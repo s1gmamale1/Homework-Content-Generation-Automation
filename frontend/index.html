@@ -2,21 +2,40 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Edu-Homework — Upload</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edu-Homework · Curriculum Press</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500;1,9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<h1>Edu-Homework — Upload curriculum book</h1>
-<form id="f">
-  <label>Subject
-    <select id="subject" required></select>
-  </label>
-  <label>PDF file
-    <input id="file" type="file" accept="application/pdf" required>
-  </label>
-  <button id="submit" type="submit">Upload</button>
-  <p class="muted" id="status"></p>
-</form>
+
+<header class="masthead">
+  <a href="/ui/" class="nameplate">Edu—Homework</a>
+  <span class="colophon">Curriculum Press · v0</span>
+</header>
+
+<main>
+  <p class="eyebrow">Begin</p>
+  <h1 class="display">Compose <em>homework</em> from a curriculum book.</h1>
+  <p class="lede">Upload a textbook PDF; the press will index its table of contents, classify the difficulty of the lesson you choose, and assemble a section-by-section study packet — faithful to the source.</p>
+
+  <form id="f" novalidate>
+    <div class="field">
+      <label for="subject">Subject</label>
+      <select id="subject" required></select>
+    </div>
+    <div class="field">
+      <label for="file">Manuscript · PDF</label>
+      <input id="file" type="file" accept="application/pdf" required>
+    </div>
+    <button id="submit" class="primary" type="submit">Send to press</button>
+    <p class="status" id="status"></p>
+  </form>
+</main>
+
+<footer>typeset by gemini · /api/v1</footer>
 
 <script src="app.js"></script>
 <script>
@@ -30,7 +49,7 @@ document.getElementById("f").addEventListener("submit", async (ev) => {
   const btn = document.getElementById("submit");
   const status = document.getElementById("status");
   btn.disabled = true;
-  status.textContent = "uploading…";
+  status.textContent = "Uploading manuscript…";
   try {
     const file = document.getElementById("file").files[0];
     const subject = sel.value;
