@@ -3,21 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0908">
 <title>Edu-Homework · Sections</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500;1,9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Geist:wght@300;400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 
 <header class="masthead">
-  <a href="/ui/" class="nameplate">Edu—Homework</a>
+  <a href="/ui/" class="nameplate">
+    <span class="nameplate-mark">e</span>
+    <span>Edu-Homework</span>
+  </a>
   <span class="colophon">Index of the volume</span>
 </header>
 
 <main>
-  <p class="eyebrow">Pick a Section</p>
+  <span class="eyebrow">Pick a Section</span>
   <h1 class="display">Choose what to <em>study</em>.</h1>
   <p class="status" id="status">Reading the volume…</p>
   <ol class="toc" id="list"></ol>
@@ -42,7 +46,7 @@ function pad2(n) { return String(n).padStart(2, "0"); }
 function renderToc(entries) {
   window.clear(list);
   const n = entries.length;
-  status.textContent = `${n} section${n === 1 ? "" : "s"} indexed · choose one to compose homework.`;
+  status.textContent = `${n} section${n === 1 ? "" : "s"} indexed · pick one to compose homework.`;
 
   entries.forEach((e, idx) => {
     const li = window.el("li", {className: "toc-item"});
@@ -67,10 +71,11 @@ function renderToc(entries) {
 
     li.appendChild(num);
     li.appendChild(text);
-    li.appendChild(pages);
+    if (pagesStr) li.appendChild(pages);
 
     li.addEventListener("click", async () => {
       li.style.opacity = 0.4;
+      li.style.pointerEvents = "none";
       status.textContent = "Sending to compositor…";
       try {
         const job = await window.generate(bookId, e.id);
@@ -78,6 +83,7 @@ function renderToc(entries) {
       } catch (err) {
         status.textContent = err.message;
         li.style.opacity = 1;
+        li.style.pointerEvents = "auto";
       }
     });
 

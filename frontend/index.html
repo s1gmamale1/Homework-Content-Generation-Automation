@@ -3,23 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Edu-Homework · Curriculum Press</title>
+<meta name="theme-color" content="#0a0908">
+<title>Edu-Homework · Compose</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500;1,9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Geist:wght@300;400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 
 <header class="masthead">
-  <a href="/ui/" class="nameplate">Edu—Homework</a>
-  <span class="colophon">Curriculum Press · v0</span>
+  <a href="/ui/" class="nameplate">
+    <span class="nameplate-mark">e</span>
+    <span>Edu-Homework</span>
+  </a>
+  <span class="colophon">v0 · /api/v1</span>
 </header>
 
 <main>
-  <p class="eyebrow">Begin</p>
-  <h1 class="display">Compose <em>homework</em> from a curriculum book.</h1>
-  <p class="lede">Upload a textbook PDF; the press will index its table of contents, classify the difficulty of the lesson you choose, and assemble a section-by-section study packet — faithful to the source.</p>
+  <span class="eyebrow">Begin</span>
+  <h1 class="display">Compose <em>homework</em>, faithfully drawn from a curriculum book.</h1>
+  <p class="lede">Upload a textbook PDF; the system indexes its table of contents, classifies the difficulty of the lesson you choose, and assembles a section-by-section study packet aligned to the source material.</p>
 
   <form id="f" novalidate>
     <div class="field">
@@ -30,12 +34,12 @@
       <label for="file">Manuscript · PDF</label>
       <input id="file" type="file" accept="application/pdf" required>
     </div>
-    <button id="submit" class="primary" type="submit">Send to press</button>
+    <button id="submit" class="primary" type="submit">Upload &amp; Compose</button>
     <p class="status" id="status"></p>
   </form>
 </main>
 
-<footer>typeset by gemini · /api/v1</footer>
+<footer>typeset by gemini</footer>
 
 <script src="app.js"></script>
 <script>

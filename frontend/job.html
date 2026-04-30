@@ -3,21 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0908">
 <title>Edu-Homework · Composing</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500;1,9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Geist:wght@300;400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 
 <header class="masthead">
-  <a href="/ui/" class="nameplate">Edu—Homework</a>
+  <a href="/ui/" class="nameplate">
+    <span class="nameplate-mark">e</span>
+    <span>Edu-Homework</span>
+  </a>
   <span class="colophon">In the press</span>
 </header>
 
 <main>
-  <p class="eyebrow">In Press</p>
+  <span class="eyebrow">In Press</span>
   <h1 class="display"><em>Composing</em> homework.</h1>
   <p class="lede">The compositor reads the lesson, classifies it, and runs each phase of the curriculum sequence in turn. Phases appear below as they begin and resolve.</p>
 
@@ -55,12 +59,12 @@ function ensurePhaseEl(name, order) {
   const wrap = window.el("article", {className: "phase running"});
   const head = window.el("div", {className: "phase-head"});
 
-  const num = window.el("div", {className: "phase-num", text: pad2(order + 1) + "."});
+  const num = window.el("div", {className: "phase-num", text: pad2(order + 1)});
   const title = window.el("div", {className: "phase-name", text: prettyName(name)});
 
   const status = window.el("div", {className: "phase-status"});
   const dot = window.el("span", {className: "dot"});
-  const statusText = window.el("span", {text: "running"});
+  const statusText = window.el("span", {text: "Running"});
   status.appendChild(dot);
   status.appendChild(statusText);
 
@@ -78,7 +82,7 @@ function ensurePhaseEl(name, order) {
 function setPhaseDone(d) {
   const cell = ensurePhaseEl(d.phase_name, d.phase_order);
   cell.wrap.className = "phase done";
-  cell.statusText.textContent = "ready";
+  cell.statusText.textContent = "Ready";
 
   if (cell.output) {
     cell.wrap.removeChild(cell.output);
@@ -100,17 +104,17 @@ function setPhaseDone(d) {
   cell.meta = window.el("div", {className: "phase-meta"});
   const tin = d.tokens_input ?? "?";
   const tout = d.tokens_output ?? "?";
-  cell.meta.appendChild(window.el("span", {text: `tokens in · ${tin}`}));
-  cell.meta.appendChild(window.el("span", {text: `tokens out · ${tout}`}));
+  cell.meta.appendChild(window.el("span", {text: `↓ ${tin} in`}));
+  cell.meta.appendChild(window.el("span", {text: `↑ ${tout} out`}));
   cell.wrap.appendChild(cell.meta);
 }
 
-function setPhaseError(phaseName, message) {
+function setPhaseError(phaseName) {
   if (!phaseName) return;
   const cell = phaseEls.get(phaseName);
   if (!cell) return;
   cell.wrap.className = "phase error";
-  cell.statusText.textContent = "failed";
+  cell.statusText.textContent = "Failed";
 }
 
 window.streamSse(`/api/v1/jobs/${encodeURIComponent(jobId)}/stream`, {
@@ -135,7 +139,7 @@ window.streamSse(`/api/v1/jobs/${encodeURIComponent(jobId)}/stream`, {
     done.appendChild(card);
   },
   error: (d) => {
-    setPhaseError(d.phase_name, d.message);
+    setPhaseError(d.phase_name);
     window.clear(done);
     done.appendChild(window.el("p", {
       className: "error-text",
