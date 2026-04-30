@@ -39,6 +39,8 @@ export interface Book {
   status: BookStatus;
   error_message: string | null;
   gemini_file_expires_at: string | null;
+  file_size_bytes: number | null;
+  created_at: string | null;
   toc: TOCEntry[] | null;
 }
 

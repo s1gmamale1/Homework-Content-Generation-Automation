@@ -1,5 +1,4 @@
-import { motion } from "motion/react";
-import { ArrowUpRight, FileText, Loader2, Upload as UploadIcon } from "lucide-react";
+import { ArrowRight, FileText, Loader2, Upload as UploadIcon } from "lucide-react";
 import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useNavigate } from "react-router-dom";
@@ -17,16 +16,6 @@ import {
 import { api } from "@/lib/api";
 import { SUBJECTS, type Subject } from "@/lib/types";
 import { cn } from "@/lib/utils";
-
-const fadeUp = {
-  hidden: { opacity: 0, y: 12, filter: "blur(6px)" },
-  show: (i: number) => ({
-    opacity: 1,
-    y: 0,
-    filter: "blur(0px)",
-    transition: { delay: 0.05 + i * 0.08, duration: 0.7, ease: [0.16, 1, 0.3, 1] as const },
-  }),
-};
 
 export function UploadPage() {
   const navigate = useNavigate();
@@ -55,7 +44,7 @@ export function UploadPage() {
     setBusy(true);
     try {
       const book = await api.uploadBook(file, subject as Subject);
-      toast.success("Uploaded — extracting table of contents.");
+      toast.success("Uploaded.");
       navigate(`/book/${book.id}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Upload failed";
@@ -66,42 +55,17 @@ export function UploadPage() {
 
   return (
     <>
-      <motion.div initial="hidden" animate="show" variants={fadeUp} custom={0}>
-        <Eyebrow>Begin</Eyebrow>
-      </motion.div>
+      <Eyebrow>New session</Eyebrow>
+      <h1 className="mt-3 text-3xl font-semibold tracking-tight text-(--color-ink)">
+        Upload a curriculum book
+      </h1>
+      <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-(--color-ink-soft)">
+        The system extracts the table of contents, classifies the lesson you choose, and assembles a
+        homework packet aligned to the source material.
+      </p>
 
-      <motion.h1
-        initial="hidden"
-        animate="show"
-        variants={fadeUp}
-        custom={1}
-        className="mt-6 font-display text-[clamp(2.8rem,6.8vw,4.6rem)] font-normal leading-[1.02] tracking-[-0.025em] text-(--color-ink)"
-      >
-        Compose <em className="not-italic gradient-text font-display italic">homework</em>,
-        faithfully drawn from a curriculum book.
-      </motion.h1>
-
-      <motion.p
-        initial="hidden"
-        animate="show"
-        variants={fadeUp}
-        custom={2}
-        className="mt-5 max-w-[58ch] text-[1.1rem] leading-[1.65] text-(--color-ink-soft)"
-      >
-        Upload a textbook PDF; the system indexes its table of contents, classifies the
-        difficulty of the lesson you choose, and assembles a section-by-section study packet
-        aligned to the source material.
-      </motion.p>
-
-      <motion.form
-        initial="hidden"
-        animate="show"
-        variants={fadeUp}
-        custom={3}
-        onSubmit={handleSubmit}
-        className="mt-12 flex flex-col gap-6"
-      >
-        <div className="flex flex-col gap-2.5">
+      <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-5">
+        <div className="flex flex-col gap-2">
           <Label htmlFor="subject">Subject</Label>
           <Select
             value={subject}
@@ -121,62 +85,56 @@ export function UploadPage() {
           </Select>
         </div>
 
-        <div className="flex flex-col gap-2.5">
-          <Label>Manuscript · PDF</Label>
+        <div className="flex flex-col gap-2">
+          <Label>PDF</Label>
           <div
             {...dz.getRootProps()}
             className={cn(
-              "group relative cursor-pointer rounded-(--radius-lg) border border-dashed bg-(--color-surface) backdrop-blur-md transition-all duration-300 ease-(--ease-soft)",
-              "hover:bg-(--color-surface-hover) hover:border-(--color-amber)/60",
+              "cursor-pointer rounded-(--radius-md) border border-dashed bg-(--color-elevated) px-4 py-7 text-center transition-colors",
+              "hover:bg-(--color-elevated-hover) hover:border-(--color-border-hover)",
               dz.isDragActive
-                ? "border-(--color-amber) bg-[oklch(0.79_0.13_70_/_8%)] scale-[1.01]"
-                : "border-(--color-border-hover)",
+                ? "border-(--color-accent) bg-(--color-accent-soft)"
+                : "border-(--color-border)",
               busy && "pointer-events-none opacity-60",
             )}
           >
             <input {...dz.getInputProps()} />
-            <div className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">
-              {file ? (
-                <>
-                  <FileText className="size-7 text-(--color-amber)" />
-                  <div className="flex flex-col gap-1">
-                    <span className="text-sm font-medium text-(--color-ink)">{file.name}</span>
-                    <span className="font-mono text-[0.7rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
-                      {(file.size / 1024 / 1024).toFixed(2)} MB · click to replace
-                    </span>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <UploadIcon className="size-7 text-(--color-ink-muted) transition-colors group-hover:text-(--color-amber)" />
-                  <div className="flex flex-col gap-1">
-                    <span className="text-sm font-medium text-(--color-ink)">
-                      {dz.isDragActive ? "Drop the manuscript" : "Drop a PDF, or click to browse"}
-                    </span>
-                    <span className="font-mono text-[0.7rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
-                      Up to 50 MB
-                    </span>
-                  </div>
-                </>
-              )}
-            </div>
+            {file ? (
+              <div className="flex items-center justify-center gap-2.5">
+                <FileText className="size-4 text-(--color-accent)" />
+                <span className="text-sm font-medium text-(--color-ink)">{file.name}</span>
+                <span className="font-mono text-[0.7rem] text-(--color-ink-muted)">
+                  · {(file.size / 1024 / 1024).toFixed(1)}MB · click to replace
+                </span>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-1.5">
+                <UploadIcon className="size-5 text-(--color-ink-muted)" />
+                <span className="text-sm text-(--color-ink)">
+                  {dz.isDragActive ? "Drop the file" : "Drop a PDF, or click to browse"}
+                </span>
+                <span className="font-mono text-[0.66rem] text-(--color-ink-muted)">
+                  Up to 50 MB
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
-        <Button type="submit" size="lg" disabled={busy} className="mt-2 self-start">
+        <Button type="submit" disabled={busy} className="self-start">
           {busy ? (
             <>
               <Loader2 className="size-4 animate-spin" />
-              Uploading manuscript…
+              Uploading…
             </>
           ) : (
             <>
-              Upload &amp; Compose
-              <ArrowUpRight className="size-4" />
+              Upload
+              <ArrowRight className="size-4" />
             </>
           )}
         </Button>
-      </motion.form>
+      </form>
     </>
   );
 }

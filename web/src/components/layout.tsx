@@ -1,28 +1,65 @@
-import { Outlet } from "react-router-dom";
-import { Aurora } from "./aurora";
+import { Library, Plus } from "lucide-react";
+import { NavLink, Outlet } from "react-router-dom";
 import { Nameplate } from "./nameplate";
+import { cn } from "@/lib/utils";
 
 export function Layout() {
   return (
-    <div className="relative flex min-h-screen flex-col">
-      <Aurora />
-
-      <header className="sticky top-0 z-20 flex items-center justify-between border-b border-(--color-border-subtle) bg-(--color-canvas)/55 px-6 py-4 backdrop-blur-xl backdrop-saturate-150 sm:px-8">
-        <Nameplate />
-        <span className="font-mono text-[0.68rem] font-medium uppercase tracking-[0.18em] text-(--color-ink-muted) hidden sm:inline">
-          v0 · /api/v1
+    <div className="flex min-h-screen flex-col">
+      <header className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-(--color-border) bg-(--color-canvas)/85 px-6 py-3 backdrop-blur sm:px-8">
+        <div className="flex items-center gap-6">
+          <Nameplate />
+          <nav className="flex items-center gap-1">
+            <NavItem to="/library" icon={<Library className="size-3.5" />}>
+              Library
+            </NavItem>
+            <NavItem to="/" icon={<Plus className="size-3.5" />} end>
+              Upload
+            </NavItem>
+          </nav>
+        </div>
+        <span className="hidden font-mono text-[0.66rem] font-medium uppercase tracking-[0.14em] text-(--color-ink-muted) sm:inline">
+          v0
         </span>
       </header>
 
-      <main className="relative z-10 mx-auto w-full max-w-[760px] flex-1 px-6 pb-28 pt-20 sm:px-8">
+      <main className="mx-auto w-full max-w-[720px] flex-1 px-6 pb-24 pt-12 sm:px-8">
         <Outlet />
       </main>
 
-      <footer className="relative z-10 flex items-center justify-center gap-3 border-t border-(--color-border-subtle) bg-(--color-canvas)/45 py-5 text-center font-mono text-[0.62rem] uppercase tracking-[0.2em] text-(--color-ink-muted) backdrop-blur-md">
-        <span className="h-px w-6 bg-[linear-gradient(to_right,transparent,var(--color-border-hover),transparent)]" />
-        typeset by gemini
-        <span className="h-px w-6 bg-[linear-gradient(to_right,transparent,var(--color-border-hover),transparent)]" />
+      <footer className="border-t border-(--color-border) py-4 text-center font-mono text-[0.64rem] uppercase tracking-[0.16em] text-(--color-ink-muted)">
+        edu-homework · /api/v1
       </footer>
     </div>
+  );
+}
+
+function NavItem({
+  to,
+  icon,
+  children,
+  end,
+}: {
+  to: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+  end?: boolean;
+}) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) =>
+        cn(
+          "inline-flex items-center gap-1.5 rounded-(--radius-sm) px-2 py-1 text-[0.78rem] font-medium transition-colors",
+          isActive
+            ? "bg-(--color-elevated) text-(--color-ink)"
+            : "text-(--color-ink-muted) hover:bg-(--color-elevated) hover:text-(--color-ink)",
+        )
+      }
+    >
+      {icon}
+      {children}
+    </NavLink>
   );
 }

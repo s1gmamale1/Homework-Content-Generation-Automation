@@ -227,7 +227,26 @@ _EXTRACT_PHASE_PROMPT = (
     "diagrams/visuals (describe them), worked examples, formulas, "
     "organisms/structures with functions, historical references, experiments, "
     "and comparison tables.\n\n"
-    "Output as structured Markdown. Be faithful to the source — do not invent."
+    "Output as structured Markdown. Be faithful to the source — do not invent.\n"
+    + "{rules}"
+)
+
+
+# Universal "no preamble" directive. Appended to every phase user message so
+# the model emits the deliverable directly without conversational scaffolding
+# like 'Mana, …', 'Quyida, …', 'Here are …', 'Below is …'. Bilingual on purpose
+# — the prompts are in Uzbek context and the curriculum output is in Uzbek.
+_NO_PREAMBLE = (
+    "\n\n## OUTPUT RULES\n"
+    "Return ONLY the requested deliverable. Do NOT write any introduction, "
+    "preface, meta-commentary, header sentence, or closing summary. Do NOT "
+    "begin with openers like 'Mana,', 'Quyida,', 'Here are', 'Below is', "
+    "'Avvalo,', 'Albatta,', 'Of course,', 'Sure,' or similar. Start the "
+    "response immediately with the actual content.\n\n"
+    "Faqat so'ralgan natijani qaytaring. Hech qanday kirish, muqaddima, izoh, "
+    "sarlavha gap yoki yakuniy xulosa yozmang. 'Mana,', 'Quyida,', 'Avvalo,', "
+    "'Albatta,' kabi kirish iboralari bilan boshlamang. Javobni darhol asosiy "
+    "mazmun bilan boshlang."
 )
 
 
@@ -247,6 +266,7 @@ async def extract_lesson_context(
         number=section_number,
         ps=page_start if page_start is not None else "?",
         pe=page_end if page_end is not None else "?",
+        rules=_NO_PREAMBLE,
     )
     logger.info(
         f"gemini lesson.extract start | section={section_number} "
@@ -321,6 +341,7 @@ async def run_phase_prompt(
         user_blocks.append("\n## Prior phase outputs")
         for name, body in prior_outputs.items():
             user_blocks.append(f"\n### {name}\n{body}")
+    user_blocks.append(_NO_PREAMBLE)
     user_text = "\n".join(user_blocks)
 
     logger.info(
@@ -354,7 +375,7 @@ async def run_phase_prompt(
         )
         raise
 
-    text = response.text or ""
+    text = _strip_preamble(response.text or "")
     duration_s = perf_counter() - t0
     usage = _extract_usage(response)
     usage_meta = dict(usage["usage_metadata"] or {})

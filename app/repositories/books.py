@@ -78,3 +78,16 @@ async def set_status(
 async def list_running_for_sweep(session: AsyncSession) -> list[Book]:
     stmt = select(Book).where(Book.status.in_(["uploading", "toc_extracting"]))
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def list_all(
+    session: AsyncSession, *, limit: int = 100, offset: int = 0
+) -> list[Book]:
+    """Most-recent first. Caps at `limit` so the library never returns thousands."""
+    stmt = (
+        select(Book)
+        .order_by(Book.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return list((await session.execute(stmt)).scalars().all())

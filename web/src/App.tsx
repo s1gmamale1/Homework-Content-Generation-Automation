@@ -4,6 +4,8 @@ import { Toaster } from "sonner";
 import { Layout } from "@/components/layout";
 import { BookPage } from "@/routes/book";
 import { JobPage } from "@/routes/job";
+import { LibraryPage } from "@/routes/library";
+import { SectionPage } from "@/routes/section";
 import { UploadPage } from "@/routes/upload";
 
 const queryClient = new QueryClient({
@@ -19,7 +21,9 @@ export default function App() {
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<UploadPage />} />
+            <Route path="/library" element={<LibraryPage />} />
             <Route path="/book/:id" element={<BookPage />} />
+            <Route path="/book/:bookId/section/:sectionId" element={<SectionPage />} />
             <Route path="/job/:id" element={<JobPage />} />
           </Route>
         </Routes>
@@ -29,10 +33,9 @@ export default function App() {
         position="bottom-right"
         toastOptions={{
           style: {
-            background: "oklch(0.13 0.018 45)",
-            border: "1px solid oklch(0.99 0.005 80 / 18%)",
-            color: "oklch(0.97 0.012 80)",
-            backdropFilter: "blur(20px)",
+            background: "oklch(0.17 0.005 60)",
+            border: "1px solid oklch(0.27 0.005 60)",
+            color: "oklch(0.97 0.005 80)",
           },
         }}
       />

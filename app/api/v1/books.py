@@ -60,6 +60,18 @@ async def upload_book(
     return BookOut.model_validate(book)
 
 
+@router.get("")
+async def list_books(
+    session: AsyncSession = Depends(get_session),
+    limit: int = 100,
+    offset: int = 0,
+) -> list[BookOut]:
+    """Library view — most-recent-first list of every book that's been uploaded.
+    `toc` is omitted (None) here; fetch /books/{id} for the full record."""
+    rows = await books_repo.list_all(session, limit=limit, offset=offset)
+    return [BookOut.model_validate(b) for b in rows]
+
+
 @router.get("/{book_id}")
 async def get_book(
     book_id: UUID,

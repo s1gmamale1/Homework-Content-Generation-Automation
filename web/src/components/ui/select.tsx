@@ -14,11 +14,11 @@ export const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "flex h-11 w-full items-center justify-between rounded-(--radius-md) border border-(--color-border-subtle) bg-(--color-surface) px-4 text-sm text-(--color-ink) backdrop-blur-md",
-      "transition-[background,border-color,box-shadow] duration-200 ease-(--ease-soft)",
-      "hover:bg-(--color-surface-hover) hover:border-(--color-border-hover)",
-      "focus:outline-none focus:bg-(--color-surface-hover) focus:border-(--color-amber) focus:ring-2 focus:ring-(--color-amber)/30",
-      "data-[state=open]:border-(--color-amber)",
+      "flex h-9 w-full items-center justify-between rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-3 text-sm text-(--color-ink)",
+      "transition-colors duration-150 ease-(--ease-soft)",
+      "hover:border-(--color-border-hover)",
+      "focus:outline-none focus:border-(--color-accent) focus:ring-2 focus:ring-(--color-accent)/30",
+      "data-[state=open]:border-(--color-accent)",
       "[&>span]:line-clamp-1 [&>span]:text-left",
       className,
     )}
@@ -40,9 +40,9 @@ export const SelectContent = React.forwardRef<
     <SelectPrimitive.Content
       ref={ref}
       className={cn(
-        "relative z-50 max-h-96 min-w-(--radix-select-trigger-width) overflow-hidden rounded-(--radius-md) border border-(--color-border-hover)",
-        "bg-[oklch(0.13_0.018_45)] backdrop-blur-2xl text-(--color-ink) shadow-2xl shadow-black/40",
-        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
+        "relative z-50 max-h-96 min-w-(--radix-select-trigger-width) overflow-hidden rounded-(--radius-md) border border-(--color-border)",
+        "bg-(--color-elevated) text-(--color-ink) shadow-lg shadow-black/40",
+        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
         position === "popper" &&
           "data-[side=bottom]:translate-y-1 data-[side=top]:-translate-y-1",
         className,
@@ -63,16 +63,16 @@ export const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      "relative flex w-full cursor-default select-none items-center gap-2 rounded-(--radius-sm) py-2 pl-9 pr-3 text-sm outline-none",
-      "transition-colors duration-150 ease-(--ease-soft)",
+      "relative flex w-full cursor-default select-none items-center gap-2 rounded-(--radius-sm) py-1.5 pl-8 pr-3 text-sm outline-none",
+      "transition-colors duration-100 ease-(--ease-soft)",
       "data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
-      "data-[highlighted]:bg-(--color-surface-strong) data-[highlighted]:text-(--color-ink)",
-      "data-[state=checked]:text-(--color-amber)",
+      "data-[highlighted]:bg-(--color-elevated-hover)",
+      "data-[state=checked]:text-(--color-accent)",
       className,
     )}
     {...props}
   >
-    <span className="absolute left-3 flex size-3.5 items-center justify-center">
+    <span className="absolute left-2.5 flex size-3.5 items-center justify-center">
       <SelectPrimitive.ItemIndicator>
         <Check className="size-3.5" />
       </SelectPrimitive.ItemIndicator>

@@ -16,4 +16,6 @@ class BookOut(BaseModel):
     status: str
     error_message: Optional[str] = None
     gemini_file_expires_at: Optional[datetime] = None
+    file_size_bytes: Optional[int] = None
+    created_at: Optional[datetime] = None
     toc: Optional[list[TOCEntryOut]] = None

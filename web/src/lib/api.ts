@@ -17,6 +17,11 @@ async function unwrap<T>(res: Response): Promise<T> {
 }
 
 export const api = {
+  async listBooks(): Promise<Book[]> {
+    const res = await fetch("/api/v1/books");
+    return unwrap<Book[]>(res);
+  },
+
   async uploadBook(file: File, subject: Subject): Promise<Book> {
     const fd = new FormData();
     fd.append("file", file);
