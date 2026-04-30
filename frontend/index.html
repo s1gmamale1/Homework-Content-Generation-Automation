@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#0a0908">
+<meta name="theme-color" content="#07060a">
 <title>Edu-Homework · Compose</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -28,13 +28,17 @@
   <form id="f" novalidate>
     <div class="field">
       <label for="subject">Subject</label>
-      <select id="subject" required></select>
+      <div class="input-shell">
+        <select id="subject" required></select>
+      </div>
     </div>
     <div class="field">
       <label for="file">Manuscript · PDF</label>
-      <input id="file" type="file" accept="application/pdf" required>
+      <div class="input-shell">
+        <input id="file" type="file" accept="application/pdf" required>
+      </div>
     </div>
-    <button id="submit" class="primary" type="submit">Upload &amp; Compose</button>
+    <button id="submit" class="primary" type="submit"><span>Upload &amp; Compose</span></button>
     <p class="status" id="status"></p>
   </form>
 </main>
@@ -48,11 +52,13 @@ for (const s of window.SUBJECTS) {
   sel.appendChild(window.el("option", {text: s, attrs: {value: s}}));
 }
 
+const submitBtn = document.getElementById("submit");
+window.attachMagnet(submitBtn, 0.18);
+
 document.getElementById("f").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  const btn = document.getElementById("submit");
   const status = document.getElementById("status");
-  btn.disabled = true;
+  submitBtn.disabled = true;
   status.textContent = "Uploading manuscript…";
   try {
     const file = document.getElementById("file").files[0];
@@ -61,7 +67,7 @@ document.getElementById("f").addEventListener("submit", async (ev) => {
     location.href = `/ui/book.html?id=${encodeURIComponent(book.id)}`;
   } catch (e) {
     status.textContent = e.message;
-    btn.disabled = false;
+    submitBtn.disabled = false;
   }
 });
 </script>

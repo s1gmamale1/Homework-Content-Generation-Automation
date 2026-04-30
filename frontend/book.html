@@ -73,6 +73,8 @@ function renderToc(entries) {
     li.appendChild(text);
     if (pagesStr) li.appendChild(pages);
 
+    window.attachInteractive(li, {tilt: true, tiltMax: 3});
+
     li.addEventListener("click", async () => {
       li.style.opacity = 0.4;
       li.style.pointerEvents = "none";
