@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Edu-Homework — Pick section</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<h1>Pick a section</h1>
+<p class="muted" id="status">connecting…</p>
+<div id="list" class="list"></div>
+
+<script src="app.js"></script>
+<script>
+const params = new URLSearchParams(location.search);
+const bookId = params.get("id");
+if (!bookId) {
+  const p = window.el("p", {text: "missing ?id="});
+  document.body.appendChild(p);
+  throw new Error("missing id");
+}
+
+const status = document.getElementById("status");
+const list = document.getElementById("list");
+
+function renderToc(entries) {
+  window.clear(list);
+  status.textContent = "click a section to generate homework";
+  for (const e of entries) {
+    const ch = e.chapter_title ? `${e.chapter_title} — ` : "";
+    const pages = e.page_start ? ` (p.${e.page_start}-${e.page_end ?? "?"})` : "";
+    const label = `${ch}${e.section_number} ${e.section_title}${pages}`;
+    const div = window.el("div", {className: "toc-item", text: label});
+    div.addEventListener("click", async () => {
+      div.style.opacity = 0.5;
+      try {
+        const job = await window.generate(bookId, e.id);
+        location.href = `/ui/job.html?id=${encodeURIComponent(job.id)}`;
+      } catch (err) {
+        status.textContent = err.message;
+        div.style.opacity = 1;
+      }
+    });
+    list.appendChild(div);
+  }
+}
+
+window.streamSse(`/api/v1/books/${encodeURIComponent(bookId)}/toc/stream`, {
+  status: (d) => status.textContent = `${d.status}…`,
+  toc_ready: (d) => renderToc(d.entries),
+  error: (d) => status.textContent = `error: ${d.message}`,
+});
+</script>
+</body>
+</html>
