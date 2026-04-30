@@ -1,0 +1,38 @@
+from datetime import datetime
+from typing import Optional
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
+
+
+class PhaseOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    phase_name: str
+    phase_order: int
+    status: str
+    output_md: Optional[str] = None
+    tokens_input: Optional[int] = None
+    tokens_output: Optional[int] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+
+
+class JobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    book_id: UUID
+    toc_entry_id: UUID
+    subject: str
+    difficulty: Optional[str] = None
+    status: str
+    current_phase: Optional[str] = None
+    error_message: Optional[str] = None
+    assembled_md: Optional[str] = None
+    phases: list[PhaseOut] = []
+
+
+class GenerateRequest(BaseModel):
+    force: bool = False
