@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
@@ -44,6 +44,12 @@ async def get_with_phases(session: AsyncSession, job_id: UUID) -> Optional[Homew
 async def find_active_for_section(
     session: AsyncSession, book_id: UUID, toc_entry_id: UUID
 ) -> Optional[HomeworkJob]:
+    """Return the most recent pending/running/done job for the (book, section).
+
+    `done` is included so idempotent regenerate returns the existing successful
+    result. Callers that want to force a new run must pass `force=True` and skip
+    this lookup entirely.
+    """
     stmt = (
         select(HomeworkJob)
         .where(
