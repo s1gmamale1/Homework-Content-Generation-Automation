@@ -1,4 +1,3 @@
-import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,17 +6,18 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from loguru import logger as log
 
 from app.api.v1 import api_v1_router
 from app.config import settings
 from app.db import SessionLocal
+from app.log import configure as configure_logging
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.services.prompts import load_all as load_prompts
 
-log = logging.getLogger("edu-homework")
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 
 
 @asynccontextmanager
