@@ -4,10 +4,10 @@ from uuid import UUID
 from sqlalchemy import ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, UUIDPK
+from app.models.base import Base, Timestamps, UUIDPK
 
 
-class TOCEntry(Base, UUIDPK):
+class TOCEntry(Base, UUIDPK, Timestamps):
     __tablename__ = "toc_entries"
 
     book_id: Mapped[UUID] = mapped_column(
