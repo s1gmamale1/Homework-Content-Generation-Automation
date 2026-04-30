@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Edu-Homework — Generating</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<h1>Generating homework</h1>
+<p class="muted" id="diff"></p>
+<div id="phases" class="list"></div>
+<p id="done"></p>
+
+<script src="app.js"></script>
+<script>
+const params = new URLSearchParams(location.search);
+const jobId = params.get("id");
+if (!jobId) {
+  document.body.appendChild(window.el("p", {text: "missing ?id="}));
+  throw new Error("missing id");
+}
+
+const phases = document.getElementById("phases");
+const diff = document.getElementById("diff");
+const done = document.getElementById("done");
+const phaseEls = new Map();
+
+function ensurePhaseEl(name, order) {
+  if (phaseEls.has(name)) return phaseEls.get(name);
+  const wrap = window.el("div", {className: "phase running"});
+  const title = window.el("strong", {text: `${order}. ${name}`});
+  const status = window.el("div", {className: "muted", text: "running…"});
+  wrap.appendChild(title);
+  wrap.appendChild(status);
+  phases.appendChild(wrap);
+  phaseEls.set(name, {wrap, title, status, output: null});
+  return phaseEls.get(name);
+}
+
+function setPhaseDone(d) {
+  const cell = ensurePhaseEl(d.phase_name, d.phase_order);
+  cell.wrap.className = "phase done";
+  const tin = d.tokens_input ?? "?";
+  const tout = d.tokens_output ?? "?";
+  cell.status.textContent = `tokens in/out: ${tin}/${tout}`;
+  if (cell.output) cell.wrap.removeChild(cell.output);
+  const preview = (d.output_md || "").slice(0, 400) +
+    ((d.output_md || "").length > 400 ? "…" : "");
+  cell.output = window.el("pre", {className: "phase-output", text: preview});
+  cell.wrap.appendChild(cell.output);
+}
+
+window.streamSse(`/api/v1/jobs/${encodeURIComponent(jobId)}/stream`, {
+  phase_started: (d) => ensurePhaseEl(d.phase_name, d.phase_order),
+  phase_completed: (d) => setPhaseDone(d),
+  difficulty_classified: (d) =>
+    diff.textContent = `Difficulty: ${String(d.difficulty).toUpperCase()}`,
+  job_completed: (d) => {
+    window.clear(done);
+    const a = window.el("a", {
+      className: "download",
+      text: "Download homework .md",
+      href: d.download_url,
+      attrs: {download: ""},
+    });
+    done.appendChild(a);
+  },
+  error: (d) => {
+    window.clear(done);
+    done.appendChild(window.el("span", {
+      className: "error-text",
+      text: `error: ${d.message}`,
+    }));
+  },
+});
+</script>
+</body>
+</html>
