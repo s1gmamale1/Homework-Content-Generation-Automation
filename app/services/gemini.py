@@ -224,10 +224,14 @@ _EXTRACT_PHASE_PROMPT = (
     "(section {number}, pages {ps}-{pe}).\n\n"
     "Extract all factual lesson content the textbook teaches on these pages. "
     "Include: key terms with definitions, named processes/mechanisms with steps, "
-    "diagrams/visuals (describe them), worked examples, formulas, "
+    "diagrams/visuals (describe them concisely), worked examples, formulas, "
     "organisms/structures with functions, historical references, experiments, "
     "and comparison tables.\n\n"
-    "Output as structured Markdown. Be faithful to the source — do not invent.\n"
+    "Output as structured Markdown. Be faithful to the source — do not invent.\n\n"
+    "BE CONCISE — keep the entire extraction under 2000 words. Prefer dense "
+    "bullet lists over prose. Skip anything not directly part of the lesson "
+    "(no front-matter, no exercises, no acknowledgements). This output is "
+    "consumed by every downstream homework phase, so smaller is cheaper."
     + "{rules}"
 )
 
@@ -324,7 +328,9 @@ async def extract_lesson_context(
 async def run_phase_prompt(
     *,
     phase_prompt: str,
-    file_uri: str,
+    file_uri: Optional[str] = None,
+    attach_file: bool = False,
+    cached_content: Optional[str] = None,
     lesson_context: str,
     prior_outputs: dict[str, str],
     difficulty: Optional[str],
@@ -332,6 +338,15 @@ async def run_phase_prompt(
     homework_job_id: Optional[UUID] = None,
     phase_output_id: Optional[UUID] = None,
 ) -> tuple[str, Optional[int], Optional[int]]:
+    """Run a single content phase. Token-efficient by default:
+
+    - `attach_file=False` (default) sends only the lesson_context — the PDF is
+      not re-uploaded, saving the bulk of input tokens. Only opt in when a
+      phase truly needs the original textbook visuals.
+    - `cached_content` references a Gemini context cache (created via
+      `create_cache`) so repeated phases that DO need the file pay ~25% rather
+      than 100% of the per-call input cost.
+    """
     client = _get_client()
 
     user_blocks: list[str] = ["## Lesson context", lesson_context]
@@ -344,10 +359,24 @@ async def run_phase_prompt(
     user_blocks.append(_NO_PREAMBLE)
     user_text = "\n".join(user_blocks)
 
+    contents: list[Any] = []
+    file_attached = bool(cached_content) or (attach_file and file_uri)
+    if cached_content is None and attach_file and file_uri:
+        contents.append(
+            types.Part.from_uri(file_uri=_uri(file_uri), mime_type="application/pdf")
+        )
+    contents.append(user_text)
+
+    config_kwargs: dict[str, Any] = {"system_instruction": phase_prompt}
+    if cached_content:
+        config_kwargs["cached_content"] = cached_content
+
     logger.info(
         f"gemini phase.run start | phase={phase_name} "
         f"prompt_chars={len(phase_prompt)} user_chars={len(user_text)} "
-        f"prior_phases={len(prior_outputs)} difficulty={difficulty}"
+        f"prior_phases={len(prior_outputs)} difficulty={difficulty} "
+        f"file={file_attached and 'cache' if cached_content else file_attached} "
+        f"cache={cached_content is not None}"
     )
     started_at = datetime.now(timezone.utc)
     t0 = perf_counter()
@@ -355,11 +384,8 @@ async def run_phase_prompt(
     try:
         response = await client.aio.models.generate_content(
             model=settings.gemini_model,
-            contents=[
-                types.Part.from_uri(file_uri=_uri(file_uri), mime_type="application/pdf"),
-                user_text,
-            ],
-            config=types.GenerateContentConfig(system_instruction=phase_prompt),
+            contents=contents,
+            config=types.GenerateContentConfig(**config_kwargs),
         )
     except Exception as exc:
         total_s = perf_counter() - t0
@@ -401,8 +427,94 @@ async def run_phase_prompt(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Context cache (token saver for phases that re-attach the same PDF)
+# ─────────────────────────────────────────────────────────────────────
+
+async def create_cache(
+    *,
+    file_uri: str,
+    extra_text: Optional[str] = None,
+    ttl: str = "3600s",
+) -> Optional[str]:
+    """Create a Gemini context cache containing the PDF and optionally extra
+    text (e.g., the lesson_context). Returns the cache `name` to pass via
+    `cached_content` on subsequent generate_content calls — those calls will
+    be billed at ~25% of regular per-token cost for the cached portion.
+
+    Returns None if creation fails (e.g., model doesn't support caching, or
+    contents are below the SDK's minimum size). Callers should fall back to
+    inline content in that case.
+    """
+    client = _get_client()
+    contents: list[Any] = [
+        types.Part.from_uri(file_uri=_uri(file_uri), mime_type="application/pdf"),
+    ]
+    if extra_text:
+        contents.append(extra_text)
+
+    t0 = perf_counter()
+    try:
+        cache = await client.aio.caches.create(
+            model=settings.gemini_model,
+            config=types.CreateCachedContentConfig(contents=contents, ttl=ttl),
+        )
+    except Exception as exc:
+        logger.warning(
+            f"gemini cache.create failed: {exc!r} — falling back to inline content"
+        )
+        return None
+
+    duration_ms = (perf_counter() - t0) * 1000
+    logger.success(
+        f"gemini cache created | name={cache.name} ttl={ttl} duration_ms={duration_ms:.0f}"
+    )
+    return cache.name
+
+
+async def delete_cache(cache_name: str) -> None:
+    """Best-effort cache cleanup. Failures are logged but ignored — caches
+    auto-expire after their TTL anyway."""
+    client = _get_client()
+    try:
+        await client.aio.caches.delete(name=cache_name)
+        logger.debug(f"gemini cache deleted | name={cache_name}")
+    except Exception as exc:
+        logger.warning(f"gemini cache.delete failed: {exc!r}")
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────
+
+# Common conversational openers Gemini sometimes emits before the actual
+# deliverable, despite the explicit "no preamble" directive in the prompt.
+# Stripped post-hoc as defense-in-depth. Match a single leading line only.
+_PREAMBLE_PATTERNS = (
+    "Mana,", "Mana ", "Quyida,", "Quyida ", "Avvalo,", "Albatta,",
+    "Here are", "Here is", "Below is", "Below are", "Sure,", "Of course,",
+    "Certainly,", "Marhamat,",
+)
+
+
+def _strip_preamble(text: str) -> str:
+    """If the model emitted a single leading conversational line, drop it.
+
+    Conservative on purpose — only strips an opening line that BOTH starts with
+    a known pattern AND looks like a sentence (no markdown heading, no list
+    bullet). Real homework content always begins with `#`, `-`, `**`, etc.
+    """
+    if not text:
+        return text
+    stripped = text.lstrip()
+    if not stripped:
+        return text
+    first_line, _, rest = stripped.partition("\n")
+    starts_with_pattern = any(first_line.startswith(p) for p in _PREAMBLE_PATTERNS)
+    looks_like_content = first_line.startswith(("#", "-", "*", "•", "|", "```", "<"))
+    if starts_with_pattern and not looks_like_content:
+        return rest.lstrip()
+    return text
+
 
 def _uri(file_name: str) -> str:
     if file_name.startswith("https://") or file_name.startswith("files/"):

@@ -14,7 +14,11 @@ from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
 from app.services import events_bus, gemini
-from app.services.flows import SUBJECT_FLOWS
+from app.services.flows import (
+    SUBJECT_FLOWS,
+    file_needed_phases,
+    filter_prior_outputs,
+)
 from app.services.prompts import get_prompt, get_prompt_hash
 
 _INTERNAL_PHASES = {"extract", "classify"}
@@ -31,6 +35,10 @@ async def run(job_id: UUID) -> None:
     t_start = perf_counter()
 
     log.info(f"[job {job_id}] pipeline starting")
+
+    # Hoisted above try/except so the `finally` block can clean it up even if
+    # an exception fires before the phase loop assigns it.
+    cache_name: Optional[str] = None
 
     try:
         # ─── load job + book + section ─────────────────────────
@@ -78,6 +86,17 @@ async def run(job_id: UUID) -> None:
         lesson_context: Optional[str] = None
         phase_order = 0
 
+        # Token-saver: a Gemini context cache, created lazily only when ≥2
+        # phases in this run actually need the original PDF. If only 0–1
+        # phases need the file, the cache overhead isn't worth it.
+        # (cache_name is hoisted above the outer try; we just decide eligibility here.)
+        file_phases = file_needed_phases(subject)
+        cache_eligible = len(file_phases) >= 2
+        log.info(
+            f"[job {job_id}] file-needed phases for '{subject}': "
+            f"{sorted(file_phases) or '(none — using lesson_context only)'}"
+        )
+
         # ─── phase loop ────────────────────────────────────────
         while phase_order < len(sequence):
             phase_name = sequence[phase_order]
@@ -88,6 +107,22 @@ async def run(job_id: UUID) -> None:
             t_phase = perf_counter()
             await _emit_started(resource_id, phase_name, phase_order)
 
+            # Decide whether THIS phase needs the original PDF, and whether a
+            # cache should back it. Lazy-create the cache on the first phase
+            # that needs the file (and only if ≥2 phases will benefit).
+            phase_needs_file = phase_name in file_phases
+            if (
+                phase_needs_file
+                and cache_name is None
+                and cache_eligible
+            ):
+                cache_name = await gemini.create_cache(file_uri=file_uri)
+
+            # Trim the prior_outputs delivered to this phase down to the
+            # subset it actually depends on. Quietly massive savings on
+            # late phases (reflection, final-challenge).
+            phase_prior = filter_prior_outputs(phase_name, prior_outputs)
+
             try:
                 output_md, tin, tout, _ph = await _execute_phase(
                     job_id=job_id,
@@ -95,9 +130,11 @@ async def run(job_id: UUID) -> None:
                     phase_order=phase_order,
                     subject=subject,
                     file_uri=file_uri,
+                    attach_file=phase_needs_file,
+                    cached_content=cache_name if phase_needs_file else None,
                     section=section_data,
                     lesson_context=lesson_context,
-                    prior_outputs=prior_outputs,
+                    prior_outputs=phase_prior,
                     difficulty=difficulty,
                 )
             except Exception as exc:
@@ -201,6 +238,8 @@ async def run(job_id: UUID) -> None:
         await events_bus.publish(resource_id, "error", {"message": str(exc)})
     finally:
         await events_bus.close(resource_id)
+        if cache_name is not None:
+            await gemini.delete_cache(cache_name)
 
 
 async def _emit_started(resource_id: str, phase_name: str, phase_order: int) -> None:
@@ -218,6 +257,8 @@ async def _execute_phase(
     phase_order: int,
     subject: str,
     file_uri: str,
+    attach_file: bool = False,
+    cached_content: Optional[str] = None,
     section: dict,
     lesson_context: Optional[str],
     prior_outputs: dict[str, str],
@@ -262,7 +303,9 @@ async def _execute_phase(
             phase_prompt = get_prompt(subject, phase_name)
             output_md, tin, tout = await gemini.run_phase_prompt(
                 phase_prompt=phase_prompt,
-                file_uri=file_uri,
+                file_uri=file_uri if attach_file else None,
+                attach_file=attach_file,
+                cached_content=cached_content,
                 lesson_context=lesson_context or "",
                 prior_outputs=prior_outputs,
                 difficulty=difficulty,
