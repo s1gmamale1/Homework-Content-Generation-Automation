@@ -24,10 +24,16 @@ async def upload_file(path: Path, mime_type: str = "application/pdf") -> tuple[s
     file = await asyncio.to_thread(
         client.files.upload, file=str(path), config={"mime_type": mime_type}
     )
-    if not file.name:
-        raise RuntimeError("Gemini Files API upload returned no file name")
+    # The model API requires the fully-qualified HTTPS URL (not the bare
+    # `files/<id>` resource name). Prefer `file.uri` when present; fall back
+    # to constructing the v1beta URL from `file.name`.
+    file_uri: Optional[str] = getattr(file, "uri", None)
+    if not file_uri:
+        if not file.name:
+            raise RuntimeError("Gemini Files API upload returned neither uri nor name")
+        file_uri = f"https://generativelanguage.googleapis.com/v1beta/{file.name}"
     expires_at = datetime.now(timezone.utc) + timedelta(hours=47)
-    return file.name, expires_at
+    return file_uri, expires_at
 
 
 async def extract_toc(file_uri: str, subject: str) -> ExtractedTOC:
@@ -133,10 +139,19 @@ async def run_phase_prompt(
     return response.text or "", _tokens_in(response), _tokens_out(response)
 
 
-def _uri(file_name: str) -> str:
-    if file_name.startswith("https://") or file_name.startswith("files/"):
-        return file_name
-    return f"files/{file_name}"
+def _uri(file_uri: str) -> str:
+    """Normalize a stored URI to the form Gemini's Part.from_uri accepts.
+
+    Accepts:
+      - full HTTPS URLs (returned as-is)
+      - `gs://...` URIs (returned as-is)
+      - legacy bare resource names like `files/<id>` (upgraded to v1beta URL)
+    """
+    if file_uri.startswith(("https://", "http://", "gs://")):
+        return file_uri
+    if file_uri.startswith("files/"):
+        return f"https://generativelanguage.googleapis.com/v1beta/{file_uri}"
+    return f"https://generativelanguage.googleapis.com/v1beta/files/{file_uri}"
 
 
 def _tokens_in(response) -> Optional[int]:
