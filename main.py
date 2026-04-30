@@ -1,11 +1,9 @@
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import api_v1_router
 from app.config import settings
@@ -67,8 +65,3 @@ app.include_router(api_v1_router)
 @app.get("/health")
 async def root_health() -> dict:
     return {"status": "ok"}
-
-
-frontend_dir = Path(__file__).resolve().parent / "frontend"
-if frontend_dir.is_dir():
-    app.mount("/ui", StaticFiles(directory=frontend_dir, html=True), name="ui")
