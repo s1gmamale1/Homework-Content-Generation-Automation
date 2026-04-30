@@ -10,10 +10,12 @@ SUBJECT_FLOWS: dict[str, dict] = {
                  "real-life", "consolidation", "final-challenge", "reflection"],
     },
     "english": {
-        # English is always HARD per flow.md — there is no Easy pipeline and no
-        # preview-easy.md exists in prompts/english/. Reading sits between
-        # memory-sprint and game-breaks in the canonical chain.
-        "has_classify": True,
+        # English is always Hard mode per flow.md — there is no Easy pipeline,
+        # and no preview-easy.md exists. Setting has_classify=False makes the
+        # orchestrator skip the classify branch entirely and run the hard
+        # sequence directly, mirroring history. CEFR level (A1–B2) is handled
+        # within the hard prompts themselves rather than via classify branching.
+        "has_classify": False,
         "easy": [],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "reading", "game-breaks",
                  "real-life", "consolidation", "final-challenge", "reflection"],
