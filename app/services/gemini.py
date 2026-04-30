@@ -24,6 +24,8 @@ async def upload_file(path: Path, mime_type: str = "application/pdf") -> tuple[s
     file = await asyncio.to_thread(
         client.files.upload, file=str(path), config={"mime_type": mime_type}
     )
+    if not file.name:
+        raise RuntimeError("Gemini Files API upload returned no file name")
     expires_at = datetime.now(timezone.utc) + timedelta(hours=47)
     return file.name, expires_at
 
@@ -53,7 +55,13 @@ async def extract_toc(file_uri: str, subject: str) -> ExtractedTOC:
         ),
     )
 
-    parsed: ExtractedTOC = response.parsed  # type: ignore[assignment]
+    parsed = response.parsed
+    if not isinstance(parsed, ExtractedTOC):
+        text_preview = (response.text or "")[:200]
+        raise RuntimeError(
+            f"Gemini returned no parseable TOC structure "
+            f"(parsed type={type(parsed).__name__}, text_preview={text_preview!r})"
+        )
     return parsed
 
 
