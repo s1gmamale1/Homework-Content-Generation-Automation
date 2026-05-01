@@ -559,12 +559,14 @@ def _extract_usage(response: Any) -> dict[str, Any]:
         total_token_count, input_text_token_count, input_audio_token_count,
         candidates_token_count, thoughts_token_count, usage_metadata (raw dict)
     """
-    out = {
+    out: dict[str, Any] = {
         "total_token_count": 0,
+        "prompt_token_count": 0,
         "input_text_token_count": 0,
-        "input_audio_token_count": 0,
+        "input_image_token_count": 0,
         "candidates_token_count": 0,
         "thoughts_token_count": 0,
+        "cached_content_token_count": 0,
         "usage_metadata": None,
     }
     meta = getattr(response, "usage_metadata", None)
@@ -574,24 +576,26 @@ def _extract_usage(response: Any) -> dict[str, Any]:
     out["total_token_count"] = getattr(meta, "total_token_count", 0) or 0
     out["candidates_token_count"] = getattr(meta, "candidates_token_count", 0) or 0
     out["thoughts_token_count"] = getattr(meta, "thoughts_token_count", 0) or 0
+    out["cached_content_token_count"] = getattr(meta, "cached_content_token_count", 0) or 0
+    out["prompt_token_count"] = getattr(meta, "prompt_token_count", 0) or 0
 
     # Input is split across modalities; SDK reports a list of (modality, token_count).
-    prompt_total = getattr(meta, "prompt_token_count", 0) or 0
+    # This project only encounters TEXT and IMAGE (PDF pages render as IMAGE).
     text_tokens = 0
-    audio_tokens = 0
+    image_tokens = 0
     details = getattr(meta, "prompt_tokens_details", None) or []
     for d in details:
         modality = getattr(getattr(d, "modality", None), "name", "") or ""
         count = getattr(d, "token_count", 0) or 0
         if modality.upper() == "TEXT":
             text_tokens += count
-        elif modality.upper() == "AUDIO":
-            audio_tokens += count
+        elif modality.upper() == "IMAGE":
+            image_tokens += count
     # Fallback when SDK doesn't expose modality breakdown — assume all text.
-    if text_tokens == 0 and audio_tokens == 0:
-        text_tokens = prompt_total
+    if text_tokens == 0 and image_tokens == 0:
+        text_tokens = out["prompt_token_count"]
     out["input_text_token_count"] = text_tokens
-    out["input_audio_token_count"] = audio_tokens
+    out["input_image_token_count"] = image_tokens
 
     # Raw dump for forward-compat with new SDK fields
     try:

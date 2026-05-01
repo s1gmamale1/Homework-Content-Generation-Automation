@@ -35,12 +35,16 @@ class GeminiUsage(Base, UUIDPK, Timestamps):
     operation: Mapped[str] = mapped_column(String(64), nullable=False)
     model_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
-    # Token counts — broken down by modality where the SDK reports it
+    # Token counts — broken down by what this project actually consumes:
+    # text + image (PDFs render as images), thoughts, output (candidates), and
+    # the SDK's own roll-ups for total prompt and cached portion.
     total_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    prompt_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     input_text_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    input_audio_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    input_image_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     candidates_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     thoughts_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cached_content_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # Raw usage_metadata as JSON — for fields the SDK adds later that we don't surface yet
     usage_metadata: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
