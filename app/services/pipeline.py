@@ -201,12 +201,33 @@ async def run(job_id: UUID) -> None:
         # ─── assembly ──────────────────────────────────────────
         log.info(f"[job {job_id}] assembling homework markdown")
         assembled = await _assemble(job_id)
+
+        # ─── games extraction ──────────────────────────────────
+        # Pull the raw `game-breaks` phase output and re-parse it as
+        # structured JSON via Gemini's response_schema. Stored on the job
+        # so the frontend can render interactive components.
+        game_breaks_md = prior_outputs.get("game-breaks", "")
+        games_json: Optional[dict] = None
+        if game_breaks_md.strip():
+            log.info(f"[job {job_id}] extracting games from game-breaks output")
+            games_pack = await gemini.extract_games(
+                game_breaks_md, homework_job_id=job_id
+            )
+            if games_pack is not None:
+                games_json = games_pack.model_dump(mode="json")
+                log.info(
+                    f"[job {job_id}] games extracted | count={len(games_pack.games)} "
+                    f"types={[g.type for g in games_pack.games]}"
+                )
+
         async with SessionLocal() as session:
             await jobs_repo.set_status(
                 session, job_id, "done",
                 completed_at=_utcnow(),
                 assembled_md=assembled,
             )
+            if games_json is not None:
+                await jobs_repo.set_games_json(session, job_id, games_json)
             await session.commit()
 
         await events_bus.publish(

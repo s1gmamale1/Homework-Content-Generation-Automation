@@ -1,9 +1,11 @@
 import asyncio
+import io
 import json
+import zipfile
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -135,18 +137,39 @@ async def stream_job(job_id: UUID, request: Request):
 
 
 @router.get("/jobs/{job_id}/download")
-async def download(job_id: UUID, session: AsyncSession = Depends(get_session)):
+async def download(
+    job_id: UUID,
+    format: str = "zip",
+    session: AsyncSession = Depends(get_session),
+):
+    """Download the assembled homework. Default format is `zip` (homework.md
+    + games.json packaged together). Pass `?format=md` for the bare markdown."""
     job = await jobs_repo.get(session, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
     if job.status != "done" or job.assembled_md is None:
         raise HTTPException(404, "homework not ready")
 
-    filename = f"homework-{job_id}.md"
-    return PlainTextResponse(
-        job.assembled_md,
-        media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    if format == "md":
+        return PlainTextResponse(
+            job.assembled_md,
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="homework-{job_id}.md"'
+            },
+        )
+
+    # Default: zip bundle
+    games_payload = job.games_json or {"games": []}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("homework.md", job.assembled_md)
+        zf.writestr("games.json", json.dumps(games_payload, ensure_ascii=False, indent=2))
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="homework-{job_id}.zip"'},
     )
 
 

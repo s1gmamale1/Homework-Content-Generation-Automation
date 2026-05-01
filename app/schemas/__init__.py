@@ -1,6 +1,7 @@
 from app.schemas.book import BookOut
-from app.schemas.toc import TOCEntryOut, TOCEntryExtracted, ExtractedTOC
-from app.schemas.job import JobOut, PhaseOut, GenerateRequest
+from app.schemas.games import Game, GameCard, GamePair, GameQuestion, GamesPack
+from app.schemas.job import GenerateRequest, JobOut, PhaseOut
+from app.schemas.toc import ExtractedTOC, TOCEntryExtracted, TOCEntryOut
 
 __all__ = [
     "BookOut",
@@ -10,4 +11,9 @@ __all__ = [
     "JobOut",
     "PhaseOut",
     "GenerateRequest",
+    "Game",
+    "GamePair",
+    "GameCard",
+    "GameQuestion",
+    "GamesPack",
 ]

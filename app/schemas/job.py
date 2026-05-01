@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -31,6 +31,7 @@ class JobOut(BaseModel):
     current_phase: Optional[str] = None
     error_message: Optional[str] = None
     assembled_md: Optional[str] = None
+    games_json: Optional[dict[str, Any]] = None
     phases: list[PhaseOut] = []
 
 

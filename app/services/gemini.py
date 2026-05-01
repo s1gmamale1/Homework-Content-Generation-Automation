@@ -25,7 +25,7 @@ from loguru import logger
 from app.config import settings
 from app.db import SessionLocal
 from app.repositories import gemini_usage as usage_repo
-from app.schemas import ExtractedTOC
+from app.schemas import ExtractedTOC, GamesPack
 
 _client: Optional[genai.Client] = None
 
@@ -472,6 +472,100 @@ async def run_phase_prompt(
 # ─────────────────────────────────────────────────────────────────────
 # Context cache (token saver for phases that re-attach the same PDF)
 # ─────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────
+# Games extraction (post-pipeline structured output for interactive render)
+# ─────────────────────────────────────────────────────────────────────
+
+_GAMES_EXTRACT_PROMPT = (
+    "You are reading a `game-breaks` phase output that describes interactive "
+    "homework games (adaptive_quiz, tile_match, memory_match, sentence_fill). "
+    "Convert the games into structured JSON.\n\n"
+    "Game type semantics:\n"
+    "- adaptive_quiz: questions[]. Each question has prompt, options (for MC), "
+    "  correct_index pointing into options, and explanation. For TF: options=["
+    "'True','False']. For YNNG: options=['Yes','No','Not Given'].\n"
+    "- tile_match: pairs[] of {left, right} — items the student must match.\n"
+    "- memory_match: cards[] of {text, pair_id}. Cards sharing pair_id match.\n"
+    "- sentence_fill: questions[] where prompt has the sentence with a blank "
+    "  '___' and answer holds the missing word.\n\n"
+    "Preserve the original language (Uzbek). Be FAITHFUL — do not invent games "
+    "or questions not present in the source. If no games are present, return "
+    "{\"games\": []}."
+)
+
+
+async def extract_games(
+    game_breaks_md: str,
+    *,
+    homework_job_id: Optional[UUID] = None,
+) -> Optional[GamesPack]:
+    """Run a structured-output extraction over the `game-breaks` phase MD.
+    Returns None on failure — callers should fall back to MD-only display."""
+    if not game_breaks_md.strip():
+        return GamesPack(games=[])
+
+    client = _get_client()
+    logger.info(f"gemini games.extract start | input_chars={len(game_breaks_md)}")
+    started_at = datetime.now(timezone.utc)
+    t0 = perf_counter()
+
+    try:
+        response = await client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=[_GAMES_EXTRACT_PROMPT, "\n\n## Source\n", game_breaks_md],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=GamesPack,
+            ),
+        )
+    except Exception as exc:
+        total_s = perf_counter() - t0
+        logger.warning(f"gemini games.extract failed: {exc!r}")
+        await _record(
+            operation="games.extract",
+            homework_job_id=homework_job_id,
+            started_at=started_at,
+            duration_s=total_s,
+            success=False,
+            error_message=str(exc),
+        )
+        return None
+
+    duration_s = perf_counter() - t0
+    usage = _extract_usage(response)
+    parsed = response.parsed
+    if not isinstance(parsed, GamesPack):
+        logger.warning(
+            f"gemini games.extract returned no parseable structure "
+            f"(parsed={type(parsed).__name__})"
+        )
+        await _record(
+            operation="games.extract",
+            homework_job_id=homework_job_id,
+            started_at=started_at,
+            duration_s=duration_s,
+            success=False,
+            error_message="non-parseable structure",
+            **usage,
+        )
+        return None
+
+    logger.success(
+        f"gemini games.extract done | games={len(parsed.games)} "
+        f"types={[g.type for g in parsed.games]} "
+        f"duration_ms={duration_s * 1000:.0f}"
+    )
+    await _record(
+        operation="games.extract",
+        homework_job_id=homework_job_id,
+        started_at=started_at,
+        duration_s=duration_s,
+        success=True,
+        **usage,
+    )
+    return parsed
+
 
 async def create_cache(
     *,

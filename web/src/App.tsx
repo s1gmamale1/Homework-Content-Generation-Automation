@@ -5,6 +5,7 @@ import { Layout } from "@/components/layout";
 import { BookPage } from "@/routes/book";
 import { JobPage } from "@/routes/job";
 import { LibraryPage } from "@/routes/library";
+import { PreviewPage } from "@/routes/preview";
 import { SectionPage } from "@/routes/section";
 import { UploadPage } from "@/routes/upload";
 
@@ -25,6 +26,7 @@ export default function App() {
             <Route path="/book/:id" element={<BookPage />} />
             <Route path="/book/:bookId/section/:sectionId" element={<SectionPage />} />
             <Route path="/job/:id" element={<JobPage />} />
+            <Route path="/preview/:id" element={<PreviewPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

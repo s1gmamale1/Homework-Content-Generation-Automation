@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from sqlalchemy import select
@@ -88,6 +88,15 @@ async def set_status(
         job.current_phase = current_phase
     if assembled_md is not None:
         job.assembled_md = assembled_md
+
+
+async def set_games_json(
+    session: AsyncSession, job_id: UUID, games_json: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.games_json = games_json
 
 
 async def set_difficulty(session: AsyncSession, job_id: UUID, difficulty: str) -> None:

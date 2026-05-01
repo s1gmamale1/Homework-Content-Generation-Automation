@@ -1,6 +1,15 @@
-import { ArrowDown, CheckCircle2, ChevronDown, CircleX, Loader2 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import {
+  ArrowRight,
+  CheckCircle2,
+  ChevronDown,
+  CircleX,
+  Download,
+  Eye,
+  Loader2,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Eyebrow } from "@/components/eyebrow";
@@ -54,8 +63,7 @@ export function JobPage() {
         for (const p of j.phases) {
           upsert(p.phase_name, {
             order: p.phase_order,
-            status:
-              p.status === "done" ? "done" : p.status === "failed" ? "failed" : "running",
+            status: p.status === "done" ? "done" : p.status === "failed" ? "failed" : "running",
             output: p.output_md ?? undefined,
             tokens_input: p.tokens_input,
             tokens_output: p.tokens_output,
@@ -116,9 +124,7 @@ export function JobPage() {
       <div className="flex items-center justify-between gap-3">
         <Eyebrow>Composing</Eyebrow>
         <div className="flex items-center gap-2">
-          {difficulty && (
-            <Badge variant="accent">difficulty · {difficulty}</Badge>
-          )}
+          {difficulty && <Badge variant="accent">difficulty · {difficulty}</Badge>}
           {totalCount > 0 && (
             <Badge variant="neutral">
               {doneCount}/{totalCount}
@@ -142,21 +148,7 @@ export function JobPage() {
         ))}
       </ol>
 
-      {downloadUrl && (
-        <a
-          href={downloadUrl}
-          download
-          className="mt-7 inline-flex items-center justify-between gap-3 rounded-(--radius-md) border border-(--color-accent-border) bg-(--color-accent-soft) px-4 py-3 text-sm transition-colors hover:bg-(--color-accent) hover:text-[oklch(0.18_0.04_55)]"
-        >
-          <span className="flex items-center gap-2.5">
-            <CheckCircle2 className="size-4 text-(--color-success)" />
-            <span className="font-medium text-(--color-ink) group-hover:text-[oklch(0.18_0.04_55)]">
-              Download homework.md
-            </span>
-          </span>
-          <ArrowDown className="size-4 text-(--color-accent)" />
-        </a>
-      )}
+      {downloadUrl && id && <DonePanel jobId={id} downloadUrl={downloadUrl} />}
 
       {error && !downloadUrl && (
         <div className="mt-6 rounded-(--radius-md) border border-[oklch(0.70_0.16_25_/_30%)] bg-[oklch(0.70_0.16_25_/_8%)] px-3 py-2 text-sm text-(--color-error)">
@@ -164,6 +156,70 @@ export function JobPage() {
         </div>
       )}
     </>
+  );
+}
+
+function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string }) {
+  const { data: job } = useQuery({
+    queryKey: ["job", jobId, "done"],
+    queryFn: () => api.getJob(jobId),
+  });
+
+  const previewMd = useMemo(() => {
+    const md = job?.assembled_md ?? "";
+    if (!md) return "";
+    return md.length > 1200 ? `${md.slice(0, 1200).trimEnd()}\n\n…` : md;
+  }, [job?.assembled_md]);
+
+  const gameCount = job?.games_json?.games?.length ?? 0;
+
+  return (
+    <section className="mt-7 overflow-hidden rounded-(--radius-md) border border-(--color-accent-border) bg-(--color-accent-soft)">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-(--color-accent-border) px-4 py-3">
+        <span className="inline-flex items-center gap-2 font-mono text-[0.7rem] font-medium uppercase tracking-[0.16em] text-(--color-accent)">
+          <CheckCircle2 className="size-3.5 text-(--color-success)" />
+          Homework ready{gameCount > 0 ? ` · ${gameCount} games` : ""}
+        </span>
+        <div className="flex items-center gap-2">
+          <Link
+            to={`/preview/${jobId}`}
+            className="inline-flex items-center gap-1.5 rounded-(--radius-sm) border border-(--color-border) bg-(--color-elevated) px-3 py-1.5 text-xs font-medium text-(--color-ink) transition-colors hover:bg-(--color-elevated-hover)"
+          >
+            <Eye className="size-3.5" />
+            Open full preview
+          </Link>
+          <a
+            href={downloadUrl}
+            download
+            className="inline-flex items-center gap-1.5 rounded-(--radius-sm) bg-(--color-accent) px-3 py-1.5 text-xs font-medium text-[oklch(0.18_0.04_55)] transition-colors hover:bg-(--color-accent-deep)"
+          >
+            <Download className="size-3.5" />
+            Download .zip
+          </a>
+        </div>
+      </header>
+
+      {previewMd && (
+        <div className="bg-(--color-canvas) px-5 py-4">
+          <div className="prose prose-invert prose-sm max-h-80 overflow-auto leading-relaxed text-(--color-ink-soft) [&>*]:my-1 [&_h1]:mt-3 [&_h1]:mb-2 [&_h1]:text-lg [&_h1]:font-semibold [&_h1]:text-(--color-ink) [&_h2]:mt-3 [&_h2]:mb-2 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-(--color-ink) [&_h3]:mt-2 [&_h3]:mb-1 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-(--color-ink) [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_code]:font-mono [&_code]:text-[0.85em]">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{previewMd}</ReactMarkdown>
+          </div>
+          <div className="mt-3 flex items-center justify-between text-xs text-(--color-ink-muted)">
+            <span className="font-mono">
+              showing {Math.min(1200, job?.assembled_md?.length ?? 0).toLocaleString()} of{" "}
+              {(job?.assembled_md?.length ?? 0).toLocaleString()} chars
+            </span>
+            <Link
+              to={`/preview/${jobId}`}
+              className="inline-flex items-center gap-1 text-(--color-accent) hover:underline"
+            >
+              Read all
+              <ArrowRight className="size-3" />
+            </Link>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 

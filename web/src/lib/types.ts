@@ -69,7 +69,43 @@ export interface Job {
   current_phase: string | null;
   error_message: string | null;
   assembled_md: string | null;
+  games_json: GamesPack | null;
   phases: PhaseOut[];
+}
+
+/* Structured games — rendered as interactive React components on the
+   /preview/:id route. Mirrors app/schemas/games.py exactly. */
+
+export type GameType = "adaptive_quiz" | "tile_match" | "memory_match" | "sentence_fill";
+
+export interface GameQuestion {
+  prompt: string;
+  options?: string[];
+  correct_index?: number | null;
+  answer?: string | null;
+  explanation?: string | null;
+}
+
+export interface GamePair {
+  left: string;
+  right: string;
+}
+
+export interface GameCard {
+  text: string;
+  pair_id: number;
+}
+
+export interface Game {
+  type: GameType | string;
+  title: string;
+  questions?: GameQuestion[];
+  pairs?: GamePair[];
+  cards?: GameCard[];
+}
+
+export interface GamesPack {
+  games: Game[];
 }
 
 /* SSE event payloads */
