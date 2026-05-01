@@ -25,7 +25,14 @@ from loguru import logger
 from app.config import settings
 from app.db import SessionLocal
 from app.repositories import gemini_usage as usage_repo
-from app.schemas import ExtractedTOC, FlashcardsPack, GamesPack
+from app.schemas import (
+    ExtractedTOC,
+    FinalChallenge,
+    FlashcardsPack,
+    GamesPack,
+    MemorySprintPack,
+    ReadingPassage,
+)
 
 _client: Optional[genai.Client] = None
 
@@ -644,6 +651,190 @@ async def extract_flashcards(
     )
     await _record(
         operation="flashcards.extract",
+        homework_job_id=homework_job_id,
+        started_at=started_at,
+        duration_s=duration_s,
+        success=True,
+        **usage,
+    )
+    return parsed
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Final Challenge (boss fight) extraction
+# ─────────────────────────────────────────────────────────────────────
+
+_FINAL_CHALLENGE_PROMPT = (
+    "You are reading a `final-challenge` phase output that describes a "
+    "boss-fight quiz with HP-based damage. Convert it into structured JSON.\n\n"
+    "- starting_hp: 100 for grades 5-8, 150 for grades 9-11 (look in the source).\n"
+    "- questions[]: each with prompt, kind ('mc'/'tf'/'ynng'/'open'), options "
+    "  (for mc/tf/ynng), correct_index for those, OR correct_answer for 'open'.\n"
+    "- damage: -10 (Easy), -20 (Medium), or -30 (Hard) per the [Damage: -XX HP] "
+    "  tag — store as a positive integer.\n"
+    "- bloom_level / pisa_level: extract from the [Bloom: LX | PISA: LX] tags.\n"
+    "- explanation: short rationale shown after answer.\n"
+    "- hints: up to 3 progressive hints if a hint ladder is described.\n\n"
+    "Preserve the original language (Uzbek). Be FAITHFUL — do not invent "
+    "questions. If no boss fight is present, return {\"questions\": []}."
+)
+
+
+async def extract_final_challenge(
+    final_challenge_md: str,
+    *,
+    homework_job_id: Optional[UUID] = None,
+) -> Optional[FinalChallenge]:
+    if not final_challenge_md.strip():
+        return FinalChallenge(questions=[])
+    return await _structured_extract(
+        operation="final_challenge.extract",
+        prompt=_FINAL_CHALLENGE_PROMPT,
+        source_md=final_challenge_md,
+        schema=FinalChallenge,
+        homework_job_id=homework_job_id,
+        log_label="final_challenge",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Memory Sprint extraction
+# ─────────────────────────────────────────────────────────────────────
+
+_MEMORY_SPRINT_PROMPT = (
+    "You are reading a `memory-sprint` phase output that describes 5-7 quick "
+    "tap-only recognition items (MC, T/F, Yes/No/Not Given). Convert into "
+    "structured JSON.\n\n"
+    "- items[]: each with prompt, kind ('mc'/'tf'/'ynng'), options "
+    "  (4 for MC, ['True','False'] or ['To'g'ri','Noto'g'ri'] for tf, "
+    "  ['Yes','No','Not Given'] or Uzbek equivalents for ynng), and "
+    "  correct_index pointing into options.\n"
+    "- explanation (optional): one short sentence shown after answer.\n\n"
+    "Preserve the original language. Be FAITHFUL — do not invent items. "
+    "If no items are present, return {\"items\": []}."
+)
+
+
+async def extract_memory_sprint(
+    memory_sprint_md: str,
+    *,
+    homework_job_id: Optional[UUID] = None,
+) -> Optional[MemorySprintPack]:
+    if not memory_sprint_md.strip():
+        return MemorySprintPack(items=[])
+    return await _structured_extract(
+        operation="memory_sprint.extract",
+        prompt=_MEMORY_SPRINT_PROMPT,
+        source_md=memory_sprint_md,
+        schema=MemorySprintPack,
+        homework_job_id=homework_job_id,
+        log_label="memory_sprint",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Reading (English HARD) extraction
+# ─────────────────────────────────────────────────────────────────────
+
+_READING_PROMPT = (
+    "You are reading a `reading` phase output for an English homework session. "
+    "It contains ONE continuous narrative followed (or interleaved) by 3-5 "
+    "comprehension checkpoints. Convert into structured JSON.\n\n"
+    "- passage_md: the full narrative as Markdown. Preserve paragraph breaks "
+    "  (blank line between paragraphs) and any **bold** vocabulary highlights. "
+    "  Do NOT include the checkpoint questions in the passage — pull those out.\n"
+    "- checkpoints[]: each with after_paragraph (0-based index of the paragraph "
+    "  AFTER which this checkpoint appears), prompt, options[] (if MC), "
+    "  correct_index for MC OR correct_answer for free-text.\n"
+    "- cefr_level: A1 / A1+ / A2 / A2+ / B1 / B1+ / B2 if visible.\n\n"
+    "If no reading is present, return {\"passage_md\": \"\", \"checkpoints\": []}."
+)
+
+
+async def extract_reading(
+    reading_md: str,
+    *,
+    homework_job_id: Optional[UUID] = None,
+) -> Optional[ReadingPassage]:
+    if not reading_md.strip():
+        return ReadingPassage(passage_md="", checkpoints=[])
+    return await _structured_extract(
+        operation="reading.extract",
+        prompt=_READING_PROMPT,
+        source_md=reading_md,
+        schema=ReadingPassage,
+        homework_job_id=homework_job_id,
+        log_label="reading",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Shared structured-extract helper
+# ─────────────────────────────────────────────────────────────────────
+
+async def _structured_extract(
+    *,
+    operation: str,
+    prompt: str,
+    source_md: str,
+    schema: type,
+    homework_job_id: Optional[UUID],
+    log_label: str,
+):
+    """Common scaffolding for the post-pipeline JSON extractions (games,
+    flashcards, final_challenge, memory_sprint, reading). One Gemini call
+    with response_schema, structured logging, gemini_usages recording."""
+    client = _get_client()
+    logger.info(f"gemini {log_label}.extract start | input_chars={len(source_md)}")
+    started_at = datetime.now(timezone.utc)
+    t0 = perf_counter()
+
+    try:
+        response = await client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=[prompt, "\n\n## Source\n", source_md],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=schema,
+            ),
+        )
+    except Exception as exc:
+        total_s = perf_counter() - t0
+        logger.warning(f"gemini {log_label}.extract failed: {exc!r}")
+        await _record(
+            operation=operation,
+            homework_job_id=homework_job_id,
+            started_at=started_at,
+            duration_s=total_s,
+            success=False,
+            error_message=str(exc),
+        )
+        return None
+
+    duration_s = perf_counter() - t0
+    usage = _extract_usage(response)
+    parsed = response.parsed
+    if not isinstance(parsed, schema):
+        logger.warning(
+            f"gemini {log_label}.extract returned no parseable structure "
+            f"(parsed={type(parsed).__name__})"
+        )
+        await _record(
+            operation=operation,
+            homework_job_id=homework_job_id,
+            started_at=started_at,
+            duration_s=duration_s,
+            success=False,
+            error_message="non-parseable structure",
+            **usage,
+        )
+        return None
+
+    logger.success(
+        f"gemini {log_label}.extract done | duration_ms={duration_s * 1000:.0f}"
+    )
+    await _record(
+        operation=operation,
         homework_job_id=homework_job_id,
         started_at=started_at,
         duration_s=duration_s,

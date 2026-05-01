@@ -27,6 +27,15 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # Structured flashcards extracted from the flashcards phase. Shape:
     # {"cards": [{"front": str, "back": str, "hint"?: str, "cluster"?: str}]}
     flashcards_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # Boss-fight-style HP quiz extracted from final-challenge.
+    # {"title", "starting_hp", "questions": [{prompt, kind, options, correct_index, damage, hints, ...}]}
+    final_challenge_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # Quick recognition quiz extracted from memory-sprint.
+    # {"items": [{prompt, kind, options, correct_index, explanation}]}
+    memory_sprint_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # English-only reading passage with inline checkpoints.
+    # {"passage_md", "checkpoints": [{after_paragraph, prompt, options, correct_index}], "cefr_level"}
+    reading_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

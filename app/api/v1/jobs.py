@@ -159,17 +159,19 @@ async def download(
             },
         )
 
-    # Default: zip bundle (homework.md + games.json + flashcards.json)
-    games_payload = job.games_json or {"games": []}
-    flashcards_payload = job.flashcards_json or {"cards": []}
+    # Default: zip bundle (homework.md + structured JSONs for the interactive phases)
+    structured_files: dict[str, dict] = {
+        "games.json": job.games_json or {"games": []},
+        "flashcards.json": job.flashcards_json or {"cards": []},
+        "final-challenge.json": job.final_challenge_json or {"questions": []},
+        "memory-sprint.json": job.memory_sprint_json or {"items": []},
+        "reading.json": job.reading_json or {"passage_md": "", "checkpoints": []},
+    }
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("homework.md", job.assembled_md)
-        zf.writestr("games.json", json.dumps(games_payload, ensure_ascii=False, indent=2))
-        zf.writestr(
-            "flashcards.json",
-            json.dumps(flashcards_payload, ensure_ascii=False, indent=2),
-        )
+        for filename, payload in structured_files.items():
+            zf.writestr(filename, json.dumps(payload, ensure_ascii=False, indent=2))
     buf.seek(0)
     return StreamingResponse(
         buf,

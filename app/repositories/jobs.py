@@ -108,6 +108,33 @@ async def set_flashcards_json(
     job.flashcards_json = flashcards_json
 
 
+async def set_final_challenge_json(
+    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.final_challenge_json = payload
+
+
+async def set_memory_sprint_json(
+    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.memory_sprint_json = payload
+
+
+async def set_reading_json(
+    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.reading_json = payload
+
+
 async def set_difficulty(session: AsyncSession, job_id: UUID, difficulty: str) -> None:
     job = await session.get(HomeworkJob, job_id)
     if job is None:

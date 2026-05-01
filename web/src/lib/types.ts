@@ -73,7 +73,59 @@ export interface Job {
   assembled_md: string | null;
   games_json: GamesPack | null;
   flashcards_json: FlashcardsPack | null;
+  final_challenge_json: FinalChallenge | null;
+  memory_sprint_json: MemorySprintPack | null;
+  reading_json: ReadingPassage | null;
   phases: PhaseOut[];
+}
+
+/* Final Challenge — boss fight */
+export interface BossQuestion {
+  prompt: string;
+  kind: "mc" | "tf" | "ynng" | "open" | string;
+  options?: string[];
+  correct_index?: number | null;
+  correct_answer?: string | null;
+  damage?: number;
+  bloom_level?: string | null;
+  pisa_level?: string | null;
+  explanation?: string | null;
+  hints?: string[];
+}
+
+export interface FinalChallenge {
+  title?: string;
+  starting_hp: number;
+  questions: BossQuestion[];
+}
+
+/* Memory Sprint — quick tap quiz */
+export interface MemorySprintItem {
+  prompt: string;
+  kind: "mc" | "tf" | "ynng" | string;
+  options?: string[];
+  correct_index: number;
+  explanation?: string | null;
+}
+
+export interface MemorySprintPack {
+  items: MemorySprintItem[];
+}
+
+/* Reading (English HARD) — passage + checkpoints */
+export interface ReadingCheckpoint {
+  after_paragraph: number;
+  prompt: string;
+  options?: string[];
+  correct_index?: number | null;
+  correct_answer?: string | null;
+  explanation?: string | null;
+}
+
+export interface ReadingPassage {
+  passage_md: string;
+  checkpoints: ReadingCheckpoint[];
+  cefr_level?: string | null;
 }
 
 export interface Flashcard {

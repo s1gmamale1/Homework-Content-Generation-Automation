@@ -235,6 +235,48 @@ async def run(job_id: UUID) -> None:
                     f"[job {job_id}] flashcards extracted | count={len(flashcards_pack.cards)}"
                 )
 
+        # final-challenge → boss fight JSON (HARD only — phase may be absent)
+        final_challenge_md = prior_outputs.get("final-challenge", "")
+        final_challenge_json: Optional[dict] = None
+        if final_challenge_md.strip():
+            log.info(f"[job {job_id}] extracting final-challenge")
+            fc_pack = await gemini.extract_final_challenge(
+                final_challenge_md, homework_job_id=job_id
+            )
+            if fc_pack is not None:
+                final_challenge_json = fc_pack.model_dump(mode="json")
+                log.info(
+                    f"[job {job_id}] final-challenge extracted | "
+                    f"questions={len(fc_pack.questions)} hp={fc_pack.starting_hp}"
+                )
+
+        # memory-sprint → tap-only quiz JSON
+        memory_sprint_md = prior_outputs.get("memory-sprint", "")
+        memory_sprint_json: Optional[dict] = None
+        if memory_sprint_md.strip():
+            log.info(f"[job {job_id}] extracting memory-sprint")
+            ms_pack = await gemini.extract_memory_sprint(
+                memory_sprint_md, homework_job_id=job_id
+            )
+            if ms_pack is not None:
+                memory_sprint_json = ms_pack.model_dump(mode="json")
+                log.info(
+                    f"[job {job_id}] memory-sprint extracted | items={len(ms_pack.items)}"
+                )
+
+        # reading → English-only passage + checkpoints JSON
+        reading_md = prior_outputs.get("reading", "")
+        reading_json: Optional[dict] = None
+        if reading_md.strip():
+            log.info(f"[job {job_id}] extracting reading")
+            r_pack = await gemini.extract_reading(reading_md, homework_job_id=job_id)
+            if r_pack is not None:
+                reading_json = r_pack.model_dump(mode="json")
+                log.info(
+                    f"[job {job_id}] reading extracted | "
+                    f"checkpoints={len(r_pack.checkpoints)} cefr={r_pack.cefr_level}"
+                )
+
         async with SessionLocal() as session:
             await jobs_repo.set_status(
                 session, job_id, "done",
@@ -245,6 +287,16 @@ async def run(job_id: UUID) -> None:
                 await jobs_repo.set_games_json(session, job_id, games_json)
             if flashcards_json is not None:
                 await jobs_repo.set_flashcards_json(session, job_id, flashcards_json)
+            if final_challenge_json is not None:
+                await jobs_repo.set_final_challenge_json(
+                    session, job_id, final_challenge_json
+                )
+            if memory_sprint_json is not None:
+                await jobs_repo.set_memory_sprint_json(
+                    session, job_id, memory_sprint_json
+                )
+            if reading_json is not None:
+                await jobs_repo.set_reading_json(session, job_id, reading_json)
             await session.commit()
 
         await events_bus.publish(

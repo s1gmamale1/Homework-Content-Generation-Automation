@@ -5,9 +5,12 @@ import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
+import { BossFight } from "@/components/boss-fight/boss-fight";
 import { Eyebrow } from "@/components/eyebrow";
 import { FlashcardDeck } from "@/components/flashcards/flashcard-deck";
 import { GameCard } from "@/components/games/game-card";
+import { MemorySprint } from "@/components/memory-sprint/memory-sprint";
+import { ReadingExperience } from "@/components/reading/reading-experience";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -84,46 +87,57 @@ export function PreviewPage() {
     enabled: Boolean(id),
   });
 
-  // Split the assembled MD into ordered segments around the "## Flashcards"
-  // and "## Game Breaks" headings. Each segment is either a chunk of MD or a
-  // structured renderer placeholder. Plain MD wins when the corresponding
-  // *_json is empty (e.g., extraction failed) so users still see *something*.
-  type Segment = { kind: "md"; content: string } | { kind: "flashcards" } | { kind: "games" };
+  // Split the assembled MD into ordered segments around the structured-phase
+  // headings. Each segment is either an MD chunk or a structured renderer
+  // placeholder. Plain MD wins when the *_json is empty (extraction failed),
+  // so users still see *something* per phase.
+  type SegmentKind =
+    | "md"
+    | "flashcards"
+    | "memory_sprint"
+    | "games"
+    | "final_challenge"
+    | "reading";
+
+  type Segment = { kind: "md"; content: string } | { kind: Exclude<SegmentKind, "md"> };
 
   const segments = useMemo<Segment[]>(() => {
     const md = job?.assembled_md ?? "";
     if (!md) return [];
 
-    const cards = job?.flashcards_json?.cards ?? [];
-    const games = job?.games_json?.games ?? [];
+    const has = {
+      flashcards: (job?.flashcards_json?.cards ?? []).length > 0,
+      memory_sprint: (job?.memory_sprint_json?.items ?? []).length > 0,
+      games: (job?.games_json?.games ?? []).length > 0,
+      final_challenge: (job?.final_challenge_json?.questions ?? []).length > 0,
+      reading: Boolean(job?.reading_json?.passage_md),
+    };
+
+    // Heading regex per phase. `.title()` in Python converts e.g.
+    // "memory-sprint" → "Memory Sprint", "final-challenge" → "Final Challenge".
+    const HEADINGS: Array<[Exclude<SegmentKind, "md">, RegExp]> = [
+      ["flashcards", /^##\s+Flashcards\s*$/im],
+      ["memory_sprint", /^##\s+Memory\s+Sprint\s*$/im],
+      ["games", /^##\s+Game\s+Breaks\s*$/im],
+      ["reading", /^##\s+Reading\s*$/im],
+      ["final_challenge", /^##\s+Final\s+Challenge\s*$/im],
+    ];
 
     interface Marker {
       idx: number;
       end: number;
-      kind: "flashcards" | "games";
+      kind: Exclude<SegmentKind, "md">;
     }
     const markers: Marker[] = [];
 
-    // ## Flashcards heading
-    if (cards.length > 0) {
-      const m = md.match(/^##\s+Flashcards\s*$/im);
-      if (m && m.index !== undefined) {
-        const after = md.slice(m.index);
-        const nextH = after.search(/\n##\s+\S/);
-        const end = nextH >= 0 ? m.index + nextH : md.length;
-        markers.push({ idx: m.index, end, kind: "flashcards" });
-      }
-    }
-
-    // ## Game Breaks heading
-    if (games.length > 0) {
-      const m = md.match(/^##\s+Game\s+Breaks\s*$/im);
-      if (m && m.index !== undefined) {
-        const after = md.slice(m.index);
-        const nextH = after.search(/\n##\s+\S/);
-        const end = nextH >= 0 ? m.index + nextH : md.length;
-        markers.push({ idx: m.index, end, kind: "games" });
-      }
+    for (const [kind, re] of HEADINGS) {
+      if (!has[kind]) continue;
+      const m = md.match(re);
+      if (!m || m.index === undefined) continue;
+      const after = md.slice(m.index);
+      const nextH = after.search(/\n##\s+\S/);
+      const end = nextH >= 0 ? m.index + nextH : md.length;
+      markers.push({ idx: m.index, end, kind });
     }
 
     if (markers.length === 0) return [{ kind: "md", content: md }];
@@ -140,7 +154,14 @@ export function PreviewPage() {
     }
     if (cursor < md.length) out.push({ kind: "md", content: md.slice(cursor) });
     return out;
-  }, [job?.assembled_md, job?.flashcards_json, job?.games_json]);
+  }, [
+    job?.assembled_md,
+    job?.flashcards_json,
+    job?.memory_sprint_json,
+    job?.games_json,
+    job?.final_challenge_json,
+    job?.reading_json,
+  ]);
 
   if (isLoading) {
     return (
@@ -215,17 +236,57 @@ export function PreviewPage() {
               </section>
             );
           }
-          // games
+          if (seg.kind === "memory_sprint") {
+            return (
+              <section key="memory_sprint" className="mt-10">
+                <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
+                  Memory Sprint
+                </h2>
+                <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
+                  <MemorySprint pack={job.memory_sprint_json ?? { items: [] }} />
+                </div>
+              </section>
+            );
+          }
+          if (seg.kind === "games") {
+            return (
+              <section key="games" className="mt-10">
+                <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
+                  Game Breaks
+                </h2>
+                <div className="flex flex-col gap-5">
+                  {(job.games_json?.games ?? []).map((g, gi) => (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: order is stable
+                    <GameCard key={gi} game={g} />
+                  ))}
+                </div>
+              </section>
+            );
+          }
+          if (seg.kind === "reading") {
+            return (
+              <section key="reading" className="mt-10">
+                <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
+                  Reading
+                </h2>
+                <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
+                  <ReadingExperience
+                    passage={job.reading_json ?? { passage_md: "", checkpoints: [] }}
+                  />
+                </div>
+              </section>
+            );
+          }
+          // final_challenge
           return (
-            <section key="games" className="mt-10">
+            <section key="final_challenge" className="mt-10">
               <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-                Game Breaks
+                Final Challenge
               </h2>
-              <div className="flex flex-col gap-5">
-                {(job.games_json?.games ?? []).map((g, gi) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: order is stable
-                  <GameCard key={gi} game={g} />
-                ))}
+              <div className="rounded-(--radius-lg) border border-(--color-accent-border) bg-[linear-gradient(135deg,var(--color-elevated),var(--color-accent-soft))] p-5">
+                <BossFight
+                  challenge={job.final_challenge_json ?? { starting_hp: 100, questions: [] }}
+                />
               </div>
             </section>
           );

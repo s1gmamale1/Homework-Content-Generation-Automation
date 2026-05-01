@@ -33,6 +33,9 @@ class JobOut(BaseModel):
     assembled_md: Optional[str] = None
     games_json: Optional[dict[str, Any]] = None
     flashcards_json: Optional[dict[str, Any]] = None
+    final_challenge_json: Optional[dict[str, Any]] = None
+    memory_sprint_json: Optional[dict[str, Any]] = None
+    reading_json: Optional[dict[str, Any]] = None
     phases: list[PhaseOut] = []
 
 
