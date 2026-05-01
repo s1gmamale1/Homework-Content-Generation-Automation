@@ -198,10 +198,14 @@ async def extract_toc(
         )
         raise RuntimeError(msg)
 
+    prompt_total = int((usage["usage_metadata"] or {}).get("prompt_token_count") or 0) or usage[
+        "input_text_token_count"
+    ]
+    cached_in = _cached_tokens(response)
     logger.success(
         f"gemini toc.extract done | entries={len(parsed.entries)} "
-        f"tokens_in={usage['input_text_token_count']} "
-        f"tokens_out={usage['candidates_token_count']} "
+        f"input={prompt_total:,} (cached={cached_in:,}) "
+        f"output={usage['candidates_token_count']:,} "
         f"duration_ms={duration_s * 1000:.0f}"
     )
     await _record(
@@ -303,11 +307,15 @@ async def extract_lesson_context(
     text = response.text or ""
     duration_s = perf_counter() - t0
     usage = _extract_usage(response)
+    prompt_total = int((usage["usage_metadata"] or {}).get("prompt_token_count") or 0) or usage[
+        "input_text_token_count"
+    ]
+    cached_in = _cached_tokens(response)
 
     logger.success(
         f"gemini lesson.extract done | section={section_number} "
-        f"output_chars={len(text)} tokens_in={usage['input_text_token_count']} "
-        f"tokens_out={usage['candidates_token_count']} duration_ms={duration_s * 1000:.0f}"
+        f"output_chars={len(text)} input={prompt_total:,} (cached={cached_in:,}) "
+        f"output={usage['candidates_token_count']:,} duration_ms={duration_s * 1000:.0f}"
     )
     await _record(
         operation="lesson.extract",
@@ -371,12 +379,22 @@ async def run_phase_prompt(
     if cached_content:
         config_kwargs["cached_content"] = cached_content
 
+    # Optimization-visibility log: shows exactly which token-savers are active
+    # for this phase. Use this to verify "did we actually skip the PDF here?".
+    file_state = (
+        "CACHE" if cached_content
+        else "INLINE" if (attach_file and file_uri)
+        else "OFF"
+    )
+    prior_names = list(prior_outputs.keys())
     logger.info(
-        f"gemini phase.run start | phase={phase_name} "
-        f"prompt_chars={len(phase_prompt)} user_chars={len(user_text)} "
-        f"prior_phases={len(prior_outputs)} difficulty={difficulty} "
-        f"file={file_attached and 'cache' if cached_content else file_attached} "
-        f"cache={cached_content is not None}"
+        f"gemini phase.run config | phase={phase_name} "
+        f"file={file_state} "
+        f"prior={len(prior_names)}{prior_names if prior_names else ''} "
+        f"lesson_chars={len(lesson_context)} "
+        f"sys_chars={len(phase_prompt)} "
+        f"user_chars={len(user_text)} "
+        f"difficulty={difficulty}"
     )
     started_at = datetime.now(timezone.utc)
     t0 = perf_counter()
@@ -404,15 +422,27 @@ async def run_phase_prompt(
     text = _strip_preamble(response.text or "")
     duration_s = perf_counter() - t0
     usage = _extract_usage(response)
+    cached_in = _cached_tokens(response)
     usage_meta = dict(usage["usage_metadata"] or {})
     usage_meta["phase_name"] = phase_name
     usage_meta["difficulty"] = difficulty
     usage["usage_metadata"] = usage_meta
 
+    # Truth comes from the SDK's prompt_token_count (full prompt incl. PDF /
+    # image modality). Our text-only column understates by orders of magnitude
+    # whenever a phase attaches the PDF.
+    prompt_total = int(usage_meta.get("prompt_token_count") or 0)
+    if prompt_total == 0:
+        prompt_total = usage["input_text_token_count"]
+    out_total = usage["candidates_token_count"]
+    fresh_in = max(prompt_total - cached_in, 0)
+    cache_pct = (cached_in / prompt_total * 100) if prompt_total else 0
+
     logger.success(
-        f"gemini phase.run done | phase={phase_name} "
-        f"output_chars={len(text)} tokens_in={usage['input_text_token_count']} "
-        f"tokens_out={usage['candidates_token_count']} duration_ms={duration_s * 1000:.0f}"
+        f"gemini phase.run billed | phase={phase_name} "
+        f"input={prompt_total:,} (fresh={fresh_in:,} cached={cached_in:,} {cache_pct:.0f}%) "
+        f"output={out_total:,} "
+        f"output_chars={len(text)} duration_ms={duration_s * 1000:.0f}"
     )
     await _record(
         operation="phase.run",
@@ -423,7 +453,7 @@ async def run_phase_prompt(
         success=True,
         **usage,
     )
-    return text, usage["input_text_token_count"] or None, usage["candidates_token_count"] or None
+    return text, in_total or None, out_total or None
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -575,6 +605,16 @@ def _extract_usage(response: Any) -> dict[str, Any]:
         out["usage_metadata"] = {"prompt_token_count": prompt_total}
 
     return out
+
+
+def _cached_tokens(response: Any) -> int:
+    """Number of input tokens served from a Gemini context cache for this call.
+    Returns 0 if caching wasn't used or the SDK doesn't surface the field.
+    Logged so we can verify the cache is actually hitting at the API level."""
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return 0
+    return getattr(meta, "cached_content_token_count", 0) or 0
 
 
 def _format_duration(seconds: float) -> str:

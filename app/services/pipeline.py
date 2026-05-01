@@ -214,14 +214,11 @@ async def run(job_id: UUID) -> None:
         )
 
         total_s = perf_counter() - t_start
-        total_tokens_in = 0  # tracked for summary only
-        total_tokens_out = 0
         log.success(
             f"[job {job_id}] pipeline complete | phases_run={len(sequence)} "
             f"assembled_chars={len(assembled)} total_s={total_s:.1f}"
         )
-        # silence unused-warning (kept for future cumulative metric)
-        _ = total_tokens_in, total_tokens_out
+        await _log_token_summary(job_id, log)
 
     except Exception as exc:
         total_s = perf_counter() - t_start
@@ -354,3 +351,111 @@ async def _assemble(job_id: UUID) -> str:
         body = p.output_md or "(empty)"
         parts.append(f"## {title}\n\n{body}\n")
     return "\n".join(parts)
+
+
+async def _log_token_summary(job_id: UUID, log) -> None:
+    """End-of-pipeline summary: per-call token cost as a flat ASCII table.
+
+    Renders one row per gemini_usages row for this job (plus a TOTAL footer)
+    so the optimizations are immediately verifiable from the terminal — large
+    inputs on `extract` only, small inputs on every other phase means the PDF
+    skip is working; non-zero `cached` column means context caching landed.
+
+    Reads token counts from `usage_metadata` (the raw SDK dump) rather than
+    the per-modality columns, because PDF tokens are reported under the IMAGE
+    modality — they're invisible if you only look at `input_text_token_count`.
+    """
+    from sqlalchemy import select  # local import: only used here
+
+    from app.models import GeminiUsage
+
+    async with SessionLocal() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(GeminiUsage)
+                    .where(GeminiUsage.homework_job_id == job_id)
+                    .order_by(GeminiUsage.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    if not rows:
+        return
+
+    OP_W = 28
+    header = (
+        f"{'operation':<{OP_W}}"
+        f"{'input':>10}{'cached':>10}{'fresh':>10}{'out':>9}{'dur':>9}  file ok"
+    )
+    bar = "─" * len(header)
+    lines = [bar, header, bar]
+
+    total_in = total_out = total_cached = total_image = 0
+    for r in rows:
+        meta = r.usage_metadata or {}
+        # Truth lives in the SDK dump; columns only capture text+audio modalities.
+        prompt_in = int(meta.get("prompt_token_count") or 0) or r.input_text_token_count
+        cached = int(meta.get("cached_content_token_count") or 0)
+        out_tokens = int(meta.get("candidates_token_count") or 0) or r.candidates_token_count
+        fresh_in = max(prompt_in - cached, 0)
+
+        # PDF tokens are reported under modality=IMAGE.
+        image_tokens = 0
+        for d in meta.get("prompt_tokens_details") or []:
+            if (d or {}).get("modality") == "IMAGE":
+                image_tokens += int(d.get("token_count") or 0)
+        file_marker = "PDF" if image_tokens > 0 else "—"
+
+        ok = "✓" if r.success else "✗"
+        op_label = r.operation
+        if isinstance(meta.get("phase_name"), str):
+            op_label = f"{r.operation}:{meta['phase_name']}"
+        if len(op_label) > OP_W - 1:
+            op_label = op_label[: OP_W - 2] + "…"
+
+        lines.append(
+            f"{op_label:<{OP_W}}"
+            f"{prompt_in:>10,}"
+            f"{cached:>10,}"
+            f"{fresh_in:>10,}"
+            f"{out_tokens:>9,}"
+            f"{(r.duration or '—'):>9}"
+            f"  {file_marker:<3} {ok}"
+        )
+        total_in += prompt_in
+        total_out += out_tokens
+        total_cached += cached
+        total_image += image_tokens
+
+    fresh_total = max(total_in - total_cached, 0)
+    cache_pct = (total_cached / total_in * 100) if total_in else 0
+    pdf_calls = sum(
+        1
+        for r in rows
+        if any(
+            (d or {}).get("modality") == "IMAGE"
+            for d in (r.usage_metadata or {}).get("prompt_tokens_details") or []
+        )
+    )
+
+    lines.append(bar)
+    lines.append(
+        f"{'TOTAL':<{OP_W}}"
+        f"{total_in:>10,}"
+        f"{total_cached:>10,}"
+        f"{fresh_total:>10,}"
+        f"{total_out:>9,}"
+        f"{'':>9}"
+    )
+    lines.append(
+        f"  {len(rows)} calls · {pdf_calls} attached the PDF · "
+        f"PDF tokens total: {total_image:,} · "
+        f"cache hit (gemini implicit + explicit): {cache_pct:.0f}% · "
+        f"net billed input (fresh): {fresh_total:,}"
+    )
+    lines.append(bar)
+
+    log.info(f"[job {job_id}] token summary\n" + "\n".join(lines))
