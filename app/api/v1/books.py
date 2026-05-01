@@ -13,6 +13,7 @@ from app.auth import get_current_user
 from app.config import settings
 from app.db import get_session, SessionLocal
 from app.repositories import books as books_repo
+from app.repositories import jobs as jobs_repo
 from app.schemas import BookOut, TOCEntryOut
 from app.services import events_bus, toc_extractor
 from app.services.flows import SUPPORTED_SUBJECTS
@@ -126,5 +127,16 @@ async def _book_out_with_toc(session: AsyncSession, book_id: UUID) -> BookOut:
         raise HTTPException(404, "book not found")
     out = BookOut.model_validate(book)
     if book.status == "toc_ready":
-        out.toc = [TOCEntryOut.model_validate(e) for e in book.toc_entries]
+        # Enrich each TOC entry with its latest homework-job status so the
+        # frontend can show a per-row indicator (Ready / Running / Failed).
+        latest = await jobs_repo.latest_by_section(session, book_id)
+        entries: list[TOCEntryOut] = []
+        for e in book.toc_entries:
+            entry_out = TOCEntryOut.model_validate(e)
+            job = latest.get(e.id)
+            if job is not None:
+                entry_out.latest_job_id = job.id
+                entry_out.latest_job_status = job.status
+            entries.append(entry_out)
+        out.toc = entries
     return out

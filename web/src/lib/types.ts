@@ -30,6 +30,8 @@ export interface TOCEntry {
   page_start: number | null;
   page_end: number | null;
   order_index: number;
+  latest_job_id?: string | null;
+  latest_job_status?: JobStatus | null;
 }
 
 export interface Book {

@@ -15,6 +15,10 @@ class TOCEntryOut(BaseModel):
     page_start: Optional[int] = None
     page_end: Optional[int] = None
     order_index: int
+    # Latest homework job status for this section (None if no job exists).
+    # Populated by /api/v1/books/{id} so the TOC list shows a per-row indicator.
+    latest_job_id: Optional[UUID] = None
+    latest_job_status: Optional[str] = None
 
 
 class TOCEntryExtracted(BaseModel):

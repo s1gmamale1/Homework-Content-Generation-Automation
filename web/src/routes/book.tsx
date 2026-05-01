@@ -1,4 +1,4 @@
-import { ArrowRight, Loader2, Search } from "lucide-react";
+import { ArrowRight, CheckCircle2, CircleDot, CircleX, Loader2, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Eyebrow } from "@/components/eyebrow";
@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useEventSource } from "@/hooks/use-event-source";
 import { api } from "@/lib/api";
-import type { TOCEntry } from "@/lib/types";
+import type { JobStatus, TOCEntry } from "@/lib/types";
 import { cn, formatPages } from "@/lib/utils";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -137,6 +137,7 @@ export function BookPage() {
                 </div>
 
                 <span className="flex items-center gap-2.5">
+                  <SectionStatusBadge status={entry.latest_job_status ?? null} />
                   {entry.page_start && (
                     <span className="hidden font-mono text-[0.66rem] text-(--color-ink-muted) sm:inline">
                       {formatPages(entry.page_start, entry.page_end)}
@@ -156,5 +157,52 @@ export function BookPage() {
         </ol>
       )}
     </>
+  );
+}
+
+function SectionStatusBadge({ status }: { status: JobStatus | null }) {
+  if (!status) return null;
+  const map: Record<
+    JobStatus,
+    {
+      label: string;
+      icon: React.ReactNode;
+      cls: string;
+    }
+  > = {
+    done: {
+      label: "Ready",
+      icon: <CheckCircle2 className="size-3" />,
+      cls: "border-[oklch(0.78_0.10_145_/_30%)] bg-[oklch(0.78_0.10_145_/_10%)] text-(--color-success)",
+    },
+    running: {
+      label: "Running",
+      icon: <Loader2 className="size-3 animate-spin" />,
+      cls: "border-(--color-accent-border) bg-(--color-accent-soft) text-(--color-accent)",
+    },
+    pending: {
+      label: "Queued",
+      icon: <CircleDot className="size-3" />,
+      cls: "border-(--color-accent-border) bg-(--color-accent-soft) text-(--color-accent)",
+    },
+    failed: {
+      label: "Failed",
+      icon: <CircleX className="size-3" />,
+      cls: "border-[oklch(0.70_0.16_25_/_30%)] bg-[oklch(0.70_0.16_25_/_10%)] text-(--color-error)",
+    },
+  };
+  const m = map[status];
+  if (!m) return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[0.6rem] font-medium uppercase tracking-[0.12em]",
+        m.cls,
+      )}
+      title={`Latest job: ${status}`}
+    >
+      {m.icon}
+      {m.label}
+    </span>
   );
 }

@@ -109,3 +109,21 @@ async def set_difficulty(session: AsyncSession, job_id: UUID, difficulty: str) -
 async def list_running_for_sweep(session: AsyncSession) -> list[HomeworkJob]:
     stmt = select(HomeworkJob).where(HomeworkJob.status.in_(["pending", "running"]))
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def latest_by_section(
+    session: AsyncSession, book_id: UUID
+) -> dict[UUID, HomeworkJob]:
+    """One row per (book, section): the most recent job for that section.
+
+    Uses Postgres' `DISTINCT ON` for a single-pass index scan instead of a
+    correlated subquery. Returns an empty dict if the book has no jobs.
+    """
+    stmt = (
+        select(HomeworkJob)
+        .where(HomeworkJob.book_id == book_id)
+        .order_by(HomeworkJob.toc_entry_id, HomeworkJob.created_at.desc())
+        .distinct(HomeworkJob.toc_entry_id)
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    return {row.toc_entry_id: row for row in rows}
