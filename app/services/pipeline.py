@@ -57,6 +57,7 @@ async def run(job_id: UUID) -> None:
             book_cache_name = book.gemini_cache_name
             book_cache_expires_at = book.gemini_cache_expires_at
             section_data = {
+                "id": section.id,
                 "title": section.section_title,
                 "number": section.section_number,
                 "page_start": section.page_start,
@@ -202,11 +203,13 @@ async def run(job_id: UUID) -> None:
         log.info(f"[job {job_id}] assembling homework markdown")
         assembled = await _assemble(job_id)
 
-        # ─── games extraction ──────────────────────────────────
-        # Pull the raw `game-breaks` phase output and re-parse it as
-        # structured JSON via Gemini's response_schema. Stored on the job
-        # so the frontend can render interactive components.
+        # ─── games + flashcards extraction ─────────────────────
+        # Pull the raw phase outputs and re-parse them as structured JSON via
+        # Gemini's response_schema. Stored on the job so the frontend can
+        # render interactive game cards and a flippable flashcard deck.
         game_breaks_md = prior_outputs.get("game-breaks", "")
+        flashcards_md = prior_outputs.get("flashcards", "")
+
         games_json: Optional[dict] = None
         if game_breaks_md.strip():
             log.info(f"[job {job_id}] extracting games from game-breaks output")
@@ -220,6 +223,18 @@ async def run(job_id: UUID) -> None:
                     f"types={[g.type for g in games_pack.games]}"
                 )
 
+        flashcards_json: Optional[dict] = None
+        if flashcards_md.strip():
+            log.info(f"[job {job_id}] extracting flashcards")
+            flashcards_pack = await gemini.extract_flashcards(
+                flashcards_md, homework_job_id=job_id
+            )
+            if flashcards_pack is not None:
+                flashcards_json = flashcards_pack.model_dump(mode="json")
+                log.info(
+                    f"[job {job_id}] flashcards extracted | count={len(flashcards_pack.cards)}"
+                )
+
         async with SessionLocal() as session:
             await jobs_repo.set_status(
                 session, job_id, "done",
@@ -228,6 +243,8 @@ async def run(job_id: UUID) -> None:
             )
             if games_json is not None:
                 await jobs_repo.set_games_json(session, job_id, games_json)
+            if flashcards_json is not None:
+                await jobs_repo.set_flashcards_json(session, job_id, flashcards_json)
             await session.commit()
 
         await events_bus.publish(
@@ -367,6 +384,45 @@ async def _execute_phase(
 
     try:
         if phase_name == "extract":
+            # Cross-job cache: if we've already extracted this section under
+            # the current builtin extract prompt, reuse the prior output and
+            # skip Gemini entirely. Saves ~15s + ~1.5K output tokens per
+            # regeneration / repeat job on the same section.
+            cached_extract = None
+            section_id = section.get("id")
+            if section_id is not None:
+                async with SessionLocal() as session:
+                    cached_extract = await phase_repo.find_latest_extract(
+                        session,
+                        toc_entry_id=section_id,
+                        prompt_hash=prompt_hash,
+                    )
+
+            if cached_extract is not None and cached_extract.output_md:
+                logger.info(
+                    f"[job {job_id}] lesson.extract REUSED from job={cached_extract.job_id} "
+                    f"po={cached_extract.id} (skipping gemini call)"
+                )
+                async with SessionLocal() as session:
+                    await phase_repo.set_status(
+                        session,
+                        po_id,
+                        "done",
+                        completed_at=_utcnow(),
+                        output_md=cached_extract.output_md,
+                        tokens_input=0,
+                        tokens_output=0,
+                    )
+                    await session.commit()
+                # Visibility: record a free gemini_usages row
+                await gemini.record_cached_lesson_extract(
+                    homework_job_id=job_id,
+                    phase_output_id=po_id,
+                    source_job_id=cached_extract.job_id,
+                    source_phase_output_id=cached_extract.id,
+                )
+                return cached_extract.output_md, 0, 0, prompt_hash
+
             output_md, tin, tout = await gemini.extract_lesson_context(
                 file_uri=file_uri,
                 section_title=section["title"],

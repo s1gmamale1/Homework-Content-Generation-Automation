@@ -3,9 +3,11 @@ import { ArrowLeft, Download, Loader2 } from "lucide-react";
 import { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
+import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
-import { GameCard } from "@/components/games/game-card";
 import { Eyebrow } from "@/components/eyebrow";
+import { FlashcardDeck } from "@/components/flashcards/flashcard-deck";
+import { GameCard } from "@/components/games/game-card";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -72,33 +74,73 @@ const MD_COMPONENTS = {
 
 export function PreviewPage() {
   const { id } = useParams<{ id: string }>();
-  const { data: job, isLoading, error } = useQuery({
+  const {
+    data: job,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: ["job", id, "preview"],
     queryFn: () => (id ? api.getJob(id) : Promise.reject(new Error("no id"))),
     enabled: Boolean(id),
   });
 
-  // Strip out the "## Game Breaks" section from the assembled MD if we have
-  // structured games — we render those interactively instead.
-  const { mdBeforeGames, mdAfterGames, hasGames } = useMemo(() => {
+  // Split the assembled MD into ordered segments around the "## Flashcards"
+  // and "## Game Breaks" headings. Each segment is either a chunk of MD or a
+  // structured renderer placeholder. Plain MD wins when the corresponding
+  // *_json is empty (e.g., extraction failed) so users still see *something*.
+  type Segment = { kind: "md"; content: string } | { kind: "flashcards" } | { kind: "games" };
+
+  const segments = useMemo<Segment[]>(() => {
     const md = job?.assembled_md ?? "";
+    if (!md) return [];
+
+    const cards = job?.flashcards_json?.cards ?? [];
     const games = job?.games_json?.games ?? [];
-    if (games.length === 0) {
-      return { mdBeforeGames: md, mdAfterGames: "", hasGames: false };
+
+    interface Marker {
+      idx: number;
+      end: number;
+      kind: "flashcards" | "games";
     }
-    // Find the "Game Breaks" heading and split around it.
-    const re = /^##\s+Game\s+Breaks\s*$/im;
-    const m = md.match(re);
-    if (!m || m.index === undefined) {
-      return { mdBeforeGames: md, mdAfterGames: "", hasGames: true };
+    const markers: Marker[] = [];
+
+    // ## Flashcards heading
+    if (cards.length > 0) {
+      const m = md.match(/^##\s+Flashcards\s*$/im);
+      if (m && m.index !== undefined) {
+        const after = md.slice(m.index);
+        const nextH = after.search(/\n##\s+\S/);
+        const end = nextH >= 0 ? m.index + nextH : md.length;
+        markers.push({ idx: m.index, end, kind: "flashcards" });
+      }
     }
-    const before = md.slice(0, m.index);
-    const after = md.slice(m.index);
-    // Trim until the next ## heading
-    const nextHeading = after.search(/\n##\s+\S/);
-    const tail = nextHeading >= 0 ? after.slice(nextHeading) : "";
-    return { mdBeforeGames: before, mdAfterGames: tail, hasGames: true };
-  }, [job?.assembled_md, job?.games_json]);
+
+    // ## Game Breaks heading
+    if (games.length > 0) {
+      const m = md.match(/^##\s+Game\s+Breaks\s*$/im);
+      if (m && m.index !== undefined) {
+        const after = md.slice(m.index);
+        const nextH = after.search(/\n##\s+\S/);
+        const end = nextH >= 0 ? m.index + nextH : md.length;
+        markers.push({ idx: m.index, end, kind: "games" });
+      }
+    }
+
+    if (markers.length === 0) return [{ kind: "md", content: md }];
+
+    markers.sort((a, b) => a.idx - b.idx);
+    const out: Segment[] = [];
+    let cursor = 0;
+    for (const mk of markers) {
+      if (mk.idx > cursor) {
+        out.push({ kind: "md", content: md.slice(cursor, mk.idx) });
+      }
+      out.push({ kind: mk.kind });
+      cursor = mk.end;
+    }
+    if (cursor < md.length) out.push({ kind: "md", content: md.slice(cursor) });
+    return out;
+  }, [job?.assembled_md, job?.flashcards_json, job?.games_json]);
 
   if (isLoading) {
     return (
@@ -147,28 +189,47 @@ export function PreviewPage() {
       </div>
 
       <article className="mt-8 leading-relaxed text-(--color-ink-soft)">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
-          {mdBeforeGames}
-        </ReactMarkdown>
-
-        {hasGames && (
-          <section className="mt-10">
-            <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-              Game Breaks
-            </h2>
-            <div className="flex flex-col gap-5">
-              {(job.games_json?.games ?? []).map((g, i) => (
-                <GameCard key={i} game={g} />
-              ))}
-            </div>
-          </section>
-        )}
-
-        {mdAfterGames && (
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
-            {mdAfterGames}
-          </ReactMarkdown>
-        )}
+        {segments.map((seg, i) => {
+          if (seg.kind === "md") {
+            return (
+              <ReactMarkdown
+                // biome-ignore lint/suspicious/noArrayIndexKey: stable segment order
+                key={`md-${i}`}
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeRaw]}
+                components={MD_COMPONENTS}
+              >
+                {seg.content}
+              </ReactMarkdown>
+            );
+          }
+          if (seg.kind === "flashcards") {
+            return (
+              <section key="flashcards" className="mt-10">
+                <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
+                  Flashcards
+                </h2>
+                <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
+                  <FlashcardDeck cards={job.flashcards_json?.cards ?? []} />
+                </div>
+              </section>
+            );
+          }
+          // games
+          return (
+            <section key="games" className="mt-10">
+              <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
+                Game Breaks
+              </h2>
+              <div className="flex flex-col gap-5">
+                {(job.games_json?.games ?? []).map((g, gi) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: order is stable
+                  <GameCard key={gi} game={g} />
+                ))}
+              </div>
+            </section>
+          );
+        })}
       </article>
     </>
   );

@@ -73,3 +73,33 @@ async def set_status(
 async def list_running_for_sweep(session: AsyncSession) -> list[PhaseOutput]:
     stmt = select(PhaseOutput).where(PhaseOutput.status.in_(["pending", "running"]))
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def find_latest_extract(
+    session: AsyncSession,
+    *,
+    toc_entry_id: UUID,
+    prompt_hash: str,
+) -> Optional[PhaseOutput]:
+    """Most-recent successful `extract` phase for this (section, prompt-hash).
+
+    Used as a cross-job cache: if we've already extracted the lesson context
+    for this section under the same builtin extract prompt, reuse the output
+    instead of re-running Gemini.
+    """
+    from app.models import HomeworkJob
+
+    stmt = (
+        select(PhaseOutput)
+        .join(HomeworkJob, HomeworkJob.id == PhaseOutput.job_id)
+        .where(
+            PhaseOutput.phase_name == "extract",
+            PhaseOutput.status == "done",
+            PhaseOutput.prompt_hash == prompt_hash,
+            PhaseOutput.output_md.is_not(None),
+            HomeworkJob.toc_entry_id == toc_entry_id,
+        )
+        .order_by(PhaseOutput.completed_at.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()

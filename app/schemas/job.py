@@ -32,6 +32,7 @@ class JobOut(BaseModel):
     error_message: Optional[str] = None
     assembled_md: Optional[str] = None
     games_json: Optional[dict[str, Any]] = None
+    flashcards_json: Optional[dict[str, Any]] = None
     phases: list[PhaseOut] = []
 
 

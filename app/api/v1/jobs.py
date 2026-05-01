@@ -159,12 +159,17 @@ async def download(
             },
         )
 
-    # Default: zip bundle
+    # Default: zip bundle (homework.md + games.json + flashcards.json)
     games_payload = job.games_json or {"games": []}
+    flashcards_payload = job.flashcards_json or {"cards": []}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("homework.md", job.assembled_md)
         zf.writestr("games.json", json.dumps(games_payload, ensure_ascii=False, indent=2))
+        zf.writestr(
+            "flashcards.json",
+            json.dumps(flashcards_payload, ensure_ascii=False, indent=2),
+        )
     buf.seek(0)
     return StreamingResponse(
         buf,

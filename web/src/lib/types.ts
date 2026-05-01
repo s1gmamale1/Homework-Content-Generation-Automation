@@ -72,7 +72,19 @@ export interface Job {
   error_message: string | null;
   assembled_md: string | null;
   games_json: GamesPack | null;
+  flashcards_json: FlashcardsPack | null;
   phases: PhaseOut[];
+}
+
+export interface Flashcard {
+  front: string;
+  back: string;
+  hint?: string | null;
+  cluster?: string | null;
+}
+
+export interface FlashcardsPack {
+  cards: Flashcard[];
 }
 
 /* Structured games — rendered as interactive React components on the

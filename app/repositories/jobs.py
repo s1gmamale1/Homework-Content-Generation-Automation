@@ -99,6 +99,15 @@ async def set_games_json(
     job.games_json = games_json
 
 
+async def set_flashcards_json(
+    session: AsyncSession, job_id: UUID, flashcards_json: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.flashcards_json = flashcards_json
+
+
 async def set_difficulty(session: AsyncSession, job_id: UUID, difficulty: str) -> None:
     job = await session.get(HomeworkJob, job_id)
     if job is None:

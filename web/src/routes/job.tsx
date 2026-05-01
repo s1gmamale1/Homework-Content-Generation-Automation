@@ -11,6 +11,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
+import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
 import { Eyebrow } from "@/components/eyebrow";
 import { Badge } from "@/components/ui/badge";
@@ -202,7 +203,9 @@ function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string 
       {previewMd && (
         <div className="bg-(--color-canvas) px-5 py-4">
           <div className="prose prose-invert prose-sm max-h-80 overflow-auto leading-relaxed text-(--color-ink-soft) [&>*]:my-1 [&_h1]:mt-3 [&_h1]:mb-2 [&_h1]:text-lg [&_h1]:font-semibold [&_h1]:text-(--color-ink) [&_h2]:mt-3 [&_h2]:mb-2 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-(--color-ink) [&_h3]:mt-2 [&_h3]:mb-1 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-(--color-ink) [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_code]:font-mono [&_code]:text-[0.85em]">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{previewMd}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+              {previewMd}
+            </ReactMarkdown>
           </div>
           <div className="mt-3 flex items-center justify-between text-xs text-(--color-ink-muted)">
             <span className="font-mono">
@@ -260,7 +263,9 @@ function PhaseRow({ phase }: { phase: PhaseUi }) {
       {open && phase.output && (
         <div className="border-t border-(--color-border) px-3.5 py-3">
           <div className="prose prose-invert prose-sm max-h-72 overflow-auto rounded-(--radius-sm) bg-(--color-canvas) p-3 leading-relaxed text-(--color-ink-soft) [&>*]:my-1 [&_h1]:mb-2 [&_h2]:mb-2 [&_h3]:mb-1 [&_pre]:bg-black/40 [&_pre]:p-2 [&_pre]:rounded-md [&_code]:font-mono [&_code]:text-[0.85em]">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{phase.output}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+              {phase.output}
+            </ReactMarkdown>
           </div>
 
           <div className="mt-2 flex flex-wrap gap-3 font-mono text-[0.66rem] text-(--color-ink-muted)">

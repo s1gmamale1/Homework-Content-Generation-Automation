@@ -24,6 +24,9 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # {"games": [{"type": "adaptive_quiz" | "tile_match" | "memory_match" |
     #             "sentence_fill", "title": str, ...type-specific fields}]}
     games_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # Structured flashcards extracted from the flashcards phase. Shape:
+    # {"cards": [{"front": str, "back": str, "hint"?: str, "cluster"?: str}]}
+    flashcards_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

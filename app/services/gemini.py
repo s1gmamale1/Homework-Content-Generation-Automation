@@ -25,7 +25,7 @@ from loguru import logger
 from app.config import settings
 from app.db import SessionLocal
 from app.repositories import gemini_usage as usage_repo
-from app.schemas import ExtractedTOC, GamesPack
+from app.schemas import ExtractedTOC, FlashcardsPack, GamesPack
 
 _client: Optional[genai.Client] = None
 
@@ -302,7 +302,7 @@ async def extract_lesson_context(
         response = await client.aio.models.generate_content(
             model=settings.gemini_model,
             contents=contents,
-            config=types.GenerateContentConfig(**config_kwargs) if config_kwargs else None,
+            config=types.GenerateContentConfig(**config_kwargs),
         )
     except Exception as exc:
         total_s = perf_counter() - t0
@@ -317,18 +317,20 @@ async def extract_lesson_context(
         )
         raise
 
-    text = response.text or ""
+    text = _strip_preamble(response.text or "")
     duration_s = perf_counter() - t0
     usage = _extract_usage(response)
-    prompt_total = int((usage["usage_metadata"] or {}).get("prompt_token_count") or 0) or usage[
-        "input_text_token_count"
-    ]
     cached_in = _cached_tokens(response)
+    # Use prompt_token_count (full input incl. PDF/IMAGE modality) — the
+    # text-only column would understate by orders of magnitude here since
+    # extract_lesson_context always reads the PDF.
+    prompt_total = usage["prompt_token_count"] or usage["input_text_token_count"]
+    out_total = usage["candidates_token_count"]
 
     logger.success(
         f"gemini lesson.extract done | section={section_number} "
         f"output_chars={len(text)} input={prompt_total:,} (cached={cached_in:,}) "
-        f"output={usage['candidates_token_count']:,} duration_ms={duration_s * 1000:.0f}"
+        f"output={out_total:,} duration_ms={duration_s * 1000:.0f}"
     )
     await _record(
         operation="lesson.extract",
@@ -339,7 +341,7 @@ async def extract_lesson_context(
         success=True,
         **usage,
     )
-    return text, usage["input_text_token_count"] or None, usage["candidates_token_count"] or None
+    return text, prompt_total or None, out_total or None
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -381,7 +383,6 @@ async def run_phase_prompt(
     user_text = "\n".join(user_blocks)
 
     contents: list[Any] = []
-    file_attached = bool(cached_content) or (attach_file and file_uri)
     if cached_content is None and attach_file and file_uri:
         contents.append(
             types.Part.from_uri(file_uri=_uri(file_uri), mime_type="application/pdf")
@@ -466,12 +467,8 @@ async def run_phase_prompt(
         success=True,
         **usage,
     )
-    return text, in_total or None, out_total or None
+    return text, prompt_total or None, out_total or None
 
-
-# ─────────────────────────────────────────────────────────────────────
-# Context cache (token saver for phases that re-attach the same PDF)
-# ─────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────
 # Games extraction (post-pipeline structured output for interactive render)
@@ -566,6 +563,99 @@ async def extract_games(
     )
     return parsed
 
+
+# ─────────────────────────────────────────────────────────────────────
+# Flashcards extraction (post-pipeline structured output for deck render)
+# ─────────────────────────────────────────────────────────────────────
+
+_FLASHCARDS_EXTRACT_PROMPT = (
+    "You are reading a `flashcards` phase output that contains study cards. "
+    "Convert each card into structured JSON with:\n"
+    "- front: the prompt side (term, question, organism name, blank sentence)\n"
+    "- back: the answer side (definition, trait, missing word, full sentence)\n"
+    "- hint (optional): a short cue if the card has a memory aid in the source\n"
+    "- cluster (optional): the section/grouping label (e.g., 'Names', "
+    "  'Frameworks', 'Modern Echoes' for history) if the source organizes "
+    "  cards into clusters; omit otherwise.\n\n"
+    "Preserve the original language (Uzbek). Be FAITHFUL — do not invent "
+    "cards not present in the source. If no cards are present, return "
+    "{\"cards\": []}."
+)
+
+
+async def extract_flashcards(
+    flashcards_md: str,
+    *,
+    homework_job_id: Optional[UUID] = None,
+) -> Optional[FlashcardsPack]:
+    """Run a structured-output extraction over the `flashcards` phase MD."""
+    if not flashcards_md.strip():
+        return FlashcardsPack(cards=[])
+
+    client = _get_client()
+    logger.info(f"gemini flashcards.extract start | input_chars={len(flashcards_md)}")
+    started_at = datetime.now(timezone.utc)
+    t0 = perf_counter()
+
+    try:
+        response = await client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=[_FLASHCARDS_EXTRACT_PROMPT, "\n\n## Source\n", flashcards_md],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=FlashcardsPack,
+            ),
+        )
+    except Exception as exc:
+        total_s = perf_counter() - t0
+        logger.warning(f"gemini flashcards.extract failed: {exc!r}")
+        await _record(
+            operation="flashcards.extract",
+            homework_job_id=homework_job_id,
+            started_at=started_at,
+            duration_s=total_s,
+            success=False,
+            error_message=str(exc),
+        )
+        return None
+
+    duration_s = perf_counter() - t0
+    usage = _extract_usage(response)
+    parsed = response.parsed
+    if not isinstance(parsed, FlashcardsPack):
+        logger.warning(
+            f"gemini flashcards.extract returned no parseable structure "
+            f"(parsed={type(parsed).__name__})"
+        )
+        await _record(
+            operation="flashcards.extract",
+            homework_job_id=homework_job_id,
+            started_at=started_at,
+            duration_s=duration_s,
+            success=False,
+            error_message="non-parseable structure",
+            **usage,
+        )
+        return None
+
+    logger.success(
+        f"gemini flashcards.extract done | cards={len(parsed.cards)} "
+        f"duration_ms={duration_s * 1000:.0f}"
+    )
+    await _record(
+        operation="flashcards.extract",
+        homework_job_id=homework_job_id,
+        started_at=started_at,
+        duration_s=duration_s,
+        success=True,
+        **usage,
+    )
+    return parsed
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Context cache (token saver for phases that re-attach the same PDF)
+# ─────────────────────────────────────────────────────────────────────
 
 async def create_cache(
     *,
@@ -672,8 +762,12 @@ def _extract_usage(response: Any) -> dict[str, Any]:
     """Pull all interesting fields out of the SDK response.usage_metadata so we
     can record one tidy dict to the DB. Returns a dict with these keys:
 
-        total_token_count, input_text_token_count, input_audio_token_count,
-        candidates_token_count, thoughts_token_count, usage_metadata (raw dict)
+        total_token_count, prompt_token_count, input_text_token_count,
+        input_image_token_count, candidates_token_count, thoughts_token_count,
+        cached_content_token_count, usage_metadata (raw dict)
+
+    The dict's keys are exactly the kwargs `_record(**usage)` accepts, so the
+    call site can spread it through to the gemini_usages writer.
     """
     out: dict[str, Any] = {
         "total_token_count": 0,
@@ -720,9 +814,9 @@ def _extract_usage(response: Any) -> dict[str, Any]:
         elif hasattr(meta, "to_json_dict"):
             out["usage_metadata"] = meta.to_json_dict()
         else:
-            out["usage_metadata"] = {"prompt_token_count": prompt_total}
+            out["usage_metadata"] = {"prompt_token_count": out["prompt_token_count"]}
     except Exception:
-        out["usage_metadata"] = {"prompt_token_count": prompt_total}
+        out["usage_metadata"] = {"prompt_token_count": out["prompt_token_count"]}
 
     return out
 
@@ -743,6 +837,31 @@ def _format_duration(seconds: float) -> str:
     return f"{seconds:.2f}s"
 
 
+async def record_cached_lesson_extract(
+    *,
+    homework_job_id: UUID,
+    phase_output_id: UUID,
+    source_job_id: UUID,
+    source_phase_output_id: UUID,
+) -> None:
+    """Persist a `lesson.extract` row with all-zero token counts and a
+    cache_hit marker. This makes cross-job extract reuse visible in the
+    token summary table (you'll see `lesson.extract` with input=0)."""
+    await _record(
+        operation="lesson.extract",
+        homework_job_id=homework_job_id,
+        phase_output_id=phase_output_id,
+        started_at=datetime.now(timezone.utc),
+        duration_s=0,
+        success=True,
+        usage_metadata={
+            "cache_hit": True,
+            "source_job_id": str(source_job_id),
+            "source_phase_output_id": str(source_phase_output_id),
+        },
+    )
+
+
 async def _record(
     *,
     operation: str,
@@ -753,10 +872,12 @@ async def _record(
     homework_job_id: Optional[UUID] = None,
     phase_output_id: Optional[UUID] = None,
     total_token_count: int = 0,
+    prompt_token_count: int = 0,
     input_text_token_count: int = 0,
-    input_audio_token_count: int = 0,
+    input_image_token_count: int = 0,
     candidates_token_count: int = 0,
     thoughts_token_count: int = 0,
+    cached_content_token_count: int = 0,
     usage_metadata: Optional[dict[str, Any]] = None,
     error_message: Optional[str] = None,
 ) -> None:
@@ -772,10 +893,12 @@ async def _record(
                 homework_job_id=homework_job_id,
                 phase_output_id=phase_output_id,
                 total_token_count=total_token_count,
+                prompt_token_count=prompt_token_count,
                 input_text_token_count=input_text_token_count,
-                input_audio_token_count=input_audio_token_count,
+                input_image_token_count=input_image_token_count,
                 candidates_token_count=candidates_token_count,
                 thoughts_token_count=thoughts_token_count,
+                cached_content_token_count=cached_content_token_count,
                 usage_metadata=usage_metadata,
                 duration=_format_duration(duration_s),
                 success=success,
