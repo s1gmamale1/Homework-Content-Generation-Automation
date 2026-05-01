@@ -265,9 +265,13 @@ async def extract_lesson_context(
     page_start: Optional[int],
     page_end: Optional[int],
     *,
+    cached_content: Optional[str] = None,
     homework_job_id: Optional[UUID] = None,
     phase_output_id: Optional[UUID] = None,
 ) -> tuple[str, Optional[int], Optional[int]]:
+    """Run the per-section 'extract' phase. If `cached_content` is supplied,
+    we skip the inline file Part and reference the cache instead — billed at
+    ~25% of regular per-token rate for the PDF portion."""
     client = _get_client()
     prompt = _EXTRACT_PHASE_PROMPT.format(
         title=section_title,
@@ -276,9 +280,20 @@ async def extract_lesson_context(
         pe=page_end if page_end is not None else "?",
         rules=_NO_PREAMBLE,
     )
+
+    contents: list[Any] = []
+    if cached_content is None:
+        contents.append(types.Part.from_uri(file_uri=_uri(file_uri), mime_type="application/pdf"))
+    contents.append(prompt)
+
+    config_kwargs: dict[str, Any] = {}
+    if cached_content:
+        config_kwargs["cached_content"] = cached_content
+
+    file_state = "CACHE" if cached_content else "INLINE"
     logger.info(
         f"gemini lesson.extract start | section={section_number} "
-        f"title={section_title!r} pages={page_start}-{page_end}"
+        f"title={section_title!r} pages={page_start}-{page_end} file={file_state}"
     )
     started_at = datetime.now(timezone.utc)
     t0 = perf_counter()
@@ -286,10 +301,8 @@ async def extract_lesson_context(
     try:
         response = await client.aio.models.generate_content(
             model=settings.gemini_model,
-            contents=[
-                types.Part.from_uri(file_uri=_uri(file_uri), mime_type="application/pdf"),
-                prompt,
-            ],
+            contents=contents,
+            config=types.GenerateContentConfig(**config_kwargs) if config_kwargs else None,
         )
     except Exception as exc:
         total_s = perf_counter() - t0
@@ -464,12 +477,13 @@ async def create_cache(
     *,
     file_uri: str,
     extra_text: Optional[str] = None,
-    ttl: str = "3600s",
-) -> Optional[str]:
+    ttl: str = "21600s",  # 6h — long enough that a second job on the same book hits the cache
+) -> Optional[tuple[str, datetime]]:
     """Create a Gemini context cache containing the PDF and optionally extra
-    text (e.g., the lesson_context). Returns the cache `name` to pass via
-    `cached_content` on subsequent generate_content calls — those calls will
-    be billed at ~25% of regular per-token cost for the cached portion.
+    text. Returns `(cache_name, expire_time)` so callers can persist the
+    expiry alongside the name. Subsequent generate_content calls passing
+    `cached_content=cache_name` are billed at ~25% of regular per-token cost
+    for the cached portion.
 
     Returns None if creation fails (e.g., model doesn't support caching, or
     contents are below the SDK's minimum size). Callers should fall back to
@@ -494,11 +508,19 @@ async def create_cache(
         )
         return None
 
+    # Prefer the SDK's authoritative expire_time when present; fall back to
+    # now+TTL so we always have a value to persist.
+    expire_time = getattr(cache, "expire_time", None)
+    if not isinstance(expire_time, datetime):
+        ttl_seconds = int(ttl.rstrip("s")) if ttl.endswith("s") and ttl[:-1].isdigit() else 21600
+        expire_time = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+
     duration_ms = (perf_counter() - t0) * 1000
     logger.success(
-        f"gemini cache created | name={cache.name} ttl={ttl} duration_ms={duration_ms:.0f}"
+        f"gemini cache created | name={cache.name} expires={expire_time.isoformat()} "
+        f"duration_ms={duration_ms:.0f}"
     )
-    return cache.name
+    return cache.name, expire_time
 
 
 async def delete_cache(cache_name: str) -> None:

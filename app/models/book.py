@@ -19,6 +19,12 @@ class Book(Base, UUIDPK, Timestamps):
     gemini_file_expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Per-book Gemini context cache (saves ~75% on input tokens for the
+    # extract phase across multiple jobs against the same book).
+    gemini_cache_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    gemini_cache_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

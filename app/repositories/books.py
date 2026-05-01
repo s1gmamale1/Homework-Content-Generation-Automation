@@ -64,6 +64,20 @@ async def set_gemini_file(
     book.gemini_file_expires_at = expires_at
 
 
+async def set_gemini_cache(
+    session: AsyncSession,
+    book_id: UUID,
+    *,
+    cache_name: Optional[str],
+    expires_at: Optional[datetime],
+) -> None:
+    book = await session.get(Book, book_id)
+    if book is None:
+        return
+    book.gemini_cache_name = cache_name
+    book.gemini_cache_expires_at = expires_at
+
+
 async def set_status(
     session: AsyncSession, book_id: UUID, status: str, error_message: Optional[str] = None
 ) -> None:

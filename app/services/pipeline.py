@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from typing import Optional
 from uuid import UUID
@@ -53,6 +53,9 @@ async def run(job_id: UUID) -> None:
                 raise RuntimeError("Job is missing book or section context")
             subject = book.subject
             file_uri = book.gemini_file_uri
+            book_id = book.id
+            book_cache_name = book.gemini_cache_name
+            book_cache_expires_at = book.gemini_cache_expires_at
             section_data = {
                 "title": section.section_title,
                 "number": section.section_number,
@@ -86,15 +89,22 @@ async def run(job_id: UUID) -> None:
         lesson_context: Optional[str] = None
         phase_order = 0
 
-        # Token-saver: a Gemini context cache, created lazily only when ≥2
-        # phases in this run actually need the original PDF. If only 0–1
-        # phases need the file, the cache overhead isn't worth it.
-        # (cache_name is hoisted above the outer try; we just decide eligibility here.)
         file_phases = file_needed_phases(subject)
-        cache_eligible = len(file_phases) >= 2
         log.info(
             f"[job {job_id}] file-needed phases for '{subject}': "
-            f"{sorted(file_phases) or '(none — using lesson_context only)'}"
+            f"{sorted(file_phases) or '(none beyond extract)'}"
+        )
+
+        # Per-book context cache: get-or-create. Persists on the books row so
+        # subsequent jobs against the same book skip re-paying for the PDF.
+        # Used by the extract phase (always) and any content phase that opts
+        # into PHASE_FILE_NEEDED.
+        cache_name = await _ensure_book_cache(
+            book_id=book_id,
+            file_uri=file_uri,
+            existing_name=book_cache_name,
+            existing_expires_at=book_cache_expires_at,
+            log=log,
         )
 
         # ─── phase loop ────────────────────────────────────────
@@ -107,20 +117,12 @@ async def run(job_id: UUID) -> None:
             t_phase = perf_counter()
             await _emit_started(resource_id, phase_name, phase_order)
 
-            # Decide whether THIS phase needs the original PDF, and whether a
-            # cache should back it. Lazy-create the cache on the first phase
-            # that needs the file (and only if ≥2 phases will benefit).
-            phase_needs_file = phase_name in file_phases
-            if (
-                phase_needs_file
-                and cache_name is None
-                and cache_eligible
-            ):
-                cache_name = await gemini.create_cache(file_uri=file_uri)
+            # extract reads the PDF; content phases skip the file unless the
+            # subject opted them into PHASE_FILE_NEEDED. Either way, when a
+            # phase touches the file we route through the per-book cache.
+            phase_needs_file = phase_name == "extract" or phase_name in file_phases
 
-            # Trim the prior_outputs delivered to this phase down to the
-            # subset it actually depends on. Quietly massive savings on
-            # late phases (reflection, final-challenge).
+            # Trim prior_outputs to what this phase declared as deps.
             phase_prior = filter_prior_outputs(phase_name, prior_outputs)
 
             try:
@@ -235,8 +237,65 @@ async def run(job_id: UUID) -> None:
         await events_bus.publish(resource_id, "error", {"message": str(exc)})
     finally:
         await events_bus.close(resource_id)
-        if cache_name is not None:
-            await gemini.delete_cache(cache_name)
+        # Note: cache_name is the per-BOOK cache. We do NOT delete it here —
+        # it lives on the books row so subsequent jobs against the same book
+        # reuse it. Gemini auto-expires the cache on its own TTL.
+
+
+async def _ensure_book_cache(
+    *,
+    book_id: UUID,
+    file_uri: str,
+    existing_name: Optional[str],
+    existing_expires_at: Optional[datetime],
+    log,
+) -> Optional[str]:
+    """Get-or-create a per-book Gemini context cache.
+
+    Reuses the existing cache if it has > 5 minutes left. Otherwise creates a
+    fresh cache and persists name + expiry on the books row. Returns None on
+    creation failure (caller falls back to inline file Part)."""
+    now = datetime.now(timezone.utc)
+    refresh_threshold = now + timedelta(minutes=5)
+
+    if existing_name and existing_expires_at:
+        # Naive vs aware datetime: ensure aware comparison.
+        existing_aware = existing_expires_at
+        if existing_aware.tzinfo is None:
+            existing_aware = existing_aware.replace(tzinfo=timezone.utc)
+        if existing_aware > refresh_threshold:
+            ttl_remaining = existing_aware - now
+            log.info(
+                f"[book {book_id}] reusing context cache | name={existing_name} "
+                f"ttl_remaining={ttl_remaining}"
+            )
+            return existing_name
+        log.info(
+            f"[book {book_id}] cache expired/expiring | name={existing_name} "
+            f"expires_at={existing_aware.isoformat()}"
+        )
+
+    log.info(f"[book {book_id}] creating per-book context cache for {file_uri}")
+    result = await gemini.create_cache(file_uri=file_uri)
+    if result is None:
+        log.warning(f"[book {book_id}] cache creation failed; falling back to inline file")
+        return None
+
+    cache_name, expire_time = result
+    async with SessionLocal() as session:
+        await books_repo.set_gemini_cache(
+            session,
+            book_id,
+            cache_name=cache_name,
+            expires_at=expire_time,
+        )
+        await session.commit()
+
+    log.success(
+        f"[book {book_id}] cache stored | name={cache_name} "
+        f"expires_at={expire_time.isoformat()}"
+    )
+    return cache_name
 
 
 async def _emit_started(resource_id: str, phase_name: str, phase_order: int) -> None:
@@ -293,6 +352,7 @@ async def _execute_phase(
                 section_number=section["number"],
                 page_start=section["page_start"],
                 page_end=section["page_end"],
+                cached_content=cached_content,
                 homework_job_id=job_id,
                 phase_output_id=po_id,
             )
