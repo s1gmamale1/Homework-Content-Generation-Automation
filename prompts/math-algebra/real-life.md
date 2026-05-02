@@ -86,4 +86,4 @@ Mix:
 - All answers include units
 - Language: Uzbek, "Siz" formal
 - No bazaar/village cliches
-- Visuals: Generate 1-2 inline SVGs per scenario — scenario setup diagram and/or data visualization. Keep under 300×200px.
+- Visuals: Generate 1-2 inline SVGs per scenario — scenario setup diagram and/or data visualization.

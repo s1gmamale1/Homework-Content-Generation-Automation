@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { RichText } from "@/components/rich-text";
 import type { Game } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function MemoryMatch({ game }: { game: Game }) {
   const cards = useMemo(
-    () =>
-      [...(game.cards ?? [])]
-        .map((c, i) => ({ idx: i, ...c }))
-        .sort(() => Math.random() - 0.5),
+    () => [...(game.cards ?? [])].map((c, i) => ({ idx: i, ...c })).sort(() => Math.random() - 0.5),
     [game.cards],
   );
 
@@ -67,7 +65,9 @@ export function MemoryMatch({ game }: { game: Game }) {
                     : "border-(--color-border) bg-(--color-elevated) text-transparent hover:bg-(--color-elevated-hover) cursor-pointer",
               )}
             >
-              <span aria-hidden={!isUp}>{isUp ? card.text : "?"}</span>
+              <span aria-hidden={!isUp}>
+                {isUp ? <RichText inline>{card.text}</RichText> : "?"}
+              </span>
             </button>
           );
         })}

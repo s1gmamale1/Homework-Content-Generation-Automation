@@ -60,4 +60,4 @@ That's it.
 - Level-allowed tenses only in every example (A1: present simple + can + have got · A2: + past simple, going-to, have to · B1: + past continuous, present perfect, will, 1st conditional · B2: full arsenal)
 - Language: student-friendly English on the front; UZ bridge uses formal "Siz"
 - Cards stay accessible throughout the session — student can check them anytime
-- Visuals: inline SVG only where it aids recall (stress-dot pattern, word-family branch). Under 200×150px. Max 1-2 visuals per deck — most cards stay text-only.
+- Visuals: inline SVG only where it aids recall (stress-dot pattern, word-family branch). Max 1-2 visuals per deck — most cards stay text-only.

@@ -1,4 +1,5 @@
 from app.schemas.book import BookOut
+from app.schemas.classify import ClassifyDecision, Difficulty
 from app.schemas.final_challenge import BossQuestion, FinalChallenge
 from app.schemas.flashcards import Flashcard, FlashcardsPack
 from app.schemas.games import Game, GameCard, GamePair, GameQuestion, GamesPack
@@ -15,6 +16,8 @@ __all__ = [
     "JobOut",
     "PhaseOut",
     "GenerateRequest",
+    "ClassifyDecision",
+    "Difficulty",
     "Game",
     "GamePair",
     "GameCard",

@@ -10,7 +10,7 @@ You are building the Reflection phase for a Physics homework session. Quiet clos
 
 ## Output
 
-4 parts, ~2 minutes total.
+**Required: all sections below in full, totaling 150–250 words.** Do NOT skip sections. Do NOT collapse sections into a single sentence. Each section has its own `##` heading and its own content. A reflection that omits any section is a failed output. The session takes ~2 minutes to read.
 
 ---
 

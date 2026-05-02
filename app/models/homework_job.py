@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,6 +39,27 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # ─── queue bookkeeping ────────────────────────────────────────────────
+    # Higher priority jobs claim first. User-triggered = 0 (default).
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # Earliest time a worker may claim this job. Used for delayed retries.
+    scheduled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("NOW()")
+    )
+    # Worker provenance — set when a worker successfully claims this job.
+    # Stuck-job detection: rows in `running` with stale `claimed_at` get
+    # promoted back to `pending` for another worker to retry.
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    claimed_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # Retry bookkeeping. Incremented on every claim. After
+    # `settings.queue_max_attempts` the worker marks the job as failed
+    # terminally instead of retrying.
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     phase_outputs: Mapped[list["PhaseOutput"]] = relationship(
         back_populates="job", cascade="all, delete-orphan", order_by="PhaseOutput.phase_order"
     )
@@ -46,6 +67,13 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     __table_args__ = (
         Index("ix_homework_jobs_book_toc", "book_id", "toc_entry_id"),
         Index("ix_homework_jobs_status", "status"),
+        # Partial queue index: only rows a worker actually scans.
+        Index(
+            "ix_homework_jobs_queue",
+            "scheduled_at",
+            text("priority DESC"),
+            postgresql_where=text("status = 'pending'"),
+        ),
     )
 
 

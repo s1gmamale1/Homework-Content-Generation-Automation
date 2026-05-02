@@ -3,9 +3,11 @@ import hashlib
 import json
 import tempfile
 from pathlib import Path
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -14,9 +16,24 @@ from app.config import settings
 from app.db import get_session, SessionLocal
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
+from app.repositories import toc_entries as toc_repo
 from app.schemas import BookOut, TOCEntryOut
 from app.services import events_bus, toc_extractor
 from app.services.flows import SUPPORTED_SUBJECTS
+
+
+class BookUpdateRequest(BaseModel):
+    original_filename: Optional[str] = None
+    subject: Optional[str] = None
+
+
+class TOCEntryUpdateRequest(BaseModel):
+    chapter_number: Optional[str] = None
+    chapter_title: Optional[str] = None
+    section_number: Optional[str] = None
+    section_title: Optional[str] = None
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
 
 router = APIRouter(prefix="/books", tags=["books"])
 
@@ -119,6 +136,80 @@ async def stream_toc(book_id: UUID, request: Request):
             events_bus.unsubscribe(resource_id, q)
 
     return EventSourceResponse(event_gen())
+
+
+@router.patch("/{book_id}")
+async def update_book(
+    book_id: UUID,
+    body: BookUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+) -> BookOut:
+    if body.subject is not None and body.subject not in SUPPORTED_SUBJECTS:
+        raise HTTPException(400, f"unknown subject; allowed: {SUPPORTED_SUBJECTS}")
+    if body.original_filename is not None and not body.original_filename.strip():
+        raise HTTPException(400, "original_filename cannot be empty")
+
+    book = await books_repo.update(
+        session,
+        book_id,
+        original_filename=body.original_filename,
+        subject=body.subject,
+    )
+    if book is None:
+        raise HTTPException(404, "book not found")
+    await session.commit()
+    return await _book_out_with_toc(session, book_id)
+
+
+@router.delete("/{book_id}", status_code=204)
+async def delete_book(
+    book_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    deleted = await books_repo.delete(session, book_id)
+    if not deleted:
+        raise HTTPException(404, "book not found")
+    await session.commit()
+
+
+@router.patch("/{book_id}/toc/{entry_id}")
+async def update_toc_entry(
+    book_id: UUID,
+    entry_id: UUID,
+    body: TOCEntryUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+) -> TOCEntryOut:
+    # Verify the entry belongs to this book — prevents accidentally editing
+    # another book's TOC by guessing IDs.
+    existing = await toc_repo.get(session, entry_id)
+    if existing is None or existing.book_id != book_id:
+        raise HTTPException(404, "toc entry not found")
+
+    updated = await toc_repo.update(
+        session,
+        entry_id,
+        chapter_number=body.chapter_number,
+        chapter_title=body.chapter_title,
+        section_number=body.section_number,
+        section_title=body.section_title,
+        page_start=body.page_start,
+        page_end=body.page_end,
+    )
+    await session.commit()
+    return TOCEntryOut.model_validate(updated)
+
+
+@router.delete("/{book_id}/toc/{entry_id}", status_code=204)
+async def delete_toc_entry(
+    book_id: UUID,
+    entry_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    existing = await toc_repo.get(session, entry_id)
+    if existing is None or existing.book_id != book_id:
+        raise HTTPException(404, "toc entry not found")
+    await toc_repo.delete(session, entry_id)
+    await session.commit()
 
 
 async def _book_out_with_toc(session: AsyncSession, book_id: UUID) -> BookOut:

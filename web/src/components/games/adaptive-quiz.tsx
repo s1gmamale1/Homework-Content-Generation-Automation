@@ -1,5 +1,6 @@
 import { Check, RefreshCcw, X } from "lucide-react";
 import { useState } from "react";
+import { RichText } from "@/components/rich-text";
 import type { Game } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -14,9 +15,7 @@ export function AdaptiveQuiz({ game }: { game: Game }) {
 
   const q = questions[idx];
   if (!q) {
-    return (
-      <p className="text-sm text-(--color-ink-muted)">No questions.</p>
-    );
+    return <p className="text-sm text-(--color-ink-muted)">No questions.</p>;
   }
 
   const correctIdx = typeof q.correct_index === "number" ? q.correct_index : null;
@@ -54,9 +53,9 @@ export function AdaptiveQuiz({ game }: { game: Game }) {
         </span>
       </div>
 
-      <p className="text-base font-medium leading-relaxed text-(--color-ink)">
+      <RichText className="text-base font-medium leading-relaxed text-(--color-ink)">
         {q.prompt}
-      </p>
+      </RichText>
 
       <div className="flex flex-col gap-2">
         {(q.options ?? []).map((opt, i) => {
@@ -74,17 +73,20 @@ export function AdaptiveQuiz({ game }: { game: Game }) {
                 "disabled:cursor-default",
                 !answered &&
                   "border-(--color-border) bg-(--color-elevated) hover:border-(--color-border-hover) hover:bg-(--color-elevated-hover) cursor-pointer",
-                reveal && isAnswer &&
+                reveal &&
+                  isAnswer &&
                   "border-[oklch(0.78_0.10_145_/_50%)] bg-[oklch(0.78_0.10_145_/_10%)] text-(--color-success)",
-                reveal && isPicked && !isAnswer &&
+                reveal &&
+                  isPicked &&
+                  !isAnswer &&
                   "border-[oklch(0.70_0.16_25_/_50%)] bg-[oklch(0.70_0.16_25_/_10%)] text-(--color-error)",
                 answered && !reveal && "opacity-50",
               )}
             >
               <span className="flex items-center gap-2.5">
-                {reveal && isAnswer && <Check className="size-3.5" />}
-                {reveal && isPicked && !isAnswer && <X className="size-3.5" />}
-                <span>{opt}</span>
+                {reveal && isAnswer && <Check className="size-3.5 shrink-0" />}
+                {reveal && isPicked && !isAnswer && <X className="size-3.5 shrink-0" />}
+                <RichText inline>{opt}</RichText>
               </span>
             </button>
           );
@@ -96,7 +98,7 @@ export function AdaptiveQuiz({ game }: { game: Game }) {
           <span className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
             {isCorrect ? "Correct" : "Not quite"} ·{" "}
           </span>
-          {q.explanation}
+          <RichText inline>{q.explanation}</RichText>
         </div>
       )}
 

@@ -25,6 +25,16 @@ export function useEventSource(
 
     for (const name of Object.keys(handlersRef.current)) {
       const fn = (e: MessageEvent) => {
+        // EventSource fires a NATIVE "error" event whenever the connection
+        // closes — including the normal case where the server has finished
+        // streaming and ends the response (e.g., a TOC stream sends
+        // toc_ready and returns). The native error has no data payload;
+        // server-sent error SSE events always include a JSON body.
+        // Distinguish the two so we don't surface "Stream failed." every
+        // time a stream completes.
+        if (name === "error" && (e.data === undefined || e.data === "")) {
+          return;
+        }
         let parsed: unknown;
         try {
           parsed = JSON.parse(e.data);
@@ -38,7 +48,10 @@ export function useEventSource(
     }
 
     es.onerror = () => {
-      // Auto-close on error; the page can reopen via state changes.
+      // Connection closed (normal or abnormal). Close our side; the page
+      // can reopen on state change. We don't escalate to the user-defined
+      // error handler — "connection closed" isn't itself a failure when
+      // the server has already streamed the final event.
       es.close();
     };
 

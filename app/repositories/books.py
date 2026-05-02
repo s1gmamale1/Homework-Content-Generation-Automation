@@ -105,3 +105,47 @@ async def list_all(
         .offset(offset)
     )
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def update(
+    session: AsyncSession,
+    book_id: UUID,
+    *,
+    original_filename: Optional[str] = None,
+    subject: Optional[str] = None,
+) -> Optional[Book]:
+    """Patch user-editable fields on a book row. Returns the updated row, or
+    None if the book doesn't exist."""
+    book = await session.get(Book, book_id)
+    if book is None:
+        return None
+    if original_filename is not None:
+        book.original_filename = original_filename
+    if subject is not None:
+        book.subject = subject
+    return book
+
+
+async def delete(session: AsyncSession, book_id: UUID) -> bool:
+    """Remove a book and everything that depends on it.
+
+    `toc_entries` cascade automatically (FK ondelete=CASCADE), but
+    `homework_jobs.book_id` has no cascade, so we delete jobs explicitly
+    first. `phase_outputs` cascade off jobs. `gemini_usages` keep their rows
+    with FKs nulled (ondelete=SET NULL) for billing audit retention.
+    """
+    from app.models import HomeworkJob
+
+    # Delete jobs first (and their phase_outputs cascade); ORM-level delete
+    # so cascade rules on relationships fire correctly.
+    job_rows = (
+        await session.execute(select(HomeworkJob).where(HomeworkJob.book_id == book_id))
+    ).scalars().all()
+    for job in job_rows:
+        await session.delete(job)
+
+    book = await session.get(Book, book_id)
+    if book is None:
+        return False
+    await session.delete(book)
+    return True

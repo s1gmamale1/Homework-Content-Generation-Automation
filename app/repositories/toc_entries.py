@@ -39,3 +39,54 @@ async def list_for_book(session: AsyncSession, book_id: UUID) -> list[TOCEntry]:
 
 async def get(session: AsyncSession, toc_entry_id: UUID) -> TOCEntry | None:
     return await session.get(TOCEntry, toc_entry_id)
+
+
+async def update(
+    session: AsyncSession,
+    toc_entry_id: UUID,
+    *,
+    chapter_number: str | None = None,
+    chapter_title: str | None = None,
+    section_number: str | None = None,
+    section_title: str | None = None,
+    page_start: int | None = None,
+    page_end: int | None = None,
+) -> TOCEntry | None:
+    """Patch user-editable fields on a TOC entry. Pass only the fields you
+    want to change; others are left untouched."""
+    entry = await session.get(TOCEntry, toc_entry_id)
+    if entry is None:
+        return None
+    if chapter_number is not None:
+        entry.chapter_number = chapter_number
+    if chapter_title is not None:
+        entry.chapter_title = chapter_title
+    if section_number is not None:
+        entry.section_number = section_number
+    if section_title is not None:
+        entry.section_title = section_title
+    if page_start is not None:
+        entry.page_start = page_start
+    if page_end is not None:
+        entry.page_end = page_end
+    return entry
+
+
+async def delete(session: AsyncSession, toc_entry_id: UUID) -> bool:
+    """Remove a TOC entry. Homework jobs that referenced it are deleted
+    explicitly first since `homework_jobs.toc_entry_id` has no cascade."""
+    from app.models import HomeworkJob
+
+    job_rows = (
+        await session.execute(
+            select(HomeworkJob).where(HomeworkJob.toc_entry_id == toc_entry_id)
+        )
+    ).scalars().all()
+    for job in job_rows:
+        await session.delete(job)
+
+    entry = await session.get(TOCEntry, toc_entry_id)
+    if entry is None:
+        return False
+    await session.delete(entry)
+    return True

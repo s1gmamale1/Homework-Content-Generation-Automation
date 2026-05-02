@@ -12,7 +12,18 @@ const PRETTY: Record<string, string> = {
   sentence_fill: "Sentence Fill",
 };
 
+// Older jobs (before the schema was tightened to a Literal enum) sometimes
+// have type set to the human display name like "Adaptive Quiz" or even
+// "tile-match". Normalize so the renderer matches regardless of casing/style.
+function normalizeType(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+}
+
 export function GameCard({ game }: { game: Game }) {
+  const kind = normalizeType(game.type);
   return (
     <article className="rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) p-5">
       <header className="mb-4 flex items-start justify-between gap-3 border-b border-(--color-border) pb-3">
@@ -25,19 +36,19 @@ export function GameCard({ game }: { game: Game }) {
               {game.title}
             </h3>
             <p className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
-              {PRETTY[game.type] ?? game.type}
+              {PRETTY[kind] ?? game.type}
             </p>
           </div>
         </div>
       </header>
 
-      <Renderer game={game} />
+      <Renderer game={game} kind={kind} />
     </article>
   );
 }
 
-function Renderer({ game }: { game: Game }) {
-  switch (game.type) {
+function Renderer({ game, kind }: { game: Game; kind: string }) {
+  switch (kind) {
     case "adaptive_quiz":
       return <AdaptiveQuiz game={game} />;
     case "tile_match":
@@ -47,10 +58,6 @@ function Renderer({ game }: { game: Game }) {
     case "sentence_fill":
       return <SentenceFill game={game} />;
     default:
-      return (
-        <pre className="text-xs text-(--color-ink-muted)">
-          Unknown game type: {game.type}
-        </pre>
-      );
+      return <pre className="text-xs text-(--color-ink-muted)">Unknown game type: {game.type}</pre>;
   }
 }

@@ -99,6 +99,9 @@ This diagram is described once in Panel 1 and referenced by label in all later p
 
 ## SVG Output Rule — mandatory for every diagram
 
+Diagram styling (background, sizing, stroke contrast, labeling) follows the universal SVG rules injected by the runtime — do not specify width, height, or stroke colors in this prompt.
+
+
 Whenever a diagram is required, output **actual SVG code** immediately after the bracket description. Do not leave a diagram as text only — the SVG must be renderable by a browser.
 
 ### Output order (always this sequence)

@@ -67,4 +67,4 @@ Example:
 - Language: student-facing English. UZ bridge in feedback uses formal "Siz".
 - Put the most important prior-unit concept as item 1 — primacy effect.
 - Tags: each item `[Bloom: L1-L2 | PISA: L1]` — Sprint is recognition only, never L3+.
-- Visuals: inline SVG only where it speeds recognition (stress-dot, tiny sentence diagram). Under 200×150px.
+- Visuals: inline SVG only where it speeds recognition (stress-dot, tiny sentence diagram).

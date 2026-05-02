@@ -99,4 +99,4 @@ Each question:
 - Language: student-facing English. UZ bridge allowed in model answers.
 - No bazaar/village/shopkeeper clichés
 - Apply Wise Status Injection Recipe on every scenario
-- Visuals: inline SVG where visuals aid understanding (scenario setup diagram, timeline). Under 300×200px. Priority SVG > Mermaid > ASCII.
+- Visuals: inline SVG where visuals aid understanding (scenario setup diagram, timeline). Use inline SVG only — inline SVG and ASCII art do not render in our preview, they appear as raw text.

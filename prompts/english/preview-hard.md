@@ -121,4 +121,4 @@ End with BOST goal prompt: "Bugun [actual topic name] haqida nimani bilmoqchisiz
 - 55/45 Uzbekistan/global balance. Modern 2020+ contexts only. No cowboy/cricket/baseball clichés.
 - Every panel: bold target form on actual chapter examples. Never invent.
 - Each panel closes with `[Bloom: LX | PISA: LX]` tag.
-- Visuals: inline SVG where visuals aid teaching (timeline bridge, stress-dot patterns, IPA charts, sentence diagrams, word-family trees, collocation grids, Buzan mind maps). Under 300×200px. Priority SVG > Mermaid > ASCII. Place SVG immediately after the text it illustrates.
+- Visuals: inline SVG where visuals aid teaching (timeline bridge, stress-dot patterns, IPA charts, sentence diagrams, word-family trees, collocation grids, Buzan mind maps). Use inline SVG only — inline SVG and ASCII art do not render in our preview, they appear as raw text. Place SVG immediately after the text it illustrates.

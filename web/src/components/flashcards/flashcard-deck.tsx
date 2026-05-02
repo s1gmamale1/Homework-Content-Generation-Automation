@@ -1,5 +1,6 @@
 import { ChevronLeft, ChevronRight, Lightbulb, RefreshCcw, Shuffle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { RichText } from "@/components/rich-text";
 import type { Flashcard } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -55,9 +56,7 @@ export function FlashcardDeck({ cards }: FlashcardDeckProps) {
   }, [cards]);
 
   if (cards.length === 0) {
-    return (
-      <p className="text-sm text-(--color-ink-muted)">No flashcards.</p>
-    );
+    return <p className="text-sm text-(--color-ink-muted)">No flashcards.</p>;
   }
 
   if (!card) return null;
@@ -110,11 +109,7 @@ export function FlashcardDeck({ cards }: FlashcardDeckProps) {
             }}
           >
             {/* Front */}
-            <Side
-              kind="front"
-              text={card.front}
-              hint={showHint ? card.hint ?? null : null}
-            />
+            <Side kind="front" text={card.front} hint={showHint ? (card.hint ?? null) : null} />
             {/* Back */}
             <Side kind="back" text={card.back} />
           </div>
@@ -165,43 +160,53 @@ export function FlashcardDeck({ cards }: FlashcardDeckProps) {
         </button>
       </div>
 
-      {/* Cluster index */}
-      {grouped.size > 1 && (
+      {/* Pagination strip — one horizontal row of card numbers in deck
+          order. Cluster boundaries get a subtle extra gap so grouping is
+          still visible without dedicating a row per cluster. The active
+          card's cluster name is shown above for context. */}
+      {cards.length > 1 && (
         <div className="mt-1 flex flex-col gap-1.5">
-          {Array.from(grouped.entries()).map(([cluster, idxs]) => (
-            <div key={cluster} className="flex items-center gap-2">
-              <span className="w-24 truncate font-mono text-[0.6rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
-                {cluster}
+          {grouped.size > 1 && card.cluster && (
+            <div className="flex items-center justify-between gap-2 font-mono text-[0.6rem] uppercase tracking-[0.16em] text-(--color-ink-muted)">
+              <span>
+                Cluster · <span className="text-(--color-ink-soft)">{card.cluster}</span>
               </span>
-              <div className="flex flex-wrap gap-1">
-                {idxs.map((idx) => {
-                  const isActive = order[pos] === idx;
-                  return (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => {
-                        const newPos = order.indexOf(idx);
-                        if (newPos >= 0) {
-                          setPos(newPos);
-                          setFlipped(false);
-                          setShowHint(false);
-                        }
-                      }}
-                      className={cn(
-                        "size-5 rounded-sm border text-[0.6rem] font-mono leading-none transition-colors",
-                        isActive
-                          ? "border-(--color-accent) bg-(--color-accent) text-[oklch(0.18_0.04_55)]"
-                          : "border-(--color-border) bg-(--color-elevated) text-(--color-ink-muted) hover:border-(--color-border-hover) hover:text-(--color-ink)",
-                      )}
-                    >
-                      {idx + 1}
-                    </button>
-                  );
-                })}
-              </div>
+              <span>
+                {pos + 1} / {cards.length}
+              </span>
             </div>
-          ))}
+          )}
+          <div className="flex flex-wrap items-center gap-1">
+            {cards.map((c, idx) => {
+              const isActive = order[pos] === idx;
+              const prevCluster = idx > 0 ? (cards[idx - 1].cluster ?? null) : null;
+              const isClusterBoundary = idx > 0 && grouped.size > 1 && c.cluster !== prevCluster;
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  title={c.cluster ?? undefined}
+                  onClick={() => {
+                    const newPos = order.indexOf(idx);
+                    if (newPos >= 0) {
+                      setPos(newPos);
+                      setFlipped(false);
+                      setShowHint(false);
+                    }
+                  }}
+                  className={cn(
+                    "size-6 shrink-0 rounded-(--radius-sm) border text-[0.62rem] font-mono leading-none tabular-nums transition-colors",
+                    isActive
+                      ? "border-(--color-accent) bg-(--color-accent) text-[oklch(0.18_0.04_55)]"
+                      : "border-(--color-border) bg-(--color-elevated) text-(--color-ink-muted) hover:border-(--color-border-hover) hover:text-(--color-ink)",
+                    isClusterBoundary && "ml-2",
+                  )}
+                >
+                  {idx + 1}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
@@ -241,18 +246,18 @@ function Side({
       >
         {isBack ? "Answer" : "Prompt"}
       </span>
-      <p
+      <RichText
         className={cn(
           "max-w-[36ch] font-display text-[clamp(1.1rem,2.6vw,1.5rem)] leading-snug text-(--color-ink)",
           isBack && "italic",
         )}
       >
         {text}
-      </p>
+      </RichText>
       {hint && (
-        <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-(--color-accent-border) bg-(--color-accent-soft) px-3 py-1 text-[0.7rem] text-(--color-accent)">
-          <Lightbulb className="size-3" /> {hint}
-        </p>
+        <div className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-(--color-accent-border) bg-(--color-accent-soft) px-3 py-1 text-[0.7rem] text-(--color-accent)">
+          <Lightbulb className="size-3 shrink-0" /> <RichText inline>{hint}</RichText>
+        </div>
       )}
     </div>
   );

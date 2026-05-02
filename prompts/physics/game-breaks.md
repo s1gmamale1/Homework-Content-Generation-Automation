@@ -78,4 +78,4 @@ Pick based on chapter:
 - Current chapter content only
 - All answers must include proper physics units
 - Language: Uzbek, "Siz" formal
-- Visuals: If a game item needs a diagram (circuit, force vector, graph), generate inline SVG. Keep simple — under 200×150px.
+- Visuals: If a game item needs a diagram (circuit, force vector, graph), generate inline SVG. Keep simple.

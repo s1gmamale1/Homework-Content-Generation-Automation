@@ -91,13 +91,16 @@ Every question tagged: `[Bloom: LX | PISA: LX | Damage: -XX HP]`
 
 ## SVG Diagrams
 
+Diagram styling (background, sizing, stroke contrast, labeling) follows the universal SVG rules injected by the runtime — do not specify width, height, or stroke colors in this prompt.
+
+
 Generate inline SVGs for every diagram analysis question. Include SVGs for:
 - Cell structures (plant cell, animal cell, organelles with labels)
 - Biological process flows (photosynthesis, respiration, cell division stages)
 - Organism anatomy (leaf cross-section, heart chambers, digestive tract segments)
 - Ecological diagrams (food web, ecosystem layers, population graphs)
 
-Place the SVG directly inside the question it belongs to. Keep under 300×200px. Use clean lines and readable labels.
+Place the SVG directly inside the question it belongs to. Use clean lines and readable labels.
 
 ---
 

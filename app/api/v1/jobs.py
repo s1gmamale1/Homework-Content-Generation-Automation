@@ -1,23 +1,56 @@
-import asyncio
 import io
 import json
 import zipfile
+from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.auth import get_current_user
+from app.config import settings
 from app.db import SessionLocal, get_session
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import GenerateRequest, JobOut, PhaseOut
-from app.services import events_bus, pipeline
+from app.services import events_bus
 
 router = APIRouter(tags=["jobs"])
+
+# Idempotency-Key → job_id cache. Bounded; oldest entries evicted when the
+# limit is hit. Each entry expires after `_IDEMPOTENCY_TTL_SECONDS`.
+# In-memory is fine for single-process; multi-process deployments would
+# need a shared store (Redis, Postgres table) — but at this scale, the
+# advisory lock + natural-key idempotency in the DB is the load-bearing
+# mechanism. The header cache is a nice-to-have for client retry safety.
+import time
+
+_IDEMPOTENCY_CACHE: dict[str, tuple[UUID, float]] = {}
+_IDEMPOTENCY_TTL_SECONDS = 24 * 3600  # 24 hours
+_IDEMPOTENCY_MAX_ENTRIES = 10_000
+
+
+def _idempotency_get(key: str) -> Optional[UUID]:
+    entry = _IDEMPOTENCY_CACHE.get(key)
+    if entry is None:
+        return None
+    job_id, expires_at = entry
+    if time.time() > expires_at:
+        _IDEMPOTENCY_CACHE.pop(key, None)
+        return None
+    return job_id
+
+
+def _idempotency_set(key: str, job_id: UUID) -> None:
+    if len(_IDEMPOTENCY_CACHE) >= _IDEMPOTENCY_MAX_ENTRIES:
+        # Evict the oldest 10% to make room. Cheap O(n) scan; fine at this size.
+        sorted_keys = sorted(_IDEMPOTENCY_CACHE.items(), key=lambda kv: kv[1][1])
+        for k, _ in sorted_keys[: _IDEMPOTENCY_MAX_ENTRIES // 10]:
+            _IDEMPOTENCY_CACHE.pop(k, None)
+    _IDEMPOTENCY_CACHE[key] = (job_id, time.time() + _IDEMPOTENCY_TTL_SECONDS)
 
 
 @router.post("/books/{book_id}/sections/{toc_entry_id}/generate", status_code=201)
@@ -26,9 +59,40 @@ async def generate(
     toc_entry_id: UUID,
     response: Response,
     body: GenerateRequest = GenerateRequest(),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     session: AsyncSession = Depends(get_session),
     user: dict = Depends(get_current_user),
 ) -> JobOut:
+    """Generate (or return) a homework job for a section.
+
+    **Idempotency** — three layers, in order of precedence:
+
+    1. `Idempotency-Key` header: client-supplied (typically a UUID v4). If
+       the same key is reused within 24h, the original job is returned
+       regardless of body. Client-side retry safety for network blips.
+
+    2. Natural-key idempotency: when `force=False` (default), an existing
+       pending / running / done job for this (book, section) is returned
+       instead of creating a duplicate. Subsequent same-section calls reuse.
+
+    3. Postgres advisory lock on (book, section): serializes concurrent
+       requests so a double-click can't race past the natural-key check
+       and create two jobs simultaneously.
+
+    `force=True` skips layer 2 (creates a fresh job) but still respects
+    layers 1 and 3.
+    """
+    # Layer 1: header-key idempotency (fast path, no DB hit if cached).
+    if idempotency_key:
+        cached_job_id = _idempotency_get(idempotency_key)
+        if cached_job_id is not None:
+            response.status_code = 200
+            try:
+                return await _job_out(session, cached_job_id)
+            except HTTPException:
+                # Cached job was deleted upstream — invalidate and fall through.
+                _IDEMPOTENCY_CACHE.pop(idempotency_key, None)
+
     book = await books_repo.get(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
@@ -38,11 +102,36 @@ async def generate(
     if section is None or section.book_id != book_id:
         raise HTTPException(404, "section not found")
 
+    # Layer 3: serialize concurrent requests for the same (book, section).
+    # Lock is held for the rest of this transaction and auto-released on
+    # commit, so the second concurrent request waits and then sees the
+    # job the first one just created.
+    await jobs_repo.lock_section_for_generate(session, book_id, toc_entry_id)
+
+    # Layer 2: natural-key idempotency.
     if not body.force:
         existing = await jobs_repo.find_active_for_section(session, book_id, toc_entry_id)
         if existing is not None:
+            await session.commit()  # release the advisory lock
+            if idempotency_key:
+                _idempotency_set(idempotency_key, existing.id)
             response.status_code = 200
             return await _job_out(session, existing.id)
+
+    # Backpressure: if the eligible-now queue is too deep, refuse to enqueue
+    # rather than letting it grow unbounded. The client can retry later.
+    # Skipped when limit=0 (disabled).
+    if settings.queue_backpressure_limit > 0:
+        depth = await jobs_repo.queue_depth(session)
+        if depth >= settings.queue_backpressure_limit:
+            await session.commit()
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"queue is full ({depth} jobs waiting); please retry shortly"
+                ),
+                headers={"Retry-After": "30"},
+            )
 
     job = await jobs_repo.create(
         session,
@@ -51,9 +140,14 @@ async def generate(
         subject=book.subject,
         status="pending",
     )
-    await session.commit()
+    await session.commit()  # commit + release advisory lock atomically
 
-    asyncio.create_task(pipeline.run(job.id))
+    if idempotency_key:
+        _idempotency_set(idempotency_key, job.id)
+
+    # Note: no `asyncio.create_task(pipeline.run(...))` here. The worker
+    # process polls `homework_jobs.status='pending'` and claims this row.
+    # See `app/services/worker.py`.
     return await _job_out(session, job.id)
 
 

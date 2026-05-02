@@ -1,5 +1,6 @@
 import { Check, X } from "lucide-react";
 import { useState } from "react";
+import { RichText } from "@/components/rich-text";
 import type { Game } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -87,7 +88,7 @@ export function SentenceFill({ game }: { game: Game }) {
             {isCorrect ? "Correct" : `Answer: ${item.answer}`}
           </span>
           {item.explanation && (
-            <p className="mt-1.5 text-(--color-ink-soft)">{item.explanation}</p>
+            <RichText className="mt-1.5 text-(--color-ink-soft)">{item.explanation}</RichText>
           )}
         </div>
       )}

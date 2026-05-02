@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { RichText } from "@/components/rich-text";
 import type { Game } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -100,13 +101,13 @@ function Tile({
         "rounded-(--radius-md) border px-3 py-2 text-left text-sm transition-colors",
         solved &&
           "border-[oklch(0.78_0.10_145_/_40%)] bg-[oklch(0.78_0.10_145_/_8%)] text-(--color-success) cursor-default",
-        !solved && picked &&
-          "border-(--color-accent) bg-(--color-accent-soft) text-(--color-ink)",
-        !solved && !picked &&
+        !solved && picked && "border-(--color-accent) bg-(--color-accent-soft) text-(--color-ink)",
+        !solved &&
+          !picked &&
           "border-(--color-border) bg-(--color-elevated) text-(--color-ink) hover:border-(--color-border-hover) hover:bg-(--color-elevated-hover) cursor-pointer",
       )}
     >
-      {text}
+      <RichText inline>{text}</RichText>
     </button>
   );
 }

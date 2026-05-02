@@ -26,6 +26,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.repositories import gemini_usage as usage_repo
 from app.schemas import (
+    ClassifyDecision,
     ExtractedTOC,
     FinalChallenge,
     FlashcardsPack,
@@ -43,6 +44,24 @@ def _get_client() -> genai.Client:
         _client = genai.Client(api_key=settings.gemini_api_key)
         logger.info(f"gemini client initialised | model={settings.gemini_model}")
     return _client
+
+
+# Process-wide concurrency cap on Gemini calls. Without this, the queue
+# worker (concurrency=N pipelines) × parallel scheduler (waves of 4-5
+# concurrent phases per pipeline) can fan out to 20+ in-flight calls per
+# second, blowing past most rate-limit tiers. This semaphore queues calls
+# transparently so each succeeds rather than cascading into 429s.
+#
+# Lazy-init so the value picks up `settings` at first use (and so test
+# code can rebind the setting before the first call).
+_gemini_call_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _gemini_semaphore() -> asyncio.Semaphore:
+    global _gemini_call_semaphore
+    if _gemini_call_semaphore is None:
+        _gemini_call_semaphore = asyncio.Semaphore(settings.gemini_max_concurrency)
+    return _gemini_call_semaphore
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -157,17 +176,18 @@ async def extract_toc(
     t0 = perf_counter()
 
     try:
-        response = await client.aio.models.generate_content(
-            model=settings.gemini_model,
-            contents=[
-                types.Part.from_uri(file_uri=file.uri, mime_type=file.mime_type),
-                prompt,
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=ExtractedTOC,
-            ),
-        )
+        async with _gemini_semaphore():
+            response = await client.aio.models.generate_content(
+                model=settings.gemini_model,
+                contents=[
+                    types.Part.from_uri(file_uri=file.uri, mime_type=file.mime_type),
+                    prompt,
+                ],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=ExtractedTOC,
+                ),
+            )
     except Exception as exc:
         total_s = perf_counter() - t0
         await _record(
@@ -265,6 +285,99 @@ _NO_PREAMBLE = (
 )
 
 
+# Universal SVG rules. Injected into every MD-producing curriculum phase so
+# inline diagrams have a consistent look: white background, content-scaled
+# size, dark high-contrast strokes, every part labeled. Overrides any
+# conflicting size guidance inside the per-subject .md prompt files.
+# Phases that produce inline SVG diagrams. Other phases (memory-sprint,
+# reflection, classify) get a slimmer prompt — saving ~450 tokens per call.
+_SVG_PHASES: set[str] = {
+    "preview-hard", "preview-easy", "preview",
+    "real-life", "consolidation",
+    "flashcards", "game-breaks", "final-challenge", "reading",
+}
+
+
+_SVG_RULES = (
+    "\n\n## VISUAL / SVG RULES (when you embed inline <svg>)\n"
+    "Every <svg> you generate MUST follow these rules. They override any "
+    "size or styling guidance in the system prompt above. The #1 failure "
+    "mode is cramped diagrams where labels overlap shapes or each other — "
+    "if in doubt, pick a LARGER frame, not smaller.\n\n"
+
+    "### 1. White background, always\n"
+    "First child of every <svg> must be:\n"
+    "  `<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\" rx=\"6\"/>`\n\n"
+
+    "### 2. Size scales with content — default to LARGER\n"
+    "Pick width/height/viewBox to give every label and shape generous room. "
+    "A diagram with extra whitespace is readable; a diagram with overlapping "
+    "labels is unusable.\n"
+    "  - Simple (1–3 labeled parts): width=320 height=220 "
+    "viewBox=\"0 0 320 220\"\n"
+    "  - Medium (4–8 labeled parts): width=520 height=340 "
+    "viewBox=\"0 0 520 340\"\n"
+    "  - Detailed (9+ parts, comparative diagrams, multi-step flows): "
+    "width=720 height=480 viewBox=\"0 0 720 480\"\n"
+    "If a frame would be cramped at the chosen tier, BUMP UP to the next "
+    "tier. If even Detailed would crowd, emit TWO svgs (overview + zoom-in) "
+    "instead of cramming into one.\n\n"
+
+    "### 3. Padding & spacing budget (anti-overlap)\n"
+    "  - **20px** minimum from every viewBox edge to the first stroke or "
+    "text — never let content butt against the frame.\n"
+    "  - **8px** minimum gap between any text label and the shape it "
+    "labels (so they don't visually merge).\n"
+    "  - **18px** minimum vertical gap between two stacked text lines.\n"
+    "  - **40px** minimum width AND height for any shape that contains "
+    "text INSIDE it. Smaller shapes need EXTERNAL labels (see §6).\n"
+    "  - **30px** minimum gap between two labeled parts that sit "
+    "side-by-side (e.g., comparative anatomy panels, before/after).\n\n"
+
+    "### 4. Text rules — labels must be legible, never overlap\n"
+    "  - Default: `<text font-size=\"14\" fill=\"#111827\" "
+    "font-family=\"sans-serif\">`\n"
+    "  - Centered text: include BOTH `text-anchor=\"middle\"` AND "
+    "`dominant-baseline=\"middle\"` — without these, text drifts off-center "
+    "and overlaps adjacent shapes.\n"
+    "  - Left-aligned: `text-anchor=\"start\"`. Right-aligned: "
+    "`text-anchor=\"end\"`.\n"
+    "  - Multi-word labels too wide for one line: split with "
+    "`<tspan x=\"...\" dy=\"1.2em\">word</tspan>` — never let text "
+    "visually run off a shape.\n"
+    "  - **Never let two text elements touch.** If they would, move one "
+    "or enlarge the frame. If still impossible, use leader lines (§6).\n"
+    "  - Long names (>12 chars) inside small shapes don't fit — put them "
+    "OUTSIDE with a leader line.\n\n"
+
+    "### 5. High-contrast strokes against white\n"
+    "  - Default outline: `stroke=\"#1f2937\" stroke-width=\"2\" "
+    "fill=\"none\"`\n"
+    "  - Filled regions: `#fde68a` (highlight), `#bae6fd` (cool/water), "
+    "`#bbf7d0` (plant/calm), `#fecaca` (warm/warning)\n"
+    "  - Emphasis stroke: `#0ea5e9` or `#dc2626`\n"
+    "  - NEVER use light grays (#ccc, #eee) or near-white pastels "
+    "(#f0f8ff, #f8fafc) — they vanish on white.\n\n"
+
+    "### 6. Leader-line pattern (for crowded diagrams)\n"
+    "When labels can't fit inside their shapes, place them in the margins "
+    "with a thin leader line connecting label to part:\n"
+    "  `<line x1=\"shapeX\" y1=\"shapeY\" x2=\"labelX\" y2=\"labelY\" "
+    "stroke=\"#1f2937\" stroke-width=\"1\"/>`\n"
+    "  `<text x=\"labelX\" y=\"labelY\" text-anchor=\"start\">Label</text>`\n"
+    "Use leader lines for cell organelles, anatomy parts, and any 4+ part "
+    "diagram where internal labels would overlap.\n\n"
+
+    "### 7. Clean output\n"
+    "  - No raster `<image>`, no `<foreignObject>`, no external fonts.\n"
+    "  - Group related parts with `<g id=\"...\">...</g>`.\n"
+    "  - Add a small legend (corner) when colors carry meaning.\n"
+    "  - Two-space indent for children.\n"
+    "  - Place each <svg> directly after the prose it illustrates — never "
+    "inside a code fence."
+)
+
+
 async def extract_lesson_context(
     file_uri: str,
     section_title: str,
@@ -306,11 +419,12 @@ async def extract_lesson_context(
     t0 = perf_counter()
 
     try:
-        response = await client.aio.models.generate_content(
-            model=settings.gemini_model,
-            contents=contents,
-            config=types.GenerateContentConfig(**config_kwargs),
-        )
+        async with _gemini_semaphore():
+            response = await client.aio.models.generate_content(
+                model=settings.gemini_model,
+                contents=contents,
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
     except Exception as exc:
         total_s = perf_counter() - t0
         await _record(
@@ -355,16 +469,32 @@ async def extract_lesson_context(
 # Phase prompt (homework content phases)
 # ─────────────────────────────────────────────────────────────────────
 
+
+# Phases that produce JSON directly via response_schema in one Gemini call.
+# Replaces the older MD-then-extract pattern where each of these phases cost
+# two roundtrips (one to write MD, another to re-parse it as JSON).
+STRUCTURED_PHASE_SCHEMAS: dict[str, type] = {
+    "classify": ClassifyDecision,
+    "flashcards": FlashcardsPack,
+    "memory-sprint": MemorySprintPack,
+    "game-breaks": GamesPack,
+    "final-challenge": FinalChallenge,
+    "reading": ReadingPassage,
+}
+
+
 async def run_phase_prompt(
     *,
     phase_prompt: str,
     file_uri: Optional[str] = None,
     attach_file: bool = False,
     cached_content: Optional[str] = None,
+    cache_holds_text_context: bool = False,
     lesson_context: str,
     prior_outputs: dict[str, str],
     difficulty: Optional[str],
     phase_name: str = "?",
+    max_output_tokens: Optional[int] = None,
     homework_job_id: Optional[UUID] = None,
     phase_output_id: Optional[UUID] = None,
 ) -> tuple[str, Optional[int], Optional[int]]:
@@ -379,14 +509,32 @@ async def run_phase_prompt(
     """
     client = _get_client()
 
-    user_blocks: list[str] = ["## Lesson context", lesson_context]
+    # Gemini API constraint: cached_content cannot be combined with
+    # system_instruction in the same request. When a cache is active, move
+    # the phase prompt into the user message instead — the model still sees
+    # the same content, just without the elevated "system" role.
+    use_cache = cached_content is not None
+    user_blocks: list[str] = []
+    if use_cache:
+        user_blocks.extend(["## Phase instruction", phase_prompt, ""])
+    # When cached_content holds the per-job text context (lesson_context +
+    # SVG_RULES + NO_PREAMBLE), drop those from user_blocks — repeating them
+    # would double the bill (cached portion + inline portion).
+    if not cache_holds_text_context:
+        user_blocks.extend(["## Lesson context", lesson_context])
     if difficulty is not None:
         user_blocks.extend(["", "## Difficulty", difficulty.upper()])
+    # SVG rules are only useful for phases that actually generate diagrams.
+    # Skip on text-only phases (memory-sprint, reflection, classify) — saves
+    # ~450 tokens per call. Also skipped when already in the per-job cache.
+    if not cache_holds_text_context and phase_name in _SVG_PHASES:
+        user_blocks.append(_SVG_RULES)
     if prior_outputs:
         user_blocks.append("\n## Prior phase outputs")
         for name, body in prior_outputs.items():
             user_blocks.append(f"\n### {name}\n{body}")
-    user_blocks.append(_NO_PREAMBLE)
+    if not cache_holds_text_context:
+        user_blocks.append(_NO_PREAMBLE)
     user_text = "\n".join(user_blocks)
 
     contents: list[Any] = []
@@ -396,9 +544,13 @@ async def run_phase_prompt(
         )
     contents.append(user_text)
 
-    config_kwargs: dict[str, Any] = {"system_instruction": phase_prompt}
-    if cached_content:
+    config_kwargs: dict[str, Any] = {}
+    if use_cache:
         config_kwargs["cached_content"] = cached_content
+    else:
+        config_kwargs["system_instruction"] = phase_prompt
+    if max_output_tokens:
+        config_kwargs["max_output_tokens"] = max_output_tokens
 
     # Optimization-visibility log: shows exactly which token-savers are active
     # for this phase. Use this to verify "did we actually skip the PDF here?".
@@ -421,11 +573,12 @@ async def run_phase_prompt(
     t0 = perf_counter()
 
     try:
-        response = await client.aio.models.generate_content(
-            model=settings.gemini_model,
-            contents=contents,
-            config=types.GenerateContentConfig(**config_kwargs),
-        )
+        async with _gemini_semaphore():
+            response = await client.aio.models.generate_content(
+                model=settings.gemini_model,
+                contents=contents,
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
     except Exception as exc:
         total_s = perf_counter() - t0
         await _record(
@@ -477,371 +630,213 @@ async def run_phase_prompt(
     return text, prompt_total or None, out_total or None
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Games extraction (post-pipeline structured output for interactive render)
-# ─────────────────────────────────────────────────────────────────────
-
-_GAMES_EXTRACT_PROMPT = (
-    "You are reading a `game-breaks` phase output that describes interactive "
-    "homework games (adaptive_quiz, tile_match, memory_match, sentence_fill). "
-    "Convert the games into structured JSON.\n\n"
-    "Game type semantics:\n"
-    "- adaptive_quiz: questions[]. Each question has prompt, options (for MC), "
-    "  correct_index pointing into options, and explanation. For TF: options=["
-    "'True','False']. For YNNG: options=['Yes','No','Not Given'].\n"
-    "- tile_match: pairs[] of {left, right} — items the student must match.\n"
-    "- memory_match: cards[] of {text, pair_id}. Cards sharing pair_id match.\n"
-    "- sentence_fill: questions[] where prompt has the sentence with a blank "
-    "  '___' and answer holds the missing word.\n\n"
-    "Preserve the original language (Uzbek). Be FAITHFUL — do not invent games "
-    "or questions not present in the source. If no games are present, return "
-    "{\"games\": []}."
-)
-
-
-async def extract_games(
-    game_breaks_md: str,
+async def run_phase_prompt_structured(
     *,
+    phase_prompt: str,
+    response_schema: type,
+    file_uri: Optional[str] = None,
+    attach_file: bool = False,
+    cached_content: Optional[str] = None,
+    cache_holds_text_context: bool = False,
+    lesson_context: str,
+    prior_outputs: dict[str, str],
+    difficulty: Optional[str],
+    phase_name: str = "?",
+    max_output_tokens: Optional[int] = None,
     homework_job_id: Optional[UUID] = None,
-) -> Optional[GamesPack]:
-    """Run a structured-output extraction over the `game-breaks` phase MD.
-    Returns None on failure — callers should fall back to MD-only display."""
-    if not game_breaks_md.strip():
-        return GamesPack(games=[])
+    phase_output_id: Optional[UUID] = None,
+) -> tuple[Any, Optional[int], Optional[int]]:
+    """Structured-output sibling of `run_phase_prompt`.
 
+    Sends the same prompt + lesson_context + prior_outputs but constrains the
+    response to JSON conforming to `response_schema`. Returns the parsed
+    Pydantic instance directly. One Gemini call replaces the older
+    MD-then-extract pattern (which paid for two roundtrips per JSON phase).
+    """
     client = _get_client()
-    logger.info(f"gemini games.extract start | input_chars={len(game_breaks_md)}")
+
+    # Same constraint as run_phase_prompt: cached_content forbids
+    # system_instruction. When a cache is active, move phase prompt into the
+    # user message instead.
+    use_cache = cached_content is not None
+    user_blocks: list[str] = []
+    if use_cache:
+        user_blocks.extend(["## Phase instruction", phase_prompt, ""])
+    if not cache_holds_text_context:
+        user_blocks.extend(["## Lesson context", lesson_context])
+    if difficulty is not None:
+        user_blocks.extend(["", "## Difficulty", difficulty.upper()])
+    # SVG rules: only for phases whose schema string fields actually carry
+    # diagrams. memory-sprint is tap-only short text — saves ~450 tokens.
+    # Skipped when already in the per-job text cache.
+    has_svg = phase_name in _SVG_PHASES
+    if has_svg and not cache_holds_text_context:
+        user_blocks.append(_SVG_RULES)
+    if prior_outputs:
+        user_blocks.append("\n## Prior phase outputs")
+        for name, body in prior_outputs.items():
+            user_blocks.append(f"\n### {name}\n{body}")
+    # Schema-mode override. Note: NO_PREAMBLE is omitted here — Gemini's
+    # structured-output decoder rejects preambles by definition (the response
+    # must be valid JSON), so we save those tokens too.
+    output_format = (
+        "\n## OUTPUT FORMAT\n"
+        "Respond with JSON conforming to the provided response schema. "
+        "Ignore any markdown-formatting instructions in the prompt — "
+        "the schema is the deliverable. Preserve the original language.\n\n"
+        "**Curriculum metadata tags** like `[Bloom: LX]`, `[PISA: LX]`, "
+        "`[Damage: -X HP]`, `[Difficulty: ...]` must go ONLY in their "
+        "matching schema fields (e.g., bloom_level, pisa_level, damage). "
+        "NEVER embed these bracket tags inside `prompt`, `options`, "
+        "`explanation`, `front`, `back`, or any other student-facing "
+        "string — the student sees those rendered raw. If the schema has "
+        "no field for a particular tag, drop the tag entirely."
+    )
+    if has_svg:
+        output_format += (
+            "\n\nIf you embed inline <svg> in any string field, follow the "
+            "SVG rules above (white background, content-scaled size, dark "
+            "strokes)."
+        )
+    user_blocks.append(output_format)
+    user_text = "\n".join(user_blocks)
+
+    contents: list[Any] = []
+    if cached_content is None and attach_file and file_uri:
+        contents.append(
+            types.Part.from_uri(file_uri=_uri(file_uri), mime_type="application/pdf")
+        )
+    contents.append(user_text)
+
+    config_kwargs: dict[str, Any] = {
+        "response_mime_type": "application/json",
+        "response_schema": response_schema,
+    }
+    if use_cache:
+        config_kwargs["cached_content"] = cached_content
+    else:
+        config_kwargs["system_instruction"] = phase_prompt
+    if max_output_tokens:
+        config_kwargs["max_output_tokens"] = max_output_tokens
+
+    file_state = (
+        "CACHE" if cached_content
+        else "INLINE" if (attach_file and file_uri)
+        else "OFF"
+    )
+    prior_names = list(prior_outputs.keys())
+    logger.info(
+        f"gemini phase.run config | phase={phase_name} mode=JSON "
+        f"file={file_state} "
+        f"prior={len(prior_names)}{prior_names if prior_names else ''} "
+        f"lesson_chars={len(lesson_context)} sys_chars={len(phase_prompt)} "
+        f"user_chars={len(user_text)} difficulty={difficulty} "
+        f"schema={response_schema.__name__}"
+    )
     started_at = datetime.now(timezone.utc)
     t0 = perf_counter()
 
     try:
-        response = await client.aio.models.generate_content(
-            model=settings.gemini_model,
-            contents=[_GAMES_EXTRACT_PROMPT, "\n\n## Source\n", game_breaks_md],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=GamesPack,
-            ),
-        )
+        async with _gemini_semaphore():
+            response = await client.aio.models.generate_content(
+                model=settings.gemini_model,
+                contents=contents,
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
     except Exception as exc:
         total_s = perf_counter() - t0
-        logger.warning(f"gemini games.extract failed: {exc!r}")
         await _record(
-            operation="games.extract",
+            operation="phase.run",
             homework_job_id=homework_job_id,
+            phase_output_id=phase_output_id,
             started_at=started_at,
             duration_s=total_s,
             success=False,
             error_message=str(exc),
+            usage_metadata={
+                "phase_name": phase_name,
+                "difficulty": difficulty,
+                "mode": "json",
+            },
         )
-        return None
+        raise
 
     duration_s = perf_counter() - t0
     usage = _extract_usage(response)
     parsed = response.parsed
-    if not isinstance(parsed, GamesPack):
-        logger.warning(
-            f"gemini games.extract returned no parseable structure "
-            f"(parsed={type(parsed).__name__})"
+    if not isinstance(parsed, response_schema):
+        # Structured-mode parse failure. Pull every diagnostic the SDK
+        # exposes — finish_reason, raw text preview, output token count —
+        # so the next failure is debuggable from the log alone instead of
+        # requiring a re-run with a debugger attached.
+        finish_reason = "?"
+        text_preview = ""
+        try:
+            cand = (response.candidates or [None])[0]
+            if cand is not None:
+                fr = getattr(cand, "finish_reason", None)
+                finish_reason = getattr(fr, "name", str(fr)) if fr else "?"
+            raw_text = response.text or ""
+            text_preview = raw_text[:200].replace("\n", " ")
+        except Exception:
+            pass
+
+        out_tokens = usage["candidates_token_count"]
+        msg = (
+            f"non-parseable structure (parsed={type(parsed).__name__}, "
+            f"finish_reason={finish_reason}, output_tokens={out_tokens}, "
+            f"preview={text_preview!r})"
         )
+        usage_meta = dict(usage["usage_metadata"] or {})
+        usage_meta["phase_name"] = phase_name
+        usage_meta["difficulty"] = difficulty
+        usage_meta["mode"] = "json"
+        usage_meta["finish_reason"] = finish_reason
+        usage["usage_metadata"] = usage_meta
+        logger.warning(f"gemini phase.run | phase={phase_name} {msg}")
         await _record(
-            operation="games.extract",
+            operation="phase.run",
             homework_job_id=homework_job_id,
+            phase_output_id=phase_output_id,
             started_at=started_at,
             duration_s=duration_s,
             success=False,
-            error_message="non-parseable structure",
+            error_message=msg,
             **usage,
         )
-        return None
+        raise RuntimeError(f"phase.run {phase_name}: {msg}")
+
+    cached_in = _cached_tokens(response)
+    usage_meta = dict(usage["usage_metadata"] or {})
+    usage_meta["phase_name"] = phase_name
+    usage_meta["difficulty"] = difficulty
+    usage_meta["mode"] = "json"
+    usage["usage_metadata"] = usage_meta
+
+    prompt_total = int(usage_meta.get("prompt_token_count") or 0)
+    if prompt_total == 0:
+        prompt_total = usage["input_text_token_count"]
+    out_total = usage["candidates_token_count"]
+    fresh_in = max(prompt_total - cached_in, 0)
+    cache_pct = (cached_in / prompt_total * 100) if prompt_total else 0
 
     logger.success(
-        f"gemini games.extract done | games={len(parsed.games)} "
-        f"types={[g.type for g in parsed.games]} "
+        f"gemini phase.run billed | phase={phase_name} mode=JSON "
+        f"input={prompt_total:,} (fresh={fresh_in:,} cached={cached_in:,} {cache_pct:.0f}%) "
+        f"output={out_total:,} schema={response_schema.__name__} "
         f"duration_ms={duration_s * 1000:.0f}"
     )
     await _record(
-        operation="games.extract",
+        operation="phase.run",
         homework_job_id=homework_job_id,
+        phase_output_id=phase_output_id,
         started_at=started_at,
         duration_s=duration_s,
         success=True,
         **usage,
     )
-    return parsed
+    return parsed, prompt_total or None, out_total or None
 
-
-# ─────────────────────────────────────────────────────────────────────
-# Flashcards extraction (post-pipeline structured output for deck render)
-# ─────────────────────────────────────────────────────────────────────
-
-_FLASHCARDS_EXTRACT_PROMPT = (
-    "You are reading a `flashcards` phase output that contains study cards. "
-    "Convert each card into structured JSON with:\n"
-    "- front: the prompt side (term, question, organism name, blank sentence)\n"
-    "- back: the answer side (definition, trait, missing word, full sentence)\n"
-    "- hint (optional): a short cue if the card has a memory aid in the source\n"
-    "- cluster (optional): the section/grouping label (e.g., 'Names', "
-    "  'Frameworks', 'Modern Echoes' for history) if the source organizes "
-    "  cards into clusters; omit otherwise.\n\n"
-    "Preserve the original language (Uzbek). Be FAITHFUL — do not invent "
-    "cards not present in the source. If no cards are present, return "
-    "{\"cards\": []}."
-)
-
-
-async def extract_flashcards(
-    flashcards_md: str,
-    *,
-    homework_job_id: Optional[UUID] = None,
-) -> Optional[FlashcardsPack]:
-    """Run a structured-output extraction over the `flashcards` phase MD."""
-    if not flashcards_md.strip():
-        return FlashcardsPack(cards=[])
-
-    client = _get_client()
-    logger.info(f"gemini flashcards.extract start | input_chars={len(flashcards_md)}")
-    started_at = datetime.now(timezone.utc)
-    t0 = perf_counter()
-
-    try:
-        response = await client.aio.models.generate_content(
-            model=settings.gemini_model,
-            contents=[_FLASHCARDS_EXTRACT_PROMPT, "\n\n## Source\n", flashcards_md],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=FlashcardsPack,
-            ),
-        )
-    except Exception as exc:
-        total_s = perf_counter() - t0
-        logger.warning(f"gemini flashcards.extract failed: {exc!r}")
-        await _record(
-            operation="flashcards.extract",
-            homework_job_id=homework_job_id,
-            started_at=started_at,
-            duration_s=total_s,
-            success=False,
-            error_message=str(exc),
-        )
-        return None
-
-    duration_s = perf_counter() - t0
-    usage = _extract_usage(response)
-    parsed = response.parsed
-    if not isinstance(parsed, FlashcardsPack):
-        logger.warning(
-            f"gemini flashcards.extract returned no parseable structure "
-            f"(parsed={type(parsed).__name__})"
-        )
-        await _record(
-            operation="flashcards.extract",
-            homework_job_id=homework_job_id,
-            started_at=started_at,
-            duration_s=duration_s,
-            success=False,
-            error_message="non-parseable structure",
-            **usage,
-        )
-        return None
-
-    logger.success(
-        f"gemini flashcards.extract done | cards={len(parsed.cards)} "
-        f"duration_ms={duration_s * 1000:.0f}"
-    )
-    await _record(
-        operation="flashcards.extract",
-        homework_job_id=homework_job_id,
-        started_at=started_at,
-        duration_s=duration_s,
-        success=True,
-        **usage,
-    )
-    return parsed
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Final Challenge (boss fight) extraction
-# ─────────────────────────────────────────────────────────────────────
-
-_FINAL_CHALLENGE_PROMPT = (
-    "You are reading a `final-challenge` phase output that describes a "
-    "boss-fight quiz with HP-based damage. Convert it into structured JSON.\n\n"
-    "- starting_hp: 100 for grades 5-8, 150 for grades 9-11 (look in the source).\n"
-    "- questions[]: each with prompt, kind ('mc'/'tf'/'ynng'/'open'), options "
-    "  (for mc/tf/ynng), correct_index for those, OR correct_answer for 'open'.\n"
-    "- damage: -10 (Easy), -20 (Medium), or -30 (Hard) per the [Damage: -XX HP] "
-    "  tag — store as a positive integer.\n"
-    "- bloom_level / pisa_level: extract from the [Bloom: LX | PISA: LX] tags.\n"
-    "- explanation: short rationale shown after answer.\n"
-    "- hints: up to 3 progressive hints if a hint ladder is described.\n\n"
-    "Preserve the original language (Uzbek). Be FAITHFUL — do not invent "
-    "questions. If no boss fight is present, return {\"questions\": []}."
-)
-
-
-async def extract_final_challenge(
-    final_challenge_md: str,
-    *,
-    homework_job_id: Optional[UUID] = None,
-) -> Optional[FinalChallenge]:
-    if not final_challenge_md.strip():
-        return FinalChallenge(questions=[])
-    return await _structured_extract(
-        operation="final_challenge.extract",
-        prompt=_FINAL_CHALLENGE_PROMPT,
-        source_md=final_challenge_md,
-        schema=FinalChallenge,
-        homework_job_id=homework_job_id,
-        log_label="final_challenge",
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Memory Sprint extraction
-# ─────────────────────────────────────────────────────────────────────
-
-_MEMORY_SPRINT_PROMPT = (
-    "You are reading a `memory-sprint` phase output that describes 5-7 quick "
-    "tap-only recognition items (MC, T/F, Yes/No/Not Given). Convert into "
-    "structured JSON.\n\n"
-    "- items[]: each with prompt, kind ('mc'/'tf'/'ynng'), options "
-    "  (4 for MC, ['True','False'] or ['To'g'ri','Noto'g'ri'] for tf, "
-    "  ['Yes','No','Not Given'] or Uzbek equivalents for ynng), and "
-    "  correct_index pointing into options.\n"
-    "- explanation (optional): one short sentence shown after answer.\n\n"
-    "Preserve the original language. Be FAITHFUL — do not invent items. "
-    "If no items are present, return {\"items\": []}."
-)
-
-
-async def extract_memory_sprint(
-    memory_sprint_md: str,
-    *,
-    homework_job_id: Optional[UUID] = None,
-) -> Optional[MemorySprintPack]:
-    if not memory_sprint_md.strip():
-        return MemorySprintPack(items=[])
-    return await _structured_extract(
-        operation="memory_sprint.extract",
-        prompt=_MEMORY_SPRINT_PROMPT,
-        source_md=memory_sprint_md,
-        schema=MemorySprintPack,
-        homework_job_id=homework_job_id,
-        log_label="memory_sprint",
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Reading (English HARD) extraction
-# ─────────────────────────────────────────────────────────────────────
-
-_READING_PROMPT = (
-    "You are reading a `reading` phase output for an English homework session. "
-    "It contains ONE continuous narrative followed (or interleaved) by 3-5 "
-    "comprehension checkpoints. Convert into structured JSON.\n\n"
-    "- passage_md: the full narrative as Markdown. Preserve paragraph breaks "
-    "  (blank line between paragraphs) and any **bold** vocabulary highlights. "
-    "  Do NOT include the checkpoint questions in the passage — pull those out.\n"
-    "- checkpoints[]: each with after_paragraph (0-based index of the paragraph "
-    "  AFTER which this checkpoint appears), prompt, options[] (if MC), "
-    "  correct_index for MC OR correct_answer for free-text.\n"
-    "- cefr_level: A1 / A1+ / A2 / A2+ / B1 / B1+ / B2 if visible.\n\n"
-    "If no reading is present, return {\"passage_md\": \"\", \"checkpoints\": []}."
-)
-
-
-async def extract_reading(
-    reading_md: str,
-    *,
-    homework_job_id: Optional[UUID] = None,
-) -> Optional[ReadingPassage]:
-    if not reading_md.strip():
-        return ReadingPassage(passage_md="", checkpoints=[])
-    return await _structured_extract(
-        operation="reading.extract",
-        prompt=_READING_PROMPT,
-        source_md=reading_md,
-        schema=ReadingPassage,
-        homework_job_id=homework_job_id,
-        log_label="reading",
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Shared structured-extract helper
-# ─────────────────────────────────────────────────────────────────────
-
-async def _structured_extract(
-    *,
-    operation: str,
-    prompt: str,
-    source_md: str,
-    schema: type,
-    homework_job_id: Optional[UUID],
-    log_label: str,
-):
-    """Common scaffolding for the post-pipeline JSON extractions (games,
-    flashcards, final_challenge, memory_sprint, reading). One Gemini call
-    with response_schema, structured logging, gemini_usages recording."""
-    client = _get_client()
-    logger.info(f"gemini {log_label}.extract start | input_chars={len(source_md)}")
-    started_at = datetime.now(timezone.utc)
-    t0 = perf_counter()
-
-    try:
-        response = await client.aio.models.generate_content(
-            model=settings.gemini_model,
-            contents=[prompt, "\n\n## Source\n", source_md],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=schema,
-            ),
-        )
-    except Exception as exc:
-        total_s = perf_counter() - t0
-        logger.warning(f"gemini {log_label}.extract failed: {exc!r}")
-        await _record(
-            operation=operation,
-            homework_job_id=homework_job_id,
-            started_at=started_at,
-            duration_s=total_s,
-            success=False,
-            error_message=str(exc),
-        )
-        return None
-
-    duration_s = perf_counter() - t0
-    usage = _extract_usage(response)
-    parsed = response.parsed
-    if not isinstance(parsed, schema):
-        logger.warning(
-            f"gemini {log_label}.extract returned no parseable structure "
-            f"(parsed={type(parsed).__name__})"
-        )
-        await _record(
-            operation=operation,
-            homework_job_id=homework_job_id,
-            started_at=started_at,
-            duration_s=duration_s,
-            success=False,
-            error_message="non-parseable structure",
-            **usage,
-        )
-        return None
-
-    logger.success(
-        f"gemini {log_label}.extract done | duration_ms={duration_s * 1000:.0f}"
-    )
-    await _record(
-        operation=operation,
-        homework_job_id=homework_job_id,
-        started_at=started_at,
-        duration_s=duration_s,
-        success=True,
-        **usage,
-    )
-    return parsed
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -896,6 +891,45 @@ async def create_cache(
         f"duration_ms={duration_ms:.0f}"
     )
     return cache.name, expire_time
+
+
+
+async def create_text_cache(
+    *,
+    text: str,
+    ttl: str = "1800s",  # 30 min — typical job lifetime + headroom
+) -> Optional[str]:
+    """Create a text-only Gemini context cache. Used per-job to hold the
+    distilled `lesson_context` + universal directives (SVG rules, no-preamble)
+    so every content-phase call references them at ~25% of input rate instead
+    of paying full freight on each.
+
+    Returns the cache name on success, None if Gemini rejects (commonly because
+    the payload is below the model's minimum cache size — caller should fall
+    back to inline content).
+    """
+    client = _get_client()
+    t0 = perf_counter()
+    try:
+        cache = await client.aio.caches.create(
+            model=settings.gemini_model,
+            config=types.CreateCachedContentConfig(contents=[text], ttl=ttl),
+        )
+    except Exception as exc:
+        # Most common failure: payload below model's min cache size (~1024
+        # tokens for Flash). Quietly fall back so the pipeline still runs.
+        logger.info(
+            f"gemini text-cache create skipped: {type(exc).__name__} "
+            f"(falling back to inline) | chars={len(text)}"
+        )
+        return None
+
+    duration_ms = (perf_counter() - t0) * 1000
+    logger.success(
+        f"gemini text-cache created | name={cache.name} chars={len(text)} "
+        f"duration_ms={duration_ms:.0f}"
+    )
+    return cache.name
 
 
 async def delete_cache(cache_name: str) -> None:

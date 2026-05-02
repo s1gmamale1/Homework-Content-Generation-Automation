@@ -1,13 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import {
-  ArrowRight,
-  CheckCircle2,
-  ChevronDown,
-  CircleX,
-  Download,
-  Eye,
-  Loader2,
-} from "lucide-react";
+import { CheckCircle2, ChevronDown, CircleX, Download, Eye, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
@@ -166,20 +158,31 @@ function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string 
     queryFn: () => api.getJob(jobId),
   });
 
-  const previewMd = useMemo(() => {
-    const md = job?.assembled_md ?? "";
-    if (!md) return "";
-    return md.length > 1200 ? `${md.slice(0, 1200).trimEnd()}\n\n…` : md;
-  }, [job?.assembled_md]);
+  const counts = useMemo(() => {
+    return {
+      games: job?.games_json?.games?.length ?? 0,
+      flashcards: job?.flashcards_json?.cards?.length ?? 0,
+      memorySprint: job?.memory_sprint_json?.items?.length ?? 0,
+      finalChallenge: job?.final_challenge_json?.questions?.length ?? 0,
+      readingCheckpoints: job?.reading_json?.checkpoints?.length ?? 0,
+      assembledChars: job?.assembled_md?.length ?? 0,
+    };
+  }, [job]);
 
-  const gameCount = job?.games_json?.games?.length ?? 0;
+  const stats: Array<{ label: string; value: number }> = [
+    { label: "flashcards", value: counts.flashcards },
+    { label: "sprint items", value: counts.memorySprint },
+    { label: "games", value: counts.games },
+    { label: "boss questions", value: counts.finalChallenge },
+    { label: "reading checkpoints", value: counts.readingCheckpoints },
+  ].filter((s) => s.value > 0);
 
   return (
     <section className="mt-7 overflow-hidden rounded-(--radius-md) border border-(--color-accent-border) bg-(--color-accent-soft)">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-(--color-accent-border) px-4 py-3">
         <span className="inline-flex items-center gap-2 font-mono text-[0.7rem] font-medium uppercase tracking-[0.16em] text-(--color-accent)">
           <CheckCircle2 className="size-3.5 text-(--color-success)" />
-          Homework ready{gameCount > 0 ? ` · ${gameCount} games` : ""}
+          Homework ready
         </span>
         <div className="flex items-center gap-2">
           <Link
@@ -200,26 +203,30 @@ function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string 
         </div>
       </header>
 
-      {previewMd && (
+      {stats.length > 0 && (
         <div className="bg-(--color-canvas) px-5 py-4">
-          <div className="prose prose-invert prose-sm max-h-80 overflow-auto leading-relaxed text-(--color-ink-soft) [&>*]:my-1 [&_h1]:mt-3 [&_h1]:mb-2 [&_h1]:text-lg [&_h1]:font-semibold [&_h1]:text-(--color-ink) [&_h2]:mt-3 [&_h2]:mb-2 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-(--color-ink) [&_h3]:mt-2 [&_h3]:mb-1 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-(--color-ink) [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_code]:font-mono [&_code]:text-[0.85em]">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
-              {previewMd}
-            </ReactMarkdown>
-          </div>
-          <div className="mt-3 flex items-center justify-between text-xs text-(--color-ink-muted)">
-            <span className="font-mono">
-              showing {Math.min(1200, job?.assembled_md?.length ?? 0).toLocaleString()} of{" "}
-              {(job?.assembled_md?.length ?? 0).toLocaleString()} chars
-            </span>
-            <Link
-              to={`/preview/${jobId}`}
-              className="inline-flex items-center gap-1 text-(--color-accent) hover:underline"
-            >
-              Read all
-              <ArrowRight className="size-3" />
-            </Link>
-          </div>
+          <p className="mb-3 text-xs text-(--color-ink-muted)">
+            Interactive components are rendered in the full preview — open it to flip flashcards,
+            run the sprint, and fight the boss.
+          </p>
+          <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {stats.map((s) => (
+              <div
+                key={s.label}
+                className="rounded-(--radius-sm) border border-(--color-border) bg-(--color-elevated) px-3 py-2"
+              >
+                <dt className="font-mono text-[0.65rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
+                  {s.label}
+                </dt>
+                <dd className="mt-0.5 text-lg font-semibold tabular-nums text-(--color-ink)">
+                  {s.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-3 font-mono text-[0.66rem] text-(--color-ink-muted)">
+            assembled markdown · {counts.assembledChars.toLocaleString()} chars
+          </p>
         </div>
       )}
     </section>

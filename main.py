@@ -1,6 +1,8 @@
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,9 +15,9 @@ from app.config import settings
 from app.db import SessionLocal
 from app.log import configure as configure_logging
 from app.repositories import books as books_repo
-from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.services.prompts import load_all as load_prompts
+from app.services.worker import Worker, build_worker_from_settings
 
 configure_logging()
 
@@ -25,16 +27,15 @@ async def lifespan(app: FastAPI):
     load_prompts()
     log.info("Prompts loaded")
 
+    # Sweep books / phase_outputs that were stuck mid-flight when the API
+    # last died. Jobs themselves are NOT marked failed here — the queue
+    # worker reclaims `running` jobs via its own `reclaim_stuck_jobs`
+    # sweep so they re-run on the next available worker instead of being
+    # silently dropped.
     async with SessionLocal() as session:
         for b in await books_repo.list_running_for_sweep(session):
             await books_repo.set_status(
                 session, b.id, "failed",
-                error_message="orphaned: worker restarted",
-            )
-        for j in await jobs_repo.list_running_for_sweep(session):
-            await jobs_repo.set_status(
-                session, j.id, "failed",
-                completed_at=datetime.now(timezone.utc),
                 error_message="orphaned: worker restarted",
             )
         for p in await phase_repo.list_running_for_sweep(session):
@@ -44,8 +45,39 @@ async def lifespan(app: FastAPI):
                 error_message="orphaned: worker restarted",
             )
         await session.commit()
-    log.info("Orphan sweep complete")
-    yield
+    log.info("Orphan sweep complete (books + phase_outputs)")
+
+    # Embedded worker. Set WORKER_CONCURRENCY=0 to disable (e.g., when
+    # running standalone workers in separate pods).
+    worker: Optional[Worker] = None
+    worker_task: Optional[asyncio.Task] = None
+    if settings.worker_concurrency > 0:
+        worker = build_worker_from_settings()
+        worker_task = asyncio.create_task(worker.run(), name="embedded-worker")
+        log.info(
+            f"Embedded worker started | concurrency={settings.worker_concurrency}"
+        )
+    else:
+        log.info(
+            "Embedded worker disabled (WORKER_CONCURRENCY=0); "
+            "expecting standalone worker(s) elsewhere"
+        )
+
+    try:
+        yield
+    finally:
+        if worker is not None and worker_task is not None:
+            worker.stop()
+            try:
+                await asyncio.wait_for(worker_task, timeout=30.0)
+            except asyncio.TimeoutError:
+                log.warning("Embedded worker did not drain within 30s; forcing")
+                worker_task.cancel()
+                try:
+                    await worker_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            log.info("Embedded worker stopped")
 
 
 app = FastAPI(

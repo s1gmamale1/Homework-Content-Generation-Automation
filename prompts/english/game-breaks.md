@@ -96,4 +96,4 @@ Pick based on content:
 - Language: student-facing English; UZ inside items only as UZ↔EN bridge tile
 - Level-allowed tenses only in model answers
 - No banned games (see list above)
-- Visuals: inline SVG where a visual speeds recognition (tiny stress-dot on a tile, IPA glyph, word-family mini-tree). Under 200×150px. Priority SVG > Mermaid > ASCII.
+- Visuals: inline SVG where a visual speeds recognition (tiny stress-dot on a tile, IPA glyph, word-family mini-tree). Use inline SVG only — inline SVG and ASCII art do not render in our preview, they appear as raw text.

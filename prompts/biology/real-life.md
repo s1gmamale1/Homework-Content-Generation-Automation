@@ -81,13 +81,14 @@ Every sub-question tagged: `[Bloom: LX | PISA: LX]`
 
 ## SVG Diagrams
 
+Diagram styling (background, sizing, stroke contrast, labeling) follows the universal SVG rules injected by the runtime — do not specify width, height, or stroke colors in this prompt.
+
+
 Generate 1-2 inline SVGs where the content involves:
 - Cell structures (mitochondria, chloroplast, nucleus, cell membrane)
 - Organism or organ diagrams (leaf cross-section, digestive tract, heart chambers)
 - Process flows (photosynthesis cycle, Krebs cycle, inheritance diagram)
-- Ecosystem layers or food webs
-
-Keep SVGs under 300×200px. Use clean lines and labels. Match textbook content — no invented anatomy.
+- Ecosystem layers or food webs Use clean lines and labels. Match textbook content — no invented anatomy.
 
 ---
 

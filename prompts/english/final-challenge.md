@@ -100,4 +100,4 @@ Show WHY the correct answer is correct. Route back to the relevant Preview card.
 - Hints cost HP, not free
 - Language: student-facing English
 - "Hali emas!" / "Not yet" — never "Noto'g'ri"
-- Visuals: inline SVG for diagram-reading questions (force diagrams, sentence trees, IPA charts, timelines). Under 300×200px. Priority SVG > Mermaid > ASCII.
+- Visuals: inline SVG for diagram-reading questions (force diagrams, sentence trees, IPA charts, timelines). Use inline SVG only — inline SVG and ASCII art do not render in our preview, they appear as raw text.

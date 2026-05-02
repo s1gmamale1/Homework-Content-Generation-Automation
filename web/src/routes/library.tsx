@@ -1,16 +1,31 @@
-import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, BookOpen, Loader2, Plus } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  ArrowRight,
+  BookOpen,
+  Check,
+  Loader2,
+  Pencil,
+  Plus,
+  Trash2,
+  X,
+} from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Eyebrow } from "@/components/eyebrow";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import type { Book, BookStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function LibraryPage() {
-  const { data: books, isLoading, error } = useQuery({
+  const {
+    data: books,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: ["books"],
     queryFn: () => api.listBooks(),
     refetchInterval: (query) => {
@@ -38,7 +53,7 @@ export function LibraryPage() {
         Uploaded books
       </h1>
       <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-(--color-ink-soft)">
-        Pick a book to open its table of contents.
+        Pick a book to open its table of contents. Hover a row to rename or delete it.
       </p>
 
       {error && (
@@ -83,46 +98,198 @@ export function LibraryPage() {
 }
 
 function BookRow({ book }: { book: Book }) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draftName, setDraftName] = useState(book.original_filename);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const renameMutation = useMutation({
+    mutationFn: (name: string) => api.updateBook(book.id, { original_filename: name }),
+    onSuccess: () => {
+      setEditing(false);
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["books"] });
+    },
+    onError: (err: Error) => setActionError(err.message),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => api.deleteBook(book.id),
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["books"] });
+    },
+    onError: (err: Error) => setActionError(err.message),
+  });
+
   const ready = book.status === "toc_ready";
   const inFlight = ["uploading", "toc_extracting"].includes(book.status);
+  const busy = renameMutation.isPending || deleteMutation.isPending;
+
+  function startEdit(e: React.MouseEvent | React.KeyboardEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setDraftName(book.original_filename);
+    setEditing(true);
+    setActionError(null);
+  }
+
+  function cancelEdit(e: React.MouseEvent | React.KeyboardEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setEditing(false);
+    setActionError(null);
+  }
+
+  function saveEdit(e: React.MouseEvent | React.KeyboardEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const trimmed = draftName.trim();
+    if (!trimmed || trimmed === book.original_filename) {
+      setEditing(false);
+      return;
+    }
+    renameMutation.mutate(trimmed);
+  }
+
+  function confirmDelete(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (
+      !window.confirm(
+        `Delete "${book.original_filename}" and every homework job derived from it?\n\nThis cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    deleteMutation.mutate();
+  }
+
+  // Edit mode renders a form (not a Link) so input clicks don't navigate.
+  if (editing) {
+    return (
+      <div
+        className={cn(
+          "grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-(--radius-md) border bg-(--color-elevated) px-3.5 py-2.5",
+          actionError ? "border-[oklch(0.70_0.16_25_/_50%)]" : "border-(--color-accent)",
+        )}
+      >
+        <span className="grid size-8 place-items-center rounded-(--radius-sm) bg-(--color-canvas) text-(--color-accent)">
+          <Pencil className="size-4" />
+        </span>
+        <Input
+          autoFocus
+          value={draftName}
+          onChange={(e) => setDraftName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") saveEdit(e);
+            if (e.key === "Escape") cancelEdit(e);
+          }}
+          disabled={busy}
+          placeholder="book filename"
+          className="h-8"
+        />
+        <span className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={saveEdit}
+            disabled={busy || !draftName.trim()}
+            title="Save (Enter)"
+            className="grid size-7 place-items-center rounded-(--radius-sm) bg-(--color-accent) text-[oklch(0.18_0.04_55)] transition-colors hover:bg-(--color-accent-deep) disabled:opacity-50"
+          >
+            {renameMutation.isPending ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Check className="size-3.5" />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={cancelEdit}
+            disabled={busy}
+            title="Cancel (Esc)"
+            className="grid size-7 place-items-center rounded-(--radius-sm) border border-(--color-border) bg-(--color-elevated) text-(--color-ink-muted) transition-colors hover:bg-(--color-elevated-hover)"
+          >
+            <X className="size-3.5" />
+          </button>
+        </span>
+        {actionError && (
+          <span className="col-span-3 text-[0.7rem] text-(--color-error)">{actionError}</span>
+        )}
+      </div>
+    );
+  }
 
   return (
-    <Link
-      to={`/book/${book.id}`}
-      className={cn(
-        "group grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-3.5 py-2.5 transition-colors",
-        "hover:bg-(--color-elevated-hover) hover:border-(--color-border-hover)",
-      )}
-    >
-      <span className="grid size-8 place-items-center rounded-(--radius-sm) bg-(--color-canvas) text-(--color-ink-muted)">
-        <BookOpen className="size-4" />
-      </span>
-
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium text-(--color-ink)">
-            {book.original_filename}
-          </span>
-          <span className="hidden font-mono text-[0.6rem] uppercase tracking-[0.14em] text-(--color-ink-muted) sm:inline">
-            · {book.subject}
-          </span>
-        </div>
-        <div className="flex items-center gap-2 font-mono text-[0.66rem] text-(--color-ink-muted)">
-          {book.created_at && <span>{formatRelative(book.created_at)}</span>}
-          {book.file_size_bytes && (
-            <span>· {(book.file_size_bytes / 1024 / 1024).toFixed(1)} MB</span>
-          )}
-        </div>
-      </div>
-
-      <span className="flex items-center gap-2.5">
-        <StatusBadge status={book.status} />
-        {ready && (
-          <ArrowRight className="size-3.5 text-(--color-ink-muted) group-hover:text-(--color-accent)" />
+    <div className="relative">
+      <Link
+        to={`/book/${book.id}`}
+        className={cn(
+          "group grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-3.5 py-2.5 transition-colors",
+          "hover:bg-(--color-elevated-hover) hover:border-(--color-border-hover)",
+          deleteMutation.isPending && "opacity-50 pointer-events-none",
         )}
-        {inFlight && <Loader2 className="size-3.5 animate-spin text-(--color-accent)" />}
+      >
+        <span className="grid size-8 place-items-center rounded-(--radius-sm) bg-(--color-canvas) text-(--color-ink-muted)">
+          <BookOpen className="size-4" />
+        </span>
+
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium text-(--color-ink)">
+              {book.original_filename}
+            </span>
+            <span className="hidden font-mono text-[0.6rem] uppercase tracking-[0.14em] text-(--color-ink-muted) sm:inline">
+              · {book.subject}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 font-mono text-[0.66rem] text-(--color-ink-muted)">
+            {book.created_at && <span>{formatRelative(book.created_at)}</span>}
+            {book.file_size_bytes && (
+              <span>· {(book.file_size_bytes / 1024 / 1024).toFixed(1)} MB</span>
+            )}
+          </div>
+        </div>
+
+        <span className="flex items-center gap-2.5">
+          <StatusBadge status={book.status} />
+          {ready && (
+            <ArrowRight className="size-3.5 text-(--color-ink-muted) group-hover:text-(--color-accent)" />
+          )}
+          {inFlight && <Loader2 className="size-3.5 animate-spin text-(--color-accent)" />}
+        </span>
+      </Link>
+
+      {/* Action buttons floated over the right side; visible on row hover. */}
+      <span className="absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-[.hover]:flex md:flex md:opacity-0 md:transition-opacity md:[&:has(button:focus)]:opacity-100 md:hover:opacity-100">
+        <button
+          type="button"
+          onClick={startEdit}
+          disabled={busy}
+          title="Rename"
+          className="grid size-7 place-items-center rounded-(--radius-sm) border border-(--color-border) bg-(--color-canvas)/95 text-(--color-ink-muted) backdrop-blur transition-colors hover:border-(--color-accent) hover:text-(--color-accent)"
+        >
+          <Pencil className="size-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={confirmDelete}
+          disabled={busy}
+          title="Delete"
+          className="grid size-7 place-items-center rounded-(--radius-sm) border border-(--color-border) bg-(--color-canvas)/95 text-(--color-ink-muted) backdrop-blur transition-colors hover:border-(--color-error) hover:text-(--color-error)"
+        >
+          {deleteMutation.isPending ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="size-3.5" />
+          )}
+        </button>
       </span>
-    </Link>
+
+      {actionError && (
+        <p className="mt-1 text-[0.7rem] text-(--color-error)">{actionError}</p>
+      )}
+    </div>
   );
 }
 

@@ -79,4 +79,4 @@ Format:
 - No bazaar/shopkeeper/farmer clichés in pro-role settings.
 - Checkpoints tagged `[Bloom: LX | PISA: LX]`. Range: L1-L2 main idea, L2-L3 inference/purpose, L3-L4 language analysis, L4-L5 evaluation.
 - Do NOT print a word count label in the output — just meet it.
-- Visuals: inline SVG where it aids comprehension (sentence diagram splitting a load-bearing sentence into subject/verb/object at Checkpoint 2). Under 300×200px. Priority SVG > Mermaid > ASCII.
+- Visuals: inline SVG where it aids comprehension (sentence diagram splitting a load-bearing sentence into subject/verb/object at Checkpoint 2). Use inline SVG only — inline SVG and ASCII art do not render in our preview, they appear as raw text.

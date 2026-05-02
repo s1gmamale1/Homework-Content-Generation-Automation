@@ -38,8 +38,14 @@ export function SectionPage() {
   async function handleGenerate(force: boolean) {
     if (!bookId || !sectionId) return;
     setBusy(force ? "regen" : "new");
+    // Stable per-click idempotency key. If the user double-clicks Generate
+    // (or the network blips and we retry), the server returns the same job
+    // both times instead of creating duplicates. crypto.randomUUID is
+    // available in all modern browsers; the server treats unknown keys as
+    // "first time, create new" anyway, so absence is not a failure mode.
+    const idempotencyKey = crypto.randomUUID();
     try {
-      const job = await api.generate(bookId, sectionId, force);
+      const job = await api.generate(bookId, sectionId, { force, idempotencyKey });
       navigate(`/job/${job.id}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Generate failed";
@@ -172,8 +178,8 @@ function ActionPanel({
         </header>
         <div className="p-5">
           <p className="text-sm leading-relaxed text-(--color-ink-soft)">
-            This section has a finished homework session. Open the preview to read or download
-            it, or regenerate from scratch with a fresh pipeline run.
+            This section has a finished homework session. Open the preview to read or download it,
+            or regenerate from scratch with a fresh pipeline run.
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <Button asChild>
@@ -244,8 +250,8 @@ function ActionPanel({
         Last run failed
       </span>
       <p className="mt-2 text-sm leading-relaxed text-(--color-ink-soft)">
-        The previous generation for this section didn't finish. You can inspect the failed
-        pipeline or kick off a fresh attempt.
+        The previous generation for this section didn't finish. You can inspect the failed pipeline
+        or kick off a fresh attempt.
       </p>
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <Button onClick={onGenerate} disabled={busy !== null}>

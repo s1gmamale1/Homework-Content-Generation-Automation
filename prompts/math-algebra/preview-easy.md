@@ -77,4 +77,4 @@ Roles to choose from: muhandis (engineer), tahlilchi (analyst), me'mor (architec
 - Every panel uses two-layer explanation: formal first, then "Sodda so'zlar bilan:" simplified version.
 - All numerical answers include units.
 - No bazaar/village/shopkeeper/farmer cliches. Modern contexts only.
-- Visuals: Generate actual SVG code inline where diagrams are needed. Priority: SVG > Mermaid > ASCII. Use SVG for: bar models, number lines, coordinate planes, area grids, shapes, graphs. Use Mermaid for: concept maps, flowcharts, decision trees. Keep SVGs under 300×200px, legible on mobile. Place SVG immediately after the text it illustrates.
+- Visuals: Generate actual SVG code inline where diagrams are needed. Use inline SVG only — inline SVG and ASCII art do not render in our preview, they appear as raw text. Use SVG for: bar models, number lines, coordinate planes, area grids, shapes, graphs. Place SVG immediately after the text it illustrates.

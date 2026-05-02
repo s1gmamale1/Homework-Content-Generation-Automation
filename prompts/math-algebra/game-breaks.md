@@ -77,4 +77,4 @@ Pick based on what fits the chapter:
 - No frozen/removed games: no Why Chain, Territory Conquest, Connect Four, Word Ladder, Puzzle Lock, Reaction Chain, Blackjack, Bridge Builder, Minefield Navigator, Escape Room, Codebreaker
 - Current chapter content only
 - Language: Uzbek, "Siz" formal
-- Visuals: If a game item needs a diagram (graph, shape, equation visual), generate inline SVG. Keep simple — under 200×150px.
+- Visuals: If a game item needs a diagram (graph, shape, equation visual), generate inline SVG. Keep simple.

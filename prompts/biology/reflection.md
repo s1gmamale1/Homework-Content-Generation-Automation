@@ -1,6 +1,6 @@
 # Prompt: Reflection — Biology
 
-You are building the Reflection phase for a Biology homework session. Quiet closing — no scoring, no pressure.
+You are building the Reflection phase for a Biology homework session. Quiet closing — no scoring, no pressure — but you MUST produce all four sections in full. "Quiet" describes the tone, not the length.
 
 ## Input
 
@@ -10,7 +10,7 @@ You are building the Reflection phase for a Biology homework session. Quiet clos
 
 ## Output
 
-4 parts, ~2 minutes total.
+**Required: all 4 sections below, totaling 150–250 words.** Do NOT skip sections. Do NOT collapse sections into a single sentence. Each section has its own `##` heading and its own content. A reflection that omits any section is a failed output.
 
 ---
 

@@ -17,7 +17,7 @@ Ordered sections in Uzbek, formal "Siz" throughout. Never "sen":
 
 1. Gate Quote
 2. Panel 1 — Xulosa (Summary)
-3. Panel 2 — Yaxshiroq tushuntirish (Better Explanation) + Mermaid mind map
+3. Panel 2 — Yaxshiroq tushuntirish (Better Explanation) + SVG concept map
 4. Panel 3 — Namunalar / Birlamchi manba (Primary Source)
 5. Memory Palace build (5–10 stations)
 6. Panel 6 — Nega bu muhim (Why This Matters) + BOST learning-goal prompt
@@ -49,7 +49,7 @@ Name the ONE causal framework that the textbook does NOT explicitly name but gov
 - **Qatlam 1:** Name the framework, state it, apply it to 3–5 specific lesson questions (why did X happen? why did Y fail?).
 - **Qatlam 2:** Plain imagery — one vivid concrete metaphor for the framework.
 
-Render the framework as a **Mermaid mind map** inside this panel (`graph TD`, `graph LR`, or `mindmap`). 6–12 nodes max. Nodes in Uzbek.
+Render the framework as a **SVG concept map** inside this panel (<svg> with labeled nodes and arrows). 6–12 nodes max. Nodes in Uzbek.
 
 Both layers mandatory.
 
@@ -112,12 +112,11 @@ Layer 2 NOT required.
 - **History terms:** Uzbek with original in parentheses on first use (`ulus (mulk)`, `xoqon (oliy hukmdor)`). Subsequent uses in Uzbek only.
 - **Textbook fidelity:** every fact from the source lesson. Never invent names, dates, quotes. If a date isn't in the textbook, don't add it.
 - **Two-layer explanation:** mandatory on Panels 1 + 2; optional (skip by default) on Panel 3, 6.
-- **Mind map:** Panel 2 only. Mermaid DSL. Max 12 nodes. Labels in Uzbek. Quote-wrap labels with special chars (`"..."`). **Always close the Mermaid code block with ` ``` ` before writing the next panel — verify the closing backticks exist before emitting.**
-- **Memory Palace:** must be thematic to the lesson's geography/era. Not a generic "your house" palace.
+- **Mind map:** Panel 2 only. inline SVG. Max 12 nodes. Labels in Uzbek. Quote-wrap labels with special chars (`"..."`). - **Memory Palace:** must be thematic to the lesson's geography/era. Not a generic "your house" palace.
 - **No Panel 4.** Never emit an Origin panel for History.
 - **Images:** specify as placeholders, never generate URLs or inline data. Format:
   ```
-  [IMAGE: short description | pedagogical purpose | source_hint: textbook_p.NN / stock / mermaid / generated]
+  [IMAGE: short description | pedagogical purpose | source_hint: textbook_p.NN / stock /  generated]
   ```
 - **Context policy:** No bazaar/village/shopkeeper/farmer clichés. Modern professional tone where non-historical framing is needed.
 - **Pronoun policy:** Uzbek `Siz` (formal) always; never `sen`. Russian variant (if applicable): `Вы`, never `ты`.

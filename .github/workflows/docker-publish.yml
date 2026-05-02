@@ -1,0 +1,120 @@
+name: Build and push Docker image
+
+# Triggers:
+#  - push to main         → publishes `latest` + `main-<sha>` tags
+#  - push tag `v*.*.*`    → publishes the semver tags + `latest` if it's a release
+#  - manual dispatch      → publishes `manual-<sha>` for ad-hoc rebuilds
+#  - PRs (build only, no push) → catches Dockerfile / dep break before merge
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel an in-progress build for the same ref when a newer commit lands.
+# Saves CI minutes; the latest commit is always what we publish.
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Set the Docker Hub repo via repository variable IMAGE_NAME (e.g. `edu/homework`).
+  # Falls back to `<dockerhub-username>/<repo-name>` if the variable isn't set.
+  IMAGE_NAME: ${{ vars.IMAGE_NAME || format('{0}/{1}', secrets.DOCKERHUB_USERNAME, github.event.repository.name) }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for OIDC token if you ever switch from password to keyless;
+      # harmless to grant now.
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # QEMU lets a single x86 runner build arm64 images. Strip this if you
+      # only deploy to amd64 — saves ~3-4 minutes per build.
+      - name: Set up QEMU (multi-arch support)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Skip login on PRs from forks — they don't have access to secrets and
+      # we only need to verify the build, not publish it.
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Generates tags + OCI labels from the trigger:
+      #   push to main         → latest, main, main-<sha>
+      #   push tag v1.2.3      → v1.2.3, 1.2.3, 1.2, 1, latest
+      #   pull_request         → pr-<num>
+      #   workflow_dispatch    → manual-<sha>
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=manual-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' }}
+          labels: |
+            org.opencontainers.image.title=${{ github.event.repository.name }}
+            org.opencontainers.image.description=Edu-Homework — FastAPI + React SPA
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          # PRs build but don't push (no secrets, no need to publish).
+          push: ${{ github.event_name != 'pull_request' }}
+          # arm64 + amd64 covers Apple Silicon dev + most cloud x86 runtimes.
+          # Drop arm64 if your deployment is amd64-only and you want faster builds.
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # GitHub Actions cache backend — turns ~6min cold builds into
+          # ~1-2min warm rebuilds. The cache is keyed by branch + Dockerfile
+          # contents, so unrelated builds don't poison each other.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Provenance + SBOM attestations. `mode=max` includes everything
+          # (dependencies, build steps); set to `mode=min` if you want
+          # smaller manifests.
+          provenance: mode=max
+          sbom: true
+
+      # Echo what we just pushed. Values come from action outputs (not user
+      # input), but we route through env vars per the safer-by-default
+      # workflow-injection guidance.
+      - name: Image digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          echo "Pushed digest: $DIGEST"
+          printf 'Tags:\n%s\n' "$TAGS"

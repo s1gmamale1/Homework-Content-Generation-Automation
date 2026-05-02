@@ -63,7 +63,6 @@ Before shipping, check every item:
 - [ ] All facts from the textbook extraction — no invented names/dates/quotes
 - [ ] Preview Panels 1 and 2 have both Qatlam 1 and Qatlam 2; Panels 3 and 6 single-layer
 - [ ] Memory Palace has 5–10 thematic stations used consistently across Preview, Flash Cards palace tags, and Consolidation walkthrough
-- [ ] **Preview Mermaid code blocks are properly closed** with ` ``` ` before next section
 - [ ] Flash Cards: 3 clusters, Xotira tasviri on every card, no standalone date cards
 - [ ] Sprint: 7 items, ≥2 formats mixed, ≥1 "Aytilmagan" YNNG
 - [ ] Game Breaks: 3 games, 40/40/20 difficulty, Von Restorff anchor on Game 2 **tagged as Hard**, dual-catalog waiver noted inline

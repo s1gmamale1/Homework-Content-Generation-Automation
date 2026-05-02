@@ -8,3 +8,8 @@ __pycache__/
 .pytest_cache/
 dist/
 build/
+
+# Local Claude / IDE config — not part of the project
+statusline-command.sh
+.claude/
+node_modules/

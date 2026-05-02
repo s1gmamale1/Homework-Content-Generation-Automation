@@ -1,5 +1,6 @@
 import { Check, RefreshCcw, Timer, Trophy, X, Zap } from "lucide-react";
 import { useMemo, useState } from "react";
+import { RichText } from "@/components/rich-text";
 import type { MemorySprintPack } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -95,7 +96,9 @@ export function MemorySprint({ pack }: MemorySprintProps) {
         </span>
       </div>
 
-      <p className="text-base font-medium leading-relaxed text-(--color-ink)">{item.prompt}</p>
+      <RichText className="text-base font-medium leading-relaxed text-(--color-ink)">
+        {item.prompt}
+      </RichText>
 
       <div className="flex flex-col gap-2">
         {(item.options ?? []).map((opt, i) => {
@@ -124,9 +127,9 @@ export function MemorySprint({ pack }: MemorySprintProps) {
               )}
             >
               <span className="flex items-center gap-2.5">
-                {reveal && isAnswer && <Check className="size-3.5" />}
-                {reveal && isPicked && !isAnswer && <X className="size-3.5" />}
-                <span>{opt}</span>
+                {reveal && isAnswer && <Check className="size-3.5 shrink-0" />}
+                {reveal && isPicked && !isAnswer && <X className="size-3.5 shrink-0" />}
+                <RichText inline>{opt}</RichText>
               </span>
             </button>
           );
@@ -134,12 +137,12 @@ export function MemorySprint({ pack }: MemorySprintProps) {
       </div>
 
       {answered && item.explanation && (
-        <p className="rounded-(--radius-md) border border-(--color-border) bg-(--color-canvas) px-3 py-2 text-xs leading-relaxed text-(--color-ink-soft)">
+        <div className="rounded-(--radius-md) border border-(--color-border) bg-(--color-canvas) px-3 py-2 text-xs leading-relaxed text-(--color-ink-soft)">
           <span className="font-mono uppercase tracking-[0.14em] text-(--color-ink-muted)">
             {isCorrect ? "Correct" : "Heads up"} ·{" "}
           </span>
-          {item.explanation}
-        </p>
+          <RichText inline>{item.explanation}</RichText>
+        </div>
       )}
 
       {answered && (

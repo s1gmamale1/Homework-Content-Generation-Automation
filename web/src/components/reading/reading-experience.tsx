@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
+import { RichText } from "@/components/rich-text";
 import type { ReadingCheckpoint, ReadingPassage } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -78,8 +79,7 @@ function CheckpointBlock({ checkpoint }: { checkpoint: ReadingCheckpoint }) {
   const actualOpen = openValue.trim().toLowerCase();
 
   const isCorrect =
-    submitted &&
-    (isOpen ? Boolean(expected) && actualOpen === expected : picked === correctIdx);
+    submitted && (isOpen ? Boolean(expected) && actualOpen === expected : picked === correctIdx);
 
   function pickMc(i: number) {
     if (submitted) return;
@@ -97,7 +97,9 @@ function CheckpointBlock({ checkpoint }: { checkpoint: ReadingCheckpoint }) {
       <p className="mb-3 inline-flex items-center gap-1.5 font-mono text-[0.66rem] font-medium uppercase tracking-[0.16em] text-(--color-accent)">
         Checkpoint
       </p>
-      <p className="mb-3 text-sm font-medium text-(--color-ink)">{checkpoint.prompt}</p>
+      <RichText className="mb-3 text-sm font-medium text-(--color-ink)">
+        {checkpoint.prompt}
+      </RichText>
 
       {isOpen ? (
         <div className="flex flex-col gap-2">
@@ -147,9 +149,9 @@ function CheckpointBlock({ checkpoint }: { checkpoint: ReadingCheckpoint }) {
                 )}
               >
                 <span className="inline-flex items-center gap-1.5">
-                  {reveal && isAnswer && <Check className="size-3" />}
-                  {reveal && isPicked && !isAnswer && <X className="size-3" />}
-                  {opt}
+                  {reveal && isAnswer && <Check className="size-3 shrink-0" />}
+                  {reveal && isPicked && !isAnswer && <X className="size-3 shrink-0" />}
+                  <RichText inline>{opt}</RichText>
                 </span>
               </button>
             );
@@ -158,17 +160,26 @@ function CheckpointBlock({ checkpoint }: { checkpoint: ReadingCheckpoint }) {
       )}
 
       {submitted && (checkpoint.explanation || isOpen) && (
-        <p
+        <div
           className={cn(
             "mt-2 rounded-sm px-2 py-1 text-xs leading-relaxed",
             isCorrect ? "text-(--color-success)" : "text-(--color-error)",
           )}
         >
           <span className="font-mono uppercase tracking-[0.14em]">
-            {isCorrect ? "Correct" : isOpen ? `Expected: ${checkpoint.correct_answer ?? "—"}` : "Not quite"}
+            {isCorrect
+              ? "Correct"
+              : isOpen
+                ? `Expected: ${checkpoint.correct_answer ?? "—"}`
+                : "Not quite"}
           </span>
-          {checkpoint.explanation && <span> · {checkpoint.explanation}</span>}
-        </p>
+          {checkpoint.explanation && (
+            <>
+              {" · "}
+              <RichText inline>{checkpoint.explanation}</RichText>
+            </>
+          )}
+        </div>
       )}
     </div>
   );

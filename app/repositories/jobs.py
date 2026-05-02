@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -61,6 +61,34 @@ async def find_active_for_section(
         .limit(1)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def lock_section_for_generate(
+    session: AsyncSession, book_id: UUID, toc_entry_id: UUID
+) -> None:
+    """Serialize generate calls for the same (book, section) using a Postgres
+    transaction-scoped advisory lock. The lock is auto-released on commit /
+    rollback, so a fast follow-up request waits behind the in-flight one and
+    then sees the just-created job via `find_active_for_section`.
+
+    Without this lock, two concurrent POSTs (e.g., a double-click) both
+    observe "no active job" and both insert — producing duplicate jobs that
+    waste Gemini calls and confuse the SSE consumer.
+
+    Uses `pg_advisory_xact_lock(bigint)` with a key derived from blake2b
+    of the (book_id, toc_entry_id) pair so it's stable across requests and
+    collision-resistant across other lock users in the same database.
+    """
+    import hashlib
+
+    digest = hashlib.blake2b(
+        f"generate:{book_id}:{toc_entry_id}".encode(),
+        digest_size=8,
+    ).digest()
+    # Postgres bigint is signed 64-bit. blake2b digest_size=8 → 8 bytes →
+    # int.from_bytes(signed=True) gives a value in [-2^63, 2^63).
+    key = int.from_bytes(digest, "big", signed=True)
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
 
 
 async def set_status(
@@ -163,3 +191,150 @@ async def latest_by_section(
     )
     rows = list((await session.execute(stmt)).scalars().all())
     return {row.toc_entry_id: row for row in rows}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Queue (Postgres-backed work queue using FOR UPDATE SKIP LOCKED)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def claim_next_job(
+    session: AsyncSession, *, worker_id: str, max_attempts: int
+) -> Optional[HomeworkJob]:
+    """Atomically claim the next pending job for this worker.
+
+    Uses `FOR UPDATE SKIP LOCKED` so multiple workers polling concurrently
+    never collide on the same row — Postgres serializes the dispatch.
+    Returns None if no claimable job is available (worker should sleep
+    and retry).
+
+    Eligibility rules:
+      - status == 'pending'
+      - scheduled_at <= NOW() (so delayed retries don't fire early)
+      - attempts < max_attempts (don't reclaim poison-pill jobs forever)
+
+    Order: highest priority first, then oldest scheduled_at first (FIFO
+    within a priority band).
+    """
+    now = datetime.now(timezone.utc)
+    pick_stmt = (
+        select(HomeworkJob.id)
+        .where(HomeworkJob.status == "pending")
+        .where(HomeworkJob.scheduled_at <= now)
+        .where(HomeworkJob.attempts < max_attempts)
+        .order_by(HomeworkJob.priority.desc(), HomeworkJob.scheduled_at.asc())
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+    job_id = (await session.execute(pick_stmt)).scalar_one_or_none()
+    if job_id is None:
+        return None
+
+    await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.id == job_id)
+        .values(
+            status="running",
+            claimed_at=now,
+            claimed_by=worker_id,
+            attempts=HomeworkJob.attempts + 1,
+            last_attempt_at=now,
+            started_at=now,
+            error_message=None,  # clear stale message from prior attempt
+        )
+    )
+    return await session.get(HomeworkJob, job_id)
+
+
+async def reclaim_stuck_jobs(
+    session: AsyncSession, *, stale_after_seconds: int
+) -> int:
+    """Promote `running` jobs whose claim is stale back to `pending`.
+
+    Triggered on worker startup (recovers jobs whose worker died mid-run)
+    and periodically by the running worker (recovers jobs from peer crashes).
+    Returns the number of rows reclaimed.
+
+    Stuck = running and (claimed_at is NULL or claimed_at < now - stale).
+    The `attempts` counter persists, so a poison-pill job runs at most
+    `max_attempts` times before being marked failed terminally.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
+    stmt = (
+        update(HomeworkJob)
+        .where(HomeworkJob.status == "running")
+        .where(
+            (HomeworkJob.claimed_at.is_(None)) | (HomeworkJob.claimed_at < cutoff)
+        )
+        .values(
+            status="pending",
+            claimed_at=None,
+            claimed_by=None,
+            current_phase=None,
+        )
+    )
+    result = await session.execute(stmt)
+    return result.rowcount or 0
+
+
+async def mark_failed_with_retry(
+    session: AsyncSession,
+    job_id: UUID,
+    *,
+    error_message: str,
+    max_attempts: int,
+    backoff_seconds: int = 30,
+) -> str:
+    """Record a failed attempt. Either re-schedules with exponential backoff
+    (status='pending', scheduled_at in the future) or marks terminal failure
+    (status='failed') if attempts exhausted.
+
+    Returns the resulting status ('pending' = will retry, 'failed' = terminal).
+    """
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return "missing"
+
+    if job.attempts >= max_attempts:
+        # Terminal: stay in failed, store the error.
+        await session.execute(
+            update(HomeworkJob)
+            .where(HomeworkJob.id == job_id)
+            .values(
+                status="failed",
+                completed_at=datetime.now(timezone.utc),
+                error_message=error_message,
+                last_error=error_message,
+                claimed_at=None,
+                claimed_by=None,
+            )
+        )
+        return "failed"
+
+    # Retry: bump scheduled_at by exponential backoff (30s, 60s, 120s, ...).
+    delay = backoff_seconds * (2 ** (job.attempts - 1))
+    await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.id == job_id)
+        .values(
+            status="pending",
+            scheduled_at=datetime.now(timezone.utc) + timedelta(seconds=delay),
+            last_error=error_message,
+            current_phase=None,
+            claimed_at=None,
+            claimed_by=None,
+        )
+    )
+    return "pending"
+
+
+async def queue_depth(session: AsyncSession) -> int:
+    """Count of pending jobs eligible to run right now. Used by the
+    `/generate` endpoint to enforce backpressure."""
+    stmt = (
+        select(func.count())
+        .select_from(HomeworkJob)
+        .where(HomeworkJob.status == "pending")
+        .where(HomeworkJob.scheduled_at <= datetime.now(timezone.utc))
+    )
+    return int((await session.execute(stmt)).scalar_one())

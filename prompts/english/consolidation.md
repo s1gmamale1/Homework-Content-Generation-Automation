@@ -94,4 +94,4 @@ Apply SMASHIN' SCOPE: Substitution, Movement, Association, Absurdity, Humour, Im
 - Language: student-facing English. Station labels in English. UZ location name in parentheses.
 - Technique must match content structure — never default to Palace unless content is spatial
 - G5-6: prefer student's own maktab/mahalla; G7-11: prefer national landmarks
-- Visuals: inline SVG per station — simple line drawing of the location with the station image overlaid. Under 300×200px.
+- Visuals: inline SVG per station — simple line drawing of the location with the station image overlaid.

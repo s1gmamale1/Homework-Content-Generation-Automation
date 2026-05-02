@@ -32,9 +32,10 @@ That's it.
 
 ## SVG guidance
 
-Include a simple inline SVG on the back ONLY when a diagram genuinely aids recognition — for example, a cell organelle, a leaf cross-section, or a food chain arrow. Keep SVGs small and clean. Skip SVG when a text description is sufficient.
+Diagram styling (background, sizing, stroke contrast, labeling) follows the universal SVG rules injected by the runtime — do not specify width, height, or stroke colors in this prompt.
 
-SVG size limit: 200×150px.
+
+Include a simple inline SVG on the back ONLY when a diagram genuinely aids recognition — for example, a cell organelle, a leaf cross-section, or a food chain arrow. Keep SVGs small and clean. Skip SVG when a text description is sufficient.
 
 ## Examples
 

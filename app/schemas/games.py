@@ -1,10 +1,14 @@
-"""Structured games schema. Permissive on purpose — different game types
-fit roughly the same shape so Gemini's response_schema is happy and the
-frontend can render generically with type-specific branches."""
+"""Structured games schema. Different game types share roughly the same
+shape so Gemini's response_schema is happy and the frontend can render
+generically with type-specific branches."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
+
+# Locked enum so Gemini's structured-output constrained decoding rejects
+# any other type string (including human display names like "Adaptive Quiz").
+GameType = Literal["adaptive_quiz", "tile_match", "memory_match", "sentence_fill"]
 
 
 class GameQuestion(BaseModel):
@@ -26,7 +30,7 @@ class GameCard(BaseModel):
 
 
 class Game(BaseModel):
-    type: str  # 'adaptive_quiz' | 'tile_match' | 'memory_match' | 'sentence_fill'
+    type: GameType
     title: str
     questions: list[GameQuestion] = []
     pairs: list[GamePair] = []

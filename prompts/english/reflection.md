@@ -11,7 +11,7 @@ You are building the Reflection phase (final phase) for an English homework sess
 
 ## Output
 
-6 parts, ~2 minutes total. Micro-exercise count by CEFR level:
+**Required: all sections below in full, totaling 150–250 words.** Do NOT skip sections. Do NOT collapse sections into a single sentence. Each section has its own `##` heading and its own content. A reflection that omits any section is a failed output. The session takes ~2 minutes to read. Micro-exercise count by CEFR level:
 
 | Level | Micro-exercises |
 |:-:|:-:|
@@ -107,4 +107,4 @@ Never punitive. Never "you failed."
 - Closing line tied to score performance — never generic
 - Summary must reference actual content from this session
 - Use level-allowed tenses in micro-exercise model answers — never a banned tense
-- Visuals: inline SVG only if it aids the micro-exercise (rare — mostly text). Under 200×150px.
+- Visuals: inline SVG only if it aids the micro-exercise (rare — mostly text).

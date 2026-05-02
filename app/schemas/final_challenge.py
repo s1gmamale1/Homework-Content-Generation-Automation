@@ -1,14 +1,18 @@
 """Final Challenge (boss fight) schema. HP-based scoring with damage per
 question and an optional hint ladder that costs HP."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
+
+# Locked enum so Gemini's structured-output rejects display names like
+# "Multiple Choice" — the renderer switches on these snake-case keys.
+BossQuestionKind = Literal["mc", "tf", "ynng", "open"]
 
 
 class BossQuestion(BaseModel):
     prompt: str
-    kind: str  # 'mc' | 'tf' | 'ynng' | 'open'
+    kind: BossQuestionKind
     options: list[str] = []  # MC: 4 options; TF: ["True","False"]; YNNG: 3
     correct_index: Optional[int] = None  # for mc/tf/ynng
     correct_answer: Optional[str] = None  # for 'open' free-text

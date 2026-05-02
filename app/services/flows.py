@@ -2,6 +2,19 @@
 sequences below were committed to code during implementation by reading each
 flow.md once. Update here when prompts/<subject>/flow.md changes."""
 
+import re
+
+# Strip inline SVGs from prior_outputs before passing them to downstream
+# phases. Downstream phases need the *concepts* an upstream taught — they
+# don't need the diagrams (and re-paying for ~800 input tokens of <svg> per
+# dependent is pure waste). Replaced with a placeholder so the model knows
+# a diagram WAS present, just not what it depicted.
+_SVG_BLOCK_RE = re.compile(r"<svg\b[^>]*>.*?</svg>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_svgs(text: str) -> str:
+    return _SVG_BLOCK_RE.sub("[diagram omitted]", text)
+
 SUBJECT_FLOWS: dict[str, dict] = {
     "biology": {
         "has_classify": True,
@@ -95,6 +108,38 @@ PHASE_FILE_NEEDED: dict[str, set[str]] = {
 }
 
 
+# Output-token caps per phase. Two reasons:
+#  1. Direct cost: outputs are billed at ~5x input rate.
+#  2. Downstream amplification: preview-hard's output becomes prior_outputs
+#     input for 4 dependent phases, so trimming 1K output tokens here saves
+#     ~4K input tokens downstream.
+# Numbers picked from observed run sizes plus ~20% headroom. Phases not in
+# the map use the model default (effectively unlimited within the model's
+# response window).
+#
+# IMPORTANT: structured (JSON-schema) phases are NOT capped here. JSON syntax
+# adds 30-50% token overhead over equivalent prose, and the schema already
+# bounds the shape — capping risks mid-object truncation that leaves
+# `response.parsed = None`. Let the schema do the constraining.
+MAX_OUTPUT_TOKENS_BY_PHASE: dict[str, int] = {
+    "preview-hard":    2500,   # observed ~3.0-3.8K → cap to 2.5K
+    "preview-easy":    1800,
+    "preview":         2500,   # history alias
+    "real-life":       2200,   # observed ~2.0K
+    "consolidation":   1200,   # observed ~0.7K
+    "reflection":      700,    # observed ~0.5K
+    # classify has no cap — it's now schema-constrained (ClassifyDecision)
+    # via STRUCTURED_PHASE_SCHEMAS, so the Literal["easy","hard"] enum bounds
+    # the output naturally. Capping risks truncating thinking tokens before
+    # the model emits the JSON enum value.
+}
+
+
+def max_output_tokens_for(phase_name: str) -> int | None:
+    """Look up the per-phase output cap; None means model default."""
+    return MAX_OUTPUT_TOKENS_BY_PHASE.get(phase_name)
+
+
 def file_needed_phases(subject: str) -> set[str]:
     """Phases for `subject` that should attach the original PDF."""
     return PHASE_FILE_NEEDED.get(subject, set())
@@ -120,6 +165,32 @@ def filter_prior_outputs(
         if category in seen_categories:
             continue
         if name in prior_outputs:
-            chosen[name] = prior_outputs[name]
+            chosen[name] = _strip_svgs(prior_outputs[name])
             seen_categories.add(category)
     return chosen
+
+
+def resolve_phase_deps(phase_name: str, content_phases: list[str]) -> set[str]:
+    """For a given content-phase sequence, return the set of phase names that
+    `phase_name` *actually* depends on (alias-resolved against the live flow).
+
+    Used by the DAG-parallel scheduler to know when a phase is ready to launch.
+    Aliases like "preview-hard" / "preview-easy" / "preview" collapse so the
+    scheduler waits on whichever variant is in this flow.
+    """
+    declared = PHASE_DEPS.get(phase_name, [])
+    if not declared:
+        return set()
+
+    in_flow = set(content_phases)
+    by_category: dict[str, list[str]] = {}
+    for d in declared:
+        by_category.setdefault(d.split("-", 1)[0], []).append(d)
+
+    resolved: set[str] = set()
+    for aliases in by_category.values():
+        for a in aliases:
+            if a in in_flow:
+                resolved.add(a)
+                break
+    return resolved

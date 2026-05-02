@@ -56,8 +56,7 @@ All phase outputs are assembled into a single `.md` file — that is the final h
 - Teaching sequence: observation-first (SEE → DO → HOW → WHAT) — never lead with terminology
 - Real-Life: narrative-process format (photosynthesis pattern) — one flowing process story, then 2-3 questions from it. Not a word-problem or scenario-problem format.
 - Consolidation: fires only when ≥2 distinct interlocking concepts taught (e.g., mitosis + meiosis compared, or photosynthesis + respiration as linked cycles). Skip for single-concept lessons.
-- SVG critical: cell diagrams, organism anatomy, process/cycle flows, food chains, classification trees, organ system maps. Priority: SVG > Mermaid > ASCII. Preview panels max 300×200 px; game panels max 200×150 px.
-- Boss HP: G5-8 = 100 HP | G9-11 = 150 HP
+- SVG critical: cell diagrams, organism anatomy, process/cycle flows, food chains, classification trees, organ system maps. Use inline SVG only — inline SVG and ASCII art do not render in our preview, they appear as raw text. - Boss HP: G5-8 = 100 HP | G9-11 = 150 HP
 - No MC in Final Boss for G6+. G5 allows up to 30% MC.
 - All content in Uzbek, "Siz" formal — never "sen"
 - Modern professional contexts only: medical lab, agritech IoT, pharmaceutical research, environmental monitoring, clinical diagnostics — never bazaar/village/shopkeeper

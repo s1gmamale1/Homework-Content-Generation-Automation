@@ -80,4 +80,4 @@ If NO formula in this chapter (purely conceptual):
 - Every panel uses two-layer explanation: formal first, then "Sodda so'zlar bilan:"
 - All numerical answers include units (N, m/s, kg, J, V, A, Ω).
 - No bazaar/village cliches. Modern contexts only.
-- Visuals: Generate actual SVG code inline where diagrams are needed. Priority: SVG > Mermaid > ASCII. Use SVG for: force diagrams, circuit diagrams, motion diagrams, graphs (distance-time, velocity-time), wave diagrams, energy bar charts. Use Mermaid for: concept maps, process flowcharts. Keep SVGs under 300×200px, legible on mobile. Place SVG immediately after the text it illustrates.
+- Visuals: Generate actual SVG code inline where diagrams are needed. Use inline SVG only — inline SVG and ASCII art do not render in our preview, they appear as raw text. Use SVG for: force diagrams, circuit diagrams, motion diagrams, graphs (distance-time, velocity-time), wave diagrams, energy bar charts. Place SVG immediately after the text it illustrates.

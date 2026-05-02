@@ -87,4 +87,4 @@ Every sub-question tagged: `[Bloom: LX | PISA: LX]`
 - Language: Uzbek, "Siz" formal
 - Modern professional context: labs, energy projects, manufacturing, telecom, medical physics
 - NO bazaar/village cliches
-- Visuals: Generate 1-2 inline SVGs per scenario — setup diagram (circuit layout, force diagram, energy flow) and/or data visualization. Keep under 300×200px.
+- Visuals: Generate 1-2 inline SVGs per scenario — setup diagram (circuit layout, force diagram, energy flow) and/or data visualization.

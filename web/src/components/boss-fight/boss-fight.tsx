@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { useState } from "react";
+import { RichText } from "@/components/rich-text";
 import type { BossQuestion, FinalChallenge } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -154,7 +155,9 @@ export function BossFight({ challenge }: BossFightProps) {
             )}
           </div>
 
-          <p className="text-base font-medium leading-relaxed text-(--color-ink)">{q.prompt}</p>
+          <RichText className="text-base font-medium leading-relaxed text-(--color-ink)">
+            {q.prompt}
+          </RichText>
 
           {/* Answer UI by kind */}
           {q.kind === "open" ? (
@@ -185,7 +188,7 @@ export function BossFight({ challenge }: BossFightProps) {
               <span className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
                 {state.result === "correct" ? "Correct" : "Not quite"} ·{" "}
               </span>
-              {q.explanation}
+              <RichText inline>{q.explanation}</RichText>
             </div>
           )}
 
@@ -244,9 +247,9 @@ function McLikeOptions({
             )}
           >
             <span className="flex items-center gap-2.5">
-              {reveal && isAnswer && <Check className="size-3.5" />}
-              {reveal && isPicked && !isAnswer && <X className="size-3.5" />}
-              <span>{opt}</span>
+              {reveal && isAnswer && <Check className="size-3.5 shrink-0" />}
+              {reveal && isPicked && !isAnswer && <X className="size-3.5 shrink-0" />}
+              <RichText inline>{opt}</RichText>
             </span>
           </button>
         );
@@ -335,12 +338,12 @@ function HintLadder({
       </div>
       <div className="flex flex-col gap-1.5">
         {hints.slice(0, used).map((h, i) => (
-          <p
+          <RichText
             key={i}
             className="rounded-sm border-l-2 border-(--color-accent) bg-(--color-accent-soft)/50 px-2 py-1 text-[0.85rem] leading-snug text-(--color-ink-soft)"
           >
             {h}
-          </p>
+          </RichText>
         ))}
       </div>
     </div>

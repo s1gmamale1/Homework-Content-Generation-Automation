@@ -56,7 +56,7 @@ Pick based on chapter type:
   - Organism ↔ classification: "Amyoba" ↔ "Sarcodina tipi"
   - Process ↔ result: "Fotosintez" ↔ "O₂ va glukoza hosil bo'ladi"
   - Cause ↔ effect: "Xlorofill quyosh nurini yutadi" ↔ "Fotosintez boshlanadi"
-- If a structure needs a diagram to be recognizable, include a small inline SVG (under 200×150px)
+- If a structure needs a diagram to be recognizable, include a small inline SVG
 
 ### Memory Match
 - 4×4 grid (8 pairs)
@@ -85,4 +85,4 @@ Pick based on chapter type:
 - No frozen/removed games: no Why Chain, Territory Conquest, Connect Four, Word Ladder, Puzzle Lock, Reaction Chain, Blackjack, Bridge Builder, Minefield Navigator, Escape Room, Codebreaker
 - Current chapter content only
 - Language: Uzbek, "Siz" formal
-- Visuals: If a game item references a structure or organism that students identify visually (cell organelle, leaf cross-section, organism diagram), generate an inline SVG. Keep simple — under 200×150px.
+- Visuals: If a game item references a structure or organism that students identify visually (cell organelle, leaf cross-section, organism diagram), generate an inline SVG. Keep simple.

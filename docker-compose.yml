@@ -1,3 +1,14 @@
+# Single-command local stack: `docker compose up --build`
+#
+# Topology:
+#   postgres  — managed by compose, persistent volume
+#   migrate   — one-shot: runs `alembic upgrade head` then exits
+#   api       — FastAPI + embedded worker (WORKER_CONCURRENCY=4)
+#   worker    — (optional, profile=scaled) standalone worker for horizontal
+#               scaling. Disabled by default; enable with:
+#                 docker compose --profile scaled up
+#               and set WORKER_CONCURRENCY=0 on the api service.
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -9,6 +20,76 @@ services:
       - "5432:5432"
     volumes:
       - edu_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edu -d edu_homework"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    build: .
+    image: edu-homework:latest
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edu:edu@postgres:5432/edu_homework
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-not-needed-for-migration}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    image: edu-homework:latest
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edu:edu@postgres:5432/edu_homework
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env or export it}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      AUTH_TOKEN: ${AUTH_TOKEN:-}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      JOB_TIMEOUT_SECONDS: ${JOB_TIMEOUT_SECONDS:-600}
+      QUEUE_MAX_ATTEMPTS: ${QUEUE_MAX_ATTEMPTS:-3}
+      QUEUE_BACKPRESSURE_LIMIT: ${QUEUE_BACKPRESSURE_LIMIT:-50}
+      GEMINI_MAX_CONCURRENCY: ${GEMINI_MAX_CONCURRENCY:-8}
+      ENABLE_DOCS: ${ENABLE_DOCS:-false}
+      ALLOW_ORIGINS: ${ALLOW_ORIGINS:-*}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # Optional standalone worker for horizontal scaling. Activate with:
+  #   docker compose --profile scaled up
+  # and set WORKER_CONCURRENCY=0 on the api service in your environment.
+  worker:
+    build: .
+    image: edu-homework:latest
+    command: ["python", "-m", "app.services.worker"]
+    profiles: ["scaled"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edu:edu@postgres:5432/edu_homework
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env or export it}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      JOB_TIMEOUT_SECONDS: ${JOB_TIMEOUT_SECONDS:-600}
+      QUEUE_MAX_ATTEMPTS: ${QUEUE_MAX_ATTEMPTS:-3}
+      GEMINI_MAX_CONCURRENCY: ${GEMINI_MAX_CONCURRENCY:-8}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      replicas: 2  # adjust to taste — `--scale worker=N` on CLI also works
 
 volumes:
   edu_pgdata:

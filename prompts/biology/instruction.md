@@ -46,7 +46,7 @@ Never lead with scientific terminology — always anchor it to what is observabl
 **SVG is critical for Biology.** Biological concepts are spatial and visual. Every panel that describes a structure, process, or cycle must include an SVG or a clearly specified visual. SVG priority:
 
 ```
-SVG > Mermaid > ASCII
+SVG only
 ```
 
 SVG use cases:
@@ -58,9 +58,6 @@ SVG use cases:
 - Organ system maps (digestive tract path, circulatory loop, nervous system branches)
 - Comparison diagrams (plant cell vs. animal cell side-by-side)
 
-SVG size constraints:
-- Preview panels: max **300×200 px**
-- Game panels (Tile Match, Memory Match): max **200×150 px**
 - Use `viewBox` attribute so SVGs scale responsively
 
 ## Step 5: Verify
