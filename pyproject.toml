@@ -1,5 +1,5 @@
 [project]
-name = "edu-homework"
+name = "class-homework-builder"
 version = "0.1.0"
 description = "Curriculum-driven homework generation microservice"
 requires-python = ">=3.13"

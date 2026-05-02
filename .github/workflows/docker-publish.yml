@@ -19,11 +19,6 @@ concurrency:
   group: docker-publish-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # Set the Docker Hub repo via repository variable IMAGE_NAME (e.g. `edu/homework`).
-  # Falls back to `<dockerhub-username>/<repo-name>` if the variable isn't set.
-  IMAGE_NAME: ${{ vars.IMAGE_NAME || format('{0}/{1}', secrets.DOCKERHUB_USERNAME, github.event.repository.name) }}
-
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -36,6 +31,27 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Compute the image name once, here, so the rest of the workflow uses
+      # a single canonical value. Docker Hub requires lowercase repo names,
+      # so we always lowercase the default — Edu-Homework -> edu-homework.
+      # Override by setting repository variable IMAGE_NAME if you want a
+      # different path (e.g. `myorg/something-else`).
+      - name: Compute image name
+        id: img
+        env:
+          OVERRIDE: ${{ vars.IMAGE_NAME }}
+          OWNER: ${{ secrets.DOCKERHUB_USERNAME }}
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          if [ -n "$OVERRIDE" ]; then
+            name="$OVERRIDE"
+          else
+            # ${VAR,,} is bash's lowercase parameter expansion.
+            name="${OWNER}/${REPO,,}"
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "Image name: $name"
 
       # QEMU lets a single x86 runner build arm64 images. Strip this if you
       # only deploy to amd64 — saves ~3-4 minutes per build.
@@ -65,7 +81,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ${{ steps.img.outputs.name }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -77,7 +93,7 @@ jobs:
             type=raw,value=manual-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' }}
           labels: |
             org.opencontainers.image.title=${{ github.event.repository.name }}
-            org.opencontainers.image.description=Edu-Homework — FastAPI + React SPA
+            org.opencontainers.image.description=Class Homework Builder — FastAPI + React SPA
             org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

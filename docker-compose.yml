@@ -28,7 +28,7 @@ services:
 
   migrate:
     build: .
-    image: edu-homework:latest
+    image: class-homework-builder:latest
     command: ["alembic", "upgrade", "head"]
     environment:
       DATABASE_URL: postgresql+asyncpg://edu:edu@postgres:5432/edu_homework
@@ -40,7 +40,7 @@ services:
 
   api:
     build: .
-    image: edu-homework:latest
+    image: class-homework-builder:latest
     ports:
       - "8000:8000"
     environment:
@@ -72,7 +72,7 @@ services:
   # and set WORKER_CONCURRENCY=0 on the api service in your environment.
   worker:
     build: .
-    image: edu-homework:latest
+    image: class-homework-builder:latest
     command: ["python", "-m", "app.services.worker"]
     profiles: ["scaled"]
     environment:

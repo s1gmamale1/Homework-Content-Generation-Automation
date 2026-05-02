@@ -81,7 +81,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Edu-Homework",
+    title="Class Homework Builder",
     docs_url="/docs" if settings.enable_docs else None,
     redoc_url=None,
     lifespan=lifespan,

@@ -50,7 +50,7 @@ docker compose up --build
 # All-in-one
 services:
   api:
-    image: edu-homework:latest
+    image: class-homework-builder:latest
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       WORKER_CONCURRENCY: "4"   # embedded worker, 4 concurrent jobs
@@ -66,14 +66,14 @@ This is what `docker compose up` runs by default.
 ```yaml
 services:
   api:                     # N replicas
-    image: edu-homework:latest
+    image: class-homework-builder:latest
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       WORKER_CONCURRENCY: "0"   # disable embedded worker
       # ... other env vars
 
   worker:                  # M replicas (scale independently of API)
-    image: edu-homework:latest
+    image: class-homework-builder:latest
     command: ["python", "-m", "app.services.worker"]
     environment:
       WORKER_CONCURRENCY: "4"
@@ -96,7 +96,7 @@ Every deploy must run `alembic upgrade head` before the API starts. Three option
 ```yaml
 services:
   migrate:
-    image: edu-homework:latest
+    image: class-homework-builder:latest
     command: ["alembic", "upgrade", "head"]
     restart: "no"
   api:
@@ -110,12 +110,12 @@ services:
 spec:
   initContainers:
     - name: migrate
-      image: edu-homework:latest
+      image: class-homework-builder:latest
       command: ["alembic", "upgrade", "head"]
       env: [...]
   containers:
     - name: api
-      image: edu-homework:latest
+      image: class-homework-builder:latest
       command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
@@ -139,7 +139,7 @@ Two secrets + one optional variable on the repo:
 2. **`DOCKERHUB_TOKEN`** (secret): an access token from
    https://hub.docker.com/settings/security — use a **read+write+delete**
    token scoped to a single repo, not your account password.
-3. **`IMAGE_NAME`** (variable, optional): full image path, e.g. `myorg/edu-homework`.
+3. **`IMAGE_NAME`** (variable, optional): full image path, e.g. `myorg/class-homework-builder`.
    If unset, defaults to `<DOCKERHUB_USERNAME>/<repo-name>`.
 
 To add them: GitHub repo → Settings → Secrets and variables → Actions:
@@ -167,9 +167,9 @@ git push origin v0.1.0
 ### Pulling the image into a deploy
 
 ```bash
-docker pull docker.io/myorg/edu-homework:latest
+docker pull docker.io/myorg/class-homework-builder:latest
 # or pin a digest for production:
-docker pull docker.io/myorg/edu-homework@sha256:...
+docker pull docker.io/myorg/class-homework-builder@sha256:...
 ```
 
 The pinned-digest form is the safer pattern in production deploys — it
@@ -195,8 +195,8 @@ prevents "the tag moved under us" surprises.
 
 ```bash
 fly launch --no-deploy --copy-config
-fly postgres create --name edu-homework-db
-fly postgres attach edu-homework-db   # populates DATABASE_URL
+fly postgres create --name class-homework-builder-db
+fly postgres attach class-homework-builder-db   # populates DATABASE_URL
 fly secrets set GEMINI_API_KEY=...  AUTH_TOKEN=...
 fly deploy
 ```

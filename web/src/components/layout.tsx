@@ -45,7 +45,7 @@ export function Layout() {
       </main>
 
       <footer className="border-t border-(--color-border) py-4 text-center font-mono text-[0.64rem] uppercase tracking-[0.16em] text-(--color-ink-muted)">
-        edu-homework · /api/v1
+        class-homework-builder · /api/v1
       </footer>
     </div>
   );

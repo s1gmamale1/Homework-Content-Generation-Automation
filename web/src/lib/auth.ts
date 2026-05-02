@@ -7,8 +7,8 @@
 // so the token doesn't outlive the browser session. Bearer tokens are
 // short-lived secrets — outliving the session is a security regression.
 
-const TOKEN_KEY = "edu-homework-auth-token";
-const AUTH_EVENT = "edu-homework-auth-changed";
+const TOKEN_KEY = "class-homework-builder-auth-token";
+const AUTH_EVENT = "class-homework-builder-auth-changed";
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
