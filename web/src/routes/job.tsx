@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle2, ChevronDown, CircleX, Download, Eye, Loader2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, ChevronDown, CircleX, Download, Eye, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
@@ -30,6 +30,7 @@ export function JobPage() {
   const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [parents, setParents] = useState<{ bookId: string; sectionId: string } | null>(null);
 
   function upsert(name: string, partial: Partial<PhaseUi>) {
     setPhases((prev) => {
@@ -53,6 +54,7 @@ export function JobPage() {
     api
       .getJob(id)
       .then((j) => {
+        setParents({ bookId: j.book_id, sectionId: j.toc_entry_id });
         for (const p of j.phases) {
           upsert(p.phase_name, {
             order: p.phase_order,
@@ -114,7 +116,17 @@ export function JobPage() {
 
   return (
     <>
-      <div className="flex items-center justify-between gap-3">
+      {parents && (
+        <Link
+          to={`/book/${parents.bookId}/section/${parents.sectionId}`}
+          className="inline-flex items-center gap-1.5 font-mono text-[0.7rem] uppercase tracking-[0.14em] text-(--color-ink-muted) transition-colors hover:text-(--color-ink)"
+        >
+          <ArrowLeft className="size-3.5" />
+          Back to section
+        </Link>
+      )}
+
+      <div className="mt-4 flex items-center justify-between gap-3">
         <Eyebrow>Composing</Eyebrow>
         <div className="flex items-center gap-2">
           {difficulty && <Badge variant="accent">difficulty · {difficulty}</Badge>}
@@ -133,13 +145,17 @@ export function JobPage() {
         Each phase reads the lesson and produces one section of the assembled study packet.
       </p>
 
-      <ol className="mt-7 flex flex-col gap-1.5">
-        {visiblePhases.map((phase) => (
-          <li key={phase.name}>
-            <PhaseRow phase={phase} />
-          </li>
-        ))}
-      </ol>
+      {visiblePhases.length === 0 && !error && !downloadUrl ? (
+        <PipelineWarmup />
+      ) : (
+        <ol className="mt-7 flex flex-col gap-1.5">
+          {visiblePhases.map((phase) => (
+            <li key={phase.name}>
+              <PhaseRow phase={phase} />
+            </li>
+          ))}
+        </ol>
+      )}
 
       {downloadUrl && id && <DonePanel jobId={id} downloadUrl={downloadUrl} />}
 
@@ -149,6 +165,39 @@ export function JobPage() {
         </div>
       )}
     </>
+  );
+}
+
+function PipelineWarmup() {
+  // Shown after the user clicks Generate and lands on /job/:id, but before
+  // the first phase_started event arrives over SSE. Without this, the page
+  // looks blank for the few seconds it takes the worker to pick up the job.
+  const placeholders = [0, 1, 2, 3];
+  return (
+    <div className="mt-7">
+      <div className="inline-flex items-center gap-2 font-mono text-[0.7rem] font-medium uppercase tracking-[0.16em] text-(--color-accent)">
+        <Loader2 className="size-3.5 animate-spin" />
+        Warming up the pipeline
+      </div>
+      <p className="mt-2 max-w-[55ch] text-sm leading-relaxed text-(--color-ink-soft)">
+        Queueing the section, classifying difficulty, and reserving a worker. The first phase
+        usually starts within a few seconds.
+      </p>
+      <ol className="mt-5 flex flex-col gap-1.5" aria-hidden>
+        {placeholders.map((i) => (
+          <li
+            key={i}
+            className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-3.5 py-2.5"
+          >
+            <span className="font-mono text-[0.7rem] tabular-nums w-7 text-(--color-ink-muted)">
+              {String(i + 1).padStart(2, "0")}
+            </span>
+            <span className="h-3 rounded-(--radius-sm) bg-(--color-border)/60 animate-pulse" />
+            <Loader2 className="size-3 animate-spin text-(--color-ink-muted)" />
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 

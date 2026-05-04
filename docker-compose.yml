@@ -2,13 +2,13 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: edu
-      POSTGRES_PASSWORD: edu
-      POSTGRES_DB: edu_homework
+      POSTGRES_USER: ${POSTGRES_USER:-edu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edu}
+      POSTGRES_DB: ${POSTGRES_DB:-edu_homework}
     volumes:
       - edu_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U edu -d edu_homework" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-edu} -d ${POSTGRES_DB:-edu_homework}" ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -18,18 +18,11 @@ services:
   api:
     image: ${IMAGE:-ghcr.io/ganiyevuz/class-homework-builder:latest}
     pull_policy: always
+    env_file:
+      - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://edu:edu@postgres:5432/edu_homework
-      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env or export it}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
-      AUTH_TOKEN: ${AUTH_TOKEN:-}
-      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
-      JOB_TIMEOUT_SECONDS: ${JOB_TIMEOUT_SECONDS:-600}
-      QUEUE_MAX_ATTEMPTS: ${QUEUE_MAX_ATTEMPTS:-3}
-      QUEUE_BACKPRESSURE_LIMIT: ${QUEUE_BACKPRESSURE_LIMIT:-50}
-      GEMINI_MAX_CONCURRENCY: ${GEMINI_MAX_CONCURRENCY:-8}
-      ENABLE_DOCS: ${ENABLE_DOCS:-false}
-      ALLOW_ORIGINS: ${ALLOW_ORIGINS:-*}
+      # Constructed from postgres credentials so it stays in sync.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-edu}:${POSTGRES_PASSWORD:-edu}@postgres:5432/${POSTGRES_DB:-edu_homework}
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,11 +37,13 @@ services:
       - local-network
     labels:
       traefik.enable: "true"
-      traefik.http.routers.backend.rule: "Host(`edu-homework.jakhongir.dev`)"
-      traefik.http.routers.backend.entrypoints: "websecure"
-      traefik.http.routers.backend.tls.certresolver: "le"
-      traefik.http.services.backend.loadbalancer.server.port: "8000"
       traefik.docker.network: "shared-network"
+      traefik.http.routers.edu-homework.rule: "Host(`${APP_HOST:-edu-homework.jakhongir.dev}`)"
+      traefik.http.routers.edu-homework.entrypoints: "websecure"
+      traefik.http.routers.edu-homework.tls.certresolver: "le"
+      traefik.http.routers.edu-homework.service: "edu-homework"
+      traefik.http.services.edu-homework.loadbalancer.server.port: "8000"
+      com.centurylinklabs.watchtower.enable: "true"
 
   # Optional standalone worker for horizontal scaling. Activate with:
   #   docker compose --profile scaled up
@@ -58,14 +53,10 @@ services:
     pull_policy: always
     command: [ "python", "-m", "app.services.worker" ]
     profiles: [ "scaled" ]
+    env_file:
+      - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://edu:edu@postgres:5432/edu_homework
-      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env or export it}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
-      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
-      JOB_TIMEOUT_SECONDS: ${JOB_TIMEOUT_SECONDS:-600}
-      QUEUE_MAX_ATTEMPTS: ${QUEUE_MAX_ATTEMPTS:-3}
-      GEMINI_MAX_CONCURRENCY: ${GEMINI_MAX_CONCURRENCY:-8}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-edu}:${POSTGRES_PASSWORD:-edu}@postgres:5432/${POSTGRES_DB:-edu_homework}
       RUN_MIGRATIONS: "0"
     depends_on:
       postgres:
@@ -76,6 +67,25 @@ services:
       replicas: 2  # adjust to taste — `--scale worker=N` on CLI also works
     networks:
       - local-network
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+
+  # Polls GHCR for updated tags on labeled containers and redeploys them.
+  # Reuses the host's docker login (~/.docker/config.json) for private GHCR.
+  watchtower:
+    image: containrrr/watchtower:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/.docker/config.json:/config.json:ro
+    environment:
+      WATCHTOWER_CLEANUP: "true"           # remove old images after update
+      WATCHTOWER_LABEL_ENABLE: "true"       # only update opted-in containers
+      WATCHTOWER_POLL_INTERVAL: "60"        # seconds; bump to 300+ in prod
+      WATCHTOWER_INCLUDE_RESTARTING: "true"
+      # Match the host daemon's API version (check with: docker version --format '{{.Server.APIVersion}}').
+      DOCKER_API_VERSION: "1.53"
+      TZ: ${TZ:-UTC}
 
 volumes:
   edu_pgdata:
