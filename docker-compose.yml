@@ -16,8 +16,8 @@ services:
       - local-network
 
   api:
-    build: .
-    image: class-homework-builder:latest
+    image: ${IMAGE:-ghcr.io/ganiyevuz/class-homework-builder:latest}
+    pull_policy: always
     environment:
       DATABASE_URL: postgresql+asyncpg://edu:edu@postgres:5432/edu_homework
       GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env or export it}
@@ -54,8 +54,8 @@ services:
   #   docker compose --profile scaled up
   # and set WORKER_CONCURRENCY=0 on the api service in your environment.
   worker:
-    build: .
-    image: class-homework-builder:latest
+    image: ${IMAGE:-ghcr.io/ganiyevuz/class-homework-builder:latest}
+    pull_policy: always
     command: [ "python", "-m", "app.services.worker" ]
     profiles: [ "scaled" ]
     environment:
