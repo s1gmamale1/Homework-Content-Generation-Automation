@@ -131,3 +131,9 @@ if WEB_DIST.is_dir():
         if not index_path.is_file():
             return Response(status_code=404)
         return FileResponse(index_path)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host=settings.host, port=settings.port)

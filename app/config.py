@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # upstream service injects the token in the request header; for manual
     # frontend access (paste token into login form), the SPA stores it in
     # sessionStorage and attaches it to every API call.
-    auth_token: str = ""
+    auth_token: str = "123"
 
     # ─── Queue / worker ───────────────────────────────────────────────────
     # 0 = no in-process worker. >0 = embedded worker runs N concurrent jobs

@@ -4,14 +4,14 @@ name: Build and push Docker image
 #  - push to main         → publishes `latest` + `main-<sha>` tags
 #  - push tag `v*.*.*`    → publishes the semver tags + `latest` if it's a release
 #  - manual dispatch      → publishes `manual-<sha>` for ad-hoc rebuilds
-#  - PRs (build only, no push) → catches Dockerfile / dep break before merge
-on:
-  push:
-    branches: [main]
-    tags: ["v*.*.*"]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
+##  - PRs (build only, no push) → catches Dockerfile / dep break before merge
+#on:
+#  push:
+#    branches: [main]
+#    tags: ["v*.*.*"]
+#  pull_request:
+#    branches: [main]
+#  workflow_dispatch:
 
 # Cancel an in-progress build for the same ref when a newer commit lands.
 # Saves CI minutes; the latest commit is always what we publish.
@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Required to push images to GHCR using GITHUB_TOKEN.
+      packages: write
       # Required for OIDC token if you ever switch from password to keyless;
       # harmless to grant now.
       id-token: write
@@ -33,22 +35,22 @@ jobs:
         uses: actions/checkout@v4
 
       # Compute the image name once, here, so the rest of the workflow uses
-      # a single canonical value. Docker Hub requires lowercase repo names,
-      # so we always lowercase the default — Edu-Homework -> edu-homework.
+      # a single canonical value. GHCR requires lowercase repo names, so we
+      # always lowercase the default — Edu-Homework -> edu-homework.
       # Override by setting repository variable IMAGE_NAME if you want a
-      # different path (e.g. `myorg/something-else`).
+      # different path (e.g. `ghcr.io/myorg/something-else`).
       - name: Compute image name
         id: img
         env:
           OVERRIDE: ${{ vars.IMAGE_NAME }}
-          OWNER: ${{ secrets.DOCKERHUB_USERNAME }}
+          OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
         run: |
           if [ -n "$OVERRIDE" ]; then
             name="$OVERRIDE"
           else
             # ${VAR,,} is bash's lowercase parameter expansion.
-            name="${OWNER}/${REPO,,}"
+            name="ghcr.io/${OWNER,,}/${REPO,,}"
           fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "Image name: $name"
@@ -65,12 +67,13 @@ jobs:
 
       # Skip login on PRs from forks — they don't have access to secrets and
       # we only need to verify the build, not publish it.
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Generates tags + OCI labels from the trigger:
       #   push to main         → latest, main, main-<sha>

@@ -1,14 +1,3 @@
-# Single-command local stack: `docker compose up --build`
-#
-# Topology:
-#   postgres  — managed by compose, persistent volume
-#   migrate   — one-shot: runs `alembic upgrade head` then exits
-#   api       — FastAPI + embedded worker (WORKER_CONCURRENCY=4)
-#   worker    — (optional, profile=scaled) standalone worker for horizontal
-#               scaling. Disabled by default; enable with:
-#                 docker compose --profile scaled up
-#               and set WORKER_CONCURRENCY=0 on the api service.
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -16,33 +5,19 @@ services:
       POSTGRES_USER: edu
       POSTGRES_PASSWORD: edu
       POSTGRES_DB: edu_homework
-    ports:
-      - "5432:5432"
     volumes:
       - edu_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U edu -d edu_homework"]
+      test: [ "CMD-SHELL", "pg_isready -U edu -d edu_homework" ]
       interval: 5s
       timeout: 3s
       retries: 10
-
-  migrate:
-    build: .
-    image: class-homework-builder:latest
-    command: ["alembic", "upgrade", "head"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://edu:edu@postgres:5432/edu_homework
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-not-needed-for-migration}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
+    networks:
+      - local-network
 
   api:
     build: .
     image: class-homework-builder:latest
-    ports:
-      - "8000:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://edu:edu@postgres:5432/edu_homework
       GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env or export it}
@@ -58,14 +33,22 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      test: [ "CMD", "curl", "-fsS", "http://localhost:8000/health" ]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
+    networks:
+      - shared-network
+      - local-network
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.backend.rule: "Host(`edu-homework.jakhongir.dev`)"
+      traefik.http.routers.backend.entrypoints: "websecure"
+      traefik.http.routers.backend.tls.certresolver: "le"
+      traefik.http.services.backend.loadbalancer.server.port: "8000"
+      traefik.docker.network: "shared-network"
 
   # Optional standalone worker for horizontal scaling. Activate with:
   #   docker compose --profile scaled up
@@ -73,8 +56,8 @@ services:
   worker:
     build: .
     image: class-homework-builder:latest
-    command: ["python", "-m", "app.services.worker"]
-    profiles: ["scaled"]
+    command: [ "python", "-m", "app.services.worker" ]
+    profiles: [ "scaled" ]
     environment:
       DATABASE_URL: postgresql+asyncpg://edu:edu@postgres:5432/edu_homework
       GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env or export it}
@@ -83,13 +66,22 @@ services:
       JOB_TIMEOUT_SECONDS: ${JOB_TIMEOUT_SECONDS:-600}
       QUEUE_MAX_ATTEMPTS: ${QUEUE_MAX_ATTEMPTS:-3}
       GEMINI_MAX_CONCURRENCY: ${GEMINI_MAX_CONCURRENCY:-8}
+      RUN_MIGRATIONS: "0"
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
+      api:
+        condition: service_healthy
     deploy:
       replicas: 2  # adjust to taste — `--scale worker=N` on CLI also works
+    networks:
+      - local-network
 
 volumes:
   edu_pgdata:
+
+networks:
+  local-network:
+    driver: bridge
+  shared-network:
+    external: true
