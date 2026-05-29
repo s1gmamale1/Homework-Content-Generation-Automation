@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """Test bootstrap.
 
 The app's ``Settings`` class requires ``DATABASE_URL`` and ``GEMINI_API_KEY``
@@ -30,3 +31,11 @@ os.environ.setdefault(
 )
 os.environ.setdefault("GEMINI_API_KEY", "test-key-not-used")
 os.environ.setdefault("AUTH_TOKEN", "")
+
+
+import pytest
+
+
+@pytest.fixture
+def auth_headers() -> dict:
+    return {"Authorization": "Bearer test-token"}
