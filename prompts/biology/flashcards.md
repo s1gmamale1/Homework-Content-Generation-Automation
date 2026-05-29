@@ -17,6 +17,8 @@ Flash Cards are a simple reference tool. Nothing more.
 
 ## Card format
 
+**id:** Stable sequential ID — `"card_1"`, `"card_2"`, ... starting from 1. Never skip or reuse.
+
 **Front:** Term name, structure name, organism name, or process name. Short. Max 10 words.
 
 **Back:** Definition or function. One sentence. Where a diagram or structure helps understanding, add a short visual description in brackets OR include an SVG.

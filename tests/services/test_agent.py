@@ -95,13 +95,30 @@ def test_structured_phase_schemas_keys_present() -> None:
     a new phase doesn't fail this test."""
     expected = {
         "classify",
+        # Phase 3 Learning Sections
+        "case-based-preview",
         "flashcards",
+        "memory-check",
+        # Legacy v1
         "memory-sprint",
         "game-breaks",
         "final-challenge",
         "reading",
     }
     assert expected.issubset(set(STRUCTURED_PHASE_SCHEMAS.keys()))
+
+
+def test_structured_phase_schemas_cbp_is_case_based_preview() -> None:
+    """case-based-preview must map to CaseBasedPreview — DPE enforcement
+    depends on the schema being the Flow v2 one, not a generic dict."""
+    from app.schemas.flow_v2 import CaseBasedPreview
+    assert STRUCTURED_PHASE_SCHEMAS["case-based-preview"] is CaseBasedPreview
+
+
+def test_structured_phase_schemas_memory_check_schema() -> None:
+    """memory-check must map to MemoryCheckPack (not MemorySprintPack)."""
+    from app.schemas.memory_check import MemoryCheckPack
+    assert STRUCTURED_PHASE_SCHEMAS["memory-check"] is MemoryCheckPack
 
 
 def test_structured_phase_schemas_values_are_pydantic_models() -> None:

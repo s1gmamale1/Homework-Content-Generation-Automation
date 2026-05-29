@@ -41,11 +41,13 @@ from app.config import settings
 from app.db import SessionLocal
 from app.repositories import agent_usage as usage_repo
 from app.schemas import (
+    CaseBasedPreview,
     ClassifyDecision,
     ExtractedTOC,
     FinalChallenge,
     FlashcardsPack,
     GamesPack,
+    MemoryCheckPack,
     MemorySprintPack,
     ReadingPassage,
 )
@@ -114,7 +116,11 @@ def _resolve_model(provider: str, model: Optional[str]) -> Optional[str]:
 # from either module during the migration.
 STRUCTURED_PHASE_SCHEMAS: dict[str, type[BaseModel]] = {
     "classify": ClassifyDecision,
+    # ── Learning Sections (Flow v2 Phase 3) ──────────────────────────
+    "case-based-preview": CaseBasedPreview,   # replaces preview-easy/hard when CBP runtime ready
     "flashcards": FlashcardsPack,
+    "memory-check": MemoryCheckPack,          # replaces memory-sprint; items reference flashcard IDs
+    # ── Legacy phases (v1) ──────────────────────────────────────────
     "memory-sprint": MemorySprintPack,
     "game-breaks": GamesPack,
     "final-challenge": FinalChallenge,

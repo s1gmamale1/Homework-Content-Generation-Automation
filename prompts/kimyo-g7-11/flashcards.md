@@ -19,6 +19,8 @@ Kimyo flash cards come in two modes. Both modes are used in every deck — mix t
 
 ---
 
+**id:** Stable sequential ID — `"card_1"`, `"card_2"`, ... starting from 1. Never skip or reuse.
+
 ### Mode A — Name → Three-Scale Description (standard)
 
 **Front:** Substance name, compound name, or reaction type name. Short. Max 10 words.

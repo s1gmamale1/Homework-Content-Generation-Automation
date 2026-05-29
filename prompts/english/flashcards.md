@@ -25,6 +25,8 @@ Split each deck roughly 70% vocabulary / 30% grammar. If the unit yields fewer r
 
 ## Card format
 
+**id:** Stable sequential ID — `"card_1"`, `"card_2"`, ... starting from 1. Never skip or reuse.
+
 **Front:** Target word, phrase, or grammar pattern name. Short. Max 10 words.
 
 **Back:** Definition or formula. One line. Include one quick example from the chapter. Add a UZ bridge if the trap needs it (false friend, stress, or structural mismatch).

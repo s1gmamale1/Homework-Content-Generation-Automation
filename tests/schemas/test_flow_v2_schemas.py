@@ -6,6 +6,12 @@ generation standard: difficulty is metadata (never branch-skipping), the
 Decision Process Explanation is never an MCQ, a Case-Based Preview has
 exactly 3 checkpoints with a required DPE, and the final simulation carries
 both a correct and a wrong path.
+
+Phase 3 additions (Learning Sections):
+- Flashcard.id is required and must be non-empty (stable ID for Memory Check refs)
+- MemoryCheckItem.flashcard_id is required — every item must trace to a card
+- MemoryCheckItem.kind is locked to {"mc", "tf", "tile_match"}
+- MemoryCheckPack.pass_threshold defaults to 0.60
 """
 
 from __future__ import annotations
@@ -13,6 +19,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from app.schemas.flashcards import Flashcard, FlashcardsPack
+from app.schemas.memory_check import MemoryCheckItem, MemoryCheckPack
 from app.schemas.flow_v2 import (
     CaseBasedPreview,
     CaseCheckpoint,
@@ -228,3 +236,110 @@ def test_source_map_requires_at_least_one_concept() -> None:
             section="Sec",
             concepts=[],
         )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Flashcard stable IDs (Phase 3)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_flashcard_requires_id() -> None:
+    """Phase 3: every card must carry a stable id for Memory Check refs."""
+    with pytest.raises(ValidationError):
+        Flashcard(front="Front", back="Back")  # missing id
+
+
+def test_flashcard_id_must_be_nonempty() -> None:
+    with pytest.raises(ValidationError):
+        Flashcard(id="", front="Front", back="Back")
+
+
+def test_flashcard_valid_with_id() -> None:
+    card = Flashcard(id="card_1", front="Fotosintez", back="CO₂ + H₂O → O₂ + shakar")
+    assert card.id == "card_1"
+    assert card.hint is None
+
+
+def test_flashcards_pack_preserves_ids() -> None:
+    pack = FlashcardsPack(cards=[
+        Flashcard(id="card_1", front="A", back="B"),
+        Flashcard(id="card_2", front="C", back="D"),
+    ])
+    assert [c.id for c in pack.cards] == ["card_1", "card_2"]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Memory Check (Phase 3) — 3 supported kinds + flashcard ID refs
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _mc_item(**kwargs) -> dict:
+    base = dict(
+        flashcard_id="card_1",
+        prompt="Fotosintez nima?",
+        kind="mc",
+        options=["A", "B", "C", "D"],
+        correct_index=0,
+    )
+    base.update(kwargs)
+    return base
+
+
+def test_memory_check_item_valid_mc() -> None:
+    item = MemoryCheckItem(**_mc_item())
+    assert item.kind == "mc"
+    assert item.flashcard_id == "card_1"
+
+
+def test_memory_check_item_valid_tf() -> None:
+    item = MemoryCheckItem(**_mc_item(kind="tf", options=["To'g'ri", "Noto'g'ri"], correct_index=0))
+    assert item.kind == "tf"
+
+
+def test_memory_check_item_valid_tile_match() -> None:
+    item = MemoryCheckItem(**_mc_item(kind="tile_match"))
+    assert item.kind == "tile_match"
+
+
+def test_memory_check_item_rejects_unsupported_kind() -> None:
+    """STOP: MC emits unsupported type → ValidationError."""
+    with pytest.raises(ValidationError):
+        MemoryCheckItem(**_mc_item(kind="ynng"))
+
+
+def test_memory_check_item_rejects_empty_flashcard_id() -> None:
+    """Every item must reference a flashcard — empty string is rejected."""
+    with pytest.raises(ValidationError):
+        MemoryCheckItem(**_mc_item(flashcard_id=""))
+
+
+def test_memory_check_item_requires_flashcard_id() -> None:
+    kwargs = _mc_item()
+    del kwargs["flashcard_id"]
+    with pytest.raises(ValidationError):
+        MemoryCheckItem(**kwargs)
+
+
+def test_memory_check_pack_defaults() -> None:
+    pack = MemoryCheckPack(items=[MemoryCheckItem(**_mc_item())])
+    assert pack.pass_threshold == 0.60
+
+
+def test_memory_check_pack_rejects_threshold_above_1() -> None:
+    with pytest.raises(ValidationError):
+        MemoryCheckPack(
+            items=[MemoryCheckItem(**_mc_item())],
+            pass_threshold=1.5,
+        )
+
+
+def test_memory_check_pack_multiple_kinds() -> None:
+    items = [
+        MemoryCheckItem(**_mc_item(flashcard_id="card_1", kind="mc")),
+        MemoryCheckItem(**_mc_item(flashcard_id="card_2", kind="tf",
+                                   options=["To'g'ri", "Noto'g'ri"], correct_index=1)),
+        MemoryCheckItem(**_mc_item(flashcard_id="card_3", kind="tile_match")),
+    ]
+    pack = MemoryCheckPack(items=items)
+    kinds = {it.kind for it in pack.items}
+    assert kinds == {"mc", "tf", "tile_match"}

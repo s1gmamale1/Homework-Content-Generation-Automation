@@ -17,6 +17,7 @@ from app.schemas.flow_v2 import (
 )
 from app.schemas.games import Game, GameCard, GamePair, GameQuestion, GamesPack
 from app.schemas.job import GenerateRequest, JobOut, PhaseOut
+from app.schemas.memory_check import MemoryCheckItem, MemoryCheckPack, MemoryCheckKind
 from app.schemas.memory_sprint import MemorySprintItem, MemorySprintPack
 from app.schemas.reading import ReadingCheckpoint, ReadingPassage
 from app.schemas.toc import ExtractedTOC, TOCEntryExtracted, TOCEntryOut
@@ -40,6 +41,9 @@ __all__ = [
     "FlashcardsPack",
     "BossQuestion",
     "FinalChallenge",
+    "MemoryCheckItem",
+    "MemoryCheckKind",
+    "MemoryCheckPack",
     "MemorySprintItem",
     "MemorySprintPack",
     "ReadingCheckpoint",

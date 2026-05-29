@@ -21,6 +21,8 @@ Geometry flash cards come in two modes. Both modes are used in every deck — mi
 
 ---
 
+**id:** Stable sequential ID — `"card_1"`, `"card_2"`, ... starting from 1. Never skip or reuse.
+
 ### Mode A — Name → Diagram (standard)
 
 **Front:** Term name or theorem name. Short. Max 10 words.

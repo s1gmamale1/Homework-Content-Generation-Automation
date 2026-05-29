@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     agent_limit_gemini_24h: int = 1500
     agent_limit_gemini_7d: int = 10000
 
+    # ─── Flow v2 beta gate ────────────────────────────────────────────────
+    # When False (default), Case-Based Preview is withheld from beta and the
+    # pipeline falls back to the v1 preview-easy/hard phases. Flip to True
+    # only when the CBP runtime (checkpoint player + DPE evaluator) is
+    # deployed and verified against the acceptance card.
+    platform_cbp_runtime_ready: bool = False
+
 
 settings = Settings()
 
