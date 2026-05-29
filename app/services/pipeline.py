@@ -563,7 +563,10 @@ async def _execute_phase(
     difficulty: Optional[str],
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     if phase_name == "extract":
-        prompt_hash = "builtin:extract:v1"
+        # v2: extract now reads section pages locally (pypdf) instead of
+        # attaching the whole PDF — bump invalidates the poisoned v1 cache
+        # (which stored the CLI's "PDF too large to read" refusal as context).
+        prompt_hash = "builtin:extract:v2"
     else:
         prompt_hash = get_prompt_hash(subject, phase_name)
 
