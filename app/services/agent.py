@@ -131,6 +131,12 @@ STRUCTURED_PHASE_SCHEMAS: dict[str, type[BaseModel]] = {
 _TOC_TEXT_MAX_PAGES = 40
 _TOC_TEXT_MAX_CHARS = 60_000
 
+# Per-section lesson extraction reads the relevant pages' text locally instead
+# of attaching the whole PDF. Provider CLIs can refuse large files before the
+# model sees the content, which poisons downstream homework phases.
+_SECTION_TEXT_MAX_CHARS = 45_000
+_SECTION_PAGE_PAD = 4
+
 
 # Universal "no preamble" directive (lifted verbatim from gemini.py:274–285).
 _NO_PREAMBLE = (
@@ -616,8 +622,10 @@ async def run_phase(
     last_stderr = ""
     last_usage: dict[str, Any] = {}
 
-    # Two attempts iff schema is set, otherwise one.
-    max_attempts = 2 if schema is not None else 1
+    # Always allow one retry. Structured phases retry on schema-validation
+    # failure; markdown phases retry on empty output, which Gemini CLI can
+    # return with rc=0 after INVALID_STREAM / malformed tool-call failures.
+    max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         started_at = datetime.now(timezone.utc)
         t0 = perf_counter()
@@ -685,6 +693,41 @@ async def run_phase(
             )
 
         if schema is None:
+            if not text.strip():
+                gem_err = ""
+                try:
+                    gem_err = str((usage.get("raw") or {}).get("error") or "")
+                except Exception:  # noqa: BLE001
+                    gem_err = ""
+                await _record_usage(
+                    operation="phase.run",
+                    provider=provider,
+                    model_name=resolved_model,
+                    usage=usage,
+                    duration_s=duration_s,
+                    started_at=started_at,
+                    success=False,
+                    homework_job_id=homework_job_id,
+                    phase_output_id=phase_output_id,
+                    error_message=(f"empty output (provider returned no text); {gem_err}")[:500],
+                    extra_envelope={"phase_name": phase_name, "attempt": attempt},
+                )
+                logger.warning(
+                    f"agent.phase EMPTY output | provider={provider} phase={phase_name} "
+                    f"attempt={attempt} gem_err={gem_err[:160]!r}"
+                )
+                if attempt < max_attempts:
+                    attempt_prompt = (
+                        base_prompt
+                        + "\n\nYour previous response was EMPTY. Do NOT call any "
+                        "tools or functions. Respond directly and immediately with "
+                        "the full deliverable as plain Markdown text."
+                    )
+                    continue
+                raise RuntimeError(
+                    f"phase.run {phase_name}: empty output after {max_attempts} "
+                    f"attempts :: {gem_err or _failure_preview(stderr, text)}"
+                )
             # Markdown-output phase. Record success, return.
             await _record_usage(
                 operation="phase.run",
@@ -969,6 +1012,68 @@ def _extract_toc_source_text(pdf_path: Path) -> tuple[str, dict[str, Any]]:
     return text, meta
 
 
+def _extract_section_text(
+    pdf_path: Path, page_start: Optional[int], page_end: Optional[int]
+) -> tuple[str, dict[str, Any]]:
+    """Extract a bounded section page window locally via pypdf.
+
+    This mirrors TOC text extraction but targets the section's page range. It
+    avoids handing a full textbook PDF to provider CLIs, where large files can
+    be refused before the model sees any lesson content. Empty text tells the
+    caller to fall back to the legacy PDF attachment path.
+    """
+    meta: dict[str, Any] = {
+        "source": "pdf_section_text",
+        "page_start": page_start,
+        "page_end": page_end,
+        "max_chars": _SECTION_TEXT_MAX_CHARS,
+        "page_pad": _SECTION_PAGE_PAD,
+    }
+    try:
+        from pypdf import PdfReader
+    except Exception as exc:  # noqa: BLE001
+        meta["error"] = f"pypdf unavailable: {exc}"
+        return "", meta
+
+    try:
+        reader = PdfReader(str(pdf_path))
+        total_pages = len(reader.pages)
+        meta["total_pages"] = total_pages
+        start = page_start if isinstance(page_start, int) and page_start > 0 else 1
+        end = page_end if isinstance(page_end, int) and page_end >= start else start
+        lo = max(1, start - _SECTION_PAGE_PAD)
+        hi = min(total_pages, end + _SECTION_PAGE_PAD)
+        chunks: list[str] = []
+        chars = 0
+        for idx in range(lo, hi + 1):
+            try:
+                page_text = (reader.pages[idx - 1].extract_text() or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    f"section text extraction skipped page {idx} of {pdf_path.name}: {exc!r}"
+                )
+                continue
+            if not page_text:
+                continue
+            chunk = f"\n\n--- PDF page {idx} ---\n{page_text}"
+            remaining = _SECTION_TEXT_MAX_CHARS - chars
+            if remaining <= 0:
+                break
+            if len(chunk) > remaining:
+                chunk = chunk[:remaining]
+            chunks.append(chunk)
+            chars += len(chunk)
+            if chars >= _SECTION_TEXT_MAX_CHARS:
+                break
+        meta["pages_range"] = [lo, hi]
+        meta["chars"] = chars
+    except Exception as exc:  # noqa: BLE001
+        meta["error"] = str(exc)
+        return "", meta
+
+    return "".join(chunks).strip(), meta
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Public API: TOC extraction
 # ─────────────────────────────────────────────────────────────────────
@@ -1209,18 +1314,50 @@ async def extract_lesson_context(
         rules=_NO_PREAMBLE,
     )
 
-    # No schema — markdown deliverable. Prior outputs / lesson_context are
-    # not meaningful here (this phase IS the lesson_context source).
-    prompt = _build_master_prompt(
-        phase_prompt=instruction,
-        phase_name="lesson.extract",
-        lesson_context=None,
-        prior_outputs=None,
-        difficulty=None,
-        schema=None,
-        provider_suffix=prov.prompt_suffix(None),
-        attachment_preamble=prov.format_attachments([pdf_path]),
-    )
+    # No schema — markdown deliverable. This phase creates lesson_context.
+    # Prefer local section text over attaching the entire PDF, because provider
+    # CLIs may refuse large files before the model sees any useful content.
+    section_text, section_meta = _extract_section_text(pdf_path, page_start, page_end)
+    if section_text:
+        logger.info(
+            f"agent.lesson.extract source text | section={section_number} "
+            f"pages={section_meta.get('pages_range')} chars={section_meta.get('chars')}"
+        )
+        lesson_src = (
+            "Locally extracted text from the section's PDF pages follows. Use "
+            "ONLY this text to extract the lesson content. The headings "
+            "`--- PDF page N ---` are physical PDF page markers, not textbook "
+            f"page numbers. Focus on the lesson titled \"{section_title}\".\n\n"
+            f"{section_text}"
+        )
+        prompt = _build_master_prompt(
+            phase_prompt=instruction,
+            phase_name="lesson.extract",
+            lesson_context=lesson_src,
+            prior_outputs=None,
+            difficulty=None,
+            schema=None,
+            provider_suffix=prov.prompt_suffix(None),
+            attachment_preamble="",
+        )
+        extract_attachments: list[Path] = []
+    else:
+        logger.warning(
+            f"agent.lesson.extract local text unavailable | section={section_number} "
+            f"reason={section_meta.get('error') or 'no text'}; attaching PDF "
+            f"(may exceed provider CLI file limits)"
+        )
+        prompt = _build_master_prompt(
+            phase_prompt=instruction,
+            phase_name="lesson.extract",
+            lesson_context=None,
+            prior_outputs=None,
+            difficulty=None,
+            schema=None,
+            provider_suffix=prov.prompt_suffix(None),
+            attachment_preamble=prov.format_attachments([pdf_path]),
+        )
+        extract_attachments = [pdf_path]
 
     started_at = datetime.now(timezone.utc)
     t0 = perf_counter()
@@ -1240,7 +1377,7 @@ async def extract_lesson_context(
             provider=prov,
             model=resolved_model,
             prompt=prompt,
-            attachments=[pdf_path],
+            attachments=extract_attachments,
         )
     except Exception as exc:
         spawn_failed = exc

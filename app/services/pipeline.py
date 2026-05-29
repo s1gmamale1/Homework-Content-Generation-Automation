@@ -639,7 +639,9 @@ async def _execute_phase(
     difficulty: Optional[str],
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     if phase_name == "extract":
-        prompt_hash = "builtin:extract:v1"
+        # v2 reads section pages locally instead of attaching the whole PDF.
+        # Bump the cache key so any poisoned v1 extract cache is discarded.
+        prompt_hash = "builtin:extract:v2"
     else:
         prompt_hash = get_prompt_hash(subject, phase_name)
 
