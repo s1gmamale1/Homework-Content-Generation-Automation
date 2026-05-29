@@ -17,6 +17,44 @@ Format per entry:
 
 ---
 
+## 2026-05-29 23:55 — alphaq — Triage: main-based RLC reverse-test vs alphaq canonical slice
+
+**Why:** A separate effort authored the Phase-4 deliverable "RLC reverse-test
+(infer the unnamed formula) per the RLC spec" on top of the stale `main` branch
+(committed as `feat/rlc-reverse-test` @ 655c47b). On review, `alphaq` already
+contains a richer, platform-aligned RLC slice, so the main-based code is
+superseded. This entry records what was done and why none of that code lands on
+`alphaq`.
+
+**What the superseded main-based work contained (feat/rlc-reverse-test @ 655c47b):**
+- app/schemas/real_life.py — a *different-shape* RealLifeChallenge
+  (role/task/context/prediction/decisions[]/answer_key) + Strip-Test helpers
+  (student_visible_text, unnamed_formula_violations, conformance_errors).
+- prompts/{physics,math-algebra,geometriya-g7-11,kimyo-g7-11}/real-life.md —
+  rewritten to a reverse-test contract (governing formula kept unnamed in every
+  student-visible field; >=1 reverse-inference decision; real-misconception
+  distractors; grade-band decision counts; mandatory red herring G7+).
+- gemini.py (SDK-era) STRUCTURED_PHASE_SCHEMAS registration, flows.py token-cap
+  removal, pipeline.py render branch, and unit tests.
+
+**Why none of it is merged into alphaq (conflicts, all resolved toward alphaq):**
+- Schema — alphaq's RealLifeChallenge is the canonical 5-step model
+  (RLCDecisionStep/RLCConceptSelectStep/RLCReasoningStep, platform-mirrored) with
+  a `variant` enum that already includes `reverse_test_same_story_new_numbers`.
+  The main-based shape is incompatible. KEEP alphaq's.
+- Provider layer — alphaq replaced the Gemini SDK with the CLI router
+  (app/services/agent.py owns STRUCTURED_PHASE_SCHEMAS), so the main-based
+  gemini.py edits target a file that no longer exists in that form. DROP.
+- Prompts — main-based prompts emit the main-based shape, not alphaq's 5-step
+  JSON; they cannot be layered as-is. Captured as a WISHLIST follow-up instead.
+
+**What landed on alphaq this entry:** changelog/SUMMARY.json + this DETAILS.md
+entry + one WISHLIST Open item (non-English RLC prompts still legacy). No code.
+
+**Notes:** feat/rlc-reverse-test is being deleted per request; commit 655c47b
+remains recoverable via reflog if the reverse-test prompt text is wanted as raw
+material when authoring the 4 remaining subjects against alphaq's 5-step schema.
+
 ## 2026-05-29 — alphaq — Code-review fixes (game conformance)
 
 **Why:** Independent review of the games deliverable flagged 5 minor issues.

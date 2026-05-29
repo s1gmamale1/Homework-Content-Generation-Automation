@@ -13,6 +13,7 @@ Status key: `[ ]` open · `[~]` in progress · `[x]` fixed
 - [ ] 2026-05-29 — Job page warmup loader hangs on slow network — repro: throttle to 3G, submit a job. Priority: med
 -->
 
+- [ ] 2026-05-29 — RLC per-subject prompts incomplete: only prompts/english/real-life.md was rewritten to the canonical 5-step platform JSON. prompts/{physics,math-algebra,geometriya-g7-11,kimyo-g7-11}/real-life.md are still legacy Bloom/word-problem prose and will NOT satisfy the canonical RealLifeChallenge schema / beta export. Author all four against alphaq's 5-step contract (incl. the reverse_test_same_story_new_numbers variant — "infer the unnamed formula"). Raw material exists on feat/rlc-reverse-test @ 655c47b (reflog) but is a different schema shape — re-author, don't copy. Priority: high
 - [ ] 2026-05-29 — app/schemas/platform/real_life_challenge.py is a HAND-MIRROR of the platform RealLifeChallengeCase, not the real schema. Must sync from s1gmamale1/Homeworks when available — divergence would let an invalid beta export pass our contract test. Priority: high
 - [ ] 2026-05-29 — Migrations 0010 + 0011 not applied/tested against a live Postgres (no DB here). Verify `alembic upgrade head` and downgrade. Priority: med
 - [ ] 2026-05-29 — DEFERRED next step (not a bug): the 6 Practice Arc games have schemas + conformance validators + tests, but NO generation yet — no per-game prompts, no structured Gemini wiring, no DB persistence columns, no pipeline fan-out. game_conformance.validate_game is ready to gate that generation when built. Priority: high (next deliverable)
