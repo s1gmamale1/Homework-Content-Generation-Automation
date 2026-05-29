@@ -15,12 +15,32 @@ _SVG_BLOCK_RE = re.compile(r"<svg\b[^>]*>.*?</svg>", re.DOTALL | re.IGNORECASE)
 def _strip_svgs(text: str) -> str:
     return _SVG_BLOCK_RE.sub("[diagram omitted]", text)
 
+# Flow v2 Practice Arc (PR-3). The single generic ``game-breaks`` plus the
+# standalone ``real-life`` and ``consolidation`` phases are replaced by typed,
+# source-traced conceptual games drawn from docs/Infra_prompts/Gamified
+# Practices. Each subject runs a curated 2-3 game arc (its target-skill fit) —
+# NOT all six (New_Flow forbids "random disconnected games" / "tasks that do
+# not match target skill"). The arc sits between the learning sections and the
+# Boss Arena. ``reflection`` is kept (New_Flow.md keeps Debrief/Marking).
+#
+# Game phase names and the schema each uses (agent.STRUCTURED_PHASE_SCHEMAS):
+#   practice-rlc             -> RealLifeChallenge (standalone; absorbs real-life)
+#   practice-error-detection -> ErrorDetection    (standalone)
+#   practice-memory-match    -> CbpModeGame (interaction_mode=memory_match)
+#   practice-tictactoe       -> CbpModeGame (interaction_mode=tictactoe)
+#   practice-jigsaw          -> CbpModeGame (interaction_mode=jigsaw)
+#   practice-sentence        -> CbpModeGame (interaction_mode=sentence_fill)
+#
+# Easy mode keeps the lighter "one strong conceptual practice (no Boss)" shape
+# the prior flow used; hard mode runs the full arc into a Boss Arena.
 SUBJECT_FLOWS: dict[str, dict] = {
     "biology": {
         "has_classify": True,
-        "easy": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
-        "hard": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
-                 "real-life", "consolidation", "boss-arena", "reflection"],
+        "easy": ["case-based-preview", "flashcards", "memory-check",
+                 "practice-rlc", "reflection"],
+        "hard": ["case-based-preview", "flashcards", "memory-check",
+                 "practice-rlc", "practice-error-detection", "practice-memory-match",
+                 "boss-arena", "reflection"],
     },
     "english": {
         # English is always Hard mode per flow.md — there is no Easy pipeline.
@@ -30,43 +50,49 @@ SUBJECT_FLOWS: dict[str, dict] = {
         # rather than via classify branching.
         "has_classify": False,
         "easy": [],
-        "hard": ["case-based-preview", "flashcards", "memory-check", "reading", "game-breaks",
-                 "real-life", "consolidation", "boss-arena", "reflection"],
+        "hard": ["case-based-preview", "flashcards", "memory-check", "reading",
+                 "practice-sentence", "practice-error-detection", "practice-memory-match",
+                 "boss-arena", "reflection"],
     },
     "geometriya-g7-11": {
         "has_classify": True,
-        "easy": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
-        "hard": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
-                 "real-life", "consolidation", "boss-arena", "reflection"],
+        "easy": ["case-based-preview", "flashcards", "memory-check",
+                 "practice-error-detection", "reflection"],
+        "hard": ["case-based-preview", "flashcards", "memory-check",
+                 "practice-error-detection", "practice-jigsaw", "practice-tictactoe",
+                 "boss-arena", "reflection"],
     },
     "history": {
         # History is always Hard mode — no Easy pipeline.
-        # Canonical structure: case-based-preview, flashcards, memory-check,
-        # game-breaks, boss-arena, reflection + consolidation as a conditional
-        # 7th. Per v0 design we run consolidation unconditionally and rely on the
-        # prompt to self-emit a skip marker when not applicable.
         "has_classify": False,
         "easy": [],
-        "hard": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
-                 "consolidation", "boss-arena", "reflection"],
+        "hard": ["case-based-preview", "flashcards", "memory-check",
+                 "practice-rlc", "practice-jigsaw", "practice-memory-match",
+                 "boss-arena", "reflection"],
     },
     "kimyo-g7-11": {
         "has_classify": True,
-        "easy": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
-        "hard": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
-                 "real-life", "consolidation", "boss-arena", "reflection"],
+        "easy": ["case-based-preview", "flashcards", "memory-check",
+                 "practice-rlc", "reflection"],
+        "hard": ["case-based-preview", "flashcards", "memory-check",
+                 "practice-rlc", "practice-error-detection", "practice-tictactoe",
+                 "boss-arena", "reflection"],
     },
     "math-algebra": {
         "has_classify": True,
-        "easy": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
-        "hard": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
-                 "real-life", "consolidation", "boss-arena", "reflection"],
+        "easy": ["case-based-preview", "flashcards", "memory-check",
+                 "practice-error-detection", "reflection"],
+        "hard": ["case-based-preview", "flashcards", "memory-check",
+                 "practice-error-detection", "practice-tictactoe", "practice-jigsaw",
+                 "boss-arena", "reflection"],
     },
     "physics": {
         "has_classify": True,
-        "easy": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
-        "hard": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
-                 "real-life", "consolidation", "boss-arena", "reflection"],
+        "easy": ["case-based-preview", "flashcards", "memory-check",
+                 "practice-rlc", "reflection"],
+        "hard": ["case-based-preview", "flashcards", "memory-check",
+                 "practice-rlc", "practice-error-detection", "practice-tictactoe",
+                 "boss-arena", "reflection"],
     },
 }
 
@@ -88,9 +114,16 @@ SUPPORTED_SUBJECTS: list[str] = sorted(SUBJECT_FLOWS.keys())
 PHASE_DEPS: dict[str, list[str]] = {
     "reading":         ["case-based-preview"],                                 # english only
     "memory-check":    ["flashcards"],
-    "game-breaks":     ["flashcards", "memory-check"],
-    "real-life":       ["case-based-preview"],
-    "consolidation":   ["case-based-preview", "flashcards"],
+    # Practice Arc games (PR-3). Each requires the learning sections done first
+    # — the concept must have appeared upstream before a game tests applying or
+    # debugging it (Error Detection in particular needs a correct-form
+    # reference earlier in the session).
+    "practice-rlc":              ["case-based-preview", "flashcards"],
+    "practice-error-detection":  ["case-based-preview", "flashcards", "memory-check"],
+    "practice-memory-match":     ["flashcards", "memory-check"],
+    "practice-tictactoe":        ["case-based-preview", "flashcards"],
+    "practice-jigsaw":           ["case-based-preview", "flashcards"],
+    "practice-sentence":         ["case-based-preview", "flashcards"],
     "boss-arena":      ["case-based-preview", "flashcards", "memory-check"],
     "reflection":      ["case-based-preview", "boss-arena"],
 }

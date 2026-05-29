@@ -19,6 +19,15 @@ from app.schemas.games import Game, GameCard, GamePair, GameQuestion, GamesPack
 from app.schemas.job import GenerateRequest, JobOut, PhaseOut
 from app.schemas.memory_check import MemoryCheckItem, MemoryCheckKind, MemoryCheckPack
 from app.schemas.memory_sprint import MemorySprintItem, MemorySprintPack
+from app.schemas.practice_games import (
+    CbpModeGame,
+    ErrorBlock,
+    ErrorDetection,
+    ErrorPattern,
+    PracticeInteractionMode,
+    RealLifeChallenge,
+    RlcDecision,
+)
 from app.schemas.reading import ReadingCheckpoint, ReadingPassage
 from app.schemas.toc import ExtractedTOC, TOCEntryExtracted, TOCEntryOut
 
@@ -61,4 +70,12 @@ __all__ = [
     "CaseBasedPreview",
     "SourceConcept",
     "SourceMap",
+    # Flow v2 Practice Arc games (PR-3)
+    "RealLifeChallenge",
+    "RlcDecision",
+    "ErrorDetection",
+    "ErrorBlock",
+    "ErrorPattern",
+    "CbpModeGame",
+    "PracticeInteractionMode",
 ]

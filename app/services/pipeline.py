@@ -174,6 +174,64 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
                 out.append(f"  _{cp.explanation}_")
         return "\n".join(out)
 
+    if phase_name == "practice-rlc":
+        decisions = getattr(parsed, "decisions", None) or []
+        concepts = ", ".join(getattr(parsed, "concept_ids", None) or [])
+        out = [
+            f"## Real-Life Challenge — _{parsed.role}_",
+            f"**Task:** {parsed.task}\n",
+            f"{parsed.context}\n",
+            f"**Prediction:** {parsed.prediction_prompt}\n",
+        ]
+        for i, d in enumerate(decisions, 1):
+            out.append(f"**Decision {i}:** {d.question}")
+            for j, opt in enumerate(d.options):
+                marker = "✓" if j == d.correct_option else " "
+                out.append(f"   - [{marker}] {opt}")
+        out.append(f"\n**Final summary:** {parsed.final_summary}")
+        if concepts:
+            out.append(f"_concepts: {concepts}_")
+        return "\n".join(out)
+
+    if phase_name == "practice-error-detection":
+        blocks = getattr(parsed, "blocks", None) or []
+        concepts = ", ".join(getattr(parsed, "concept_ids", None) or [])
+        out = [
+            f"## Error Detection _({parsed.pattern})_",
+            "_Find the one broken block, then type the correction._\n",
+        ]
+        for b in blocks:
+            tag = " ← broken" if b.is_error else ""
+            out.append(f"- `{b.content}`{tag}")
+        out.append(f"\n**Correct version:** {parsed.correct_answer_for_error_block}")
+        if parsed.hint:
+            out.append(f"**Hint:** {parsed.hint}")
+        if parsed.why_prompt:
+            out.append(f"**Why:** {parsed.why_prompt}")
+        if concepts:
+            out.append(f"_concepts: {concepts}_")
+        return "\n".join(out)
+
+    if phase_name in _CBP_MODE_PHASES:
+        mode = getattr(parsed, "interaction_mode", "") or ""
+        title = getattr(parsed, "title", None) or "Practice Game"
+        role = getattr(parsed, "student_role", "") or ""
+        cps = getattr(parsed, "checkpoints", None) or []
+        dpe = getattr(parsed, "decision_process_explanation", None)
+        sim = getattr(parsed, "final_simulation", None)
+        out = [
+            f"## {title} _(CBP mode: {mode})_",
+            f"_Student role: {role}. {len(cps)} checkpoints + DPE._\n",
+        ]
+        for i, cp in enumerate(cps, 1):
+            out.append(f"**Checkpoint {i}** [{cp.intent}] {cp.question}")
+        if dpe:
+            out.append(f"\n**Decision Process Explanation:** {dpe.prompt}")
+        if sim:
+            out.append(f"\n**Correct path:** {sim.correct_path}")
+            out.append(f"**Wrong path:** {sim.wrong_path}")
+        return "\n".join(out)
+
     return ""
 
 
@@ -186,6 +244,21 @@ _JSON_COLUMN_SETTERS = {
     "case-based-preview": jobs_repo.set_cbp_json,
     "memory-check": jobs_repo.set_memory_check_json,
     "reading": jobs_repo.set_reading_json,
+    # PR-3 Practice Arc games.
+    "practice-rlc": jobs_repo.set_practice_rlc_json,
+    "practice-error-detection": jobs_repo.set_practice_error_detection_json,
+    "practice-memory-match": jobs_repo.set_practice_memory_match_json,
+    "practice-tictactoe": jobs_repo.set_practice_tictactoe_json,
+    "practice-jigsaw": jobs_repo.set_practice_jigsaw_json,
+    "practice-sentence": jobs_repo.set_practice_sentence_json,
+}
+
+# The four CBP-mode game phases share the CaseBasedPreview-derived synth render.
+_CBP_MODE_PHASES = {
+    "practice-memory-match",
+    "practice-tictactoe",
+    "practice-jigsaw",
+    "practice-sentence",
 }
 
 

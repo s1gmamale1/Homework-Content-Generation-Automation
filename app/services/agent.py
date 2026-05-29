@@ -48,9 +48,12 @@ from app.schemas import (
     FinalChallenge,
     FlashcardsPack,
     GamesPack,
+    CbpModeGame,
+    ErrorDetection,
     MemoryCheckPack,
     MemorySprintPack,
     ReadingPassage,
+    RealLifeChallenge,
     SourceMap,
 )
 from app.services.providers import Provider, get_provider
@@ -114,6 +117,14 @@ STRUCTURED_PHASE_SCHEMAS: dict[str, type[BaseModel]] = {
     "final-challenge": FinalChallenge,
     "boss-arena": BossArena,
     "reading": ReadingPassage,
+    # Flow v2 Practice Arc games (PR-3). Two standalone mechanics + four
+    # Case-Based-Preview interaction modes sharing the CbpModeGame contract.
+    "practice-rlc": RealLifeChallenge,
+    "practice-error-detection": ErrorDetection,
+    "practice-memory-match": CbpModeGame,
+    "practice-tictactoe": CbpModeGame,
+    "practice-jigsaw": CbpModeGame,
+    "practice-sentence": CbpModeGame,
 }
 
 
@@ -241,6 +252,10 @@ _SVG_PHASES: set[str] = {
     "preview", "case-based-preview",
     "real-life", "consolidation",
     "flashcards", "game-breaks", "final-challenge", "boss-arena", "reading",
+    # Practice Arc games: each spec allows source-carrying SVG/CSS visuals
+    # (equation blocks, decision grids, assembly puzzles, science diagrams).
+    "practice-rlc", "practice-error-detection", "practice-memory-match",
+    "practice-tictactoe", "practice-jigsaw", "practice-sentence",
 }
 
 

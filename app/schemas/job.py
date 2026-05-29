@@ -40,6 +40,12 @@ class JobOut(BaseModel):
     boss_arena_json: Optional[dict[str, Any]] = None
     cbp_json: Optional[dict[str, Any]] = None
     memory_check_json: Optional[dict[str, Any]] = None
+    practice_rlc_json: Optional[dict[str, Any]] = None
+    practice_error_detection_json: Optional[dict[str, Any]] = None
+    practice_memory_match_json: Optional[dict[str, Any]] = None
+    practice_tictactoe_json: Optional[dict[str, Any]] = None
+    practice_jigsaw_json: Optional[dict[str, Any]] = None
+    practice_sentence_json: Optional[dict[str, Any]] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     phases: list[PhaseOut] = []

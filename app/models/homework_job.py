@@ -58,6 +58,16 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # MemoryCheckPack ({"items":[{flashcard_id,prompt,kind,...}], "pass_threshold"}).
     cbp_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     memory_check_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # PR-3 (Flow v2) Practice Arc games. One column per game phase; a subject
+    # only fills the columns for the games in its flow. The two standalone
+    # mechanics (RealLifeChallenge, ErrorDetection) and the four CbpModeGame
+    # interaction modes each persist their structured output here.
+    practice_rlc_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    practice_error_detection_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    practice_memory_match_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    practice_tictactoe_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    practice_jigsaw_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    practice_sentence_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

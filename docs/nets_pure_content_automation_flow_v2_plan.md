@@ -47,7 +47,7 @@ Current phases are legacy. Flow v2 swaps them:
 | `real-life` (standalone) | folds into Practice as the RLC mission |
 | `consolidation` | redistribute into learning/practice (optional) |
 | `final-challenge` (HP quiz) | **Boss Arena** (Why → How → What) |
-| `reflection` | **dropped** (see §9) |
+| `reflection` | **kept** — `New_Flow.md` (source-of-truth) keeps Reflection / Debrief / Marking; this overrides the earlier "dropped" note in §9 |
 | assembly (old sections) | reshape to Flow v2 sections (§8) |
 
 Flashcards survives; everything else is new prompts/schemas or a rename.
@@ -111,12 +111,14 @@ Recommended: **Option A** — keep one pinned extract, upgrade its output. The s
 
 ## 6. Practice games
 
-Replace the single generic `game-breaks` with six named games, each its own prompt + schema, each mapping missions to target skills from the source map:
+Replace the single generic `game-breaks` with six named games, each its own prompt, each mapping missions to target skills from the source map:
 
 ```txt
 Real-Life Challenge · Error Detection · Memory Matching · TicTacToe · Jigsaw Matching · Sentence Filling
 ```
 
+- **Schemas — three, not six.** *(Implemented 2026-05-29.)* The six games' content contracts collapse to three Pydantic schemas (`app/schemas/practice_games.py`): the four games whose own spec files title them *"Case-Based Preview Interaction Mode"* (Memory Matching, Jigsaw, Sentence Filling, TicTacToe) share **one** `CbpModeGame` schema (`CaseBasedPreview` + an `interaction_mode` discriminator); only `RealLifeChallenge` and `ErrorDetection` are genuinely distinct shapes. Each game is still its own pipeline phase (`practice-rlc`, `practice-error-detection`, `practice-memory-match`, `practice-tictactoe`, `practice-jigsaw`, `practice-sentence`) with its own per-subject prompt.
+- **Curated per-subject arc, not all-six-everywhere.** Each subject runs a 2-3 game arc that fits its target skills (set in `flows.SUBJECT_FLOWS`), sitting between the learning sections and the Boss Arena. Running all six on every lesson would violate "no random disconnected games / tasks must match target skill."
 - RLC absorbs the legacy standalone `real-life`. The reverse-test variant (same story, new numbers, infer the unnamed method) is authored per its spec.
 - No disconnected drills — every game traces to source concept IDs.
 
@@ -159,7 +161,7 @@ The structured per-phase JSON the pipeline already persists (`phase_outputs`) is
 
 **Difficulty — keep what works.** `classify` + Easy/Hard sequences in `SUBJECT_FLOWS` are real and load-bearing (English/History already skip via `has_classify=False`). Keep the mechanism; Flow v2 just changes which phases the easy/hard sequences contain. Migrating to a `GenerationProfile` is optional cleanup, not required.
 
-**Reflection — dropped.** The repo's `reflection` is a content closing-summary phase (not student-attempt marking — that "Reflection/Marking + weak-point signals" concept was never in this repo). Per the content-scope decision it's dropped from the Flow v2 sequence. If a closing-summary debrief is wanted later, it re-adds as one phase via the §3 mechanism.
+**Reflection — kept.** *(Corrected 2026-05-29.)* This earlier said "dropped." The source-of-truth flow `docs/Infra_prompts/Flow/New_Flow.md` explicitly **keeps** "Reflection / Debrief / Marking" as the closing section of the cycle, so it stays in the Flow v2 sequence (it is the last phase in every subject sequence). The repo's `reflection` phase serves this role. What *is* dropped is the standalone **`consolidation`** phase — `New_Flow.md` marks it "superseded," its Anchor-Lock / Memory-Lock behaviour redistributed across Flashcards + Memory Check + Reflection.
 
 ---
 

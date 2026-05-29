@@ -310,6 +310,13 @@ async def download(
         "memory-check.json": job.memory_check_json or {"items": [], "pass_threshold": 0.60},
         "boss-arena.json": job.boss_arena_json or {"questions": []},
         "source-map.json": job.source_map_json or {"concepts": []},
+        # PR-3 Practice Arc games (only the ones a subject ran are non-empty).
+        "practice-rlc.json": job.practice_rlc_json or {},
+        "practice-error-detection.json": job.practice_error_detection_json or {},
+        "practice-memory-match.json": job.practice_memory_match_json or {},
+        "practice-tictactoe.json": job.practice_tictactoe_json or {},
+        "practice-jigsaw.json": job.practice_jigsaw_json or {},
+        "practice-sentence.json": job.practice_sentence_json or {},
     }
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

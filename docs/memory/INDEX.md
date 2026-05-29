@@ -13,3 +13,4 @@
 | 0006 | 2026-05-29 | Nggaev-v2 | PR-1: source map — extract_source_map + persist source_map_json (TDD, 58 green) |
 | 0007 | 2026-05-29 | Nggaev-v2 | PR-4: Boss Arena (Why→How→What) content phase, replaces final-challenge in flows (TDD, 64 green) |
 | 0008 | 2026-05-29 | flow-v2-integration | Integrate teammate PRs: Learning(PR#3) DONE+verified (75 green); Practice/alphaq(PR#2) NOT usable as-is; reflection KEPT per New_Flow.md; consolidation→remove; Practice Arc pending |
+| 0009 | 2026-05-29 | flow-v2-integration | PR-3 Practice Arc: 6 typed games (3 schemas — RLC + ErrorDetection + shared CbpModeGame), curated per-subject arcs, removed game-breaks/real-life/consolidation, kept reflection; 168 green + claude smoke OK; plan §6/§9 patched |

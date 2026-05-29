@@ -206,6 +206,63 @@ async def set_memory_check_json(
     job.memory_check_json = payload
 
 
+# ─── PR-3 Practice Arc games ───────────────────────────────────────────
+
+
+async def set_practice_rlc_json(
+    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.practice_rlc_json = payload
+
+
+async def set_practice_error_detection_json(
+    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.practice_error_detection_json = payload
+
+
+async def set_practice_memory_match_json(
+    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.practice_memory_match_json = payload
+
+
+async def set_practice_tictactoe_json(
+    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.practice_tictactoe_json = payload
+
+
+async def set_practice_jigsaw_json(
+    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.practice_jigsaw_json = payload
+
+
+async def set_practice_sentence_json(
+    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.practice_sentence_json = payload
+
+
 async def set_difficulty(session: AsyncSession, job_id: UUID, difficulty: str) -> None:
     job = await session.get(HomeworkJob, job_id)
     if job is None:
