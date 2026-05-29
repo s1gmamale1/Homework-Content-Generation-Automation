@@ -1,439 +1,223 @@
 # NETS Pure Content Automation — Flow v2 Transformation Plan
 
-**Status:** Rewritten to correct scope. This is a **pure content-automation** plan.
-**Supersedes:** `nets_generator_flow_v2_transformation_plan_FINAL_PATCHED.md` and every earlier version that mixed in Homeworks runtime/platform concerns.
+**Status:** Grounded in the real generator (`Homework-Content-Generation-Automation`, branch `DaddysBranch`). This replaces the earlier abstract plan.
 **Date:** 2026-05-29
-**Repo in scope:** the content generator only (`Homework-Content-Generation-Automation`).
+**Scope:** pure content automation — book in, Flow v2 content out, Markdown handoff. No runtime, no platform.
 
 ---
 
-## 0. Scope correction (read this first)
+## 0. Reality anchor
 
-This project is a **content factory**. It takes a textbook and produces Flow v2 homework **content**: structured JSON plus a human-readable Markdown handoff. It does **not** build, render, gate, or export to any runtime.
+The branch is a **mature legacy-flow generator**, not a greenfield. A large part of what earlier plans called "build" already exists and works. So Flow v2 is a **phase-set swap on existing infrastructure**, not a rebuild.
 
-**This plan is NOT about, and contains nothing about:**
-
-- Homeworks runtime / student screen
-- server gates or Unlock Gate enforcement
-- Practice Arc locking at runtime
-- browser answer stripping / injector behavior
-- beta-platform-safe export
-- platform schema (Pydantic `ContentJSON`) conformance
-- legacy runtime compatibility
-- any "Platform PR-0" prerequisite or runtime readiness flag
-
-All of those were the wrong scope and have been removed. Nothing in the runtime world blocks this team.
-
-**This plan IS only:**
-
-```txt
-book / textbook
-  → locate chapter + section
-  → extract + normalize section content
-  → build source map
-  → map source concepts to Flow v2 divisions
-  → run the correct prompt per phase/game (from the Infra registry)
-  → generate content
-  → assemble homework-content.md
-  → content QA against Flow v2 specs
-```
-
-Three content rules survived the scope cut **because they are content standards, not platform rules** (flagged here so nobody deletes them by accident):
-
-1. **Decision Process Explanation (DPE)** in Case-Based Preview — required by `nets_case_based_preview_generation_standard_v1_1.md`.
-2. **Source fidelity** — every generated phase/game traces back to extracted source concepts; no invented facts.
-3. **Spec conformance** — each phase/game matches its **Infra content spec** (not a platform schema).
+The headline correction: stop treating infrastructure (gateway, parallel pipeline, structured outputs, assembly, queue) as work. It's done. The real work is authoring the Flow v2 **prompts + schemas** and wiring them into the existing flow tables.
 
 ---
 
-## 1. What the generator does
+## 1. What already exists — reuse, do not rebuild
 
-A single generation job runs this chain and nothing more:
+| Capability | Where it lives | Status |
+|---|---|---|
+| Provider abstraction | `app/services/agent.py` + `providers/{claude,codex,gemini,kimi}.py` | **Done.** CLI-subprocess router. **No SDKs** (explicitly forbidden in `CLAUDE.md`). |
+| Per-job model selection | `agent_models.MODEL_MANIFEST`, `_PROVIDER_DEFAULT_MODEL` | Done. Only `claude` has a default; `gemini/kimi/codex` resolve `None` (guarded by a test). |
+| DAG-parallel generation | `app/services/pipeline.py` + `flows.PHASE_DEPS` | **Done.** Wave scheduler runs phases concurrently when deps are met. |
+| Structured output + repair | `agent.STRUCTURED_PHASE_SCHEMAS` → `model_validate_json` → retry-once on `ValidationError` | Done. |
+| Extract + cross-job reuse | `toc_extractor.py`, pinned to `settings.extract_provider/model` (`gemini` / `gemini-2.5-flash`) | Done (but output is a flat summary — see §4). |
+| Markdown packet + JSON columns | `pipeline.py` assembly step | Done (old-flow shaped — needs reshaping, §8). |
+| Queue / worker / usage / auth / Postgres | `worker.py`, `agent_usages`, `homework_jobs`, `phase_outputs` | Done. |
+| Prompt registry | `prompts/<subject>/*.md` (+ `flow.md` per subject) mirrored by `flows.SUBJECT_FLOWS` | **This is the registry.** No separate "Infra loader" exists or is needed. |
 
-```txt
-extract_book_section
-        ↓
-build_source_map
-        ↓
-parallel generation (all depend on SourceMap only):
-  case_based_preview
-  flashcards
-  real_life_challenge
-  error_detection
-  memory_matching
-  tictactoe
-  jigsaw_matching
-  sentence_filling
-  boss_arena (draft)
-        ↓
-memory_check            # depends on flashcards
-        ↓
-reflection_marking      # depends on all generated sections
-        ↓
-assemble homework-content.md
-        ↓
-content_qa
-```
+**Provider note:** the providers are `claude`, `codex`, `gemini`, `kimi` CLIs. Earlier plans said "openai/anthropic SDK providers" and an "AI Gateway to build" — both wrong. Don't reintroduce SDKs.
 
-The generator emits **content artifacts only**. It must never generate frontend or runtime code as part of a homework job.
+**Infra.zip note:** there is **no `Infra/` folder in the repo.** If `Infra.zip` is a separate pack of authored Flow v2 prompt specs, the integration is "port its specs into `prompts/<subject>/*.md` and register in `flows.py`" — not "build a registry."
 
 ---
 
-## 2. Outputs per job
+## 2. The Flow v2 delta (the real work)
 
-Every job produces exactly these:
+Current phases are legacy. Flow v2 swaps them:
 
-```txt
-1. content_package.json     # canonical Flow v2 content
-2. homework-content.md       # human-readable handoff (mirrors the package)
-3. flow_manifest.json        # prompt paths/versions/hashes, model usage, generation order
-4. qa_report.json            # content QA results
-```
-
-There is **no** "beta-safe export" and **no** "future runtime export." Those layers are deleted. Runtime is somebody else's project; if a runtime ever wants this content, that is a separate downstream adapter, not part of this plan.
-
----
-
-## 3. Book ingestion → extraction → SourceMap → Flow v2 mapping
-
-The generator must not assume pasted text is the only input path.
-
-Required input chain:
-
-```txt
-Book / PDF / textbook source
-  → locate chapter
-  → locate section
-  → extract section content
-  → normalize extracted text
-  → build source_map
-  → map source concepts into Flow v2 divisions/phases
-```
-
-Required extraction outputs:
-
-```json
-{
-  "book_source": {},
-  "chapter": {},
-  "section": {},
-  "extracted_section_content": {},
-  "source_map": {}
-}
-```
-
-The `source_map` is the factual anchor. Every generated phase/game must reference the relevant source concept IDs. If extraction returns content unrelated to the requested chapter/section, the whole job is grounded in the wrong source → **stop and re-extract**.
-
----
-
-## 4. Dependency graph and parallelization
-
-After SourceMap, almost everything runs in parallel. The team can start isolated generators immediately using a **mock SourceMap** — the only shared contract they need is the mock SourceMap shape plus the expected Markdown section format.
-
-| Part | Depends on |
+| Legacy phase (today) | Flow v2 |
 |---|---|
-| Case-Based Preview | SourceMap only |
-| Flashcards | SourceMap only |
-| Real-Life Challenge | SourceMap only |
-| Error Detection | SourceMap only |
-| Memory Matching | SourceMap only |
-| TicTacToe | SourceMap only |
-| Jigsaw Matching | SourceMap only |
-| Sentence Filling | SourceMap only |
-| Boss Arena | SourceMap; ideally the practice skill map, but can draft in parallel |
-| Memory Check | Flashcards |
-| Reflection / Marking | all generated sections |
-| Markdown assembly | all generated sections |
-| Content QA | final Markdown + source map |
+| `extract` (flat summary) | upgrade → structured **source map** with concept IDs |
+| `preview-easy` / `preview-hard` | **Case-Based Preview** (3 checkpoints + Decision Process Explanation) |
+| `flashcards` | keep, add stable IDs |
+| `memory-sprint` | **Memory Check** (references flashcard IDs, 60%) |
+| `game-breaks` (one generic) | split into **6 named games**: RLC, Error Detection, Memory Matching, TicTacToe, Jigsaw, Sentence Filling |
+| `real-life` (standalone) | folds into Practice as the RLC mission |
+| `consolidation` | redistribute into learning/practice (optional) |
+| `final-challenge` (HP quiz) | **Boss Arena** (Why → How → What) |
+| `reflection` | **dropped** (see §9) |
+| assembly (old sections) | reshape to Flow v2 sections (§8) |
 
-**Start-now tasks (mock SourceMap):** Case-Based Preview, Flashcards, every Practice game, Boss Arena draft. Only Memory Check waits for Flashcards; only Reflection and final assembly wait for everything.
+Flashcards survives; everything else is new prompts/schemas or a rename.
 
 ---
 
-## 5. Infra prompt registry
+## 3. The mechanism — how one Flow v2 phase gets added
 
-The uploaded `Infra.zip` is the phase/game prompt/spec registry. The generator loads the correct prompt by **subject family + phase/game type**.
-
-Registry structure:
+This is already proven by every legacy phase. Each new phase = five small, local edits:
 
 ```txt
-Infra/Flow/                          New_Flow.md, nets_homework_flow_v2
-Infra/Case-Based Preview/            math_family, sciences, languages, CBP standard v1.x
-Infra/Flashcards/Flashcard Prompts/  math_family, sciences, languages, humanities
-Infra/Flashcards/Quzilet Learning/   Multiple Choice, Fill in the blank, Choose Correct Explanation
-Infra/Gamified Practices/Real Life Challenge/
-Infra/Gamified Practices/Error Detection/
-Infra/Gamified Practices/Memory Matching/
-Infra/Gamified Practices/TicTacToe/
-Infra/Gamified Practices/Jigsaw Matching/
-Infra/Gamified Practices/Sentence Filling/
-Infra/Gamified Practices/Boss Arena/
-Infra/Uzbek Specification/           NETS_Uzbek_Language_Foundation_Review
+1. prompts/<subject>/<phase>.md          # the prompt (authored from the spec)
+2. app/schemas/<phase>.py                # Pydantic output schema
+3. agent.STRUCTURED_PHASE_SCHEMAS[...]   # register phase → schema for JSON mode
+4. flows.SUBJECT_FLOWS[...]              # insert into the subject's easy/hard sequence
+5. flows.PHASE_DEPS[...]                 # declare which prior outputs it consumes
 ```
 
-Registry rules:
-
-```txt
-Do not invent a phase/game prompt when a registry file exists.
-Select prompt by subject family and game type.
-Record prompt path + version/source hash in flow_manifest.json.
-Fail content QA if any enabled phase/game has no prompt/spec mapping.
-```
-
-Implementation: pinned copied prompt pack + a sync script is simplest for agents (avoids submodule weirdness). The CBP **content standard** (`nets_case_based_preview_generation_standard_v1_1.md`) is a project standard and is pinned alongside the registry as the source of truth for CBP.
+No new infrastructure. The parallel scheduler, retry, usage tracking, and assembly pick it up automatically.
 
 ---
 
-## 6. Case-Based Preview content spec
+## 4. Source map (upgrade `extract`)
 
-CBP is the load-bearing learning section. Its structure is a **content** requirement (CBP v1.1), independent of any runtime.
+Today `extract` produces a flat factual summary. Flow v2 needs a structured **source map** so every generated phase can cite concept IDs.
 
-Canonical shape:
+- Option A: change the `extract` prompt + add a `SourceMap` schema so `extract` emits structured concepts (cheapest; keeps the gemini pin and cross-job reuse).
+- Option B: add a separate `source-map` phase depending on `extract`.
 
-```python
-class DecisionProcessExplanation(BaseModel):
-    prompt: str
-    expected_components: list[Literal["concept", "method", "mistake"]]
-    rubric: dict
-    sample_acceptable_answer: str
-    eval_mode: Literal["ai", "rubric_ai"] = "ai"
-    min_chars: int = 60
-    options: None = None        # never an MCQ
+Recommended: **Option A** — keep one pinned extract, upgrade its output. The source map is the factual anchor; every phase references its concept IDs. Extraction returning content unrelated to the requested chapter/section means the whole job is grounded wrong → re-extract.
 
-class CaseBasedPreview(BaseModel):
-    title: str
-    student_role: str
-    case_type: str
-    source_concept_ids: list[str]
-    case_setup: CaseSetup
-    checkpoints: list[CaseCheckpoint]            # exactly 3
-    decision_process_explanation: DecisionProcessExplanation
-    final_simulation: CaseSimulation
-    feedback_summary: FeedbackSummary
-    completion_rules: CompletionRules
-```
+---
 
-Required order:
+## 5. Learning Sections
+
+**Case-Based Preview** (new prompt + schema). Content standard CBP v1.1. Required order:
 
 ```txt
 1 case_setup
-2 checkpoint_1
+2 checkpoint_1        (recognition: identify / decide / justify_or_avoid_mistake)
 3 learning_block_1
 4 checkpoint_2
 5 learning_block_2
 6 checkpoint_3
-7 decision_process_explanation     ← required, before consequence
+7 decision_process_explanation   ← REQUIRED, before the consequence, open-ended,
+                                   evaluates concept · method · mistake, never an MCQ
 8 final_simulation
 9 feedback_summary
 10 completion_rules
 ```
 
-Checkpoint design:
+- Checkpoints 1–3 are low-friction (mcq/choice/short_select). The production reasoning lives only in the DPE.
+- The method/formula stays unnamed in the case body; the student commits first.
+- Invalid CBP (reject as content): DPE missing · DPE has options · DPE passable in one word · DPE after the consequence · source concept not preserved · student not the decision-maker.
+
+**Flashcards** — keep the existing phase; add stable IDs so Memory Check can reference them.
+
+**Memory Check** — replaces `memory-sprint`. New prompt + schema; items reference flashcard IDs; 60% threshold; item types per the content spec. Depends on `flashcards` (already the pattern: legacy `memory-sprint` depends on `flashcards` in `PHASE_DEPS`).
+
+---
+
+## 6. Practice games
+
+Replace the single generic `game-breaks` with six named games, each its own prompt + schema, each mapping missions to target skills from the source map:
 
 ```txt
-Checkpoints 1–3 are low-friction recognition / decision checks.
-The production reasoning lives in decision_process_explanation.
-Allowed checkpoint intents: identify · decide · justify_or_avoid_mistake.
-Allowed forms: mcq · choice · short_select · true_false (only if meaningful).
-Not allowed: a 4th checkpoint · checkpoint-as-essay · checkpoint with no consequence · unrelated trivia.
-The method/formula is left unnamed in the case body; the student commits before the consequence.
+Real-Life Challenge · Error Detection · Memory Matching · TicTacToe · Jigsaw Matching · Sentence Filling
 ```
 
-QA hard-fails (reject the CBP):
-
-```txt
-decision_process_explanation missing
-decision_process_explanation has options
-decision_process_explanation passable in one word
-decision_process_explanation appears after final_simulation
-final_simulation missing correct/wrong paths
-student is not the decision-maker
-source/textbook concept not preserved
-```
+- RLC absorbs the legacy standalone `real-life`. The reverse-test variant (same story, new numbers, infer the unnamed method) is authored per its spec.
+- No disconnected drills — every game traces to source concept IDs.
 
 ---
 
-## 7. Flashcards + Memory Check
+## 7. Boss Arena
 
-**Flashcards** — generated from SourceMap, carry **stable IDs** so Memory Check can reference them.
-
-**Memory Check** — depends on Flashcards; items reference flashcard IDs; pass threshold 60% (content design). Item types follow the **Flow v2 content spec / Quizlet-Learning Infra specs** (Multiple Choice, Fill in the blank, Choose Correct Explanation, and any others the spec enables). There is no platform "3-types-only" restriction here — that was a runtime-export constraint and is gone. Use whatever item types the content spec defines.
+Replaces `final-challenge`. New prompt + schema. Reasoning content (Why → How → What), not a flashcard-recall HP quiz. Mastery peak of the practice arc. Can draft in parallel from the source map; ideally consumes the practice skill map.
 
 ---
 
-## 8. Practice games content
+## 8. Assembly reshape
 
-Replace the old `game-breaks` / standalone `real-life` / standalone `consolidation` with conceptual practice tied to target skills. Each game is generated from its **Infra spec** and references SourceMap concept IDs.
-
-| Game | Source of truth |
-|---|---|
-| Real-Life Challenge | `Infra/.../Real Life Challenge/` |
-| Error Detection | `Infra/.../Error Detection/` |
-| Memory Matching | `Infra/.../Memory Matching/` |
-| TicTacToe | `Infra/.../TicTacToe/` |
-| Jigsaw Matching | `Infra/.../Jigsaw Matching/` |
-| Sentence Filling | `Infra/.../Sentence Filling/` |
-
-Rules:
-
-- Every mission maps to a target skill drawn from SourceMap; no disconnected drills.
-- Each game conforms to its Infra spec — that is the content contract (no platform validator involved).
-- **Real-Life Challenge** follows the RLC Infra specification. The **reverse-test** variant (same story, new numbers, student infers the unnamed formula) is authored directly per the content spec — there is no "5-step platform bridge" caveat anymore; that was platform clothing and is deleted.
-
----
-
-## 9. Boss Arena content
-
-Boss Arena is the mastery peak inside the Practice arc. It is **reasoning content**, not a quiz skin.
-
-```txt
-Every Boss encounter carries Why → How → What reasoning.
-Not flashcard recall, not a quiz-plus-HP wrapper.
-Can be drafted in parallel from SourceMap; ideally uses the practice skill map once available.
-Generated from Infra/.../Boss Arena/ spec.
-```
-
----
-
-## 10. Reflection / Marking + Weak Point Signals
-
-Reflection/Marking produces the outcome content (Passed · Needs Retry) and the weak-point data layer.
-
-```python
-class WeakPointSignal(BaseModel):
-    concept_id: str
-    source_phase: str
-    evidence: list[dict]
-    severity: Literal["low", "medium", "high"]
-    target_accounts: list[Literal["teacher", "parent", "admin"]]
-    recommended_action: str
-```
-
-Reflection output includes `weak_point_signals: []`. Purpose: sub-threshold attempts become **needs-attention signals**, not just local feedback text. This is content/data output, not a runtime feature.
-
----
-
-## 11. Markdown content export
-
-Every job produces `homework-content.md` — the human handoff. It mirrors the canonical package, contains **generated content only** (no implementation instructions, no frontend code), and includes every enabled game.
+The pipeline already assembles a markdown packet + structured JSON columns. Reshape the assembly so the markdown carries Flow v2 sections:
 
 ```md
 # Homework Content
-
 ## Source Book / Chapter / Section
 ## Extracted Section Summary
 ## Source Map
-
 ## Learning Sections
-### Case-Based Preview
-#### Case Setup
-#### Checkpoint 1
-#### Learning Block 1
-#### Checkpoint 2
-#### Learning Block 2
-#### Checkpoint 3
-#### Decision Process Explanation
-#### Final Consequence / Simulation
-#### Feedback Summary
+### Case-Based Preview (Case Setup · Checkpoint 1 · Learning Block 1 · Checkpoint 2 ·
+###   Learning Block 2 · Checkpoint 3 · Decision Process Explanation ·
+###   Final Consequence / Simulation · Feedback Summary)
 ### Flashcard Learning
 ### Memory Check
-
-## Progression Criteria          # content-level pass notes (CBP ≥2/3, Memory Check ≥60%) — descriptive, not enforced
 ## Practice Arc
-### Real-Life Challenge
-### Error Detection
-### Memory Matching
-### TicTacToe
-### Jigsaw Matching
-### Sentence Filling
-### Other Enabled Practice Games
-
+### Real-Life Challenge · Error Detection · Memory Matching · TicTacToe ·
+###   Jigsaw Matching · Sentence Filling
 ## Boss Arena
-## Reflection / Marking
-## Weak Point Signals
-## QA Notes
 ```
 
-Note: the old "Unlock Gate Requirements" heading is renamed **Progression Criteria** and is purely descriptive content (what the pass thresholds are), not server enforcement.
+**Content convention:** answer keys, rubrics, teacher notes are labeled distinctly from student-visible text in both the JSON and the markdown so a downstream consumer can split them. Content hygiene, not a security control.
 
-**Content-output convention (replaces the deleted answer-stripping rule):** in both the JSON package and the Markdown, clearly label answer keys, rubrics, and teacher-only notes as distinct from student-visible text, so a downstream consumer can separate them. This is content hygiene, not a security control.
+The structured per-phase JSON the pipeline already persists (`phase_outputs`) is the structured deliverable; the reshaped markdown is the human handoff.
 
 ---
 
-## 12. GenerationProfile (difficulty)
+## 9. Difficulty & dropped phases
 
-Drop the old Easy/Hard phase-skipping. Keep difficulty as **generation metadata**:
+**Difficulty — keep what works.** `classify` + Easy/Hard sequences in `SUBJECT_FLOWS` are real and load-bearing (English/History already skip via `has_classify=False`). Keep the mechanism; Flow v2 just changes which phases the easy/hard sequences contain. Migrating to a `GenerationProfile` is optional cleanup, not required.
 
-```txt
-GenerationProfile { difficulty, grade_band, target_skills, subject_family, ... }
-```
-
-Difficulty changes the depth/complexity of generated items; it does not skip proving learning and does not branch the phase list.
+**Reflection — dropped.** The repo's `reflection` is a content closing-summary phase (not student-attempt marking — that "Reflection/Marking + weak-point signals" concept was never in this repo). Per the content-scope decision it's dropped from the Flow v2 sequence. If a closing-summary debrief is wanted later, it re-adds as one phase via the §3 mechanism.
 
 ---
 
-## 13. Content QA (the fence)
+## 10. Content rules that stay (not infrastructure)
 
-QA validates **content**, not platform compatibility. Reject/flag a job when:
+- **DPE present** (CBP v1.1) — the only production-reasoning step in CBP.
+- **Source fidelity** — every phase/game traces to source-map concept IDs; no invented facts.
+- **Spec conformance** — each phase/game matches its authored prompt spec.
+- **Fail-fast** — if an enabled phase has no prompt in `prompts/<subject>/`, generation fails rather than inventing content. (`flows.py` already mirrors `prompts/<subject>/`; a missing prompt should error, not improvise.)
 
-```txt
-DPE missing or modeled as a 4th MCQ                       (CBP v1.1 violation)
-CBP order wrong or DPE after the consequence
-a generated phase/game has no Infra prompt/spec mapping   (would mean invented content)
-book/chapter/section extraction returned unrelated content
-source_map missing for any generated phase
-a generated phase/game does not match its Infra spec
-Boss Arena lacks Why → How → What
-Markdown export missing, incomplete, or contains implementation code
-generated content not traceable to source concept IDs
-```
-
-QA writes results to `qa_report.json` and `## QA Notes` in the Markdown.
+These are generation-time requirements baked into the prompts/schemas, not a separate QA stage (QA dropped earlier as technical).
 
 ---
 
-## 14. Implementation sequence (no Phase 0)
+## 11. Prompts — source of truth
 
-No platform prerequisite. Phases are content-generator work only; most can start in parallel against a mock SourceMap.
-
-```txt
-Phase 1  AI Gateway + Flow v2 content schemas (incl. DPE, GenerationProfile)
-Phase 2  Book ingestion + chapter/section extraction + SourceMap + Infra prompt registry
-Phase 3  Learning Sections — CBP (with DPE), Flashcards (stable IDs), Memory Check (after Flashcards)
-Phase 4  Practice games — RLC, Error Detection, Memory Matching, TTT, Jigsaw, Sentence Filling
-Phase 5  Boss Arena — Why → How → What
-Phase 6  Reflection / Marking + weak-point signals + Markdown assembly
-Phase 7  Content QA (registry coverage, source fidelity, DPE present, spec conformance, MD complete)
-```
-
-**Start in parallel now:** Phase 1 (schema/gateway) and Phase 2 (ingestion + registry). Isolated phase/game generators (Phase 3–5) can begin immediately on a mock SourceMap. Final assembly (Phase 6) and QA (Phase 7) close the loop once sections exist.
-
-A lightweight content **preview / QA console** (the existing generator frontend, de-platformed) is optional supporting tooling, not a blocking phase.
+- Runtime prompts live in `prompts/<subject>/*.md`; `flow.md` per subject is the human doc; `flows.SUBJECT_FLOWS` mirrors it in code.
+- Flow v2 prompts are authored here (one `.md` per new phase per subject family), porting from the CBP v1.1 standard and any `Infra.zip` spec pack.
+- Keep `flows.py` in sync with the prompt files; a phase in a sequence with no prompt file is a bug.
 
 ---
 
-## 15. What was removed and why
+## 12. What changed from the previous plan
 
-| Removed | Reason |
+| Previous plan said | Reality on `DaddysBranch` |
 |---|---|
-| Platform PR-0 / Homeworks runtime prerequisite | runtime, not content |
-| CBP runtime readiness flag | runtime gate |
-| Unlock Gate server enforcement | runtime gate (kept only as descriptive "Progression Criteria" content) |
-| Beta-platform-safe export layer | platform export, not content |
-| Future full-v2 runtime export layer | platform export |
-| Platform `ContentJSON` conformance test | platform schema, replaced by Infra-spec conformance |
-| Memory Check "3 types only" | platform-export constraint; item types now follow the content spec |
-| RLC "strict 5-step platform contract" + reverse-test bridge caveat | platform validator; RLC now follows its Infra spec directly |
-| Browser answer stripping / injector server-only | runtime security; replaced by content-level answer/teacher labeling |
-| Legacy runtime compatibility | runtime concern |
-| "Three output layers" | collapsed to canonical package + Markdown + manifest + QA |
-| Claims A–F platform verification framing | platform reverse-engineering; irrelevant to content |
+| Build an "AI Gateway" (Phase 1) | Exists — CLI router (`agent.py` + `providers/`). Deleted from the plan. |
+| Providers: gemini/kimi/openai/anthropic SDKs | Actual: `claude/codex/gemini/kimi` CLIs, no SDKs. |
+| Build parallel generation | Exists — `pipeline.py` + `flows.PHASE_DEPS` wave scheduler. |
+| Build structured-output + repair | Exists — `STRUCTURED_PHASE_SCHEMAS` + retry-once. |
+| Build an "Infra prompt registry" loader | No `Infra/` in repo; registry is `prompts/<subject>/` + `flows.py`. |
+| 4 job artifacts incl. `qa_report.json` | Repo persists `phase_outputs` JSON + assembled markdown; QA dropped. |
+| Replace `SUBJECT_FLOWS` / drop Easy-Hard | Keep it; it works. GenerationProfile optional. |
+| Reflection/Marking + weak-point signals | Never in this repo; repo `reflection` is a content phase, now dropped. |
 
 ---
 
-## 16. The one rule
+## 13. Implementation sequence (PRs)
+
+No gateway PR, no registry PR — those don't exist as work.
 
 ```txt
-Book in. Flow v2 content out. Markdown handoff. Content QA.
-No runtime. No platform. No export gymnastics.
+PR-1  Source map — upgrade extract output to structured concepts + SourceMap schema
+PR-2  Learning — Case-Based Preview (+DPE) prompt & schema; flashcards stable IDs;
+                 memory-check replacing memory-sprint
+PR-3  Practice games — RLC + Error Detection + Memory Matching + TTT + Jigsaw + Sentence Filling
+PR-4  Boss Arena — replace final-challenge with Why→How→What
+PR-5  Assembly reshape — Flow v2 markdown sections; retire legacy section names
+```
+
+Each PR is the §3 mechanism applied to its phases (prompt + schema + `STRUCTURED_PHASE_SCHEMAS` + `SUBJECT_FLOWS` + `PHASE_DEPS`). PR-2/3/4 generators run in parallel under the existing scheduler and can be developed against a mock source map. Legacy flow keeps working until the new sequences replace it per subject.
+
+---
+
+## 14. The one rule
+
+```txt
+Book in. Flow v2 content out. Markdown handoff.
+Swap the phase set on the generator that already exists — don't rebuild it.
+No runtime. No platform. No SDKs.
 ```

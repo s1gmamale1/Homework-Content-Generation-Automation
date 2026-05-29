@@ -23,10 +23,10 @@
       radial-gradient(700px 700px at 50% 110%,rgba(167,139,250,.08),transparent 60%)}
   body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.025;
     background-image:repeating-linear-gradient(0deg,#fff 0 1px,transparent 1px 3px)}
-  .wrap{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:0 24px}
+  .wrap{position:relative;z-index:1;max-width:1080px;margin:0 auto;padding:0 24px}
 
   nav{position:sticky;top:0;z-index:50;backdrop-filter:blur(14px);background:rgba(8,10,15,.78);border-bottom:1px solid var(--line)}
-  .nav-inner{max-width:1100px;margin:0 auto;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;gap:20px}
+  .nav-inner{max-width:1080px;margin:0 auto;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;gap:20px}
   .logo{font-weight:800;font-size:15px;letter-spacing:-.02em;display:flex;align-items:center;gap:10px}
   .logo .dot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,var(--green),var(--blue));box-shadow:0 0 14px var(--green)}
   .logo .tag{font-family:var(--mono);font-size:10px;color:var(--green);border:1px solid rgba(52,211,153,.4);padding:2px 7px;border-radius:6px;margin-left:4px;background:rgba(52,211,153,.08)}
@@ -35,74 +35,58 @@
   .nav-links a:hover{color:var(--text);background:var(--surface2)}
   @media(max-width:980px){.nav-links{display:none}}
 
-  header{padding:84px 0 60px}
+  header{padding:84px 0 58px}
   .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.28em;text-transform:uppercase;color:var(--green);margin-bottom:22px;display:flex;align-items:center;gap:12px}
   .eyebrow::before{content:'';width:42px;height:1px;background:var(--green)}
-  h1{font-size:clamp(34px,5.4vw,64px);font-weight:900;line-height:1;letter-spacing:-.035em;margin-bottom:22px}
+  h1{font-size:clamp(33px,5.2vw,60px);font-weight:900;line-height:1;letter-spacing:-.035em;margin-bottom:22px}
   h1 .grad{background:linear-gradient(115deg,var(--green),var(--blue) 55%,var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
-  .lede{font-size:clamp(16px,2.2vw,20px);color:var(--muted);max-width:760px}
-  .lede b{color:var(--text);font-weight:600}.lede .gr{color:var(--green);font-weight:600}
+  .lede{font-size:clamp(16px,2.2vw,20px);color:var(--muted);max-width:770px}
+  .lede b{color:var(--text);font-weight:600}.lede .gr{color:var(--green);font-weight:600}.lede .bl{color:var(--blue);font-weight:600}
 
-  .hero-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:48px}
+  .hero-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:46px}
   @media(max-width:780px){.hero-stats{grid-template-columns:repeat(2,1fr)}}
   .stat{background:linear-gradient(180deg,var(--surface),var(--bg2));border:1px solid var(--line);border-radius:14px;padding:20px;position:relative;overflow:hidden}
   .stat::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--accent,var(--green));opacity:.8}
   .stat .v{font-family:var(--mono);font-size:27px;font-weight:700;letter-spacing:-.02em}
   .stat .l{font-size:12px;color:var(--muted);margin-top:6px}
 
-  section{padding:58px 0;border-top:1px solid var(--line)}
+  section{padding:56px 0;border-top:1px solid var(--line)}
   .sec-head{margin-bottom:32px}
   .sec-tag{font-family:var(--mono);font-size:11.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted2);margin-bottom:12px}
-  h2{font-size:clamp(24px,3.8vw,36px);font-weight:800;letter-spacing:-.03em;line-height:1.05}
+  h2{font-size:clamp(24px,3.7vw,35px);font-weight:800;letter-spacing:-.03em;line-height:1.05}
   h2 .gr{color:var(--green)}h2 .bl{color:var(--blue)}h2 .rd{color:var(--red)}h2 .or{color:var(--orange)}
-  .sec-sub{color:var(--muted);font-size:15.5px;max-width:740px;margin-top:14px}
-  .sec-sub b{color:var(--text)}
+  .sec-sub{color:var(--muted);font-size:15.5px;max-width:740px;margin-top:14px}.sec-sub b{color:var(--text)}
 
   .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:24px}
   .panel{background:linear-gradient(180deg,var(--surface),var(--bg2));border:1px solid var(--line);border-radius:18px;overflow:hidden}
   .panel-head{padding:16px 22px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
   .panel-head .icn{width:8px;height:8px;border-radius:2px;background:var(--green);box-shadow:0 0 10px var(--green)}
   .panel-head .t{font-weight:700;font-size:14.5px}
-  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-  @media(max-width:780px){.grid2{grid-template-columns:1fr}}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:780px){.grid2{grid-template-columns:1fr}}
 
   table{width:100%;border-collapse:collapse;font-size:13.5px}
   th{text-align:left;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted2);font-weight:600;padding:12px 14px;border-bottom:1px solid var(--line2)}
   td{padding:12px 14px;border-bottom:1px solid var(--line);color:var(--text);vertical-align:top}
   tr:last-child td{border-bottom:none}tbody tr{transition:.15s}tbody tr:hover{background:var(--surface2)}
-  .mono{font-family:var(--mono)}.dim{color:var(--muted2)}
-  del{color:var(--muted2);text-decoration-color:var(--red)}
+  .mono{font-family:var(--mono)}.dim{color:var(--muted2)}del{color:var(--muted2);text-decoration-color:var(--red)}
 
-  /* BEFORE / AFTER */
-  .ba{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-  @media(max-width:780px){.ba{grid-template-columns:1fr}}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:780px){.ba{grid-template-columns:1fr}}
   .ba .col{border-radius:14px;padding:22px;border:1.5px solid var(--line2)}
   .ba .col.was{border-color:var(--red);background:linear-gradient(180deg,rgba(248,113,113,.05),var(--surface))}
   .ba .col.now{border-color:var(--green);background:linear-gradient(180deg,rgba(52,211,153,.06),var(--surface))}
   .ba .h{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.12em;margin-bottom:14px}
   .ba .col.was .h{color:var(--red)}.ba .col.now .h{color:var(--green)}
-  .ba ul{list-style:none}
-  .ba li{font-size:13px;padding:5px 0 5px 22px;position:relative;line-height:1.5}
-  .ba .col.was li{color:var(--muted)}
-  .ba .col.was li::before{content:'✕';position:absolute;left:0;color:var(--red);font-weight:700;font-family:var(--mono);font-size:11px}
+  .ba ul{list-style:none}.ba li{font-size:13px;padding:5px 0 5px 22px;position:relative;line-height:1.5}
+  .ba .col.was li{color:var(--muted)}.ba .col.was li::before{content:'✕';position:absolute;left:0;color:var(--red);font-weight:700;font-family:var(--mono);font-size:11px}
   .ba .col.now li::before{content:'✓';position:absolute;left:0;color:var(--green);font-weight:700;font-family:var(--mono);font-size:11px}
 
-  /* CHAIN */
   pre.chain{font-family:var(--mono);font-size:12.5px;line-height:1.85;color:var(--muted);background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:20px;overflow-x:auto;margin:0}
-  pre.chain .n{color:var(--green)}pre.chain .f{color:var(--text)}
-
-  .arts{list-style:none;margin:0}
-  .arts li{font-size:13px;padding:8px 0;border-bottom:1px dashed var(--line);display:flex;gap:12px;align-items:baseline}
-  .arts li:last-child{border-bottom:none}
-  .arts .k{font-family:var(--mono);color:var(--green);font-size:12.5px;flex:0 0 auto;min-width:220px}
-  .arts .d{color:var(--muted)}
-  @media(max-width:560px){.arts li{flex-direction:column;gap:2px}.arts .k{min-width:0}}
+  pre.chain .n{color:var(--green)}pre.chain .f{color:var(--text)}pre.chain .c{color:var(--muted2)}
 
   .kept{display:flex;flex-direction:column;gap:12px}
   .kept .row{display:flex;gap:14px;align-items:flex-start;background:var(--surface2);border:1px solid var(--line);border-left:3px solid var(--green);border-radius:10px;padding:14px 16px}
   .kept .row .n{font-family:var(--mono);font-size:11px;color:var(--green);font-weight:700;flex:0 0 auto;margin-top:2px}
-  .kept .row .b{font-size:13.5px}
-  .kept .row .b b{color:var(--text)}.kept .row .b span{color:var(--muted)}
+  .kept .row .b{font-size:13.5px}.kept .row .b b{color:var(--text)}.kept .row .b span{color:var(--muted)}
 
   .callout{background:rgba(52,211,153,.07);border:1px solid rgba(52,211,153,.3);border-radius:12px;padding:18px 20px;font-size:14px;color:var(--text)}
   .callout b{color:var(--green)}
@@ -112,7 +96,6 @@
   .rule .a{color:var(--green)}.rule .b{color:var(--blue)}.rule .c{color:var(--muted2)}
 
   .footer{padding:46px 0 70px;border-top:1px solid var(--line);text-align:center;color:var(--muted2);font-family:var(--mono);font-size:12px}
-
   .reveal{opacity:0;transform:translateY(24px);transition:.7s cubic-bezier(.2,.8,.2,1)}
   .reveal.in{opacity:1;transform:none}
 </style>
@@ -121,13 +104,13 @@
 
 <nav>
   <div class="nav-inner">
-    <div class="logo"><span class="dot"></span>NETS · Plan Summary<span class="tag">pure content</span></div>
+    <div class="logo"><span class="dot"></span>NETS · Plan Summary<span class="tag">grounded in code</span></div>
     <div class="nav-links">
-      <a href="#scope">Scope fix</a>
-      <a href="#chain">The chain</a>
-      <a href="#outputs">Outputs</a>
-      <a href="#kept">What survived</a>
-      <a href="#removed">What was cut</a>
+      <a href="#shift">The shift</a>
+      <a href="#changed">What changed</a>
+      <a href="#delta">The delta</a>
+      <a href="#chain">Pipeline</a>
+      <a href="#kept">Rules kept</a>
       <a href="#rule">The rule</a>
     </div>
   </div>
@@ -135,144 +118,130 @@
 
 <header>
   <div class="wrap">
-    <div class="eyebrow">Transformation plan · summary · 2026-05-29</div>
-    <h1>The plan,<br><span class="grad">re-scoped to content.</span></h1>
-    <p class="lede">The earlier plan cooked runtime and platform concerns into a job that is <b>pure content automation</b>. This is the corrected summary: a content factory that takes a textbook and produces Flow v2 content plus a Markdown handoff. <span class="gr">No runtime, no server gates, no platform export.</span> Twelve platform concepts removed; three content rules kept on purpose.</p>
+    <div class="eyebrow">Plan summary · grounded in DaddysBranch · 2026-05-29</div>
+    <h1>It's already built.<br><span class="grad">Swap the phase set.</span></h1>
+    <p class="lede">Reading the real branch flipped the plan. The generator is a <b>mature legacy-flow engine</b> — provider router, parallel pipeline, structured outputs, queue, assembly and prompt registry all exist. Flow v2 is a <span class="bl">content job</span>: author new prompts + schemas and wire them into the flow tables. <span class="gr">No infrastructure to build, no SDKs, no Infra loader.</span></p>
 
     <div class="hero-stats">
-      <div class="stat" style="--accent:var(--green)"><div class="v" style="color:var(--green)" data-count="7">0</div><div class="l">content phases · no Phase 0</div></div>
-      <div class="stat" style="--accent:var(--blue)"><div class="v" style="color:var(--blue)" data-count="4">0</div><div class="l">artifacts per job</div></div>
-      <div class="stat" style="--accent:var(--red)"><div class="v" style="color:var(--red)" data-count="12">0</div><div class="l">platform concepts removed</div></div>
-      <div class="stat" style="--accent:var(--orange)"><div class="v" style="color:var(--orange)" data-count="3">0</div><div class="l">content rules kept on purpose</div></div>
+      <div class="stat" style="--accent:var(--green)"><div class="v" style="color:var(--green)" data-count="8">0</div><div class="l">capabilities already built</div></div>
+      <div class="stat" style="--accent:var(--blue)"><div class="v" style="color:var(--blue)" data-count="5">0</div><div class="l">content PRs to swap phases</div></div>
+      <div class="stat" style="--accent:var(--orange)"><div class="v" style="color:var(--orange)" data-count="0">0</div><div class="l">new infra / SDKs added</div></div>
+      <div class="stat" style="--accent:var(--purple)"><div class="v" style="color:var(--purple)" data-count="3">0</div><div class="l">content rules kept</div></div>
     </div>
   </div>
 </header>
 
-<!-- SCOPE FIX -->
-<section id="scope">
+<!-- THE SHIFT -->
+<section id="shift">
   <div class="wrap">
     <div class="sec-head reveal">
       <div class="sec-tag">00 / the correction</div>
-      <h2>Wrong scope <span class="rd">→</span> <span class="gr">right scope</span>.</h2>
-      <p class="sec-sub">The whole framing shifted from "generator that must stay compatible with the Homeworks runtime" to "content factory that owns nothing downstream."</p>
+      <h2>Build from scratch <span class="rd">→</span> <span class="gr">reuse + swap</span>.</h2>
+      <p class="sec-sub">Earlier plans (mine included) treated infrastructure as work. The code says otherwise. The scope collapses to content.</p>
     </div>
-
     <div class="ba reveal">
       <div class="col was">
-        <div class="h">WAS — RUNTIME-COUPLED</div>
+        <div class="h">EARLIER PLAN ASSUMED</div>
         <ul>
-          <li>Phase 0 platform prerequisite</li>
-          <li>Beta-platform-safe export</li>
-          <li>CBP runtime flag, Unlock Gate enforcement</li>
-          <li>Browser answer stripping</li>
-          <li>Platform schema conformance, legacy compat</li>
+          <li>Build an "AI Gateway" + SDK providers</li>
+          <li>Build the parallel pipeline</li>
+          <li>Build structured-output + repair</li>
+          <li>Build an "Infra prompt registry" loader</li>
+          <li>Emit 4 artifacts incl. <span class="mono">qa_report.json</span></li>
         </ul>
       </div>
       <div class="col now">
-        <div class="h">NOW — CONTENT-OWNED</div>
+        <div class="h">CODE REALITY (DaddysBranch)</div>
         <ul>
-          <li>Seven content phases, no Phase 0</li>
-          <li>Canonical content package + Markdown handoff</li>
-          <li>Progression criteria as descriptive content</li>
-          <li>Answer/teacher labeling as content hygiene</li>
-          <li>Conformance to Infra content specs, not a platform validator</li>
+          <li>CLI router exists — claude / codex / gemini / kimi, no SDKs</li>
+          <li><span class="mono">pipeline.py</span> + <span class="mono">flows.PHASE_DEPS</span> wave scheduler exists</li>
+          <li><span class="mono">STRUCTURED_PHASE_SCHEMAS</span> + retry-once exists</li>
+          <li>Registry is <span class="mono">prompts/&lt;subject&gt;/</span> + <span class="mono">flows.py</span></li>
+          <li>Repo persists <span class="mono">phase_outputs</span> JSON + assembled markdown</li>
         </ul>
       </div>
     </div>
   </div>
 </section>
 
-<!-- THE CHAIN -->
-<section id="chain">
+<!-- WHAT CHANGED -->
+<section id="changed">
   <div class="wrap">
     <div class="sec-head reveal">
-      <div class="sec-tag">01 / what the generator does</div>
-      <h2>One chain, <span class="gr">content only</span>.</h2>
-      <p class="sec-sub">Source fidelity is the root; after the source map the generators fan out in parallel. The team can start isolated generators today against a mock source map.</p>
-    </div>
-    <div class="reveal">
-<pre class="chain">book / textbook
-  <span class="n">→</span> locate chapter + section
-  <span class="n">→</span> extract + normalize section content
-  <span class="n">→</span> <span class="f">build source map</span>          <span class="c"># factual anchor · concept IDs</span>
-  <span class="n">→</span> map concepts to Flow v2 divisions
-  <span class="n">→</span> run correct prompt per phase/game   <span class="c"># from Infra registry, never invented</span>
-  <span class="n">→</span> generate content                    <span class="c"># CBP · flashcards · 6 games · boss · memory check</span>
-  <span class="n">→</span> reflection / marking + weak-point signals
-  <span class="n">→</span> assemble <span class="f">homework-content.md</span>
-  <span class="n">→</span> content QA vs Flow v2 specs</pre>
-    </div>
-  </div>
-</section>
-
-<!-- OUTPUTS -->
-<section id="outputs">
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <div class="sec-tag">02 / outputs per job</div>
-      <h2>Four artifacts. <span class="bl">No export gymnastics</span>.</h2>
-      <p class="sec-sub">There is no beta-safe layer and no future-runtime layer — those collapsed. The Markdown is the human handoff; the JSON is the structured record.</p>
-    </div>
-    <div class="panel reveal">
-      <div class="panel-head"><span class="icn"></span><span class="t">Every generation job produces exactly these</span></div>
-      <div style="padding:8px 22px 18px">
-        <ul class="arts">
-          <li><span class="k">content_package.json</span><span class="d">canonical Flow v2 content</span></li>
-          <li><span class="k">homework-content.md</span><span class="d">human-readable handoff, mirrors the package, content only</span></li>
-          <li><span class="k">flow_manifest.json</span><span class="d">prompt paths / versions / hashes, model usage, generation order</span></li>
-          <li><span class="k">qa_report.json</span><span class="d">content QA results</span></li>
-        </ul>
-      </div>
-    </div>
-    <div style="margin-top:16px" class="callout reveal"><b>Content convention —</b> answer keys, rubrics and teacher notes are labeled distinctly from student-visible text so any downstream consumer can split them. This replaces the deleted browser-stripping rule — it's content hygiene, not a security control.</div>
-  </div>
-</section>
-
-<!-- WHAT SURVIVED -->
-<section id="kept">
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <div class="sec-tag">03 / not deleted by accident</div>
-      <h2>Three rules that <span class="gr">survived the cut</span>.</h2>
-      <p class="sec-sub">These read like platform caveats but are actually content standards. They stay — reframed from platform-schema to content-spec.</p>
-    </div>
-    <div class="kept reveal">
-      <div class="row"><span class="n">01</span><div class="b"><b>Decision Process Explanation (CBP slot 7).</b> <span>Required by CBP standard v1.1. Open-ended, before the consequence, evaluating concept · method · mistake. Never an MCQ. The method stays unnamed in the case body so the student commits first.</span></div></div>
-      <div class="row"><span class="n">02</span><div class="b"><b>Source fidelity.</b> <span>Every generated phase/game traces back to extracted source concept IDs. No invented facts. Extraction returning unrelated content stops the job.</span></div></div>
-      <div class="row"><span class="n">03</span><div class="b"><b>Each phase/game conforms to its Infra spec.</b> <span>This is the content contract — not a platform Pydantic validator. So Memory Check item types and RLC structure follow the content spec; the reverse-test is authored straight from the RLC spec with no "5-step bridge" caveat.</span></div></div>
-    </div>
-  </div>
-</section>
-
-<!-- WHAT WAS CUT -->
-<section id="removed">
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <div class="sec-tag">04 / de-platforming changelog</div>
-      <h2>Twelve things <span class="rd">removed</span>, and why.</h2>
-      <p class="sec-sub">So the team can see exactly what changed from the previous plan rather than guessing.</p>
+      <div class="sec-tag">01 / corrections from real code</div>
+      <h2>What the branch <span class="rd">changed</span> in the plan.</h2>
+      <p class="sec-sub">Line-by-line, what the previous plan claimed versus what the repo actually contains.</p>
     </div>
     <div class="panel reveal">
       <div style="padding:0">
         <table>
-          <thead><tr><th>Removed</th><th>Reason</th></tr></thead>
+          <thead><tr><th>Previous plan said</th><th>Reality on DaddysBranch</th></tr></thead>
           <tbody>
-            <tr><td><del>Platform PR-0 / Homeworks runtime prerequisite</del></td><td class="dim">runtime, not content</td></tr>
-            <tr><td><del>CBP runtime readiness flag</del></td><td class="dim">runtime gate</td></tr>
-            <tr><td><del>Unlock Gate server enforcement</del></td><td class="dim">runtime gate · kept only as descriptive "Progression Criteria"</td></tr>
-            <tr><td><del>Beta-platform-safe export layer</del></td><td class="dim">platform export</td></tr>
-            <tr><td><del>Future full-v2 runtime export layer</del></td><td class="dim">platform export</td></tr>
-            <tr><td><del>Platform ContentJSON conformance test</del></td><td class="dim">replaced by Infra-spec conformance</td></tr>
-            <tr><td><del>Memory Check "3 types only"</del></td><td class="dim">export constraint · types now follow the content spec</td></tr>
-            <tr><td><del>RLC "strict 5-step" + reverse-test bridge caveat</del></td><td class="dim">platform validator · RLC follows its Infra spec</td></tr>
-            <tr><td><del>Browser answer stripping / injector server-only</del></td><td class="dim">runtime security · replaced by content labeling</td></tr>
-            <tr><td><del>Legacy runtime compatibility</del></td><td class="dim">runtime concern</td></tr>
-            <tr><td><del>"Three output layers"</del></td><td class="dim">collapsed to package + Markdown + manifest + QA</td></tr>
-            <tr><td><del>Claims A–F platform verification framing</del></td><td class="dim">platform reverse-engineering · irrelevant to content</td></tr>
+            <tr><td><del>Build an "AI Gateway" (Phase 1)</del></td><td class="dim">exists — CLI router (<span class="mono">agent.py</span> + <span class="mono">providers/</span>); phase deleted</td></tr>
+            <tr><td><del>Providers: gemini/kimi/openai/anthropic SDKs</del></td><td class="dim">actual: <span class="mono">claude / codex / gemini / kimi</span> CLIs, no SDKs</td></tr>
+            <tr><td><del>Build parallel generation</del></td><td class="dim">exists — <span class="mono">pipeline.py</span> + <span class="mono">flows.PHASE_DEPS</span></td></tr>
+            <tr><td><del>Build structured output + repair</del></td><td class="dim">exists — <span class="mono">STRUCTURED_PHASE_SCHEMAS</span> + retry-once</td></tr>
+            <tr><td><del>Build an "Infra registry" loader</del></td><td class="dim">no <span class="mono">Infra/</span> in repo; registry is <span class="mono">prompts/&lt;subject&gt;/</span></td></tr>
+            <tr><td><del>4 artifacts incl. qa_report.json</del></td><td class="dim">repo persists <span class="mono">phase_outputs</span> JSON + markdown; QA dropped</td></tr>
+            <tr><td><del>Replace SUBJECT_FLOWS / drop Easy-Hard</del></td><td class="dim">keep it — it works; GenerationProfile optional</td></tr>
+            <tr><td><del>Reflection / Marking + weak-point signals</del></td><td class="dim">never in repo; repo <span class="mono">reflection</span> is a content phase, now dropped</td></tr>
           </tbody>
         </table>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- THE DELTA -->
+<section id="delta">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-tag">02 / the real work</div>
+      <h2>Five PRs, all <span class="or">content</span>.</h2>
+      <p class="sec-sub">Each PR is the same five-edit recipe: <span class="mono">prompt.md + schema + STRUCTURED_PHASE_SCHEMAS + SUBJECT_FLOWS + PHASE_DEPS</span>. No infra.</p>
+    </div>
+    <div class="kept reveal">
+      <div class="row"><span class="n">PR-1</span><div class="b"><b>Source map.</b> <span>Upgrade <span class="mono">extract</span> from flat summary to structured concepts + SourceMap schema.</span></div></div>
+      <div class="row"><span class="n">PR-2</span><div class="b"><b>Learning.</b> <span>Case-Based Preview (+DPE); flashcards stable IDs; <span class="mono">memory-check</span> replaces <span class="mono">memory-sprint</span>.</span></div></div>
+      <div class="row"><span class="n">PR-3</span><div class="b"><b>Practice games.</b> <span>Split generic <span class="mono">game-breaks</span> into RLC · Error Detection · Memory Matching · TicTacToe · Jigsaw · Sentence Filling.</span></div></div>
+      <div class="row"><span class="n">PR-4</span><div class="b"><b>Boss Arena.</b> <span>Replace <span class="mono">final-challenge</span> with Why → How → What.</span></div></div>
+      <div class="row"><span class="n">PR-5</span><div class="b"><b>Assembly reshape.</b> <span>Flow v2 markdown sections; retire legacy names. Legacy flow runs until swapped per subject.</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- PIPELINE -->
+<section id="chain">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-tag">03 / the existing chain</div>
+      <h2>The engine is <span class="bl">already wired</span>.</h2>
+      <p class="sec-sub">This is the real pipeline. Flow v2 changes which phases run in the parallel wave — not the engine. <span class="mono" style="font-size:13px">classify</span> / Easy-Hard stays.</p>
+    </div>
+    <div class="reveal">
+<pre class="chain">extract       <span class="c"># pinned gemini · upgrade output → structured source map (concept IDs)</span>
+  <span class="n">→</span> classify           <span class="c"># easy / hard · English & History skip</span>
+  <span class="n">→</span> <span class="f">parallel wave</span>      <span class="c"># CBP(+DPE) · flashcards · 6 games · boss — concurrent</span>
+  <span class="n">→</span> memory-check       <span class="c"># after flashcards · refs IDs · 60%</span>
+  <span class="n">→</span> <span class="f">assemble</span>           <span class="c"># Flow v2 markdown + phase_outputs JSON</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- KEPT -->
+<section id="kept">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-tag">04 / not infrastructure</div>
+      <h2>Three content rules that <span class="gr">stay</span>.</h2>
+      <p class="sec-sub">These ride inside the prompts/schemas — not a separate QA stage (QA dropped earlier as technical).</p>
+    </div>
+    <div class="kept reveal">
+      <div class="row"><span class="n">01</span><div class="b"><b>Decision Process Explanation (CBP slot 7).</b> <span>Required by CBP v1.1. Open-ended, before the consequence, evaluates concept · method · mistake. Never an MCQ. Method stays unnamed so the student commits first.</span></div></div>
+      <div class="row"><span class="n">02</span><div class="b"><b>Source fidelity.</b> <span>Every phase/game traces to source-map concept IDs. No invented facts.</span></div></div>
+      <div class="row"><span class="n">03</span><div class="b"><b>Spec conformance + fail-fast.</b> <span>Each phase/game matches its authored prompt spec; a phase in a sequence with no prompt file errors rather than improvising.</span></div></div>
+    </div>
+    <div style="margin-top:16px" class="callout warn reveal"><b>Open question —</b> if <span class="mono">Infra.zip</span> holds authored Flow v2 prompt specs, they get ported into <span class="mono">prompts/&lt;subject&gt;/</span> and registered in <span class="mono">flows.py</span>. Share it and the prompt coverage can be verified phase-by-phase against the supported subjects.</div>
   </div>
 </section>
 
@@ -284,15 +253,16 @@
       <h2>If in doubt, <span class="gr">read this</span>.</h2>
     </div>
     <div class="reveal rule">
-      <span class="a">Book in.</span> &nbsp; <span class="b">Flow v2 content out.</span> &nbsp; Markdown handoff. &nbsp; Content QA.<br>
-      <span class="c">No runtime. No platform. No export gymnastics.</span>
+      <span class="a">Book in.</span> &nbsp; <span class="b">Flow v2 content out.</span> &nbsp; Markdown handoff.<br>
+      Swap the phase set on the generator that already exists.<br>
+      <span class="c">No runtime. No platform. No SDKs.</span>
     </div>
   </div>
 </section>
 
 <div class="footer">
   <div class="wrap">
-    NETS Pure Content Automation · Flow v2 transformation plan summary · book in, content out · 2026-05-29
+    NETS Pure Content Automation · plan summary · grounded in DaddysBranch · 2026-05-29
   </div>
 </div>
 
