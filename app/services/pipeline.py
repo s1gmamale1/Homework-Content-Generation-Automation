@@ -928,17 +928,181 @@ def _parse_classify(output_md: str) -> str:
     return "hard"
 
 
+# PR-5 assembly reshape (plan §8). Ordered phase → display-name within each of
+# the three Flow v2 divisions. Legacy phase names are kept so older jobs still
+# render under the right division. A subject only ran a subset of these.
+_LEARNING_PHASES: list[tuple[str, str]] = [
+    ("case-based-preview", "Case-Based Preview"),
+    ("reading", "Reading"),
+    ("flashcards", "Flashcard Learning"),
+    ("memory-check", "Memory Check"),
+    # legacy
+    ("memory-sprint", "Memory Sprint"),
+    ("preview-hard", "Preview"),
+    ("preview-easy", "Preview"),
+    ("preview", "Preview"),
+]
+_PRACTICE_PHASES: list[tuple[str, str]] = [
+    ("practice-rlc", "Real-Life Challenge"),
+    ("practice-error-detection", "Error Detection"),
+    ("practice-memory-match", "Memory Matching"),
+    ("practice-tictactoe", "TicTacToe"),
+    ("practice-jigsaw", "Jigsaw Matching"),
+    ("practice-sentence", "Sentence Filling"),
+    # legacy
+    ("game-breaks", "Game Breaks"),
+    ("real-life", "Real-Life Challenge"),
+    ("consolidation", "Consolidation"),
+]
+_BOSS_PHASES: list[tuple[str, str]] = [
+    ("boss-arena", "Boss Arena"),
+    ("final-challenge", "Final Challenge"),  # legacy
+]
+_REFLECT_PHASES: list[tuple[str, str]] = [("reflection", "Reflection")]
+
+
+def _strip_leading_md_heading(body: str) -> str:
+    """Drop a leading markdown heading line (``#``/``##``/``###`` …) from a
+    phase body so it doesn't double up with the ``###`` subsection heading the
+    assembler adds. Leaves non-heading bodies untouched."""
+    if not body:
+        return body
+    stripped = body.lstrip("\n")
+    lines = stripped.split("\n", 1)
+    if lines and lines[0].lstrip().startswith("#"):
+        rest = lines[1] if len(lines) > 1 else ""
+        return rest.lstrip("\n")
+    return body
+
+
+def _render_source_map_md(source_map_json: Optional[dict]) -> str:
+    if not source_map_json:
+        return ""
+    concepts = source_map_json.get("concepts") or []
+    if not concepts:
+        return ""
+    lines = []
+    for c in concepts:
+        cid = c.get("id", "")
+        label = c.get("label", "")
+        statement = c.get("statement", "")
+        kind = c.get("kind")
+        kind_tag = f" _({kind})_" if kind else ""
+        lines.append(f"- **[{cid}]** {label} — {statement}{kind_tag}")
+    return "\n".join(lines)
+
+
+def _render_division(
+    title: str,
+    ordered: list[tuple[str, str]],
+    phase_bodies: dict[str, str],
+    rendered: set[str],
+) -> str:
+    """Render one division (e.g. Learning Sections) as a ``## title`` block with
+    each present phase as a ``### display name`` subsection. Returns "" when no
+    phase in the division ran. Marks rendered phases in ``rendered``."""
+    blocks: list[str] = []
+    for phase_name, display in ordered:
+        if phase_name in phase_bodies and phase_name not in rendered:
+            rendered.add(phase_name)
+            body = _strip_leading_md_heading(phase_bodies[phase_name] or "").strip()
+            blocks.append(f"### {display}\n\n{body or '(empty)'}")
+    if not blocks:
+        return ""
+    return f"## {title}\n\n" + "\n\n".join(blocks)
+
+
+def _render_homework_md(
+    *,
+    book_title: Optional[str],
+    chapter: Optional[str],
+    section_number: Optional[str],
+    section_title: Optional[str],
+    page_start: Optional[int],
+    page_end: Optional[int],
+    extract_md: Optional[str],
+    source_map_json: Optional[dict],
+    phase_bodies: dict[str, str],
+) -> str:
+    """Pure Flow v2 markdown assembler (plan §8). Takes already-loaded data and
+    returns the human-handoff packet. Kept pure so it's unit-testable without a
+    DB."""
+    out: list[str] = ["# Homework Content", ""]
+
+    # Source book / chapter / section.
+    out.append("## Source Book / Chapter / Section")
+    meta_lines = []
+    if book_title:
+        meta_lines.append(f"- **Book:** {book_title}")
+    if chapter:
+        meta_lines.append(f"- **Chapter:** {chapter}")
+    sec = " ".join(s for s in [section_number, section_title] if s)
+    if sec:
+        meta_lines.append(f"- **Section:** {sec}")
+    if page_start is not None and page_end is not None:
+        meta_lines.append(f"- **Pages:** {page_start}–{page_end}")
+    out.append("\n".join(meta_lines) if meta_lines else "_(metadata unavailable)_")
+
+    # Extracted section summary (the pinned extract output).
+    if extract_md and extract_md.strip():
+        out.append("\n## Extracted Section Summary")
+        out.append(extract_md.strip())
+
+    # Source map (previously persisted to JSON only — now in the handoff).
+    sm = _render_source_map_md(source_map_json)
+    if sm:
+        out.append("\n## Source Map")
+        out.append(sm)
+
+    rendered: set[str] = set()
+    for title, ordered in (
+        ("Learning Sections", _LEARNING_PHASES),
+        ("Practice Arc", _PRACTICE_PHASES),
+        ("Boss Arena", _BOSS_PHASES),
+        ("Reflection", _REFLECT_PHASES),
+    ):
+        block = _render_division(title, ordered, phase_bodies, rendered)
+        if block:
+            out.append("\n" + block)
+
+    # Safety net: never silently drop a phase the divisions didn't cover.
+    leftovers = [
+        name for name in phase_bodies
+        if name not in rendered and name not in _INTERNAL_PHASES
+    ]
+    if leftovers:
+        extra_blocks = []
+        for name in leftovers:
+            display = name.replace("-", " ").title()
+            body = _strip_leading_md_heading(phase_bodies[name] or "").strip()
+            extra_blocks.append(f"### {display}\n\n{body or '(empty)'}")
+        out.append("\n## Other\n\n" + "\n\n".join(extra_blocks))
+
+    return "\n".join(out).strip() + "\n"
+
+
 async def _assemble(job_id: UUID) -> str:
     async with SessionLocal() as session:
+        job = await jobs_repo.get(session, job_id)
         phases = await phase_repo.list_for_job(session, job_id)
-    parts: list[str] = []
-    for p in phases:
-        if p.phase_name in _INTERNAL_PHASES:
-            continue
-        title = p.phase_name.replace("-", " ").title()
-        body = p.output_md or "(empty)"
-        parts.append(f"## {title}\n\n{body}\n")
-    return "\n".join(parts)
+        book = await books_repo.get(session, job.book_id) if job else None
+        section = await toc_repo.get(session, job.toc_entry_id) if job else None
+
+    phase_bodies = {p.phase_name: (p.output_md or "") for p in phases}
+    extract_md = phase_bodies.get("extract")
+    source_map_json = job.source_map_json if job else None
+
+    return _render_homework_md(
+        book_title=getattr(book, "title", None),
+        chapter=getattr(section, "chapter_title", None),
+        section_number=getattr(section, "section_number", None),
+        section_title=getattr(section, "section_title", None),
+        page_start=getattr(section, "page_start", None),
+        page_end=getattr(section, "page_end", None),
+        extract_md=extract_md,
+        source_map_json=source_map_json,
+        phase_bodies=phase_bodies,
+    )
 
 
 async def _log_token_summary(job_id: UUID, log) -> None:
