@@ -304,15 +304,19 @@ async def run(job_id: UUID) -> None:
                     f"[job {job_id}] source_map build failed (non-fatal): {exc}"
                 )
 
-        # ─── Phase 2: flow manifest — the division plan (enabled phases/games).
-        # Prompt provenance + registry coverage are layered in later (Phase 2 E).
-        # Additive + non-fatal.
+        # ─── Phase 2: flow manifest — division plan + prompt provenance ───────
+        # Records the division plan, per-item prompt provenance (path/version/
+        # hash via the Infra registry), and registry integrity. Persistence is
+        # additive + non-fatal; the coverage GATE below can fail the job early
+        # when configured (Phase 2 E.2).
+        _coverage_missing: list[str] = []
         try:
             from app.services import flow_division_mapper as fdm
             from app.services import prompt_registry
 
             _plan = fdm.build_division_plan(subject=subject, difficulty=difficulty)
             _coverage = prompt_registry.resolve_plan_coverage(_plan)
+            _coverage_missing = list(_coverage.get("missing") or [])
             async with SessionLocal() as session:
                 await jobs_repo.set_flow_manifest_json(
                     session,
@@ -320,6 +324,7 @@ async def run(job_id: UUID) -> None:
                     {
                         "division_plan": _plan.to_dict(),
                         "prompt_registry": _coverage,
+                        "registry_integrity": prompt_registry.integrity_report(),
                     },
                 )
                 await session.commit()
@@ -328,10 +333,24 @@ async def run(job_id: UUID) -> None:
                 f"family={_plan.family} difficulty={_plan.difficulty} "
                 f"games={_plan.practice_games} "
                 f"registry_covered={_coverage.get('covered')} "
-                f"missing={_coverage.get('missing')}"
+                f"missing={_coverage_missing}"
             )
         except Exception as exc:  # noqa: BLE001 — Phase-2 additive; never break the job
             log.warning(f"[job {job_id}] flow_manifest build failed (non-fatal): {exc}")
+
+        # E.2 registry-coverage gate: fail fast when enabled items have no prompt
+        # (neither Infra nor builtin). Enforced only when configured; advisory
+        # (logged) otherwise so coverage is recorded without breaking jobs.
+        if _coverage_missing:
+            if settings.registry_coverage_enforce:
+                from app.services import prompt_registry
+
+                prompt_registry.assert_covered({"missing": _coverage_missing})
+            else:
+                log.warning(
+                    f"[job {job_id}] registry coverage gap (advisory): "
+                    f"{_coverage_missing} — set registry_coverage_enforce=true to fail"
+                )
 
         content_phases = sequence[len(head_phases):]
 

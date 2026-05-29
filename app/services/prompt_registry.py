@@ -23,6 +23,7 @@ what exists and flags v1.1 as pending in `standards`.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -208,3 +209,61 @@ def build_manifest() -> dict:
             "cbp_v1_1": "not_present — only v1.0 ships; author for DPE slot 7",
         },
     }
+
+
+# ── Coverage gate (Phase 2 E.2) ──────────────────────────────────────────
+
+
+class CoverageError(RuntimeError):
+    """Raised when an enabled phase/game resolves to no prompt at all."""
+
+
+def assert_covered(coverage: dict) -> None:
+    """Raise CoverageError if the coverage report lists any missing items."""
+    missing = coverage.get("missing") or []
+    if missing:
+        raise CoverageError(f"enabled items without a prompt: {missing}")
+
+
+# ── Registry integrity / drift (Phase 2 E.1) ─────────────────────────────
+
+PINNED_MANIFEST_PATH = (
+    Path(__file__).resolve().parent.parent.parent
+    / "docs"
+    / "infra_prompt_registry_pinned"
+    / "manifest.json"
+)
+
+
+def load_pinned() -> Optional[dict]:
+    """Load the pinned manifest written by sync_infra_prompt_registry.py."""
+    if not PINNED_MANIFEST_PATH.is_file():
+        return None
+    try:
+        return json.loads(PINNED_MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
+def integrity_report() -> dict:
+    """Compare live Infra files against the pinned manifest.
+
+    Detects drift (a prompt changed since it was pinned) and missing pins —
+    the provenance integrity signal recorded in each job's flow manifest.
+    """
+    pinned = load_pinned()
+    live = build_manifest()
+    if not pinned:
+        return {
+            "pinned_present": False,
+            "drifted": [],
+            "ok": False,
+            "note": "run scripts/sync_infra_prompt_registry.py to pin the registry",
+        }
+    pinned_entries = pinned.get("entries", {})
+    drifted = [
+        key
+        for key, meta in live["entries"].items()
+        if pinned_entries.get(key, {}).get("sha256") != meta.get("sha256")
+    ]
+    return {"pinned_present": True, "drifted": drifted, "ok": not drifted}

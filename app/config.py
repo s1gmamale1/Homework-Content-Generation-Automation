@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     extract_provider: str = "gemini"
     extract_model: str = "gemini-2.5-flash"
 
+    # ─── Flow v2 registry coverage gate (Phase 2 E.2) ─────────────────────
+    # When True, a job fails fast (before content phases) if any enabled phase
+    # or game resolves to no prompt (neither Infra nor builtin). Default False:
+    # coverage is still recorded in flow_manifest_json, just not enforced.
+    registry_coverage_enforce: bool = False
+
     # ─── Per-provider call-count caps, per rolling window ─────────────────
     # 0 = unmetered (the /usage page renders a `—` instead of a percentage).
     # The four CLIs (claude, kimi, codex, gemini) don't expose real quota
