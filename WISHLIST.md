@@ -14,7 +14,11 @@ Status key: `[ ]` open · `[~]` in progress · `[x]` fixed
 -->
 
 - [ ] 2026-05-29 — app/schemas/platform/real_life_challenge.py is a HAND-MIRROR of the platform RealLifeChallengeCase, not the real schema. Must sync from s1gmamale1/Homeworks when available — divergence would let an invalid beta export pass our contract test. Priority: high
-- [ ] 2026-05-29 — Migration 0010 not applied/tested against a live Postgres (no DB available here). Verify `alembic upgrade head` and downgrade work. Priority: med
+- [ ] 2026-05-29 — Migrations 0010 + 0011 not applied/tested against a live Postgres (no DB here). Verify `alembic upgrade head` and downgrade. Priority: med
+- [ ] 2026-05-29 — DEFERRED next step (not a bug): the 6 Practice Arc games have schemas + conformance validators + tests, but NO generation yet — no per-game prompts, no structured Gemini wiring, no DB persistence columns, no pipeline fan-out. game_conformance.validate_game is ready to gate that generation when built. Priority: high (next deliverable)
+- [ ] 2026-05-29 — Skills/SourceMap extraction runs as a serial head-phase Gemini call (adds latency + tokens to every job's critical path). Once it's load-bearing, consider running it parallel with the first content phase. Priority: low
+- [ ] 2026-05-29 — Skills extraction is currently BEST-EFFORT (non-fatal) in pipeline.py — fine for foundation. Must become stop-the-line once games actually consume the SourceMap (so a missing SourceMap can't silently ship unmapped games). Priority: med
+- [ ] 2026-05-29 — Memory Matching / Sentence Filling Infra specs are framed as 'Case-Based Preview interaction modes'. Confirm with design whether these are Practice Arc games OR CBP variants — affects where they sit in the flow. Schema works either way. Priority: low
 - [ ] 2026-05-29 — PRE-EXISTING (not from RLC work, confirmed via git stash on clean base): test_pipeline_synth.py::TestSynthReading::test_checkpoint_count_shown fails — reading synth branch reads cp.after_paragraph but the test's checkpoint stub omits it (pipeline.py:103 AttributeError). Priority: med
 - [ ] 2026-05-29 — PRE-EXISTING (not from RLC work): test_flows.py::TestStripSvgs::test_svg_replaced_with_placeholder fails on clean base. Priority: low
 - [ ] 2026-05-29 — Integration tests (31, test_api_*) error at setup, not run: project pins NO pytest/asyncio config (no asyncio_mode, pytest not in uv.lock). Modern pytest 9 + pytest-asyncio strict mode rejects the async `tables` fixture. Need `asyncio_mode=auto` config + pinned test deps + a Postgres test DB. Priority: med
