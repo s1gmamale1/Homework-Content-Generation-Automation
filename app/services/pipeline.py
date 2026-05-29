@@ -41,13 +41,53 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
         reason = getattr(parsed, "reason", "") or ""
         return f"**Classification:** {difficulty.upper()}" + (f" — {reason}" if reason else "")
 
+    if phase_name == "case-based-preview":
+        title = getattr(parsed, "title", None) or "Case-Based Preview"
+        role = getattr(parsed, "student_role", "") or ""
+        cps = getattr(parsed, "checkpoints", None) or []
+        dpe = getattr(parsed, "decision_process_explanation", None)
+        sim = getattr(parsed, "final_simulation", None)
+        out = [
+            f"## {title}",
+            f"_Student role: {role}. {len(cps)} checkpoints + DPE slot 7. "
+            f"Interactive CBP rendered in preview._\n",
+        ]
+        for i, cp in enumerate(cps, 1):
+            out.append(f"**Checkpoint {i}** [{cp.intent}] {cp.question}")
+        if dpe:
+            out.append(f"\n**Decision Process Explanation (slot 7):** {dpe.prompt}")
+        if sim:
+            out.append(f"\n**Correct path:** {sim.correct_path}")
+            out.append(f"**Wrong path:** {sim.wrong_path}")
+        return "\n".join(out)
+
     if phase_name == "flashcards":
         cards = getattr(parsed, "cards", None) or []
         out = [f"_{len(cards)} flashcards — interactive deck rendered in preview._\n"]
         for i, c in enumerate(cards, 1):
-            out.append(f"{i}. **{c.front}** — {c.back}")
+            card_id = getattr(c, "id", "") or ""
+            id_tag = f" `{card_id}`" if card_id else ""
+            out.append(f"{i}.{id_tag} **{c.front}** — {c.back}")
             if getattr(c, "hint", None):
                 out.append(f"   - hint: {c.hint}")
+        return "\n".join(out)
+
+    if phase_name == "memory-check":
+        items = getattr(parsed, "items", None) or []
+        threshold = getattr(parsed, "pass_threshold", 0.60)
+        out = [
+            f"_{len(items)} memory-check items (pass ≥{int(threshold * 100)}%) "
+            f"— interactive check rendered in preview._\n"
+        ]
+        for i, it in enumerate(items, 1):
+            fid = getattr(it, "flashcard_id", "") or ""
+            fid_tag = f" [←{fid}]" if fid else ""
+            out.append(f"{i}. **[{it.kind.upper()}]{fid_tag}** {it.prompt}")
+            for j, opt in enumerate(it.options or []):
+                marker = "✓" if it.correct_index is not None and j == it.correct_index else " "
+                out.append(f"   - [{marker}] {opt}")
+            if getattr(it, "explanation", None):
+                out.append(f"   - _{it.explanation}_")
         return "\n".join(out)
 
     if phase_name == "memory-sprint":
@@ -143,6 +183,8 @@ _JSON_COLUMN_SETTERS = {
     "game-breaks": jobs_repo.set_games_json,
     "final-challenge": jobs_repo.set_final_challenge_json,
     "boss-arena": jobs_repo.set_boss_arena_json,
+    "case-based-preview": jobs_repo.set_cbp_json,
+    "memory-check": jobs_repo.set_memory_check_json,
     "reading": jobs_repo.set_reading_json,
 }
 

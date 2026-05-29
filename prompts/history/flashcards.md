@@ -22,6 +22,8 @@ All cards in Uzbek. "Siz" if referenced.
 
 ## Card format — 4 fields
 
+**id:** Stable sequential ID — `"card_1"`, `"card_2"`, ... starting from 1. Never skip or reuse.
+
 **Front:** Term name, figure name, or concept phrase. Max 10 words. No context.
 
 **Back:** Definition + key facts. 1–3 sentences. NO practice, NO examples, NO questions.

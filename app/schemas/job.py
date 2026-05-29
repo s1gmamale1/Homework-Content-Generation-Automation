@@ -38,6 +38,8 @@ class JobOut(BaseModel):
     reading_json: Optional[dict[str, Any]] = None
     source_map_json: Optional[dict[str, Any]] = None
     boss_arena_json: Optional[dict[str, Any]] = None
+    cbp_json: Optional[dict[str, Any]] = None
+    memory_check_json: Optional[dict[str, Any]] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     phases: list[PhaseOut] = []

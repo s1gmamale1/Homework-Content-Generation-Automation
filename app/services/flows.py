@@ -18,54 +18,54 @@ def _strip_svgs(text: str) -> str:
 SUBJECT_FLOWS: dict[str, dict] = {
     "biology": {
         "has_classify": True,
-        "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
-        "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
+        "easy": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
+        "hard": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
                  "real-life", "consolidation", "boss-arena", "reflection"],
     },
     "english": {
-        # English is always Hard mode per flow.md — there is no Easy pipeline,
-        # and no preview-easy.md exists. Setting has_classify=False makes the
-        # orchestrator skip the classify branch entirely and run the hard
-        # sequence directly, mirroring history. CEFR level (A1–B2) is handled
-        # within the hard prompts themselves rather than via classify branching.
+        # English is always Hard mode per flow.md — there is no Easy pipeline.
+        # Setting has_classify=False makes the orchestrator skip the classify
+        # branch entirely and run the hard sequence directly, mirroring history.
+        # CEFR level (A1–B2) is handled within the hard prompts themselves
+        # rather than via classify branching.
         "has_classify": False,
         "easy": [],
-        "hard": ["preview-hard", "flashcards", "memory-sprint", "reading", "game-breaks",
+        "hard": ["case-based-preview", "flashcards", "memory-check", "reading", "game-breaks",
                  "real-life", "consolidation", "boss-arena", "reflection"],
     },
     "geometriya-g7-11": {
         "has_classify": True,
-        "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
-        "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
+        "easy": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
+        "hard": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
                  "real-life", "consolidation", "boss-arena", "reflection"],
     },
     "history": {
         # History is always Hard mode — no Easy pipeline.
-        # Canonical structure: 6 mandatory phases (preview, flashcards, memory-sprint,
-        # game-breaks, boss-arena, reflection) + consolidation as a conditional
+        # Canonical structure: case-based-preview, flashcards, memory-check,
+        # game-breaks, boss-arena, reflection + consolidation as a conditional
         # 7th. Per v0 design we run consolidation unconditionally and rely on the
         # prompt to self-emit a skip marker when not applicable.
         "has_classify": False,
         "easy": [],
-        "hard": ["preview", "flashcards", "memory-sprint", "game-breaks",
+        "hard": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
                  "consolidation", "boss-arena", "reflection"],
     },
     "kimyo-g7-11": {
         "has_classify": True,
-        "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
-        "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
+        "easy": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
+        "hard": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
                  "real-life", "consolidation", "boss-arena", "reflection"],
     },
     "math-algebra": {
         "has_classify": True,
-        "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
-        "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
+        "easy": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
+        "hard": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
                  "real-life", "consolidation", "boss-arena", "reflection"],
     },
     "physics": {
         "has_classify": True,
-        "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
-        "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
+        "easy": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
+        "hard": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
                  "real-life", "consolidation", "boss-arena", "reflection"],
     },
 }
@@ -86,14 +86,13 @@ SUPPORTED_SUBJECTS: list[str] = sorted(SUBJECT_FLOWS.keys())
 # because different subjects use different preview phase names; the runtime
 # picks whichever exists in the current job's prior_outputs (one per category).
 PHASE_DEPS: dict[str, list[str]] = {
-    "reading":         ["preview-hard"],                                       # english only
-    "memory-sprint":   ["flashcards"],
-    "game-breaks":     ["flashcards", "memory-sprint"],
-    "real-life":       ["preview-hard", "preview-easy", "preview"],
-    "consolidation":   ["preview-hard", "preview-easy", "preview", "flashcards"],
-    "boss-arena": ["preview-hard", "preview-easy", "preview",
-                        "flashcards", "memory-sprint"],
-    "reflection":      ["preview-hard", "preview-easy", "preview", "boss-arena"],
+    "reading":         ["case-based-preview"],                                 # english only
+    "memory-check":    ["flashcards"],
+    "game-breaks":     ["flashcards", "memory-check"],
+    "real-life":       ["case-based-preview"],
+    "consolidation":   ["case-based-preview", "flashcards"],
+    "boss-arena":      ["case-based-preview", "flashcards", "memory-check"],
+    "reflection":      ["case-based-preview", "boss-arena"],
 }
 
 

@@ -53,6 +53,11 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # {"title","starting_hp","questions":[{concept_ids,difficulty,scenario,why,how,what,
     #   base_damage,hints,correct_feedback,partial_feedback,wrong_feedback}]}
     boss_arena_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # PR-2 (Flow v2) Learning Sections: Case-Based Preview + Memory Check.
+    # cbp_json mirrors the CaseBasedPreview schema; memory_check_json the
+    # MemoryCheckPack ({"items":[{flashcard_id,prompt,kind,...}], "pass_threshold"}).
+    cbp_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    memory_check_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

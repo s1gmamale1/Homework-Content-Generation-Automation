@@ -306,6 +306,10 @@ async def download(
         "final-challenge.json": job.final_challenge_json or {"questions": []},
         "memory-sprint.json": job.memory_sprint_json or {"items": []},
         "reading.json": job.reading_json or {"passage_md": "", "checkpoints": []},
+        "case-based-preview.json": job.cbp_json or {},
+        "memory-check.json": job.memory_check_json or {"items": [], "pass_threshold": 0.60},
+        "boss-arena.json": job.boss_arena_json or {"questions": []},
+        "source-map.json": job.source_map_json or {"concepts": []},
     }
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

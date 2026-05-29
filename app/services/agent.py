@@ -42,11 +42,13 @@ from app.db import SessionLocal
 from app.repositories import agent_usage as usage_repo
 from app.schemas import (
     BossArena,
+    CaseBasedPreview,
     ClassifyDecision,
     ExtractedTOC,
     FinalChallenge,
     FlashcardsPack,
     GamesPack,
+    MemoryCheckPack,
     MemorySprintPack,
     ReadingPassage,
     SourceMap,
@@ -104,8 +106,10 @@ def _resolve_model(provider: str, model: Optional[str]) -> Optional[str]:
 # from either module during the migration.
 STRUCTURED_PHASE_SCHEMAS: dict[str, type[BaseModel]] = {
     "classify": ClassifyDecision,
+    "case-based-preview": CaseBasedPreview,
     "flashcards": FlashcardsPack,
     "memory-sprint": MemorySprintPack,
+    "memory-check": MemoryCheckPack,
     "game-breaks": GamesPack,
     "final-challenge": FinalChallenge,
     "boss-arena": BossArena,
@@ -234,6 +238,7 @@ _EXTRACT_PHASE_PROMPT = (
 # Phases that produce inline SVG diagrams (mirrors gemini.py:_SVG_PHASES).
 _SVG_PHASES: set[str] = {
     "preview-hard", "preview-easy", "preview",
+    "preview", "case-based-preview",
     "real-life", "consolidation",
     "flashcards", "game-breaks", "final-challenge", "boss-arena", "reading",
 }
