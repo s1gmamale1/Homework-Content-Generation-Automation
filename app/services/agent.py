@@ -49,6 +49,7 @@ from app.schemas import (
     MemorySprintPack,
     ReadingPassage,
     RealLifeChallenge,
+    SkillRegistry,
 )
 from app.services.providers import Provider, get_provider
 
@@ -1279,6 +1280,71 @@ async def run_phase_prompt_structured(
     pt = int(result.usage.get("prompt_tokens") or 0)
     ot = int(result.usage.get("output_tokens") or 0)
     return result.parsed, pt or None, ot or None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Skill registry (concepts + target skills derived from the lesson)
+# ─────────────────────────────────────────────────────────────────────
+
+_SKILLS_EXTRACT_PROMPT = (
+    "You are analysing a {subject} lesson to build its skill map. Below is the "
+    "extracted lesson content for section {number} — \"{title}\".\n\n"
+    "Produce TWO layers as structured JSON:\n\n"
+    "1. `concepts` — the atomic facts the lesson teaches: each key term, "
+    "definition, rule, formula, or named process. For each give a stable "
+    "`concept_id` (snake_case slug, e.g. `present_perfect_unfinished_time`), a "
+    "short `label`, and a `statement` faithful to the lesson (do not invent).\n\n"
+    "2. `skills` — the can-do TARGET SKILLS a student should master. Each is a "
+    "`statement` phrased as \"The student can …\" (an action, not a fact), with "
+    "a stable `skill_id` slug and `concept_ids` listing the concept_id(s) it "
+    "rests on (at least one, and every id MUST be one you defined in "
+    "`concepts`). Optionally tag `bloom_level` and `pisa_level`.\n\n"
+    "Rules: every skill must reference real concepts; skills are about applying "
+    "or reasoning with concepts, not merely recalling them; keep the set tight "
+    "(typically 3-8 concepts, 2-6 skills). Do not invent content beyond the "
+    "lesson.\n\n"
+    "## Lesson content\n{lesson_context}"
+)
+
+
+async def extract_skill_registry(
+    *,
+    provider: str,
+    model: Optional[str] = None,
+    lesson_context: str,
+    section_title: str,
+    section_number: str,
+    subject: str,
+    homework_job_id: Optional[UUID] = None,
+    phase_output_id: Optional[UUID] = None,
+) -> tuple[SkillRegistry, Optional[int], Optional[int]]:
+    """Derive the lesson's SkillRegistry (concepts + target skills) from the
+    already-extracted ``lesson_context``. One structured call via the CLI router;
+    no PDF re-read. Returns ``(registry, prompt_tokens, output_tokens)``.
+
+    Router port of the former ``gemini.extract_skill_registry`` — the prompt
+    carries the lesson inline, so we pass it as ``phase_prompt`` and leave the
+    structured runner's ``lesson_context`` empty to avoid duplicating it.
+    """
+    prompt = _SKILLS_EXTRACT_PROMPT.format(
+        subject=subject,
+        number=section_number,
+        title=section_title,
+        lesson_context=lesson_context,
+    )
+    parsed, tin, tout = await run_phase_prompt_structured(
+        provider=provider,
+        model=model,
+        phase_prompt=prompt,
+        response_schema=SkillRegistry,
+        lesson_context="",
+        prior_outputs={},
+        difficulty=None,
+        phase_name="skills.extract",
+        homework_job_id=homework_job_id,
+        phase_output_id=phase_output_id,
+    )
+    return parsed, tin, tout
 
 
 # ─────────────────────────────────────────────────────────────────────

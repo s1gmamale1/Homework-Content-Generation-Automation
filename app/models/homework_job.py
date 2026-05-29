@@ -49,6 +49,12 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # platform `real_life_challenge` key; server-only answer fields are stripped
     # before the student-facing payload. Shape: app/schemas/real_life.py
     real_life_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # Lesson skill registry: atomic concepts + can-do target skills derived from
+    # the lesson. The source-of-truth every Practice Arc mission maps to.
+    # {"concepts": [{concept_id, label, statement, section_ref}],
+    #  "skills": [{skill_id, statement, bloom_level, pisa_level, concept_ids}]}
+    # Shape: app/schemas/skills.py
+    skills_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

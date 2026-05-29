@@ -179,6 +179,15 @@ async def set_real_life_json(
     job.real_life_json = payload
 
 
+async def set_skills_json(
+    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.skills_json = payload
+
+
 async def set_difficulty(session: AsyncSession, job_id: UUID, difficulty: str) -> None:
     job = await session.get(HomeworkJob, job_id)
     if job is None:

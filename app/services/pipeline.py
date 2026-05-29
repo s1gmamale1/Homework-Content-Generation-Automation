@@ -289,6 +289,45 @@ async def run(job_id: UUID) -> None:
 
         content_phases = sequence[len(head_phases):]
 
+        # ─── skill registry (Deliverable #1: concepts + target skills) ────────
+        # Derive the lesson's skill map right after extract, while lesson_context
+        # is fresh. Persisted so resumes reload it instead of re-extracting.
+        # Foundation-only: stored + held in memory, NOT yet fed into mission
+        # generation. Best-effort — a failure must not kill the job at this
+        # stage. (Becomes stop-the-line once missions consume skills — see
+        # WISHLIST.)
+        #
+        # Pinned to the cheap extractor (settings.extract_*) like lesson.extract,
+        # and routed through the CLI router (app.services.agent) — the former
+        # gemini-SDK call was removed with the rest of the SDK on this base.
+        skill_registry = None
+        if lesson_context:
+            try:
+                skill_registry, _sk_tin, _sk_tout = await agent.extract_skill_registry(
+                    provider=settings.extract_provider,
+                    model=settings.extract_model,
+                    lesson_context=lesson_context,
+                    section_title=section_data["title"],
+                    section_number=section_data["number"],
+                    subject=subject,
+                    homework_job_id=job_id,
+                )
+                async with SessionLocal() as session:
+                    await jobs_repo.set_skills_json(
+                        session, job_id, skill_registry.model_dump(mode="json")
+                    )
+                    await session.commit()
+                log.info(
+                    f"[job {job_id}] skill registry stored | "
+                    f"concepts={len(skill_registry.concepts)} "
+                    f"skills={len(skill_registry.skills)}"
+                )
+            except Exception as exc:
+                log.warning(
+                    f"[job {job_id}] skills extraction failed (non-fatal for "
+                    f"foundation): {exc}"
+                )
+
         # ─── tail: content phases (parallel, wave-based by PHASE_DEPS) ────────
         # Everything from sequence[len(head_phases):] is a content phase. They
         # run concurrently when their PHASE_DEPS are satisfied — typically a 2x

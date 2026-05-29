@@ -6,6 +6,12 @@ from app.schemas.games import Game, GameCard, GamePair, GameQuestion, GamesPack
 from app.schemas.job import GenerateRequest, JobOut, PhaseOut
 from app.schemas.memory_sprint import MemorySprintItem, MemorySprintPack
 from app.schemas.reading import ReadingCheckpoint, ReadingPassage
+from app.schemas.skills import (
+    SkillMapped,
+    SkillRegistry,
+    SourceConcept,
+    TargetSkill,
+)
 from app.schemas.real_life import (
     RealLifeChallenge,
     RLCConceptChip,
@@ -45,4 +51,8 @@ __all__ = [
     "RLCDecisionStep",
     "RLCConceptSelectStep",
     "RLCReasoningStep",
+    "SourceConcept",
+    "TargetSkill",
+    "SkillRegistry",
+    "SkillMapped",
 ]

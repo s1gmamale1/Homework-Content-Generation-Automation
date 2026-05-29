@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """Test bootstrap.
 
 The app's ``Settings`` class requires ``DATABASE_URL`` and ``GEMINI_API_KEY``
