@@ -484,6 +484,7 @@ def _build_master_prompt(
     schema: Optional[type[BaseModel]],
     provider_suffix: str,
     attachment_preamble: str = "",
+    source_map_digest: Optional[str] = None,
 ) -> str:
     """Assemble the user-visible prompt the CLI consumes on stdin.
 
@@ -511,6 +512,21 @@ def _build_master_prompt(
     parts.append("--- LESSON CONTEXT ---")
     parts.append(lesson_context.strip() if lesson_context else "(none)")
     parts.append("--- END LESSON CONTEXT ---")
+
+    # Phase 2: the SourceMap is the authoritative concept list — threaded into
+    # every content phase so generation stays grounded in the textbook.
+    if source_map_digest:
+        parts.append("")
+        parts.append("--- SOURCE MAP (authoritative concept list) ---")
+        parts.append(source_map_digest.strip())
+        parts.append("--- END SOURCE MAP ---")
+        parts.append(
+            "Use the SOURCE MAP above as the authoritative list of what this "
+            "lesson teaches. Cover these concepts and stay within them: do NOT "
+            "introduce concepts, facts, formulas, dates, or terms absent from "
+            "the SOURCE MAP and LESSON CONTEXT. The bracketed ids (e.g. c3) are "
+            "for grounding only — do NOT print them in student-facing text."
+        )
 
     if prior_outputs:
         parts.append("")
@@ -568,6 +584,7 @@ async def run_phase(
     phase_output_id: Optional[UUID],
     lesson_context: Optional[str] = None,
     prior_outputs: Optional[dict[str, str]] = None,
+    source_map_digest: Optional[str] = None,
     attachments: list[Path] = (),
     schema: Optional[type[BaseModel]] = None,
     difficulty: Optional[str] = None,
@@ -595,6 +612,7 @@ async def run_phase(
         schema=schema,
         provider_suffix=suffix,
         attachment_preamble=attachment_preamble,
+        source_map_digest=source_map_digest,
     )
 
     attempt_prompt = base_prompt
@@ -1350,6 +1368,7 @@ async def run_phase_prompt(
     phase_prompt: str,
     lesson_context: str,
     prior_outputs: dict[str, str],
+    source_map_digest: Optional[str] = None,
     difficulty: Optional[str],
     phase_name: str = "?",
     max_output_tokens: Optional[int] = None,
@@ -1369,6 +1388,7 @@ async def run_phase_prompt(
         phase_output_id=phase_output_id,
         lesson_context=lesson_context,
         prior_outputs=prior_outputs,
+        source_map_digest=source_map_digest,
         attachments=list(attachments),
         schema=None,
         difficulty=difficulty,
@@ -1387,6 +1407,7 @@ async def run_phase_prompt_structured(
     response_schema: type[BaseModel],
     lesson_context: str,
     prior_outputs: dict[str, str],
+    source_map_digest: Optional[str] = None,
     difficulty: Optional[str],
     phase_name: str = "?",
     max_output_tokens: Optional[int] = None,
@@ -1405,6 +1426,7 @@ async def run_phase_prompt_structured(
         phase_output_id=phase_output_id,
         lesson_context=lesson_context,
         prior_outputs=prior_outputs,
+        source_map_digest=source_map_digest,
         attachments=list(attachments),
         schema=response_schema,
         difficulty=difficulty,

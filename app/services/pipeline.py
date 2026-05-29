@@ -266,6 +266,7 @@ async def run(job_id: UUID) -> None:
         # Structured concept map (stable concept ids) downstream phases cite to
         # stay grounded in the textbook. Additive + non-fatal: a failure here
         # must never break the existing generation flow.
+        source_map_digest: Optional[str] = None
         if lesson_context:
             try:
                 from app.services import source_map as source_map_svc
@@ -290,6 +291,7 @@ async def run(job_id: UUID) -> None:
                         session, job_id, sm.model_dump(mode="json")
                     )
                     await session.commit()
+                source_map_digest = source_map_svc.render_source_map_digest(sm)
                 log.info(
                     f"[job {job_id}] source_map persisted | "
                     f"concepts={len(sm.core_concepts)} terms={len(sm.key_terms)}"
@@ -322,6 +324,7 @@ async def run(job_id: UUID) -> None:
                     lesson_context=lesson_context,
                     prior_outputs=prior_outputs,
                     difficulty=difficulty,
+                    source_map_digest=source_map_digest,
                 )
             except RuntimeError as exc:
                 if "content phase failed" in str(exc):
@@ -397,6 +400,7 @@ async def _execute_one_phase(
     lesson_context: Optional[str],
     prior_outputs: dict[str, str],
     difficulty: Optional[str],
+    source_map_digest: Optional[str] = None,
 ) -> tuple[str, Optional[int], Optional[int], Optional[Any]]:
     """Run a single phase end-to-end with status tracking, SSE emit, and
     error handling. Wraps `_execute_phase` so both the sequential head loop
@@ -429,6 +433,7 @@ async def _execute_one_phase(
             lesson_context=lesson_context,
             prior_outputs=phase_prior,
             difficulty=difficulty,
+            source_map_digest=source_map_digest,
         )
     except Exception as exc:
         phase_ms = (perf_counter() - t_phase) * 1000
@@ -483,6 +488,7 @@ async def _run_content_phases_parallel(
     lesson_context: Optional[str],
     prior_outputs: dict[str, str],
     difficulty: Optional[str],
+    source_map_digest: Optional[str] = None,
 ) -> None:
     """Wave-based parallel scheduler for content phases.
 
@@ -531,6 +537,7 @@ async def _run_content_phases_parallel(
                         lesson_context=lesson_context,
                         prior_outputs=prior_outputs,
                         difficulty=difficulty,
+                        source_map_digest=source_map_digest,
                     ),
                     name=f"phase:{name}",
                 )
@@ -598,6 +605,7 @@ async def _execute_phase(
     lesson_context: Optional[str],
     prior_outputs: dict[str, str],
     difficulty: Optional[str],
+    source_map_digest: Optional[str] = None,
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     if phase_name == "extract":
         # v2: extract now reads section pages locally (pypdf) instead of
@@ -709,6 +717,7 @@ async def _execute_phase(
                 lesson_context=lesson_context or "",
                 prior_outputs=prior_outputs,
                 difficulty=difficulty,
+                source_map_digest=source_map_digest,
                 phase_name=phase_name,
                 max_output_tokens=max_output_tokens_for(phase_name),
                 homework_job_id=job_id,
@@ -725,6 +734,7 @@ async def _execute_phase(
                 lesson_context=lesson_context or "",
                 prior_outputs=prior_outputs,
                 difficulty=difficulty,
+                source_map_digest=source_map_digest,
                 phase_name=phase_name,
                 max_output_tokens=max_output_tokens_for(phase_name),
                 homework_job_id=job_id,

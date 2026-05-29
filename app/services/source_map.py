@@ -104,3 +104,31 @@ async def build_source_map(
         len(sm.main_rules_or_formulas),
     )
     return sm
+
+
+def render_source_map_digest(sm: SourceMap) -> str:
+    """Render a compact, prompt-ready digest of a SourceMap.
+
+    Threaded into every downstream content phase as the authoritative concept
+    list so generation stays grounded (no invention beyond it). Concept ids are
+    for grounding/traceability only — phases are told NOT to print them in
+    student-facing text.
+    """
+    lines: list[str] = []
+    header = f"{sm.section_number} {sm.section_title}".strip()
+    if header:
+        lines.append(f"Section: {header}")
+    if sm.core_concepts:
+        lines.append("Concepts (grounding ids):")
+        for c in sm.core_concepts:
+            summary = f" — {c.summary.strip()}" if c.summary else ""
+            lines.append(f"  [{c.id}] {c.name}{summary}")
+    if sm.main_rules_or_formulas:
+        lines.append("Rules/formulas: " + "; ".join(sm.main_rules_or_formulas))
+    if sm.key_terms:
+        lines.append("Key terms: " + ", ".join(sm.key_terms))
+    if sm.required_skills:
+        lines.append("Student must be able to: " + "; ".join(sm.required_skills))
+    if sm.common_mistakes:
+        lines.append("Common mistakes to watch: " + "; ".join(sm.common_mistakes))
+    return "\n".join(lines).strip()
