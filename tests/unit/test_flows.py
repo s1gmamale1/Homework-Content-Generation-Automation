@@ -16,9 +16,9 @@ from app.services.flows import (
 class TestStripSvgs:
     def test_svg_replaced_with_placeholder(self):
         """SVG blocks inside prior outputs are swapped for [diagram omitted]."""
-        outputs = {"preview-hard": "intro <svg><circle r='5'/></svg> end"}
+        outputs = {"flashcards": "intro <svg><circle r='5'/></svg> end"}
         result = filter_prior_outputs("memory-sprint", outputs)
-        assert "[diagram omitted]" in result.get("flashcards", result.get("preview-hard", ""))
+        assert "[diagram omitted]" in result["flashcards"]
 
     def test_no_svg_unchanged(self):
         outputs = {"flashcards": "plain text output"}
