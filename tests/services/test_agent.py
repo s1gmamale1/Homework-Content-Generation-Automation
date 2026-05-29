@@ -77,10 +77,10 @@ def test_resolve_model_explicit_overrides_default_claude() -> None:
 
 
 def test_provider_default_model_table_keys() -> None:
-    """The dict must register exactly the four supported providers; an
-    accidental rename / drop would break ``run_phase`` silently."""
+    """The dict must register exactly the supported providers; an accidental
+    rename / drop would break ``run_phase`` silently."""
     assert set(_PROVIDER_DEFAULT_MODEL.keys()) == {
-        "claude", "kimi", "codex", "gemini",
+        "claude", "kimi", "codex", "gemini", "opencode",
     }
 
 

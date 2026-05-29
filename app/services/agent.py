@@ -89,6 +89,10 @@ _PROVIDER_DEFAULT_MODEL: dict[str, Optional[str]] = {
     "kimi":   None,
     "codex":  None,
     "gemini": None,
+    # opencode cannot run bare — it REQUIRES a provider/model — so unlike the
+    # others it carries a non-None default (a free zen model). This does NOT
+    # violate the no-leak invariant: kimi/codex/gemini stay None.
+    "opencode": "opencode/deepseek-v4-flash-free",
 }
 
 

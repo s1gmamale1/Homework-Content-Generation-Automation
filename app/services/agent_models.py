@@ -28,6 +28,14 @@ MODEL_MANIFEST: dict[str, list[str]] = {
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
     ],
+    "opencode": [
+        # opencode zen models, addressed as provider/model. The *-free ones
+        # need no API key — attractive for the cheap extract phase.
+        "opencode/deepseek-v4-flash-free",
+        "opencode/nemotron-3-super-free",
+        "opencode/mimo-v2.5-free",
+        "opencode/big-pickle",
+    ],
 }
 
 
