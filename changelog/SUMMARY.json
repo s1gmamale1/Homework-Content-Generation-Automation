@@ -1,0 +1,24 @@
+{
+  "_description": "Short, one-line entries for every change. Newest first. Detail lives in DETAILS.md.",
+  "_format": { "date": "YYYY-MM-DD", "time": "HH:MM (optional)", "branch": "git branch", "summary": "short description" },
+  "entries": [
+    { "date": "2026-05-29", "time": "23:55", "branch": "alphaq", "summary": "Docs/triage: logged the main-based RLC reverse-test deliverable (canonical RLC slice on alphaq supersedes it); filed WISHLIST item — only english/real-life.md is 5-step, the other 4 subject prompts are still legacy" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Review fixes: game_conformance docstring, jigsaw requires 1-3 allowed types, model/type pairing guard, learning_blocks==2, removed dead ExplanationComponent enum (+3 tests, 241 pass)" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Mission→skill: every game now carries target_skill_ids (SkillMapped) and game_conformance enforces mapping to a SourceMap skill (no unmapped missions)" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Practice games: game conformance validators + tests for all 6 (34 new tests pass)" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Practice games: Error Detection schema (spot+correct, 1 error/task)" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Practice games: 4 CBP-mode schemas (Memory Matching, Sentence Filling, TicTacToe, Jigsaw) in app/schemas/practice_games/" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Practice games: shared CBP components (3 MCQ checkpoints + DPE + final sim)" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "SourceMap: concept-trace validator (no disconnected drills) in skill_map" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "SourceMap: skills registry foundation (concepts+skills schemas, extract_skill_registry, skills_json col + migration 0011, pipeline head wiring)" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: added contract + no-leak tests (11 pass)" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: rewrote prompts/english/real-life.md to platform 5-step JSON" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: download ZIP now includes student-safe real-life.json" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: beta_export.py adapter (validate + no-leak strip + reverse-test bridge warning)" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: set_real_life_json setter + pipeline _JSON_COLUMN_SETTERS + synth MD branch" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: added real_life_json column + migration 0010" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: registered real-life in STRUCTURED_PHASE_SCHEMAS + schemas exports" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: added canonical RealLifeChallenge schema (app/schemas/real_life.py)" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: added platform RealLifeChallengeCase mirror (app/schemas/platform/)" }
+  ]
+}

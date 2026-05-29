@@ -1,102 +1,105 @@
-# Prompt: Real-Life Challenge — English (Phase 4, HARD only)
+# Prompt: Real-Life Challenge — English (Practice Arc)
 
-You are building the Real-Life Challenge (Phase 4) for an English HARD mode session. The student has completed Preview, Flash Cards, Sprint, Reading, and Game Breaks. Now they apply everything to ONE deep real-world scenario as THE EXPERT.
+You are building the Real-Life Challenge for an English HARD session. The
+student is not answering questions *about* a scenario — they ARE the expert
+inside it. The fire inspector. The receptionist. The reporter. They predict,
+decide, and justify; the system evaluates whether their reasoning would hold up
+if a real expert read it.
 
-This phase tests whether Preview's Word→Structure Translation actually worked. The student must read a scenario, identify the language target in context, and produce correct English under professional pressure.
+This game outputs ONE first-person expert scenario as a strict **5-step
+decision case**. The point is not "what's the right answer" — it is "did the
+student think like someone who could actually use this concept."
 
 ## Input
 
 - Textbook unit (image or text)
 - All previous phase outputs
-- Detected CEFR level (from `classify.md`): A1 · A1+ · A2 · A2+ · B1 · B1+ · B2
-- Grade (for pro-role selection)
+- Detected CEFR level (A1 · A1+ · A2 · A2+ · B1 · B1+ · B2)
+- Grade (drives the pro-role)
 
-## Output
+## Output — the 5-step contract
 
-ONE scenario with questions (count by CEFR level). Answer key included.
+Produce ONE scenario as exactly these five steps, in this order. Each maps to a
+schema field of the same name. **The order and counts are non-negotiable** —
+they are validated downstream and a violation discards the whole case.
 
-| Level | Scenario words | Questions |
-|:-:|:-:|:-:|
-| A1 / A1+ | 40-70 | 2 |
-| A2 / A2+ | 60-110 | 3 |
-| B1 / B1+ | 90-155 | 3-4 |
-| B2 | 130-180 | 4 |
+1. **decision** — first decision point. The student picks an action that
+   applies the chapter's language/concept. `options`: 2–4 choices, **exactly
+   one** with `is_correct: true`. Distractors must be real mistakes students
+   make, not nonsense. Each option may carry a `consequence` (what happens if
+   chosen). `expected_reasoning`: concept tags a strong "why" would cite.
+2. **info_request** — "What do you need to know before you commit?" The student
+   chooses which extra information to request. `options`: 2–4, **exactly one**
+   correct (the genuinely decision-relevant info). Tests metacognition —
+   knowing what you don't know.
+3. **final_decision** — the committed call after the info arrives. `options`:
+   2–4, **exactly one** correct.
+4. **concept_select** — "Which lesson concept did this actually test?"
+   `concept_chips`: **at least 3** chips, **exactly one** with
+   `is_correct: true` (the lesson concept that applies). The wrong chips are
+   plausible-but-off lesson concepts.
+5. **reasoning** — free-text justification. `prompt` asks the student to
+   explain, in their own English, why the correct call is correct.
+   `min_chars`: between 20 and 1000 (use ~60–120 by grade). Provide
+   `acceptable_keywords` (rubric anchors) and a `sample_acceptable_answer`.
 
-**Tenses in model answers:** level-allowed set only (see `classify.md`).
+Also fill the framing fields: `role`, `task`, `context` (2–4 sentences),
+`prediction_prompt` ("Before you decide, what do you expect to happen?"),
+`source_concept_ids`, `grade_band`, `pisa`, and a closing `expert_feedback` +
+`final_summary_template`. Leave `variant` as `expert_case_5_step`.
 
 ---
 
 ## Scenario Construction
 
-**First-person POV mandatory.** The student IS the professional.
-
-> "You are [role]. Your task is..."
-
-Never third person ("Dilnoza needs to..."). Always direct: "You", "Your".
+**First-person POV mandatory.** The student IS the professional: "You are
+[role]. Your task is…" Never third person ("Dilnoza needs to…").
 
 **Pick a pro-role from the grade-anchored list (grade drives role, NOT level):**
-- **G5-6 — LOCAL ONLY:** Chorsu bozor helper, mahalla football captain, school monitor, young Samarkand kid-tourist guide, family bakery helper, Telegram-group admin
-- **G7-8:** Tashkent IT intern, Chorsu export seller, Hilton Tashkent receptionist, BBC Tashkent young reporter, NASA young-scholar, airline ground staff, CoderDojo mentor
-- **G9-10:** NASA stringer, BBC Tashkent reporter trainee, UN interpreter trainee, airline cabin crew applicant, Uzbekistan Airways customer-service lead, Presidential School IELTS tutor, Samarkand heritage-site docent
-- **G11:** IELTS Task-2 essayist, TEDx Tashkent speaker, Cambridge UCAS personal-statement writer, startup pitch presenter (Tashkent IT Park), UN MUN delegate
+- **G5-6 — LOCAL ONLY:** Chorsu bozor helper, mahalla football captain, school
+  monitor, young Samarkand kid-tourist guide, family bakery helper, Telegram-group admin
+- **G7-8:** Tashkent IT intern, Chorsu export seller, Hilton Tashkent receptionist,
+  BBC Tashkent young reporter, NASA young-scholar, airline ground staff, CoderDojo mentor
+- **G9-10:** NASA stringer, BBC Tashkent reporter trainee, UN interpreter trainee,
+  airline cabin crew applicant, Uzbekistan Airways customer-service lead,
+  Presidential School IELTS tutor, Samarkand heritage-site docent
+- **G11:** IELTS Task-2 essayist, TEDx Tashkent speaker, Cambridge UCAS
+  personal-statement writer, startup pitch presenter (Tashkent IT Park), UN MUN delegate
 
-**Wise Status Injection Recipe:**
-1. Assign a high-status, credible professional role
-2. Anchor in UZ (55%) or global (45%) — no more than 45% global
-3. Close the scenario frame with: "Your precision builds the Third Renaissance." OR "Your accuracy meets Global Standards."
+**Wise Status Injection:** assign a high-status credible role; anchor in UZ
+(~55%) or global (~45%, no more than 45% global); close the `context` with
+"Your precision builds the Third Renaissance." OR "Your accuracy meets Global
+Standards."
 
-**A1/A2 levels: W5H scaffold required.** Include 4 of 6 W5H branches (Who / What / When / Where / Why / How) visible inside the scenario prompt.
+**Scope lock:** every option and the reasoning must rest on language/concepts
+**already taught** in Preview. No new grammar or vocabulary. Same difficulty as
+the hardest Preview example — different context.
 
-**Scope lock:** Every skill tested must have been taught in Preview. No new grammar or vocabulary. Same difficulty as the hardest Preview example — different context.
-
----
-
-## Sub-question Construction
-
-Bloom progression:
-1. **Application** — use the chapter's grammar/vocab to complete a realistic task (Bloom L3)
-2. **Analysis** — compare two English options and explain which is correct in this context (Bloom L4)
-3. **Transfer** — adapt the language to a related but different professional moment (Bloom L4-L5)
-4. **(B1+/B2 only) Evaluation** — critique a piece of English for register, accuracy, or effect (Bloom L5-L6)
-
-A1/A2: questions 1-2 only (Application + simple Analysis). No Transfer or Evaluation.
-
-Each question:
-- Requires producing English (sentence, short dialogue, 2-3 sentence response)
-- Uses level-allowed tenses in the model answer
-- Tagged `[Bloom: LX | PISA: LX]`
+**Strip Test:** remove the lesson concept and the scenario must stop working. If
+a student could decide correctly with general intuition alone, regenerate.
 
 ---
 
-## Example (B1 level, G7 pro-role)
+## Evaluation data (server-side)
 
-> You are a **BBC Tashkent junior reporter**. Your editor has asked you to write a 3-sentence update on the new IT Park expansion in Tashkent. You have already visited the site and interviewed two engineers. Your accuracy meets Global Standards.
-
-> **Q1.** Write 3 sentences reporting what you saw at the IT Park. Use the present perfect at least once. `[Bloom: L3 | PISA: L2]`
->
-> Model: "The new IT Park expansion **has added** 15,000 square metres of co-working space. Engineers **have installed** fibre-optic cables across the entire building. The project **has already attracted** 20 international startups."
-
-> **Q2.** Your editor says: "Use past simple, not present perfect." Which sentence below fits past simple correctly — and why?
-> A) "The engineers installed the cables last Tuesday."  B) "The engineers have installed the cables last Tuesday." `[Bloom: L4 | PISA: L2]`
->
-> Model: A is correct. "Last Tuesday" is a fixed past time → past simple. Present perfect is banned when the time is named.
-
-> **Q3.** Now write one sentence about the IT Park for a formal UN report. Upgrade the register. `[Bloom: L4 | PISA: L3]`
->
-> Model: "The Tashkent IT Park expansion, completed in March 2024, **has significantly enhanced** Uzbekistan's digital infrastructure capacity."
+`is_correct`, `consequence`, and `acceptable_keywords` are evaluation data —
+fill them accurately. They are stripped from the student-facing export
+automatically, so never restate the answer inside a student-visible field
+(`prompt`, option `label`, `context`, …).
 
 ---
 
 ## Rules
 
-- ONE scenario only — not multiple
+- ONE scenario only. Exactly the five steps above, in order.
 - First-person "You" POV. Never third person.
-- Pro-role from grade table — grade drives role, not level
-- All grammar must come from Preview content — no new methods
-- Every question tagged with Bloom + PISA
-- A1/A2 levels: W5H scaffold visible in scenario prompt
-- Model answers use level-allowed tenses — never a banned tense
-- Language: student-facing English. UZ bridge allowed in model answers.
-- No bazaar/village/shopkeeper clichés
-- Apply Wise Status Injection Recipe on every scenario
-- Visuals: inline SVG where visuals aid understanding (scenario setup diagram, timeline). Use inline SVG only — inline SVG and ASCII art do not render in our preview, they appear as raw text.
+- Pro-role from the grade table — grade drives role, not level.
+- All language/concepts come from Preview — no new methods.
+- decision / info_request / final_decision: 2–4 options, exactly one correct.
+- concept_select: ≥3 chips, exactly one correct.
+- reasoning: `min_chars` in [20, 1000]; include `sample_acceptable_answer`.
+- Distractors are real misconceptions, never nonsense.
+- No bazaar/village/shopkeeper clichés; modern 2020+ contexts for global settings.
+- Visuals: inline SVG only where a visual aids the scenario (setup diagram,
+  timeline). Inline SVG and ASCII art are the only visuals that render — anything
+  else appears as raw text.

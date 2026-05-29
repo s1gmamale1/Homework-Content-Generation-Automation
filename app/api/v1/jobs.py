@@ -18,7 +18,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import GenerateRequest, JobOut, PhaseOut
-from app.services import events_bus
+from app.services import beta_export, events_bus
 from app.services.agent_models import MODEL_MANIFEST, is_valid
 
 router = APIRouter(tags=["jobs"])
@@ -276,6 +276,18 @@ async def stream_job(job_id: UUID, request: Request):
     return EventSourceResponse(event_gen())
 
 
+def _student_safe_real_life(real_life_json: Optional[dict]) -> dict:
+    """Validated, no-leak RLC payload for the download bundle. Returns
+    {"steps": []} when absent or malformed so the download never 500s."""
+    if not real_life_json:
+        return {"steps": []}
+    try:
+        payload, _warning = beta_export.adapt_to_beta(real_life_json)
+        return payload
+    except Exception:
+        return {"steps": []}
+
+
 @router.get("/jobs/{job_id}/download")
 async def download(
     job_id: UUID,
@@ -306,6 +318,10 @@ async def download(
         "final-challenge.json": job.final_challenge_json or {"questions": []},
         "memory-sprint.json": job.memory_sprint_json or {"items": []},
         "reading.json": job.reading_json or {"passage_md": "", "checkpoints": []},
+        # Real-Life Challenge is exported student-safe: validated against the
+        # platform contract and stripped of server-only answer fields. On a
+        # malformed canonical we emit empty steps rather than 500 the download.
+        "real-life.json": _student_safe_real_life(job.real_life_json),
     }
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
