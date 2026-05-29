@@ -17,19 +17,20 @@ Retrieval practice: "Do you know the key cards?" Not "Can you apply the concept?
 
 ## Supported item kinds — EXACTLY 3 (no others)
 
-### `mc` — Multiple Choice
+### `multiple_choice` — Multiple Choice
 - Question about a card's front or back.
 - 4 options, 1 correct.
-- Distractors: plausible wrong formulas/values a student might confuse.
+- Distractors: plausible wrong terms, formulas, values, or definitions a student might confuse.
 
-### `tf` — True / False
-- Statement derived from a card. Student taps True or False.
-- Test a rule or common misconception — not trivial recall.
+### `fill_blank` — Fill in the Blank
+- `prompt` contains one blank marker (`_____`) asking for a missing term, value, formula, or short phrase from a card.
+- `options` may be empty; `correct_index` should be null.
+- Put the exact expected answer in `explanation` so the renderer/review can show it.
 
-### `tile_match` — Tile Match
-- `prompt` = a term/expression from a card's front.
-- `options` = list of 4 definitions/values; one matches the card's back.
-- `correct_index` = index of the matching definition.
+### `choose_correct_explanation` — Choose Correct Explanation
+- Question asks which explanation correctly connects a card's front and back.
+- 4 explanation options, 1 correct.
+- Distractors are flawed reasoning, not random wrong answers.
 
 ## Rules
 
@@ -47,7 +48,7 @@ Retrieval practice: "Do you know the key cards?" Not "Can you apply the concept?
     {
       "flashcard_id": "card_1",
       "prompt": "...",
-      "kind": "mc | tf | tile_match",
+      "kind": "multiple_choice | fill_blank | choose_correct_explanation",
       "options": ["A", "B", "C", "D"],
       "correct_index": 0,
       "explanation": "..."
@@ -60,7 +61,7 @@ Retrieval practice: "Do you know the key cards?" Not "Can you apply the concept?
 ## Self-check
 
 1. ✓ Every item has a non-empty `flashcard_id`?
-2. ✓ Only kinds used: `mc`, `tf`, `tile_match`?
+2. ✓ Only kinds used: `multiple_choice`, `fill_blank`, `choose_correct_explanation`?
 3. ✓ `pass_threshold` = 0.60?
 4. ✓ No calculation problems — recall only?
 5. ✓ At least 2 of the 3 kinds represented?

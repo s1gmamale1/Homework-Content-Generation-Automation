@@ -169,6 +169,31 @@ _JSON_COLUMN_SETTERS = {
 }
 
 
+def _validate_memory_check_refs(memory_check: Any, flashcards: Any) -> None:
+    """Require every Memory Check item to reference a generated flashcard id."""
+    if flashcards is None:
+        raise ValueError("memory-check requires structured flashcards output")
+
+    card_ids = {
+        getattr(card, "id", None)
+        for card in (getattr(flashcards, "cards", None) or [])
+    }
+    card_ids.discard(None)
+    if not card_ids:
+        raise ValueError("memory-check requires flashcards with stable ids")
+
+    missing = sorted({
+        getattr(item, "flashcard_id", None)
+        for item in (getattr(memory_check, "items", None) or [])
+        if getattr(item, "flashcard_id", None) not in card_ids
+    })
+    if missing:
+        raise ValueError(
+            "memory-check references unknown flashcard ids: "
+            + ", ".join(str(item) for item in missing)
+        )
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -502,6 +527,7 @@ async def _run_content_phases_parallel(
     """
     pending: set[str] = set(content_phases)
     in_flight: dict[str, asyncio.Task] = {}
+    structured_outputs: dict[str, Any] = {}
     phase_order_map: dict[str, int] = {
         name: phase_order_offset + i for i, name in enumerate(content_phases)
     }
@@ -560,6 +586,11 @@ async def _run_content_phases_parallel(
             del in_flight[phase_name]
             try:
                 output_md, _tin, _tout, parsed_struct = task.result()
+                if phase_name == "memory-check" and parsed_struct is not None:
+                    _validate_memory_check_refs(
+                        parsed_struct,
+                        structured_outputs.get("flashcards"),
+                    )
             except Exception:
                 # Already logged + marked failed by _execute_one_phase. Cancel
                 # any peers still in flight and stop launching new phases.
@@ -573,6 +604,8 @@ async def _run_content_phases_parallel(
                 continue
 
             prior_outputs[phase_name] = output_md
+            if parsed_struct is not None:
+                structured_outputs[phase_name] = parsed_struct
             if parsed_struct is not None and phase_name in _JSON_COLUMN_SETTERS:
                 json_payload = parsed_struct.model_dump(mode="json")
                 setter = _JSON_COLUMN_SETTERS[phase_name]

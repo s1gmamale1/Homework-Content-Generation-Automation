@@ -10,7 +10,8 @@ both a correct and a wrong path.
 Phase 3 additions (Learning Sections):
 - Flashcard.id is required and must be non-empty (stable ID for Memory Check refs)
 - MemoryCheckItem.flashcard_id is required — every item must trace to a card
-- MemoryCheckItem.kind is locked to {"mc", "tf", "tile_match"}
+- MemoryCheckItem.kind is locked to
+  {"multiple_choice", "fill_blank", "choose_correct_explanation"}
 - MemoryCheckPack.pass_threshold defaults to 0.60
 """
 
@@ -268,6 +269,14 @@ def test_flashcards_pack_preserves_ids() -> None:
     assert [c.id for c in pack.cards] == ["card_1", "card_2"]
 
 
+def test_flashcards_pack_rejects_duplicate_ids() -> None:
+    with pytest.raises(ValidationError):
+        FlashcardsPack(cards=[
+            Flashcard(id="card_1", front="A", back="B"),
+            Flashcard(id="card_1", front="C", back="D"),
+        ])
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Memory Check (Phase 3) — 3 supported kinds + flashcard ID refs
 # ─────────────────────────────────────────────────────────────────────
@@ -277,7 +286,7 @@ def _mc_item(**kwargs) -> dict:
     base = dict(
         flashcard_id="card_1",
         prompt="Fotosintez nima?",
-        kind="mc",
+        kind="multiple_choice",
         options=["A", "B", "C", "D"],
         correct_index=0,
     )
@@ -285,20 +294,28 @@ def _mc_item(**kwargs) -> dict:
     return base
 
 
-def test_memory_check_item_valid_mc() -> None:
+def test_memory_check_item_valid_multiple_choice() -> None:
     item = MemoryCheckItem(**_mc_item())
-    assert item.kind == "mc"
+    assert item.kind == "multiple_choice"
     assert item.flashcard_id == "card_1"
 
 
-def test_memory_check_item_valid_tf() -> None:
-    item = MemoryCheckItem(**_mc_item(kind="tf", options=["To'g'ri", "Noto'g'ri"], correct_index=0))
-    assert item.kind == "tf"
+def test_memory_check_item_valid_fill_blank() -> None:
+    item = MemoryCheckItem(
+        **_mc_item(
+            kind="fill_blank",
+            prompt="Fotosintez uchun pigment nomi: _____.",
+            options=[],
+            correct_index=None,
+            explanation="xlorofill",
+        )
+    )
+    assert item.kind == "fill_blank"
 
 
-def test_memory_check_item_valid_tile_match() -> None:
-    item = MemoryCheckItem(**_mc_item(kind="tile_match"))
-    assert item.kind == "tile_match"
+def test_memory_check_item_valid_choose_correct_explanation() -> None:
+    item = MemoryCheckItem(**_mc_item(kind="choose_correct_explanation"))
+    assert item.kind == "choose_correct_explanation"
 
 
 def test_memory_check_item_rejects_unsupported_kind() -> None:
@@ -325,21 +342,21 @@ def test_memory_check_pack_defaults() -> None:
     assert pack.pass_threshold == 0.60
 
 
-def test_memory_check_pack_rejects_threshold_above_1() -> None:
+def test_memory_check_pack_rejects_threshold_other_than_sixty_percent() -> None:
     with pytest.raises(ValidationError):
         MemoryCheckPack(
             items=[MemoryCheckItem(**_mc_item())],
-            pass_threshold=1.5,
+            pass_threshold=0.80,
         )
 
 
 def test_memory_check_pack_multiple_kinds() -> None:
     items = [
-        MemoryCheckItem(**_mc_item(flashcard_id="card_1", kind="mc")),
-        MemoryCheckItem(**_mc_item(flashcard_id="card_2", kind="tf",
-                                   options=["To'g'ri", "Noto'g'ri"], correct_index=1)),
-        MemoryCheckItem(**_mc_item(flashcard_id="card_3", kind="tile_match")),
+        MemoryCheckItem(**_mc_item(flashcard_id="card_1", kind="multiple_choice")),
+        MemoryCheckItem(**_mc_item(flashcard_id="card_2", kind="fill_blank",
+                                   options=[], correct_index=None)),
+        MemoryCheckItem(**_mc_item(flashcard_id="card_3", kind="choose_correct_explanation")),
     ]
     pack = MemoryCheckPack(items=items)
     kinds = {it.kind for it in pack.items}
-    assert kinds == {"mc", "tf", "tile_match"}
+    assert kinds == {"multiple_choice", "fill_blank", "choose_correct_explanation"}

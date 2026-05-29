@@ -4,7 +4,7 @@ rendered as a flippable deck on the /preview/:id page."""
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Flashcard(BaseModel):
@@ -19,3 +19,10 @@ class Flashcard(BaseModel):
 
 class FlashcardsPack(BaseModel):
     cards: list[Flashcard]
+
+    @model_validator(mode="after")
+    def _ids_must_be_unique(self) -> "FlashcardsPack":
+        ids = [card.id for card in self.cards]
+        if len(ids) != len(set(ids)):
+            raise ValueError("flashcard ids must be unique")
+        return self
