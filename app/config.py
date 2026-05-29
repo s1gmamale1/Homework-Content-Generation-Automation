@@ -5,7 +5,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str
-    gemini_api_key: str
+    # VESTIGIAL — leftover from the removed google-genai SDK era. The runtime
+    # makes NO LLM API/SDK calls; every model call goes through a CLI subprocess
+    # (claude/gemini/codex/kimi/opencode), and each CLI uses its own login, not
+    # this key. Nothing reads these two fields. Kept (now optional) only so an
+    # old .env that still sets GEMINI_API_KEY doesn't error. Safe to delete once
+    # no environment references them.
+    gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash-exp"
     max_file_mb: int = 50
     enable_docs: bool = False
