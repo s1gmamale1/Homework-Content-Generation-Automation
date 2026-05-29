@@ -5,9 +5,22 @@
 
 ---
 
-## W1 — Add `opencode` as a 5th CLI provider
+## W1 — Add `opencode` as a 5th CLI provider — ✅ DONE 2026-05-29 (commit 8a96435)
 
-**Status:** Deferred 2026-05-29 (user cancelled mid-scoping; added to wishlist).
+**Status:** IMPLEMENTED (user reinstated; harvested from PR #1 / molotov). See [[MASTER_MEMORY]] §0010.
+`app/services/providers/opencode.py` + registered in PROVIDERS + MODEL_MANIFEST (zen models)
++ `_PROVIDER_DEFAULT_MODEL["opencode"]="opencode/deepseek-v4-flash-free"`. 10 unit tests green.
+
+**⚠️ KEY UNVERIFIED RISK — stdin vs positional prompt.** My research below suspected the
+prompt is a POSITIONAL arg and opencode might NOT read piped stdin. **molotov's implementation
+uses stdin** (`run` with no positional message, prompt piped) and reportedly verified it against
+real generation in PR #1. opencode is NOT installed in this env, so we could not independently
+confirm. **First action when opencode is installed: run one real generation.** If it HANGS
+(the anomalyco/opencode#11891 failure mode), the fix is the argv-positional prompt routing
+described under "To implement" below (the driver always pipes stdin today). Token usage may
+report zeros like kimi. Extract pin left on gemini; opencode-as-extractor via EXTRACT_PROVIDER/
+EXTRACT_MODEL.
+
 **Goal:** Add `opencode` to the CLI-subprocess router alongside `claude / codex / gemini / kimi`.
 
 **Why deferred:** opencode is not installed on this machine, and its CLI contract is
