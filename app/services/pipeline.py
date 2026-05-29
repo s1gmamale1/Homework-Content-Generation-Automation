@@ -151,6 +151,9 @@ async def run(job_id: UUID) -> None:
                 raise RuntimeError("Job is missing book or section context")
             subject = book.subject
             book_id = book.id
+            book_grade = book.grade
+            book_language = book.language or "uz"
+            book_title = book.original_filename or ""
             # Per-job provider/model. Pinned at job-creation time so retries
             # hit the same backend; ``model`` may be None — agent._resolve_model
             # falls back to either a hardcoded provider default or the CLI's
@@ -275,14 +278,14 @@ async def run(job_id: UUID) -> None:
                     provider=settings.extract_provider,
                     model=settings.extract_model,
                     subject=subject,
-                    grade=None,
-                    language="uz",
+                    grade=book_grade,
+                    language=book_language,
                     section_number=str(section_data.get("number") or ""),
                     section_title=str(section_data.get("title") or ""),
                     page_range=(
                         f"{section_data.get('page_start')}-{section_data.get('page_end')}"
                     ),
-                    textbook_title="",
+                    textbook_title=book_title,
                     lesson_context=lesson_context,
                     homework_job_id=job_id,
                 )

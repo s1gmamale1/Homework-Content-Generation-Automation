@@ -16,6 +16,8 @@ async def create(
     content_sha256: str,
     file_size_bytes: int,
     status: str = "uploading",
+    grade: Optional[int] = None,
+    language: str = "uz",
 ) -> Book:
     book = Book(
         subject=subject,
@@ -23,6 +25,8 @@ async def create(
         content_sha256=content_sha256,
         file_size_bytes=file_size_bytes,
         status=status,
+        grade=grade,
+        language=language,
     )
     session.add(book)
     await session.flush()

@@ -12,6 +12,8 @@ class BookOut(BaseModel):
 
     id: UUID
     subject: str
+    grade: Optional[int] = None
+    language: Optional[str] = None
     original_filename: str
     status: str
     error_message: Optional[str] = None

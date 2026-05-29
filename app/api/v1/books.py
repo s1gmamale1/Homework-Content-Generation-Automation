@@ -41,11 +41,18 @@ router = APIRouter(prefix="/books", tags=["books"])
 async def upload_book(
     file: UploadFile = File(...),
     subject: str = Form(...),
+    grade: Optional[int] = Form(None),
+    language: str = Form("uz"),
     session: AsyncSession = Depends(get_session),
     user: dict = Depends(get_current_user),
 ) -> BookOut:
     if subject not in SUPPORTED_SUBJECTS:
         raise HTTPException(400, f"unknown subject; allowed: {SUPPORTED_SUBJECTS}")
+    if grade is not None and not (1 <= grade <= 11):
+        raise HTTPException(400, "grade must be between 1 and 11")
+    language = (language or "uz").lower()
+    if language not in {"uz", "ru", "en"}:
+        raise HTTPException(400, "language must be one of: uz, ru, en")
 
     body = await file.read()
     if len(body) > settings.max_file_mb * 1024 * 1024:
@@ -66,6 +73,8 @@ async def upload_book(
         content_sha256=sha,
         file_size_bytes=len(body),
         status="uploading",
+        grade=grade,
+        language=language,
     )
     await session.commit()
 

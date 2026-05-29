@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import BigInteger, DateTime, Index, String, Text
+from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, Timestamps, UUIDPK
@@ -12,6 +12,10 @@ class Book(Base, UUIDPK, Timestamps):
     __tablename__ = "books"
 
     subject: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Grade band (1-11) and language ("uz"/"ru"/"en"): set at upload, used to
+    # calibrate difficulty and to stamp the SourceMap with real provenance.
+    grade: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    language: Mapped[str] = mapped_column(String(8), nullable=False, server_default="uz")
     original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
