@@ -170,6 +170,15 @@ async def set_reading_json(
     job.reading_json = payload
 
 
+async def set_source_map_json(
+    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.source_map_json = payload
+
+
 async def set_difficulty(session: AsyncSession, job_id: UUID, difficulty: str) -> None:
     job = await session.get(HomeworkJob, job_id)
     if job is None:

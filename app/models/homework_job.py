@@ -44,6 +44,11 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # English-only reading passage with inline checkpoints.
     # {"passage_md", "checkpoints": [{after_paragraph, prompt, options, correct_index}], "cefr_level"}
     reading_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # PR-1 (Flow v2): structured source map derived from the extract — the
+    # factual anchor downstream phases cite. Shape:
+    # {"subject_family", "chapter", "section",
+    #  "concepts": [{"id","label","statement","kind","source_ref?"}]}
+    source_map_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

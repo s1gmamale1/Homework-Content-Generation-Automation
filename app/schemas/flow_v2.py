@@ -126,6 +126,7 @@ SourceConceptKind = Literal["concept", "term", "formula", "process", "skill", "f
 class SourceConcept(BaseModel):
     id: str
     label: str
+    statement: str  # the atomic fact/definition, faithful to the textbook
     kind: SourceConceptKind = "concept"
     source_ref: Optional[str] = None  # page/section pointer back to the book
 

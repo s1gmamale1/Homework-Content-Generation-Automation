@@ -175,12 +175,26 @@ def test_source_map_mock_contract() -> None:
         chapter="Oddiy kasrlar",
         section="To'g'ri kasrni natural songa bo'lish",
         concepts=[
-            SourceConcept(id="c1", label="proper fraction"),
-            SourceConcept(id="c2", label="divide fraction by whole", kind="process"),
+            SourceConcept(
+                id="c1", label="proper fraction",
+                statement="A proper fraction has a numerator smaller than its denominator.",
+            ),
+            SourceConcept(
+                id="c2", label="divide fraction by whole", kind="process",
+                statement="To divide a/b by n, multiply the denominator by n: (a/b)/n = a/(b*n).",
+            ),
         ],
     )
     assert sm.concept_ids() == ["c1", "c2"]
     assert sm.concepts[1].kind == "process"
+    assert sm.concepts[0].statement.startswith("A proper fraction")
+
+
+def test_source_concept_requires_statement() -> None:
+    # `statement` (the atomic textbook fact) is mandatory — the source map is
+    # the factual anchor, so a concept carrying no fact is meaningless.
+    with pytest.raises(ValidationError):
+        SourceConcept(id="c1", label="proper fraction")
 
 
 def test_source_map_requires_at_least_one_concept() -> None:

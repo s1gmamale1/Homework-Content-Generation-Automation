@@ -48,6 +48,7 @@ from app.schemas import (
     GamesPack,
     MemorySprintPack,
     ReadingPassage,
+    SourceMap,
 )
 from app.services.providers import Provider, get_provider
 
@@ -1197,6 +1198,70 @@ async def extract_lesson_context(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Public API: source map (PR-1 — structured concepts from the extract)
+# ─────────────────────────────────────────────────────────────────────
+
+
+_SOURCE_MAP_PROMPT = (
+    "You are building the SOURCE MAP for a {subject_family} lesson — the factual "
+    "anchor every downstream homework phase will cite.\n\n"
+    "From the lesson context below (already extracted from the textbook section "
+    '"{section}" of chapter "{chapter}"), produce a structured source map:\n'
+    '- Set subject_family to "{subject_family}", chapter to "{chapter}", '
+    'section to "{section}".\n'
+    "- Add one `concepts` entry per atomic thing the lesson teaches, each with:\n"
+    '  - `id`: a short stable kebab-case slug (e.g. "divide-fraction-by-whole"), '
+    "unique within this map;\n"
+    "  - `label`: a short human name;\n"
+    "  - `statement`: the atomic fact / definition / rule, faithful to the source "
+    "— do NOT invent facts;\n"
+    "  - `kind`: one of concept | term | formula | process | skill | fact;\n"
+    "  - `source_ref`: a page/section pointer if known, else omit.\n"
+    "Cover the key terms, rules/formulas, processes, and the common-mistake fact. "
+    "Stay strictly within the lesson content; invent nothing."
+)
+
+
+async def extract_source_map(
+    *,
+    provider: str,
+    model: Optional[str],
+    lesson_context: str,
+    subject_family: str,
+    chapter: str,
+    section: str,
+    homework_job_id: Optional[UUID] = None,
+    phase_output_id: Optional[UUID] = None,
+) -> SourceMap:
+    """Derive a structured :class:`SourceMap` from the already-extracted
+    ``lesson_context`` (PR-1).
+
+    Text-only — it does NOT re-read the PDF; it re-structures the lesson context
+    the ``extract`` phase already produced, so it's cheap and stays grounded in
+    the same source. Callers pin ``provider``/``model`` to the cheap extractor.
+    Wraps :func:`run_phase` in schema mode, inheriting its one-shot repair retry
+    and ``AgentUsage`` recording.
+    """
+    prompt = _SOURCE_MAP_PROMPT.format(
+        subject_family=subject_family, chapter=chapter, section=section
+    )
+    result = await run_phase(
+        provider=provider,
+        model=model,
+        phase_prompt=prompt,
+        phase_name="source-map",
+        homework_job_id=homework_job_id,
+        phase_output_id=phase_output_id,
+        lesson_context=lesson_context,
+        schema=SourceMap,
+    )
+    # run_phase raises in schema mode before returning parsed=None, so this is
+    # always a validated SourceMap here.
+    assert isinstance(result.parsed, SourceMap)
+    return result.parsed
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Compatibility shims: pipeline.py migrates to these incrementally
 # ─────────────────────────────────────────────────────────────────────
 
@@ -1325,6 +1390,7 @@ __all__ = [
     "run_phase",
     "extract_toc",
     "extract_lesson_context",
+    "extract_source_map",
     "run_phase_prompt",
     "run_phase_prompt_structured",
     "record_cached_lesson_extract",

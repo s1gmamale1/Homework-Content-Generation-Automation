@@ -163,6 +163,7 @@ async def run(job_id: UUID) -> None:
                 "number": section.section_number,
                 "page_start": section.page_start,
                 "page_end": section.page_end,
+                "chapter": section.chapter_title or "",
             }
 
         # Local on-disk PDF — written by app.api.v1.books.upload_book and kept
@@ -239,6 +240,40 @@ async def run(job_id: UUID) -> None:
             if phase_name == "extract":
                 lesson_context = output_md
                 log.info(f"[job {job_id}] lesson_context captured | chars={len(output_md)}")
+                # PR-1: derive the structured source map from the freshly
+                # captured lesson_context — text-only, pinned to the cheap
+                # extractor (no PDF re-read). Best-effort: a failure logs but
+                # does NOT fail the job (downstream phases don't consume the
+                # map yet; that wiring lands in later PRs).
+                try:
+                    source_map = await agent.extract_source_map(
+                        provider=settings.extract_provider,
+                        model=settings.extract_model,
+                        lesson_context=lesson_context,
+                        subject_family=subject,
+                        chapter=section_data.get("chapter") or "",
+                        section=section_data["title"],
+                        homework_job_id=job_id,
+                    )
+                    async with SessionLocal() as session:
+                        await jobs_repo.set_source_map_json(
+                            session, job_id, source_map.model_dump(mode="json")
+                        )
+                        await session.commit()
+                    log.info(
+                        f"[job {job_id}] source map captured | "
+                        f"concepts={len(source_map.concepts)}"
+                    )
+                    await events_bus.publish(
+                        resource_id,
+                        "source_map_ready",
+                        {"concepts": len(source_map.concepts)},
+                    )
+                except Exception as exc:
+                    log.warning(
+                        f"[job {job_id}] source map extraction failed "
+                        f"(non-fatal): {exc!r}"
+                    )
             elif phase_name == "classify":
                 # Schema-constrained classifier returns ClassifyDecision; the
                 # Literal[easy,hard] enum guarantees `difficulty` is one of
