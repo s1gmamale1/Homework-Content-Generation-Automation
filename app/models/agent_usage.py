@@ -9,16 +9,17 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, Timestamps, UUIDPK
 
 
-class GeminiUsage(Base, UUIDPK, Timestamps):
-    """One row per Gemini API call. Records what the call was for, how long it
-    took, what tokens it consumed, and whether it succeeded.
+class AgentUsage(Base, UUIDPK, Timestamps):
+    """One row per LLM API call (across all providers). Records what the call
+    was for, which provider/model handled it, how long it took, what tokens
+    it consumed, and whether it succeeded.
 
     The three nullable FKs are alternatives — exactly one is typically set:
     - `book_id` for file uploads and TOC extraction
     - `homework_job_id` + `phase_output_id` for pipeline phases
     """
 
-    __tablename__ = "gemini_usages"
+    __tablename__ = "agent_usages"
 
     # Optional links — SET NULL on delete so usage history survives cleanup
     book_id: Mapped[Optional[UUID]] = mapped_column(
@@ -31,23 +32,25 @@ class GeminiUsage(Base, UUIDPK, Timestamps):
         ForeignKey("phase_outputs.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Provider that served the call: 'gemini' | 'openai' | 'anthropic' | ...
+    provider: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="gemini"
+    )
+
     # What kind of call it was: 'files.upload' | 'toc.extract' | 'lesson.extract' | 'phase.run'
     operation: Mapped[str] = mapped_column(String(64), nullable=False)
     model_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
-    # Token counts — broken down by what this project actually consumes:
-    # text + image (PDFs render as images), thoughts, output (candidates), and
-    # the SDK's own roll-ups for total prompt and cached portion.
-    total_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    prompt_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    input_text_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    input_image_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    candidates_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    thoughts_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    cached_content_token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Provider-neutral token counts. Anything provider-specific (modality
+    # breakdowns, reasoning/thoughts tokens, etc.) lives in `raw_envelope`.
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cached_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
-    # Raw usage_metadata as JSON — for fields the SDK adds later that we don't surface yet
-    usage_metadata: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # Raw provider response envelope (usage_metadata, headers, etc.) as JSON —
+    # for fields the SDK adds later that we don't surface as columns yet.
+    raw_envelope: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
 
     # Duration as a stringified value (e.g., '1.23s' or '4500ms') — easy to read in DB browsers
     duration: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
@@ -62,9 +65,10 @@ class GeminiUsage(Base, UUIDPK, Timestamps):
     )
 
     __table_args__ = (
-        Index("ix_gemini_usages_book", "book_id"),
-        Index("ix_gemini_usages_job", "homework_job_id"),
-        Index("ix_gemini_usages_phase", "phase_output_id"),
-        Index("ix_gemini_usages_operation", "operation"),
-        Index("ix_gemini_usages_created_at_desc", "created_at"),
+        Index("ix_agent_usages_book", "book_id"),
+        Index("ix_agent_usages_job", "homework_job_id"),
+        Index("ix_agent_usages_phase", "phase_output_id"),
+        Index("ix_agent_usages_operation", "operation"),
+        Index("ix_agent_usages_provider", "provider"),
+        Index("ix_agent_usages_created_at_desc", "created_at"),
     )

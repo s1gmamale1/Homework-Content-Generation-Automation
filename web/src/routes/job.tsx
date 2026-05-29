@@ -1,12 +1,23 @@
-import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, CheckCircle2, ChevronDown, CircleX, Download, Eye, Loader2 } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  ArrowLeft,
+  CheckCircle2,
+  ChevronDown,
+  CircleX,
+  Download,
+  Eye,
+  Loader2,
+  RefreshCcw,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
+import { toast } from "sonner";
 import { Eyebrow } from "@/components/eyebrow";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useEventSource } from "@/hooks/use-event-source";
 import { api } from "@/lib/api";
 import type { Difficulty } from "@/lib/types";
@@ -31,6 +42,36 @@ export function JobPage() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [parents, setParents] = useState<{ bookId: string; sectionId: string } | null>(null);
+  const [agent, setAgent] = useState<{ provider: string; model: string | null } | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const queryClient = useQueryClient();
+
+  /**
+   * Retry-in-place. Reuses the same job row (and pinned provider/model) — see
+   * `POST /api/v1/jobs/<id>/retry`. Distinct from the section-page "Try again"
+   * button, which creates a fresh job via `force=true`. After the server
+   * resets the row, we clear local error/phase state so the existing
+   * `useEventSource` re-enables (its `enabled` gate is `!downloadUrl && !error`)
+   * and the worker's phase_started events repopulate the timeline.
+   */
+  async function handleRetry() {
+    if (!id) return;
+    setRetrying(true);
+    try {
+      const updated = await api.retryJob(id);
+      queryClient.setQueryData(["job", id], updated);
+      // Reset local UI state so the SSE stream takes over again.
+      setError(null);
+      setPhases({});
+      setOrder([]);
+      setDifficulty(null);
+      toast.success("Retry queued — pipeline restarting");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Retry failed");
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   function upsert(name: string, partial: Partial<PhaseUi>) {
     setPhases((prev) => {
@@ -55,6 +96,7 @@ export function JobPage() {
       .getJob(id)
       .then((j) => {
         setParents({ bookId: j.book_id, sectionId: j.toc_entry_id });
+        if (j.provider) setAgent({ provider: j.provider, model: j.model ?? null });
         for (const p of j.phases) {
           upsert(p.phase_name, {
             order: p.phase_order,
@@ -138,6 +180,17 @@ export function JobPage() {
         </div>
       </div>
 
+      {agent && (
+        <p className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="font-mono text-[0.7rem] uppercase tracking-[0.16em] text-(--color-ink-muted)">
+            Agent
+          </span>
+          <span className="font-mono text-[0.75rem] text-(--color-ink-soft)">
+            {agent.provider} · {agent.model ?? "default"}
+          </span>
+        </p>
+      )}
+
       <h1 className="mt-3 text-3xl font-semibold tracking-tight text-(--color-ink)">
         {downloadUrl ? "Homework ready" : "Generating homework"}
       </h1>
@@ -160,9 +213,33 @@ export function JobPage() {
       {downloadUrl && id && <DonePanel jobId={id} downloadUrl={downloadUrl} />}
 
       {error && !downloadUrl && (
-        <div className="mt-6 rounded-(--radius-md) border border-[oklch(0.70_0.16_25_/_30%)] bg-[oklch(0.70_0.16_25_/_8%)] px-3 py-2 text-sm text-(--color-error)">
-          {error}
-        </div>
+        <>
+          <div className="mt-6 rounded-(--radius-md) border border-[oklch(0.70_0.16_25_/_30%)] bg-[oklch(0.70_0.16_25_/_8%)] px-3 py-2 text-sm text-(--color-error)">
+            {error}
+          </div>
+          {parents && (
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button onClick={handleRetry} disabled={retrying}>
+                {retrying ? (
+                  <>
+                    <Loader2 className="size-3.5 animate-spin" />
+                    Retrying…
+                  </>
+                ) : (
+                  <>
+                    <RefreshCcw className="size-3.5" />
+                    Retry this job
+                  </>
+                )}
+              </Button>
+              <Button asChild variant="secondary">
+                <Link to={`/book/${parents.bookId}/section/${parents.sectionId}`}>
+                  Start fresh
+                </Link>
+              </Button>
+            </div>
+          )}
+        </>
       )}
     </>
   );

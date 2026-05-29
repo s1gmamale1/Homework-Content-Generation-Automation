@@ -1,5 +1,12 @@
 import { clearToken, getToken } from "./auth";
-import type { Book, Job, Subject, TOCEntry } from "./types";
+import type {
+  AgentStats,
+  Book,
+  Job,
+  ProviderModelManifest,
+  Subject,
+  TOCEntry,
+} from "./types";
 
 class ApiError extends Error {
   status: number;
@@ -132,9 +139,14 @@ export const api = {
   async generate(
     bookId: string,
     sectionId: string,
-    opts: { force?: boolean; idempotencyKey?: string } = {},
+    opts: {
+      force?: boolean;
+      idempotencyKey?: string;
+      provider?: string;
+      model?: string | null;
+    } = {},
   ): Promise<Job> {
-    const { force = false, idempotencyKey } = opts;
+    const { force = false, idempotencyKey, provider = "gemini", model = null } = opts;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
     const res = await authFetch(
@@ -142,14 +154,38 @@ export const api = {
       {
         method: "POST",
         headers,
-        body: JSON.stringify({ force }),
+        body: JSON.stringify({ force, provider, model }),
       },
     );
     return unwrap<Job>(res);
   },
 
+  async getAgentModels(): Promise<ProviderModelManifest> {
+    const res = await authFetch("/api/v1/agent/models");
+    return unwrap<ProviderModelManifest>(res);
+  },
+
+  async getAgentStats(): Promise<AgentStats> {
+    const res = await authFetch("/api/v1/agent/stats");
+    return unwrap<AgentStats>(res);
+  },
+
   async getJob(jobId: string): Promise<Job> {
     const res = await authFetch(`/api/v1/jobs/${encodeURIComponent(jobId)}`);
+    return unwrap<Job>(res);
+  },
+
+  /**
+   * Retry a failed job in place — reuses the same job row (keeping the
+   * pinned provider/model) instead of creating a new one. Server returns
+   * 409 if the job is not in `failed` status. The "regenerate from scratch"
+   * path is `generate(..., { force: true })` from the section page.
+   */
+  async retryJob(jobId: string): Promise<Job> {
+    const res = await authFetch(
+      `/api/v1/jobs/${encodeURIComponent(jobId)}/retry`,
+      { method: "POST" },
+    );
     return unwrap<Job>(res);
   },
 

@@ -39,7 +39,45 @@ class Settings(BaseSettings):
     # Process-wide cap on simultaneous Gemini calls. Protects against
     # rate-limit cascades when multiple workers + parallel scheduler all
     # fan out at once.
-    gemini_max_concurrency: int = 8
+    agent_max_concurrency: int = 8  # process-wide cap on concurrent CLI subprocesses
+    gemini_max_concurrency: int = 8  # DEPRECATED — kept for backwards-compat with agent.py
+
+    # ─── Filesystem ───────────────────────────────────────────────────────
+    # Where PDFs are persisted on disk.
+    var_dir: str = "var"  # relative to project root; PDFs persist at <var_dir>/books/<book_id>/source.pdf
+
+    # ─── Cheap-extractor pin ──────────────────────────────────────────────
+    # Both PDF-reading paths (TOC extraction at upload time + per-section
+    # lesson.extract during a job) are pinned to a cheap model regardless of
+    # which provider/model the user picked for the rest of the job. Reasoning:
+    # extract phases burn the most input tokens (whole-PDF or many-page reads)
+    # and the output is a flat factual summary, so paying smart-tier rates
+    # buys nothing. Other phases keep using the job-level provider/model.
+    extract_provider: str = "gemini"
+    extract_model: str = "gemini-2.5-flash"
+
+    # ─── Per-provider call-count caps, per rolling window ─────────────────
+    # 0 = unmetered (the /usage page renders a `—` instead of a percentage).
+    # The four CLIs (claude, kimi, codex, gemini) don't expose real quota
+    # APIs in headless mode, so the dashboard tracks LOCAL consumption —
+    # calls THIS app has issued — within fixed rolling windows. Match these
+    # values to the plan/tier you're on for each provider so the
+    # percentages reflect real headroom.
+    agent_limit_claude_1h: int = 100
+    agent_limit_claude_24h: int = 1000
+    agent_limit_claude_7d: int = 5000
+
+    agent_limit_kimi_1h: int = 60
+    agent_limit_kimi_24h: int = 600
+    agent_limit_kimi_7d: int = 3000
+
+    agent_limit_codex_1h: int = 60
+    agent_limit_codex_24h: int = 500
+    agent_limit_codex_7d: int = 2500
+
+    agent_limit_gemini_1h: int = 60
+    agent_limit_gemini_24h: int = 1500
+    agent_limit_gemini_7d: int = 10000
 
 
 settings = Settings()

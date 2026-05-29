@@ -10,7 +10,10 @@ class TOCEntryOut(BaseModel):
     id: UUID
     chapter_number: Optional[str] = None
     chapter_title: Optional[str] = None
-    section_number: str
+    # Real-world TOCs often contain unnumbered sections (intros, prefaces,
+    # appendices). Make ``section_number`` optional so extraction does not
+    # reject otherwise-valid entries.
+    section_number: Optional[str] = None
     section_title: str
     page_start: Optional[int] = None
     page_end: Optional[int] = None
@@ -24,7 +27,8 @@ class TOCEntryOut(BaseModel):
 class TOCEntryExtracted(BaseModel):
     chapter_number: Optional[str] = None
     chapter_title: Optional[str] = None
-    section_number: str
+    # See ``TOCEntryOut.section_number`` — same rationale.
+    section_number: Optional[str] = None
     section_title: str
     page_start: Optional[int] = None
     page_end: Optional[int] = None

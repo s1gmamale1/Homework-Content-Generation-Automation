@@ -1,4 +1,4 @@
-import { Library, Plus } from "lucide-react";
+import { Gauge, Library, Plus } from "lucide-react";
 import { NavLink, Outlet } from "react-router-dom";
 import { Nameplate } from "./nameplate";
 import { cn } from "@/lib/utils";
@@ -20,6 +20,9 @@ export function Layout() {
               </NavItem>
               <NavItem to="/library" icon={<Library className="size-4" />}>
                 Library
+              </NavItem>
+              <NavItem to="/usage" icon={<Gauge className="size-4" />}>
+                Usage
               </NavItem>
             </nav>
           </div>

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import settings
 from app.models.base import Base
-from app.models import book, toc_entry, homework_job, phase_output, gemini_usage  # noqa: F401
+from app.models import book, toc_entry, homework_job, phase_output, agent_usage  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)

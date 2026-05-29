@@ -10,6 +10,7 @@ import { LoginPage } from "@/routes/login";
 import { PreviewPage } from "@/routes/preview";
 import { SectionPage } from "@/routes/section";
 import { UploadPage } from "@/routes/upload";
+import { UsagePage } from "@/routes/usage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -35,6 +36,7 @@ export default function App() {
           >
             <Route index element={<UploadPage />} />
             <Route path="/library" element={<LibraryPage />} />
+            <Route path="/usage" element={<UsagePage />} />
             <Route path="/book/:id" element={<BookPage />} />
             <Route path="/book/:bookId/section/:sectionId" element={<SectionPage />} />
             <Route path="/job/:id" element={<JobPage />} />

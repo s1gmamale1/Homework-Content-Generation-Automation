@@ -15,7 +15,11 @@ class TOCEntry(Base, UUIDPK, Timestamps):
     )
     chapter_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     chapter_title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    section_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Nullable because real-world TOCs often have unnumbered sections
+    # (intros, prefaces, appendices). The matching schema in
+    # ``app/schemas/toc.py`` keeps this Optional; migration 0011 relaxes
+    # the column from NOT NULL.
+    section_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     section_title: Mapped[str] = mapped_column(Text, nullable=False)
     page_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     page_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

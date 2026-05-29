@@ -209,6 +209,12 @@ export function PreviewPage() {
         </a>
       </div>
 
+      {job.provider && (
+        <p className="mt-3 font-mono text-[0.7rem] uppercase tracking-[0.16em] text-(--color-ink-muted)">
+          {job.subject} · {job.provider}
+        </p>
+      )}
+
       <article className="mt-8 leading-relaxed text-(--color-ink-soft)">
         {segments.map((seg, i) => {
           if (seg.kind === "md") {

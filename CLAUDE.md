@@ -1,175 +1,117 @@
-# Ruflo — Claude Code Configuration
+# CLAUDE.md
 
-## Rules
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-- Do what has been asked; nothing more, nothing less
-- NEVER create files unless absolutely necessary — prefer editing existing files
-- NEVER create documentation files unless explicitly requested
-- NEVER save working files or tests to root — use `/src`, `/tests`, `/docs`, `/config`, `/scripts`
-- ALWAYS read a file before editing it
-- NEVER commit secrets, credentials, or .env files
-- Keep files under 500 lines
-- Validate input at system boundaries
+## What this is
 
-## Agent Comms (SendMessage-First Coordination)
+FastAPI + React app that turns a textbook PDF into a multi-phase homework packet (preview, flashcards, memory sprint, mini-games, boss-fight quiz, reading, reflection). Background workers run a DAG-parallel pipeline that drives **CLI subprocesses** of one of four LLM providers — `claude`, `kimi`, `codex`, `gemini` — chosen per job by the user.
 
-Named agents coordinate via `SendMessage`, not polling or shared state.
+Everything LLM-facing goes through `app/services/agent.py` (the CLI router); there is no Gemini SDK, OpenAI SDK, or Anthropic SDK in the runtime path. The four CLIs must be installed on `PATH`.
 
-```
-Lead (you) ←→ architect ←→ developer ←→ tester ←→ reviewer
-              (named agents message each other directly)
-```
+## Commands
 
-### Spawning a Coordinated Team
+```powershell
+# Backend
+uv sync                                 # install Python deps
+uv sync --extra dev                     # incl. pytest, pytest-asyncio
+uv run alembic upgrade head             # apply migrations
+uv run alembic revision -m "describe"   # new migration
+uv run uvicorn main:app --host 0.0.0.0 --port 8000   # API + SPA + embedded worker
 
-```javascript
-// ALL agents in ONE message, each knows WHO to message next
-Agent({ prompt: "Research the codebase. SendMessage findings to 'architect'.",
-  subagent_type: "researcher", name: "researcher", run_in_background: true })
-Agent({ prompt: "Wait for 'researcher'. Design solution. SendMessage to 'coder'.",
-  subagent_type: "system-architect", name: "architect", run_in_background: true })
-Agent({ prompt: "Wait for 'architect'. Implement it. SendMessage to 'tester'.",
-  subagent_type: "coder", name: "coder", run_in_background: true })
-Agent({ prompt: "Wait for 'coder'. Write tests. SendMessage results to 'reviewer'.",
-  subagent_type: "tester", name: "tester", run_in_background: true })
-Agent({ prompt: "Wait for 'tester'. Review code quality and security.",
-  subagent_type: "reviewer", name: "reviewer", run_in_background: true })
+# Tests
+uv run python -m pytest tests/ -q                    # all (~41 tests)
+uv run python -m pytest tests/services/test_agent.py -q     # single file
+uv run python -m pytest tests/services/test_agent.py::test_resolve_model_no_default_leak -v   # one test
 
-// Kick off the pipeline
-SendMessage({ to: "researcher", summary: "Start", message: "[task context]" })
-```
+# Frontend (web/)
+cd web && npm install
+cd web && npm run dev                   # Vite dev server (proxies /api to :8000)
+cd web && npm run build                 # writes web/dist/, served by FastAPI on :8000
+cd web && npx tsc -p tsconfig.app.json --noEmit       # typecheck only
 
-### Patterns
+# Postgres (local dev)
+docker run -d --name edu-postgres -e POSTGRES_USER=edu -e POSTGRES_PASSWORD=edu \
+  -e POSTGRES_DB=edu_homework -p 5433:5432 -v edu_pgdata:/var/lib/postgresql/data \
+  postgres:16-alpine
 
-| Pattern | Flow | Use When |
-|---------|------|----------|
-| **Pipeline** | A → B → C → D | Sequential dependencies (feature dev) |
-| **Fan-out** | Lead → A, B, C → Lead | Independent parallel work (research) |
-| **Supervisor** | Lead ↔ workers | Ongoing coordination (complex refactor) |
-
-### Rules
-
-- ALWAYS name agents — `name: "role"` makes them addressable
-- ALWAYS include comms instructions in prompts — who to message, what to send
-- Spawn ALL agents in ONE message with `run_in_background: true`
-- After spawning: STOP, tell user what's running, wait for results
-- NEVER poll status — agents message back or complete automatically
-
-## Swarm & Routing
-
-### Config
-- **Topology**: hierarchical-mesh (anti-drift)
-- **Max Agents**: 15
-- **Memory**: hybrid
-- **HNSW**: Enabled
-- **Neural**: Enabled
-
-```bash
-npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8 --strategy specialized
+# Inspect DB
+docker exec edu-postgres psql -U edu -d edu_homework -c "<sql>"
 ```
 
-### Agent Routing
+Local dev uses port **5433** for Postgres, not 5432, because the Windows host typically has its own Postgres on 5432. `.env` reflects this.
 
-| Task | Agents | Topology |
-|------|--------|----------|
-| Bug Fix | researcher, coder, tester | hierarchical |
-| Feature | architect, coder, tester, reviewer | hierarchical |
-| Refactor | architect, coder, reviewer | hierarchical |
-| Performance | perf-engineer, coder | hierarchical |
-| Security | security-architect, auditor | hierarchical |
+## Architecture
 
-### When to Swarm
-- **YES**: 3+ files, new features, cross-module refactoring, API changes, security, performance
-- **NO**: single file edits, 1-2 line fixes, docs updates, config changes, questions
+### Provider router (`app/services/providers/` + `app/services/agent.py`)
 
-### 3-Tier Model Routing
+`Provider` is an abstract base (`base.py`) with one subclass per CLI (`claude.py`, `kimi.py`, `codex.py`, `gemini.py`). Each provider implements:
+- `build_argv(...)` — argv vector for `asyncio.create_subprocess_exec`. Adds `--model X` only when truthy. Adds attachment scope flags (`--add-dir`, `--include-directories`) per CLI.
+- `parse_envelope(stdout, last_msg_path)` — returns `(text, usage)` where usage has normalized keys `prompt_tokens`, `output_tokens`, `cached_tokens`, `total_tokens`, `raw`.
+- `format_attachments(paths)` — provider-specific prompt preamble that names attached files. Claude returns `""` (consumes attachments via positional `@<path>` argv); the others return text instructing the CLI which tool to use to read the file.
+- `prompt_suffix(ctx)` — visual-policy suffix (e.g., "use $imagegen for raster, SVG inline").
 
-| Tier | Handler | Use Cases |
-|------|---------|-----------|
-| 1 | Agent Booster (WASM) | Simple transforms — skip LLM, use Edit directly |
-| 2 | Haiku | Simple tasks, low complexity |
-| 3 | Sonnet/Opus | Architecture, security, complex reasoning |
+`agent.py` exposes:
+- `run_phase`, `extract_toc`, `extract_lesson_context` — primary call surface used by the pipeline.
+- `_resolve_model(provider, model)` — provider→default-model lookup. **Critical invariant**: `_resolve_model("gemini", None) is None` (and same for kimi/codex). Only `claude` has a default. This guards a real regression where a single shared default once leaked across providers; there is a unit test for it.
+- `_PROVIDER_DEFAULT_MODEL` — the table the resolver reads.
+- `STRUCTURED_PHASE_SCHEMAS` — phase name → Pydantic class for JSON-mode phases. JSON Schema is embedded into the prompt and the response is `model_validate_json`'d; on `ValidationError` we retry once with the error appended.
 
-## Memory & Learning
+### MODEL_MANIFEST (`app/services/agent_models.py`)
 
-### Before Any Task
-```bash
-npx @claude-flow/cli@latest memory search --query "[task keywords]" --namespace patterns
-npx @claude-flow/cli@latest hooks route --task "[task description]"
-```
+The single source of truth for which `(provider, model)` pairs the API and frontend will accept. The `/api/v1/agent/models` endpoint serves it; `is_valid()` enforces it on `POST /generate`. Update here when adding/removing models.
 
-### After Success
-```bash
-npx @claude-flow/cli@latest memory store --namespace patterns --key "[name]" --value "[what worked]"
-npx @claude-flow/cli@latest hooks post-task --task-id "[id]" --success true --store-results true
-```
+### Pipeline (`app/services/pipeline.py`)
 
-### MCP Tools (use `ToolSearch("keyword")` to discover)
+Per-job state machine:
 
-| Category | Key Tools |
-|----------|-----------|
-| **Memory** | `memory_store`, `memory_search`, `memory_search_unified` |
-| **Bridge** | `memory_import_claude`, `memory_bridge_status` |
-| **Swarm** | `swarm_init`, `swarm_status`, `swarm_health` |
-| **Agents** | `agent_spawn`, `agent_list`, `agent_status` |
-| **Hooks** | `hooks_route`, `hooks_post-task`, `hooks_worker-dispatch` |
-| **Security** | `aidefence_scan`, `aidefence_is_safe`, `aidefence_has_pii` |
-| **Hive-Mind** | `hive-mind_init`, `hive-mind_consensus`, `hive-mind_spawn` |
+1. **Head (sequential)**: `extract` → `classify` (if `flow.has_classify`).
+2. **Tail (DAG-parallel)**: every phase declares its deps in `flows.PHASE_DEPS`; a wave-based scheduler launches phases concurrently when their deps are met. Typical 2× speedup over sequential.
+3. **Assembly**: combines phase outputs into a single markdown packet plus structured JSON columns for interactive renders.
 
-### Background Workers
+Three things this pipeline does that aren't obvious from a single file:
+- **`extract` phase is pinned** to `settings.extract_provider` / `settings.extract_model` (default `gemini` / `gemini-2.5-flash`) regardless of which provider the user picked for the job. Extract is high-input/low-value (whole-PDF read → flat factual summary), so paying smart-tier rates buys nothing. All other phases honor `job.provider` / `job.model`.
+- **Cross-job extract reuse**: if the same `(toc_entry_id, prompt_hash)` was already extracted in another job, the existing output is reused and a free `agent_usages` row is written via `agent.record_cached_lesson_extract`.
+- **`phase_repo.create_or_reset`** (not `create`) is used because the orphan sweep in `main.lifespan` only marks stale phase rows `failed` — it doesn't delete them. Naive INSERT clashes with `uq_phase_output_job_order` on retry.
 
-| Worker | When |
-|--------|------|
-| `audit` | After security changes |
-| `optimize` | After performance work |
-| `testgaps` | After adding features |
-| `map` | Every 5+ file changes |
-| `document` | After API changes |
+### Subject flows (`app/services/flows.py` + `prompts/<subject>/`)
 
-```bash
-npx @claude-flow/cli@latest hooks worker dispatch --trigger audit
-```
+Each supported subject (biology, english, geometriya-g7-11, history, kimyo-g7-11, math-algebra, physics) has:
+- An entry in `SUBJECT_FLOWS` (easy / hard sequences, whether `classify` runs).
+- A directory `prompts/<subject>/` with one `.md` per phase plus `flow.md` (documentation only).
 
-## Agents
+`flows.PHASE_DEPS` declares which prior phase outputs each phase consumes; the parallel scheduler reads it. SVG blocks in prior outputs are stripped with `_strip_svgs` before injection (they cost ~800 input tokens each and downstream phases need the concept, not the picture).
 
-**Core**: `coder`, `reviewer`, `tester`, `planner`, `researcher`
-**Architecture**: `system-architect`, `backend-dev`, `mobile-dev`
-**Security**: `security-architect`, `security-auditor`
-**Performance**: `performance-engineer`, `perf-analyzer`
-**Coordination**: `hierarchical-coordinator`, `mesh-coordinator`, `adaptive-coordinator`
-**GitHub**: `pr-manager`, `code-review-swarm`, `issue-tracker`, `release-manager`
+### Queue + worker (`app/services/worker.py`)
 
-Any string works as a custom agent type.
+Postgres-backed via `SELECT … FOR UPDATE SKIP LOCKED`. The API process embeds a worker (`worker_concurrency` in settings, default 4); set to 0 to run workers as separate pods. Restart-safe: `lifespan` sweeps stuck rows to `failed` so the worker can re-claim and `create_or_reset` rebuilds phase rows in place.
 
-## Build & Test
+### Token / usage tracking
 
-- ALWAYS run tests after code changes
-- ALWAYS verify build succeeds before committing
+Every CLI call writes one row to `agent_usages` with `provider`, `model_name`, normalized token counts, `duration`, `success`, `raw_envelope`. The `/api/v1/agent/stats` endpoint aggregates by provider over rolling 1h/24h/7d windows; the `/usage` SPA route renders progress bars against per-provider caps configured via `AGENT_LIMIT_<PROVIDER>_<WINDOW>` env vars. These are local consumption, not real provider quotas — the four CLIs don't expose quota in headless mode.
 
-```bash
-npm run build && npm test
-```
+**Kimi gap**: kimi 1.30 stream-json doesn't report token counts; rows have `prompt_tokens=0`, `output_tokens=0`, `cached_tokens=0`. Duration and call counts still work.
 
-## CLI Quick Reference
+## Database (key tables)
 
-```bash
-npx @claude-flow/cli@latest init --wizard           # Setup
-npx @claude-flow/cli@latest swarm init --v3-mode     # Start swarm
-npx @claude-flow/cli@latest memory search --query "" # Vector search
-npx @claude-flow/cli@latest hooks route --task ""    # Route to agent
-npx @claude-flow/cli@latest doctor --fix             # Diagnostics
-npx @claude-flow/cli@latest security scan            # Security scan
-npx @claude-flow/cli@latest performance benchmark    # Benchmarks
-```
+- `homework_jobs` — one row per generation request. Has `provider`, `model`, `attempts`, `current_phase`, `status` (`pending`/`running`/`done`/`failed`), structured-output JSON columns.
+- `phase_outputs` — one row per phase per job (`uq_phase_output_job_order` enforces no duplicates). Use `phase_repo.create_or_reset`, not `create`.
+- `agent_usages` — one row per CLI subprocess call. The token-summary log at end-of-job reads these.
+- `books` — has legacy `gemini_file_uri` / `gemini_cache_*` columns that are unused but kept nullable for backwards-compat. The PDF lives on disk at `var/books/<book_id>/source.pdf`.
 
-26 commands, 140+ subcommands. Use `--help` on any command for details.
+## PDF handling caveats
 
-## Setup
+- Stored on disk, not in Gemini Files API (the SDK is gone). Path is deterministic: `Path(settings.var_dir) / "books" / str(book_id) / "source.pdf"`.
+- **Gemini CLI rejects files > 20 MB**. TOC extraction is hardcoded through Gemini and will fail for larger PDFs with a sandbox error. Pre-shrink, or change `settings.extract_provider`.
+- **Kimi has no native PDF support**. The kimi prompt preamble instructs the model to shell out to Python (`pdfplumber` preferred, `pypdf`/`PyPDF2` fallback). If those aren't installed on the host, kimi will report extraction failure rather than fabricate content.
 
-```bash
-claude mcp add claude-flow -- npx -y @claude-flow/cli@latest
-npx @claude-flow/cli@latest daemon start
-npx @claude-flow/cli@latest doctor --fix
-```
+## Auth
 
-**Agent tool** handles execution (agents, files, code, git). **MCP tools** handle coordination (swarm, memory, hooks). **CLI** is the same via Bash.
+Token-based via `Authorization: Bearer <token>` (REST) or `?token=<>` query param (SSE / downloads, since `EventSource` can't set headers). Comma-separated list in `AUTH_TOKEN`. Empty disables auth (everything is `user="anonymous"`).
+
+## Things not to do
+
+- Don't reintroduce a Gemini / Anthropic / OpenAI SDK call. Everything goes through the CLI router. `google-genai` was deliberately removed from `pyproject.toml`.
+- Don't hardcode model names in `pipeline.py` — they belong in `agent_models.MODEL_MANIFEST` (frontend manifest) or `_PROVIDER_DEFAULT_MODEL` (server-side fallback).
+- Don't bypass `phase_repo.create_or_reset` with raw `phase_repo.create` for retried jobs — you'll trip `uq_phase_output_job_order`.
+- Don't add per-call provider/model overrides anywhere except where they already exist (extract pin via `settings.extract_*`); keeping job-level provider stable across the rest of the pipeline is what makes `agent_usages` and the UI badge mean something.
+- Don't `unlink` the PDF after TOC extraction — every subsequent phase re-reads it.
