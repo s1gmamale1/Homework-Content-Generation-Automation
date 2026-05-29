@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import json
-import tempfile
 from pathlib import Path
 from typing import Optional
 from uuid import UUID
@@ -70,10 +69,15 @@ async def upload_book(
     )
     await session.commit()
 
-    tmp = Path(tempfile.gettempdir()) / f"edu-book-{book.id}.pdf"
-    tmp.write_bytes(body)
+    # Persist the PDF to a deterministic on-disk location so every downstream
+    # phase (TOC extract, lesson extract, content phases) can re-attach it via
+    # the agent CLI subprocess driver. Wave 3E may move this under a settings
+    # value; for now the path is hardcoded relative to the project root.
+    pdf_path = Path("var") / "books" / str(book.id) / "source.pdf"
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    pdf_path.write_bytes(body)
 
-    asyncio.create_task(toc_extractor.run(book.id, tmp, subject))
+    asyncio.create_task(toc_extractor.run(book.id, pdf_path, subject))
 
     return BookOut.model_validate(book)
 

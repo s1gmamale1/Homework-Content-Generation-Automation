@@ -9,12 +9,19 @@ import {
   RefreshCcw,
   Sparkles,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { Eyebrow } from "@/components/eyebrow";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { api } from "@/lib/api";
 import type { JobStatus } from "@/lib/types";
 import { cn, formatPages } from "@/lib/utils";
@@ -23,6 +30,8 @@ export function SectionPage() {
   const { bookId, sectionId } = useParams<{ bookId: string; sectionId: string }>();
   const navigate = useNavigate();
   const [busy, setBusy] = useState<"new" | "regen" | null>(null);
+  const [provider, setProvider] = useState<string>("gemini");
+  const [model, setModel] = useState<string | null>(null);
 
   const { data: book, isLoading } = useQuery({
     queryKey: ["book", bookId],
@@ -30,6 +39,21 @@ export function SectionPage() {
     enabled: Boolean(bookId),
     refetchOnWindowFocus: true,
   });
+
+  const { data: manifest, isLoading: manifestLoading } = useQuery({
+    queryKey: ["agent-models"],
+    queryFn: () => api.getAgentModels(),
+    staleTime: 1000 * 60 * 60, // 1h — manifest rarely changes
+  });
+
+  // When the manifest loads (or the selected provider changes), reset the
+  // model to that provider's first entry. Until the manifest is here we
+  // hold model=null so the request body sends "use provider default".
+  useEffect(() => {
+    if (!manifest) return;
+    const firstModel = manifest.providers[provider]?.[0] ?? null;
+    setModel(firstModel);
+  }, [manifest, provider]);
 
   const section = book?.toc?.find((e) => e.id === sectionId);
   const existingJobId = section?.latest_job_id ?? null;
@@ -45,7 +69,12 @@ export function SectionPage() {
     // "first time, create new" anyway, so absence is not a failure mode.
     const idempotencyKey = crypto.randomUUID();
     try {
-      const job = await api.generate(bookId, sectionId, { force, idempotencyKey });
+      const job = await api.generate(bookId, sectionId, {
+        force,
+        idempotencyKey,
+        provider,
+        model,
+      });
       navigate(`/job/${job.id}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Generate failed";
@@ -111,11 +140,23 @@ export function SectionPage() {
         </p>
       )}
 
+      {/* Provider + model picker. Sits above the action panel so the user
+          can choose which agent runs the pipeline before clicking Generate. */}
+      <AgentPicker
+        manifest={manifest}
+        manifestLoading={manifestLoading}
+        provider={provider}
+        onProviderChange={setProvider}
+        model={model}
+        onModelChange={setModel}
+      />
+
       {/* Existing-homework-aware action panel */}
       <ActionPanel
         existingJobId={existingJobId}
         existingStatus={existingStatus}
         busy={busy}
+        manifestLoading={manifestLoading}
         onGenerate={() => handleGenerate(false)}
         onRegenerate={() => handleGenerate(true)}
       />
@@ -123,10 +164,94 @@ export function SectionPage() {
   );
 }
 
+interface AgentPickerProps {
+  manifest: { providers: Record<string, string[]> } | undefined;
+  manifestLoading: boolean;
+  provider: string;
+  onProviderChange: (next: string) => void;
+  model: string | null;
+  onModelChange: (next: string | null) => void;
+}
+
+function AgentPicker({
+  manifest,
+  manifestLoading,
+  provider,
+  onProviderChange,
+  model,
+  onModelChange,
+}: AgentPickerProps) {
+  const providerNames = manifest ? Object.keys(manifest.providers) : [];
+  const modelOptions = manifest?.providers[provider] ?? [];
+  const modelDisabled = !manifest || modelOptions.length === 0;
+
+  return (
+    <section className="mt-8 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) p-5">
+      <p className="font-mono text-[0.7rem] uppercase tracking-[0.16em] text-(--color-ink-muted)">
+        Agent
+      </p>
+      <h2 className="mt-1 text-sm font-semibold tracking-tight text-(--color-ink)">
+        Pick provider and model
+      </h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-(--color-ink-soft)">
+        Choose which agent runs the pipeline. The model dropdown lists the options exposed by the
+        backend manifest for the selected provider.
+      </p>
+
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1.5">
+          <span className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
+            Provider
+          </span>
+          <Select
+            value={provider}
+            onValueChange={onProviderChange}
+            disabled={manifestLoading || providerNames.length === 0}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder={manifestLoading ? "Loading…" : "Provider"} />
+            </SelectTrigger>
+            <SelectContent>
+              {providerNames.map((name) => (
+                <SelectItem key={name} value={name}>
+                  {name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
+            Model
+          </span>
+          <Select
+            value={model ?? undefined}
+            onValueChange={(value) => onModelChange(value)}
+            disabled={modelDisabled}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder={manifestLoading ? "Loading…" : "Model"} />
+            </SelectTrigger>
+            <SelectContent>
+              {modelOptions.map((m) => (
+                <SelectItem key={m} value={m}>
+                  {m}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+      </div>
+    </section>
+  );
+}
+
 interface ActionPanelProps {
   existingJobId: string | null;
   existingStatus: JobStatus | null;
   busy: "new" | "regen" | null;
+  manifestLoading: boolean;
   onGenerate: () => void;
   onRegenerate: () => void;
 }
@@ -135,9 +260,15 @@ function ActionPanel({
   existingJobId,
   existingStatus,
   busy,
+  manifestLoading,
   onGenerate,
   onRegenerate,
 }: ActionPanelProps) {
+  // Buttons are disabled while a generate is in flight OR while the agent
+  // manifest is still loading — without the manifest we can't send a valid
+  // provider/model pair.
+  const disabled = busy !== null || manifestLoading;
+
   // No existing job — fresh generate
   if (!existingJobId) {
     return (
@@ -149,7 +280,7 @@ function ActionPanel({
           Run the curriculum pipeline against this section. It will read the lesson, classify
           difficulty, and produce the assembled study packet.
         </p>
-        <Button onClick={onGenerate} disabled={busy !== null} className="mt-4">
+        <Button onClick={onGenerate} disabled={disabled} className="mt-4">
           {busy === "new" ? (
             <>
               <Loader2 className="size-4 animate-spin" /> Sending to compositor…
@@ -195,7 +326,7 @@ function ActionPanel({
             <Button
               variant="ghost"
               onClick={onRegenerate}
-              disabled={busy !== null}
+              disabled={disabled}
               className="ml-auto text-(--color-ink-muted)"
             >
               {busy === "regen" ? (
@@ -254,7 +385,7 @@ function ActionPanel({
         or kick off a fresh attempt.
       </p>
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        <Button onClick={onGenerate} disabled={busy !== null}>
+        <Button onClick={onGenerate} disabled={disabled}>
           {busy === "new" ? (
             <>
               <Loader2 className="size-4 animate-spin" /> Retrying…

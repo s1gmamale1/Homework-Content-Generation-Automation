@@ -36,8 +36,12 @@ class JobOut(BaseModel):
     final_challenge_json: Optional[dict[str, Any]] = None
     memory_sprint_json: Optional[dict[str, Any]] = None
     reading_json: Optional[dict[str, Any]] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
     phases: list[PhaseOut] = []
 
 
 class GenerateRequest(BaseModel):
     force: bool = False
+    provider: str = "gemini"     # default to gemini for backwards compat
+    model: str | None = None     # None ⇒ provider's default model

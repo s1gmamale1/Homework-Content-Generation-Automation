@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
@@ -52,30 +51,6 @@ async def find_ready_by_hash(
         .limit(1)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
-
-
-async def set_gemini_file(
-    session: AsyncSession, book_id: UUID, *, file_uri: str, expires_at: datetime
-) -> None:
-    book = await session.get(Book, book_id)
-    if book is None:
-        return
-    book.gemini_file_uri = file_uri
-    book.gemini_file_expires_at = expires_at
-
-
-async def set_gemini_cache(
-    session: AsyncSession,
-    book_id: UUID,
-    *,
-    cache_name: Optional[str],
-    expires_at: Optional[datetime],
-) -> None:
-    book = await session.get(Book, book_id)
-    if book is None:
-        return
-    book.gemini_cache_name = cache_name
-    book.gemini_cache_expires_at = expires_at
 
 
 async def set_status(

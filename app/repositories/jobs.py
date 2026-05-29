@@ -16,13 +16,20 @@ async def create(
     toc_entry_id: UUID,
     subject: str,
     status: str = "pending",
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> HomeworkJob:
-    job = HomeworkJob(
+    kwargs: dict[str, Any] = dict(
         book_id=book_id,
         toc_entry_id=toc_entry_id,
         subject=subject,
         status=status,
     )
+    if provider is not None:
+        kwargs["provider"] = provider
+    if model is not None:
+        kwargs["model"] = model
+    job = HomeworkJob(**kwargs)
     session.add(job)
     await session.flush()
     return job
@@ -168,6 +175,31 @@ async def set_difficulty(session: AsyncSession, job_id: UUID, difficulty: str) -
     if job is None:
         return
     job.difficulty = difficulty
+
+
+async def reset_for_retry(
+    session: AsyncSession, job_id: UUID
+) -> Optional[HomeworkJob]:
+    """Reset a failed job back to 'pending' so the worker can re-claim it.
+
+    Clears `error_message`, `current_phase`, `started_at`, `completed_at`, and
+    resets the queue retry counter (`attempts`) so the worker treats this as a
+    fresh attempt rather than counting it against `queue_max_attempts`. The
+    pipeline is idempotent against existing phase rows (`phase_repo.create_or_reset`
+    handles the upsert), so no phase-output cleanup is needed here.
+
+    Returns the updated row, or None if the job no longer exists.
+    """
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return None
+    job.status = "pending"
+    job.error_message = None
+    job.current_phase = None
+    job.started_at = None
+    job.completed_at = None
+    job.attempts = 0
+    return job
 
 
 async def list_running_for_sweep(session: AsyncSession) -> list[HomeworkJob]:

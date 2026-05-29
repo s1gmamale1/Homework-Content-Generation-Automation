@@ -6,15 +6,21 @@ from uuid import UUID
 
 from loguru import logger
 
+from app.config import settings
 from app.db import SessionLocal
 from app.repositories import books as books_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import TOCEntryOut
-from app.services import events_bus, gemini
+from app.services import agent, events_bus
 
 
 async def run(book_id: UUID, file_path: Path, subject: str) -> None:
-    """Background task: upload PDF → extract TOC → persist entries → emit SSE."""
+    """Background task: extract TOC from on-disk PDF → persist entries → emit SSE.
+
+    The PDF stays at ``file_path`` for the lifetime of the book — every later
+    phase (lesson extract, content phases) re-attaches it via the agent CLI.
+    No temp-file cleanup happens here.
+    """
     resource_id = f"book:{book_id}"
     log = logger.bind(book_id=str(book_id), subject=subject)
     t_start = perf_counter()
@@ -26,43 +32,43 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
     )
 
     try:
-        await events_bus.publish(resource_id, "status", {"status": "uploading"})
-
-        # 1. Upload to Gemini
-        log.info(f"[book {book_id}] step 1/4 uploading to gemini")
-        t_upload = perf_counter()
-        uploaded_file, expires_at = await gemini.upload_file(file_path, book_id=book_id)
-        log.info(
-            f"[book {book_id}] step 1/4 upload complete | uri={uploaded_file.uri} "
-            f"duration_ms={(perf_counter() - t_upload) * 1000:.0f}"
-        )
-
-        # 2. Persist file metadata + flip status to toc_extracting
+        # Flip status to toc_extracting and emit SSE so the frontend can show
+        # the extraction spinner. The PDF is already persisted on disk by the
+        # API handler; no upload step is required.
         async with SessionLocal() as session:
-            await books_repo.set_gemini_file(
-                session, book_id, file_uri=uploaded_file.uri, expires_at=expires_at
-            )
             await books_repo.set_status(session, book_id, "toc_extracting")
             await session.commit()
-        log.info(f"[book {book_id}] step 2/4 status=toc_extracting (committed)")
+        log.info(f"[book {book_id}] status=toc_extracting (committed)")
         await events_bus.publish(resource_id, "status", {"status": "toc_extracting"})
 
-        # 3. Ask Gemini for the structured TOC
-        log.info(f"[book {book_id}] step 3/4 extracting TOC via gemini")
-        t_extract = perf_counter()
-        extracted = await gemini.extract_toc(uploaded_file, subject, book_id=book_id)
+        # Ask the agent for the structured TOC. The provider/model are pinned
+        # to the cheap-extractor settings (gemini-flash by default) regardless
+        # of any per-job choice — TOC extraction is a one-shot factual read
+        # that doesn't benefit from a smart-tier model.
         log.info(
-            f"[book {book_id}] step 3/4 TOC extracted | entries={len(extracted.entries)} "
+            f"[book {book_id}] extracting TOC via agent "
+            f"({settings.extract_provider} / {settings.extract_model})"
+        )
+        t_extract = perf_counter()
+        extracted = await agent.extract_toc(
+            provider=settings.extract_provider,
+            model=settings.extract_model,
+            pdf_path=file_path,
+            subject=subject,
+            book_id=book_id,
+        )
+        log.info(
+            f"[book {book_id}] TOC extracted | entries={len(extracted.entries)} "
             f"duration_ms={(perf_counter() - t_extract) * 1000:.0f}"
         )
 
-        # 4. Persist entries + flip status to toc_ready
+        # Persist entries + flip status to toc_ready
         async with SessionLocal() as session:
             rows = await toc_repo.bulk_create(session, book_id, extracted.entries)
             await books_repo.set_status(session, book_id, "toc_ready")
             await session.commit()
             entries_out = [TOCEntryOut.model_validate(r) for r in rows]
-        log.info(f"[book {book_id}] step 4/4 entries persisted | count={len(rows)}")
+        log.info(f"[book {book_id}] entries persisted | count={len(rows)}")
 
         await events_bus.publish(
             resource_id,
@@ -88,8 +94,5 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
 
     finally:
         await events_bus.close(resource_id)
-        try:
-            file_path.unlink(missing_ok=True)
-            log.debug(f"[book {book_id}] temp file removed | path={file_path}")
-        except Exception as exc:
-            log.warning(f"[book {book_id}] failed to remove temp file: {exc}")
+        # NOTE: The PDF is intentionally left on disk — every subsequent phase
+        # (lesson.extract, content phases that opt-in to attachments) reads it.

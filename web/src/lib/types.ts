@@ -77,6 +77,29 @@ export interface Job {
   memory_sprint_json: MemorySprintPack | null;
   reading_json: ReadingPassage | null;
   phases: PhaseOut[];
+  provider?: string;
+  model?: string | null;
+}
+
+export interface ProviderModelManifest {
+  providers: Record<string, string[]>;
+}
+
+/* /api/v1/agent/stats — per-provider rolling consumption against caps */
+export interface ProviderStatsWindow {
+  calls: number;
+  duration_secs: number;
+  prompt_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  success_pct: number;
+  limit_calls_per_window: number | null;
+  pct_of_limit: number | null;
+}
+export interface AgentStats {
+  windows: string[];
+  providers: Record<string, Record<string, ProviderStatsWindow>>;
+  now: string;
 }
 
 /* Final Challenge — boss fight */

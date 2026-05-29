@@ -1,6 +1,7 @@
 import io
 import json
 import zipfile
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -12,11 +13,13 @@ from sse_starlette.sse import EventSourceResponse
 from app.auth import get_current_user
 from app.config import settings
 from app.db import SessionLocal, get_session
+from app.repositories import agent_usage as agent_usage_repo
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import GenerateRequest, JobOut, PhaseOut
 from app.services import events_bus
+from app.services.agent_models import MODEL_MANIFEST, is_valid
 
 router = APIRouter(tags=["jobs"])
 
@@ -102,6 +105,13 @@ async def generate(
     if section is None or section.book_id != book_id:
         raise HTTPException(404, "section not found")
 
+    if not is_valid(body.provider, body.model):
+        raise HTTPException(
+            400,
+            f"unknown (provider, model) pair: ({body.provider!r}, {body.model!r}). "
+            f"Allowed providers: {sorted(MODEL_MANIFEST)}.",
+        )
+
     # Layer 3: serialize concurrent requests for the same (book, section).
     # Lock is held for the rest of this transaction and auto-released on
     # commit, so the second concurrent request waits and then sees the
@@ -139,6 +149,8 @@ async def generate(
         toc_entry_id=toc_entry_id,
         subject=book.subject,
         status="pending",
+        provider=body.provider,
+        model=body.model,
     )
     await session.commit()  # commit + release advisory lock atomically
 
@@ -156,6 +168,40 @@ async def get_job(
     job_id: UUID,
     session: AsyncSession = Depends(get_session),
 ) -> JobOut:
+    return await _job_out(session, job_id)
+
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    user: dict = Depends(get_current_user),
+) -> JobOut:
+    """Retry a failed job in place — reuses the same job row (and pinned
+    provider/model) instead of creating a fresh one.
+
+    Distinct from the `force=True` path on `/generate`, which is the
+    "regenerate from scratch" affordance. This endpoint resets the job back
+    to `pending` and zeroes the queue retry counter so the worker re-claims
+    it as a fresh attempt. The pipeline is idempotent against existing phase
+    rows, so no cleanup is needed.
+
+    Refuses anything other than `failed` with 409 — there's no point retrying
+    a pending/running/done job.
+    """
+    job = await jobs_repo.get(session, job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    if job.status != "failed":
+        raise HTTPException(
+            409,
+            f"only failed jobs can be retried; current status={job.status!r}",
+        )
+    updated = await jobs_repo.reset_for_retry(session, job_id)
+    if updated is None:
+        # Race: row was deleted between the get() and the reset. Treat as 404.
+        raise HTTPException(404, "job not found")
+    await session.commit()
     return await _job_out(session, job_id)
 
 
@@ -281,3 +327,88 @@ async def _job_out(session: AsyncSession, job_id: UUID) -> JobOut:
     out = JobOut.model_validate(job)
     out.phases = [PhaseOut.model_validate(p) for p in job.phase_outputs]
     return out
+
+
+@router.get("/agent/models")
+async def list_agent_models():
+    return {"providers": MODEL_MANIFEST}
+
+
+# ─── Usage dashboard ──────────────────────────────────────────────────────
+# Per-provider rolling stats over fixed windows. Surfaces local consumption
+# (calls + duration + tokens) issued by THIS app — the four CLIs (claude,
+# kimi, codex, gemini) don't expose real quota APIs in headless mode, so
+# we track what we've driven through them and compare against user-set
+# caps in `settings.agent_limit_*` to estimate headroom.
+_STATS_WINDOWS: list[tuple[str, timedelta]] = [
+    ("1h", timedelta(hours=1)),
+    ("24h", timedelta(hours=24)),
+    ("7d", timedelta(days=7)),
+]
+_STATS_PROVIDERS = ("claude", "kimi", "codex", "gemini")
+
+
+def _limit_for(provider: str, window: str) -> int:
+    """Look up `agent_limit_<provider>_<window>` on the settings object.
+    Returns 0 (unmetered) for unknown combos so we degrade gracefully."""
+    return int(getattr(settings, f"agent_limit_{provider}_{window}", 0))
+
+
+@router.get("/agent/stats")
+async def get_agent_stats(
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Per-provider rolling consumption stats over 1h / 24h / 7d windows.
+
+    For each provider we aggregate `agent_usages` rows whose `started_at`
+    falls within the window, then divide by the configured cap to get
+    `pct_of_limit`. When the cap is 0 (unmetered) `pct_of_limit` is null
+    and the frontend renders a dash.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Each window is one independent SQL aggregate. Three queries total.
+    providers: dict[str, dict[str, dict]] = {p: {} for p in _STATS_PROVIDERS}
+    for window_label, delta in _STATS_WINDOWS:
+        since = now - delta
+        rows = await agent_usage_repo.stats_by_provider(session, since=since)
+        by_provider = {row["provider"]: row for row in rows}
+        for provider in _STATS_PROVIDERS:
+            row = by_provider.get(provider)
+            calls = int(row["calls"]) if row else 0
+            success_count = int(row["success_count"]) if row else 0
+            duration_secs = float(row["duration_secs"]) if row else 0.0
+            prompt_tokens = int(row["prompt_tokens"]) if row else 0
+            output_tokens = int(row["output_tokens"]) if row else 0
+            cached_tokens = int(row["cached_tokens"]) if row else 0
+
+            success_pct = (
+                round(100.0 * success_count / calls, 1) if calls > 0 else 0.0
+            )
+
+            limit = _limit_for(provider, window_label)
+            if limit > 0:
+                pct_of_limit: Optional[float] = round(100.0 * calls / limit, 1)
+                limit_value: Optional[int] = limit
+            else:
+                pct_of_limit = None
+                limit_value = None
+
+            providers[provider][window_label] = {
+                "calls": calls,
+                "duration_secs": round(duration_secs, 1),
+                "prompt_tokens": prompt_tokens,
+                "output_tokens": output_tokens,
+                "cached_tokens": cached_tokens,
+                "success_pct": success_pct,
+                "limit_calls_per_window": limit_value,
+                "pct_of_limit": pct_of_limit,
+            }
+
+    return {
+        "windows": [w for w, _ in _STATS_WINDOWS],
+        "providers": providers,
+        # Strip microseconds and tag UTC so the response reads naturally
+        # ('2026-05-06T03:14:22Z') and matches the docstring example.
+        "now": now.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }

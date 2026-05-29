@@ -29,14 +29,17 @@ def load_all() -> None:
         _hash_cache[subject] = hashes
 
 
-def get_prompt(subject: str, phase_name: str) -> str:
+def get_prompt(subject: str, phase_name: str, provider_suffix: str = "") -> str:
     if subject not in _cache:
         bodies, hashes = _load_subject(subject)
         _cache[subject] = bodies
         _hash_cache[subject] = hashes
     if phase_name not in _cache[subject]:
         raise KeyError(f"Prompt {subject}/{phase_name}.md not found")
-    return _cache[subject][phase_name]
+    body = _cache[subject][phase_name]
+    if provider_suffix:
+        body = body + "\n\n" + provider_suffix
+    return body
 
 
 def get_prompt_hash(subject: str, phase_name: str) -> str:

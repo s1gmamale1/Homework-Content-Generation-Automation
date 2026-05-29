@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from pathlib import Path
 from time import perf_counter
 from typing import Any, Optional
 from uuid import UUID
@@ -14,7 +15,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
-from app.services import events_bus, gemini
+from app.services import agent, events_bus
 from app.services.flows import (
     SUBJECT_FLOWS,
     file_needed_phases,
@@ -137,10 +138,6 @@ async def run(job_id: UUID) -> None:
 
     log.info(f"[job {job_id}] pipeline starting")
 
-    # Hoisted above try/except so the `finally` block can clean it up even if
-    # an exception fires before the phase loop assigns it.
-    cache_name: Optional[str] = None
-
     try:
         # ─── load job + book + section ─────────────────────────
         async with SessionLocal() as session:
@@ -150,13 +147,16 @@ async def run(job_id: UUID) -> None:
                 return
             book = await books_repo.get(session, job.book_id)
             section = await toc_repo.get(session, job.toc_entry_id)
-            if book is None or section is None or book.gemini_file_uri is None:
+            if book is None or section is None:
                 raise RuntimeError("Job is missing book or section context")
             subject = book.subject
-            file_uri = book.gemini_file_uri
             book_id = book.id
-            book_cache_name = book.gemini_cache_name
-            book_cache_expires_at = book.gemini_cache_expires_at
+            # Per-job provider/model. Pinned at job-creation time so retries
+            # hit the same backend; ``model`` may be None — agent._resolve_model
+            # falls back to either a hardcoded provider default or the CLI's
+            # own default in that case.
+            provider = job.provider
+            model = job.model
             section_data = {
                 "id": section.id,
                 "title": section.section_title,
@@ -164,8 +164,16 @@ async def run(job_id: UUID) -> None:
                 "page_start": section.page_start,
                 "page_end": section.page_end,
             }
+
+        # Local on-disk PDF — written by app.api.v1.books.upload_book and kept
+        # for the lifetime of the book (no Files-API URI anymore).
+        pdf_path = Path("var") / "books" / str(book_id) / "source.pdf"
+        if not pdf_path.exists():
+            raise RuntimeError(f"Book PDF missing on disk: {pdf_path}")
+
         log.info(
             f"[job {job_id}] context loaded | subject={subject} "
+            f"provider={provider} model={model or '<default>'} "
             f"section={section_data['number']!r} title={section_data['title']!r} "
             f"pages={section_data['page_start']}-{section_data['page_end']}"
         )
@@ -197,18 +205,6 @@ async def run(job_id: UUID) -> None:
             f"{sorted(file_phases) or '(none beyond extract)'}"
         )
 
-        # Per-book context cache: get-or-create. Persists on the books row so
-        # subsequent jobs against the same book skip re-paying for the PDF.
-        # Used by the extract phase (always) and any content phase that opts
-        # into PHASE_FILE_NEEDED.
-        cache_name = await _ensure_book_cache(
-            book_id=book_id,
-            file_uri=file_uri,
-            existing_name=book_cache_name,
-            existing_expires_at=book_cache_expires_at,
-            log=log,
-        )
-
         # ─── head: extract + classify (sequential — everyone depends on them) ──
         # Each step is sequential because the next step's content depends on
         # this one's *output*: extract → lesson_context → classify → difficulty.
@@ -226,9 +222,10 @@ async def run(job_id: UUID) -> None:
                     phase_order=idx,
                     total_phases_hint=len(sequence),
                     subject=subject,
-                    file_uri=file_uri,
+                    provider=provider,
+                    model=model,
+                    pdf_path=pdf_path,
                     file_phases=file_phases,
-                    book_cache_name=cache_name,
                     section_data=section_data,
                     lesson_context=lesson_context,
                     prior_outputs=prior_outputs,
@@ -267,24 +264,6 @@ async def run(job_id: UUID) -> None:
 
         content_phases = sequence[len(head_phases):]
 
-        # ─── per-job text context cache (best-effort) ─────────────────────────
-        # Bundle lesson_context + universal directives into a Gemini cache so
-        # content phases reference them at ~25% input rate. Falls back to inline
-        # if the model rejects (commonly because payload < min cache size).
-        job_text_cache_name: Optional[str] = None
-        if lesson_context and content_phases:
-            cache_payload = (
-                "## Lesson context\n" + lesson_context + "\n"
-                + gemini._SVG_RULES.lstrip() + "\n"
-                + gemini._NO_PREAMBLE
-            )
-            job_text_cache_name = await gemini.create_text_cache(text=cache_payload)
-            if job_text_cache_name:
-                log.info(
-                    f"[job {job_id}] per-job text cache active | name={job_text_cache_name} "
-                    f"chars={len(cache_payload)}"
-                )
-
         # ─── tail: content phases (parallel, wave-based by PHASE_DEPS) ────────
         # Everything from sequence[len(head_phases):] is a content phase. They
         # run concurrently when their PHASE_DEPS are satisfied — typically a 2x
@@ -298,10 +277,10 @@ async def run(job_id: UUID) -> None:
                     content_phases=content_phases,
                     phase_order_offset=len(head_phases),
                     subject=subject,
-                    file_uri=file_uri,
+                    provider=provider,
+                    model=model,
+                    pdf_path=pdf_path,
                     file_phases=file_phases,
-                    book_cache_name=cache_name,
-                    job_text_cache_name=job_text_cache_name,
                     section_data=section_data,
                     lesson_context=lesson_context,
                     prior_outputs=prior_outputs,
@@ -354,65 +333,6 @@ async def run(job_id: UUID) -> None:
         await events_bus.publish(resource_id, "error", {"message": str(exc)})
     finally:
         await events_bus.close(resource_id)
-        # Note: cache_name is the per-BOOK cache. We do NOT delete it here —
-        # it lives on the books row so subsequent jobs against the same book
-        # reuse it. Gemini auto-expires the cache on its own TTL.
-
-
-async def _ensure_book_cache(
-    *,
-    book_id: UUID,
-    file_uri: str,
-    existing_name: Optional[str],
-    existing_expires_at: Optional[datetime],
-    log,
-) -> Optional[str]:
-    """Get-or-create a per-book Gemini context cache.
-
-    Reuses the existing cache if it has > 5 minutes left. Otherwise creates a
-    fresh cache and persists name + expiry on the books row. Returns None on
-    creation failure (caller falls back to inline file Part)."""
-    now = datetime.now(timezone.utc)
-    refresh_threshold = now + timedelta(minutes=5)
-
-    if existing_name and existing_expires_at:
-        # Naive vs aware datetime: ensure aware comparison.
-        existing_aware = existing_expires_at
-        if existing_aware.tzinfo is None:
-            existing_aware = existing_aware.replace(tzinfo=timezone.utc)
-        if existing_aware > refresh_threshold:
-            ttl_remaining = existing_aware - now
-            log.info(
-                f"[book {book_id}] reusing context cache | name={existing_name} "
-                f"ttl_remaining={ttl_remaining}"
-            )
-            return existing_name
-        log.info(
-            f"[book {book_id}] cache expired/expiring | name={existing_name} "
-            f"expires_at={existing_aware.isoformat()}"
-        )
-
-    log.info(f"[book {book_id}] creating per-book context cache for {file_uri}")
-    result = await gemini.create_cache(file_uri=file_uri)
-    if result is None:
-        log.warning(f"[book {book_id}] cache creation failed; falling back to inline file")
-        return None
-
-    cache_name, expire_time = result
-    async with SessionLocal() as session:
-        await books_repo.set_gemini_cache(
-            session,
-            book_id,
-            cache_name=cache_name,
-            expires_at=expire_time,
-        )
-        await session.commit()
-
-    log.success(
-        f"[book {book_id}] cache stored | name={cache_name} "
-        f"expires_at={expire_time.isoformat()}"
-    )
-    return cache_name
 
 
 async def _emit_started(resource_id: str, phase_name: str, phase_order: int) -> None:
@@ -432,10 +352,10 @@ async def _execute_one_phase(
     phase_order: int,
     total_phases_hint: int,
     subject: str,
-    file_uri: str,
+    provider: str,
+    model: Optional[str],
+    pdf_path: Path,
     file_phases: set[str],
-    book_cache_name: Optional[str],
-    job_text_cache_name: Optional[str] = None,
     section_data: dict,
     lesson_context: Optional[str],
     prior_outputs: dict[str, str],
@@ -458,29 +378,16 @@ async def _execute_one_phase(
     phase_needs_file = phase_name == "extract" or phase_name in file_phases
     phase_prior = filter_prior_outputs(phase_name, prior_outputs)
 
-    # Cache choice: PDF cache wins when the phase actually reads the file;
-    # otherwise use the per-job text cache (lesson_context + universal
-    # directives) if it exists. If neither, content runs inline.
-    if phase_needs_file:
-        cached_content = book_cache_name
-        cache_holds_text_context = False
-    elif job_text_cache_name and phase_name not in _INTERNAL_PHASES:
-        cached_content = job_text_cache_name
-        cache_holds_text_context = True
-    else:
-        cached_content = None
-        cache_holds_text_context = False
-
     try:
         output_md, tin, tout, _ph, parsed_struct = await _execute_phase(
             job_id=job_id,
             phase_name=phase_name,
             phase_order=phase_order,
             subject=subject,
-            file_uri=file_uri,
+            provider=provider,
+            model=model,
+            pdf_path=pdf_path,
             attach_file=phase_needs_file,
-            cached_content=cached_content,
-            cache_holds_text_context=cache_holds_text_context,
             section=section_data,
             lesson_context=lesson_context,
             prior_outputs=phase_prior,
@@ -531,10 +438,10 @@ async def _run_content_phases_parallel(
     content_phases: list[str],
     phase_order_offset: int,
     subject: str,
-    file_uri: str,
+    provider: str,
+    model: Optional[str],
+    pdf_path: Path,
     file_phases: set[str],
-    book_cache_name: Optional[str],
-    job_text_cache_name: Optional[str] = None,
     section_data: dict,
     lesson_context: Optional[str],
     prior_outputs: dict[str, str],
@@ -579,10 +486,10 @@ async def _run_content_phases_parallel(
                         phase_order=phase_order_map[name],
                         total_phases_hint=phase_order_offset + len(content_phases),
                         subject=subject,
-                        file_uri=file_uri,
+                        provider=provider,
+                        model=model,
+                        pdf_path=pdf_path,
                         file_phases=file_phases,
-                        book_cache_name=book_cache_name,
-                        job_text_cache_name=job_text_cache_name,
                         section_data=section_data,
                         lesson_context=lesson_context,
                         prior_outputs=prior_outputs,
@@ -646,10 +553,10 @@ async def _execute_phase(
     phase_name: str,
     phase_order: int,
     subject: str,
-    file_uri: str,
+    provider: str,
+    model: Optional[str],
+    pdf_path: Path,
     attach_file: bool = False,
-    cached_content: Optional[str] = None,
-    cache_holds_text_context: bool = False,
     section: dict,
     lesson_context: Optional[str],
     prior_outputs: dict[str, str],
@@ -660,14 +567,28 @@ async def _execute_phase(
     else:
         prompt_hash = get_prompt_hash(subject, phase_name)
 
+    # Per-phase model_name on the phase row records exactly what served this
+    # call. The ``extract`` phase is pinned to the cheap-extractor settings
+    # regardless of the job-level provider/model; every other phase honors
+    # the user's pick.
+    if phase_name == "extract":
+        phase_model_label = settings.extract_model
+    else:
+        phase_model_label = model or "<provider-default>"
+
     async with SessionLocal() as session:
-        po = await phase_repo.create(
+        # ``create_or_reset`` (not ``create``) so retries of a job whose phase
+        # row already exists from a previous, killed run don't crash on the
+        # ``uq_phase_output_job_order`` unique constraint. The orphan sweep in
+        # ``main.lifespan`` only marks stale phase rows as ``failed``; it does
+        # not delete them.
+        po = await phase_repo.create_or_reset(
             session,
             job_id=job_id,
             phase_name=phase_name,
             phase_order=phase_order,
             prompt_hash=prompt_hash,
-            model_name=settings.gemini_model,
+            model_name=phase_model_label,
         )
         await phase_repo.set_status(session, po.id, "running", started_at=_utcnow())
         await jobs_repo.set_status(session, job_id, "running", current_phase=phase_name)
@@ -676,15 +597,15 @@ async def _execute_phase(
 
     logger.debug(
         f"[job {job_id}] phase row created | phase={phase_name} order={phase_order} "
-        f"prompt_hash={prompt_hash[:12]} model={settings.gemini_model}"
+        f"prompt_hash={prompt_hash[:12]} provider={provider} model={phase_model_label}"
     )
 
     try:
         if phase_name == "extract":
             # Cross-job cache: if we've already extracted this section under
             # the current builtin extract prompt, reuse the prior output and
-            # skip Gemini entirely. Saves ~15s + ~1.5K output tokens per
-            # regeneration / repeat job on the same section.
+            # skip the agent call entirely. Saves ~15s + ~1.5K output tokens
+            # per regeneration / repeat job on the same section.
             cached_extract = None
             section_id = section.get("id")
             if section_id is not None:
@@ -698,7 +619,7 @@ async def _execute_phase(
             if cached_extract is not None and cached_extract.output_md:
                 logger.info(
                     f"[job {job_id}] lesson.extract REUSED from job={cached_extract.job_id} "
-                    f"po={cached_extract.id} (skipping gemini call)"
+                    f"po={cached_extract.id} (skipping agent call)"
                 )
                 async with SessionLocal() as session:
                     await phase_repo.set_status(
@@ -711,8 +632,8 @@ async def _execute_phase(
                         tokens_output=0,
                     )
                     await session.commit()
-                # Visibility: record a free gemini_usages row
-                await gemini.record_cached_lesson_extract(
+                # Visibility: record a free agent_usages row
+                await agent.record_cached_lesson_extract(
                     homework_job_id=job_id,
                     phase_output_id=po_id,
                     source_job_id=cached_extract.job_id,
@@ -720,28 +641,31 @@ async def _execute_phase(
                 )
                 return cached_extract.output_md, 0, 0, prompt_hash, None
 
-            output_md, tin, tout = await gemini.extract_lesson_context(
-                file_uri=file_uri,
+            # Pin lesson.extract to the cheap-extractor model regardless of
+            # the job's per-phase provider/model: it's a high-input/low-value
+            # factual summary, paying smart-tier rates here saves nothing.
+            output_md, tin, tout = await agent.extract_lesson_context(
+                provider=settings.extract_provider,
+                model=settings.extract_model,
+                pdf_path=pdf_path,
                 section_title=section["title"],
                 section_number=section["number"],
                 page_start=section["page_start"],
                 page_end=section["page_end"],
-                cached_content=cached_content,
                 homework_job_id=job_id,
                 phase_output_id=po_id,
             )
             parsed_struct: Optional[Any] = None
-        elif phase_name in gemini.STRUCTURED_PHASE_SCHEMAS:
-            # JSON-renderable phase: produce structured output in ONE Gemini
-            # call instead of MD-then-extract (which paid for two roundtrips).
+        elif phase_name in agent.STRUCTURED_PHASE_SCHEMAS:
+            # JSON-renderable phase: produce structured output in ONE call
+            # instead of MD-then-extract (which paid for two roundtrips).
             phase_prompt = get_prompt(subject, phase_name)
-            parsed_struct, tin, tout = await gemini.run_phase_prompt_structured(
+            parsed_struct, tin, tout = await agent.run_phase_prompt_structured(
+                provider=provider,
+                model=model,
                 phase_prompt=phase_prompt,
-                response_schema=gemini.STRUCTURED_PHASE_SCHEMAS[phase_name],
-                file_uri=file_uri if attach_file else None,
-                attach_file=attach_file,
-                cached_content=cached_content,
-                cache_holds_text_context=cache_holds_text_context,
+                response_schema=agent.STRUCTURED_PHASE_SCHEMAS[phase_name],
+                attachments=[pdf_path] if attach_file else [],
                 lesson_context=lesson_context or "",
                 prior_outputs=prior_outputs,
                 difficulty=difficulty,
@@ -753,12 +677,11 @@ async def _execute_phase(
             output_md = _synth_md_for_structured(phase_name, parsed_struct)
         else:
             phase_prompt = get_prompt(subject, phase_name)
-            output_md, tin, tout = await gemini.run_phase_prompt(
+            output_md, tin, tout = await agent.run_phase_prompt(
+                provider=provider,
+                model=model,
                 phase_prompt=phase_prompt,
-                file_uri=file_uri if attach_file else None,
-                attach_file=attach_file,
-                cached_content=cached_content,
-                cache_holds_text_context=cache_holds_text_context,
+                attachments=[pdf_path] if attach_file else [],
                 lesson_context=lesson_context or "",
                 prior_outputs=prior_outputs,
                 difficulty=difficulty,
@@ -834,26 +757,28 @@ async def _assemble(job_id: UUID) -> str:
 async def _log_token_summary(job_id: UUID, log) -> None:
     """End-of-pipeline summary: per-call token cost as a flat ASCII table.
 
-    Renders one row per gemini_usages row for this job (plus a TOTAL footer)
-    so the optimizations are immediately verifiable from the terminal — large
-    inputs on `extract` only, small inputs on every other phase means the PDF
-    skip is working; non-zero `cached` column means context caching landed.
+    Renders one row per ``agent_usages`` row for this job (plus a TOTAL footer)
+    so the optimizations are immediately verifiable from the terminal — small
+    `fresh` columns alongside non-zero `cached` columns means the provider's
+    own implicit prompt cache is hitting.
 
-    Reads token counts from `usage_metadata` (the raw SDK dump) rather than
-    the per-modality columns, because PDF tokens are reported under the IMAGE
-    modality — they're invisible if you only look at `input_text_token_count`.
+    Reads token counts from the provider-neutral columns
+    (``prompt_tokens``, ``output_tokens``, ``cached_tokens``). Modality
+    breakdowns no longer exist in the new schema, so we drop the IMAGE/PDF
+    column — providers that report attachments inline aren't comparable
+    anyway.
     """
     from sqlalchemy import select  # local import: only used here
 
-    from app.models import GeminiUsage
+    from app.models import AgentUsage
 
     async with SessionLocal() as session:
         rows = list(
             (
                 await session.execute(
-                    select(GeminiUsage)
-                    .where(GeminiUsage.homework_job_id == job_id)
-                    .order_by(GeminiUsage.created_at)
+                    select(AgentUsage)
+                    .where(AgentUsage.homework_job_id == job_id)
+                    .order_by(AgentUsage.created_at)
                 )
             )
             .scalars()
@@ -864,64 +789,56 @@ async def _log_token_summary(job_id: UUID, log) -> None:
         return
 
     OP_W = 28
+    PROV_W = 9
     header = (
         f"{'operation':<{OP_W}}"
-        f"{'input':>10}{'cached':>10}{'fresh':>10}{'out':>9}{'dur':>9}  file ok"
+        f"{'provider':<{PROV_W}}"
+        f"{'prompt':>10}{'cached':>10}{'fresh':>10}{'out':>9}{'dur':>9}  ok"
     )
     bar = "─" * len(header)
     lines = [bar, header, bar]
 
-    total_in = total_out = total_cached = total_image = 0
+    total_in = total_out = total_cached = 0
     for r in rows:
-        meta = r.usage_metadata or {}
-        # Truth lives in the SDK dump; columns only capture text+audio modalities.
-        prompt_in = int(meta.get("prompt_token_count") or 0) or r.input_text_token_count
-        cached = int(meta.get("cached_content_token_count") or 0)
-        out_tokens = int(meta.get("candidates_token_count") or 0) or r.candidates_token_count
+        prompt_in = int(r.prompt_tokens or 0)
+        cached = int(r.cached_tokens or 0)
+        out_tokens = int(r.output_tokens or 0)
         fresh_in = max(prompt_in - cached, 0)
 
-        # PDF tokens are reported under modality=IMAGE.
-        image_tokens = 0
-        for d in meta.get("prompt_tokens_details") or []:
-            if (d or {}).get("modality") == "IMAGE":
-                image_tokens += int(d.get("token_count") or 0)
-        file_marker = "PDF" if image_tokens > 0 else "—"
-
         ok = "✓" if r.success else "✗"
+        # Decorate operation with the phase name when available — pulled from
+        # the raw envelope where _record_usage stashed it.
         op_label = r.operation
-        if isinstance(meta.get("phase_name"), str):
-            op_label = f"{r.operation}:{meta['phase_name']}"
+        envelope = r.raw_envelope or {}
+        phase_name = envelope.get("phase_name")
+        if isinstance(phase_name, str):
+            op_label = f"{r.operation}:{phase_name}"
         if len(op_label) > OP_W - 1:
             op_label = op_label[: OP_W - 2] + "…"
 
+        prov_label = (r.provider or "?")[: PROV_W - 1]
+
         lines.append(
             f"{op_label:<{OP_W}}"
+            f"{prov_label:<{PROV_W}}"
             f"{prompt_in:>10,}"
             f"{cached:>10,}"
             f"{fresh_in:>10,}"
             f"{out_tokens:>9,}"
             f"{(r.duration or '—'):>9}"
-            f"  {file_marker:<3} {ok}"
+            f"  {ok}"
         )
         total_in += prompt_in
         total_out += out_tokens
         total_cached += cached
-        total_image += image_tokens
 
     fresh_total = max(total_in - total_cached, 0)
     cache_pct = (total_cached / total_in * 100) if total_in else 0
-    pdf_calls = sum(
-        1
-        for r in rows
-        if any(
-            (d or {}).get("modality") == "IMAGE"
-            for d in (r.usage_metadata or {}).get("prompt_tokens_details") or []
-        )
-    )
 
     lines.append(bar)
     lines.append(
         f"{'TOTAL':<{OP_W}}"
+        f"{'':<{PROV_W}}"
         f"{total_in:>10,}"
         f"{total_cached:>10,}"
         f"{fresh_total:>10,}"
@@ -929,9 +846,8 @@ async def _log_token_summary(job_id: UUID, log) -> None:
         f"{'':>9}"
     )
     lines.append(
-        f"  {len(rows)} calls · {pdf_calls} attached the PDF · "
-        f"PDF tokens total: {total_image:,} · "
-        f"cache hit (gemini implicit + explicit): {cache_pct:.0f}% · "
+        f"  {len(rows)} calls · "
+        f"cache hit: {cache_pct:.0f}% · "
         f"net billed input (fresh): {fresh_total:,}"
     )
     lines.append(bar)

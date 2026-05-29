@@ -17,6 +17,14 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     subject: Mapped[str] = mapped_column(String(64), nullable=False)
     difficulty: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    # LLM provider used for this job (e.g. "gemini", "openai", "anthropic"). Set when the
+    # job is created and never changes — pinned so retries hit the same backend.
+    provider: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="gemini"
+    )
+    # Specific model id within the provider (e.g. "gemini-2.5-flash", "gpt-5-mini"). Optional
+    # because some providers default at the SDK level.
+    model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     current_phase: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     assembled_md: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

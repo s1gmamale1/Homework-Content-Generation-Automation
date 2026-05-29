@@ -13,3 +13,10 @@ build/
 statusline-command.sh
 .claude/
 node_modules/
+
+# Runtime data + local artifacts (not source)
+var/                  # uploaded PDFs + generated screenshots
+*.log                 # uvicorn / retry logs
+.playwright-cli/      # playwright skill cache
+ruvector.db           # ruflo MCP local store
+prompts.zip           # local backup archive

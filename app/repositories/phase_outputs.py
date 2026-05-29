@@ -31,6 +31,59 @@ async def create(
     return po
 
 
+async def create_or_reset(
+    session: AsyncSession,
+    *,
+    job_id: UUID,
+    phase_name: str,
+    phase_order: int,
+    prompt_hash: str,
+    model_name: str,
+    status: str = "pending",
+) -> PhaseOutput:
+    """Create a new phase_outputs row, or hard-reset an existing one for
+    (job_id, phase_name).
+
+    Used when a job is reclaimed and retried after the worker died mid-phase:
+    the orphan sweep in ``main.lifespan`` only marks pre-existing phase rows
+    as ``failed``, leaving the unique constraint
+    ``uq_phase_output_job_order`` (job_id, phase_order) intact. A naive
+    ``create()`` on the retry would then crash with ``UniqueViolationError``.
+
+    On reset, the audit trail is preserved (same row id, FK references
+    survive) but all per-attempt fields are cleared so the phase looks
+    identical to a fresh row in the ``pending`` state.
+    """
+    existing = await session.scalar(
+        select(PhaseOutput).where(
+            PhaseOutput.job_id == job_id,
+            PhaseOutput.phase_name == phase_name,
+        )
+    )
+    if existing is not None:
+        existing.phase_order = phase_order
+        existing.prompt_hash = prompt_hash
+        existing.model_name = model_name
+        existing.status = status
+        existing.output_md = None
+        existing.tokens_input = None
+        existing.tokens_output = None
+        existing.error_message = None
+        existing.started_at = None
+        existing.completed_at = None
+        await session.flush()
+        return existing
+    return await create(
+        session,
+        job_id=job_id,
+        phase_name=phase_name,
+        phase_order=phase_order,
+        prompt_hash=prompt_hash,
+        model_name=model_name,
+        status=status,
+    )
+
+
 async def list_for_job(session: AsyncSession, job_id: UUID) -> list[PhaseOutput]:
     stmt = (
         select(PhaseOutput)
