@@ -17,7 +17,29 @@ Format per entry:
 
 ---
 
-## 2026-05-29 — alphaq — Each mission maps to a target skill from SourceMap
+## 2026-05-29 — alphaq — Code-review fixes (game conformance)
+
+**Why:** Independent review of the games deliverable flagged 5 minor issues.
+All addressed.
+
+**What changed:**
+- app/services/game_conformance.py:
+  - validate_game docstring corrected (raises GameConformanceError, not KeyError).
+  - Added _MODEL_TYPES + isinstance guard so a model/type mismatch (e.g. a
+    TicTacToe under "memory_matching") raises a clean GameConformanceError
+    instead of a raw AttributeError.
+  - Jigsaw: now requires 1-3 allowed_assembly_types (was: only rejected >3, and
+    an empty list silently skipped the correct_assembly_type membership check).
+  - CBP: enforce exactly 2 learning_blocks (spec skeleton LB1 + LB2).
+- app/schemas/practice_games/common.py — removed the unused ExplanationComponent
+  Literal (dead code; DPE stays permissive list[str] per the schema philosophy).
+- tests/unit/test_game_conformance.py — added 3 tests: model/type mismatch,
+  jigsaw empty allowed-types, learning_blocks count.
+
+**Verification:** 54 deliverable tests pass; full suite 241 passed (+3), only
+the 2 known pre-existing failures, no regressions.
+
+
 
 **Why:** Deliverable ACC: every Practice Arc mission must map to a target skill
 in the SourceMap (no unmapped missions). The SkillMapped mixin and

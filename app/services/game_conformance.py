@@ -77,6 +77,12 @@ def _validate_case_based(game: CaseBasedInteraction, registry: SkillRegistry) ->
     for cp in game.checkpoints:  # C3 (justify) is an MCQCheckpoint by type → never open
         _check_mcq(cp)
 
+    # Spec skeleton: two learning blocks (one between each checkpoint pair).
+    if len(game.learning_blocks) != 2:
+        raise GameConformanceError(
+            f"CBP game needs exactly 2 learning blocks, got {len(game.learning_blocks)}"
+        )
+
     dpe = game.decision_process_explanation
     if len(dpe.expected_components) != 3:
         raise GameConformanceError(
@@ -136,15 +142,18 @@ def validate_jigsaw_matching(game: JigsawMatching, registry: SkillRegistry) -> N
         raise GameConformanceError(
             f"jigsaw needs 3-6 pieces, got {len(game.pieces)}"
         )
-    if len(game.allowed_assembly_types) > 3:
-        raise GameConformanceError("jigsaw allows max 3 assembly types per round")
+    if not (1 <= len(game.allowed_assembly_types) <= 3):
+        raise GameConformanceError(
+            f"jigsaw needs 1-3 allowed assembly types per round, "
+            f"got {len(game.allowed_assembly_types)}"
+        )
     if len(game.correct_pair) != 2:
         raise GameConformanceError("jigsaw correct_pair must name exactly 2 piece ids")
     piece_ids = {p.piece_id for p in game.pieces}
     dangling = [pid for pid in game.correct_pair if pid not in piece_ids]
     if dangling:
         raise GameConformanceError(f"jigsaw correct_pair references unknown pieces: {dangling}")
-    if game.allowed_assembly_types and game.correct_assembly_type not in game.allowed_assembly_types:
+    if game.correct_assembly_type not in game.allowed_assembly_types:
         raise GameConformanceError(
             "jigsaw correct_assembly_type must be among allowed_assembly_types"
         )
@@ -189,6 +198,15 @@ _VALIDATORS = {
     "real_life": validate_real_life,
 }
 
+_MODEL_TYPES = {
+    "memory_matching": MemoryMatching,
+    "sentence_filling": SentenceFilling,
+    "tictactoe": TicTacToe,
+    "jigsaw_matching": JigsawMatching,
+    "error_detection": ErrorDetectionTask,
+    "real_life": RealLifeChallenge,
+}
+
 GameModel = Union[
     MemoryMatching, SentenceFilling, TicTacToe, JigsawMatching,
     ErrorDetectionTask, RealLifeChallenge,
@@ -196,9 +214,19 @@ GameModel = Union[
 
 
 def validate_game(game_type: str, game: GameModel, registry: SkillRegistry) -> None:
-    """Dispatch to the right Infra-conformance validator. Raises
-    GameConformanceError on violation, KeyError on an unknown game_type."""
+    """Dispatch to the right Infra-conformance validator.
+
+    Raises GameConformanceError on an unknown game_type, a model/type mismatch
+    (e.g. a TicTacToe passed as "memory_matching"), or any Infra-spec /
+    concept-trace / skill-mapping violation.
+    """
     validator = _VALIDATORS.get(game_type)
     if validator is None:
         raise GameConformanceError(f"unknown game type: {game_type!r}")
+    expected_model = _MODEL_TYPES[game_type]
+    if not isinstance(game, expected_model):
+        raise GameConformanceError(
+            f"game_type {game_type!r} expects {expected_model.__name__}, "
+            f"got {type(game).__name__}"
+        )
     validator(game, registry)

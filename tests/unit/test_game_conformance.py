@@ -186,6 +186,12 @@ class TestValidGames:
         with pytest.raises(GameConformanceError, match="unknown game type"):
             game_conformance.validate_game("nope", memory_matching(), registry())
 
+    def test_model_type_mismatch_raises(self):
+        # A TicTacToe passed under the wrong game_type is a clean
+        # GameConformanceError, not a raw AttributeError.
+        with pytest.raises(GameConformanceError, match="expects MemoryMatching"):
+            game_conformance.validate_game("memory_matching", tictactoe(), registry())
+
 
 # ── concept trace (no disconnected drills) ──────────────────────────────
 
@@ -257,6 +263,12 @@ class TestCbpRules:
         with pytest.raises(GameConformanceError, match="3 expected_components"):
             game_conformance.validate_game("sentence_filling", g, registry())
 
+    def test_learning_blocks_count_enforced(self):
+        g = memory_matching()
+        g.learning_blocks = ["only one"]
+        with pytest.raises(GameConformanceError, match="2 learning blocks"):
+            game_conformance.validate_game("memory_matching", g, registry())
+
 
 # ── per-game specifics ──────────────────────────────────────────────────
 
@@ -283,6 +295,12 @@ class TestPerGame:
         g = jigsaw()
         g.correct_assembly_type = "step_result"  # not in allowed list
         with pytest.raises(GameConformanceError, match="allowed_assembly_types"):
+            game_conformance.validate_game("jigsaw_matching", g, registry())
+
+    def test_jigsaw_empty_allowed_types_rejected(self):
+        g = jigsaw()
+        g.allowed_assembly_types = []  # empty list must not silently skip the check
+        with pytest.raises(GameConformanceError, match="1-3 allowed assembly types"):
             game_conformance.validate_game("jigsaw_matching", g, registry())
 
     def test_error_detection_exactly_one_error(self):

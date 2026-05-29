@@ -30,7 +30,6 @@ CheckpointKind = Literal["identify", "decide", "justify"]
 MistakeProvenance = Literal["source", "inferred"]
 CompletionStatus = Literal["passed", "needs_retry"]
 ConsequenceKind = Literal["correct", "weak"]
-ExplanationComponent = Literal["concept", "method", "mistake", "relationship", "action", "meaning"]
 
 
 class MCQOption(BaseModel):
