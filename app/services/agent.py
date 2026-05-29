@@ -604,8 +604,11 @@ async def run_phase(
     last_stderr = ""
     last_usage: dict[str, Any] = {}
 
-    # Two attempts iff schema is set, otherwise one.
-    max_attempts = 2 if schema is not None else 1
+    # Always allow one retry: structured phases retry on schema-validation
+    # failure; markdown phases retry on an empty body (e.g. gemini's
+    # INVALID_STREAM "empty response or malformed tool call", common on
+    # SVG-heavy prompts and usually transient).
+    max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         started_at = datetime.now(timezone.utc)
         t0 = perf_counter()
@@ -673,6 +676,46 @@ async def run_phase(
             )
 
         if schema is None:
+            if not text.strip():
+                # rc==0 but empty body — e.g. gemini INVALID_STREAM ("empty
+                # response or malformed tool call"), seen on SVG-heavy prompts.
+                # Never store empty as success: retry once (telling the model
+                # not to call tools), then fail loudly so the phase doesn't
+                # silently produce a blank section.
+                gem_err = ""
+                try:
+                    gem_err = str((usage.get("raw") or {}).get("error") or "")
+                except Exception:  # noqa: BLE001
+                    gem_err = ""
+                await _record_usage(
+                    operation="phase.run",
+                    provider=provider,
+                    model_name=resolved_model,
+                    usage=usage,
+                    duration_s=duration_s,
+                    started_at=started_at,
+                    success=False,
+                    homework_job_id=homework_job_id,
+                    phase_output_id=phase_output_id,
+                    error_message=(f"empty output (provider returned no text); {gem_err}")[:500],
+                    extra_envelope={"phase_name": phase_name, "attempt": attempt},
+                )
+                logger.warning(
+                    f"agent.phase EMPTY output | provider={provider} phase={phase_name} "
+                    f"attempt={attempt} gem_err={gem_err[:160]!r}"
+                )
+                if attempt < max_attempts:
+                    attempt_prompt = (
+                        base_prompt
+                        + "\n\nYour previous response was EMPTY. Do NOT call any "
+                        "tools or functions. Respond directly and immediately with "
+                        "the full deliverable as plain Markdown text."
+                    )
+                    continue
+                raise RuntimeError(
+                    f"phase.run {phase_name}: empty output after {max_attempts} "
+                    f"attempts :: {gem_err or _failure_preview(stderr, text)}"
+                )
             # Markdown-output phase. Record success, return.
             await _record_usage(
                 operation="phase.run",
