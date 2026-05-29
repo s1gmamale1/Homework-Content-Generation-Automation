@@ -20,6 +20,3 @@ var/                  # uploaded PDFs + generated screenshots
 .playwright-cli/      # playwright skill cache
 ruvector.db           # ruflo MCP local store
 prompts.zip           # local backup archive
-
-# Project worklog — local only, not committed
-docs/memory/
