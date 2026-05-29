@@ -20,7 +20,7 @@ SUBJECT_FLOWS: dict[str, dict] = {
         "has_classify": True,
         "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
-                 "real-life", "consolidation", "final-challenge", "reflection"],
+                 "real-life", "consolidation", "boss-arena", "reflection"],
     },
     "english": {
         # English is always Hard mode per flow.md — there is no Easy pipeline,
@@ -31,42 +31,42 @@ SUBJECT_FLOWS: dict[str, dict] = {
         "has_classify": False,
         "easy": [],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "reading", "game-breaks",
-                 "real-life", "consolidation", "final-challenge", "reflection"],
+                 "real-life", "consolidation", "boss-arena", "reflection"],
     },
     "geometriya-g7-11": {
         "has_classify": True,
         "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
-                 "real-life", "consolidation", "final-challenge", "reflection"],
+                 "real-life", "consolidation", "boss-arena", "reflection"],
     },
     "history": {
         # History is always Hard mode — no Easy pipeline.
         # Canonical structure: 6 mandatory phases (preview, flashcards, memory-sprint,
-        # game-breaks, final-challenge, reflection) + consolidation as a conditional
+        # game-breaks, boss-arena, reflection) + consolidation as a conditional
         # 7th. Per v0 design we run consolidation unconditionally and rely on the
         # prompt to self-emit a skip marker when not applicable.
         "has_classify": False,
         "easy": [],
         "hard": ["preview", "flashcards", "memory-sprint", "game-breaks",
-                 "consolidation", "final-challenge", "reflection"],
+                 "consolidation", "boss-arena", "reflection"],
     },
     "kimyo-g7-11": {
         "has_classify": True,
         "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
-                 "real-life", "consolidation", "final-challenge", "reflection"],
+                 "real-life", "consolidation", "boss-arena", "reflection"],
     },
     "math-algebra": {
         "has_classify": True,
         "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
-                 "real-life", "consolidation", "final-challenge", "reflection"],
+                 "real-life", "consolidation", "boss-arena", "reflection"],
     },
     "physics": {
         "has_classify": True,
         "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
-                 "real-life", "consolidation", "final-challenge", "reflection"],
+                 "real-life", "consolidation", "boss-arena", "reflection"],
     },
 }
 
@@ -91,9 +91,9 @@ PHASE_DEPS: dict[str, list[str]] = {
     "game-breaks":     ["flashcards", "memory-sprint"],
     "real-life":       ["preview-hard", "preview-easy", "preview"],
     "consolidation":   ["preview-hard", "preview-easy", "preview", "flashcards"],
-    "final-challenge": ["preview-hard", "preview-easy", "preview",
+    "boss-arena": ["preview-hard", "preview-easy", "preview",
                         "flashcards", "memory-sprint"],
-    "reflection":      ["preview-hard", "preview-easy", "preview", "final-challenge"],
+    "reflection":      ["preview-hard", "preview-easy", "preview", "boss-arena"],
 }
 
 

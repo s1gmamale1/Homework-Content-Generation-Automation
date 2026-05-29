@@ -41,6 +41,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.repositories import agent_usage as usage_repo
 from app.schemas import (
+    BossArena,
     ClassifyDecision,
     ExtractedTOC,
     FinalChallenge,
@@ -107,6 +108,7 @@ STRUCTURED_PHASE_SCHEMAS: dict[str, type[BaseModel]] = {
     "memory-sprint": MemorySprintPack,
     "game-breaks": GamesPack,
     "final-challenge": FinalChallenge,
+    "boss-arena": BossArena,
     "reading": ReadingPassage,
 }
 
@@ -233,7 +235,7 @@ _EXTRACT_PHASE_PROMPT = (
 _SVG_PHASES: set[str] = {
     "preview-hard", "preview-easy", "preview",
     "real-life", "consolidation",
-    "flashcards", "game-breaks", "final-challenge", "reading",
+    "flashcards", "game-breaks", "final-challenge", "boss-arena", "reading",
 }
 
 

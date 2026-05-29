@@ -91,6 +91,26 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
                 out.append(f"   - _{q.explanation}_")
         return "\n".join(out)
 
+    if phase_name == "boss-arena":
+        qs = getattr(parsed, "questions", None) or []
+        title = getattr(parsed, "title", None) or "Boss Arena"
+        hp = getattr(parsed, "starting_hp", 100)
+        out = [
+            f"_{title} — Why→How→What reasoning boss with {len(qs)} questions, "
+            f"starting HP {hp}._\n"
+        ]
+        for i, q in enumerate(qs, 1):
+            concepts = ", ".join(getattr(q, "concept_ids", None) or [])
+            out.append(
+                f"{i}. **[{q.difficulty.upper()} · -{q.base_damage} HP]** _{q.scenario}_"
+            )
+            out.append(f"   - **Why:** {q.why}")
+            out.append(f"   - **How:** {q.how}")
+            out.append(f"   - **What:** {q.what}")
+            if concepts:
+                out.append(f"   - _concepts: {concepts}_")
+        return "\n".join(out)
+
     if phase_name == "reading":
         cps = getattr(parsed, "checkpoints", None) or []
         cefr = f" (CEFR {parsed.cefr_level})" if getattr(parsed, "cefr_level", None) else ""
@@ -122,6 +142,7 @@ _JSON_COLUMN_SETTERS = {
     "memory-sprint": jobs_repo.set_memory_sprint_json,
     "game-breaks": jobs_repo.set_games_json,
     "final-challenge": jobs_repo.set_final_challenge_json,
+    "boss-arena": jobs_repo.set_boss_arena_json,
     "reading": jobs_repo.set_reading_json,
 }
 

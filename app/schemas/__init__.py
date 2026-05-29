@@ -1,4 +1,5 @@
 from app.schemas.book import BookOut
+from app.schemas.boss_arena import BossArena, BossQuestion as BossArenaQuestion
 from app.schemas.classify import ClassifyDecision, Difficulty
 from app.schemas.final_challenge import BossQuestion, FinalChallenge
 from app.schemas.flashcards import Flashcard, FlashcardsPack
@@ -39,6 +40,8 @@ __all__ = [
     "FlashcardsPack",
     "BossQuestion",
     "FinalChallenge",
+    "BossArena",
+    "BossArenaQuestion",
     "MemorySprintItem",
     "MemorySprintPack",
     "ReadingCheckpoint",

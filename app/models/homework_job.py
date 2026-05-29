@@ -49,6 +49,10 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # {"subject_family", "chapter", "section",
     #  "concepts": [{"id","label","statement","kind","source_ref?"}]}
     source_map_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # PR-4 (Flow v2): Boss Arena — reasoning Why->How->What questions. Shape:
+    # {"title","starting_hp","questions":[{concept_ids,difficulty,scenario,why,how,what,
+    #   base_damage,hints,correct_feedback,partial_feedback,wrong_feedback}]}
+    boss_arena_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

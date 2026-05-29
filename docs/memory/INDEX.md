@@ -11,3 +11,4 @@
 | 0004 | 2026-05-29 | Nggaev-v2 | Phase 1: Flow v2 schemas + provider fallback + task→model policy (TDD, 67 green) |
 | 0005 | 2026-05-29 | Nggaev-v2 | Adopt rewritten (codebase-grounded) plan; prune Phase 1 to PR-scope (55 green) |
 | 0006 | 2026-05-29 | Nggaev-v2 | PR-1: source map — extract_source_map + persist source_map_json (TDD, 58 green) |
+| 0007 | 2026-05-29 | Nggaev-v2 | PR-4: Boss Arena (Why→How→What) content phase, replaces final-challenge in flows (TDD, 64 green) |
