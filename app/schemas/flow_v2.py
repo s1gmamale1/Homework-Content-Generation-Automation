@@ -9,7 +9,6 @@ here so malformed content fails fast at the boundary:
   ``None`` so it can never be modeled as an MCQ (§6, CBP standard).
 - ``CaseBasedPreview`` — exactly 3 checkpoints, a required DPE, and a final
   simulation that carries both a correct and a wrong path.
-- ``WeakPointSignal`` — the needs-attention data layer (§10).
 - ``SourceMap`` / ``SourceConcept`` — the factual anchor; defined here as the
   shared mock contract that lets phase generators start in parallel (§3). The
   real builder lands in Phase 2.
@@ -115,20 +114,6 @@ class CaseBasedPreview(BaseModel):
     final_simulation: CaseSimulation
     feedback_summary: FeedbackSummary
     completion_rules: CompletionRules
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Weak Point Signals (§10) — needs-attention data layer
-# ─────────────────────────────────────────────────────────────────────
-
-
-class WeakPointSignal(BaseModel):
-    concept_id: str
-    source_phase: str
-    evidence: list[dict]
-    severity: Literal["low", "medium", "high"]
-    target_accounts: list[Literal["teacher", "parent", "admin"]]
-    recommended_action: str
 
 
 # ─────────────────────────────────────────────────────────────────────

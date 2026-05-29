@@ -1,7 +1,7 @@
 """Unit tests for the Flow v2 content schemas (``app.schemas.flow_v2``).
 
 These encode the structural content rules from the Pure Content Automation
-plan (§6 CBP, §10 WeakPointSignal, §12 GenerationProfile) and the CBP
+plan (§6 CBP, §12 GenerationProfile) and the CBP
 generation standard: difficulty is metadata (never branch-skipping), the
 Decision Process Explanation is never an MCQ, a Case-Based Preview has
 exactly 3 checkpoints with a required DPE, and the final simulation carries
@@ -24,7 +24,6 @@ from app.schemas.flow_v2 import (
     GenerationProfile,
     SourceConcept,
     SourceMap,
-    WeakPointSignal,
 )
 
 
@@ -163,42 +162,6 @@ def test_cbp_requires_nonempty_source_concept_ids() -> None:
 def test_final_simulation_requires_both_paths() -> None:
     with pytest.raises(ValidationError):
         CaseSimulation(correct_path="only the correct path given")
-
-
-# ─────────────────────────────────────────────────────────────────────
-# WeakPointSignal
-# ─────────────────────────────────────────────────────────────────────
-
-
-def _valid_signal_kwargs() -> dict:
-    return dict(
-        concept_id="c1",
-        source_phase="case_based_preview",
-        evidence=[{"checkpoint": 2, "selected": "add"}],
-        severity="medium",
-        target_accounts=["teacher", "parent"],
-        recommended_action="Re-teach dividing a fraction by a whole.",
-    )
-
-
-def test_weak_point_signal_valid() -> None:
-    sig = WeakPointSignal(**_valid_signal_kwargs())
-    assert sig.severity == "medium"
-    assert "teacher" in sig.target_accounts
-
-
-def test_weak_point_signal_rejects_bad_severity() -> None:
-    kwargs = _valid_signal_kwargs()
-    kwargs["severity"] = "catastrophic"
-    with pytest.raises(ValidationError):
-        WeakPointSignal(**kwargs)
-
-
-def test_weak_point_signal_rejects_bad_target_account() -> None:
-    kwargs = _valid_signal_kwargs()
-    kwargs["target_accounts"] = ["teacher", "principal"]
-    with pytest.raises(ValidationError):
-        WeakPointSignal(**kwargs)
 
 
 # ─────────────────────────────────────────────────────────────────────

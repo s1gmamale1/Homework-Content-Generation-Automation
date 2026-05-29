@@ -13,7 +13,6 @@ from app.schemas.flow_v2 import (
     GenerationProfile,
     SourceConcept,
     SourceMap,
-    WeakPointSignal,
 )
 from app.schemas.games import Game, GameCard, GamePair, GameQuestion, GamesPack
 from app.schemas.job import GenerateRequest, JobOut, PhaseOut
@@ -53,7 +52,6 @@ __all__ = [
     "FeedbackSummary",
     "CompletionRules",
     "CaseBasedPreview",
-    "WeakPointSignal",
     "SourceConcept",
     "SourceMap",
 ]
