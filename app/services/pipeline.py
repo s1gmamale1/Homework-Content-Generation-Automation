@@ -309,17 +309,26 @@ async def run(job_id: UUID) -> None:
         # Additive + non-fatal.
         try:
             from app.services import flow_division_mapper as fdm
+            from app.services import prompt_registry
 
             _plan = fdm.build_division_plan(subject=subject, difficulty=difficulty)
+            _coverage = prompt_registry.resolve_plan_coverage(_plan)
             async with SessionLocal() as session:
                 await jobs_repo.set_flow_manifest_json(
-                    session, job_id, {"division_plan": _plan.to_dict()}
+                    session,
+                    job_id,
+                    {
+                        "division_plan": _plan.to_dict(),
+                        "prompt_registry": _coverage,
+                    },
                 )
                 await session.commit()
             log.info(
                 f"[job {job_id}] flow_manifest persisted | "
                 f"family={_plan.family} difficulty={_plan.difficulty} "
-                f"games={_plan.practice_games}"
+                f"games={_plan.practice_games} "
+                f"registry_covered={_coverage.get('covered')} "
+                f"missing={_coverage.get('missing')}"
             )
         except Exception as exc:  # noqa: BLE001 — Phase-2 additive; never break the job
             log.warning(f"[job {job_id}] flow_manifest build failed (non-fatal): {exc}")

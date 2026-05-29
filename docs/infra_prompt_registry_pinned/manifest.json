@@ -1,0 +1,128 @@
+{
+  "infra_root": "docs/Infra_prompts",
+  "entry_count": 17,
+  "entries": {
+    "cbp:standard": {
+      "path": "docs/Infra_prompts/Case-Based Preview/nets_case_based_preview_generation_standard_v1.md",
+      "version": "1",
+      "sha256": "b5ac085378384655196fde200824d0ec6ff78aed3221c4185b750131ddd65205",
+      "exists": true,
+      "size": 19157
+    },
+    "cbp:math_family": {
+      "path": "docs/Infra_prompts/Case-Based Preview/nets_cbp_prompt_math_family.md",
+      "version": "1.0",
+      "sha256": "d69de68e420e8124f9479319ce6d67968d70bb16fd3034517033b6487b4aa337",
+      "exists": true,
+      "size": 12722
+    },
+    "cbp:sciences": {
+      "path": "docs/Infra_prompts/Case-Based Preview/nets_cbp_prompt_sciences.md",
+      "version": "1.0",
+      "sha256": "ec4d95f02d4a4a5972c407008c455bcd83dd35554e35b3cc2fa6ac7efe79b1eb",
+      "exists": true,
+      "size": 14634
+    },
+    "cbp:languages": {
+      "path": "docs/Infra_prompts/Case-Based Preview/nets_cbp_prompt_languages.md",
+      "version": "1.0",
+      "sha256": "9283d405b3878a88bbc8f3a70174d9643841959905429418fa67ab754f9401e4",
+      "exists": true,
+      "size": 15273
+    },
+    "flashcards:math_family": {
+      "path": "docs/Infra_prompts/Flashcards/Flashcard Prompts/nets_flashcard_game_prompt_math_family.md",
+      "version": "1.0",
+      "sha256": "fc51ef583170b0852fc2479c75efbfad94615813f1351dff3e02c6132ce9b2ce",
+      "exists": true,
+      "size": 15632
+    },
+    "flashcards:sciences": {
+      "path": "docs/Infra_prompts/Flashcards/Flashcard Prompts/nets_flashcard_game_prompt_sciences.md",
+      "version": "1.0",
+      "sha256": "dcccb5a094d9840b77b0a4ae3851172c13fe26fa1ca97a07aba2fed9d1d7cb6f",
+      "exists": true,
+      "size": 17375
+    },
+    "flashcards:languages": {
+      "path": "docs/Infra_prompts/Flashcards/Flashcard Prompts/nets_flashcard_game_prompt_languages.md",
+      "version": "1.0",
+      "sha256": "67b436a43d57a7a0d24d2f3835413d307eb7f6d46e85e00ceab6bef90c53fc46",
+      "exists": true,
+      "size": 16874
+    },
+    "flashcards:humanities": {
+      "path": "docs/Infra_prompts/Flashcards/Flashcard Prompts/nets_flashcard_game_prompt_humanities.md",
+      "version": "1.0",
+      "sha256": "79f9262569cc2c58e79f921a3c65160cb0c5641fdecbed5919533bead39bb6f9",
+      "exists": true,
+      "size": 18706
+    },
+    "phase:real-life": {
+      "path": "docs/Infra_prompts/Gamified Practices/Real Life Challenge/Real_Life_Challenge_Specification.md",
+      "version": "1.0",
+      "sha256": "2fe1e29c72f245984be8fda9e0b4cb7d2fd1528b107a7f4163062f0b3abc2fd4",
+      "exists": true,
+      "size": 13922
+    },
+    "phase:final-challenge": {
+      "path": "docs/Infra_prompts/Gamified Practices/Boss Arena/Boss_Arena_Specification.md",
+      "version": "1.0",
+      "sha256": "dd97611a84816b00bec5277bd28d6a8264b5b63f24a18dc4dc1473fbd7405bd5",
+      "exists": true,
+      "size": 11125
+    },
+    "game:memory_match": {
+      "path": "docs/Infra_prompts/Gamified Practices/Memory Matching/MemoryMatching.md",
+      "version": "1.0",
+      "sha256": "69b6079e487b100b4adff66b70c8da4e1dac82fcad849c2c2fbb750441a77482",
+      "exists": true,
+      "size": 9712
+    },
+    "game:sentence_fill": {
+      "path": "docs/Infra_prompts/Gamified Practices/Sentence Filling/SentenceFilling.md",
+      "version": "1.0",
+      "sha256": "9cd1407d9d95f24e7dd1dcbb4655219e018d662088a1defc2f74d95da56d5cb6",
+      "exists": true,
+      "size": 11009
+    },
+    "game:adaptive_quiz": {
+      "path": "docs/Infra_prompts/Flashcards/Quzilet Learning/Multiple Choice/Multiple_Choice_Specification.md",
+      "version": "1.0",
+      "sha256": "5755d85d4121b858edae8bca2ef4466d88c2e13210e8d3f715f7686e8cfc9cad",
+      "exists": true,
+      "size": 13868
+    },
+    "game:tile_match": {
+      "path": "docs/Infra_prompts/Gamified Practices/Jigsaw Matching/JigsawMatching.md",
+      "version": "1.0",
+      "sha256": "58b64296cffcdcaee375bf9cb55ba5cc69e5a09a3da0dc1ca31a1a797d585dfc",
+      "exists": true,
+      "size": 10725
+    },
+    "standard:cbp_standard": {
+      "path": "docs/Infra_prompts/Case-Based Preview/nets_case_based_preview_generation_standard_v1.md",
+      "version": "1",
+      "sha256": "b5ac085378384655196fde200824d0ec6ff78aed3221c4185b750131ddd65205",
+      "exists": true,
+      "size": 19157
+    },
+    "standard:flow_v2": {
+      "path": "docs/Infra_prompts/Flow/New_Flow.md",
+      "version": "1.0",
+      "sha256": "a700f1c08125eb9234f815458334f3b895b40d6bc8fe87fe140978646af5199d",
+      "exists": true,
+      "size": 9294
+    },
+    "standard:uzbek_review": {
+      "path": "docs/Infra_prompts/Uzbek Specification/NETS_Uzbek_Language_Foundation_Review.md",
+      "version": "1.0",
+      "sha256": "4c8e805fe5ded317a5a56c5dcffb55189f815e42db42e88ad3ef71b072e51b55",
+      "exists": true,
+      "size": 14772
+    }
+  },
+  "pending": {
+    "cbp_v1_1": "not_present — only v1.0 ships; author for DPE slot 7"
+  }
+}
