@@ -24,3 +24,6 @@ prompts.zip           # local backup archive
 # Ruflo / claude-flow local runtime state — machine-local, not committed
 .swarm/
 .claude-flow/
+
+# Project worklog — local only, not committed
+docs/memory/

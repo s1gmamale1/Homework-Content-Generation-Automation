@@ -2,6 +2,19 @@ from app.schemas.book import BookOut
 from app.schemas.classify import ClassifyDecision, Difficulty
 from app.schemas.final_challenge import BossQuestion, FinalChallenge
 from app.schemas.flashcards import Flashcard, FlashcardsPack
+from app.schemas.flow_v2 import (
+    CaseBasedPreview,
+    CaseCheckpoint,
+    CaseSetup,
+    CaseSimulation,
+    CompletionRules,
+    DecisionProcessExplanation,
+    FeedbackSummary,
+    GenerationProfile,
+    SourceConcept,
+    SourceMap,
+    WeakPointSignal,
+)
 from app.schemas.games import Game, GameCard, GamePair, GameQuestion, GamesPack
 from app.schemas.job import GenerateRequest, JobOut, PhaseOut
 from app.schemas.memory_sprint import MemorySprintItem, MemorySprintPack
@@ -31,4 +44,16 @@ __all__ = [
     "MemorySprintPack",
     "ReadingCheckpoint",
     "ReadingPassage",
+    # Flow v2 content schemas
+    "GenerationProfile",
+    "DecisionProcessExplanation",
+    "CaseSetup",
+    "CaseCheckpoint",
+    "CaseSimulation",
+    "FeedbackSummary",
+    "CompletionRules",
+    "CaseBasedPreview",
+    "WeakPointSignal",
+    "SourceConcept",
+    "SourceMap",
 ]
