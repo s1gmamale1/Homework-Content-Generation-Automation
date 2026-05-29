@@ -66,6 +66,7 @@ def _cbp_kwargs() -> dict:
             case_type="memory case", student_role="checker",
         ),
         source_concept_ids=["c1"],
+        target_skill_ids=["s1"],
         common_mistake=CommonMistake(text="confuses c1 and c2", provenance="inferred"),
         case_setup="You are a checker. Sort these.",
         checkpoints=[_mcq("identify"), _mcq("decide"), _mcq("justify")],
@@ -130,6 +131,7 @@ def error_detection() -> ErrorDetectionTask:
     return ErrorDetectionTask(
         pattern="math_equation",
         source_concept_ids=["c1"],
+        target_skill_ids=["s1"],
         blocks=[
             ErrorDetectionBlock(id="b1", content="3x+5=11", is_error=False),
             ErrorDetectionBlock(id="b2", content="3x=11-5", is_error=False),
@@ -152,7 +154,7 @@ def real_life() -> RealLifeChallenge:
         )
     return RealLifeChallenge(
         role="reporter", task="report", context="ctx",
-        source_concept_ids=["c1"], prediction_prompt="predict?",
+        source_concept_ids=["c1"], target_skill_ids=["s1"], prediction_prompt="predict?",
         decision=step("d"), info_request=step("i"), final_decision=step("f"),
         concept_select=RLCConceptSelectStep(
             prompt="which concept?",
@@ -199,6 +201,32 @@ class TestConceptTrace:
         g.source_concept_ids = ["ghost"]
         with pytest.raises(GameConformanceError):
             game_conformance.validate_game("error_detection", g, registry())
+
+
+# ── mission → skill mapping (each mission maps to a SourceMap skill) ─────
+
+class TestSkillMapping:
+    @pytest.mark.parametrize("game_type,factory", [
+        ("memory_matching", memory_matching),
+        ("error_detection", error_detection),
+        ("real_life", real_life),
+    ])
+    def test_empty_skill_mapping_rejected(self, game_type, factory):
+        g = factory()
+        g.target_skill_ids = []
+        with pytest.raises(GameConformanceError, match="no target skill"):
+            game_conformance.validate_game(game_type, g, registry())
+
+    @pytest.mark.parametrize("game_type,factory", [
+        ("tictactoe", tictactoe),
+        ("jigsaw_matching", jigsaw),
+        ("real_life", real_life),
+    ])
+    def test_dangling_skill_id_rejected(self, game_type, factory):
+        g = factory()
+        g.target_skill_ids = ["ghost_skill"]
+        with pytest.raises(GameConformanceError, match="unknown skill_id"):
+            game_conformance.validate_game(game_type, g, registry())
 
 
 # ── CBP hard-rule violations ────────────────────────────────────────────

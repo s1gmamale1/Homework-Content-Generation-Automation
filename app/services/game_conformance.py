@@ -40,6 +40,15 @@ def _trace(concept_ids: list[str], registry: SkillRegistry) -> None:
         raise GameConformanceError(str(exc)) from exc
 
 
+def _skills(target_skill_ids: list[str], registry: SkillRegistry) -> None:
+    """Mission→skill mapping check (every mission maps to >=1 SourceMap skill),
+    surfaced as GameConformanceError."""
+    try:
+        skill_map.validate_mission_mapping(target_skill_ids, registry)
+    except skill_map.SkillMappingError as exc:
+        raise GameConformanceError(str(exc)) from exc
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Shared CBP-mode checks
 # ─────────────────────────────────────────────────────────────────────
@@ -57,6 +66,8 @@ def _check_mcq(cp: MCQCheckpoint) -> None:
 def _validate_case_based(game: CaseBasedInteraction, registry: SkillRegistry) -> None:
     # No disconnected drills — must trace to >=1 real concept.
     _trace(game.source_concept_ids, registry)
+    # Every mission maps to >=1 target skill in the SourceMap.
+    _skills(game.target_skill_ids, registry)
 
     kinds = tuple(c.kind for c in game.checkpoints)
     if kinds != _CBP_CHECKPOINT_ORDER:
@@ -141,6 +152,7 @@ def validate_jigsaw_matching(game: JigsawMatching, registry: SkillRegistry) -> N
 
 def validate_error_detection(game: ErrorDetectionTask, registry: SkillRegistry) -> None:
     _trace(game.source_concept_ids, registry)
+    _skills(game.target_skill_ids, registry)
     error_blocks = [b for b in game.blocks if b.is_error]
     if len(error_blocks) != 1:
         raise GameConformanceError(
@@ -160,6 +172,7 @@ def validate_error_detection(game: ErrorDetectionTask, registry: SkillRegistry) 
 
 def validate_real_life(game: RealLifeChallenge, registry: SkillRegistry) -> None:
     _trace(game.source_concept_ids, registry)
+    _skills(game.target_skill_ids, registry)
     # Reuse the platform-contract check: must still map to the validated 5-step.
     try:
         beta_export.to_platform_case(game)

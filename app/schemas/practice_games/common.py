@@ -24,6 +24,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel
 
+from app.schemas.skills import SkillMapped
+
 CheckpointKind = Literal["identify", "decide", "justify"]
 MistakeProvenance = Literal["source", "inferred"]
 CompletionStatus = Literal["passed", "needs_retry"]
@@ -88,9 +90,12 @@ class CaseMetadata(BaseModel):
     student_role: str
 
 
-class CaseBasedInteraction(BaseModel):
+class CaseBasedInteraction(SkillMapped):
     """Base for the four CBP interaction-mode games. Game-specific content is
-    added by each subclass (cards, chips, board, pieces)."""
+    added by each subclass (cards, chips, board, pieces).
+
+    Inherits `target_skill_ids` from SkillMapped — every mission maps to >=1
+    target skill in the SourceMap (enforced by game_conformance)."""
 
     metadata: CaseMetadata
     source_concept_ids: list[str] = []  # trace to SourceMap concepts (expects >=1)

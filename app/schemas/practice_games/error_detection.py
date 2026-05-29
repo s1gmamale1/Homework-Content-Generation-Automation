@@ -12,6 +12,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel
 
+from app.schemas.skills import SkillMapped
+
 ErrorPattern = Literal["math_equation", "grammar_sentence", "science_diagram"]
 
 
@@ -21,7 +23,8 @@ class ErrorDetectionBlock(BaseModel):
     is_error: bool = False  # server-only — exactly one block is True per task
 
 
-class ErrorDetectionTask(BaseModel):
+class ErrorDetectionTask(SkillMapped):
+    # target_skill_ids inherited from SkillMapped — maps to SourceMap skills.
     pattern: ErrorPattern
     source_concept_ids: list[str] = []  # trace to SourceMap concepts (expects >=1)
     grade_band: Optional[str] = None

@@ -17,7 +17,31 @@ Format per entry:
 
 ---
 
-## 2026-05-29 — alphaq — SourceMap foundation + Practice Arc game schemas (deliverable re-scoped)
+## 2026-05-29 — alphaq — Each mission maps to a target skill from SourceMap
+
+**Why:** Deliverable ACC: every Practice Arc mission must map to a target skill
+in the SourceMap (no unmapped missions). The SkillMapped mixin and
+skill_map.validate_mission_mapping existed but weren't wired into any game.
+
+**What changed:**
+- app/schemas/practice_games/common.py — CaseBasedInteraction now inherits
+  SkillMapped, giving the 4 CBP games target_skill_ids.
+- app/schemas/practice_games/error_detection.py — ErrorDetectionTask inherits
+  SkillMapped.
+- app/schemas/real_life.py — added target_skill_ids field to RealLifeChallenge.
+- app/services/game_conformance.py — new _skills() wrapper around
+  skill_map.validate_mission_mapping (surfaced as GameConformanceError); called
+  in _validate_case_based, validate_error_detection, validate_real_life. Every
+  game now fails conformance if it maps to no skill or to an unknown skill_id.
+- tests/unit/test_game_conformance.py — factories set target_skill_ids; new
+  TestSkillMapping (empty mapping rejected, dangling skill id rejected).
+
+**Verification:** py_compile clean; targeted tests 51 pass; full suite 238
+passed (+6), only the 2 known pre-existing failures, no regressions. Concept
+trace (source_concept_ids) and skill mapping (target_skill_ids) are now both
+enforced for every mission.
+
+
 
 **Why:** Deliverable #1 was re-scoped mid-flight. The original "skills mapping"
 foundation was KEPT (it IS the SourceMap), and the new first deliverable is the

@@ -2,6 +2,7 @@
   "_description": "Short, one-line entries for every change. Newest first. Detail lives in DETAILS.md.",
   "_format": { "date": "YYYY-MM-DD", "time": "HH:MM (optional)", "branch": "git branch", "summary": "short description" },
   "entries": [
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Mission→skill: every game now carries target_skill_ids (SkillMapped) and game_conformance enforces mapping to a SourceMap skill (no unmapped missions)" },
     { "date": "2026-05-29", "branch": "alphaq", "summary": "Practice games: game conformance validators + tests for all 6 (34 new tests pass)" },
     { "date": "2026-05-29", "branch": "alphaq", "summary": "Practice games: Error Detection schema (spot+correct, 1 error/task)" },
     { "date": "2026-05-29", "branch": "alphaq", "summary": "Practice games: 4 CBP-mode schemas (Memory Matching, Sentence Filling, TicTacToe, Jigsaw) in app/schemas/practice_games/" },

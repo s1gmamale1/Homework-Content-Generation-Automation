@@ -67,6 +67,9 @@ class RealLifeChallenge(BaseModel):
     grade_band: Optional[str] = None
     pisa: Optional[str] = None
     source_concept_ids: list[str] = []
+    # Maps this mission to >=1 target skill in the SourceMap (SkillMapped
+    # semantics; enforced by game_conformance.validate_real_life).
+    target_skill_ids: list[str] = []
     prediction_prompt: str
 
     # ── five logical steps (map 1:1 onto the platform contract) ────────
