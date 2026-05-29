@@ -334,6 +334,9 @@ async def run(job_id: UUID) -> None:
         difficulty: Optional[str] = None
         prior_outputs: dict[str, str] = {}
         lesson_context: Optional[str] = None
+        # PR-1/plan §10: the source map digest threaded into every content
+        # phase prompt as the authoritative concept list (source fidelity).
+        source_map_digest: str = ""
         phase_order = 0
 
         file_phases = file_needed_phases(subject)
@@ -391,11 +394,16 @@ async def run(job_id: UUID) -> None:
                         section=section_data["title"],
                         homework_job_id=job_id,
                     )
+                    source_map_payload = source_map.model_dump(mode="json")
                     async with SessionLocal() as session:
                         await jobs_repo.set_source_map_json(
-                            session, job_id, source_map.model_dump(mode="json")
+                            session, job_id, source_map_payload
                         )
                         await session.commit()
+                    # Thread the map into downstream content phases (plan §10).
+                    source_map_digest = agent.format_source_map_digest(
+                        source_map_payload
+                    )
                     log.info(
                         f"[job {job_id}] source map captured | "
                         f"concepts={len(source_map.concepts)}"
@@ -456,6 +464,7 @@ async def run(job_id: UUID) -> None:
                     lesson_context=lesson_context,
                     prior_outputs=prior_outputs,
                     difficulty=difficulty,
+                    source_map_digest=source_map_digest,
                 )
             except RuntimeError as exc:
                 if "content phase failed" in str(exc):
@@ -531,6 +540,7 @@ async def _execute_one_phase(
     lesson_context: Optional[str],
     prior_outputs: dict[str, str],
     difficulty: Optional[str],
+    source_map_digest: str = "",
 ) -> tuple[str, Optional[int], Optional[int], Optional[Any]]:
     """Run a single phase end-to-end with status tracking, SSE emit, and
     error handling. Wraps `_execute_phase` so both the sequential head loop
@@ -563,6 +573,7 @@ async def _execute_one_phase(
             lesson_context=lesson_context,
             prior_outputs=phase_prior,
             difficulty=difficulty,
+            source_map_digest=source_map_digest,
         )
     except Exception as exc:
         phase_ms = (perf_counter() - t_phase) * 1000
@@ -617,6 +628,7 @@ async def _run_content_phases_parallel(
     lesson_context: Optional[str],
     prior_outputs: dict[str, str],
     difficulty: Optional[str],
+    source_map_digest: str = "",
 ) -> None:
     """Wave-based parallel scheduler for content phases.
 
@@ -665,6 +677,7 @@ async def _run_content_phases_parallel(
                         lesson_context=lesson_context,
                         prior_outputs=prior_outputs,
                         difficulty=difficulty,
+                        source_map_digest=source_map_digest,
                     ),
                     name=f"phase:{name}",
                 )
@@ -732,6 +745,7 @@ async def _execute_phase(
     lesson_context: Optional[str],
     prior_outputs: dict[str, str],
     difficulty: Optional[str],
+    source_map_digest: str = "",
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     if phase_name == "extract":
         prompt_hash = "builtin:extract:v1"
@@ -844,6 +858,7 @@ async def _execute_phase(
                 max_output_tokens=max_output_tokens_for(phase_name),
                 homework_job_id=job_id,
                 phase_output_id=po_id,
+                source_map_digest=source_map_digest,
             )
             output_md = _synth_md_for_structured(phase_name, parsed_struct)
         else:
@@ -860,6 +875,7 @@ async def _execute_phase(
                 max_output_tokens=max_output_tokens_for(phase_name),
                 homework_job_id=job_id,
                 phase_output_id=po_id,
+                source_map_digest=source_map_digest,
             )
             parsed_struct = None
     except Exception as exc:

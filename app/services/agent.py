@@ -491,6 +491,41 @@ async def _record_usage(
 # ─────────────────────────────────────────────────────────────────────
 
 
+def format_source_map_digest(source_map: Optional[dict]) -> str:
+    """Render the persisted source map (``source_map_json`` shape) into a compact
+    authoritative-concept-list block for injection into every content phase's
+    prompt (plan §10 — source fidelity).
+
+    The digest is the grounding contract: *cover these concepts, invent nothing*.
+    Concept IDs are for grounding/cross-referencing only — the per-phase prompts
+    already instruct the model to put them in ``concept_ids`` /
+    ``source_concept_ids`` and never in student-facing text.
+
+    Returns ``""`` when there is no map (or it has no concepts) so callers can
+    unconditionally pass the result and the prompt stays unchanged.
+    """
+    if not source_map:
+        return ""
+    concepts = source_map.get("concepts") or []
+    if not concepts:
+        return ""
+    lines = [
+        "",
+        "--- SOURCE MAP (authoritative concept list) ---",
+        "Cover these source concepts and invent nothing beyond them. Reference "
+        "them by id in `concept_ids` / `source_concept_ids`. The ids are for "
+        "grounding only — never print an id in student-facing text.",
+        "",
+    ]
+    for c in concepts:
+        cid = c.get("id", "")
+        label = c.get("label", "")
+        statement = c.get("statement", "")
+        lines.append(f"- [{cid}] {label}: {statement}")
+    lines.append("--- END SOURCE MAP ---")
+    return "\n".join(lines)
+
+
 def _build_master_prompt(
     *,
     phase_prompt: str,
@@ -501,6 +536,7 @@ def _build_master_prompt(
     schema: Optional[type[BaseModel]],
     provider_suffix: str,
     attachment_preamble: str = "",
+    source_map_digest: str = "",
 ) -> str:
     """Assemble the user-visible prompt the CLI consumes on stdin.
 
@@ -528,6 +564,9 @@ def _build_master_prompt(
     parts.append("--- LESSON CONTEXT ---")
     parts.append(lesson_context.strip() if lesson_context else "(none)")
     parts.append("--- END LESSON CONTEXT ---")
+
+    if source_map_digest:
+        parts.append(source_map_digest)
 
     if prior_outputs:
         parts.append("")
@@ -589,6 +628,7 @@ async def run_phase(
     schema: Optional[type[BaseModel]] = None,
     difficulty: Optional[str] = None,
     max_output_tokens: Optional[int] = None,  # noqa: ARG001 — providers ignore today
+    source_map_digest: str = "",
 ) -> PhaseResult:
     """Run one phase and return the result + usage envelope.
 
@@ -612,6 +652,7 @@ async def run_phase(
         schema=schema,
         provider_suffix=suffix,
         attachment_preamble=attachment_preamble,
+        source_map_digest=source_map_digest,
     )
 
     attempt_prompt = base_prompt
@@ -621,8 +662,9 @@ async def run_phase(
     last_stderr = ""
     last_usage: dict[str, Any] = {}
 
-    # Two attempts iff schema is set, otherwise one.
-    max_attempts = 2 if schema is not None else 1
+    # Up to two attempts: schema mode retries on a validation error; markdown
+    # mode retries on an empty body (transient rc=0 + blank output).
+    max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         started_at = datetime.now(timezone.utc)
         t0 = perf_counter()
@@ -690,7 +732,42 @@ async def run_phase(
             )
 
         if schema is None:
-            # Markdown-output phase. Record success, return.
+            # Markdown-output phase. An empty/whitespace body is a transient CLI
+            # failure (rc=0 but blank — e.g. gemini INVALID_STREAM); treat it as
+            # a failure and retry once before giving up, rather than storing a
+            # blank phase as success.
+            if not text.strip():
+                await _record_usage(
+                    operation="phase.run",
+                    provider=provider,
+                    model_name=resolved_model,
+                    usage=usage,
+                    duration_s=duration_s,
+                    started_at=started_at,
+                    success=False,
+                    homework_job_id=homework_job_id,
+                    phase_output_id=phase_output_id,
+                    error_message="empty output body",
+                    extra_envelope={"phase_name": phase_name, "attempt": attempt},
+                )
+                logger.warning(
+                    f"agent.phase empty body | provider={provider} "
+                    f"phase={phase_name} attempt={attempt}"
+                )
+                if attempt < max_attempts:
+                    attempt_prompt = (
+                        base_prompt
+                        + "\n\nYour previous response was empty. Produce the "
+                        "full markdown deliverable for this phase — do not use "
+                        "any tools, just write the content."
+                    )
+                    continue
+                raise RuntimeError(
+                    f"phase.run {phase_name}: empty output after {attempt} attempts "
+                    f":: {_failure_preview(stderr, text)}"
+                )
+
+            # Non-empty markdown. Record success, return.
             await _record_usage(
                 operation="phase.run",
                 provider=provider,
@@ -1082,6 +1159,52 @@ async def extract_toc(
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _subset_pdf(
+    pdf_path: Path, page_start: Optional[int], page_end: Optional[int]
+) -> Optional[Path]:
+    """Write pages ``[page_start..page_end]`` (1-based, inclusive) of ``pdf_path``
+    into a small temp PDF and return its path; ``None`` on any problem so the
+    caller falls back to attaching the full PDF.
+
+    Why: the extractor CLI (gemini) rejects PDFs > 20 MB, and its refusal
+    message then poisons every downstream phase. Attaching only the section's
+    pages keeps the upload tiny while PRESERVING diagram/visual content (a
+    text-only read would lose figures).
+
+    NOTE: ``page_start``/``page_end`` are the section's *textbook* page numbers;
+    this assumes they map 1:1 to PDF page order. A textbook with front-matter
+    offset could make the slice off-by-N — **verify against a real book before
+    trusting this on large PDFs.** On any out-of-range/empty/error result we
+    return ``None`` (full-PDF fallback) rather than risk a wrong slice.
+    """
+    if not page_start or not page_end or page_start <= 0 or page_end < page_start:
+        return None
+    try:
+        from pypdf import PdfReader, PdfWriter
+
+        reader = PdfReader(str(pdf_path))
+        n = len(reader.pages)
+        start_idx = max(0, page_start - 1)
+        end_idx = min(n - 1, page_end - 1)
+        if start_idx > end_idx:
+            return None
+        writer = PdfWriter()
+        for i in range(start_idx, end_idx + 1):
+            writer.add_page(reader.pages[i])
+        if len(writer.pages) == 0:
+            return None
+        fd, tmp = tempfile.mkstemp(suffix=".pdf", prefix="extract_section_")
+        os.close(fd)
+        with open(tmp, "wb") as f:
+            writer.write(f)
+        return Path(tmp)
+    except Exception as exc:
+        logger.warning(
+            f"_subset_pdf failed ({exc!r}); falling back to full PDF attach"
+        )
+        return None
+
+
 async def extract_lesson_context(
     *,
     provider: str,
@@ -1111,6 +1234,18 @@ async def extract_lesson_context(
         rules=_NO_PREAMBLE,
     )
 
+    # Attach only the section's page window (a small subset PDF) so the extractor
+    # never hits the gemini >20 MB rejection that would poison downstream phases.
+    # Preserves diagrams (unlike a text-only read). Falls back to the full PDF
+    # when the subset can't be built. Cleaned up in the finally below.
+    subset_pdf = _subset_pdf(pdf_path, page_start, page_end)
+    attach_path = subset_pdf or pdf_path
+    if subset_pdf is not None:
+        logger.info(
+            f"agent.lesson.extract | attaching section subset PDF "
+            f"pages {page_start}-{page_end} ({subset_pdf.name}) instead of full book"
+        )
+
     # No schema — markdown deliverable. Prior outputs / lesson_context are
     # not meaningful here (this phase IS the lesson_context source).
     prompt = _build_master_prompt(
@@ -1121,7 +1256,7 @@ async def extract_lesson_context(
         difficulty=None,
         schema=None,
         provider_suffix=prov.prompt_suffix(None),
-        attachment_preamble=prov.format_attachments([pdf_path]),
+        attachment_preamble=prov.format_attachments([attach_path]),
     )
 
     started_at = datetime.now(timezone.utc)
@@ -1142,10 +1277,18 @@ async def extract_lesson_context(
             provider=prov,
             model=resolved_model,
             prompt=prompt,
-            attachments=[pdf_path],
+            attachments=[attach_path],
         )
     except Exception as exc:
         spawn_failed = exc
+    finally:
+        # Remove the temp subset PDF (never the book's source.pdf — every
+        # downstream phase re-reads that).
+        if subset_pdf is not None:
+            try:
+                subset_pdf.unlink()
+            except OSError:
+                pass
 
     duration_s = perf_counter() - t0
 
@@ -1301,6 +1444,7 @@ async def run_phase_prompt(
     homework_job_id: Optional[UUID] = None,
     phase_output_id: Optional[UUID] = None,
     attachments: list[Path] = (),
+    source_map_digest: str = "",
 ) -> tuple[str, Optional[int], Optional[int]]:
     """Markdown-output phase. Wraps :func:`run_phase` and returns
     ``(text, prompt_tokens, output_tokens)`` to mirror gemini.run_phase_prompt's
@@ -1318,6 +1462,7 @@ async def run_phase_prompt(
         schema=None,
         difficulty=difficulty,
         max_output_tokens=max_output_tokens,
+        source_map_digest=source_map_digest,
     )
     pt = int(result.usage.get("prompt_tokens") or 0)
     ot = int(result.usage.get("output_tokens") or 0)
@@ -1338,6 +1483,7 @@ async def run_phase_prompt_structured(
     homework_job_id: Optional[UUID] = None,
     phase_output_id: Optional[UUID] = None,
     attachments: list[Path] = (),
+    source_map_digest: str = "",
 ) -> tuple[BaseModel, Optional[int], Optional[int]]:
     """Structured-output phase. Wraps :func:`run_phase` and returns
     ``(parsed, prompt_tokens, output_tokens)`` to match the gemini equivalent."""
@@ -1354,6 +1500,7 @@ async def run_phase_prompt_structured(
         schema=response_schema,
         difficulty=difficulty,
         max_output_tokens=max_output_tokens,
+        source_map_digest=source_map_digest,
     )
     if result.parsed is None:
         # Should be unreachable: run_phase raises before returning a
