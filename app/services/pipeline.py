@@ -262,6 +262,43 @@ async def run(job_id: UUID) -> None:
                     f"appended_phases={appended} new_total={len(sequence)}"
                 )
 
+        # ─── Phase 2: SourceMap — factual anchor built from the lesson text ───
+        # Structured concept map (stable concept ids) downstream phases cite to
+        # stay grounded in the textbook. Additive + non-fatal: a failure here
+        # must never break the existing generation flow.
+        if lesson_context:
+            try:
+                from app.services import source_map as source_map_svc
+
+                sm = await source_map_svc.build_source_map(
+                    provider=settings.extract_provider,
+                    model=settings.extract_model,
+                    subject=subject,
+                    grade=None,
+                    language="uz",
+                    section_number=str(section_data.get("number") or ""),
+                    section_title=str(section_data.get("title") or ""),
+                    page_range=(
+                        f"{section_data.get('page_start')}-{section_data.get('page_end')}"
+                    ),
+                    textbook_title="",
+                    lesson_context=lesson_context,
+                    homework_job_id=job_id,
+                )
+                async with SessionLocal() as session:
+                    await jobs_repo.set_source_map_json(
+                        session, job_id, sm.model_dump(mode="json")
+                    )
+                    await session.commit()
+                log.info(
+                    f"[job {job_id}] source_map persisted | "
+                    f"concepts={len(sm.core_concepts)} terms={len(sm.key_terms)}"
+                )
+            except Exception as exc:  # noqa: BLE001 — Phase-2 additive; never break the job
+                log.warning(
+                    f"[job {job_id}] source_map build failed (non-fatal): {exc}"
+                )
+
         content_phases = sequence[len(head_phases):]
 
         # ─── tail: content phases (parallel, wave-based by PHASE_DEPS) ────────
