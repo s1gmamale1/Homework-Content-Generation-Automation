@@ -79,6 +79,8 @@ class PhaseResult:
 # own default is preferred when ``model`` is unset.
 _PROVIDER_DEFAULT_MODEL: dict[str, Optional[str]] = {
     "claude": "claude-sonnet-4-6",
+    # opencode needs an explicit provider/model; default to a free zen model.
+    "opencode": "opencode/deepseek-v4-flash-free",
     "kimi":   None,
     "codex":  None,
     "gemini": None,

@@ -53,8 +53,11 @@ class Settings(BaseSettings):
     # extract phases burn the most input tokens (whole-PDF or many-page reads)
     # and the output is a flat factual summary, so paying smart-tier rates
     # buys nothing. Other phases keep using the job-level provider/model.
-    extract_provider: str = "gemini"
-    extract_model: str = "gemini-2.5-flash"
+    # Content extraction (lesson.extract) runs on opencode (https://opencode.ai/)
+    # — a free zen model, no API key needed. Override via EXTRACT_PROVIDER /
+    # EXTRACT_MODEL in .env (e.g. back to gemini) if desired.
+    extract_provider: str = "opencode"
+    extract_model: str = "opencode/deepseek-v4-flash-free"
 
     # ─── Flow v2 registry coverage gate (Phase 2 E.2) ─────────────────────
     # When True, a job fails fast (before content phases) if any enabled phase

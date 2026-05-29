@@ -659,10 +659,10 @@ async def _execute_phase(
     source_map_digest: Optional[str] = None,
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     if phase_name == "extract":
-        # v2: extract now reads section pages locally (pypdf) instead of
-        # attaching the whole PDF — bump invalidates the poisoned v1 cache
-        # (which stored the CLI's "PDF too large to read" refusal as context).
-        prompt_hash = "builtin:extract:v2"
+        # v2: extract reads section pages locally (pypdf) instead of attaching
+        # the whole PDF. v3: extraction backend swapped gemini -> opencode, so
+        # invalidate the gemini-era cache and re-extract via the new provider.
+        prompt_hash = "builtin:extract:v3"
     else:
         prompt_hash = get_prompt_hash(subject, phase_name)
 

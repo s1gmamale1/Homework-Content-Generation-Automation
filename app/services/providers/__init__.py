@@ -19,15 +19,17 @@ from .claude import Claude
 from .codex import Codex
 from .gemini import Gemini
 from .kimi import Kimi
+from .opencode import OpenCode
 
 
 CLAUDE = Claude()
 KIMI = Kimi()
 CODEX = Codex()
 GEMINI = Gemini()
+OPENCODE = OpenCode()
 
 PROVIDERS: dict[str, Provider] = {
-    p.name: p for p in (CLAUDE, KIMI, CODEX, GEMINI)
+    p.name: p for p in (CLAUDE, KIMI, CODEX, GEMINI, OPENCODE)
 }
 
 
@@ -49,10 +51,12 @@ __all__ = [
     "Kimi",
     "Codex",
     "Gemini",
+    "OpenCode",
     "CLAUDE",
     "KIMI",
     "CODEX",
     "GEMINI",
+    "OPENCODE",
     "PROVIDERS",
     "get_provider",
 ]
