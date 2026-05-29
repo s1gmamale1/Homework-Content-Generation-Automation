@@ -13,3 +13,7 @@ build/
 statusline-command.sh
 .claude/
 node_modules/
+
+# Ruflo / claude-flow local runtime state — machine-local, not committed
+.swarm/
+.claude-flow/

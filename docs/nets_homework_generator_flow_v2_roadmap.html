@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NETS Homework Generator — Flow v2 Execution Roadmap</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#080a0f;--bg2:#0c0f16;--surface:#11151f;--surface2:#161b27;
+    --line:#222a3a;--line2:#2e394d;--text:#e6edf3;--muted:#8b97ab;--muted2:#5c6779;
+    --orange:#ff7a45;--blue:#4a9eff;--purple:#a78bfa;--green:#34d399;--red:#f87171;--yellow:#fbbf24;
+    --mono:'JetBrains Mono',monospace;--sans:'Onest',sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.6;overflow-x:hidden;-webkit-font-smoothing:antialiased}
+  body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:radial-gradient(800px 500px at 12% -5%,rgba(255,122,69,.10),transparent 60%),
+      radial-gradient(900px 600px at 95% 8%,rgba(74,158,255,.10),transparent 60%),
+      radial-gradient(700px 700px at 50% 110%,rgba(167,139,250,.08),transparent 60%)}
+  body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.025;
+    background-image:repeating-linear-gradient(0deg,#fff 0 1px,transparent 1px 3px)}
+  .wrap{position:relative;z-index:1;max-width:1180px;margin:0 auto;padding:0 24px}
+
+  nav{position:sticky;top:0;z-index:50;backdrop-filter:blur(14px);background:rgba(8,10,15,.78);border-bottom:1px solid var(--line)}
+  .nav-inner{max-width:1180px;margin:0 auto;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;gap:20px}
+  .logo{font-weight:800;font-size:15px;letter-spacing:-.02em;display:flex;align-items:center;gap:10px}
+  .logo .dot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,var(--orange),var(--purple));box-shadow:0 0 14px var(--orange)}
+  .logo .tag{font-family:var(--mono);font-size:10px;color:var(--orange);border:1px solid rgba(255,122,69,.4);padding:2px 7px;border-radius:6px;margin-left:4px;background:rgba(255,122,69,.08)}
+  .nav-links{display:flex;gap:4px;flex-wrap:wrap}
+  .nav-links a{color:var(--muted);text-decoration:none;font-size:11.5px;font-weight:500;padding:6px 9px;border-radius:7px;transition:.2s;font-family:var(--mono)}
+  .nav-links a:hover{color:var(--text);background:var(--surface2)}
+  @media(max-width:980px){.nav-links{display:none}}
+
+  header{padding:88px 0 64px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.28em;text-transform:uppercase;color:var(--orange);margin-bottom:22px;display:flex;align-items:center;gap:12px}
+  .eyebrow::before{content:'';width:42px;height:1px;background:var(--orange)}
+  h1{font-size:clamp(34px,5.6vw,68px);font-weight:900;line-height:.98;letter-spacing:-.035em;margin-bottom:24px}
+  h1 .grad{background:linear-gradient(115deg,var(--orange),var(--purple) 55%,var(--blue));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{font-size:clamp(16px,2.2vw,20px);color:var(--muted);max-width:760px;font-weight:400}
+  .lede b{color:var(--text);font-weight:600}
+  .lede .paid{color:var(--orange);font-weight:600}
+  .lede .ab{color:var(--purple);font-weight:600}
+  .lede .gr{color:var(--green);font-weight:600}
+
+  .hero-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:50px}
+  @media(max-width:780px){.hero-stats{grid-template-columns:repeat(2,1fr)}}
+  .stat{background:linear-gradient(180deg,var(--surface),var(--bg2));border:1px solid var(--line);border-radius:14px;padding:22px 20px;position:relative;overflow:hidden}
+  .stat::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--accent,var(--orange));opacity:.8}
+  .stat .v{font-family:var(--mono);font-size:29px;font-weight:700;letter-spacing:-.02em}
+  .stat .l{font-size:12px;color:var(--muted);margin-top:6px}
+
+  section{padding:62px 0;border-top:1px solid var(--line)}
+  .sec-head{margin-bottom:36px}
+  .sec-tag{font-family:var(--mono);font-size:11.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted2);margin-bottom:12px}
+  h2{font-size:clamp(25px,4vw,38px);font-weight:800;letter-spacing:-.03em;line-height:1.05}
+  h2 .accent{color:var(--orange)}
+  h2 .purp{color:var(--purple)}
+  h2 .gr{color:var(--green)}
+  h2 .bl{color:var(--blue)}
+  .sec-sub{color:var(--muted);font-size:15.5px;max-width:740px;margin-top:14px}
+  .sec-sub b{color:var(--text)}
+
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:24px}
+  .panel{background:linear-gradient(180deg,var(--surface),var(--bg2));border:1px solid var(--line);border-radius:18px;overflow:hidden}
+  .panel-head{padding:18px 24px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  .panel-title{font-weight:700;font-size:15px;display:flex;align-items:center;gap:10px}
+  .panel-title .icn{width:8px;height:8px;border-radius:2px;background:var(--green);box-shadow:0 0 10px var(--green)}
+  .panel-body{padding:24px}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th{text-align:left;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted2);font-weight:600;padding:12px 14px;border-bottom:1px solid var(--line2)}
+  td{padding:12px 14px;border-bottom:1px solid var(--line);color:var(--text);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  tbody tr{transition:.15s}tbody tr:hover{background:var(--surface2)}
+  .mono{font-family:var(--mono)}
+  .dim{color:var(--muted2)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10.5px;font-weight:600;padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .pill.paid{background:rgba(255,122,69,.14);color:var(--orange);border:1px solid rgba(255,122,69,.3)}
+  .pill.free{background:rgba(52,211,153,.14);color:var(--green);border:1px solid rgba(52,211,153,.3)}
+  .pill.blue{background:rgba(74,158,255,.13);color:var(--blue);border:1px solid rgba(74,158,255,.3)}
+  .pill.purp{background:rgba(167,139,250,.13);color:var(--purple);border:1px solid rgba(167,139,250,.3)}
+  .pill.warn{background:rgba(251,191,36,.13);color:var(--yellow);border:1px solid rgba(251,191,36,.3)}
+  .pill.no{background:rgba(248,113,113,.13);color:var(--red);border:1px solid rgba(248,113,113,.3)}
+
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:780px){.grid2{grid-template-columns:1fr}}
+
+  /* TL;DR rule box */
+  .rule{font-family:var(--mono);font-size:13px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:18px 20px;line-height:1.9}
+  .rule .a{color:var(--green)}.rule .b{color:var(--orange)}.rule .c{color:var(--muted2)}
+  .locks{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+  .lock{font-size:12px;background:var(--surface2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--text)}
+  .lock b{color:var(--orange);font-family:var(--mono);font-size:11px}
+
+  /* PHASE CARDS */
+  .phase-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:860px){.phase-grid{grid-template-columns:1fr}}
+  .ph{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:0;overflow:hidden;transition:.2s;display:flex;flex-direction:column}
+  .ph:hover{border-color:var(--pc,var(--orange));transform:translateY(-2px)}
+  .ph-top{padding:18px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;background:linear-gradient(180deg,var(--surface2),transparent)}
+  .ph-num{flex:0 0 auto;width:44px;height:44px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:700;font-size:18px;color:var(--pc,var(--orange));border:1.5px solid var(--pc,var(--orange));background:var(--bg)}
+  .ph-tt{flex:1}
+  .ph-tt .nm{font-weight:800;font-size:15.5px;letter-spacing:-.01em}
+  .ph-tt .gl{font-size:12px;color:var(--muted);margin-top:2px}
+  .ph-body{padding:18px 20px;flex:1}
+  .ph-lab{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted2);margin:0 0 7px}
+  .ph-del{list-style:none;margin:0 0 14px}
+  .ph-del li{font-size:12.5px;padding:3px 0 3px 16px;position:relative;color:var(--text);line-height:1.5}
+  .ph-del li::before{content:'▸';position:absolute;left:0;color:var(--pc,var(--orange));font-size:10px}
+  .ph-meta{border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px}
+  .ph-meta .row{display:flex;gap:9px;font-size:12px;align-items:flex-start}
+  .ph-meta .row .ic{flex:0 0 auto;font-family:var(--mono);font-size:9px;font-weight:700;padding:2px 6px;border-radius:5px;margin-top:1px}
+  .ph-meta .row.ok .ic{background:rgba(52,211,153,.13);color:var(--green)}
+  .ph-meta .row.stop .ic{background:rgba(248,113,113,.13);color:var(--red)}
+  .ph-meta .row .tx{color:var(--muted)}
+
+  /* TRACK CARDS */
+  .track{background:var(--surface);border:1.5px solid var(--line2);border-radius:14px;padding:22px}
+  .track.a{border-color:var(--blue)}
+  .track.b{border-color:var(--orange)}
+  .track .tk-tag{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.12em}
+  .track.a .tk-tag{color:var(--blue)}
+  .track.b .tk-tag{color:var(--orange)}
+  .track .tk-t{font-weight:800;font-size:18px;margin:8px 0 10px;letter-spacing:-.01em}
+  .track code{display:block;font-family:var(--mono);font-size:11.5px;background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:8px 11px;margin:5px 0;color:var(--text)}
+  .track .why{font-size:13px;color:var(--muted);margin-top:10px}
+
+  /* CODE TREE */
+  pre.tree{font-family:var(--mono);font-size:12px;line-height:1.65;color:var(--muted);background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:20px;overflow-x:auto;margin:0}
+  pre.tree .d{color:var(--blue)}
+  pre.tree .f{color:var(--text)}
+  pre.tree .n{color:var(--orange)}
+
+  .callout{background:rgba(251,191,36,.07);border:1px solid rgba(251,191,36,.28);border-radius:12px;padding:16px 18px;font-size:13.5px;color:var(--text)}
+  .callout b{color:var(--yellow)}
+  .callout.pivot{background:rgba(255,122,69,.07);border-color:rgba(255,122,69,.32)}
+  .callout.pivot b{color:var(--orange)}
+  .callout.ok{background:rgba(52,211,153,.07);border-color:rgba(52,211,153,.3)}
+  .callout.ok b{color:var(--green)}
+
+  .chklist{list-style:none;margin:0;display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  @media(max-width:680px){.chklist{grid-template-columns:1fr}}
+  .chklist li{display:flex;gap:9px;align-items:flex-start;font-size:12.5px;background:var(--surface2);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-family:var(--mono)}
+  .chklist li .bx{flex:0 0 auto;width:14px;height:14px;border-radius:4px;border:1.5px solid var(--line2);margin-top:2px}
+
+  .footer{padding:48px 0 70px;border-top:1px solid var(--line);text-align:center;color:var(--muted2);font-family:var(--mono);font-size:12px}
+  .footer .chain{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:16px}
+  .footer .chain span{padding:4px 10px;border:1px solid var(--line);border-radius:6px}
+  .footer .chain .cur{border-color:var(--blue);color:var(--blue)}
+
+  .reveal{opacity:0;transform:translateY(24px);transition:.7s cubic-bezier(.2,.8,.2,1)}
+  .reveal.in{opacity:1;transform:none}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <div class="logo"><span class="dot"></span>NETS · Flow v2 Roadmap<span class="tag">execution-ready</span></div>
+    <div class="nav-links">
+      <a href="#tldr">TL;DR</a>
+      <a href="#map">Map</a>
+      <a href="#phases">Phases</a>
+      <a href="#content">Artifacts</a>
+      <a href="#start">Start</a>
+      <a href="#compat">Compatibility</a>
+      <a href="#stop">Stop-the-line</a>
+      <a href="#layout">Repo layout</a>
+      <a href="#pr">PR strategy</a>
+    </div>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <div class="eyebrow">Operational playbook · execution-ready · 2026-05-29</div>
+    <h1>Nine phases. One gate.<br><span class="grad">Ship canonical, export safe.</span></h1>
+    <p class="lede">The migration playbook for turning <span class="mono" style="color:var(--orange)">Homework-Content-Generation-Automation</span> into a Flow v2 generator while keeping <span class="mono" style="color:var(--blue)">Homeworks</span> runtime compatible. <span class="gr">Build full canonical Flow v2 now</span>; <span class="paid">export only beta-safe content</span> until the platform can render the full flow. The chain is <span class="mono" style="color:var(--text)">book → chapter/section → source map → Flow v2</span>, and every job emits <b>content artifacts only</b> — five outputs, no runtime code. One platform prerequisite, eight generator PRs, fifteen stop-the-line conditions. <b>No ghost CBP. No invalid content_json. No "v2 ready" cosplay.</b></p>
+
+    <div class="hero-stats">
+      <div class="stat" style="--accent:var(--blue)"><div class="v" style="color:var(--blue)" data-count="9">0</div><div class="l">phases · 1 platform + 8 generator</div></div>
+      <div class="stat" style="--accent:var(--orange)"><div class="v" style="color:var(--orange)" data-count="3">0</div><div class="l">output layers · canonical / safe / future</div></div>
+      <div class="stat" style="--accent:var(--red)"><div class="v" style="color:var(--red)" data-count="15">0</div><div class="l">consolidated stop-the-line conditions</div></div>
+      <div class="stat" style="--accent:var(--purple)"><div class="v" style="color:var(--purple)" data-count="5">0</div><div class="l">content artifacts per job · no runtime code</div></div>
+    </div>
+  </div>
+</header>
+
+<!-- TL;DR -->
+<section id="tldr">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-tag">00 / tl;dr + revision locks</div>
+      <h2>One rule above <span class="accent">all the rest</span>.</h2>
+      <p class="sec-sub">The generator becomes a canonical Flow v2 package producer. The platform repo stays the runtime reference and compatibility target. What gets exported is gated by what the runtime can actually render today.</p>
+    </div>
+
+    <div class="grid2 reveal">
+      <div class="card">
+        <div class="ph-lab">THE LOCKED RULE</div>
+        <div class="rule">
+          <span class="a">build</span> full canonical Flow v2 &nbsp;<span class="c">// now</span><br>
+          <span class="b">export</span> only beta-platform-safe content<br>
+          <span class="c">until</span> Homeworks runtime can render full Flow v2
+        </div>
+        <div class="callout pivot" style="margin-top:16px"><b>Default flip —</b> do not start serious beta-export flipping until <b>Platform Phase 0 + Generator Phase 7</b> are both green.</div>
+      </div>
+      <div class="card">
+        <div class="ph-lab">REVISION LOCKS FROM THE REVIEW LOOP</div>
+        <div class="locks">
+          <div class="lock"><b>3 layers</b> canonical / safe / future</div>
+          <div class="lock"><b>DPE</b> required by CBP v1.1</div>
+          <div class="lock"><b>MC beta</b> mcq · fill_blank · choose_explanation</div>
+          <div class="lock"><b>RLC beta</b> exact 5-step contract</div>
+          <div class="lock"><b>Prompts</b> from Homeworks/server/prompts</div>
+          <div class="lock"><b>Standards</b> from NETS CBP v1.1</div>
+          <div class="lock"><b>Boss</b> mastery peak inside Practice Arc</div>
+          <div class="lock"><b>Classify</b> → GenerationProfile</div>
+          <div class="lock"><b>Leak</b> explicit answer-leak QA fields</div>
+          <div class="lock"><b>Signals</b> weak-point → teacher/parent/admin</div>
+          <div class="lock"><b>Reverse-test</b> bridge only, not native</div>
+          <div class="lock"><b>Input</b> book → chapter/section → source map</div>
+          <div class="lock"><b>Artifacts</b> JSON · beta JSON · md · manifest · QA</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- MAP -->
+<section id="map">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-tag">01 / phases at a glance</div>
+      <h2>The map in <span class="accent">one table</span>.</h2>
+      <p class="sec-sub">Phase 0 lives in the platform repo and can run in parallel with Generator Phases 1–2. Phase 3 may build canonical CBP early, but its beta export keeps CBP runtime-disabled.</p>
+    </div>
+
+    <div class="panel reveal">
+      <div class="panel-body" style="padding:0">
+        <table>
+          <thead><tr><th style="width:48px">Phase</th><th>Repo</th><th>Name</th><th>Primary output</th><th>Gate</th></tr></thead>
+          <tbody>
+            <tr><td class="mono" style="color:var(--blue)">0</td><td><span class="pill blue">Homeworks</span></td><td><b>CBP + Unlock Gate prerequisite</b></td><td class="dim">Runtime renders CBP & gates Practice Arc</td><td class="dim">before full v2 default</td></tr>
+            <tr><td class="mono" style="color:var(--orange)">1</td><td><span class="pill paid">Generator</span></td><td><b>AI Gateway + Flow v2 schemas</b></td><td class="dim">Provider-agnostic structured generation</td><td class="dim">Phase 2</td></tr>
+            <tr><td class="mono" style="color:var(--orange)">2</td><td><span class="pill paid">Generator</span></td><td><b>Book ingestion + extraction + SourceMap + Infra registry</b></td><td class="dim">Grounded source map, pinned prompt/spec packs</td><td class="dim">Phase 3</td></tr>
+            <tr><td class="mono" style="color:var(--orange)">3</td><td><span class="pill paid">Generator</span></td><td><b>Learning Sections</b></td><td class="dim">CBP + flashcards + Memory Check</td><td class="dim">Phase 4</td></tr>
+            <tr><td class="mono" style="color:var(--orange)">4</td><td><span class="pill paid">Generator</span></td><td><b>Practice Arc + RLC</b></td><td class="dim">Conceptual arc + platform-valid RLC</td><td class="dim">Phase 5</td></tr>
+            <tr><td class="mono" style="color:var(--orange)">5</td><td><span class="pill paid">Generator</span></td><td><b>Boss Arena</b></td><td class="dim">Why→How→What + beta boss adapter</td><td class="dim">Phase 6</td></tr>
+            <tr><td class="mono" style="color:var(--orange)">6</td><td><span class="pill paid">Generator</span></td><td><b>Reflection + manifest</b></td><td class="dim">Signals, manifest, package assembler</td><td class="dim">Phase 7</td></tr>
+            <tr><td class="mono" style="color:var(--orange)">7</td><td><span class="pill paid">Generator</span></td><td><b>QA + conformance fence</b></td><td class="dim">Schema validation, leak, banned names</td><td class="dim">Phase 8</td></tr>
+            <tr><td class="mono" style="color:var(--orange)">8</td><td><span class="pill paid">Generator</span></td><td><b>UI preview</b></td><td class="dim">Authoring/QA console</td><td class="dim">final smoke</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PHASES -->
+<section id="phases">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-tag">02 / per-phase detail</div>
+      <h2>Every phase: deliverables, <span class="gr">acceptance</span>, <span style="color:var(--red)">stop-the-line</span>.</h2>
+      <p class="sec-sub">One PR per phase. Never mix platform runtime work with generator schema work in the same PR.</p>
+    </div>
+
+    <div class="phase-grid reveal">
+
+      <div class="ph" style="--pc:var(--blue)">
+        <div class="ph-top"><div class="ph-num">0</div><div class="ph-tt"><div class="nm">Platform CBP + Unlock Gate</div><div class="gl">Make the runtime render the Flow v2 learning structure</div></div></div>
+        <div class="ph-body">
+          <div class="ph-lab">Deliverables · repo: Homeworks</div>
+          <ul class="ph-del">
+            <li>Add <span class="mono">case_based_preview</span> to ContentJSON (additive, keep <span class="mono">extra="allow"</span>)</li>
+            <li>Injector: <span class="mono">case_based_preview → CBP</span>, strip server-only fields</li>
+            <li>Runtime: screen-cbp · Learning Hub · Unlock Gate · Practice lock states</li>
+            <li>State machine branches by <span class="mono">flow_version</span>; gate = CBP pass + MC ≥60%</li>
+          </ul>
+          <div class="ph-meta">
+            <div class="row ok"><span class="ic">ACC</span><span class="tx">v2 + CBP renders; Practice locked until CBP + MC pass; legacy renders; no leak.</span></div>
+            <div class="row stop"><span class="ic">STOP</span><span class="tx">CBP validates but won't render · gate bypassable · legacy breaks · leak.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ph" style="--pc:var(--orange)">
+        <div class="ph-top"><div class="ph-num">1</div><div class="ph-tt"><div class="nm">AI Gateway + Flow v2 schemas</div><div class="gl">Provider-agnostic foundation + canonical schemas</div></div></div>
+        <div class="ph-body">
+          <div class="ph-lab">Deliverables · repo: Generator</div>
+          <ul class="ph-del">
+            <li>gateway · orchestrator · contracts · providers (Gemini kept, others stubbed)</li>
+            <li>Task→model policy + one structured-output repair retry</li>
+            <li>Flow v2 schemas incl. required <span class="mono">decision_process_explanation</span></li>
+            <li><span class="mono">GenerationProfile</span> replaces Easy/Hard branch-skipping</li>
+          </ul>
+          <div class="ph-meta">
+            <div class="row ok"><span class="ic">ACC</span><span class="tx">Structured call validates; repair retry works; provider fallback unit-tested.</span></div>
+            <div class="row stop"><span class="ic">STOP</span><span class="tx">DPE missing or modeled as a 4th MCQ → violates CBP v1.1.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ph" style="--pc:var(--orange)">
+        <div class="ph-top"><div class="ph-num">2</div><div class="ph-tt"><div class="nm">Book ingestion + extraction + SourceMap + Infra registry</div><div class="gl">Make textbook fidelity & prompt-source consistency load-bearing</div></div></div>
+        <div class="ph-body">
+          <div class="ph-lab">Deliverables · repo: Generator</div>
+          <ul class="ph-del">
+            <li>Book ingestion + chapter/section locator + section extraction</li>
+            <li>Flow v2 division mapper · <span class="mono">source_map.py</span> + no-invention check</li>
+            <li><b>Infra prompt registry</b> from <span class="mono">Infra.zip</span> — never invent when a registry file exists</li>
+            <li>Pinned packs + sync scripts; record prompt path/version/hash in manifest</li>
+          </ul>
+          <div class="ph-meta">
+            <div class="row ok"><span class="ic">ACC</span><span class="tx">source_map per job; every phase consumes it; every enabled phase/game resolves from the Infra registry; prompt source traceable.</span></div>
+            <div class="row stop"><span class="ic">STOP</span><span class="tx">Extraction returns unrelated content · enabled game has no Infra mapping · source map missing · prompt untraceable.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ph" style="--pc:var(--purple)">
+        <div class="ph-top"><div class="ph-num">3</div><div class="ph-tt"><div class="nm">Learning Sections</div><div class="gl">Generate CBP, Flashcards, Memory Check</div></div></div>
+        <div class="ph-body">
+          <div class="ph-lab">Deliverables · repo: Generator</div>
+          <ul class="ph-del">
+            <li>CBP canonical: 3 recognition checkpoints + DPE slot 7</li>
+            <li>Flashcards with stable IDs</li>
+            <li>Memory Check using only the 3 supported modes + beta adapter</li>
+            <li>CBP withheld from beta unless <span class="mono">PLATFORM_CBP_RUNTIME_READY</span></li>
+          </ul>
+          <div class="ph-meta">
+            <div class="row ok"><span class="ic">ACC</span><span class="tx">Exactly 3 checkpoints + DPE; flashcards have IDs; MC refs IDs at 60%.</span></div>
+            <div class="row stop"><span class="ic">STOP</span><span class="tx">DPE missing/MCQ · MC emits unsupported type.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ph" style="--pc:var(--purple)">
+        <div class="ph-top"><div class="ph-num">4</div><div class="ph-tt"><div class="nm">Practice Arc + RLC</div><div class="gl">Replace game-breaks / real-life / consolidation</div></div></div>
+        <div class="ph-body">
+          <div class="ph-lab">Deliverables · repo: Generator</div>
+          <ul class="ph-del">
+            <li>Conceptual missions mapped to target skills</li>
+            <li>RLC as a Practice Arc mission, bound to platform 5-step contract</li>
+            <li>Reverse-test variant adapted as compatibility bridge only</li>
+            <li>Beta export into <span class="mono">gb_*</span> + <span class="mono">real_life_challenge</span></li>
+          </ul>
+          <div class="ph-meta">
+            <div class="row ok"><span class="ic">ACC</span><span class="tx">Every mission maps a skill; RLC passes the exact 5-step validator; no leak.</span></div>
+            <div class="row stop"><span class="ic">STOP</span><span class="tx">RLC fails 5-step · reverse-test called native · answer key leaks.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ph" style="--pc:var(--purple)">
+        <div class="ph-top"><div class="ph-num">5</div><div class="ph-tt"><div class="nm">Boss Arena</div><div class="gl">Mastery peak inside Practice Arc</div></div></div>
+        <div class="ph-body">
+          <div class="ph-lab">Deliverables · repo: Generator</div>
+          <ul class="ph-del">
+            <li>Why → How → What encounters + expected reasoning + rubric</li>
+            <li>Beta adapter → <span class="mono">boss_questions</span> + <span class="mono">boss_meta</span></li>
+            <li>Dynamic-boss flag support</li>
+            <li>Answer keys & rubrics held server-only</li>
+          </ul>
+          <div class="ph-meta">
+            <div class="row ok"><span class="ic">ACC</span><span class="tx">Every encounter has why/how/what; not flashcard recall; no quiz-plus-HP skin.</span></div>
+            <div class="row stop"><span class="ic">STOP</span><span class="tx">Boss lacks Why→How→What · answer key leaks to client.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ph" style="--pc:var(--green)">
+        <div class="ph-top"><div class="ph-num">6</div><div class="ph-tt"><div class="nm">Reflection + manifest + Markdown</div><div class="gl">Assemble package, marking & the human handoff doc</div></div></div>
+        <div class="ph-body">
+          <div class="ph-lab">Deliverables · repo: Generator</div>
+          <ul class="ph-del">
+            <li>Reflection / Marking output (Passed · Needs Retry)</li>
+            <li><span class="mono">weak_point_signals</span> routed to teacher / parent / admin</li>
+            <li><span class="mono">flow_manifest</span> + <span class="mono">assembler_v2</span> → content package</li>
+            <li><b>Markdown export</b> — <span class="mono">homework-content.md</span> for human review (content only, no code)</li>
+          </ul>
+          <div class="ph-meta">
+            <div class="row ok"><span class="ic">ACC</span><span class="tx">Package validates; manifest lists phase order, prompt versions, model usage; the five job artifacts are produced.</span></div>
+            <div class="row stop"><span class="ic">STOP</span><span class="tx">Markdown export missing or contains implementation code · legacy generation breaks.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ph" style="--pc:var(--yellow)">
+        <div class="ph-top"><div class="ph-num">7</div><div class="ph-tt"><div class="nm">QA + conformance fence</div><div class="gl">Stop drift & invalid exports before runtime</div></div></div>
+        <div class="ph-body">
+          <div class="ph-lab">Deliverables · repo: Generator</div>
+          <ul class="ph-del">
+            <li><span class="mono">flow_v2_validator</span> per-phase + full package</li>
+            <li>Beta export validated against the <i>real</i> ContentJSON</li>
+            <li>Answer-leak tests · banned old-phase-name tests</li>
+            <li>MemoryCheck-type test · RLC 5-step test</li>
+          </ul>
+          <div class="ph-meta">
+            <div class="row ok"><span class="ic">ACC</span><span class="tx">Beta validates vs real ContentJSON; MC types ok; RLC ok; no leak; no legacy names.</span></div>
+            <div class="row stop"><span class="ic">STOP</span><span class="tx">Must land before any default flip — this is the fence.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ph" style="--pc:var(--green)">
+        <div class="ph-top"><div class="ph-num">8</div><div class="ph-tt"><div class="nm">Generator UI preview</div><div class="gl">Flow v2 authoring & QA console</div></div></div>
+        <div class="ph-body">
+          <div class="ph-lab">Deliverables · repo: Generator</div>
+          <ul class="ph-del">
+            <li>Render canonical sections (drop old heading parser)</li>
+            <li>Mark runtime-supported vs authoring-only</li>
+            <li>Platform compatibility status + QA report + warnings</li>
+            <li>Per-phase regenerate + export buttons</li>
+          </ul>
+          <div class="ph-meta">
+            <div class="row ok"><span class="ic">ACC</span><span class="tx">Preview no longer heading-dependent; v2 renders all sections; legacy still renders.</span></div>
+            <div class="row stop"><span class="ic">STOP</span><span class="tx">Final smoke before declaring the console done.</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- CONTENT PIPELINE + INFRA REGISTRY -->
+<section id="content">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-tag">03 / content artifacts &amp; infra registry</div>
+      <h2>Five artifacts per job. <span class="purp">Zero invented prompts</span>.</h2>
+      <p class="sec-sub">The generator produces <b>content only</b> — never runtime code. The input is a real book, located down to chapter and section; every enabled phase and game resolves its prompt from the pinned Infra registry, or QA fails.</p>
+    </div>
+
+    <div class="reveal" style="margin-bottom:18px">
+<pre class="tree">book/textbook file
+  <span class="n">→</span> chapter + section locator
+  <span class="n">→</span> extracted section content
+  <span class="n">→</span> <span class="f">source map</span>
+  <span class="n">→</span> Flow v2 division mapping
+  <span class="n">→</span> dependency-aware phase/game generation
+  <span class="n">→</span> canonical content package
+  <span class="n">→</span> beta-platform-safe runtime export
+  <span class="n">→</span> human-readable <span class="f">homework-content.md</span></pre>
+    </div>
+
+    <div class="grid2 reveal">
+      <div class="card">
+        <div class="ph-lab">EVERY JOB EMITS — CONTENT ARTIFACTS ONLY</div>
+        <ul class="ph-del" style="margin:0">
+          <li><span class="mono">canonical_v2_authoring_package.json</span></li>
+          <li><span class="mono">beta_platform_safe_export.json</span></li>
+          <li><span class="mono">homework-content.md</span> <span class="dim">— human review &amp; handoff</span></li>
+          <li><span class="mono">flow_manifest.json</span> <span class="dim">— prompt paths, versions, model usage</span></li>
+          <li><span class="mono">qa_report.json</span></li>
+        </ul>
+        <div class="callout ok" style="margin-top:14px"><b>Rule —</b> the Markdown file is for humans; the runtime still requires structured JSON. The generator must not emit frontend/runtime code as part of a homework job.</div>
+      </div>
+      <div class="card">
+        <div class="ph-lab">INFRA PROMPT REGISTRY · pinned from Infra.zip</div>
+        <div class="locks">
+          <div class="lock"><b>Flow</b> New_Flow</div>
+          <div class="lock"><b>Case-Based Preview</b> math · sciences · languages</div>
+          <div class="lock"><b>Flashcards</b> prompts + Quizlet learning</div>
+          <div class="lock"><b>Real Life Challenge</b></div>
+          <div class="lock"><b>Error Detection</b></div>
+          <div class="lock"><b>Memory Matching</b></div>
+          <div class="lock"><b>TicTacToe</b></div>
+          <div class="lock"><b>Jigsaw Matching</b></div>
+          <div class="lock"><b>Sentence Filling</b></div>
+          <div class="lock"><b>Boss Arena</b></div>
+          <div class="lock"><b>Uzbek Specification</b></div>
+        </div>
+        <div style="margin-top:14px;font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.9">
+          <span style="color:var(--text)">registry rules →</span><br>
+          don't invent when a registry file exists<br>
+          select by subject family + phase/game type<br>
+          record path · version · hash in <span class="mono" style="color:var(--text)">flow_manifest</span><br>
+          <span style="color:var(--yellow)">fail QA if an enabled phase/game has no mapping</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:18px" class="panel reveal">
+      <div class="panel-head"><div class="panel-title"><span class="icn" style="background:var(--purple);box-shadow:0 0 10px var(--purple)"></span>homework-content.md · human handoff structure</div><span class="pill purp">content only</span></div>
+      <div class="panel-body">
+        <div class="slots" style="display:flex;flex-wrap:wrap;gap:8px">
+          <div class="lock">Source Book / Chapter / Section</div>
+          <div class="lock">Extracted Section Summary</div>
+          <div class="lock">Source Map</div>
+          <div class="lock" style="border-color:var(--blue)">Learning Sections · CBP · Flashcards · Memory Check</div>
+          <div class="lock">Unlock Gate Requirements</div>
+          <div class="lock" style="border-color:var(--orange)">Practice Arc · RLC · Error Detection · Memory Match · TTT · Jigsaw · Sentence Fill</div>
+          <div class="lock">Boss Arena</div>
+          <div class="lock">Reflection / Marking</div>
+          <div class="lock">Weak Point Signals</div>
+          <div class="lock">QA Notes</div>
+        </div>
+        <div style="margin-top:12px;font-size:12.5px;color:var(--muted)">Inside Case-Based Preview the Markdown preserves the full ordered structure including the <b style="color:var(--text)">Decision Process Explanation</b> before the Final Consequence.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- START -->
+<section id="start">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-tag">04 / execution start</div>
+      <h2>Begin <span class="bl">two tracks</span> in parallel.</h2>
+      <p class="sec-sub">Track A unlocks true runtime Flow v2 and removes the ghost-content risk. Track B builds the generator backbone while the platform catches up — neither needs the other finished.</p>
+    </div>
+
+    <div class="grid2 reveal">
+      <div class="track a">
+        <div class="tk-tag">TRACK A · PLATFORM PREREQUISITE</div>
+        <div class="tk-t">Land the runtime gate first</div>
+        <code>[Flow v2 Phase 0] Add CBP runtime and Unlock Gate</code>
+        <div class="why">Why first: this is the lock on the castle gate. Without it the generator can create CBP, but students never see it.</div>
+      </div>
+      <div class="track b">
+        <div class="tk-tag">TRACK B · GENERATOR FOUNDATION</div>
+        <div class="tk-t">Build the backbone in parallel</div>
+        <code>[Flow v2 Phase 1] Add AI Gateway and canonical schemas</code>
+        <code>[Flow v2 Phase 2] Add SourceMap and prompt/standard sync</code>
+        <div class="why">Why parallel: neither needs platform runtime finished. They lay the generation spine while Track A renders.</div>
+      </div>
+    </div>
+    <div style="margin-top:18px" class="callout ok reveal"><b>Gate to flip the default —</b> hold serious beta-export flipping until <b>Platform Phase 0</b> and <b>Generator Phase 7</b> are both green.</div>
+  </div>
+</section>
+
+<!-- COMPAT -->
+<section id="compat">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-tag">05 / compatibility matrix</div>
+      <h2>What ships <span class="gr">where</span>, and when.</h2>
+      <p class="sec-sub">The canonical package is allowed to be richer than the runtime. The beta column is the truth of what leaves the building today.</p>
+    </div>
+
+    <div class="panel reveal">
+      <div class="panel-body" style="padding:0">
+        <table>
+          <thead><tr><th>Feature</th><th>Canonical package</th><th>Beta export now</th><th>Full runtime later</th></tr></thead>
+          <tbody>
+            <tr><td>Source map</td><td><span class="pill free">yes</span></td><td><span class="pill warn">authoring-only</span></td><td class="dim">maybe</td></tr>
+            <tr><td>Flow manifest</td><td><span class="pill free">yes</span></td><td><span class="pill warn">authoring-only</span></td><td class="dim">maybe</td></tr>
+            <tr><td>Case-Based Preview</td><td><span class="pill free">yes</span></td><td><span class="pill no">no · unless flag</span></td><td><span class="pill free">yes</span></td></tr>
+            <tr><td>DPE</td><td><span class="pill paid">required</span></td><td><span class="pill no">no · unless CBP true</span></td><td><span class="pill free">yes</span></td></tr>
+            <tr><td>Flashcards</td><td><span class="pill free">yes</span></td><td><span class="pill free">yes</span></td><td><span class="pill free">yes</span></td></tr>
+            <tr><td>Memory Check</td><td><span class="pill free">yes</span></td><td><span class="pill warn">3 types only</span></td><td class="dim">richer later</td></tr>
+            <tr><td>Practice Arc wrapper</td><td><span class="pill free">yes</span></td><td><span class="pill warn">adapted to keys</span></td><td><span class="pill free">yes</span></td></tr>
+            <tr><td>RLC expert case</td><td><span class="pill free">yes</span></td><td><span class="pill warn">strict 5-step</span></td><td><span class="pill free">yes</span></td></tr>
+            <tr><td>Reverse-test RLC</td><td><span class="pill free">yes</span></td><td><span class="pill warn">bridge only</span></td><td class="dim">native after infer-step</td></tr>
+            <tr><td>Boss Arena</td><td><span class="pill free">yes</span></td><td><span class="pill warn">→ boss_questions</span></td><td><span class="pill free">yes</span></td></tr>
+            <tr><td>Reflection</td><td><span class="pill free">yes</span></td><td><span class="pill free">yes</span></td><td><span class="pill free">yes</span></td></tr>
+            <tr><td>Weak-point signals</td><td><span class="pill free">yes</span></td><td><span class="pill warn">backend first</span></td><td><span class="pill free">yes</span></td></tr>
+            <tr><td><span class="mono">homework-content.md</span></td><td><span class="pill free">yes</span></td><td><span class="pill warn">human review only</span></td><td class="dim">n/a</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STOP -->
+<section id="stop">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-tag">06 / consolidated stop-the-line</div>
+      <h2>Fifteen ways to <span style="color:var(--red)">halt the build</span>.</h2>
+      <p class="sec-sub">Any one of these triggers a dedicated issue before continuing. Runtime claims require a browser smoke, not only schema validation.</p>
+    </div>
+
+    <div class="panel reveal">
+      <div class="panel-body" style="padding:0">
+        <table>
+          <thead><tr><th>Condition</th><th style="width:90px">Phase</th><th>Why it halts</th></tr></thead>
+          <tbody>
+            <tr><td>Generator flips full-v2 default while platform can't render CBP</td><td class="mono dim">0 / 7</td><td class="dim">student sees incomplete homework</td></tr>
+            <tr><td>DPE missing from CBP</td><td class="mono dim">1 / 3</td><td class="dim">violates CBP v1.1</td></tr>
+            <tr><td>DPE represented as a 4th MCQ</td><td class="mono dim">1 / 3</td><td class="dim">violates CBP v1.1</td></tr>
+            <tr><td>Memory Check beta export emits an unsupported type</td><td class="mono dim">3 / 7</td><td class="dim">platform validation failure</td></tr>
+            <tr><td>RLC export fails the 5-step validator</td><td class="mono dim">4 / 7</td><td class="dim">platform validation failure</td></tr>
+            <tr><td>Reverse-test called runtime-native while adapted via concept_select</td><td class="mono dim">4</td><td class="dim">pedagogy mismatch</td></tr>
+            <tr><td>Boss lacks Why → How → What</td><td class="mono dim">5</td><td class="dim">boss becomes quiz skin</td></tr>
+            <tr><td>Any answer key leaks into student-visible export</td><td class="mono dim">4 / 5 / 7</td><td class="dim">security / pedagogy failure</td></tr>
+            <tr><td>Old phase names appear in v2 visible content</td><td class="mono dim">7</td><td class="dim">flow drift</td></tr>
+            <tr><td>Prompt source untraceable to platform prompt or standard</td><td class="mono dim">2</td><td class="dim">drift risk</td></tr>
+            <tr><td>Book/chapter/section extraction returns unrelated content</td><td class="mono dim">2</td><td class="dim">whole homework grounded in wrong source</td></tr>
+            <tr><td>Source map missing for any generated phase</td><td class="mono dim">2</td><td class="dim">textbook-fidelity risk</td></tr>
+            <tr><td>Enabled game has no Infra prompt/spec mapping</td><td class="mono dim">2 / 7</td><td class="dim">generator may invent game content</td></tr>
+            <tr><td>Markdown export missing or contains implementation code</td><td class="mono dim">6 / 7</td><td class="dim">human handoff becomes unusable</td></tr>
+            <tr><td>Legacy generation breaks</td><td class="mono dim">any</td><td class="dim">migration no longer additive</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- LAYOUT -->
+<section id="layout">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-tag">07 / target repo layout</div>
+      <h2>Where everything <span class="accent">lands</span>.</h2>
+      <p class="sec-sub">Pinned prompt and standard packs sit beside the schema module, so source-of-truth travels with the code and can be diffed on every sync.</p>
+    </div>
+
+    <div class="reveal">
+<pre class="tree"><span class="d">Homework-Content-Generation-Automation/</span>
+├── <span class="d">app/services/ai/</span>          <span class="f">gateway · orchestrator · contracts · providers/</span>
+├── <span class="d">app/services/</span>             <span class="f">book_ingestion · chapter_extractor · source_map</span>
+│                              <span class="f">flow_division_mapper · prompt_registry · markdown_exporter</span>
+│                              <span class="f">flows_v2 · assembler_v2</span>
+│   ├── <span class="d">export_adapters/</span>        <span class="f">canonical.py · beta_platform.py</span>
+│   └── <span class="d">qa/</span>                     <span class="f">flow_v2_validator.py</span>
+├── <span class="d">app/schemas/flow_v2/</span>        <span class="f">source_map · case_based_preview · flashcards</span>
+│                              <span class="f">memory_check · practice_arc · boss_arena · reflection</span>
+│                              <span class="f">flow_manifest · generation_profile · weak_point_signal</span>
+├── <span class="n">infra_prompt_registry_pinned/</span> <span class="f">manifest.json · Infra/{Flow,Case-Based Preview,</span>
+│                              <span class="f">Flashcards,Gamified Practices,Uzbek Specification}/</span>
+├── <span class="n">prompts_platform_pinned/</span>    <span class="f">manifest.json · server/prompts/&lt;subject&gt;/*.md</span>
+├── <span class="n">standards_pinned/</span>           <span class="f">cbp_v1_1 · homework_flow_v2 · interactivity · gamification</span>
+├── <span class="d">scripts/</span>                   <span class="f">sync_infra_prompt_registry · sync_platform_prompts</span>
+│                              <span class="f">sync_project_standards · validate_beta_export</span>
+├── <span class="d">docs/</span>                      <span class="f">transformation_plan_FINAL · roadmap · phase-N-*.md</span>
+└── <span class="d">tests/</span>                     <span class="f">ai_gateway · flow_v2_schemas · *_export_contract</span>
+                               <span class="f">beta_platform_contract · no_answer_leak · no_old_phase_names</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- PR STRATEGY -->
+<section id="pr">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-tag">08 / branch / pr strategy</div>
+      <h2>One PR per phase. <span class="gr">Paper trail</span> every contract change.</h2>
+      <p class="sec-sub">Phase completion = PR merged + tests green + result doc committed. After each phase: update the result doc, roadmap (if a contract changed), compatibility matrix, prompt/standard manifest, then re-run conformance.</p>
+    </div>
+
+    <div class="grid2 reveal">
+      <div class="card">
+        <div class="ph-lab">MERGE ORDER + TITLE FORMAT</div>
+        <code style="display:block;font-family:var(--mono);font-size:12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 13px;color:var(--text);margin-bottom:12px">[Flow v2 Phase N] &lt;deliverable name&gt;</code>
+        <div class="rule" style="font-size:12.5px">
+          Platform Phase 0 <span class="c">∥</span> Generator Phase 1–2<br>
+          <span class="b">Phase 3+</span> must not claim runtime-v2 readiness until Phase 0 lands<br>
+          <span class="b">Phase 7</span> must land before any default flip
+        </div>
+      </div>
+      <div class="card">
+        <div class="ph-lab">REQUIRED PR CHECKLIST</div>
+        <ul class="chklist">
+          <li><span class="bx"></span>Tests added</li>
+          <li><span class="bx"></span>Legacy mode preserved</li>
+          <li><span class="bx"></span>Beta export contract checked</li>
+          <li><span class="bx"></span>Answer-leak check passed</li>
+          <li><span class="bx"></span>Prompt/standard source recorded</li>
+          <li><span class="bx"></span>Phase result doc committed</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="footer">
+  <div class="wrap">
+    <div class="chain">
+      <span class="cur">Phase 0 · platform</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7 · fence</span><span>8</span>
+    </div>
+    NETS Homework Generator · Flow v2 execution roadmap · begin Phase 0 and Phase 1 in parallel · 2026-05-29
+  </div>
+</div>
+
+<script>
+function countUp(el){const t=+el.dataset.count,p=el.dataset.prefix||'';let c=0;const s=Math.max(1,Math.ceil(t/40));if(t===0){el.textContent=p+'0';return}const iv=setInterval(()=>{c+=s;if(c>=t){c=t;clearInterval(iv)}el.textContent=p+c},26)}
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');e.target.querySelectorAll&&e.target.querySelectorAll('[data-count]').forEach(countUp);io.unobserve(e.target)}}),{threshold:.12});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+document.querySelectorAll('.hero-stats [data-count]').forEach(countUp);
+</script>
+</body>
+</html>
