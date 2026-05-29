@@ -14,6 +14,7 @@ from app.schemas.skills import (
 )
 from app.schemas.real_life import (
     RealLifeChallenge,
+    RLCAnswerKey,
     RLCConceptChip,
     RLCConceptSelectStep,
     RLCDecisionOption,
@@ -46,6 +47,7 @@ __all__ = [
     "ReadingCheckpoint",
     "ReadingPassage",
     "RealLifeChallenge",
+    "RLCAnswerKey",
     "RLCDecisionOption",
     "RLCConceptChip",
     "RLCDecisionStep",

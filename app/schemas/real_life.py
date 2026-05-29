@@ -57,6 +57,20 @@ class RLCReasoningStep(BaseModel):
     sample_acceptable_answer: Optional[str] = None
 
 
+class RLCAnswerKey(BaseModel):
+    """The reveal for the reverse-test variant. Labeled distinctly so a
+    downstream consumer (and `beta_export`) can split it from student-visible
+    text — this is the ONLY place the governing formula is named (spec §11/§12).
+
+    Server-only by construction: `to_platform_case` never maps it into the
+    student payload, so the inferred formula cannot reach the browser.
+    """
+
+    inferred_formula: str  # the named formula/relationship the student infers
+    derivation: str  # how it is reconstructed from the scenario data
+    concept_tags: list[str] = []
+
+
 class RealLifeChallenge(BaseModel):
     # ── scenario framing (Infra pedagogy) ──────────────────────────────
     scenario_id: Optional[str] = None
@@ -79,6 +93,69 @@ class RealLifeChallenge(BaseModel):
     concept_select: RLCConceptSelectStep
     reasoning: RLCReasoningStep
 
+    # ── reverse-test extras (variant="reverse_test_same_story_new_numbers") ──
+    # red_herring: mandatory G7+ irrelevant datum (spec §6). missing_info_pool:
+    # G10+ incomplete-info variant (§6). answer_key: the reveal — the named
+    # formula lives ONLY here; required for the reverse-test variant and enforced
+    # by game_conformance.validate_real_life (kept Optional so the
+    # expert_case_5_step variant stays valid without it).
+    red_herring: Optional[str] = None
+    missing_info_pool: list[str] = []
+    answer_key: Optional[RLCAnswerKey] = None
+
     # ── post-scenario pedagogy (Infra) ─────────────────────────────────
     expert_feedback: Optional[str] = None
     final_summary_template: Optional[str] = None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Reverse-test Strip-Test helpers (spec §11/§12)
+#
+# The reverse-test rule: the governing formula/method is NEVER named in the
+# student-visible body — the student must INFER it. The named formula lives
+# only in `answer_key`. These helpers verify the formula did not leak into any
+# student-visible field, adapted to the host's fixed 5-step structure.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def student_visible_text(rlc: "RealLifeChallenge") -> str:
+    """Concatenate every field a student reads BEFORE the reveal — the text the
+    inferred formula must NOT appear in. Excludes `answer_key` (the reveal) and
+    server-only fields (consequences/keywords are stripped before the student
+    sees them anyway)."""
+    parts: list[str] = [rlc.role, rlc.task, rlc.context, rlc.prediction_prompt]
+    if rlc.red_herring:
+        parts.append(rlc.red_herring)
+    parts.extend(rlc.missing_info_pool)
+    for step in (rlc.decision, rlc.info_request, rlc.final_decision):
+        parts.append(step.prompt)
+        parts.extend(o.label for o in step.options)
+    parts.append(rlc.concept_select.prompt)
+    parts.extend(c.label for c in rlc.concept_select.concept_chips)
+    parts.append(rlc.reasoning.prompt)
+    return "\n".join(p for p in parts if p)
+
+
+def unnamed_formula_violations(rlc: "RealLifeChallenge") -> list[str]:
+    """Return reasons the formula leaked into the student-visible body. Empty
+    list == the unnamed-formula rule holds. Case-insensitive substring match on
+    the answer-key formula. No-op when there is no answer_key."""
+    if rlc.answer_key is None:
+        return []
+    needle = rlc.answer_key.inferred_formula.strip().lower()
+    if needle and needle in student_visible_text(rlc).lower():
+        return [
+            f"inferred_formula {rlc.answer_key.inferred_formula!r} appears verbatim "
+            f"in the student-visible body (reverse-test Strip Test, spec §11)"
+        ]
+    return []
+
+
+def reverse_test_conformance_errors(rlc: "RealLifeChallenge") -> list[str]:
+    """Reverse-test invariants (spec §11/§12). Empty list == conformant. Only
+    meaningful for the reverse_test variant; callers gate on `rlc.variant`."""
+    errors: list[str] = []
+    if rlc.answer_key is None or not rlc.answer_key.inferred_formula.strip():
+        errors.append("reverse_test variant requires a non-empty answer_key.inferred_formula")
+    errors.extend(unnamed_formula_violations(rlc))
+    return errors

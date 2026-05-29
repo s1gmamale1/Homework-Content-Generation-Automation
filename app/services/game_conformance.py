@@ -18,7 +18,7 @@ from app.schemas.practice_games.jigsaw_matching import JigsawMatching
 from app.schemas.practice_games.memory_matching import MemoryMatching
 from app.schemas.practice_games.sentence_filling import SentenceFilling
 from app.schemas.practice_games.tictactoe import TicTacToe
-from app.schemas.real_life import RealLifeChallenge
+from app.schemas.real_life import RealLifeChallenge, reverse_test_conformance_errors
 from app.schemas.skills import SkillRegistry
 from app.services import beta_export, skill_map
 
@@ -187,6 +187,14 @@ def validate_real_life(game: RealLifeChallenge, registry: SkillRegistry) -> None
         beta_export.to_platform_case(game)
     except Exception as exc:  # pydantic ValidationError or adapter error
         raise GameConformanceError(f"RLC fails platform 5-step contract: {exc}") from exc
+    # Reverse-test variant: the inferred formula must be present in answer_key
+    # and must NOT leak into the student-visible body (Strip Test, spec §11/§12).
+    if game.variant == "reverse_test_same_story_new_numbers":
+        rt_errors = reverse_test_conformance_errors(game)
+        if rt_errors:
+            raise GameConformanceError(
+                "RLC reverse-test invariants violated: " + "; ".join(rt_errors)
+            )
 
 
 _VALIDATORS = {

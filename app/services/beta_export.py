@@ -5,11 +5,12 @@ Down-maps the canonical `RealLifeChallenge` onto the platform's
 (a stop-the-line condition per the Flow v2 plan §6), and strips server-only
 answer fields so nothing leaks into the student browser (§10.1).
 
-Reverse-test variant: per §17 the 5-step contract's `concept_select` hands the
-student concept chips, which does not faithfully express reverse-test pedagogy
-(inferring the unnamed method). We adapt it into the 5-step shape only as a
-labeled compatibility bridge — `adapt_to_beta` returns a warning the caller can
-surface, and never claims runtime fidelity.
+Reverse-test variant: the governing formula must never be named in the
+student-visible body (spec §11/§12). The reveal lives only in `answer_key`,
+which `to_platform_case` never maps into the payload — so it cannot reach the
+browser. For this variant `adapt_to_beta` runs the Strip-Test (no-leak)
+validation and treats a leak as stop-the-line, the same as a platform-contract
+failure; there is no longer a "compatibility bridge" disclaimer.
 """
 
 from __future__ import annotations
@@ -23,7 +24,15 @@ from app.schemas.platform import (
     RLCStep,
 )
 from app.schemas.platform.real_life_challenge import SERVER_ONLY_FIELDS
-from app.schemas.real_life import RealLifeChallenge
+from app.schemas.real_life import (
+    RealLifeChallenge,
+    reverse_test_conformance_errors,
+)
+
+
+class ReverseTestLeakError(ValueError):
+    """Raised when the reverse-test inferred formula leaks into the
+    student-visible body — a stop-the-line content-safety violation."""
 
 CanonicalRLC = Union[RealLifeChallenge, dict[str, Any]]
 
@@ -95,22 +104,26 @@ def _strip_server_only(value: Any) -> Any:
 
 
 def adapt_to_beta(canonical: CanonicalRLC) -> tuple[dict[str, Any], Optional[str]]:
-    """Return (student_safe_payload, bridge_warning).
+    """Return (student_safe_payload, warning).
 
     The payload is the validated platform case with server-only fields stripped
-    — safe for the student browser. `bridge_warning` is non-None only for the
-    reverse-test variant, flagging that the 5-step adaptation is a compatibility
-    bridge, not faithful reverse-test runtime.
+    — safe for the student browser. The `answer_key` reveal is never mapped into
+    the platform case, so the inferred formula cannot reach the browser.
+
+    For the reverse-test variant we additionally run the Strip-Test: if the
+    inferred formula leaked into any student-visible field, raise
+    ``ReverseTestLeakError`` (stop-the-line). On success ``warning`` is ``None``
+    — the reverse-test is now a validated path, not a compatibility bridge.
     """
     rl = _coerce(canonical)
+
+    if rl.variant == "reverse_test_same_story_new_numbers":
+        errors = reverse_test_conformance_errors(rl)
+        if errors:
+            raise ReverseTestLeakError(
+                "reverse-test RLC failed the Strip-Test: " + "; ".join(errors)
+            )
+
     case = to_platform_case(rl)
     payload = _strip_server_only(case.model_dump())
-
-    warning: Optional[str] = None
-    if rl.variant == "reverse_test_same_story_new_numbers":
-        warning = (
-            "reverse_test variant adapted into the 5-step expert-case contract "
-            "as a compatibility bridge — concept_select reveals concept chips, "
-            "so this is NOT a faithful reverse-test runtime (Flow v2 plan §17)."
-        )
-    return payload, warning
+    return payload, None

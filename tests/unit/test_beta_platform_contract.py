@@ -2,9 +2,12 @@
 
 Builds a valid canonical RLC, runs it through the beta adapter, and asserts the
 platform validator accepts it and the 5-step invariants hold. Also checks the
-reverse-test variant emits a compatibility-bridge warning, and that a malformed
-canonical is rejected (stop-the-line).
+reverse-test variant is validated (formula present in answer_key, never leaked
+into the student body), and that a malformed canonical is rejected
+(stop-the-line).
 """
+
+import json
 
 import pytest
 from pydantic import ValidationError
@@ -13,6 +16,7 @@ from app.schemas.platform import RealLifeChallengeCase
 from app.schemas.platform.real_life_challenge import REQUIRED_STEP_ORDER
 from app.schemas.real_life import (
     RealLifeChallenge,
+    RLCAnswerKey,
     RLCConceptChip,
     RLCConceptSelectStep,
     RLCDecisionOption,
@@ -20,6 +24,7 @@ from app.schemas.real_life import (
     RLCReasoningStep,
 )
 from app.services import beta_export
+from app.services.beta_export import ReverseTestLeakError
 
 
 def _decision_step(prompt: str) -> RLCDecisionStep:
@@ -33,10 +38,14 @@ def _decision_step(prompt: str) -> RLCDecisionStep:
     )
 
 
-def make_canonical(variant: str = "expert_case_5_step") -> RealLifeChallenge:
+def make_canonical(
+    variant: str = "expert_case_5_step",
+    answer_key: RLCAnswerKey | None = None,
+) -> RealLifeChallenge:
     return RealLifeChallenge(
         scenario_id="rlc_eng_g7_001",
         variant=variant,
+        answer_key=answer_key,
         role="BBC Tashkent junior reporter",
         task="Write a 3-sentence update on the IT Park expansion.",
         context="You have visited the site. Your accuracy meets Global Standards.",
@@ -78,11 +87,38 @@ class TestPlatformContract:
         case = beta_export.to_platform_case(canonical)
         assert len(case.steps) == 5
 
-    def test_reverse_test_emits_bridge_warning(self):
+    def test_reverse_test_without_answer_key_is_rejected(self):
+        # reverse-test variant requires answer_key.inferred_formula (stop-the-line).
         canonical = make_canonical(variant="reverse_test_same_story_new_numbers")
-        _payload, warning = beta_export.adapt_to_beta(canonical)
-        assert warning is not None
-        assert "compatibility bridge" in warning
+        with pytest.raises(ReverseTestLeakError):
+            beta_export.adapt_to_beta(canonical)
+
+    def test_reverse_test_clean_validates_and_hides_formula(self):
+        canonical = make_canonical(
+            variant="reverse_test_same_story_new_numbers",
+            answer_key=RLCAnswerKey(
+                inferred_formula="distance = speed × time",
+                derivation="From the table, distance scales linearly with elapsed time.",
+                concept_tags=["proportional_reasoning"],
+            ),
+        )
+        payload, warning = beta_export.adapt_to_beta(canonical)
+        assert warning is None  # no longer a compatibility-bridge stub
+        # the reveal must never reach the student payload
+        assert "distance = speed" not in json.dumps(payload).lower()
+
+    def test_reverse_test_formula_leak_is_rejected(self):
+        # The formula appears verbatim in the student-visible task → Strip Test fails.
+        canonical = make_canonical(
+            variant="reverse_test_same_story_new_numbers",
+            answer_key=RLCAnswerKey(
+                inferred_formula="distance = speed × time",
+                derivation="…",
+            ),
+        )
+        canonical.task = "Use distance = speed × time to predict the arrival."
+        with pytest.raises(ReverseTestLeakError):
+            beta_export.adapt_to_beta(canonical)
 
     def test_expert_variant_has_no_warning(self):
         _payload, warning = beta_export.adapt_to_beta(make_canonical())
