@@ -48,6 +48,7 @@ from app.schemas import (
     GamesPack,
     MemorySprintPack,
     ReadingPassage,
+    RealLifeChallenge,
 )
 from app.services.providers import Provider, get_provider
 
@@ -107,6 +108,7 @@ STRUCTURED_PHASE_SCHEMAS: dict[str, type[BaseModel]] = {
     "game-breaks": GamesPack,
     "final-challenge": FinalChallenge,
     "reading": ReadingPassage,
+    "real-life": RealLifeChallenge,
 }
 
 

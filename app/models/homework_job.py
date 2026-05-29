@@ -44,6 +44,11 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # English-only reading passage with inline checkpoints.
     # {"passage_md", "checkpoints": [{after_paragraph, prompt, options, correct_index}], "cefr_level"}
     reading_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # Canonical Real-Life Challenge (Practice Arc). Rich generator source-of-truth
+    # (Infra pedagogy + 5 logical steps). Beta export down-maps this to the
+    # platform `real_life_challenge` key; server-only answer fields are stripped
+    # before the student-facing payload. Shape: app/schemas/real_life.py
+    real_life_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

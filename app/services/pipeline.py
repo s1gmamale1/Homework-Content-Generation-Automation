@@ -114,6 +114,30 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
                 out.append(f"  _{cp.explanation}_")
         return "\n".join(out)
 
+    if phase_name == "real-life":
+        role = getattr(parsed, "role", "") or ""
+        task = getattr(parsed, "task", "") or ""
+        variant = getattr(parsed, "variant", "expert_case_5_step")
+        steps = [
+            s
+            for s in ("decision", "info_request", "final_decision",
+                      "concept_select", "reasoning")
+            if getattr(parsed, s, None) is not None
+        ]
+        out = [
+            f"_Real-Life Challenge ({variant}) — {len(steps)} steps. "
+            f"Interactive expert scenario rendered in preview._\n",
+        ]
+        if role:
+            out.append(f"**You are:** {role}")
+        if task:
+            out.append(f"**Task:** {task}")
+        if getattr(parsed, "context", None):
+            out.append(f"\n{parsed.context}")
+        if getattr(parsed, "prediction_prompt", None):
+            out.append(f"\n**Prediction:** {parsed.prediction_prompt}")
+        return "\n".join(out)
+
     return ""
 
 
@@ -123,6 +147,7 @@ _JSON_COLUMN_SETTERS = {
     "game-breaks": jobs_repo.set_games_json,
     "final-challenge": jobs_repo.set_final_challenge_json,
     "reading": jobs_repo.set_reading_json,
+    "real-life": jobs_repo.set_real_life_json,
 }
 
 

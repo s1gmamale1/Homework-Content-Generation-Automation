@@ -1,0 +1,15 @@
+{
+  "_description": "Short, one-line entries for every change. Newest first. Detail lives in DETAILS.md.",
+  "_format": { "date": "YYYY-MM-DD", "time": "HH:MM (optional)", "branch": "git branch", "summary": "short description" },
+  "entries": [
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: added contract + no-leak tests (11 pass)" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: rewrote prompts/english/real-life.md to platform 5-step JSON" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: download ZIP now includes student-safe real-life.json" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: beta_export.py adapter (validate + no-leak strip + reverse-test bridge warning)" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: set_real_life_json setter + pipeline _JSON_COLUMN_SETTERS + synth MD branch" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: added real_life_json column + migration 0010" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: registered real-life in STRUCTURED_PHASE_SCHEMAS + schemas exports" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: added canonical RealLifeChallenge schema (app/schemas/real_life.py)" },
+    { "date": "2026-05-29", "branch": "alphaq", "summary": "Phase 4 RLC slice: added platform RealLifeChallengeCase mirror (app/schemas/platform/)" }
+  ]
+}
