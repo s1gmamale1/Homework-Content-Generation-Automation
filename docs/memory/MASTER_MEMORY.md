@@ -129,3 +129,16 @@ Full record of every task done on this project. Quick-scan titles live in [INDEX
 **SKIPPED from PR #1** (plan-rejected/dropped/deferred): prompt registry + pinned manifest, QA/coverage gate + provenance integrity, flow division mapper + flow_manifest, grade/language ingestion. **PR #1 left UNMERGED.**
 
 **State:** `Nggaev-v2` tip after this = harvest `a1874f0` + opencode `8a96435` (+ this worklog). Suite **190 green**. Migration chain unchanged (…0015; next free 0016). Open follow-ups: PR-5 assembly reshape; apply migrations on real DB; opencode live smoke once installed; (optional) wire SourceMap digest into the games' own prompts more strictly. See [[0009]].
+
+---
+
+## [0011] PR-5 assembly reshape + migration chain verified offline — 2026-05-29 (Nggaev-v2)
+**What:** Closed the last two remaining Flow v2 items.
+
+**PR-5 — assembly reshape (plan §8, commit `3a60639`, TDD +7 → 197 green):** Replaced the flat per-phase concatenator `_assemble` with the Flow v2 packet structure: `# Homework Content` → `## Source Book / Chapter / Section` → `## Extracted Section Summary` (the extract output) → `## Source Map` (**rendered from `source_map_json` — was JSON-only before, the verification report's gap**) → `## Learning Sections` (### Case-Based Preview / Flashcard Learning / Memory Check / Reading) → `## Practice Arc` (### whichever games ran) → `## Boss Arena` → `## Reflection`. Split into a **pure** `_render_homework_md(...)` (unit-testable, no DB) + thin `_assemble` that loads job/book/section/phases and feeds it. `_strip_leading_md_heading` fixes the double-`##` bug (synth body's own heading no longer duplicates the `###` subsection). Legacy phase names mapped to the right division; a safety-net `## Other` block guarantees no phase output is ever silently dropped. No LLM in assembly → unit tests are the right verification (no smoke needed).
+
+**Migrations — verified offline (Docker not running):** `alembic heads` → single head `b6d2f8a4c3e9` (no branch). `alembic upgrade c8e1d4b27a91:head --sql` renders clean DDL for all four: 0012 source_map_json, 0013 boss_arena_json, 0014 cbp_json+memory_check_json, 0015 the six practice_*_json. Scripts are well-formed + linearly chained. **A true live `alembic upgrade head` still needs Docker Desktop started** (CLAUDE.md's `edu-postgres` container on :5433) — daemon was down this session.
+
+**Minor remaining (flagged, not done):** plan §8 "answer keys / rubrics / teacher notes labeled distinctly" is only partially met (synth marks correct answers with ✓); a formal student-vs-teacher label convention would be a prompt-level follow-up. opencode live smoke still pending install. Live DB apply pending Docker.
+
+**Flow v2 status:** all five PRs now done on `Nggaev-v2` (PR-1 source map, PR-2 learning, PR-3 practice arc, PR-4 boss, PR-5 assembly) + the PR#1 harvest (fidelity threading, robustness) + opencode. See [[0010]] [[0009]].
