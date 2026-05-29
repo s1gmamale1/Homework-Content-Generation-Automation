@@ -12,3 +12,4 @@
 | 0005 | 2026-05-29 | Nggaev-v2 | Adopt rewritten (codebase-grounded) plan; prune Phase 1 to PR-scope (55 green) |
 | 0006 | 2026-05-29 | Nggaev-v2 | PR-1: source map — extract_source_map + persist source_map_json (TDD, 58 green) |
 | 0007 | 2026-05-29 | Nggaev-v2 | PR-4: Boss Arena (Why→How→What) content phase, replaces final-challenge in flows (TDD, 64 green) |
+| 0008 | 2026-05-29 | flow-v2-integration | Integrate teammate PRs: Learning(PR#3) DONE+verified (75 green); Practice/alphaq(PR#2) NOT usable as-is; reflection KEPT per New_Flow.md; consolidation→remove; Practice Arc pending |
