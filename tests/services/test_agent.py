@@ -95,13 +95,30 @@ def test_structured_phase_schemas_keys_present() -> None:
     a new phase doesn't fail this test."""
     expected = {
         "classify",
+        # Phase 3 Learning Sections
+        "case-based-preview",
         "flashcards",
+        "memory-check",
+        # Legacy v1
         "memory-sprint",
         "game-breaks",
         "final-challenge",
         "reading",
     }
     assert expected.issubset(set(STRUCTURED_PHASE_SCHEMAS.keys()))
+
+
+def test_structured_phase_schemas_cbp_is_case_based_preview() -> None:
+    """case-based-preview must map to CaseBasedPreview — DPE enforcement
+    depends on the schema being the Flow v2 one, not a generic dict."""
+    from app.schemas.flow_v2 import CaseBasedPreview
+    assert STRUCTURED_PHASE_SCHEMAS["case-based-preview"] is CaseBasedPreview
+
+
+def test_structured_phase_schemas_memory_check_schema() -> None:
+    """memory-check must map to MemoryCheckPack (not MemorySprintPack)."""
+    from app.schemas.memory_check import MemoryCheckPack
+    assert STRUCTURED_PHASE_SCHEMAS["memory-check"] is MemoryCheckPack
 
 
 def test_structured_phase_schemas_values_are_pydantic_models() -> None:
@@ -257,12 +274,70 @@ async def test_run_phase_schema_retry_exhausts_and_raises(
     assert record_calls[1]["extra_envelope"]["attempt"] == 2
 
 
+@pytest.mark.asyncio
+async def test_run_phase_markdown_empty_output_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Markdown phases must not silently persist empty Gemini INVALID_STREAM output."""
+    spawn_outputs: list[tuple[int, str, dict[str, Any], str]] = [
+        (
+            0,
+            "",
+            {
+                **_make_usage(prompt=120, output=0),
+                "raw": {"error": "INVALID_STREAM: empty response"},
+            },
+            "",
+        ),
+        (0, "## Real phase output", _make_usage(prompt=140, output=30), ""),
+    ]
+    spawn_prompts: list[str] = []
+
+    async def fake_spawn(
+        *,
+        provider: Any,
+        model: Any,
+        prompt: str,
+        attachments: list[Any],
+    ) -> tuple[int, str, dict[str, Any], str]:
+        spawn_prompts.append(prompt)
+        return spawn_outputs.pop(0)
+
+    record_calls: list[dict[str, Any]] = []
+
+    async def fake_record(**kwargs: Any) -> None:
+        record_calls.append(kwargs)
+
+    monkeypatch.setattr(agent_module, "_spawn", fake_spawn)
+    monkeypatch.setattr(agent_module, "_record_usage", fake_record)
+
+    result = await run_phase(
+        provider="gemini",
+        model=None,
+        phase_prompt="Write the section.",
+        phase_name="preview-hard",
+        homework_job_id=None,
+        phase_output_id=None,
+        schema=None,
+    )
+
+    assert result.text == "## Real phase output"
+    assert len(spawn_prompts) == 2
+    assert "previous response was EMPTY" in spawn_prompts[1]
+    assert len(record_calls) == 2
+    assert record_calls[0]["success"] is False
+    assert "empty output" in record_calls[0]["error_message"]
+    assert record_calls[1]["success"] is True
+
+
 # ─────────────────────────────────────────────────────────────────────
 # extract_toc — schema validation retry path
 # ─────────────────────────────────────────────────────────────────────
 
 
 BOOK_ID = UUID("00000000-0000-0000-0000-000000000123")
+JOB_ID = UUID("00000000-0000-0000-0000-000000000456")
+PHASE_ID = UUID("00000000-0000-0000-0000-000000000789")
 
 
 @pytest.mark.asyncio
@@ -341,6 +416,65 @@ async def test_extract_toc_schema_retry_succeeds_on_second_attempt(
     assert record_calls[1]["success"] is True
     assert record_calls[1]["extra_envelope"]["attempt"] == 2
     assert record_calls[1]["extra_envelope"]["entries"] == 1
+
+
+@pytest.mark.asyncio
+async def test_extract_lesson_context_prefers_local_section_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Lesson extract should feed bounded local page text, not attach a large PDF."""
+    pdf = tmp_path / "book.pdf"
+    pdf.write_bytes(b"%PDF-stub")
+
+    def fake_extract_section_text(*_args: Any, **_kwargs: Any) -> tuple[str, dict[str, Any]]:
+        return (
+            "--- PDF page 10 ---\nThis is the target section text.",
+            {"pages_range": [8, 12], "chars": 52},
+        )
+
+    spawn_prompts: list[str] = []
+    spawn_attachments: list[list[Any]] = []
+
+    async def fake_spawn(
+        *,
+        provider: Any,
+        model: Any,
+        prompt: str,
+        attachments: list[Any],
+    ) -> tuple[int, str, dict[str, Any], str]:
+        spawn_prompts.append(prompt)
+        spawn_attachments.append(attachments)
+        return (0, "## Extracted lesson context", _make_usage(prompt=90, output=20), "")
+
+    record_calls: list[dict[str, Any]] = []
+
+    async def fake_record(**kwargs: Any) -> None:
+        record_calls.append(kwargs)
+
+    monkeypatch.setattr(agent_module, "_extract_section_text", fake_extract_section_text)
+    monkeypatch.setattr(agent_module, "_spawn", fake_spawn)
+    monkeypatch.setattr(agent_module, "_record_usage", fake_record)
+
+    text, tin, tout = await agent_module.extract_lesson_context(
+        provider="gemini",
+        model=None,
+        pdf_path=pdf,
+        section_title="Target Lesson",
+        section_number="1.2",
+        page_start=10,
+        page_end=11,
+        homework_job_id=JOB_ID,
+        phase_output_id=PHASE_ID,
+    )
+
+    assert text == "## Extracted lesson context"
+    assert tin == 90
+    assert tout == 20
+    assert spawn_attachments == [[]]
+    assert "Locally extracted text" in spawn_prompts[0]
+    assert "This is the target section text." in spawn_prompts[0]
+    assert record_calls[-1]["success"] is True
 
 
 @pytest.mark.asyncio

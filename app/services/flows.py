@@ -1,6 +1,13 @@
 """Per-subject phase sequences. Each subject's flow.md is the source of truth;
 sequences below were committed to code during implementation by reading each
-flow.md once. Update here when prompts/<subject>/flow.md changes."""
+flow.md once. Update here when prompts/<subject>/flow.md changes.
+
+v1 phases: preview-easy / preview-hard + memory-sprint
+v2 phases: case-based-preview + memory-check (gated by PLATFORM_CBP_RUNTIME_READY)
+
+Use ``get_phase_list(flow, difficulty)`` rather than ``flow[difficulty]`` to
+honour the CBP beta gate at runtime.
+"""
 
 import re
 
@@ -18,9 +25,14 @@ def _strip_svgs(text: str) -> str:
 SUBJECT_FLOWS: dict[str, dict] = {
     "biology": {
         "has_classify": True,
+        # v1 (default, beta-safe)
         "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
                  "real-life", "consolidation", "final-challenge", "reflection"],
+        # v2 (activated when PLATFORM_CBP_RUNTIME_READY=true)
+        "easy_v2": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
+        "hard_v2": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
+                    "real-life", "consolidation", "final-challenge", "reflection"],
     },
     "english": {
         # English is always Hard mode per flow.md — there is no Easy pipeline,
@@ -32,12 +44,17 @@ SUBJECT_FLOWS: dict[str, dict] = {
         "easy": [],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "reading", "game-breaks",
                  "real-life", "consolidation", "final-challenge", "reflection"],
+        "hard_v2": ["case-based-preview", "flashcards", "memory-check", "reading",
+                    "game-breaks", "real-life", "consolidation", "final-challenge", "reflection"],
     },
     "geometriya-g7-11": {
         "has_classify": True,
         "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
                  "real-life", "consolidation", "final-challenge", "reflection"],
+        "easy_v2": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
+        "hard_v2": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
+                    "real-life", "consolidation", "final-challenge", "reflection"],
     },
     "history": {
         # History is always Hard mode — no Easy pipeline.
@@ -49,24 +66,35 @@ SUBJECT_FLOWS: dict[str, dict] = {
         "easy": [],
         "hard": ["preview", "flashcards", "memory-sprint", "game-breaks",
                  "consolidation", "final-challenge", "reflection"],
+        "hard_v2": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
+                    "consolidation", "final-challenge", "reflection"],
     },
     "kimyo-g7-11": {
         "has_classify": True,
         "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
                  "real-life", "consolidation", "final-challenge", "reflection"],
+        "easy_v2": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
+        "hard_v2": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
+                    "real-life", "consolidation", "final-challenge", "reflection"],
     },
     "math-algebra": {
         "has_classify": True,
         "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
                  "real-life", "consolidation", "final-challenge", "reflection"],
+        "easy_v2": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
+        "hard_v2": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
+                    "real-life", "consolidation", "final-challenge", "reflection"],
     },
     "physics": {
         "has_classify": True,
         "easy": ["preview-easy", "flashcards", "memory-sprint", "game-breaks", "reflection"],
         "hard": ["preview-hard", "flashcards", "memory-sprint", "game-breaks",
                  "real-life", "consolidation", "final-challenge", "reflection"],
+        "easy_v2": ["case-based-preview", "flashcards", "memory-check", "game-breaks", "reflection"],
+        "hard_v2": ["case-based-preview", "flashcards", "memory-check", "game-breaks",
+                    "real-life", "consolidation", "final-challenge", "reflection"],
     },
 }
 
@@ -86,14 +114,23 @@ SUPPORTED_SUBJECTS: list[str] = sorted(SUBJECT_FLOWS.keys())
 # because different subjects use different preview phase names; the runtime
 # picks whichever exists in the current job's prior_outputs (one per category).
 PHASE_DEPS: dict[str, list[str]] = {
-    "reading":         ["preview-hard"],                                       # english only
+    "reading":         ["preview-hard", "case-based-preview"],                 # english only
     "memory-sprint":   ["flashcards"],
-    "game-breaks":     ["flashcards", "memory-sprint"],
-    "real-life":       ["preview-hard", "preview-easy", "preview"],
-    "consolidation":   ["preview-hard", "preview-easy", "preview", "flashcards"],
-    "final-challenge": ["preview-hard", "preview-easy", "preview",
-                        "flashcards", "memory-sprint"],
-    "reflection":      ["preview-hard", "preview-easy", "preview", "final-challenge"],
+    # memory-check depends on flashcards (same as memory-sprint).
+    # Both share the "memory" split-category so the alias resolver picks
+    # whichever variant appears in the live prior_outputs.
+    "memory-check":    ["flashcards"],
+    # game-breaks needs whichever quick-recall phase ran (sprint or check).
+    "game-breaks":     ["flashcards", "memory-sprint", "memory-check"],
+    # case-based-preview is the v2 alias for preview-* phases; list it after
+    # all three v1 aliases so the resolver finds it in v2 flows.
+    "real-life":       ["preview-hard", "preview-easy", "preview", "case-based-preview"],
+    "consolidation":   ["preview-hard", "preview-easy", "preview", "case-based-preview",
+                        "flashcards"],
+    "final-challenge": ["preview-hard", "preview-easy", "preview", "case-based-preview",
+                        "flashcards", "memory-sprint", "memory-check"],
+    "reflection":      ["preview-hard", "preview-easy", "preview", "case-based-preview",
+                        "final-challenge"],
 }
 
 
@@ -194,3 +231,20 @@ def resolve_phase_deps(phase_name: str, content_phases: list[str]) -> set[str]:
                 resolved.add(a)
                 break
     return resolved
+
+
+def get_phase_list(flow: dict, difficulty: str) -> list[str]:
+    """Return the content-phase list for the given difficulty, respecting the
+    PLATFORM_CBP_RUNTIME_READY beta gate.
+
+    When the flag is True the v2 sequence (case-based-preview + memory-check)
+    is used if defined for this subject/difficulty; otherwise the v1 sequence
+    is returned (safe default for beta deployments).
+    """
+    from app.config import settings  # local import avoids circular at module load
+
+    if settings.platform_cbp_runtime_ready:
+        v2_key = f"{difficulty}_v2"
+        if v2_key in flow:
+            return flow[v2_key]
+    return flow.get(difficulty, [])

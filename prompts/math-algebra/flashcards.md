@@ -16,6 +16,8 @@ Flash Cards are a simple reference tool. Nothing more.
 
 ## Card format
 
+**id:** Stable sequential ID — `"card_1"`, `"card_2"`, ... starting from 1. Never skip or reuse.
+
 **Front:** Term name or formula name. Short. Max 10 words.
 
 **Back:** Definition or formula. One line. If it's a formula, show one quick example.

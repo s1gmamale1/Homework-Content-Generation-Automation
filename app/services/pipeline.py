@@ -20,6 +20,7 @@ from app.services.flows import (
     SUBJECT_FLOWS,
     file_needed_phases,
     filter_prior_outputs,
+    get_phase_list,
     max_output_tokens_for,
     resolve_phase_deps,
 )
@@ -41,11 +42,33 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
         reason = getattr(parsed, "reason", "") or ""
         return f"**Classification:** {difficulty.upper()}" + (f" — {reason}" if reason else "")
 
+    if phase_name == "case-based-preview":
+        title = getattr(parsed, "title", None) or "Case-Based Preview"
+        role = getattr(parsed, "student_role", "") or ""
+        cps = getattr(parsed, "checkpoints", None) or []
+        dpe = getattr(parsed, "decision_process_explanation", None)
+        sim = getattr(parsed, "final_simulation", None)
+        out = [
+            f"## {title}",
+            f"_Student role: {role}. {len(cps)} checkpoints + DPE slot 7. "
+            f"Interactive CBP rendered in preview._\n",
+        ]
+        for i, cp in enumerate(cps, 1):
+            out.append(f"**Checkpoint {i}** [{cp.intent}] {cp.question}")
+        if dpe:
+            out.append(f"\n**Decision Process Explanation (slot 7):** {dpe.prompt}")
+        if sim:
+            out.append(f"\n**Correct path:** {sim.correct_path}")
+            out.append(f"**Wrong path:** {sim.wrong_path}")
+        return "\n".join(out)
+
     if phase_name == "flashcards":
         cards = getattr(parsed, "cards", None) or []
         out = [f"_{len(cards)} flashcards — interactive deck rendered in preview._\n"]
         for i, c in enumerate(cards, 1):
-            out.append(f"{i}. **{c.front}** — {c.back}")
+            card_id = getattr(c, "id", "") or ""
+            id_tag = f" `{card_id}`" if card_id else ""
+            out.append(f"{i}.{id_tag} **{c.front}** — {c.back}")
             if getattr(c, "hint", None):
                 out.append(f"   - hint: {c.hint}")
         return "\n".join(out)
@@ -57,6 +80,24 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
             out.append(f"{i}. **[{it.kind.upper()}]** {it.prompt}")
             for j, opt in enumerate(it.options or []):
                 marker = "✓" if j == it.correct_index else " "
+                out.append(f"   - [{marker}] {opt}")
+            if getattr(it, "explanation", None):
+                out.append(f"   - _{it.explanation}_")
+        return "\n".join(out)
+
+    if phase_name == "memory-check":
+        items = getattr(parsed, "items", None) or []
+        threshold = getattr(parsed, "pass_threshold", 0.60)
+        out = [
+            f"_{len(items)} memory-check items (pass ≥{int(threshold*100)}%) "
+            f"— interactive check rendered in preview._\n"
+        ]
+        for i, it in enumerate(items, 1):
+            fid = getattr(it, "flashcard_id", "") or ""
+            fid_tag = f" [←{fid}]" if fid else ""
+            out.append(f"{i}. **[{it.kind.upper()}]{fid_tag}** {it.prompt}")
+            for j, opt in enumerate(it.options or []):
+                marker = "✓" if it.correct_index is not None and j == it.correct_index else " "
                 out.append(f"   - [{marker}] {opt}")
             if getattr(it, "explanation", None):
                 out.append(f"   - _{it.explanation}_")
@@ -118,12 +159,39 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
 
 
 _JSON_COLUMN_SETTERS = {
+    "case-based-preview": jobs_repo.set_cbp_json,
     "flashcards": jobs_repo.set_flashcards_json,
+    "memory-check": jobs_repo.set_memory_check_json,
     "memory-sprint": jobs_repo.set_memory_sprint_json,
     "game-breaks": jobs_repo.set_games_json,
     "final-challenge": jobs_repo.set_final_challenge_json,
     "reading": jobs_repo.set_reading_json,
 }
+
+
+def _validate_memory_check_refs(memory_check: Any, flashcards: Any) -> None:
+    """Require every Memory Check item to reference a generated flashcard id."""
+    if flashcards is None:
+        raise ValueError("memory-check requires structured flashcards output")
+
+    card_ids = {
+        getattr(card, "id", None)
+        for card in (getattr(flashcards, "cards", None) or [])
+    }
+    card_ids.discard(None)
+    if not card_ids:
+        raise ValueError("memory-check requires flashcards with stable ids")
+
+    missing = sorted({
+        getattr(item, "flashcard_id", None)
+        for item in (getattr(memory_check, "items", None) or [])
+        if getattr(item, "flashcard_id", None) not in card_ids
+    })
+    if missing:
+        raise ValueError(
+            "memory-check references unknown flashcard ids: "
+            + ", ".join(str(item) for item in missing)
+        )
 
 
 def _utcnow() -> datetime:
@@ -184,7 +252,7 @@ async def run(job_id: UUID) -> None:
         if flow["has_classify"]:
             sequence.append("classify")
         else:
-            sequence.extend(flow["hard"])
+            sequence.extend(get_phase_list(flow, "hard"))
         log.info(
             f"[job {job_id}] sequence planned | has_classify={flow['has_classify']} "
             f"initial_phases={sequence}"
@@ -255,7 +323,7 @@ async def run(job_id: UUID) -> None:
                 await events_bus.publish(
                     resource_id, "difficulty_classified", {"difficulty": difficulty}
                 )
-                appended = flow[difficulty]
+                appended = get_phase_list(flow, difficulty)
                 sequence.extend(appended)
                 log.info(
                     f"[job {job_id}] difficulty resolved={difficulty} | "
@@ -459,6 +527,7 @@ async def _run_content_phases_parallel(
     """
     pending: set[str] = set(content_phases)
     in_flight: dict[str, asyncio.Task] = {}
+    structured_outputs: dict[str, Any] = {}
     phase_order_map: dict[str, int] = {
         name: phase_order_offset + i for i, name in enumerate(content_phases)
     }
@@ -517,6 +586,11 @@ async def _run_content_phases_parallel(
             del in_flight[phase_name]
             try:
                 output_md, _tin, _tout, parsed_struct = task.result()
+                if phase_name == "memory-check" and parsed_struct is not None:
+                    _validate_memory_check_refs(
+                        parsed_struct,
+                        structured_outputs.get("flashcards"),
+                    )
             except Exception:
                 # Already logged + marked failed by _execute_one_phase. Cancel
                 # any peers still in flight and stop launching new phases.
@@ -530,6 +604,8 @@ async def _run_content_phases_parallel(
                 continue
 
             prior_outputs[phase_name] = output_md
+            if parsed_struct is not None:
+                structured_outputs[phase_name] = parsed_struct
             if parsed_struct is not None and phase_name in _JSON_COLUMN_SETTERS:
                 json_payload = parsed_struct.model_dump(mode="json")
                 setter = _JSON_COLUMN_SETTERS[phase_name]
@@ -563,7 +639,9 @@ async def _execute_phase(
     difficulty: Optional[str],
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     if phase_name == "extract":
-        prompt_hash = "builtin:extract:v1"
+        # v2 reads section pages locally instead of attaching the whole PDF.
+        # Bump the cache key so any poisoned v1 extract cache is discarded.
+        prompt_hash = "builtin:extract:v2"
     else:
         prompt_hash = get_prompt_hash(subject, phase_name)
 

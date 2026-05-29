@@ -15,12 +15,15 @@ statusline-command.sh
 node_modules/
 
 # Runtime data + local artifacts (not source)
-var/                  # uploaded PDFs + generated screenshots
-*.log                 # uvicorn / retry logs
-.playwright-cli/      # playwright skill cache
-ruvector.db           # ruflo MCP local store
-prompts.zip           # local backup archive
+var/
+*.log
+.playwright-cli/
+ruvector.db
+prompts.zip
 
 # Ruflo / claude-flow local runtime state — machine-local, not committed
 .swarm/
 .claude-flow/
+
+# Project worklog — local only, not committed
+docs/memory/

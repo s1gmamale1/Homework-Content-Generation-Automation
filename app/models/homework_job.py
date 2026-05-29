@@ -44,6 +44,13 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # English-only reading passage with inline checkpoints.
     # {"passage_md", "checkpoints": [{after_paragraph, prompt, options, correct_index}], "cefr_level"}
     reading_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # Flow v2 Phase 3 — Learning Sections
+    # Case-Based Preview: {"title", "student_role", "case_type", "checkpoints": [3 items],
+    #   "decision_process_explanation": {DPE, never MCQ}, "final_simulation": {...}}
+    cbp_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # Memory Check: {"items": [{flashcard_id, prompt, kind, options, correct_index}],
+    #   "pass_threshold": 0.60}
+    memory_check_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

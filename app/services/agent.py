@@ -41,11 +41,13 @@ from app.config import settings
 from app.db import SessionLocal
 from app.repositories import agent_usage as usage_repo
 from app.schemas import (
+    CaseBasedPreview,
     ClassifyDecision,
     ExtractedTOC,
     FinalChallenge,
     FlashcardsPack,
     GamesPack,
+    MemoryCheckPack,
     MemorySprintPack,
     ReadingPassage,
 )
@@ -71,6 +73,18 @@ class PhaseResult:
     parsed: Optional[BaseModel] = None
     usage: dict[str, Any] = field(default_factory=dict)
     raw_envelope: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ProviderSpec:
+    """One link in a fallback chain: a provider name + optional model.
+
+    ``model=None`` means "let the provider/CLI pick its own default" (resolved
+    by :func:`_resolve_model`). Specs are ordered; the first that succeeds wins.
+    """
+
+    provider: str
+    model: Optional[str] = None
 
 
 # Default-model lookup. **Regression guard from a prior session**:
@@ -102,7 +116,11 @@ def _resolve_model(provider: str, model: Optional[str]) -> Optional[str]:
 # from either module during the migration.
 STRUCTURED_PHASE_SCHEMAS: dict[str, type[BaseModel]] = {
     "classify": ClassifyDecision,
+    # ── Learning Sections (Flow v2 Phase 3) ──────────────────────────
+    "case-based-preview": CaseBasedPreview,   # replaces preview-easy/hard when CBP runtime ready
     "flashcards": FlashcardsPack,
+    "memory-check": MemoryCheckPack,          # replaces memory-sprint; items reference flashcard IDs
+    # ── Legacy phases (v1) ──────────────────────────────────────────
     "memory-sprint": MemorySprintPack,
     "game-breaks": GamesPack,
     "final-challenge": FinalChallenge,
@@ -112,6 +130,12 @@ STRUCTURED_PHASE_SCHEMAS: dict[str, type[BaseModel]] = {
 
 _TOC_TEXT_MAX_PAGES = 40
 _TOC_TEXT_MAX_CHARS = 60_000
+
+# Per-section lesson extraction reads the relevant pages' text locally instead
+# of attaching the whole PDF. Provider CLIs can refuse large files before the
+# model sees the content, which poisons downstream homework phases.
+_SECTION_TEXT_MAX_CHARS = 45_000
+_SECTION_PAGE_PAD = 4
 
 
 # Universal "no preamble" directive (lifted verbatim from gemini.py:274–285).
@@ -598,8 +622,10 @@ async def run_phase(
     last_stderr = ""
     last_usage: dict[str, Any] = {}
 
-    # Two attempts iff schema is set, otherwise one.
-    max_attempts = 2 if schema is not None else 1
+    # Always allow one retry. Structured phases retry on schema-validation
+    # failure; markdown phases retry on empty output, which Gemini CLI can
+    # return with rc=0 after INVALID_STREAM / malformed tool-call failures.
+    max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         started_at = datetime.now(timezone.utc)
         t0 = perf_counter()
@@ -667,6 +693,41 @@ async def run_phase(
             )
 
         if schema is None:
+            if not text.strip():
+                gem_err = ""
+                try:
+                    gem_err = str((usage.get("raw") or {}).get("error") or "")
+                except Exception:  # noqa: BLE001
+                    gem_err = ""
+                await _record_usage(
+                    operation="phase.run",
+                    provider=provider,
+                    model_name=resolved_model,
+                    usage=usage,
+                    duration_s=duration_s,
+                    started_at=started_at,
+                    success=False,
+                    homework_job_id=homework_job_id,
+                    phase_output_id=phase_output_id,
+                    error_message=(f"empty output (provider returned no text); {gem_err}")[:500],
+                    extra_envelope={"phase_name": phase_name, "attempt": attempt},
+                )
+                logger.warning(
+                    f"agent.phase EMPTY output | provider={provider} phase={phase_name} "
+                    f"attempt={attempt} gem_err={gem_err[:160]!r}"
+                )
+                if attempt < max_attempts:
+                    attempt_prompt = (
+                        base_prompt
+                        + "\n\nYour previous response was EMPTY. Do NOT call any "
+                        "tools or functions. Respond directly and immediately with "
+                        "the full deliverable as plain Markdown text."
+                    )
+                    continue
+                raise RuntimeError(
+                    f"phase.run {phase_name}: empty output after {max_attempts} "
+                    f"attempts :: {gem_err or _failure_preview(stderr, text)}"
+                )
             # Markdown-output phase. Record success, return.
             await _record_usage(
                 operation="phase.run",
@@ -774,6 +835,109 @@ async def run_phase(
     )
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Public API: run_phase_with_fallback (provider fallback chain)
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def run_phase_with_fallback(
+    *,
+    providers: list[ProviderSpec],
+    phase_prompt: str,
+    phase_name: str,
+    homework_job_id: Optional[UUID],
+    phase_output_id: Optional[UUID],
+    lesson_context: Optional[str] = None,
+    prior_outputs: Optional[dict[str, str]] = None,
+    attachments: list[Path] = (),
+    schema: Optional[type[BaseModel]] = None,
+    difficulty: Optional[str] = None,
+    max_output_tokens: Optional[int] = None,
+) -> PhaseResult:
+    """Run a phase against an ordered provider chain, falling back on failure.
+
+    Each :class:`ProviderSpec` is tried in order via :func:`run_phase`. A spec
+    "fails" when ``run_phase`` raises — a spawn error, a non-zero CLI exit, or
+    schema-validation exhaustion (each provider keeps its own one-shot repair
+    retry *inside* ``run_phase``). The first spec that succeeds returns its
+    ``PhaseResult``; if every spec fails, a single ``RuntimeError`` naming the
+    exhausted chain is raised. Every underlying attempt still records its own
+    ``AgentUsage`` row through ``run_phase``.
+    """
+    if not providers:
+        raise ValueError("run_phase_with_fallback requires at least one provider")
+
+    last_exc: Optional[Exception] = None
+    for idx, spec in enumerate(providers, start=1):
+        try:
+            return await run_phase(
+                provider=spec.provider,
+                model=spec.model,
+                phase_prompt=phase_prompt,
+                phase_name=phase_name,
+                homework_job_id=homework_job_id,
+                phase_output_id=phase_output_id,
+                lesson_context=lesson_context,
+                prior_outputs=prior_outputs,
+                attachments=list(attachments),
+                schema=schema,
+                difficulty=difficulty,
+                max_output_tokens=max_output_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001 — any provider failure → try next
+            last_exc = exc
+            logger.warning(
+                f"agent.fallback | provider={spec.provider} "
+                f"({idx}/{len(providers)}) failed for phase={phase_name}: "
+                f"{str(exc)[:200]!r}"
+            )
+            continue
+
+    chain = " -> ".join(s.provider for s in providers)
+    raise RuntimeError(
+        f"phase.run {phase_name}: all {len(providers)} providers failed "
+        f"[{chain}]; last error: {last_exc}"
+    ) from last_exc
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Task → model policy
+# ─────────────────────────────────────────────────────────────────────
+
+# Order the remaining CLIs are appended as fallbacks after the job's primary.
+_DEFAULT_FALLBACK_ORDER: tuple[str, ...] = ("claude", "gemini", "codex", "kimi")
+
+# Tasks pinned to the cheap extractor regardless of the job provider: these
+# burn the most input tokens (whole-PDF / many-page reads) and emit a flat
+# factual summary, so smart-tier rates buy nothing.
+_EXTRACT_TASKS: frozenset[str] = frozenset({"toc.extract", "lesson.extract"})
+
+
+def resolve_provider_chain(
+    *,
+    task: str,
+    job_provider: str,
+    job_model: Optional[str] = None,
+    fallback_order: tuple[str, ...] = _DEFAULT_FALLBACK_ORDER,
+) -> list[ProviderSpec]:
+    """Map a task type to an ordered provider/model fallback chain.
+
+    Extract-family tasks are pinned to ``settings.extract_provider`` /
+    ``settings.extract_model`` regardless of the job's chosen provider. Every
+    other task uses the job provider as primary, then the remaining CLIs (in
+    ``fallback_order``) as fallbacks. The primary is never duplicated in the
+    fallback tail, and ``job_model`` rides only on the primary.
+    """
+    if task in _EXTRACT_TASKS:
+        return [ProviderSpec(settings.extract_provider, settings.extract_model)]
+
+    chain = [ProviderSpec(job_provider, job_model)]
+    for provider in fallback_order:
+        if provider != job_provider:
+            chain.append(ProviderSpec(provider))
+    return chain
+
+
 def _strip_code_fences(text: str) -> str:
     """Best-effort unwrap of ```json ... ``` fences some CLIs sprinkle around
     structured output. Returns ``text`` unchanged if no fences are detected."""
@@ -846,6 +1010,68 @@ def _extract_toc_source_text(pdf_path: Path) -> tuple[str, dict[str, Any]]:
     meta["pages_read"] = pages_read
     meta["chars"] = len(text)
     return text, meta
+
+
+def _extract_section_text(
+    pdf_path: Path, page_start: Optional[int], page_end: Optional[int]
+) -> tuple[str, dict[str, Any]]:
+    """Extract a bounded section page window locally via pypdf.
+
+    This mirrors TOC text extraction but targets the section's page range. It
+    avoids handing a full textbook PDF to provider CLIs, where large files can
+    be refused before the model sees any lesson content. Empty text tells the
+    caller to fall back to the legacy PDF attachment path.
+    """
+    meta: dict[str, Any] = {
+        "source": "pdf_section_text",
+        "page_start": page_start,
+        "page_end": page_end,
+        "max_chars": _SECTION_TEXT_MAX_CHARS,
+        "page_pad": _SECTION_PAGE_PAD,
+    }
+    try:
+        from pypdf import PdfReader
+    except Exception as exc:  # noqa: BLE001
+        meta["error"] = f"pypdf unavailable: {exc}"
+        return "", meta
+
+    try:
+        reader = PdfReader(str(pdf_path))
+        total_pages = len(reader.pages)
+        meta["total_pages"] = total_pages
+        start = page_start if isinstance(page_start, int) and page_start > 0 else 1
+        end = page_end if isinstance(page_end, int) and page_end >= start else start
+        lo = max(1, start - _SECTION_PAGE_PAD)
+        hi = min(total_pages, end + _SECTION_PAGE_PAD)
+        chunks: list[str] = []
+        chars = 0
+        for idx in range(lo, hi + 1):
+            try:
+                page_text = (reader.pages[idx - 1].extract_text() or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    f"section text extraction skipped page {idx} of {pdf_path.name}: {exc!r}"
+                )
+                continue
+            if not page_text:
+                continue
+            chunk = f"\n\n--- PDF page {idx} ---\n{page_text}"
+            remaining = _SECTION_TEXT_MAX_CHARS - chars
+            if remaining <= 0:
+                break
+            if len(chunk) > remaining:
+                chunk = chunk[:remaining]
+            chunks.append(chunk)
+            chars += len(chunk)
+            if chars >= _SECTION_TEXT_MAX_CHARS:
+                break
+        meta["pages_range"] = [lo, hi]
+        meta["chars"] = chars
+    except Exception as exc:  # noqa: BLE001
+        meta["error"] = str(exc)
+        return "", meta
+
+    return "".join(chunks).strip(), meta
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1088,18 +1314,50 @@ async def extract_lesson_context(
         rules=_NO_PREAMBLE,
     )
 
-    # No schema — markdown deliverable. Prior outputs / lesson_context are
-    # not meaningful here (this phase IS the lesson_context source).
-    prompt = _build_master_prompt(
-        phase_prompt=instruction,
-        phase_name="lesson.extract",
-        lesson_context=None,
-        prior_outputs=None,
-        difficulty=None,
-        schema=None,
-        provider_suffix=prov.prompt_suffix(None),
-        attachment_preamble=prov.format_attachments([pdf_path]),
-    )
+    # No schema — markdown deliverable. This phase creates lesson_context.
+    # Prefer local section text over attaching the entire PDF, because provider
+    # CLIs may refuse large files before the model sees any useful content.
+    section_text, section_meta = _extract_section_text(pdf_path, page_start, page_end)
+    if section_text:
+        logger.info(
+            f"agent.lesson.extract source text | section={section_number} "
+            f"pages={section_meta.get('pages_range')} chars={section_meta.get('chars')}"
+        )
+        lesson_src = (
+            "Locally extracted text from the section's PDF pages follows. Use "
+            "ONLY this text to extract the lesson content. The headings "
+            "`--- PDF page N ---` are physical PDF page markers, not textbook "
+            f"page numbers. Focus on the lesson titled \"{section_title}\".\n\n"
+            f"{section_text}"
+        )
+        prompt = _build_master_prompt(
+            phase_prompt=instruction,
+            phase_name="lesson.extract",
+            lesson_context=lesson_src,
+            prior_outputs=None,
+            difficulty=None,
+            schema=None,
+            provider_suffix=prov.prompt_suffix(None),
+            attachment_preamble="",
+        )
+        extract_attachments: list[Path] = []
+    else:
+        logger.warning(
+            f"agent.lesson.extract local text unavailable | section={section_number} "
+            f"reason={section_meta.get('error') or 'no text'}; attaching PDF "
+            f"(may exceed provider CLI file limits)"
+        )
+        prompt = _build_master_prompt(
+            phase_prompt=instruction,
+            phase_name="lesson.extract",
+            lesson_context=None,
+            prior_outputs=None,
+            difficulty=None,
+            schema=None,
+            provider_suffix=prov.prompt_suffix(None),
+            attachment_preamble=prov.format_attachments([pdf_path]),
+        )
+        extract_attachments = [pdf_path]
 
     started_at = datetime.now(timezone.utc)
     t0 = perf_counter()
@@ -1119,7 +1377,7 @@ async def extract_lesson_context(
             provider=prov,
             model=resolved_model,
             prompt=prompt,
-            attachments=[pdf_path],
+            attachments=extract_attachments,
         )
     except Exception as exc:
         spawn_failed = exc
@@ -1319,10 +1577,13 @@ async def record_cached_lesson_extract(
 
 __all__ = [
     "PhaseResult",
+    "ProviderSpec",
     "STRUCTURED_PHASE_SCHEMAS",
     "_PROVIDER_DEFAULT_MODEL",
     "_resolve_model",
     "run_phase",
+    "run_phase_with_fallback",
+    "resolve_provider_chain",
     "extract_toc",
     "extract_lesson_context",
     "run_phase_prompt",

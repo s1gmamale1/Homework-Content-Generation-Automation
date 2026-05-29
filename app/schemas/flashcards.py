@@ -4,10 +4,13 @@ rendered as a flippable deck on the /preview/:id page."""
 
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 
 class Flashcard(BaseModel):
+    # Stable ID so Memory Check items can reference specific cards across sessions.
+    # Format convention: "card_<N>" (e.g. "card_1", "card_12").
+    id: str = Field(min_length=1)
     front: str
     back: str
     hint: Optional[str] = None
@@ -16,3 +19,10 @@ class Flashcard(BaseModel):
 
 class FlashcardsPack(BaseModel):
     cards: list[Flashcard]
+
+    @model_validator(mode="after")
+    def _ids_must_be_unique(self) -> "FlashcardsPack":
+        ids = [card.id for card in self.cards]
+        if len(ids) != len(set(ids)):
+            raise ValueError("flashcard ids must be unique")
+        return self
