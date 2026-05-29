@@ -37,6 +37,7 @@ class JobOut(BaseModel):
     memory_sprint_json: Optional[dict[str, Any]] = None
     reading_json: Optional[dict[str, Any]] = None
     source_map_json: Optional[dict[str, Any]] = None
+    flow_manifest_json: Optional[dict[str, Any]] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     phases: list[PhaseOut] = []

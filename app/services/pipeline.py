@@ -304,6 +304,26 @@ async def run(job_id: UUID) -> None:
                     f"[job {job_id}] source_map build failed (non-fatal): {exc}"
                 )
 
+        # ─── Phase 2: flow manifest — the division plan (enabled phases/games).
+        # Prompt provenance + registry coverage are layered in later (Phase 2 E).
+        # Additive + non-fatal.
+        try:
+            from app.services import flow_division_mapper as fdm
+
+            _plan = fdm.build_division_plan(subject=subject, difficulty=difficulty)
+            async with SessionLocal() as session:
+                await jobs_repo.set_flow_manifest_json(
+                    session, job_id, {"division_plan": _plan.to_dict()}
+                )
+                await session.commit()
+            log.info(
+                f"[job {job_id}] flow_manifest persisted | "
+                f"family={_plan.family} difficulty={_plan.difficulty} "
+                f"games={_plan.practice_games}"
+            )
+        except Exception as exc:  # noqa: BLE001 — Phase-2 additive; never break the job
+            log.warning(f"[job {job_id}] flow_manifest build failed (non-fatal): {exc}")
+
         content_phases = sequence[len(head_phases):]
 
         # ─── tail: content phases (parallel, wave-based by PHASE_DEPS) ────────

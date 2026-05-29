@@ -47,6 +47,9 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # Flow v2 SourceMap (Phase 2): factual anchor built from the extracted lesson
     # — concepts (stable ids), terms, formulas, examples, mistakes, skills.
     source_map_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # Flow v2 manifest (Phase 2): division plan (enabled phases/games) + prompt
+    # provenance + registry-coverage result.
+    flow_manifest_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

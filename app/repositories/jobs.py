@@ -186,6 +186,15 @@ async def set_source_map_json(
     job.source_map_json = payload
 
 
+async def set_flow_manifest_json(
+    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.flow_manifest_json = payload
+
+
 async def reset_for_retry(
     session: AsyncSession, job_id: UUID
 ) -> Optional[HomeworkJob]:
