@@ -73,6 +73,18 @@ class PhaseResult:
     raw_envelope: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ProviderSpec:
+    """One link in a fallback chain: a provider name + optional model.
+
+    ``model=None`` means "let the provider/CLI pick its own default" (resolved
+    by :func:`_resolve_model`). Specs are ordered; the first that succeeds wins.
+    """
+
+    provider: str
+    model: Optional[str] = None
+
+
 # Default-model lookup. **Regression guard from a prior session**:
 # ``_PROVIDER_DEFAULT_MODEL["gemini"]`` MUST stay ``None`` so that one
 # provider's default never leaks into another's resolution path. Each CLI's
@@ -774,6 +786,109 @@ async def run_phase(
     )
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Public API: run_phase_with_fallback (provider fallback chain)
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def run_phase_with_fallback(
+    *,
+    providers: list[ProviderSpec],
+    phase_prompt: str,
+    phase_name: str,
+    homework_job_id: Optional[UUID],
+    phase_output_id: Optional[UUID],
+    lesson_context: Optional[str] = None,
+    prior_outputs: Optional[dict[str, str]] = None,
+    attachments: list[Path] = (),
+    schema: Optional[type[BaseModel]] = None,
+    difficulty: Optional[str] = None,
+    max_output_tokens: Optional[int] = None,
+) -> PhaseResult:
+    """Run a phase against an ordered provider chain, falling back on failure.
+
+    Each :class:`ProviderSpec` is tried in order via :func:`run_phase`. A spec
+    "fails" when ``run_phase`` raises — a spawn error, a non-zero CLI exit, or
+    schema-validation exhaustion (each provider keeps its own one-shot repair
+    retry *inside* ``run_phase``). The first spec that succeeds returns its
+    ``PhaseResult``; if every spec fails, a single ``RuntimeError`` naming the
+    exhausted chain is raised. Every underlying attempt still records its own
+    ``AgentUsage`` row through ``run_phase``.
+    """
+    if not providers:
+        raise ValueError("run_phase_with_fallback requires at least one provider")
+
+    last_exc: Optional[Exception] = None
+    for idx, spec in enumerate(providers, start=1):
+        try:
+            return await run_phase(
+                provider=spec.provider,
+                model=spec.model,
+                phase_prompt=phase_prompt,
+                phase_name=phase_name,
+                homework_job_id=homework_job_id,
+                phase_output_id=phase_output_id,
+                lesson_context=lesson_context,
+                prior_outputs=prior_outputs,
+                attachments=list(attachments),
+                schema=schema,
+                difficulty=difficulty,
+                max_output_tokens=max_output_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001 — any provider failure → try next
+            last_exc = exc
+            logger.warning(
+                f"agent.fallback | provider={spec.provider} "
+                f"({idx}/{len(providers)}) failed for phase={phase_name}: "
+                f"{str(exc)[:200]!r}"
+            )
+            continue
+
+    chain = " -> ".join(s.provider for s in providers)
+    raise RuntimeError(
+        f"phase.run {phase_name}: all {len(providers)} providers failed "
+        f"[{chain}]; last error: {last_exc}"
+    ) from last_exc
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Task → model policy
+# ─────────────────────────────────────────────────────────────────────
+
+# Order the remaining CLIs are appended as fallbacks after the job's primary.
+_DEFAULT_FALLBACK_ORDER: tuple[str, ...] = ("claude", "gemini", "codex", "kimi")
+
+# Tasks pinned to the cheap extractor regardless of the job provider: these
+# burn the most input tokens (whole-PDF / many-page reads) and emit a flat
+# factual summary, so smart-tier rates buy nothing.
+_EXTRACT_TASKS: frozenset[str] = frozenset({"toc.extract", "lesson.extract"})
+
+
+def resolve_provider_chain(
+    *,
+    task: str,
+    job_provider: str,
+    job_model: Optional[str] = None,
+    fallback_order: tuple[str, ...] = _DEFAULT_FALLBACK_ORDER,
+) -> list[ProviderSpec]:
+    """Map a task type to an ordered provider/model fallback chain.
+
+    Extract-family tasks are pinned to ``settings.extract_provider`` /
+    ``settings.extract_model`` regardless of the job's chosen provider. Every
+    other task uses the job provider as primary, then the remaining CLIs (in
+    ``fallback_order``) as fallbacks. The primary is never duplicated in the
+    fallback tail, and ``job_model`` rides only on the primary.
+    """
+    if task in _EXTRACT_TASKS:
+        return [ProviderSpec(settings.extract_provider, settings.extract_model)]
+
+    chain = [ProviderSpec(job_provider, job_model)]
+    for provider in fallback_order:
+        if provider != job_provider:
+            chain.append(ProviderSpec(provider))
+    return chain
+
+
 def _strip_code_fences(text: str) -> str:
     """Best-effort unwrap of ```json ... ``` fences some CLIs sprinkle around
     structured output. Returns ``text`` unchanged if no fences are detected."""
@@ -1319,10 +1434,13 @@ async def record_cached_lesson_extract(
 
 __all__ = [
     "PhaseResult",
+    "ProviderSpec",
     "STRUCTURED_PHASE_SCHEMAS",
     "_PROVIDER_DEFAULT_MODEL",
     "_resolve_model",
     "run_phase",
+    "run_phase_with_fallback",
+    "resolve_provider_chain",
     "extract_toc",
     "extract_lesson_context",
     "run_phase_prompt",
