@@ -57,15 +57,15 @@ def test_memory_check_threshold_locked_at_sixty() -> None:
 
 def test_flashcard_requires_id() -> None:
     with pytest.raises(ValidationError):
-        Flashcard(id="", front="f", back="b")
+        Flashcard(id="", front="f", back="b", type="definition", difficulty="easy")
 
 
 def test_flashcards_pack_rejects_duplicate_ids() -> None:
     with pytest.raises(ValidationError):
         FlashcardsPack(
             cards=[
-                Flashcard(id="card_1", front="a", back="b"),
-                Flashcard(id="card_1", front="c", back="d"),
+                Flashcard(id="card_1", front="a", back="b", type="definition", difficulty="easy"),
+                Flashcard(id="card_1", front="c", back="d", type="definition", difficulty="easy"),
             ]
         )
 
@@ -73,8 +73,42 @@ def test_flashcards_pack_rejects_duplicate_ids() -> None:
 def test_flashcards_pack_unique_ids_ok() -> None:
     pack = FlashcardsPack(
         cards=[
-            Flashcard(id="card_1", front="a", back="b"),
-            Flashcard(id="card_2", front="c", back="d"),
+            Flashcard(id="card_1", front="a", back="b", type="definition", difficulty="easy"),
+            Flashcard(id="card_2", front="c", back="d", type="definition", difficulty="easy"),
         ]
     )
     assert [c.id for c in pack.cards] == ["card_1", "card_2"]
+
+
+def _valid_card(**overrides) -> dict:
+    base = dict(id="card_1", front="Mitoxondriya", back="Hujayra energiya markazi",
+                type="definition", difficulty="easy")
+    base.update(overrides)
+    return base
+
+
+def test_flashcard_requires_type_and_difficulty() -> None:
+    for missing in ("type", "difficulty"):
+        kwargs = _valid_card()
+        del kwargs[missing]
+        with pytest.raises(ValidationError):
+            Flashcard(**kwargs)
+
+
+def test_flashcard_rejects_unknown_type_and_difficulty() -> None:
+    with pytest.raises(ValidationError):
+        Flashcard(**_valid_card(type="vibes"))
+    with pytest.raises(ValidationError):
+        Flashcard(**_valid_card(difficulty="impossible"))
+
+
+def test_flashcard_optionals_default_none() -> None:
+    c = Flashcard(**_valid_card())
+    assert c.explanation is None and c.example is None and c.misconception is None and c.hint is None
+
+
+def test_flashcard_requires_nonempty_front_and_back() -> None:
+    with pytest.raises(ValidationError):
+        Flashcard(**_valid_card(front=""))
+    with pytest.raises(ValidationError):
+        Flashcard(**_valid_card(back=""))
