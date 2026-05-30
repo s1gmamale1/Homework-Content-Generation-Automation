@@ -46,6 +46,10 @@ every field — do not invent fields.
     (d) wrong/unsupported. C3 stays MCQ; do NOT turn it into the open-ended DPE.
   - Set `correct_index` to the right option; `feedback` is a short formal-Uzbek note.
 
+## Interaction payload (required)
+
+Emit `interaction_payload` = `{ "sentence": "...", "chips": [ {label, is_correct, reason}, … ] }`. The `sentence` contains the broken/blank span. Provide **≥3 chips**, EXACTLY ONE with `is_correct: true`; each wrong chip's `reason` names why it fails (grammatically possible but wrong meaning/register, too broad/narrow, or irrelevant).
+
 ## Learning Blocks (required — slots 3 & 5)
 
 Emit `learning_block_1` (after Checkpoint 1) and `learning_block_2` (after Checkpoint 2): each a 1–3 sentence, textbook-grounded teaching moment for this game's mechanic. Set `source_concept_id`. Keep them short and text-first; use `visual_svg` only if a tiny diagram is essential and not already shown.

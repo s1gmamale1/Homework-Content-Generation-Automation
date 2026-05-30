@@ -29,6 +29,10 @@ Emit the structured form the response schema requests. Fields, exactly:
   2. `decide` (`mcq`): Which ASSEMBLY TYPE LABEL correctly connects that pair — `cause ↔ effect`, `evidence ↔ claim`, or `event ↔ consequence` (max 3 labels in this round)? Options = correct label + related-but-wrong label + too-broad label + opposite/reversed label.
   3. `justify_or_avoid_mistake` (`mcq`): Which explanation PROVES the relationship and rejects the tempting wrong label? Wrong options include a correct-pair-but-wrong-relationship explanation, a surface-similarity explanation, and an unsupported/reversed explanation. **Checkpoint 3 stays MCQ — it is NOT the open reasoning.**
 
+## Interaction payload (required)
+
+Emit `interaction_payload` = `{ "pieces": [ {id, content}, … ], "allowed_assembly_types": [ … ] }` with **3–6 pieces** and **1–3** assembly-relationship labels (the relationship types the student may use to connect pieces). Pieces and relationships must come from the lesson's source concepts.
+
 ## Learning Blocks (required — slots 3 & 5)
 
 Emit `learning_block_1` (after Checkpoint 1) and `learning_block_2` (after Checkpoint 2): each a 1–3 sentence, textbook-grounded teaching moment for this game's mechanic. Set `source_concept_id`. Keep them short and text-first; use `visual_svg` only if a tiny diagram is essential and not already shown.

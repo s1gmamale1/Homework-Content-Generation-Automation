@@ -50,6 +50,10 @@ extending `CaseBasedPreview`). Fill every field; invent no fields.
      intuition without the method · tempting-but-incomplete strategy · wrong
      strategy. Set `correct_index`, write `feedback`.
 
+## Interaction payload (required)
+
+Emit `interaction_payload` = `{ "cells": [ {label, is_correct, reason}, … ] }` with **exactly 9 cells** (a 3×3 decision grid). Each cell is a candidate action/answer; at least one with `is_correct: true`. Every wrong cell's `reason` names why it fails. Cells must be solvable only through the lesson concept, not general intuition.
+
 ## Learning Blocks (required — slots 3 & 5)
 
 Emit `learning_block_1` (after Checkpoint 1) and `learning_block_2` (after Checkpoint 2): each a 1–3 sentence, textbook-grounded teaching moment for this game's mechanic. Set `source_concept_id`. Keep them short and text-first; use `visual_svg` only if a tiny diagram is essential and not already shown.

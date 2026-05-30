@@ -27,6 +27,10 @@ Emit the structured form the response schema requests. Fields, exactly:
   2. `decide` (`mcq`): After the cards are hidden, which function/role belonged to the term? Options = correct reconstructed meaning + close distractor + surface-similar + irrelevant.
   3. `justify_or_avoid_mistake` (`mcq`): Which explanation shows WHY this pairing is correct? The wrong options include a position-memory-only explanation and a surface-similarity explanation. **Checkpoint 3 stays MCQ — it is NOT the open reasoning.**
 
+## Interaction payload (required)
+
+Emit `interaction_payload` = `{ "pairs": [ {left, right}, … ] }` with **4–8 pairs**. Each pair is a valid match drawn from the lesson (e.g. term ↔ meaning). Pairs must be matchable only by understanding the source concept, not by surface cues.
+
 ## Learning Blocks (required — slots 3 & 5)
 
 Emit `learning_block_1` (after Checkpoint 1) and `learning_block_2` (after Checkpoint 2): each a 1–3 sentence, textbook-grounded teaching moment for this game's mechanic. Set `source_concept_id`. Keep them short and text-first; use `visual_svg` only if a tiny diagram is essential and not already shown.
