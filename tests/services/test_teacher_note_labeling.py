@@ -26,8 +26,12 @@ def test_memory_check_answer_only_in_teacher_notes():
                 flashcard_id="card_1",
                 prompt="Which organelle makes ATP?",
                 kind="multiple_choice",
-                options=["Nucleus", "Mitochondrion", "Ribosome"],
-                correct_index=1,
+                options=[
+                    {"text": "Nucleus", "is_correct": False, "reason": "stores DNA, not energy"},
+                    {"text": "Mitochondrion", "is_correct": True},
+                    {"text": "Ribosome", "is_correct": False, "reason": "builds proteins"},
+                    {"text": "Vacuole", "is_correct": False, "reason": "storage, not energy"},
+                ],
                 explanation="Mitochondrion is the powerhouse because reasons.",
             )
         ]

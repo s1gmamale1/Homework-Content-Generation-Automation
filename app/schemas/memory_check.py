@@ -14,7 +14,7 @@ STOP conditions (enforced by schema):
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Three and only three supported kinds — the renderer knows exactly these.
 MemoryCheckKind = Literal[
@@ -24,14 +24,47 @@ MemoryCheckKind = Literal[
 ]
 
 
+class MemoryCheckOption(BaseModel):
+    text: str = Field(min_length=1)
+    is_correct: bool = False
+    reason: Optional[str] = None  # why this distractor is wrong (MCQ) / flawed reasoning (CCE)
+
+
+class MemoryCheckBlank(BaseModel):
+    answer: str = Field(min_length=1)
+    accepted_variations: list[str] = Field(default_factory=list)
+
+
+_OPTION_KINDS = {"multiple_choice", "choose_correct_explanation"}
+
+
 class MemoryCheckItem(BaseModel):
-    # Required: every item must trace back to a specific flashcard.
     flashcard_id: str = Field(min_length=1)
-    prompt: str
     kind: MemoryCheckKind
-    options: list[str] = Field(default_factory=list)
-    correct_index: Optional[int] = None
+    prompt: str = Field(min_length=1)
+    options: list[MemoryCheckOption] = Field(default_factory=list)
+    blanks: list[MemoryCheckBlank] = Field(default_factory=list)
+    why_prompt: Optional[str] = None
+    expected_reasoning_keywords: list[str] = Field(default_factory=list)
+    correct_feedback: Optional[str] = None
+    wrong_feedback: Optional[str] = None
     explanation: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _shape_matches_kind(self) -> "MemoryCheckItem":
+        if self.kind in _OPTION_KINDS:
+            if len(self.options) != 4:
+                raise ValueError(f"{self.kind} requires exactly 4 options, got {len(self.options)}")
+            if sum(1 for o in self.options if o.is_correct) != 1:
+                raise ValueError(f"{self.kind} requires exactly one correct option")
+            if self.blanks:
+                raise ValueError(f"{self.kind} must not carry blanks")
+        elif self.kind == "fill_blank":
+            if not self.blanks:
+                raise ValueError("fill_blank requires at least one blank")
+            if self.options:
+                raise ValueError("fill_blank must not carry options")
+        return self
 
 
 class MemoryCheckPack(BaseModel):

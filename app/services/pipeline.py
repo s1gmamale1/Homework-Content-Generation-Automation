@@ -126,12 +126,21 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
             fid = getattr(it, "flashcard_id", "") or ""
             fid_tag = f" [←{fid}]" if fid else ""
             out.append(f"{i}. **[{it.kind.upper()}]{fid_tag}** {it.prompt}")
-            opts = it.options or []
+            opts = getattr(it, "options", None) or []
             for j, opt in enumerate(opts):
-                out.append(f"   - {chr(97 + j)}) {opt}")
-            if opts and it.correct_index is not None and 0 <= it.correct_index < len(opts):
-                ci = it.correct_index
-                out.append(f"   - {_teacher(f'Correct answer: {chr(97 + ci)}) {opts[ci]}')}")
+                out.append(f"   - {chr(97 + j)}) {opt.text}")
+            correct = next((o for o in opts if o.is_correct), None)
+            if correct is not None:
+                ci = opts.index(correct)
+                out.append(f"   - {_teacher(f'Correct: {chr(97 + ci)}) {correct.text}')}")
+            for j, opt in enumerate(opts):
+                if not opt.is_correct and getattr(opt, "reason", None):
+                    out.append(f"   - {_teacher(f'{chr(97 + j)}) wrong — {opt.reason}')}")
+            for b in getattr(it, "blanks", None) or []:
+                acc = f" (also accept: {', '.join(b.accepted_variations)})" if b.accepted_variations else ""
+                out.append(f"   - {_teacher(f'Answer: {b.answer}{acc}')}")
+            if getattr(it, "why_prompt", None):
+                out.append(f"   - **Why:** {it.why_prompt}")
             if getattr(it, "explanation", None):
                 out.append(f"   - {_teacher(it.explanation)}")
         return "\n".join(out)

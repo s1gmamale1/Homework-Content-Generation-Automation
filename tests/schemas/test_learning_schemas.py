@@ -20,8 +20,12 @@ def _item(**over) -> dict:
         flashcard_id="card_1",
         prompt="Which rule divides a fraction by a whole number?",
         kind="multiple_choice",
-        options=["multiply denominator", "multiply numerator"],
-        correct_index=0,
+        options=[
+            dict(text="multiply the denominator by the whole number", is_correct=True),
+            dict(text="multiply the numerator", is_correct=False, reason="changes the wrong part of the fraction"),
+            dict(text="add the whole number to the denominator", is_correct=False, reason="division is not addition"),
+            dict(text="flip the fraction over", is_correct=False, reason="that is the rule for dividing by a fraction"),
+        ],
     )
     base.update(over)
     return base
@@ -112,3 +116,34 @@ def test_flashcard_requires_nonempty_front_and_back() -> None:
         Flashcard(**_valid_card(front=""))
     with pytest.raises(ValidationError):
         Flashcard(**_valid_card(back=""))
+
+
+def test_mcq_requires_exactly_four_options() -> None:
+    three = _item()["options"][:3]
+    with pytest.raises(ValidationError):
+        MemoryCheckItem(**_item(options=three))
+
+
+def test_mcq_requires_exactly_one_correct() -> None:
+    opts2 = [dict(o) for o in _item()["options"]]
+    opts2[1]["is_correct"] = True  # now two correct
+    with pytest.raises(ValidationError):
+        MemoryCheckItem(**_item(options=opts2))
+
+
+def test_fill_blank_requires_blanks_and_no_options() -> None:
+    with pytest.raises(ValidationError):
+        MemoryCheckItem(flashcard_id="card_1", kind="fill_blank",
+                        prompt="A proper fraction's numerator is _____ its denominator.")
+    with pytest.raises(ValidationError):
+        MemoryCheckItem(flashcard_id="card_1", kind="fill_blank", prompt="_____",
+                        blanks=[dict(answer="smaller than")],
+                        options=[dict(text="x", is_correct=True)])
+
+
+def test_fill_blank_valid() -> None:
+    it = MemoryCheckItem(flashcard_id="card_1", kind="fill_blank",
+                         prompt="A proper fraction's numerator is _____ its denominator.",
+                         blanks=[dict(answer="smaller than", accepted_variations=["less than"])])
+    assert it.blanks[0].answer == "smaller than"
+    assert it.options == []
