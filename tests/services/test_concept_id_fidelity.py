@@ -53,3 +53,12 @@ def test_emitted_collects_all_locations():
         questions=[_Obj(concept_ids=["c"])],
     )
     assert set(_emitted_concept_ids(parsed)) == {"a", "b", "c"}
+
+
+def test_flags_invented_learning_block_concept_id():
+    parsed = _Obj(
+        source_concept_ids=["c1"],
+        learning_block_1=_Obj(source_concept_id="ghost"),
+        learning_block_2=_Obj(source_concept_id="c1"),
+    )
+    assert _unknown_concept_ids(parsed, {"c1"}) == ["ghost"]

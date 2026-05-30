@@ -307,6 +307,11 @@ def _emitted_concept_ids(parsed: Any) -> list[str]:
     ids += list(getattr(parsed, "source_concept_ids", None) or [])
     for q in getattr(parsed, "questions", None) or []:
         ids += list(getattr(q, "concept_ids", None) or [])
+    for lb_attr in ("learning_block_1", "learning_block_2"):
+        lb = getattr(parsed, lb_attr, None)
+        cid = getattr(lb, "source_concept_id", None) if lb is not None else None
+        if cid:
+            ids.append(cid)
     return ids
 
 
