@@ -132,8 +132,17 @@ STRUCTURED_PHASE_SCHEMAS: dict[str, type[BaseModel]] = {
 }
 
 
-_TOC_TEXT_MAX_PAGES = 40
-_TOC_TEXT_MAX_CHARS = 60_000
+_TOC_TEXT_MAX_PAGES = 40        # front scan ceiling (physical pages)
+_TOC_TEXT_MAX_CHARS = 60_000    # total char budget (front + tail combined)
+# Many textbooks (esp. Uzbek "Mundarija") put the contents page at the BACK of
+# the book. So we also scan the last _TOC_TAIL_PAGES pages, reserving
+# _TOC_TAIL_MAX_CHARS of the budget for them so a dense front matter can't
+# starve the tail scan.
+_TOC_TAIL_PAGES = 15
+_TOC_TAIL_MAX_CHARS = 20_000
+# Gemini's CLI rejects PDFs larger than ~20 MB; below this we can attach the
+# whole PDF for native reading alongside the text excerpt (see extract_toc).
+_GEMINI_PDF_MAX_BYTES = 20 * 1024 * 1024
 
 
 # Universal "no preamble" directive (lifted verbatim from gemini.py:274–285).
@@ -900,17 +909,84 @@ def _strip_code_fences(text: str) -> str:
     return body
 
 
+_GLYPH_NAME_RE = re.compile(r"/G([0-9A-Fa-f]{2})")
+
+
+def _decode_glyph_text(text: str) -> str:
+    """Recover real text from PDFs whose font subset has no ToUnicode map.
+
+    Such PDFs make pypdf emit glyph names like ``/G55/G6D/G75`` instead of
+    characters. Where the glyph code equals the original byte value (a common
+    case), ``/G<hex>`` decoded as a cp1252 byte recovers the text
+    (``/G55/G6D/G75/G6D/G69/G79`` → ``Umumiy``). Only fires when glyph tokens
+    clearly dominate the page, so ordinary text containing an incidental
+    ``/G...`` is left untouched.
+    """
+    if "/G" not in text:
+        return text
+    if len(_GLYPH_NAME_RE.findall(text)) < 20:
+        return text
+
+    def _sub(m: "re.Match[str]") -> str:
+        try:
+            return bytes([int(m.group(1), 16)]).decode("cp1252", "replace")
+        except Exception:
+            return ""
+
+    return _GLYPH_NAME_RE.sub(_sub, text)
+
+
+def _read_pdf_pages(
+    reader, indices, *, budget: int, already: set[int], pdf_name: str
+) -> tuple[list[str], list[int]]:
+    """Read text from the given 1-based page ``indices`` into labeled chunks,
+    stopping once ``budget`` chars are consumed. Skips pages in ``already`` so
+    overlapping windows never emit the same page twice. Returns
+    ``(chunks, pages_read)``."""
+    chunks: list[str] = []
+    pages_read: list[int] = []
+    chars = 0
+    for idx in indices:
+        if idx in already:
+            continue
+        page = reader.pages[idx - 1]
+        try:
+            page_text = _decode_glyph_text(page.extract_text() or "").strip()
+        except Exception as exc:
+            logger.debug(f"toc text extraction skipped page {idx} of {pdf_name}: {exc!r}")
+            continue
+        if not page_text:
+            continue
+        chunk = f"\n\n--- PDF page {idx} ---\n{page_text}"
+        remaining = budget - chars
+        if remaining <= 0:
+            break
+        if len(chunk) > remaining:
+            chunk = chunk[:remaining]
+        chunks.append(chunk)
+        chars += len(chunk)
+        pages_read.append(idx)
+        if chars >= budget:
+            break
+    return chunks, pages_read
+
+
 def _extract_toc_source_text(pdf_path: Path) -> tuple[str, dict[str, Any]]:
-    """Extract a bounded front-matter text slice for TOC-only prompts.
+    """Extract a bounded text slice from BOTH ends of the PDF for TOC prompts.
 
     Gemini CLI's file-reading path can reject large PDFs before the model sees
-    the contents. For TOC extraction we only need the early pages, so feeding a
-    compact local text excerpt is both faster and avoids provider file limits.
+    the contents, so feeding a compact local text excerpt is faster and avoids
+    provider file limits. Crucially we scan the front pages AND the last
+    ``_TOC_TAIL_PAGES`` pages: many textbooks (esp. Uzbek "Mundarija") print
+    their table of contents at the BACK of the book, and a front-only scan
+    returned 0 entries for those. The tail gets a reserved char budget so a
+    dense front matter can't starve it.
     """
     meta: dict[str, Any] = {
         "source": "pdf_text",
         "max_pages": _TOC_TEXT_MAX_PAGES,
         "max_chars": _TOC_TEXT_MAX_CHARS,
+        "tail_pages": _TOC_TAIL_PAGES,
     }
     try:
         from pypdf import PdfReader
@@ -922,37 +998,38 @@ def _extract_toc_source_text(pdf_path: Path) -> tuple[str, dict[str, Any]]:
         reader = PdfReader(str(pdf_path))
         total_pages = len(reader.pages)
         meta["total_pages"] = total_pages
-        chunks: list[str] = []
-        chars = 0
-        pages_read = 0
-        for idx in range(1, min(total_pages, _TOC_TEXT_MAX_PAGES) + 1):
-            page = reader.pages[idx - 1]
-            try:
-                page_text = (page.extract_text() or "").strip()
-            except Exception as exc:
-                logger.debug(
-                    f"toc text extraction skipped page {idx} of {pdf_path.name}: {exc!r}"
-                )
-                continue
-            if not page_text:
-                continue
-            chunk = f"\n\n--- PDF page {idx} ---\n{page_text}"
-            remaining = _TOC_TEXT_MAX_CHARS - chars
-            if remaining <= 0:
-                break
-            if len(chunk) > remaining:
-                chunk = chunk[:remaining]
-            chunks.append(chunk)
-            chars += len(chunk)
-            pages_read = idx
-            if chars >= _TOC_TEXT_MAX_CHARS:
-                break
+
+        # Front scan: pages 1..N, capped so it can't consume the tail's budget.
+        front_budget = _TOC_TEXT_MAX_CHARS - _TOC_TAIL_MAX_CHARS
+        front_indices = range(1, min(total_pages, _TOC_TEXT_MAX_PAGES) + 1)
+        front_chunks, front_pages = _read_pdf_pages(
+            reader, front_indices, budget=front_budget, already=set(), pdf_name=pdf_path.name
+        )
+
+        # Tail scan: the last _TOC_TAIL_PAGES pages not already read by the front
+        # scan (overlap on short books is skipped). Gets whatever budget remains.
+        # Read from the LAST page BACKWARD so the very end of the book — where a
+        # back-of-book "Mundarija" usually sits — is captured first if the budget
+        # runs out, then present the chunks in ascending page order.
+        already = set(front_pages)
+        tail_start = max(1, total_pages - _TOC_TAIL_PAGES + 1)
+        tail_indices = list(range(total_pages, tail_start - 1, -1))
+        tail_budget = _TOC_TEXT_MAX_CHARS - sum(len(c) for c in front_chunks)
+        tail_chunks, tail_pages = _read_pdf_pages(
+            reader, tail_indices, budget=tail_budget, already=already, pdf_name=pdf_path.name
+        )
+        if tail_pages:
+            _ordered = sorted(zip(tail_pages, tail_chunks), key=lambda kv: kv[0])
+            tail_pages = [p for p, _ in _ordered]
+            tail_chunks = [c for _, c in _ordered]
     except Exception as exc:
         meta["error"] = str(exc)
         return "", meta
 
-    text = "".join(chunks).strip()
-    meta["pages_read"] = pages_read
+    text = "".join(front_chunks + tail_chunks).strip()
+    meta["front_pages"] = front_pages
+    meta["tail_pages_read"] = tail_pages
+    meta["pages_read"] = len(front_pages) + len(tail_pages)
     meta["chars"] = len(text)
     return text, meta
 
@@ -1013,14 +1090,25 @@ async def extract_toc(
     attachments = [pdf_path]
     if has_local_toc_text:
         lesson_context = (
-            "Locally extracted text from the first pages of the PDF follows. "
-            "Use only this text to identify TOC entries and printed page "
+            "Locally extracted text from the FIRST and LAST pages of the PDF "
+            "follows (a textbook's table of contents may be at the front OR the "
+            "back). Use this text to identify TOC entries and printed page "
             "numbers. The headings `--- PDF page N ---` are physical PDF page "
             "markers, not textbook page numbers.\n\n"
             f"{toc_source_text}"
         )
-        attachment_preamble = ""
-        attachments = []
+        # Gemini reads PDFs natively: for PDFs under its size limit, keep the
+        # whole PDF attached alongside the text excerpt so it can still locate a
+        # TOC the excerpt missed. Other providers (claude refuses copyrighted
+        # PDFs) or oversized PDFs fall back to text-only.
+        try:
+            pdf_size = pdf_path.stat().st_size
+        except OSError:
+            pdf_size = _GEMINI_PDF_MAX_BYTES + 1  # force text-only on stat failure
+        keep_pdf = provider == "gemini" and pdf_size <= _GEMINI_PDF_MAX_BYTES
+        if not keep_pdf:
+            attachment_preamble = ""
+            attachments = []
 
     base_prompt = _build_master_prompt(
         phase_prompt=instruction,

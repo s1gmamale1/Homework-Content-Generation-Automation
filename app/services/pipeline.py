@@ -297,6 +297,36 @@ _CBP_MODE_PHASES = {
 }
 
 
+def _emitted_concept_ids(parsed: Any) -> list[str]:
+    """Collect every source-concept id a structured phase output references:
+    top-level (``concept_ids`` on RLC/ErrorDetection, ``source_concept_ids`` on
+    CBP/CbpModeGame) and per-question (``questions[].concept_ids`` on BossArena).
+    """
+    ids: list[str] = []
+    ids += list(getattr(parsed, "concept_ids", None) or [])
+    ids += list(getattr(parsed, "source_concept_ids", None) or [])
+    for q in getattr(parsed, "questions", None) or []:
+        ids += list(getattr(q, "concept_ids", None) or [])
+    return ids
+
+
+def _unknown_concept_ids(parsed: Any, source_map_ids: set[str]) -> list[str]:
+    """Concept ids emitted by ``parsed`` that are NOT in the job's SourceMap —
+    i.e. invented, violating plan §10 "no invented facts". De-duplicated and
+    order-stable. Returns ``[]`` when the source map is unknown/empty (we can't
+    validate against nothing, so we never flag in that case).
+    """
+    if not source_map_ids:
+        return []
+    seen: set[str] = set()
+    unknown: list[str] = []
+    for cid in _emitted_concept_ids(parsed):
+        if cid not in source_map_ids and cid not in seen:
+            seen.add(cid)
+            unknown.append(cid)
+    return unknown
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -372,6 +402,9 @@ async def run(job_id: UUID) -> None:
         # PR-1/plan §10: the source map digest threaded into every content
         # phase prompt as the authoritative concept list (source fidelity).
         source_map_digest: str = ""
+        # The set of legitimate concept ids from the source map. Used to detect
+        # phases that cite invented ids (plan §10 "no invented facts").
+        source_map_ids: set[str] = set()
         phase_order = 0
 
         file_phases = file_needed_phases(subject)
@@ -439,6 +472,11 @@ async def run(job_id: UUID) -> None:
                     source_map_digest = agent.format_source_map_digest(
                         source_map_payload
                     )
+                    source_map_ids = {
+                        c.get("id")
+                        for c in source_map_payload.get("concepts", [])
+                        if c.get("id")
+                    }
                     log.info(
                         f"[job {job_id}] source map captured | "
                         f"concepts={len(source_map.concepts)}"
@@ -500,6 +538,7 @@ async def run(job_id: UUID) -> None:
                     prior_outputs=prior_outputs,
                     difficulty=difficulty,
                     source_map_digest=source_map_digest,
+                    source_map_ids=source_map_ids,
                 )
             except RuntimeError as exc:
                 if "content phase failed" in str(exc):
@@ -664,6 +703,7 @@ async def _run_content_phases_parallel(
     prior_outputs: dict[str, str],
     difficulty: Optional[str],
     source_map_digest: str = "",
+    source_map_ids: Optional[set[str]] = None,
 ) -> None:
     """Wave-based parallel scheduler for content phases.
 
@@ -749,6 +789,23 @@ async def _run_content_phases_parallel(
                 continue
 
             prior_outputs[phase_name] = output_md
+            # Source fidelity (plan §10): a phase must only cite concept ids that
+            # exist in the job's source map. Surface invented ids loudly. Kept
+            # non-fatal — a single hallucinated id shouldn't discard an otherwise
+            # good multi-phase generation — but it's now detected and auditable
+            # rather than silently trusted.
+            if parsed_struct is not None:
+                invented = _unknown_concept_ids(parsed_struct, source_map_ids or set())
+                if invented:
+                    log.warning(
+                        f"[job {job_id}] {phase_name} cites concept_ids NOT in the "
+                        f"source map (plan §10 source-fidelity violation): {invented}"
+                    )
+                    await events_bus.publish(
+                        resource_id,
+                        "concept_fidelity_warning",
+                        {"phase_name": phase_name, "unknown_ids": invented},
+                    )
             if parsed_struct is not None and phase_name in _JSON_COLUMN_SETTERS:
                 json_payload = parsed_struct.model_dump(mode="json")
                 setter = _JSON_COLUMN_SETTERS[phase_name]

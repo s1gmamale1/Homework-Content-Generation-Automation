@@ -48,6 +48,16 @@ One scenario object with these fields:
 - `final_summary` — what an expert would have done, what strong reasoning looks
   like (mechanism/hazard reasoned, not just outcome guessed), likely misses.
 
+## Reverse-test variant (required, §6)
+
+Make the FINAL decision a **reverse test** of the same scenario: re-present it
+with the key quantities/reagents/measurements CHANGED, and ask the student to
+infer **which underlying concept or method governs the new outcome**. The
+principle's name must NOT appear in the setup; the `options` are candidate
+concepts/methods and `correct_option` is the one the lesson actually supports.
+This tests transfer — recognising the unnamed principle from a fresh instance,
+not re-running the forward steps. It counts as one of the 2–4 `decisions`.
+
 ## Non-negotiables
 
 - **Strip Test:** remove the lesson concept and the scenario must STOP working.

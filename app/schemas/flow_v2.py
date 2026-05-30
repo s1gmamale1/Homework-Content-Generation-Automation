@@ -9,9 +9,9 @@ here so malformed content fails fast at the boundary:
   ``None`` so it can never be modeled as an MCQ (§6, CBP standard).
 - ``CaseBasedPreview`` — exactly 3 checkpoints, a required DPE, and a final
   simulation that carries both a correct and a wrong path.
-- ``SourceMap`` / ``SourceConcept`` — the factual anchor; defined here as the
-  shared mock contract that lets phase generators start in parallel (§3). The
-  real builder lands in Phase 2.
+- ``SourceMap`` / ``SourceConcept`` — the factual anchor every phase cites by
+  concept id (§4/§10). Built by ``agent.extract_source_map`` from the extracted
+  lesson context (PR-1) and threaded into every content-phase prompt.
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ class CaseBasedPreview(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# SourceMap mock contract (§3) — factual anchor for parallel generation
+# SourceMap (§4/§10) — factual anchor; built by agent.extract_source_map
 # ─────────────────────────────────────────────────────────────────────
 
 SourceConceptKind = Literal["concept", "term", "formula", "process", "skill", "fact"]
@@ -132,8 +132,8 @@ class SourceConcept(BaseModel):
 
 
 class SourceMap(BaseModel):
-    """The factual anchor every generated phase references. Defined now as the
-    shared mock contract; the real extraction-driven builder is Phase 2."""
+    """The factual anchor every generated phase references by concept id. Built
+    by ``agent.extract_source_map`` from the extracted lesson context (PR-1)."""
 
     subject_family: str
     chapter: str
