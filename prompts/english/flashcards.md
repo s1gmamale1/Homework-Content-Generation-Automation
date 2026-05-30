@@ -23,35 +23,66 @@ Card count by CEFR level:
 
 Split each deck roughly 70% vocabulary / 30% grammar. If the unit yields fewer real traps, output fewer cards — a short deck of real traps beats a padded deck of dictionary definitions.
 
-## Card format
+## Card format — 8 fields
 
-**id:** Stable sequential ID — `"card_1"`, `"card_2"`, ... starting from 1. Never skip or reuse.
+Each card emits these fields:
+- `id` — stable sequential `card_1, card_2, …` (never skip or reuse).
+- `front` — the cue (term / question / prompt). **3–14 words.**
+- `back` — the answer (definition / value / rule). **5–22 words, never over 25** (a formula or process step may run longer).
+- `type` — REQUIRED. One of: `definition`, `term_to_meaning`, `question_answer`, `misconception`, `vocabulary`, `grammar`.
+- `difficulty` — REQUIRED. One of: `easy | medium | hard`.
+- `hint` (optional) — a nudge, ≤12 words, never gives away the answer.
+- `explanation` (optional, encouraged) — 1 short sentence on why/how it works.
+- `example` (optional, encouraged) — 1 short concrete example.
+- `misconception` (optional) — 1 sentence naming a common wrong idea. **Required for trap / false-friend cards.**
 
-**Front:** Target word, phrase, or grammar pattern name. Short. Max 10 words.
-
-**Back:** Definition or formula. One line. Include one quick example from the chapter. Add a UZ bridge if the trap needs it (false friend, stress, or structural mismatch).
-
-That's it.
+Rules:
+- One retrievable idea per card. Do NOT fold `explanation` / `example` / `misconception` into `back`.
+- Every card MUST set `type` and `difficulty`.
+- Diagrams: describe with a bracket `[Diagram: ...]` note — do NOT emit raw inline `<svg>`.
 
 ## Examples
 
-> **Front:** photographer
-> **Back:** /fəˈtɒɡrəfər/ — oOoo. Someone who takes photos. Misol: "Daniel worked as a **photographer** for a fashion magazine." UZ: suratkash.
+> **id:** card_1  
+> **front:** photographer  
+> **back:** /fəˈtɒɡrəfər/ — someone who takes photos professionally.  
+> **type:** vocabulary  
+> **difficulty:** easy  
+> **example:** "Daniel worked as a **photographer** for a fashion magazine."  
+> **hint:** oOoo stress pattern.  
+> **explanation:** UZ: suratkash.
 
-> **Front:** magazine ≠ магазин
-> **Back:** A journal, not a shop. False friend with RU "магазин" (= shop). Misol: "Daniel took photos for a fashion **magazine**." UZ: jurnal.
+> **id:** card_2  
+> **front:** magazine ≠ магазин  
+> **back:** A journal or periodical — not a shop.  
+> **type:** misconception  
+> **difficulty:** medium  
+> **misconception:** RU false friend "магазин" means shop, not magazine.  
+> **example:** "Daniel took photos for a fashion **magazine**."
 
-> **Front:** Past simple — negative
-> **Back:** subject + didn't + base verb. Misol: "He **didn't use** buses or planes." UZ: "-ma-di" suffix = "didn't" + base.
+> **id:** card_3  
+> **front:** Past simple — negative form  
+> **back:** subject + didn't + base verb (no -ed in negative).  
+> **type:** grammar  
+> **difficulty:** easy  
+> **example:** "He **didn't use** buses or planes."  
+> **explanation:** UZ: "-ma-di" suffix matches "didn't" + base verb.
 
-> **Front:** earn (vs win)
-> **Back:** Get money for work — not luck. "Win" is for prizes. Misol: "**Did you earn** any money?" UZ: ishlab topmoq.
+> **id:** card_4  
+> **front:** earn (vs win)  
+> **back:** Get money for work done — not by chance or contest.  
+> **type:** term_to_meaning  
+> **difficulty:** medium  
+> **misconception:** "Win money" implies luck; "earn money" implies effort.  
+> **example:** "**Did you earn** any money?" UZ: ishlab topmoq.
 
-> **Front:** make a decision
-> **Back:** Collocation — never "do a decision". Misol: "She **made the decision** to study abroad." UZ: qaror qabul qilmoq.
-
-> **Front:** Past simple — question
-> **Back:** Did + subject + base verb? Misol: "**Did you earn** any money?" UZ: "-dingizmi?" = "Did you ...?"
+> **id:** card_5  
+> **front:** make a decision (collocation)  
+> **back:** Fixed collocation — "make" not "do" with "decision".  
+> **type:** vocabulary  
+> **difficulty:** medium  
+> **misconception:** "Do a decision" is a common learner error.  
+> **example:** "She **made the decision** to study abroad."
 
 ## Rules
 

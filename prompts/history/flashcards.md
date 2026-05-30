@@ -20,13 +20,25 @@ You are building the Flash Card deck (Phase 0-B) for a History homework session.
 
 All cards in Uzbek. "Siz" if referenced.
 
-## Card format — 4 fields
+## Card format — 8 fields
 
-**id:** Stable sequential ID — `"card_1"`, `"card_2"`, ... starting from 1. Never skip or reuse.
+Each card emits these fields:
+- `id` — stable sequential `card_1, card_2, …` (never skip or reuse).
+- `front` — the cue (term / question / prompt). **3–14 words.**
+- `back` — the answer (definition / value / rule). **5–22 words, never over 25** (a formula or process step may run longer).
+- `type` — REQUIRED. One of: `definition`, `term_to_meaning`, `question_answer`, `misconception`, `process_step`.
+- `difficulty` — REQUIRED. One of: `easy | medium | hard`.
+- `hint` (optional) — a nudge, ≤12 words, never gives away the answer.
+- `explanation` (optional, encouraged) — 1 short sentence on why/how it works.
+- `example` (optional, encouraged) — 1 short concrete example.
+- `misconception` (optional) — 1 sentence naming a common wrong idea. **Required for trap / false-friend cards.**
 
-**Front:** Term name, figure name, or concept phrase. Max 10 words. No context.
+Rules:
+- One retrievable idea per card. Do NOT fold `explanation` / `example` / `misconception` into `back`.
+- Every card MUST set `type` and `difficulty`.
+- Diagrams: describe with a bracket `[Diagram: ...]` note — do NOT emit raw inline `<svg>`.
 
-**Back:** Definition + key facts. 1–3 sentences. NO practice, NO examples, NO questions.
+Additional history-specific fields (retained):
 
 **Xotira tasviri (Buzan hook):** One vivid memory aid. Pick one type:
 - Visual image (figure holding item, place with event)
@@ -64,26 +76,35 @@ Include a **Sana qarmogʻi (date hook)** inline with the Xotira tasviri when a f
 
 ### Name card
 
-**Front:** Chigʻatoyxon
-
-**Back:** Chingizxonning ikkinchi oʻgʻli. Markaziy Osiyo ulusining xoni (1225–1242). Yasoq qonunining qatʼiy qoʻriqchisi.
-**Xotira tasviri:** Yasoq kitobini ikki qoʻli bilan mahkam ushlab turgan, koʻzi oʻtkir.
-**Sana qarmogʻi:** 1-2-2-5 (1225, ulus boʻlinishi).
+**id:** card_1  
+**front:** Chigʻatoyxon  
+**back:** Chingizxonning ikkinchi oʻgʻli; Markaziy Osiyo ulusining xoni (1225–1242).  
+**type:** definition  
+**difficulty:** medium  
+**explanation:** Yasoq qonunining qatʼiy qoʻriqchisi edi.  
+**Xotira tasviri:** Yasoq kitobini ikki qoʻli bilan mahkam ushlab turgan, koʻzi oʻtkir.  
+**Sana qarmogʻi:** 1-2-2-5 (1225, ulus boʻlinishi).  
 **Saroy bekati:** 1 — Olmaliq
 
 ### Framework card
 
-**Front:** Ulus
-
-**Back:** Chingizxon tuzgan mulk birligi. Maʼnosi vaqt bilan oʻzgargan: mulk → mustaqil davlat → "xalq".
+**id:** card_2  
+**front:** Ulus  
+**back:** Chingizxon tuzgan mulk birligi; maʼnosi mulk → davlat → xalq koʻrinishida oʻzgargan.  
+**type:** term_to_meaning  
+**difficulty:** hard  
+**explanation:** Bir soʻzning uch tarixiy maʼnosi.  
 **Xotira tasviri:** Uch bosqichli zina — bir soʻz, uch maʼno.
 
 ### Modern echo card
 
-**Front:** Kepaki → Kopeyka
-
-**Back:** Kebekxonning 1321-yilgi tangasi Oltin Oʻrda orqali rus pul birligining nomiga aylandi.
-**Xotira tasviri:** Tovush zanjiri K-e-p-a-k-i → K-o-p-e-y-k-a.
+**id:** card_3  
+**front:** Kepaki → Kopeyka  
+**back:** Kebekxonning 1321-yilgi tangasi Oltin Oʻrda orqali rus "kopeyka" nomiga aylandi.  
+**type:** process_step  
+**difficulty:** hard  
+**hint:** Tovush zanjiriga e'tibor bering: K-e-p-a-k-i.  
+**Xotira tasviri:** Tovush zanjiri K-e-p-a-k-i → K-o-p-e-y-k-a.  
 **Saroy bekati:** 4 — Qarshi
 
 ---

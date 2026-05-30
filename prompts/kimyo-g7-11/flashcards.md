@@ -13,6 +13,24 @@ Flash Cards are a simple reference tool. Nothing more.
 
 - G7-11: **8-12 cards**
 
+## Card format — 8 fields
+
+Each card emits these fields:
+- `id` — stable sequential `card_1, card_2, …` (never skip or reuse).
+- `front` — the cue (term / question / prompt). **3–14 words.**
+- `back` — the answer (definition / value / rule). **5–22 words, never over 25** (a formula or process step may run longer).
+- `type` — REQUIRED. One of: `definition`, `term_to_meaning`, `formula`, `process_step`, `question_answer`, `misconception`, `image_label`.
+- `difficulty` — REQUIRED. One of: `easy | medium | hard`.
+- `hint` (optional) — a nudge, ≤12 words, never gives away the answer.
+- `explanation` (optional, encouraged) — 1 short sentence on why/how it works.
+- `example` (optional, encouraged) — 1 short concrete example.
+- `misconception` (optional) — 1 sentence naming a common wrong idea. **Required for trap / false-friend cards.**
+
+Rules:
+- One retrievable idea per card. Do NOT fold `explanation` / `example` / `misconception` into `back`.
+- Every card MUST set `type` and `difficulty`.
+- Diagrams: describe with a bracket `[Diagram: ...]` note — do NOT emit raw inline `<svg>`.
+
 ## Two card modes
 
 Kimyo flash cards come in two modes. Both modes are used in every deck — mix them.
@@ -37,13 +55,18 @@ Safety: [one-line hazard note if applicable]
 [Diagram: lab sample appearance OR molecule/ion structure OR lab apparatus with PPE labeled]
 ```
 
-> **Front:** Natriy xlorid (NaCl)
-> **Back:**
-> Macro: oq kristall kukun, hidsiz, suvda eriydi.
-> Micro: Na⁺ va Cl⁻ ionlari kub panjarasida joylashgan.
-> Symbolic: NaCl (Na: valentligi +1, Cl: valentligi -1).
+> **id:** card_1  
+> **front:** Natriy xlorid (NaCl)  
+> **back:** Oq kristall osh tuzi; suvda eriydi; Na⁺ va Cl⁻ ionlaridan iborat.  
+> **type:** definition  
+> **difficulty:** easy  
+> **explanation:** Na⁺ va Cl⁻ ionlari kub panjarasida joylashgan.  
+> **example:** [Diagram: white cubic crystals (macro) | Na⁺ orange spheres alternating with Cl⁻ green spheres in lattice (micro) | formula NaCl labeled]  
+> *(Full three-scale back for Mode A:)*  
+> Macro: oq kristall kukun, hidsiz, suvda eriydi.  
+> Micro: Na⁺ va Cl⁻ ionlari kub panjarasida joylashgan.  
+> Symbolic: NaCl (Na: valentligi +1, Cl: valentligi -1).  
 > Safety: ko'zga tegsa — suv bilan yuving.
-> [Diagram: white cubic crystals (macro) | Na⁺ orange spheres alternating with Cl⁻ green spheres in lattice (micro) | formula NaCl labeled]
 
 > **Front:** Neytrallash reaksiyasi
 > **Back:**

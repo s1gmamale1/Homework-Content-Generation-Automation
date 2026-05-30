@@ -15,6 +15,24 @@ Flash Cards are a simple reference tool. Nothing more.
 
 > **Diagram Rule:** Flash cards are a simple reference tool, so every diagram is written as a bracket `[Diagram: ...]` description using the Visual Layer notation (tick marks, arc marks, square corners, parallel arrows, color codes) — exactly like the examples below. Do NOT emit raw inline `<svg>` code on flash cards; the rich SVG visuals belong in the Case-Based Preview / learning panels, not crammed into a card. Mode B front cards show the diagram with an orange `?` on the unknown element.
 
+## Card format — 8 fields
+
+Each card emits these fields:
+- `id` — stable sequential `card_1, card_2, …` (never skip or reuse).
+- `front` — the cue (term / question / prompt). **3–14 words.**
+- `back` — the answer (definition / value / rule). **5–22 words, never over 25** (a formula or process step may run longer).
+- `type` — REQUIRED. One of: `definition`, `term_to_meaning`, `formula`, `process_step`, `question_answer`, `misconception`, `image_label`, `example`.
+- `difficulty` — REQUIRED. One of: `easy | medium | hard`.
+- `hint` (optional) — a nudge, ≤12 words, never gives away the answer.
+- `explanation` (optional, encouraged) — 1 short sentence on why/how it works.
+- `example` (optional, encouraged) — 1 short concrete example.
+- `misconception` (optional) — 1 sentence naming a common wrong idea. **Required for trap / false-friend cards.**
+
+Rules:
+- One retrievable idea per card. Do NOT fold `explanation` / `example` / `misconception` into `back`.
+- Every card MUST set `type` and `difficulty`.
+- Diagrams: describe with a bracket `[Diagram: ...]` note — do NOT emit raw inline `<svg>`.
+
 ## Two card modes
 
 Geometry flash cards come in two modes. Both modes are used in every deck — mix them.
@@ -29,11 +47,19 @@ Geometry flash cards come in two modes. Both modes are used in every deck — mi
 
 **Back:** Definition or theorem statement. One line. Then the diagram in brackets using the Visual Layer notation standard.
 
-> **Front:** To'g'ri burchak (∠ = 90°)
-> **Back:** 90° ga teng burchak. [Diagram: rays BA and BC, square corner symbol at vertex B]
+> **id:** card_1  
+> **front:** To'g'ri burchak (∠ = 90°)  
+> **back:** 90° ga teng burchak.  
+> **type:** definition  
+> **difficulty:** easy  
+> **example:** [Diagram: rays BA and BC, square corner symbol at vertex B]
 
-> **Front:** SAS tenglik belgisi
-> **Back:** Agar ikki tomon va ular orasidagi burchak teng bo'lsa — uchburchaklar teng. [Diagram: triangles ABC and DEF, one tick on AB and DE (blue), arc at ∠B and ∠E (blue), one tick on BC and EF (blue)]
+> **id:** card_2  
+> **front:** SAS tenglik belgisi  
+> **back:** Agar ikki tomon va ular orasidagi burchak teng bo'lsa — uchburchaklar teng.  
+> **type:** formula  
+> **difficulty:** medium  
+> **example:** [Diagram: triangles ABC and DEF, one tick on AB and DE (blue), arc at ∠B and ∠E (blue), one tick on BC and EF (blue)]
 
 > **Front:** Parallel to'g'ri chiziqlar (∥)
 > **Back:** Bir tekislikda kesishmaydigan ikki to'g'ri chiziq. [Diagram: two horizontal lines with single arrows, notation AB ∥ CD]
