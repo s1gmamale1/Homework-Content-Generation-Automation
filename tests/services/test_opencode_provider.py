@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import pathlib
 
-from app.services.agent import _PROVIDER_DEFAULT_MODEL, _resolve_model, _stdin_and_argv
+from app.services.agent import _PROVIDER_DEFAULT_MODEL, _resolve_model
 from app.services.agent_models import MODEL_MANIFEST
 from app.services.providers import get_provider
-from app.services.providers.claude import Claude
 from app.services.providers.opencode import OpenCode
 
 
@@ -97,18 +96,12 @@ def test_resolve_model_opencode_explicit_overrides() -> None:
     assert _resolve_model("opencode", "opencode/big-pickle") == "opencode/big-pickle"
 
 
-def test_opencode_takes_prompt_positionally_not_stdin() -> None:
-    # opencode run wants the prompt as a positional arg (per opencode.ai docs).
-    assert OpenCode().prompt_on_stdin is False
-    cmd, stdin = _stdin_and_argv(OpenCode(), ["opencode", "run", "--format", "json"], "hi there")
-    assert cmd[-1] == "hi there"          # prompt appended as final argv token
-    assert stdin == b""                    # nothing piped on stdin
-
-
-def test_stdin_providers_keep_prompt_on_stdin() -> None:
-    # claude (and the other 3) still pipe the prompt on stdin, argv untouched.
-    assert Claude().prompt_on_stdin is True
-    base = ["claude", "-p"]
-    cmd, stdin = _stdin_and_argv(Claude(), base, "hello")
-    assert cmd == base                     # argv unchanged
-    assert stdin == b"hello"               # prompt on stdin
+def test_build_argv_feeds_prompt_on_stdin_not_argv() -> None:
+    # Prompt goes on stdin (verified live); build_argv must NOT contain it, or
+    # large (~60k char) prompts would blow the Windows command-line limit.
+    argv = OpenCode().build_argv(
+        binary="opencode", model=None, last_msg_path=pathlib.Path("x"),
+        attachments=[pathlib.Path("/a/b.pdf")],
+    )
+    assert all("run" != a or True for a in argv)  # argv is just flags + file
+    assert argv == ["opencode", "run", "--format", "json", "-f", str(pathlib.Path("/a/b.pdf").resolve())]

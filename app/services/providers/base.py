@@ -28,11 +28,6 @@ class Provider(ABC):
 
     name: str = ""
     binary_names: tuple[str, ...] = ()
-    # Whether the driver feeds the master prompt on the CLI's stdin (the default
-    # for claude/gemini/codex/kimi). Providers whose CLI takes the prompt as a
-    # positional argument instead (opencode: ``opencode run "<msg>"``) set this
-    # False, and the driver appends the prompt as the final argv token.
-    prompt_on_stdin: bool = True
 
     @abstractmethod
     def build_argv(

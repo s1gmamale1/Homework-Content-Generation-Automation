@@ -40,10 +40,6 @@ class OpenCode(Provider):
     # npm also drops an extensionless bash shim that create_subprocess_exec
     # can't run directly.
     binary_names = ("opencode.cmd", "opencode")
-    # ``opencode run`` takes the prompt as a POSITIONAL arg (`opencode run
-    # "<msg>"`), not on stdin — confirmed against opencode.ai/docs/cli. The
-    # driver appends the prompt as the final argv token for this provider.
-    prompt_on_stdin = False
 
     def build_argv(
         self,
@@ -53,7 +49,10 @@ class OpenCode(Provider):
         last_msg_path: pathlib.Path,
         attachments: list[pathlib.Path] = (),
     ) -> list[str]:
-        # Prompt is appended positionally by the driver (prompt_on_stdin=False).
+        # Prompt is fed on stdin by the driver (verified: `"<msg>" | opencode
+        # run --format json` works). Do NOT switch to opencode's positional
+        # `run <msg>` form — our prompts embed page text and reach ~60k chars,
+        # which exceeds the Windows command-line length limit (WinError 206).
         argv: list[str] = [binary, "run", "--format", "json"]
         if model:
             argv += ["-m", model]
