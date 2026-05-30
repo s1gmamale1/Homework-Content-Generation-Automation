@@ -13,7 +13,7 @@ Flash Cards are a simple reference tool. Nothing more.
 
 - G7-9: **8-12 cards**
 
-> **SVG Rule:** Every diagram on a flash card (both Mode A and Mode B) must be actual SVG code — not a bracket description alone. Use `instruction.md` → SVG Output Rule for templates and mark syntax. Mode B front cards show the diagram with an orange `?` on the unknown element.
+> **Diagram Rule:** Flash cards are a simple reference tool, so every diagram is written as a bracket `[Diagram: ...]` description using the Visual Layer notation (tick marks, arc marks, square corners, parallel arrows, color codes) — exactly like the examples below. Do NOT emit raw inline `<svg>` code on flash cards; the rich SVG visuals belong in the Case-Based Preview / learning panels, not crammed into a card. Mode B front cards show the diagram with an orange `?` on the unknown element.
 
 ## Two card modes
 

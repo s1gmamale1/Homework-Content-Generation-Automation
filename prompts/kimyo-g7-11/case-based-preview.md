@@ -4,14 +4,14 @@ You are building a **Case-Based Preview** (CBP) for a Chemistry homework session
 
 ## CBP canonical structure (NON-NEGOTIABLE)
 
-EXACTLY 3 checkpoints + DPE in slot 7 (before final simulation).
+EXACTLY 3 checkpoints, then the DPE — placed after Checkpoint 3 and before the final simulation (this is the canonical CBP "slot 7").
 
 ```
 1. Case setup          — student role (lab_assistant/safety_officer/analyst), scenario, task
 2. Checkpoint 1        — Identify: which substance/process/reaction type is present?
 3. Checkpoint 2        — Decide: which method/procedure is safe and correct?
 4. Checkpoint 3        — Justify or Avoid Mistake: explain consequence of wrong choice
-5. Decision Process Explanation (DPE) — slot 7, OPEN-ENDED, options = null
+5. Decision Process Explanation (DPE) — after Checkpoint 3, before the final simulation (canonical CBP slot 7); OPEN-ENDED, options = null
 6. Final simulation    — correct procedure + wrong procedure + why wrong causes harm/failure
 7. Feedback summary
 8. Completion rules

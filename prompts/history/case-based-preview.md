@@ -4,14 +4,14 @@ You are building a **Case-Based Preview** (CBP) for a History homework session. 
 
 ## CBP canonical structure (NON-NEGOTIABLE)
 
-EXACTLY 3 checkpoints + DPE in slot 7 (before final simulation).
+EXACTLY 3 checkpoints, then the DPE — placed after Checkpoint 3 and before the final simulation (this is the canonical CBP "slot 7").
 
 ```
 1. Case setup          — student role (advisor/historian/witness), historical situation, task
 2. Checkpoint 1        — Identify: which historical factor/force is driving this event?
 3. Checkpoint 2        — Decide: which decision/interpretation fits the evidence best?
 4. Checkpoint 3        — Justify or Avoid Mistake: why is the alternative interpretation wrong?
-5. Decision Process Explanation (DPE) — slot 7, OPEN-ENDED, options = null
+5. Decision Process Explanation (DPE) — after Checkpoint 3, before the final simulation (canonical CBP slot 7); OPEN-ENDED, options = null
 6. Final simulation    — correct historical interpretation + wrong interpretation + consequence
 7. Feedback summary
 8. Completion rules

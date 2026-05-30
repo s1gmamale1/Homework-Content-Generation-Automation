@@ -21,7 +21,7 @@ Flash Cards are a simple reference tool. Nothing more.
 
 **Front:** Term name, structure name, organism name, or process name. Short. Max 10 words.
 
-**Back:** Definition or function. One sentence. Where a diagram or structure helps understanding, add a short visual description in brackets OR include an SVG.
+**Back:** Definition or function. One sentence. Where a diagram or structure helps understanding, add a short bracket `[Diagram: ...]` description (e.g. `[Diagram: animal cell with mitochondria labeled]`).
 
 That's it.
 
@@ -32,12 +32,9 @@ That's it.
 - **Process names:** photosynthesis, mitosis, digestion — describe what happens and what it produces
 - **Classification terms:** kingdom, phylum, class, order, family, genus, species
 
-## SVG guidance
+## Diagram descriptions
 
-Diagram styling (background, sizing, stroke contrast, labeling) follows the universal SVG rules injected by the runtime — do not specify width, height, or stroke colors in this prompt.
-
-
-Include a simple inline SVG on the back ONLY when a diagram genuinely aids recognition — for example, a cell organelle, a leaf cross-section, or a food chain arrow. Keep SVGs small and clean. Skip SVG when a text description is sufficient.
+Flash cards are a simple reference tool, so describe any helpful diagram as a short bracket `[Diagram: ...]` note — for example, a cell organelle, a leaf cross-section, or a food-chain arrow. Do NOT emit raw inline `<svg>` code on flash cards; the rich SVG visuals belong in the Case-Based Preview / learning panels, not crammed into a card. Skip the bracket note when a plain text description is enough.
 
 ## Examples
 
@@ -62,7 +59,7 @@ Include a simple inline SVG on the back ONLY when a diagram genuinely aids recog
 ## Rules
 
 - One concept per card
-- Front = name. Back = definition/function + optional visual description or SVG. Nothing else.
+- Front = name. Back = definition/function + optional bracket `[Diagram: ...]` description. Nothing else.
 - NO practice problems, NO questions, NO explanations, NO hooks, NO stories
 - NO calculations, NO formulas — this is Biology
 - Language: Uzbek, "Siz" formal

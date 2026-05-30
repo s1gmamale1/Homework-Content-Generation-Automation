@@ -27,6 +27,20 @@ from app.services.prompts import get_prompt, get_prompt_hash
 
 _INTERNAL_PHASES = {"extract", "classify"}
 
+# Plan §8 content convention: answer keys, correct-option flags, model answers,
+# rubrics, and explanations must be LABELED distinctly from student-visible text
+# in the assembled markdown so a downstream consumer can mechanically split
+# teacher content from student content. Every such element in the synth render
+# goes through `_teacher()`, which stamps this stable, greppable marker. Lines
+# WITHOUT this marker are student-visible; lines WITH it are teacher-only.
+_TEACHER_MARK = "🔑 TEACHER NOTE:"
+
+
+def _teacher(text: str) -> str:
+    """Wrap answer-key / rubric / explanation text in the machine-detectable
+    teacher marker (plan §8). Callers prepend their own list indentation."""
+    return f"**{_TEACHER_MARK}** {text}"
+
 
 def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
     """Render a tiny human-readable Markdown body from structured JSON output.
@@ -49,16 +63,17 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
         sim = getattr(parsed, "final_simulation", None)
         out = [
             f"## {title}",
-            f"_Student role: {role}. {len(cps)} checkpoints + DPE slot 7. "
+            f"_Student role: {role}. {len(cps)} checkpoints + DPE "
+            f"(after the checkpoints, before the simulation). "
             f"Interactive CBP rendered in preview._\n",
         ]
         for i, cp in enumerate(cps, 1):
             out.append(f"**Checkpoint {i}** [{cp.intent}] {cp.question}")
         if dpe:
-            out.append(f"\n**Decision Process Explanation (slot 7):** {dpe.prompt}")
+            out.append(f"\n**Decision Process Explanation:** {dpe.prompt}")
         if sim:
-            out.append(f"\n**Correct path:** {sim.correct_path}")
-            out.append(f"**Wrong path:** {sim.wrong_path}")
+            out.append("\n" + _teacher(f"Correct path: {sim.correct_path}"))
+            out.append(_teacher(f"Wrong path: {sim.wrong_path}"))
         return "\n".join(out)
 
     if phase_name == "flashcards":
@@ -83,11 +98,14 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
             fid = getattr(it, "flashcard_id", "") or ""
             fid_tag = f" [←{fid}]" if fid else ""
             out.append(f"{i}. **[{it.kind.upper()}]{fid_tag}** {it.prompt}")
-            for j, opt in enumerate(it.options or []):
-                marker = "✓" if it.correct_index is not None and j == it.correct_index else " "
-                out.append(f"   - [{marker}] {opt}")
+            opts = it.options or []
+            for j, opt in enumerate(opts):
+                out.append(f"   - {chr(97 + j)}) {opt}")
+            if opts and it.correct_index is not None and 0 <= it.correct_index < len(opts):
+                ci = it.correct_index
+                out.append(f"   - {_teacher(f'Correct answer: {chr(97 + ci)}) {opts[ci]}')}")
             if getattr(it, "explanation", None):
-                out.append(f"   - _{it.explanation}_")
+                out.append(f"   - {_teacher(it.explanation)}")
         return "\n".join(out)
 
     if phase_name == "memory-sprint":
@@ -95,11 +113,14 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
         out = [f"_{len(items)} rapid-fire items — interactive sprint rendered in preview._\n"]
         for i, it in enumerate(items, 1):
             out.append(f"{i}. **[{it.kind.upper()}]** {it.prompt}")
-            for j, opt in enumerate(it.options or []):
-                marker = "✓" if j == it.correct_index else " "
-                out.append(f"   - [{marker}] {opt}")
+            opts = it.options or []
+            for j, opt in enumerate(opts):
+                out.append(f"   - {chr(97 + j)}) {opt}")
+            if opts and it.correct_index is not None and 0 <= it.correct_index < len(opts):
+                ci = it.correct_index
+                out.append(f"   - {_teacher(f'Correct answer: {chr(97 + ci)}) {opts[ci]}')}")
             if getattr(it, "explanation", None):
-                out.append(f"   - _{it.explanation}_")
+                out.append(f"   - {_teacher(it.explanation)}")
         return "\n".join(out)
 
     if phase_name == "game-breaks":
@@ -121,14 +142,17 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
         ]
         for i, q in enumerate(qs, 1):
             out.append(f"{i}. **[{q.kind.upper()} · -{q.damage} HP]** {q.prompt}")
-            if q.options:
-                for j, opt in enumerate(q.options):
-                    marker = "✓" if q.correct_index is not None and j == q.correct_index else " "
-                    out.append(f"   - [{marker}] {opt}")
+            opts = q.options or []
+            if opts:
+                for j, opt in enumerate(opts):
+                    out.append(f"   - {chr(97 + j)}) {opt}")
+                if q.correct_index is not None and 0 <= q.correct_index < len(opts):
+                    ci = q.correct_index
+                    out.append(f"   - {_teacher(f'Correct answer: {chr(97 + ci)}) {opts[ci]}')}")
             elif getattr(q, "correct_answer", None):
-                out.append(f"   - answer: {q.correct_answer}")
+                out.append(f"   - {_teacher(f'answer: {q.correct_answer}')}")
             if getattr(q, "explanation", None):
-                out.append(f"   - _{q.explanation}_")
+                out.append(f"   - {_teacher(q.explanation)}")
         return "\n".join(out)
 
     if phase_name == "boss-arena":
@@ -144,9 +168,10 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
             out.append(
                 f"{i}. **[{q.difficulty.upper()} · -{q.base_damage} HP]** _{q.scenario}_"
             )
-            out.append(f"   - **Why:** {q.why}")
-            out.append(f"   - **How:** {q.how}")
-            out.append(f"   - **What:** {q.what}")
+            # Why/How/What are the model reasoning answer — teacher-facing.
+            out.append(f"   - {_teacher(f'Why (model answer): {q.why}')}")
+            out.append(f"   - {_teacher(f'How (model answer): {q.how}')}")
+            out.append(f"   - {_teacher(f'What (model answer): {q.what}')}")
             if concepts:
                 out.append(f"   - _concepts: {concepts}_")
         return "\n".join(out)
@@ -164,14 +189,17 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
             after = (cp.after_paragraph or 0) + 1
             out.append(f"\n**Checkpoint {i}** _(after paragraph {after})_  ")
             out.append(cp.prompt)
-            if cp.options:
-                for j, opt in enumerate(cp.options):
-                    marker = "✓" if cp.correct_index is not None and j == cp.correct_index else " "
-                    out.append(f"- [{marker}] {opt}")
+            opts = cp.options or []
+            if opts:
+                for j, opt in enumerate(opts):
+                    out.append(f"- {chr(97 + j)}) {opt}")
+                if cp.correct_index is not None and 0 <= cp.correct_index < len(opts):
+                    ci = cp.correct_index
+                    out.append(_teacher(f"Correct answer: {chr(97 + ci)}) {opts[ci]}"))
             elif getattr(cp, "correct_answer", None):
-                out.append(f"- answer: {cp.correct_answer}")
+                out.append(_teacher(f"answer: {cp.correct_answer}"))
             if getattr(cp, "explanation", None):
-                out.append(f"  _{cp.explanation}_")
+                out.append(_teacher(cp.explanation))
         return "\n".join(out)
 
     if phase_name == "practice-rlc":
@@ -185,9 +213,12 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
         ]
         for i, d in enumerate(decisions, 1):
             out.append(f"**Decision {i}:** {d.question}")
-            for j, opt in enumerate(d.options):
-                marker = "✓" if j == d.correct_option else " "
-                out.append(f"   - [{marker}] {opt}")
+            opts = d.options or []
+            for j, opt in enumerate(opts):
+                out.append(f"   - {chr(97 + j)}) {opt}")
+            if 0 <= d.correct_option < len(opts):
+                ci = d.correct_option
+                out.append(f"   - {_teacher(f'Correct action: {chr(97 + ci)}) {opts[ci]}')}")
         out.append(f"\n**Final summary:** {parsed.final_summary}")
         if concepts:
             out.append(f"_concepts: {concepts}_")
@@ -198,16 +229,20 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
         concepts = ", ".join(getattr(parsed, "concept_ids", None) or [])
         out = [
             f"## Error Detection _({parsed.pattern})_",
-            "_Find the one broken block, then type the correction._\n",
+            "_Find the one flawed block, then type the correction._\n",
         ]
         for b in blocks:
-            tag = " ← broken" if b.is_error else ""
-            out.append(f"- `{b.content}`{tag}")
-        out.append(f"\n**Correct version:** {parsed.correct_answer_for_error_block}")
+            out.append(f"- `{b.content}`")
+        # Student-facing scaffolding (a probing hint + the reasoning prompt).
+        if parsed.why_prompt:
+            out.append(f"\n**Why:** {parsed.why_prompt}")
         if parsed.hint:
             out.append(f"**Hint:** {parsed.hint}")
-        if parsed.why_prompt:
-            out.append(f"**Why:** {parsed.why_prompt}")
+        # Answer key — which block is wrong + the correction — teacher-facing.
+        broken = next((b for b in blocks if b.is_error), None)
+        if broken is not None:
+            out.append("\n" + _teacher(f"Flawed block: `{broken.content}`"))
+        out.append(_teacher(f"Correct version: {parsed.correct_answer_for_error_block}"))
         if concepts:
             out.append(f"_concepts: {concepts}_")
         return "\n".join(out)
@@ -228,8 +263,8 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
         if dpe:
             out.append(f"\n**Decision Process Explanation:** {dpe.prompt}")
         if sim:
-            out.append(f"\n**Correct path:** {sim.correct_path}")
-            out.append(f"**Wrong path:** {sim.wrong_path}")
+            out.append("\n" + _teacher(f"Correct path: {sim.correct_path}"))
+            out.append(_teacher(f"Wrong path: {sim.wrong_path}"))
         return "\n".join(out)
 
     return ""

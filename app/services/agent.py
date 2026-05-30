@@ -255,7 +255,12 @@ _SVG_PHASES: set[str] = {
     "preview-hard", "preview-easy", "preview",
     "preview", "case-based-preview",
     "real-life", "consolidation",
-    "flashcards", "game-breaks", "final-challenge", "boss-arena", "reading",
+    # NOTE: "flashcards" deliberately excluded. The Flow v2 plan keeps flashcards
+    # a "simple reference tool" (§3/§5: "keep, add stable IDs") and FlashcardsPack
+    # has no SVG field — cards carry bracket "[Diagram: ...]" descriptions, not
+    # inline <svg>. Including it here made claude emit a full SVG per card and
+    # exceed the claude CLI's 32k output-token ceiling, failing the job.
+    "game-breaks", "final-challenge", "boss-arena", "reading",
     # Practice Arc games: each spec allows source-carrying SVG/CSS visuals
     # (equation blocks, decision grids, assembly puzzles, science diagrams).
     "practice-rlc", "practice-error-detection", "practice-memory-match",
