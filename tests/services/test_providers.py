@@ -442,6 +442,11 @@ def test_gemini_build_argv_no_model(tmp_path: Path) -> None:
     )
     assert argv[0] == "/usr/bin/gemini"
     assert "--model" not in argv
+    # ``-p`` must carry a NON-empty value: newer gemini-cli rejects an empty
+    # ``-p`` ("Not enough arguments following: p"). The real prompt is piped on
+    # stdin; ``-p`` is just the headless-mode trigger.
+    assert "-p" in argv
+    assert argv[argv.index("-p") + 1].strip() != ""
 
 
 def test_gemini_build_argv_with_model(tmp_path: Path) -> None:

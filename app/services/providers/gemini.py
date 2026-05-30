@@ -46,10 +46,15 @@ class Gemini(Provider):
         last_msg_path: pathlib.Path,
         attachments: list[pathlib.Path] = (),
     ) -> list[str]:
+        # ``-p`` switches gemini to non-interactive (headless) mode; the real
+        # prompt is piped on stdin (gemini appends ``-p`` to stdin input). Newer
+        # gemini-cli rejects an EMPTY ``-p`` ("Not enough arguments following:
+        # p"), so we pass a non-empty no-op token (``.``) — verified that stdin
+        # remains the effective prompt (a stdin question still gets answered).
         argv: list[str] = [
             binary,
             "-o", "json",
-            "-p", "",
+            "-p", ".",
         ]
         if model:
             argv += ["--model", model]
