@@ -42,6 +42,26 @@ def _teacher(text: str) -> str:
     return f"**{_TEACHER_MARK}** {text}"
 
 
+def _render_checkpoints_and_blocks(parsed: Any) -> list[str]:
+    """Render the CBP checkpoints with the two learning blocks interleaved
+    (C1 → LB1 → C2 → LB2 → C3), per the CBP generation standard §5."""
+    cps = getattr(parsed, "checkpoints", None) or []
+    blocks = {
+        1: getattr(parsed, "learning_block_1", None),
+        2: getattr(parsed, "learning_block_2", None),
+    }
+    out: list[str] = []
+    for i, cp in enumerate(cps, 1):
+        out.append(f"**Checkpoint {i}** [{cp.intent}] {cp.question}")
+        lb = blocks.get(i)
+        if lb is not None:
+            title = f" — {lb.title}" if getattr(lb, "title", None) else ""
+            out.append(f"**Learning Block {i}**{title} {lb.explanation}")
+            if getattr(lb, "visual_svg", None):
+                out.append(lb.visual_svg)
+    return out
+
+
 def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
     """Render a tiny human-readable Markdown body from structured JSON output.
 
@@ -67,8 +87,7 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
             f"(after the checkpoints, before the simulation). "
             f"Interactive CBP rendered in preview._\n",
         ]
-        for i, cp in enumerate(cps, 1):
-            out.append(f"**Checkpoint {i}** [{cp.intent}] {cp.question}")
+        out.extend(_render_checkpoints_and_blocks(parsed))
         if dpe:
             out.append(f"\n**Decision Process Explanation:** {dpe.prompt}")
         if sim:
@@ -258,8 +277,7 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
             f"## {title} _(CBP mode: {mode})_",
             f"_Student role: {role}. {len(cps)} checkpoints + DPE._\n",
         ]
-        for i, cp in enumerate(cps, 1):
-            out.append(f"**Checkpoint {i}** [{cp.intent}] {cp.question}")
+        out.extend(_render_checkpoints_and_blocks(parsed))
         if dpe:
             out.append(f"\n**Decision Process Explanation:** {dpe.prompt}")
         if sim:

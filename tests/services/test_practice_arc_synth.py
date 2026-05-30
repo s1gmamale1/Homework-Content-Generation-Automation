@@ -5,9 +5,11 @@ that every game type produces a non-empty render naming its load-bearing parts.
 
 from __future__ import annotations
 
+from app.schemas.flow_v2 import CaseBasedPreview
 from app.schemas.practice_games import CbpModeGame, ErrorDetection, RealLifeChallenge
 from app.services.pipeline import _TEACHER_MARK, _synth_md_for_structured
 
+from tests.schemas.test_flow_v2_schemas import _valid_cbp_kwargs
 from tests.schemas.test_practice_games_schemas import _cbp_mode, _err, _rlc
 
 
@@ -47,3 +49,11 @@ def test_synth_cbp_mode_names_mode_and_checkpoints() -> None:
         assert mode in md, f"{phase} render should name its interaction mode"
         assert "Checkpoint 1" in md
         assert "Decision Process Explanation" in md
+
+
+def test_synth_cbp_interleaves_learning_blocks() -> None:
+    md = _synth_md_for_structured("case-based-preview", CaseBasedPreview(**_valid_cbp_kwargs()))
+    assert "Learning Block 1" in md and "Learning Block 2" in md
+    pos = {k: md.index(k) for k in (
+        "Checkpoint 1", "Learning Block 1", "Checkpoint 2", "Learning Block 2", "Checkpoint 3")}
+    assert pos["Checkpoint 1"] < pos["Learning Block 1"] < pos["Checkpoint 2"] < pos["Learning Block 2"] < pos["Checkpoint 3"]
