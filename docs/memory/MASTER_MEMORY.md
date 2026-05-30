@@ -221,3 +221,23 @@ Plus **Part 2**: gemini (which reads PDFs natively) keeps the whole PDF attached
 **Skipped (with reason):** #1 (deliberate collapsed-CBP decision, [[0013]]), #3/#6 (audit wrong), #4 (done), #7 (plan says "ideally", soft), #8 (conforms — Option B allowed).
 
 **State:** `Nggaev-v2`. Suite **214 green**. This entry's work committed+pushed together (TOC fix + conformance fixes + worklog). Open follow-ups: TOC fix is general but image-only/OCR PDFs still rely on gemini's native read; #2 fidelity is detect-only (could escalate to hard-fail/retry if desired). See [[0013]] [[0012]].
+
+---
+
+## [0015] CBP Completeness — Learning Blocks added (Flow v2 reshape, workstream 1) — 2026-05-30 (Nggaev-v2)
+**What:** First workstream of the Flow v2 content reshape. Brainstormed → spec'd → planned → executed via subagent-driven development (fresh subagent per task; controller independently verified every task by reading the committed diff + re-running the suite). Spec: docs/superpowers/specs/2026-05-30-cbp-completeness-design.md · Plan: docs/superpowers/plans/2026-05-30-cbp-completeness.md.
+
+**The gap fixed:** the CBP standard (§5) mandates two interleaved Learning Blocks (LB1 after Checkpoint 1, LB2 after Checkpoint 2 — short teaching moments). Our CBP omitted them (quiz → quiz → quiz, no teaching between). NOTE: this REVERSES the [[0013]] "keep collapsed model" call — that decision was made before reading the actual standard; the standard clearly requires the blocks. (mistake_provenance deferred to a later fidelity pass; not in this workstream.)
+
+**Commits (all on Nggaev-v2):**
+1. `0bfebc5` — schema: new `LearningBlock` model (explanation required; optional title/visual_svg/source_concept_id); `learning_block_1`+`learning_block_2` required on CaseBasedPreview (CbpModeGame inherits — the 4 CBP-mode game specs also mandate them); `CaseSimulation.why_wrong_fails` now required (was `=""`). +3 tests, 2 fixtures updated.
+2. `e38f117` — `pipeline._emitted_concept_ids` now collects learning-block `source_concept_id`, so the source-fidelity check flags an invented one.
+3. `42c879f` — synth render: new `_render_checkpoints_and_blocks` helper interleaves C1→LB1→C2→LB2→C3 in both the case-based-preview and CBP-mode branches.
+4. `6a8a184` — 7 CBP subject prompts: structure renumbered to insert LB1/LB2, "## Learning Blocks" section + "## Final simulation rules" (why_wrong_fails REQUIRED).
+5. `8734e2b` — 11 CBP-mode game prompts (memory-match/jigsaw/sentence/tictactoe across subjects): same Learning Blocks + why_wrong_fails instruction.
+
+**Tests:** 219 green throughout (each task verified independently — diff + full suite).
+
+**Live smoke (real claude CBP on geometry, throwaway verify_cbp.py, now removed):** SUCCESS attempt=1, no 32k crash. Both learning blocks + why_wrong_fails populated with real Uzbek geometry content; 3 checkpoints; `visual_svg` empty on both (text-first prompt guidance worked → no SVG bloat). **⚠ WATCH-ITEM:** the call reported **46,251 output tokens and took ~12.4 min** — CBP is the heaviest phase and got heavier. It did NOT trip the response ceiling (likely the 46k includes thinking tokens; the visible JSON response stayed under the cap, unlike the SVG-laden flashcards that failed in [[0013]]). If CBP ever starts failing on output size, the lever is the text-first/no-SVG guidance in the LB + case prompts, or raising the claude output cap.
+
+**Remaining Flow v2 content workstreams (each its own spec→plan→build):** flashcards 8-field active-recall shape; memory-check WHY apparatus + distractor tagging + FITB normalization; practice-game interaction payloads (pairs/grid/pieces/chips); Uzbek language contract. See [[0013]] [[0014]] and the gap analysis. Frontend (web/) is old-flow and out of scope here (separate student app).
