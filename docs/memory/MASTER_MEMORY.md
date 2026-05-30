@@ -277,3 +277,18 @@ Plus **Part 2**: gemini (which reads PDFs natively) keeps the whole PDF attached
 **Live smoke (real claude memory-check on geometry, throwaway removed):** SUCCESS attempt=1. 10 items (4 MCQ / 3 fill_blank / 3 CCE), **all satisfy their kind-shape** (4-option/one-correct or blanks-only — validator accepted), every distractor has a real-misconception `reason`, pass_threshold 0.60. Light: 12,287 output tokens / ~3 min. why_prompt=0 (correct — geometry is non-science, where it's optional).
 
 **Remaining Flow v2 content workstreams (in order):** 4) Practice-game interaction payloads (pairs/grid/pieces/chips for the 4 CBP-mode games — the structured data the games need beyond the shared CBP skeleton); 5) Uzbek language contract. See [[0016]] [[0015]].
+
+---
+
+## [0018] Practice-Game Payloads (Flow v2 reshape, WS4) — code complete + GREEN, but live gen exposed a heaviness blocker — 2026-05-30 (Nggaev-v2)
+**What:** Workstream 4. Added a required, typed `interaction_payload` to `CbpModeGame` so the 4 CBP-mode games are renderable. Brainstorm → spec → plan → subagent-driven (each task diff+suite verified). Spec: docs/superpowers/specs/2026-05-30-practice-game-payloads-design.md · Plan: docs/superpowers/plans/2026-05-30-practice-game-payloads.md.
+
+**Code shipped + verified (228→233 green):**
+1. `96de5f5` — schema: `GameChoice` + `MemoryMatchPair/Payload` (4-8 pairs), `JigsawPiece/Payload` (3-6 pieces + 1-3 assembly types), `SentenceFillPayload` (sentence + ≥3 chips, exactly 1 correct), `TicTacToePayload` (exactly 9 cells, ≥1 correct). `CbpModeGame.interaction_payload: Union[...]` + `_payload_matches_mode` validator (smart-union + isinstance guard). Synth `_CBP_MODE_PHASES` renders each payload (pairs/pieces/sentence+chips/3x3 grid; chip+cell correctness teacher-noted). `_cbp_mode` fixture builds a per-mode payload via `_PAYLOAD_FOR` (guarded setdefault so the unknown-mode rejection test still raises). +5 tests.
+2. `abc88c4` — 11 CBP-mode game prompts instruct their payload (pairs/pieces+types/sentence+chips/9-cell grid). All verified present with correct keys.
+
+**⚠ BLOCKER found in live smoke (the WS4 risk materialized):** a real claude `practice-jigsaw` generation (geometry, throwaway verify_game.py) ran **>21.5 min on a SINGLE call** (not a retry) and was KILLED — conclusively too heavy to be practical. Root cause is ARCHITECTURAL and predates the payload: a `CbpModeGame` inherits the ENTIRE Case-Based Preview shell (case_setup + 3 checkpoints + DPE + final_simulation + feedback + completion) PLUS the 2 required learning blocks (WS1) — that shell is the bulk of the weight; the payload itself is small. The spec calls these "CBP interaction modes" (shared skeleton), but generating the full shell PER GAME is impractical (~20+ min each; a HARD homework has 2-3 of them).
+
+**FINDING / REQUIRED FOLLOW-UP (no longer optional):** design a LIGHTER schema for the CBP-mode games — they likely need only a compact prompt/scenario + the interaction_payload (+ maybe one checkpoint + DPE), NOT the full CBP shell. This is a new mini-workstream (its own spec/plan). The current payload schema + prompts are correct and stay; the lightening is a separate change to `CbpModeGame`'s inherited shape. Per-homework latency (~25-35 min for HARD, driven by CBP ~12min + the heavy games) is the motivation — see the latency analysis.
+
+**Status:** WS4 schema/synth/prompts = DONE + green; live game generation NOT yet usable pending the lighter-skeleton follow-up. Remaining Flow v2: WS5 (Uzbek language contract) + the game-skeleton lightening follow-up. See [[0017]] [[0015]].
