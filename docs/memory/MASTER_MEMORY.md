@@ -260,3 +260,20 @@ Plus **Part 2**: gemini (which reads PDFs natively) keeps the whole PDF attached
 **Live smoke (real claude flashcards on geometry, throwaway removed):** SUCCESS attempt=1. 12 cards, **every card has type+difficulty**, **no raw `<svg>`**, all 12 have `explanation` + 7 have `misconception`; valid geometry types (definition/formula/image_label/term_to_meaning); real Uzbek content. Lightweight: 13,781 output tokens / ~3.5 min (vs CBP's ~46k/~12min — flashcards are small text cards, no token concern).
 
 **Remaining Flow v2 content workstreams (in order):** 3) Memory Check (WHY apparatus + distractor tagging + FITB normalization + 4-option lock); 4) Practice-game interaction payloads (pairs/grid/pieces/chips); 5) Uzbek language contract. See [[0015]] [[0013]] [[0014]].
+
+---
+
+## [0017] Memory Check Completeness — per-type item model (Flow v2 reshape, WS3) — 2026-05-30 (Nggaev-v2)
+**What:** Workstream 3 of the Flow v2 content reshape. Brainstorm → spec → plan → subagent-driven execution with per-task independent verification (controller read every diff + re-ran suite). Spec: docs/superpowers/specs/2026-05-30-memory-check-completeness-design.md · Plan: docs/superpowers/plans/2026-05-30-memory-check-completeness.md. Scope: content only (items + answers + reasons; runtime scoring/retry/adaptation = student app).
+
+**The gap fixed:** Memory Check items were a flat `options: list[str]` + `correct_index`. Spec wants per-type structure. Now: `MemoryCheckOption {text, is_correct, reason}` + `MemoryCheckBlank {answer, accepted_variations}`; enriched `MemoryCheckItem` (options for MCQ/CCE, blanks for fill_blank, + why_prompt/expected_reasoning_keywords/correct_feedback/wrong_feedback/explanation); `correct_index` removed. Kind-keyed `model_validator`: MCQ/CCE → exactly 4 options + exactly 1 correct + no blanks; fill_blank → ≥1 blank + no options. pass_threshold stays locked 0.60 (our gate metadata).
+
+**Commits (Nggaev-v2):**
+1. `0a638b6` — schema (option/blank models + validator) + synth rewrite (clean lettered options for student, 🔑 TEACHER NOTE for correct + distractor reasons + blank answers; why_prompt student-facing) + updated `_item` fixture + teacher-note fixture + 4 new validator tests. Schema+synth landed together (teacher-note test couples them).
+2. `bc3a5c1` — rewrote 7 memory-check prompts to option-objects + blanks + WHY apparatus (required for science subjects). Subagent proactively removed the contradictory old `correct_index`/string-options leftovers (the flashcards-round lesson carried over) — verification confirmed zero leftovers.
+
+**Tests:** 228 green.
+
+**Live smoke (real claude memory-check on geometry, throwaway removed):** SUCCESS attempt=1. 10 items (4 MCQ / 3 fill_blank / 3 CCE), **all satisfy their kind-shape** (4-option/one-correct or blanks-only — validator accepted), every distractor has a real-misconception `reason`, pass_threshold 0.60. Light: 12,287 output tokens / ~3 min. why_prompt=0 (correct — geometry is non-science, where it's optional).
+
+**Remaining Flow v2 content workstreams (in order):** 4) Practice-game interaction payloads (pairs/grid/pieces/chips for the 4 CBP-mode games — the structured data the games need beyond the shared CBP skeleton); 5) Uzbek language contract. See [[0016]] [[0015]].
