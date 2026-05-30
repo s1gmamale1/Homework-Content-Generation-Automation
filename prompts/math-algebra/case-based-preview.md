@@ -4,17 +4,19 @@ You are building a **Case-Based Preview** (CBP) for a Math/Algebra homework sess
 
 ## CBP canonical structure (NON-NEGOTIABLE)
 
-Your output must have EXACTLY this shape:
+Your output must have EXACTLY this shape (3 checkpoints with a Learning Block after the first two, then the DPE):
 
 ```
 1. Case setup          — student role, narrative, task
 2. Checkpoint 1        — Identify (MCQ/choice): which operation/concept applies?
-3. Checkpoint 2        — Decide (MCQ/choice): which formula/method to use?
-4. Checkpoint 3        — Justify or Avoid Mistake (MCQ/choice): why is the wrong path wrong?
-5. Decision Process Explanation (DPE) — slot 7, OPEN-ENDED, before consequence
-6. Final simulation    — correct path + wrong path + why wrong path fails
-7. Feedback summary
-8. Completion rules
+3. Learning Block 1    — short, textbook-grounded explanation of the concept just identified
+4. Checkpoint 2        — Decide (MCQ/choice): which formula/method to use?
+5. Learning Block 2    — short explanation showing the method/relationship to apply
+6. Checkpoint 3        — Justify or Avoid Mistake (MCQ/choice): why is the wrong path wrong?
+7. Decision Process Explanation (DPE) — slot 7, OPEN-ENDED, before consequence
+8. Final simulation    — correct path + wrong path + why wrong path fails
+9. Feedback summary
+10. Completion rules
 ```
 
 ## Checkpoint rules
@@ -23,6 +25,14 @@ Your output must have EXACTLY this shape:
 - Forms allowed: `mcq`, `choice`, `true_false`, `short_select`
 - Checkpoints are RECOGNITION only (low friction). Production reasoning belongs ONLY in the DPE.
 - Intents must be: `identify` → `decide` → `justify_or_avoid_mistake` (in that order).
+
+## Learning Blocks (slots 3 & 5)
+
+Two short teaching moments, emitted as `learning_block_1` and `learning_block_2`.
+- **learning_block_1** (after Checkpoint 1): a 1–3 sentence explanation of the concept the student just identified, grounded in the textbook. Set `source_concept_id` to the SourceMap concept it teaches.
+- **learning_block_2** (after Checkpoint 2): a 1–3 sentence explanation that shows the method/relationship to apply. Set `source_concept_id`.
+- Keep them **text-first and short**. Use `visual_svg` ONLY if a tiny diagram is essential AND not already shown in the case — otherwise omit it (a `[Diagram: ...]` note in the text is preferred). This protects the output-token budget.
+- Do NOT name the method in `learning_block_1` if the case still expects the student to commit at Checkpoint 2 first.
 
 ## Decision Process Explanation (DPE) — slot 7
 
@@ -36,6 +46,12 @@ Your output must have EXACTLY this shape:
 - `min_chars` = 60
 - `eval_mode` = `"ai"`
 - `sample_acceptable_answer`: write a real example (2–4 sentences)
+
+## Final simulation rules
+
+- `correct_path`: walk through the successful outcome when the student's decision is applied.
+- `wrong_path`: show what happens when the common wrong answer is applied instead.
+- `why_wrong_fails`: one sentence on why the wrong path cannot be correct (REQUIRED).
 
 ## Math case types
 
