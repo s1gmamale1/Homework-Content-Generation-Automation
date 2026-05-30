@@ -26,6 +26,11 @@ Emit the structured form the response schema requests. Fields, exactly:
   1. `identify` (`mcq`): Which two cards form the same source-supported pair? Options = one correct term↔function/structure↔role pair plus close, surface-similar, and one irrelevant pair.
   2. `decide` (`mcq`): After the cards are hidden, which function/role belonged to the term? Options = correct reconstructed meaning + close distractor + surface-similar + irrelevant.
   3. `justify_or_avoid_mistake` (`mcq`): Which explanation shows WHY this pairing is correct? The wrong options include a position-memory-only explanation and a surface-similarity explanation. **Checkpoint 3 stays MCQ — it is NOT the open reasoning.**
+
+## Learning Blocks (required — slots 3 & 5)
+
+Emit `learning_block_1` (after Checkpoint 1) and `learning_block_2` (after Checkpoint 2): each a 1–3 sentence, textbook-grounded teaching moment for this game's mechanic. Set `source_concept_id`. Keep them short and text-first; use `visual_svg` only if a tiny diagram is essential and not already shown.
+
 - `decision_process_explanation` (DPE): comes AFTER checkpoint 3 and BEFORE the final simulation.
   - `prompt`: ask the student to walk through (1) which concept they reconstructed, (2) why this function/role belongs to that structure (the reconstructed meaning), (3) what memory mistake would occur if they relied only on card position or a close distractor.
   - `expected_components`: `["concept", "method", "mistake"]`.
@@ -33,6 +38,7 @@ Emit the structured form the response schema requests. Fields, exactly:
   - `sample_acceptable_answer`: a model 2-4 sentence answer covering all three.
   - `eval_mode`: `"ai"`. `min_chars`: `60`. `options`: **MUST be `null`** — the DPE is never an MCQ and never auto-passes.
 - `final_simulation`: `{ correct_path, wrong_path, why_wrong_fails }`. Separate the outcomes: correct reconstruction → **Recalled**; matched by location but failed reconstruction → **Position Memory Only / Guessed / Missed** and item returns to review.
+  - `why_wrong_fails`: one sentence on why the wrong path cannot be correct (REQUIRED).
 - `feedback_summary`: `{ understood, mistake, review }`.
 - `completion_rules`: `{ pass_condition, retry_condition }`. Pass = valid pair + correct reconstruction + relationship explained before the consequence. Retry = card-flipping done but meaning not reconstructed, position relied on, close distractor confused, or DPE skipped.
 

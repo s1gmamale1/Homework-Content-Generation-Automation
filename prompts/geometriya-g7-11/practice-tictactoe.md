@@ -49,6 +49,11 @@ extending `CaseBasedPreview`). Fill every field; invent no fields.
      correct explanation (theorem + why this step fits) · general intuition
      without the theorem · tempting-but-incomplete strategy (missing condition) ·
      wrong strategy. Set `correct_index`, write `feedback`.
+
+## Learning Blocks (required — slots 3 & 5)
+
+Emit `learning_block_1` (after Checkpoint 1) and `learning_block_2` (after Checkpoint 2): each a 1–3 sentence, textbook-grounded teaching moment for this game's mechanic. Set `source_concept_id`. Keep them short and text-first; use `visual_svg` only if a tiny diagram is essential and not already shown.
+
 - `decision_process_explanation` — open-ended, AFTER C3, BEFORE the simulation:
   - `prompt` — ask for all three: (1) qaysi teorema/qoidani aniqladingiz,
     (2) nega bu qadam alternativlardan mosroq, (3) zaif strategiyada qanday xato
@@ -63,6 +68,7 @@ extending `CaseBasedPreview`). Fill every field; invent no fields.
   xavfi, Samaradorlik) and reaches the proven/solved result. Wrong path: the
   tempting weak strategy worsens at least one meter (e.g. an unprovable claim).
   `why_wrong_fails`: why it violates the theorem or skips a required condition.
+  - `why_wrong_fails`: one sentence on why the wrong path cannot be correct (REQUIRED).
 - `feedback_summary` — `{understood, mistake, review}`.
 - `completion_rules` — `{pass_condition, retry_condition}`. Pass: identifies the
   theorem, picks the theorem-aligned cell, explains before the consequence. Retry:

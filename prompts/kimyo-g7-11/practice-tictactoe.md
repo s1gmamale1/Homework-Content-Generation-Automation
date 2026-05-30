@@ -48,6 +48,11 @@ extending `CaseBasedPreview`). Fill every field; invent no fields.
      Options: correct explanation (rule + why the action is safe/right) · general
      intuition without the rule · tempting-but-incomplete step · wrong/unsafe step.
      Set `correct_index`, write `feedback`.
+
+## Learning Blocks (required — slots 3 & 5)
+
+Emit `learning_block_1` (after Checkpoint 1) and `learning_block_2` (after Checkpoint 2): each a 1–3 sentence, textbook-grounded teaching moment for this game's mechanic. Set `source_concept_id`. Keep them short and text-first; use `visual_svg` only if a tiny diagram is essential and not already shown.
+
 - `decision_process_explanation` — open-ended, AFTER C3, BEFORE the simulation:
   - `prompt` — ask for all three: (1) qaysi qoidani/sinfni aniqladingiz,
     (2) nega bu amal (yoki xavfsizlik qadami) alternativlardan mosroq, (3) zaif
@@ -62,6 +67,7 @@ extending `CaseBasedPreview`). Fill every field; invent no fields.
   Xavf) and yields a controlled outcome. Wrong path: the tempting weak/unsafe
   action worsens at least one meter. `why_wrong_fails`: why it breaks the rule or
   safety principle.
+  - `why_wrong_fails`: one sentence on why the wrong path cannot be correct (REQUIRED).
 - `feedback_summary` — `{understood, mistake, review}`.
 - `completion_rules` — `{pass_condition, retry_condition}`. Pass: identifies the
   rule, picks the rule-aligned cell, explains before the consequence. Retry: picks

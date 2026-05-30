@@ -45,6 +45,11 @@ every field — do not invent fields.
     source-changing explanation, (c) grammar/register-only, missing the concept,
     (d) wrong/unsupported. C3 stays MCQ; do NOT turn it into the open-ended DPE.
   - Set `correct_index` to the right option; `feedback` is a short formal-Uzbek note.
+
+## Learning Blocks (required — slots 3 & 5)
+
+Emit `learning_block_1` (after Checkpoint 1) and `learning_block_2` (after Checkpoint 2): each a 1–3 sentence, textbook-grounded teaching moment for this game's mechanic. Set `source_concept_id`. Keep them short and text-first; use `visual_svg` only if a tiny diagram is essential and not already shown.
+
 - `decision_process_explanation` — comes AFTER C3, BEFORE the final simulation:
   - `prompt` — ask for all three: (1) which concept/rule you spotted,
     (2) why the replacement preserves the source meaning, (3) what wording mistake
@@ -60,6 +65,7 @@ every field — do not invent fields.
   source concept changed and/or explanation missing — `why_wrong_fails` says which
   check fails. Never skip the weak-path meaning test. Do not treat fluent grammar
   as correct if the source concept changed.
+  - `why_wrong_fails`: one sentence on why the wrong path cannot be correct (REQUIRED).
 - `feedback_summary` — `{ understood, mistake, review }`, formal Uzbek.
 - `completion_rules` — `{ pass_condition, retry_condition }`. Pass: broken phrase
   found, source-aligned replacement chosen, repair explained before the meaning

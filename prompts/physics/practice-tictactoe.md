@@ -45,6 +45,11 @@ extending `CaseBasedPreview`). Fill every field; invent no fields.
      Options: correct explanation (law + why the action fits) · general intuition
      without the law · tempting-but-incomplete strategy · wrong/unsafe strategy.
      Set `correct_index`, write `feedback`.
+
+## Learning Blocks (required — slots 3 & 5)
+
+Emit `learning_block_1` (after Checkpoint 1) and `learning_block_2` (after Checkpoint 2): each a 1–3 sentence, textbook-grounded teaching moment for this game's mechanic. Set `source_concept_id`. Keep them short and text-first; use `visual_svg` only if a tiny diagram is essential and not already shown.
+
 - `decision_process_explanation` — open-ended, AFTER C3, BEFORE the simulation:
   - `prompt` — ask for all three: (1) qaysi qonun/mexanizmni aniqladingiz,
     (2) nega bu amal alternativlardan mosroq, (3) zaif strategiyada qanday xato
@@ -58,6 +63,7 @@ extending `CaseBasedPreview`). Fill every field; invent no fields.
   the law-aligned action improves the visible state meters (Aniqlik, Xavf,
   Samaradorlik) and yields a controlled/solved outcome. Wrong path: the tempting
   weak action worsens at least one meter. `why_wrong_fails`: why it violates the law.
+  - `why_wrong_fails`: one sentence on why the wrong path cannot be correct (REQUIRED).
 - `feedback_summary` — `{understood, mistake, review}`.
 - `completion_rules` — `{pass_condition, retry_condition}`. Pass: identifies the
   law, picks the law-aligned cell, explains before the consequence. Retry: picks a
