@@ -111,12 +111,12 @@ Safety: [one-line hazard note if applicable]
 ## Rules
 
 - One concept per card
-- Mode A: Front = name. Back = three-scale description (Macro + Micro + Symbolic + Safety) + lab diagram. Nothing else.
-- Mode B: Front = macroscopic observation or diagram with question mark. Back = substance/reaction name + three-scale description. Nothing else.
+- Mode A: Front = name. Back = three-scale description (Macro + Micro + Symbolic + Safety) + lab diagram. Extra detail goes in the explanation/example/misconception fields.
+- Mode B: Front = macroscopic observation or diagram with question mark. Back = substance/reaction name + three-scale description. Extra detail goes in the explanation/example/misconception fields.
 - Every card MUST include a diagram description — showing either lab sample appearance, molecular/ion structure, or lab apparatus with PPE labeled
 - Every Mode A card must include the Safety note — even if it is "no hazard for typical school lab use"
 - All balanced equations on cards must be verified — equal atom counts on both sides
-- NO practice problems, NO questions, NO explanations beyond the three-scale description, NO hooks, NO stories
+- NO practice problems, NO questions, NO hooks, NO stories
 - Language: Uzbek, "Siz" formal
 - Cover every substance, reaction type, formula, safety rule, and Periodic Table relationship the student will encounter in the homework
 - Cards are returnable throughout the session — student can check them anytime

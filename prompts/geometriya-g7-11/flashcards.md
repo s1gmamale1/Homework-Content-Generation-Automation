@@ -91,11 +91,11 @@ Geometry flash cards come in two modes. Both modes are used in every deck — mi
 ## Rules
 
 - One concept per card
-- Mode A: Front = name. Back = definition + diagram (Visual Layer notation). Nothing else.
-- Mode B: Front = diagram with question mark on the unknown. Back = theorem/term name + definition. Nothing else.
+- Mode A: Front = name. Back = definition + diagram (Visual Layer notation). Extra detail goes in the explanation/example/misconception fields.
+- Mode B: Front = diagram with question mark on the unknown. Back = theorem/term name + definition. Extra detail goes in the explanation/example/misconception fields.
 - Every card MUST include a diagram description using the Visual Layer notation standard — no text-only geometry cards
 - Diagram marks: tick marks for equal sides, arc marks for equal angles, square corners for right angles, arrows for parallel lines, color codes (blue=given, orange=to prove)
-- NO practice problems, NO questions, NO explanations, NO hooks, NO stories
+- NO practice problems, NO questions, NO hooks, NO stories
 - Language: Uzbek, "Siz" formal
 - Cover every theorem, definition, and term the student will encounter in the homework
 - Cards are returnable throughout the session — student can check them anytime

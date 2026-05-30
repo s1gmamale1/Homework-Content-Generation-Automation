@@ -66,8 +66,8 @@ Rules:
 ## Rules
 
 - One concept per card
-- Front = name. Back = definition or formula + one example. Nothing else.
-- NO practice problems, NO questions, NO explanations, NO hooks, NO stories
+- Front = name. Back = definition or formula + one example. Put explanation/example/misconception in their own fields.
+- NO practice problems, NO questions, NO hooks, NO stories
 - Language: Uzbek, "Siz" formal
 - Cover every formula and term the student will encounter in the homework
 - Cards are returnable throughout the session — student can check them anytime

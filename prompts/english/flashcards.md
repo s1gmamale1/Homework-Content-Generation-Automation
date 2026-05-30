@@ -87,8 +87,8 @@ Rules:
 ## Rules
 
 - One concept per card
-- Front = target. Back = definition/formula + one chapter example + UZ bridge if needed. Nothing else.
-- NO practice problems, NO quizzes, NO explanations, NO stories, NO ASCII boxes
+- Front = target. Back = definition/formula + one chapter example + UZ bridge if needed. Put explanation/example/misconception in their own fields.
+- NO practice problems, NO quizzes, NO stories, NO ASCII boxes
 - Every example must be a real sentence from the attached chapter — if the word isn't in the chapter, pick a different word
 - Level-allowed tenses only in every example (A1: present simple + can + have got · A2: + past simple, going-to, have to · B1: + past continuous, present perfect, will, 1st conditional · B2: full arsenal)
 - Language: student-friendly English on the front; UZ bridge uses formal "Siz"

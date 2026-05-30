@@ -21,7 +21,7 @@ Each card emits these fields:
 - `id` — stable sequential `card_1, card_2, …` (never skip or reuse).
 - `front` — the cue (term / question / prompt). **3–14 words.**
 - `back` — the answer (definition / value / rule). **5–22 words, never over 25** (a formula or process step may run longer).
-- `type` — REQUIRED. One of: `definition`, `term_to_meaning`, `formula`, `process_step`, `question_answer`, `misconception`, `image_label`.
+- `type` — REQUIRED. One of: `definition`, `term_to_meaning`, `process_step`, `question_answer`, `misconception`, `image_label`.
 - `difficulty` — REQUIRED. One of: `easy | medium | hard`.
 - `hint` (optional) — a nudge, ≤12 words, never gives away the answer.
 - `explanation` (optional, encouraged) — 1 short sentence on why/how it works.
@@ -85,8 +85,8 @@ Flash cards are a simple reference tool, so describe any helpful diagram as a sh
 ## Rules
 
 - One concept per card
-- Front = name. Back = definition/function + optional bracket `[Diagram: ...]` description. Nothing else.
-- NO practice problems, NO questions, NO explanations, NO hooks, NO stories
+- Front = name. Back = definition/function + optional bracket `[Diagram: ...]` description. Put any explanation/example/misconception in their own fields, not crammed into `back`.
+- NO practice problems, NO questions, NO hooks, NO stories
 - NO calculations, NO formulas — this is Biology
 - Language: Uzbek, "Siz" formal
 - Cover every organism, structure, process, and classification term the student will encounter in the homework
