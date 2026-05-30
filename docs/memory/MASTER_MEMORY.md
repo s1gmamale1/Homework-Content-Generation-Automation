@@ -241,3 +241,22 @@ Plus **Part 2**: gemini (which reads PDFs natively) keeps the whole PDF attached
 **Live smoke (real claude CBP on geometry, throwaway verify_cbp.py, now removed):** SUCCESS attempt=1, no 32k crash. Both learning blocks + why_wrong_fails populated with real Uzbek geometry content; 3 checkpoints; `visual_svg` empty on both (text-first prompt guidance worked → no SVG bloat). **⚠ WATCH-ITEM:** the call reported **46,251 output tokens and took ~12.4 min** — CBP is the heaviest phase and got heavier. It did NOT trip the response ceiling (likely the 46k includes thinking tokens; the visible JSON response stayed under the cap, unlike the SVG-laden flashcards that failed in [[0013]]). If CBP ever starts failing on output size, the lever is the text-first/no-SVG guidance in the LB + case prompts, or raising the claude output cap.
 
 **Remaining Flow v2 content workstreams (each its own spec→plan→build):** flashcards 8-field active-recall shape; memory-check WHY apparatus + distractor tagging + FITB normalization; practice-game interaction payloads (pairs/grid/pieces/chips); Uzbek language contract. See [[0013]] [[0014]] and the gap analysis. Frontend (web/) is old-flow and out of scope here (separate student app).
+
+---
+
+## [0016] Flashcards Completeness — 8-field active-recall card (Flow v2 reshape, WS2) — 2026-05-30 (Nggaev-v2)
+**What:** Workstream 2 of the Flow v2 content reshape. Brainstormed → spec'd → planned → subagent-driven execution with per-task independent verification (controller read every diff + re-ran the suite). Spec: docs/superpowers/specs/2026-05-30-flashcards-completeness-design.md · Plan: docs/superpowers/plans/2026-05-30-flashcards-completeness.md. Scope: the card DECK only (the 5 runtime study games are student-app/Memory-Check territory — out of scope).
+
+**The gap fixed:** flashcards were a 3-field "reference tool" (id/front/back/hint + non-spec cluster). Spec requires an 8-field active-recall card. Now: `front, back` (required, min_length≥1), `type` + `difficulty` (required closed enums), `hint, explanation, example, misconception` (optional, prompt-encouraged), `cluster` kept. Word limits + count stay prompt-governed (brittle as schema rules).
+
+**Commits (Nggaev-v2):**
+1. `d6ea8e1` — schema: `FlashcardType` (10-value) + `FlashcardDifficulty` enums; type/difficulty required; explanation/example/misconception optional; front/back min_length. +4 tests, 4 fixtures fixed.
+2. `d95983f` — synth: flashcards branch renders `type·difficulty` tag + explanation/example/misconception (no teacher-note wrap — both card sides are student-facing).
+3. `4878801` — rewrote 7 subject flashcards prompts to the 8-field card (per-subject `type` subset + word limits).
+4. `9a1a061` — **fix:** the WS3 subagent left contradictory legacy rules in 6 of 7 prompts ("NO explanations" / "Back = … Nothing else"; biology listed `formula` despite "NO formulas"). Controller verification caught it; reconciled all — removed the contradictions, dropped `formula` from biology's type list. (history was already clean.)
+
+**Tests:** 224 green.
+
+**Live smoke (real claude flashcards on geometry, throwaway removed):** SUCCESS attempt=1. 12 cards, **every card has type+difficulty**, **no raw `<svg>`**, all 12 have `explanation` + 7 have `misconception`; valid geometry types (definition/formula/image_label/term_to_meaning); real Uzbek content. Lightweight: 13,781 output tokens / ~3.5 min (vs CBP's ~46k/~12min — flashcards are small text cards, no token concern).
+
+**Remaining Flow v2 content workstreams (in order):** 3) Memory Check (WHY apparatus + distractor tagging + FITB normalization + 4-option lock); 4) Practice-game interaction payloads (pairs/grid/pieces/chips); 5) Uzbek language contract. See [[0015]] [[0013]] [[0014]].
