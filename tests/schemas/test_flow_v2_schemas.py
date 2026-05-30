@@ -22,6 +22,7 @@ from app.schemas.flow_v2 import (
     DecisionProcessExplanation,
     FeedbackSummary,
     GenerationProfile,
+    LearningBlock,
     SourceConcept,
     SourceMap,
 )
@@ -111,10 +112,17 @@ def _valid_cbp_kwargs() -> dict:
             _checkpoint("decide"),
             _checkpoint("justify_or_avoid_mistake"),
         ],
+        learning_block_1=LearningBlock(
+            explanation="A proper fraction's numerator is smaller than its denominator.",
+        ),
+        learning_block_2=LearningBlock(
+            explanation="To divide a fraction by a whole number, multiply the denominator by it.",
+        ),
         decision_process_explanation=DecisionProcessExplanation(**_valid_dpe_kwargs()),
         final_simulation=CaseSimulation(
             correct_path="3/5 ÷ 3 = 1/5 ℓ per cup.",
             wrong_path="3/5 × 3 = 9/5 ℓ, impossible.",
+            why_wrong_fails="Multiplying grows the amount, but sharing must shrink each cup.",
         ),
         feedback_summary=FeedbackSummary(
             understood="Chose division.",
@@ -205,3 +213,21 @@ def test_source_map_requires_at_least_one_concept() -> None:
             section="Sec",
             concepts=[],
         )
+
+
+def test_learning_block_requires_explanation() -> None:
+    with pytest.raises(ValidationError):
+        LearningBlock(explanation="")
+
+
+def test_cbp_requires_both_learning_blocks() -> None:
+    for missing in ("learning_block_1", "learning_block_2"):
+        kwargs = _valid_cbp_kwargs()
+        del kwargs[missing]
+        with pytest.raises(ValidationError):
+            CaseBasedPreview(**kwargs)
+
+
+def test_cbp_simulation_requires_why_wrong_fails() -> None:
+    with pytest.raises(ValidationError):
+        CaseSimulation(correct_path="ok", wrong_path="bad", why_wrong_fails="")

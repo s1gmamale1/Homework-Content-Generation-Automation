@@ -89,7 +89,19 @@ class CaseSimulation(BaseModel):
 
     correct_path: str
     wrong_path: str
-    why_wrong_fails: str = ""
+    why_wrong_fails: str = Field(min_length=1)
+
+
+class LearningBlock(BaseModel):
+    """Short teaching explanation between checkpoints (CBP standard §5, slots 3 & 5).
+    LB1 explains the concept after Checkpoint 1; LB2 shows the method after
+    Checkpoint 2. Text-first: ``visual_svg`` is optional and used only when a tiny
+    diagram is essential and not already shown in the case."""
+
+    explanation: str = Field(min_length=1)
+    title: Optional[str] = None
+    visual_svg: Optional[str] = None
+    source_concept_id: Optional[str] = None
 
 
 class FeedbackSummary(BaseModel):
@@ -110,6 +122,8 @@ class CaseBasedPreview(BaseModel):
     source_concept_ids: list[str] = Field(min_length=1)
     case_setup: CaseSetup
     checkpoints: list[CaseCheckpoint] = Field(min_length=3, max_length=3)
+    learning_block_1: LearningBlock
+    learning_block_2: LearningBlock
     decision_process_explanation: DecisionProcessExplanation
     final_simulation: CaseSimulation
     feedback_summary: FeedbackSummary

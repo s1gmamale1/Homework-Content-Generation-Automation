@@ -236,9 +236,16 @@ def _cbp_mode(**overrides) -> dict:
             rubric={"full": "all three"},
             sample_acceptable_answer="Mitoxondriya energiya ishlab chiqaradi...",
         ),
+        learning_block_1=dict(
+            explanation="Ikki karta faqat manba ularni bog'laganda juftlik bo'ladi.",
+        ),
+        learning_block_2=dict(
+            explanation="Bog'lanishning yo'nalishi bor: A qism B ni qo'llab-quvvatlaydi.",
+        ),
         final_simulation=dict(
             correct_path="Talaba ma'noni qayta tiklaydi -> Recalled.",
             wrong_path="Talaba faqat joyni eslaydi -> Position Memory Only.",
+            why_wrong_fails="Joy xotirasi tez unutiladi; faqat ma'no qayta tiklash qoladi.",
         ),
         feedback_summary=dict(
             understood="Tushuncha ma'nosi.",
