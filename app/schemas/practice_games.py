@@ -29,7 +29,7 @@ the downstream homework-builder platform, not this content factory.
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -154,6 +154,60 @@ PracticeInteractionMode = Literal[
 ]
 
 
+class GameChoice(BaseModel):
+    label: str = Field(min_length=1)
+    is_correct: bool = False
+    reason: Optional[str] = None
+
+
+class MemoryMatchPair(BaseModel):
+    left: str = Field(min_length=1)
+    right: str = Field(min_length=1)
+
+
+class MemoryMatchPayload(BaseModel):
+    pairs: list[MemoryMatchPair] = Field(min_length=4, max_length=8)
+
+
+class JigsawPiece(BaseModel):
+    id: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+
+
+class JigsawPayload(BaseModel):
+    pieces: list[JigsawPiece] = Field(min_length=3, max_length=6)
+    allowed_assembly_types: list[str] = Field(min_length=1, max_length=3)
+
+
+class SentenceFillPayload(BaseModel):
+    sentence: str = Field(min_length=1)
+    chips: list[GameChoice] = Field(min_length=3)
+
+    @model_validator(mode="after")
+    def _one_correct_chip(self) -> "SentenceFillPayload":
+        if sum(1 for c in self.chips if c.is_correct) != 1:
+            raise ValueError("sentence_fill needs exactly one correct chip")
+        return self
+
+
+class TicTacToePayload(BaseModel):
+    cells: list[GameChoice] = Field(min_length=9, max_length=9)
+
+    @model_validator(mode="after")
+    def _at_least_one_correct(self) -> "TicTacToePayload":
+        if not any(c.is_correct for c in self.cells):
+            raise ValueError("tictactoe needs at least one correct cell")
+        return self
+
+
+_PAYLOAD_TYPE_FOR_MODE = {
+    "memory_match": MemoryMatchPayload,
+    "jigsaw": JigsawPayload,
+    "sentence_fill": SentenceFillPayload,
+    "tictactoe": TicTacToePayload,
+}
+
+
 class CbpModeGame(CaseBasedPreview):
     """A Case-Based Preview interaction-mode game. These four games share the
     exact CBP content contract (3 MCQ checkpoints -> DPE -> correct/wrong
@@ -164,3 +218,16 @@ class CbpModeGame(CaseBasedPreview):
     """
 
     interaction_mode: PracticeInteractionMode
+    interaction_payload: Union[
+        MemoryMatchPayload, JigsawPayload, SentenceFillPayload, TicTacToePayload
+    ]
+
+    @model_validator(mode="after")
+    def _payload_matches_mode(self) -> "CbpModeGame":
+        expected = _PAYLOAD_TYPE_FOR_MODE[self.interaction_mode]
+        if not isinstance(self.interaction_payload, expected):
+            raise ValueError(
+                f"interaction_mode={self.interaction_mode} requires a "
+                f"{expected.__name__}, got {type(self.interaction_payload).__name__}"
+            )
+        return self

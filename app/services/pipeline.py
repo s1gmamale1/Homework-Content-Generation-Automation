@@ -301,6 +301,37 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
         if sim:
             out.append("\n" + _teacher(f"Correct path: {sim.correct_path}"))
             out.append(_teacher(f"Wrong path: {sim.wrong_path}"))
+        payload = getattr(parsed, "interaction_payload", None)
+        mode = getattr(parsed, "interaction_mode", "")
+        if payload is not None:
+            if mode == "memory_match":
+                out.append("\n**Pairs to match:**")
+                for p in payload.pairs:
+                    out.append(f"   - {p.left} ↔ {p.right}")
+            elif mode == "jigsaw":
+                out.append(f"\n**Pieces** (assemble via: {', '.join(payload.allowed_assembly_types)}):")
+                for pc in payload.pieces:
+                    out.append(f"   - `{pc.id}` {pc.content}")
+            elif mode == "sentence_fill":
+                out.append(f"\n**Sentence:** {payload.sentence}")
+                for j, ch in enumerate(payload.chips):
+                    out.append(f"   - {chr(97 + j)}) {ch.label}")
+                correct = next((c for c in payload.chips if c.is_correct), None)
+                if correct is not None:
+                    out.append(f"   - {_teacher(f'Correct chip: {correct.label}')}")
+                for ch in payload.chips:
+                    if not ch.is_correct and ch.reason:
+                        out.append(f"   - {_teacher(f'{ch.label} — {ch.reason}')}")
+            elif mode == "tictactoe":
+                out.append("\n**Decision grid (3×3):**")
+                for r in range(3):
+                    row = payload.cells[r * 3:r * 3 + 3]
+                    out.append("   | " + " | ".join(c.label for c in row) + " |")
+                for c in payload.cells:
+                    if c.is_correct:
+                        out.append(f"   - {_teacher(f'Correct cell: {c.label}')}")
+                    elif c.reason:
+                        out.append(f"   - {_teacher(f'{c.label} — {c.reason}')}")
         return "\n".join(out)
 
     return ""

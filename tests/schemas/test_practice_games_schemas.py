@@ -213,6 +213,32 @@ def _checkpoint(**overrides) -> dict:
     return base
 
 
+_PAYLOAD_FOR = {
+    "memory_match": dict(pairs=[
+        dict(left="Parallelogramm", right="qarama-qarshi tomonlari parallel"),
+        dict(left="Romb", right="hamma tomonlari teng"),
+        dict(left="Kvadrat", right="hamma tomon teng + to'g'ri burchak"),
+        dict(left="Trapetsiya", right="bir juft parallel tomon"),
+    ]),
+    "jigsaw": dict(
+        pieces=[dict(id="p1", content="qarama-qarshi tomonlar"),
+                dict(id="p2", content="teng"),
+                dict(id="p3", content="parallel")],
+        allowed_assembly_types=["xossa", "ta'rif"],
+    ),
+    "sentence_fill": dict(
+        sentence="Parallelogrammning qarama-qarshi tomonlari _____.",
+        chips=[dict(label="teng va parallel", is_correct=True),
+               dict(label="faqat teng", is_correct=False, reason="parallellik ham shart"),
+               dict(label="perpendikular", is_correct=False, reason="bu noto'g'ri munosabat")],
+    ),
+    "tictactoe": dict(cells=[
+        dict(label="qarama-qarshi tomonlar teng", is_correct=True),
+        *[dict(label=f"chalg'ituvchi {i}", is_correct=False, reason="mavzuga aloqasiz") for i in range(8)],
+    ]),
+}
+
+
 def _cbp_mode(**overrides) -> dict:
     base = dict(
         interaction_mode="memory_match",
@@ -258,6 +284,8 @@ def _cbp_mode(**overrides) -> dict:
         ),
     )
     base.update(overrides)
+    if base["interaction_mode"] in _PAYLOAD_FOR:
+        base.setdefault("interaction_payload", _PAYLOAD_FOR[base["interaction_mode"]])
     return base
 
 
@@ -292,3 +320,38 @@ def test_cbp_mode_requires_exactly_three_checkpoints() -> None:
 def test_cbp_mode_requires_at_least_one_source_concept_id() -> None:
     with pytest.raises(ValidationError):
         CbpModeGame(**_cbp_mode(source_concept_ids=[]))
+
+
+def test_cbp_mode_requires_payload_matching_mode() -> None:
+    with pytest.raises(ValidationError):
+        CbpModeGame(**_cbp_mode(interaction_mode="jigsaw",
+                                interaction_payload=_PAYLOAD_FOR["memory_match"]))
+
+
+def test_memory_match_payload_pair_count() -> None:
+    from app.schemas.practice_games import MemoryMatchPayload
+    with pytest.raises(ValidationError):
+        MemoryMatchPayload(pairs=[dict(left="a", right="b")])
+
+
+def test_sentence_fill_requires_exactly_one_correct_chip() -> None:
+    from app.schemas.practice_games import SentenceFillPayload
+    with pytest.raises(ValidationError):
+        SentenceFillPayload(sentence="x _____", chips=[
+            dict(label="a", is_correct=True), dict(label="b", is_correct=True),
+            dict(label="c", is_correct=False)])
+
+
+def test_tictactoe_requires_nine_cells_and_a_correct() -> None:
+    from app.schemas.practice_games import TicTacToePayload
+    with pytest.raises(ValidationError):
+        TicTacToePayload(cells=[dict(label=f"c{i}", is_correct=False) for i in range(9)])
+    with pytest.raises(ValidationError):
+        TicTacToePayload(cells=[dict(label=f"c{i}", is_correct=(i == 0)) for i in range(4)])
+
+
+def test_cbp_mode_valid_with_each_mode_payload() -> None:
+    for mode in ("memory_match", "jigsaw", "sentence_fill", "tictactoe"):
+        g = CbpModeGame(**_cbp_mode(interaction_mode=mode))
+        assert g.interaction_mode == mode
+        assert g.interaction_payload is not None
