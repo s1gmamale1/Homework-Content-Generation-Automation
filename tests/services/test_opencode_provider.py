@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import pathlib
 
-from app.services.agent import _PROVIDER_DEFAULT_MODEL, _resolve_model
+from app.services.agent import _PROVIDER_DEFAULT_MODEL, _resolve_model, _stdin_and_argv
 from app.services.agent_models import MODEL_MANIFEST
 from app.services.providers import get_provider
+from app.services.providers.claude import Claude
 from app.services.providers.opencode import OpenCode
 
 
@@ -94,3 +95,20 @@ def test_resolve_model_opencode_default_is_free_zen() -> None:
 
 def test_resolve_model_opencode_explicit_overrides() -> None:
     assert _resolve_model("opencode", "opencode/big-pickle") == "opencode/big-pickle"
+
+
+def test_opencode_takes_prompt_positionally_not_stdin() -> None:
+    # opencode run wants the prompt as a positional arg (per opencode.ai docs).
+    assert OpenCode().prompt_on_stdin is False
+    cmd, stdin = _stdin_and_argv(OpenCode(), ["opencode", "run", "--format", "json"], "hi there")
+    assert cmd[-1] == "hi there"          # prompt appended as final argv token
+    assert stdin == b""                    # nothing piped on stdin
+
+
+def test_stdin_providers_keep_prompt_on_stdin() -> None:
+    # claude (and the other 3) still pipe the prompt on stdin, argv untouched.
+    assert Claude().prompt_on_stdin is True
+    base = ["claude", "-p"]
+    cmd, stdin = _stdin_and_argv(Claude(), base, "hello")
+    assert cmd == base                     # argv unchanged
+    assert stdin == b"hello"               # prompt on stdin

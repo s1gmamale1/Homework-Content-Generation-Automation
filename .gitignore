@@ -14,9 +14,16 @@ statusline-command.sh
 .claude/
 node_modules/
 
-# Runtime data + local artifacts (not source)
-var/                  # uploaded PDFs + generated screenshots
-*.log                 # uvicorn / retry logs
-.playwright-cli/      # playwright skill cache
-ruvector.db           # ruflo MCP local store
+# Runtime data + local artifacts (not source).
+# NOTE: .gitignore does NOT support inline (trailing) comments — a comment
+# after a pattern on the same line makes the whole line a literal path and the
+# pattern silently stops matching. Keep comments on their own lines.
+# uploaded PDFs + generated screenshots
+var/
+# uvicorn / retry logs
+*.log
+# playwright skill cache
+.playwright-cli/
+# ruflo MCP local store
+ruvector.db
 prompts.zip           # local backup archive

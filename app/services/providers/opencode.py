@@ -40,6 +40,10 @@ class OpenCode(Provider):
     # npm also drops an extensionless bash shim that create_subprocess_exec
     # can't run directly.
     binary_names = ("opencode.cmd", "opencode")
+    # ``opencode run`` takes the prompt as a POSITIONAL arg (`opencode run
+    # "<msg>"`), not on stdin — confirmed against opencode.ai/docs/cli. The
+    # driver appends the prompt as the final argv token for this provider.
+    prompt_on_stdin = False
 
     def build_argv(
         self,
@@ -49,7 +53,7 @@ class OpenCode(Provider):
         last_msg_path: pathlib.Path,
         attachments: list[pathlib.Path] = (),
     ) -> list[str]:
-        # Prompt is fed on stdin by the driver; no positional message.
+        # Prompt is appended positionally by the driver (prompt_on_stdin=False).
         argv: list[str] = [binary, "run", "--format", "json"]
         if model:
             argv += ["-m", model]

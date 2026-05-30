@@ -309,6 +309,22 @@ def _resolve_binary(provider: Provider) -> str:
     )
 
 
+def _stdin_and_argv(
+    provider: Provider, base_argv: list[str], prompt: str
+) -> tuple[list[str], bytes]:
+    """Decide how the master prompt reaches the CLI.
+
+    Default (``prompt_on_stdin=True``): the prompt is piped on stdin and argv is
+    unchanged. Providers whose CLI takes the prompt positionally (opencode) set
+    ``prompt_on_stdin=False`` — we append the prompt as the final argv token and
+    feed empty stdin. Keeping this pure makes the routing unit-testable without
+    spawning a subprocess.
+    """
+    if getattr(provider, "prompt_on_stdin", True):
+        return base_argv, prompt.encode("utf-8")
+    return [*base_argv, prompt], b""
+
+
 async def _spawn(
     *,
     provider: Provider,
@@ -339,6 +355,8 @@ async def _spawn(
         last_msg_path=last_msg_path,
         attachments=list(attachments),
     )
+    # Route the prompt to stdin (default) or append it positionally (opencode).
+    cmd, stdin_bytes = _stdin_and_argv(provider, cmd, prompt)
 
     # Force UTF-8 in the child process. Without this, Python-based CLIs (kimi)
     # default to cp1252 on Windows and crash on any non-ASCII output character.
@@ -368,7 +386,7 @@ async def _spawn(
             ) from exc
 
         try:
-            stdout_b, stderr_b = await proc.communicate(prompt.encode("utf-8"))
+            stdout_b, stderr_b = await proc.communicate(stdin_bytes)
         except asyncio.CancelledError:
             proc.kill()
             try:
