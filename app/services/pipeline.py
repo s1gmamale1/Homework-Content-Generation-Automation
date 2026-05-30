@@ -101,9 +101,18 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
         for i, c in enumerate(cards, 1):
             card_id = getattr(c, "id", "") or ""
             id_tag = f" `{card_id}`" if card_id else ""
-            out.append(f"{i}.{id_tag} **{c.front}** — {c.back}")
+            tag = ""
+            if getattr(c, "type", None) or getattr(c, "difficulty", None):
+                tag = f" _({c.type} · {c.difficulty})_"
+            out.append(f"{i}.{id_tag} **{c.front}** — {c.back}{tag}")
             if getattr(c, "hint", None):
                 out.append(f"   - hint: {c.hint}")
+            if getattr(c, "explanation", None):
+                out.append(f"   - explanation: {c.explanation}")
+            if getattr(c, "example", None):
+                out.append(f"   - example: {c.example}")
+            if getattr(c, "misconception", None):
+                out.append(f"   - misconception: {c.misconception}")
         return "\n".join(out)
 
     if phase_name == "memory-check":
