@@ -33,7 +33,7 @@ Rules:
 - Every card MUST set `type` and `difficulty`.
 - Diagrams: describe with a bracket `[Diagram: ...]` note — do NOT emit raw inline `<svg>`.
 
-For an English (L2) lesson: the card front is the English target item (word / phrase / grammar structure); the back, hint, and explanation are the Uzbek bridge (gloss / meaning / usage note). For every other subject, both sides follow the Language rules above (Uzbek).
+For an English (L2) lesson: the card front is the English target item (word / phrase / grammar structure); the back, hint, and explanation are the Uzbek bridge (gloss / meaning / usage note). For every other subject, both sides follow the Language rules below.
 
 ## What to put on cards for {{SUBJECT}}
 
