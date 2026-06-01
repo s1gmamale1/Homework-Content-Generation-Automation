@@ -81,8 +81,8 @@ def flow_for(subject: str) -> list[str]:
 There is **no language detection in the system** — language is fixed in prompt text (the Uzbek Language Foundation spec; `app/` has no language field, `GenerationProfile.language` is unused). For the MVP:
 
 - **Default = formal Uzbek ("Siz", never "sen") for ALL subjects**, formulas/numbers/units preserved verbatim, modern professional (non-bazaar) contexts. A single shared language block, reused across every general prompt — no per-subject language branching.
-- The model also mirrors the source `lesson_context`; the `english` subject (English source) will naturally surface English terms — acceptable as-is for the MVP.
-- **Deferred (NOT MVP):** explicit language control, CEFR leveling, English-scaffolding branch.
+- **English-target handling now exists** via the `{{LANGUAGE_RULES}}` token in `prompts.py`: for the `english` subject, the target content (vocabulary, example sentences, passages, grammar items) is in English while all scaffolding (instructions, hints, explanations, DPE/reasoning prompts) stays in formal Uzbek ("Siz"), CEFR-leveled by a grade→CEFR ladder (G5→A1 … G11→B2). All other subjects resolve to the formal-Uzbek default. See the spec `docs/superpowers/specs/2026-06-01-english-target-language-design.md`.
+- **Deferred (NOT MVP):** explicit language control beyond the English-target branch (e.g. a user-selectable target language / level).
 
 ---
 
