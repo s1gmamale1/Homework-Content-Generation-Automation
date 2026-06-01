@@ -1,103 +1,37 @@
-"""Per-subject phase sequences. Each subject's flow.md is the source of truth;
-sequences below were committed to code during implementation by reading each
-flow.md once. Update here when prompts/<subject>/flow.md changes."""
+"""Single Flow v2 phase sequence for every subject (MVP — no classify, no
+easy/hard). Subject-specific prompts/flows are a future override layer.
+New_Flow.md (docs/Infra_prompts/Flow) is the source of truth, NOT flow.md."""
 
 import re
 
-# Strip inline SVGs from prior_outputs before passing them to downstream
-# phases. Downstream phases need the *concepts* an upstream taught — they
-# don't need the diagrams (and re-paying for ~800 input tokens of <svg> per
-# dependent is pure waste). Replaced with a placeholder so the model knows
-# a diagram WAS present, just not what it depicted.
 _SVG_BLOCK_RE = re.compile(r"<svg\b[^>]*>.*?</svg>", re.DOTALL | re.IGNORECASE)
 
 
 def _strip_svgs(text: str) -> str:
     return _SVG_BLOCK_RE.sub("[diagram omitted]", text)
 
-# Flow v2 Practice Arc (PR-3). The single generic ``game-breaks`` plus the
-# standalone ``real-life`` and ``consolidation`` phases are replaced by typed,
-# source-traced conceptual games drawn from docs/Infra_prompts/Gamified
-# Practices. Each subject runs a curated 2-3 game arc (its target-skill fit) —
-# NOT all six (New_Flow forbids "random disconnected games" / "tasks that do
-# not match target skill"). The arc sits between the learning sections and the
-# Boss Arena. ``reflection`` is kept (New_Flow.md keeps Debrief/Marking).
-#
-# Game phase names and the schema each uses (agent.STRUCTURED_PHASE_SCHEMAS):
-#   practice-rlc             -> RealLifeChallenge (standalone; absorbs real-life)
-#   practice-error-detection -> ErrorDetection    (standalone)
-#   practice-memory-match    -> CbpModeGame (interaction_mode=memory_match)
-#   practice-tictactoe       -> CbpModeGame (interaction_mode=tictactoe)
-#   practice-jigsaw          -> CbpModeGame (interaction_mode=jigsaw)
-#   practice-sentence        -> CbpModeGame (interaction_mode=sentence_fill)
-#
-# Easy mode keeps the lighter "one strong conceptual practice (no Boss)" shape
-# the prior flow used; hard mode runs the full arc into a Boss Arena.
-SUBJECT_FLOWS: dict[str, dict] = {
-    "biology": {
-        "has_classify": True,
-        "easy": ["case-based-preview", "flashcards", "memory-check",
-                 "practice-rlc", "reflection"],
-        "hard": ["case-based-preview", "flashcards", "memory-check",
-                 "practice-rlc", "practice-error-detection", "practice-memory-match",
-                 "boss-arena", "reflection"],
-    },
-    "english": {
-        # English is always Hard mode per flow.md — there is no Easy pipeline.
-        # Setting has_classify=False makes the orchestrator skip the classify
-        # branch entirely and run the hard sequence directly, mirroring history.
-        # CEFR level (A1–B2) is handled within the hard prompts themselves
-        # rather than via classify branching.
-        "has_classify": False,
-        "easy": [],
-        "hard": ["case-based-preview", "flashcards", "memory-check", "reading",
-                 "practice-sentence", "practice-error-detection", "practice-memory-match",
-                 "boss-arena", "reflection"],
-    },
-    "geometriya-g7-11": {
-        "has_classify": True,
-        "easy": ["case-based-preview", "flashcards", "memory-check",
-                 "practice-error-detection", "reflection"],
-        "hard": ["case-based-preview", "flashcards", "memory-check",
-                 "practice-error-detection", "practice-jigsaw", "practice-tictactoe",
-                 "boss-arena", "reflection"],
-    },
-    "history": {
-        # History is always Hard mode — no Easy pipeline.
-        "has_classify": False,
-        "easy": [],
-        "hard": ["case-based-preview", "flashcards", "memory-check",
-                 "practice-rlc", "practice-jigsaw", "practice-memory-match",
-                 "boss-arena", "reflection"],
-    },
-    "kimyo-g7-11": {
-        "has_classify": True,
-        "easy": ["case-based-preview", "flashcards", "memory-check",
-                 "practice-rlc", "reflection"],
-        "hard": ["case-based-preview", "flashcards", "memory-check",
-                 "practice-rlc", "practice-error-detection", "practice-tictactoe",
-                 "boss-arena", "reflection"],
-    },
-    "math-algebra": {
-        "has_classify": True,
-        "easy": ["case-based-preview", "flashcards", "memory-check",
-                 "practice-error-detection", "reflection"],
-        "hard": ["case-based-preview", "flashcards", "memory-check",
-                 "practice-error-detection", "practice-tictactoe", "practice-jigsaw",
-                 "boss-arena", "reflection"],
-    },
-    "physics": {
-        "has_classify": True,
-        "easy": ["case-based-preview", "flashcards", "memory-check",
-                 "practice-rlc", "reflection"],
-        "hard": ["case-based-preview", "flashcards", "memory-check",
-                 "practice-rlc", "practice-error-detection", "practice-tictactoe",
-                 "boss-arena", "reflection"],
-    },
-}
+
+SUBJECTS: list[str] = [
+    "biology", "english", "geometriya-g7-11", "history",
+    "kimyo-g7-11", "math-algebra", "physics",
+]
+
+# One flow, all subjects. Learning sections -> practice arc (2 light games) ->
+# Boss -> Reflection. CBP-mode games are Path B (after CbpModeGame is lightened).
+GENERAL_FLOW: list[str] = [
+    "case-based-preview", "flashcards", "memory-check",
+    "practice-rlc", "practice-error-detection",
+    "boss-arena", "reflection",
+]
 
 
-SUPPORTED_SUBJECTS: list[str] = sorted(SUBJECT_FLOWS.keys())
+def flow_for(subject: str) -> list[str]:
+    if subject not in SUBJECTS:
+        raise KeyError(f"Unsupported subject: {subject}")
+    return list(GENERAL_FLOW)
+
+
+SUPPORTED_SUBJECTS: list[str] = sorted(SUBJECTS)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -112,20 +46,11 @@ SUPPORTED_SUBJECTS: list[str] = sorted(SUBJECT_FLOWS.keys())
 # because different subjects use different preview phase names; the runtime
 # picks whichever exists in the current job's prior_outputs (one per category).
 PHASE_DEPS: dict[str, list[str]] = {
-    "reading":         ["case-based-preview"],                                 # english only
-    "memory-check":    ["flashcards"],
-    # Practice Arc games (PR-3). Each requires the learning sections done first
-    # — the concept must have appeared upstream before a game tests applying or
-    # debugging it (Error Detection in particular needs a correct-form
-    # reference earlier in the session).
-    "practice-rlc":              ["case-based-preview", "flashcards"],
-    "practice-error-detection":  ["case-based-preview", "flashcards", "memory-check"],
-    "practice-memory-match":     ["flashcards", "memory-check"],
-    "practice-tictactoe":        ["case-based-preview", "flashcards"],
-    "practice-jigsaw":           ["case-based-preview", "flashcards"],
-    "practice-sentence":         ["case-based-preview", "flashcards"],
-    "boss-arena":      ["case-based-preview", "flashcards", "memory-check"],
-    "reflection":      ["case-based-preview", "boss-arena"],
+    "memory-check":             ["flashcards"],
+    "practice-rlc":             ["case-based-preview", "flashcards"],
+    "practice-error-detection": ["case-based-preview", "flashcards", "memory-check"],
+    "boss-arena":               ["case-based-preview", "flashcards", "memory-check"],
+    "reflection":               ["case-based-preview", "boss-arena"],
 }
 
 
@@ -154,16 +79,7 @@ PHASE_FILE_NEEDED: dict[str, set[str]] = {
 # bounds the shape — capping risks mid-object truncation that leaves
 # `response.parsed = None`. Let the schema do the constraining.
 MAX_OUTPUT_TOKENS_BY_PHASE: dict[str, int] = {
-    "preview-hard":    2500,   # observed ~3.0-3.8K → cap to 2.5K
-    "preview-easy":    1800,
-    "preview":         2500,   # history alias
-    "real-life":       2200,   # observed ~2.0K
-    "consolidation":   1200,   # observed ~0.7K
-    "reflection":      700,    # observed ~0.5K
-    # classify has no cap — it's now schema-constrained (ClassifyDecision)
-    # via STRUCTURED_PHASE_SCHEMAS, so the Literal["easy","hard"] enum bounds
-    # the output naturally. Capping risks truncating thinking tokens before
-    # the model emits the JSON enum value.
+    "reflection": 700,
 }
 
 
