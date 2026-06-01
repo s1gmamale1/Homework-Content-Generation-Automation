@@ -32,8 +32,9 @@ _LANG_ENGLISH = (
     "- In formal Uzbek (\"Siz\"): all scaffolding — task instructions, framing, "
     "hints, explanations, feedback, and the DPE/reasoning prompts (the UZ bridge).\n"
     "- CEFR (A1–B2): if the source shows a grade, level the English via "
-    "G5→A1, G6→A1+, G7→A2, G8→A2+, G9→B1, G10→B1+, G11→B2; otherwise infer from the "
-    "source. CEFR controls sentence length, tenses, and vocabulary range — never "
+    "G5→A1, G6→A1+, G7→A2, G8→A2+, G9→B1, G10→B1+, G11→B2; otherwise infer the "
+    "level from the source's own complexity (default to A2 if truly indeterminate). "
+    "CEFR controls sentence length, tenses, and vocabulary range — never "
     "exceed the level (no B2 vocabulary in an A1/G5 lesson)."
 )
 

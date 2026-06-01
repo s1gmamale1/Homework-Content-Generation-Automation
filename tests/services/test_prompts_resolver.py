@@ -49,6 +49,8 @@ def test_english_subject_gets_english_language_block(tmp_lang):
     assert "{{LANGUAGE_RULES}}" not in out
     assert "English (L2)" in out
     assert "Siz" in out
+    assert "Governing principle" in out
+    assert "G11→B2" in out and "never exceed" in out
 
 
 def test_nonenglish_subject_gets_uzbek_block(tmp_lang):
