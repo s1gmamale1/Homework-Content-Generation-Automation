@@ -14,6 +14,16 @@
 - `opencode` provider is implemented but never run against a real install — first action when installed: one real generation (watch for the stdin/positional hang). Detail: [[MASTER_MEMORY]] §0010.
 - Bad book data: math-algebra book `9e7833bc…` has a 4 KB stub PDF (not a real textbook) — extraction would fail; clean up or replace.
 - Confirm the English grade→CEFR ladder against the official Uzbek curriculum (values already adjusted this session — just needs curriculum-owner sign-off).
+- _(audit 2026-06-02, verified)_ `frontend-6`: `web/src/routes/job.tsx` `DonePanel` summary counts only legacy columns → v2 jobs show partial/empty done-stats. (I rewired `preview.tsx` but not `job.tsx`.)
+- _(audit)_ `api-3`: `difficulty_classified` SSE event + `set_difficulty` repo method + `JobOut.difficulty` are functionally dead (classify removed) — remove them.
+- _(audit)_ `api-2`: pipeline emits `source_map_ready` / `concept_fidelity_warning` but they have no schema in `app/schemas/events.py` — add the event schemas.
+- _(audit)_ memory-check prompt contradiction: `memory-check.md:35` "Use all 3 kinds" vs self-check `:86` "at least 2 of the 3" — a model can emit only 2. Tighten.
+- _(audit)_ flashcards prompt `:24` type enum omits schema-allowed `formula`/`vocabulary`/`grammar`/`example` — align the prompt enum to `FlashcardType`.
+- _(audit)_ memory-check `why_prompt` is "required for science" in the prompt/docstring but not schema-enforced (`schemas-6`) — enforce via subject-threaded validator, or fix the docstring claim.
+- _(audit)_ memory-check models 3 kinds vs spec's 6 question types (`schemas-8`) — extend `MemoryCheckKind` or record as an accepted deviation.
+- _(audit)_ `flow-1`: `pipeline.py:797` "scheduler stuck" diagnostic embeds the dep dict as literal f-string text (double-braces, never evaluated) — cosmetic, unreachable path.
+- _(dev warning)_ pre-existing React "Select uncontrolled→controlled" on the `<Select>` in `web/src/routes/section.tsx` / `upload.tsx` (provider/model/subject pickers) — give it a default `value=""`. Benign, not from the Flow v2 work.
+- _(audit)_ stale carried-over `main` test files break `pytest tests/` (`test_flows.py` imports removed `SUBJECT_FLOWS`; `test_providers_registry.py`/`test_agent_models.py` assert 4 providers; `test_api.py` needs :5432) — delete or port to the v2 API.
 
 ## Done / promoted
 
