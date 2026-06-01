@@ -1,14 +1,25 @@
-import type { ReactNode } from "react";
-import { KeyRound } from "lucide-react";
 import { RichText } from "@/components/rich-text";
 import { cn } from "@/lib/utils";
+import { KeyRound } from "lucide-react";
+import type { ReactNode } from "react";
 
 /** A titled review card — the standard wrapper for one piece of phase content. */
-export function ReviewCard({ title, children, className }: {
-  title?: string; children: ReactNode; className?: string;
+export function ReviewCard({
+  title,
+  children,
+  className,
+}: {
+  title?: string;
+  children: ReactNode;
+  className?: string;
 }) {
   return (
-    <div className={cn("rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) p-4", className)}>
+    <div
+      className={cn(
+        "rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) p-4",
+        className,
+      )}
+    >
       {title && (
         <h4 className="mb-2 font-mono text-[0.66rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
           {title}

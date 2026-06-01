@@ -1,6 +1,6 @@
+import { AnswerKey, Labeled, ReviewCard } from "@/components/flow-v2/parts";
 import { RichText } from "@/components/rich-text";
 import { Badge } from "@/components/ui/badge";
-import { AnswerKey, Labeled, ReviewCard } from "@/components/flow-v2/parts";
 import type { MemoryCheckItem, MemoryCheckPack } from "@/lib/types";
 
 function Item({ item, n }: { item: MemoryCheckItem; n: number }) {
@@ -8,21 +8,31 @@ function Item({ item, n }: { item: MemoryCheckItem; n: number }) {
     <ReviewCard>
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span className="font-mono text-[0.66rem] text-(--color-ink-muted)">#{n}</span>
-        <Badge variant="neutral" size="sm">{item.kind}</Badge>
-        <Badge variant="accent" size="sm">{item.flashcard_id}</Badge>
+        <Badge variant="neutral" size="sm">
+          {item.kind}
+        </Badge>
+        <Badge variant="accent" size="sm">
+          {item.flashcard_id}
+        </Badge>
       </div>
       <RichText className="text-sm font-medium text-(--color-ink)">{item.prompt}</RichText>
 
       {item.options && item.options.length > 0 && (
         <ul className="mt-2 flex flex-col gap-1">
           {item.options.map((o, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: stable render order
             <li key={i} className="flex items-start gap-2 text-sm text-(--color-ink-soft)">
               <Badge variant={o.is_correct ? "success" : "neutral"} size="sm">
                 {String.fromCharCode(65 + i)}
               </Badge>
               <span className="min-w-0">
                 <RichText inline>{o.text}</RichText>
-                {o.reason && <span className="text-(--color-ink-muted)"> — <RichText inline>{o.reason}</RichText></span>}
+                {o.reason && (
+                  <span className="text-(--color-ink-muted)">
+                    {" "}
+                    — <RichText inline>{o.reason}</RichText>
+                  </span>
+                )}
               </span>
             </li>
           ))}
@@ -32,6 +42,7 @@ function Item({ item, n }: { item: MemoryCheckItem; n: number }) {
       {item.blanks && item.blanks.length > 0 && (
         <AnswerKey>
           {item.blanks.map((b, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: stable render order
             <Labeled key={i} label={`Blank ${i + 1}`}>
               {[b.answer, ...(b.accepted_variations ?? [])].join(" · ")}
             </Labeled>
@@ -52,7 +63,8 @@ function Item({ item, n }: { item: MemoryCheckItem; n: number }) {
 }
 
 export function MemoryCheckView({ pack }: { pack: MemoryCheckPack }) {
-  if (!pack.items?.length) return <p className="text-sm text-(--color-ink-muted)">No memory check.</p>;
+  if (!pack.items?.length)
+    return <p className="text-sm text-(--color-ink-muted)">No memory check.</p>;
   return (
     <div className="flex flex-col gap-3">
       {pack.pass_threshold != null && (
@@ -60,7 +72,9 @@ export function MemoryCheckView({ pack }: { pack: MemoryCheckPack }) {
           Pass ≥ {Math.round(pack.pass_threshold * 100)}%
         </p>
       )}
-      {pack.items.map((it, i) => <Item key={i} item={it} n={i + 1} />)}
+      {pack.items.map((it, i) => (
+        <Item key={it.flashcard_id} item={it} n={i + 1} />
+      ))}
     </div>
   );
 }
