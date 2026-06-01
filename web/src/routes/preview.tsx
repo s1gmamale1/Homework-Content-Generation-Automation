@@ -1,3 +1,14 @@
+import { BossFight } from "@/components/boss-fight/boss-fight";
+import { Eyebrow } from "@/components/eyebrow";
+import { FlashcardDeck } from "@/components/flashcards/flashcard-deck";
+import { SourceMapView } from "@/components/flow-v2/source-map";
+import { GameCard } from "@/components/games/game-card";
+import { MemorySprint } from "@/components/memory-sprint/memory-sprint";
+import { ReadingExperience } from "@/components/reading/reading-experience";
+import { api } from "@/lib/api";
+import { DIVISION_ORDER, FLOW_V2_PHASES, isFlowV2 } from "@/lib/flow-v2-phases";
+import type { Job } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Download, Loader2 } from "lucide-react";
 import { useMemo } from "react";
@@ -5,14 +16,6 @@ import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
-import { BossFight } from "@/components/boss-fight/boss-fight";
-import { Eyebrow } from "@/components/eyebrow";
-import { FlashcardDeck } from "@/components/flashcards/flashcard-deck";
-import { GameCard } from "@/components/games/game-card";
-import { MemorySprint } from "@/components/memory-sprint/memory-sprint";
-import { ReadingExperience } from "@/components/reading/reading-experience";
-import { api } from "@/lib/api";
-import { cn } from "@/lib/utils";
 
 const MD_COMPONENTS = {
   h1: ({ children }: any) => (
@@ -75,18 +78,7 @@ const MD_COMPONENTS = {
   ),
 };
 
-export function PreviewPage() {
-  const { id } = useParams<{ id: string }>();
-  const {
-    data: job,
-    isLoading,
-    error,
-  } = useQuery({
-    queryKey: ["job", id, "preview"],
-    queryFn: () => (id ? api.getJob(id) : Promise.reject(new Error("no id"))),
-    enabled: Boolean(id),
-  });
-
+function LegacyPreview({ job }: { job: Job; id: string }) {
   // Split the assembled MD into ordered segments around the structured-phase
   // headings. Each segment is either an MD chunk or a structured renderer
   // placeholder. Plain MD wins when the *_json is empty (extraction failed),
@@ -102,15 +94,15 @@ export function PreviewPage() {
   type Segment = { kind: "md"; content: string } | { kind: Exclude<SegmentKind, "md"> };
 
   const segments = useMemo<Segment[]>(() => {
-    const md = job?.assembled_md ?? "";
+    const md = job.assembled_md ?? "";
     if (!md) return [];
 
     const has = {
-      flashcards: (job?.flashcards_json?.cards ?? []).length > 0,
-      memory_sprint: (job?.memory_sprint_json?.items ?? []).length > 0,
-      games: (job?.games_json?.games ?? []).length > 0,
-      final_challenge: (job?.final_challenge_json?.questions ?? []).length > 0,
-      reading: Boolean(job?.reading_json?.passage_md),
+      flashcards: (job.flashcards_json?.cards ?? []).length > 0,
+      memory_sprint: (job.memory_sprint_json?.items ?? []).length > 0,
+      games: (job.games_json?.games ?? []).length > 0,
+      final_challenge: (job.final_challenge_json?.questions ?? []).length > 0,
+      reading: Boolean(job.reading_json?.passage_md),
     };
 
     // Heading regex per phase. `.title()` in Python converts e.g.
@@ -155,13 +147,150 @@ export function PreviewPage() {
     if (cursor < md.length) out.push({ kind: "md", content: md.slice(cursor) });
     return out;
   }, [
-    job?.assembled_md,
-    job?.flashcards_json,
-    job?.memory_sprint_json,
-    job?.games_json,
-    job?.final_challenge_json,
-    job?.reading_json,
+    job.assembled_md,
+    job.flashcards_json,
+    job.memory_sprint_json,
+    job.games_json,
+    job.final_challenge_json,
+    job.reading_json,
   ]);
+
+  return (
+    <article className="mt-8 leading-relaxed text-(--color-ink-soft)">
+      {segments.map((seg, i) => {
+        if (seg.kind === "md") {
+          return (
+            <ReactMarkdown
+              // biome-ignore lint/suspicious/noArrayIndexKey: stable segment order
+              key={`md-${i}`}
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeRaw]}
+              components={MD_COMPONENTS}
+            >
+              {seg.content}
+            </ReactMarkdown>
+          );
+        }
+        if (seg.kind === "flashcards") {
+          return (
+            <section key="flashcards" className="mt-10">
+              <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
+                Flashcards
+              </h2>
+              <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
+                <FlashcardDeck cards={job.flashcards_json?.cards ?? []} />
+              </div>
+            </section>
+          );
+        }
+        if (seg.kind === "memory_sprint") {
+          return (
+            <section key="memory_sprint" className="mt-10">
+              <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
+                Memory Sprint
+              </h2>
+              <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
+                <MemorySprint pack={job.memory_sprint_json ?? { items: [] }} />
+              </div>
+            </section>
+          );
+        }
+        if (seg.kind === "games") {
+          return (
+            <section key="games" className="mt-10">
+              <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
+                Game Breaks
+              </h2>
+              <div className="flex flex-col gap-5">
+                {(job.games_json?.games ?? []).map((g, gi) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: order is stable
+                  <GameCard key={gi} game={g} />
+                ))}
+              </div>
+            </section>
+          );
+        }
+        if (seg.kind === "reading") {
+          return (
+            <section key="reading" className="mt-10">
+              <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
+                Reading
+              </h2>
+              <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
+                <ReadingExperience
+                  passage={job.reading_json ?? { passage_md: "", checkpoints: [] }}
+                />
+              </div>
+            </section>
+          );
+        }
+        // final_challenge
+        return (
+          <section key="final_challenge" className="mt-10">
+            <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
+              Final Challenge
+            </h2>
+            <div className="rounded-(--radius-lg) border border-(--color-accent-border) bg-[linear-gradient(135deg,var(--color-elevated),var(--color-accent-soft))] p-5">
+              <BossFight
+                challenge={job.final_challenge_json ?? { starting_hp: 100, questions: [] }}
+              />
+            </div>
+          </section>
+        );
+      })}
+    </article>
+  );
+}
+
+function FlowV2Preview({ job }: { job: Job }) {
+  const byDivision = DIVISION_ORDER.map((div) => ({
+    div,
+    phases: FLOW_V2_PHASES.filter((p) => p.division === div).filter((p) => {
+      const data = job[p.column];
+      return data != null && !p.isEmpty(data);
+    }),
+  })).filter((g) => g.phases.length > 0);
+
+  return (
+    <article className="mt-8 flex flex-col gap-10">
+      {job.source_map_json && (
+        <section>
+          <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
+            Source Map
+          </h2>
+          <SourceMapView map={job.source_map_json} />
+        </section>
+      )}
+      {byDivision.map(({ div, phases }) => (
+        <section key={div}>
+          <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">{div}</h2>
+          <div className="flex flex-col gap-6">
+            {phases.map((p) => (
+              <div key={p.key}>
+                <h3 className="mb-2 text-base font-semibold text-(--color-ink)">{p.title}</h3>
+                <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
+                  {p.render(job[p.column])}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ))}
+    </article>
+  );
+}
+
+export function PreviewPage() {
+  const { id } = useParams<{ id: string }>();
+  const {
+    data: job,
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ["job", id, "preview"],
+    queryFn: () => (id ? api.getJob(id) : Promise.reject(new Error("no id"))),
+    enabled: Boolean(id),
+  });
 
   if (isLoading) {
     return (
@@ -215,89 +344,7 @@ export function PreviewPage() {
         </p>
       )}
 
-      <article className="mt-8 leading-relaxed text-(--color-ink-soft)">
-        {segments.map((seg, i) => {
-          if (seg.kind === "md") {
-            return (
-              <ReactMarkdown
-                // biome-ignore lint/suspicious/noArrayIndexKey: stable segment order
-                key={`md-${i}`}
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeRaw]}
-                components={MD_COMPONENTS}
-              >
-                {seg.content}
-              </ReactMarkdown>
-            );
-          }
-          if (seg.kind === "flashcards") {
-            return (
-              <section key="flashcards" className="mt-10">
-                <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-                  Flashcards
-                </h2>
-                <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
-                  <FlashcardDeck cards={job.flashcards_json?.cards ?? []} />
-                </div>
-              </section>
-            );
-          }
-          if (seg.kind === "memory_sprint") {
-            return (
-              <section key="memory_sprint" className="mt-10">
-                <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-                  Memory Sprint
-                </h2>
-                <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
-                  <MemorySprint pack={job.memory_sprint_json ?? { items: [] }} />
-                </div>
-              </section>
-            );
-          }
-          if (seg.kind === "games") {
-            return (
-              <section key="games" className="mt-10">
-                <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-                  Game Breaks
-                </h2>
-                <div className="flex flex-col gap-5">
-                  {(job.games_json?.games ?? []).map((g, gi) => (
-                    // biome-ignore lint/suspicious/noArrayIndexKey: order is stable
-                    <GameCard key={gi} game={g} />
-                  ))}
-                </div>
-              </section>
-            );
-          }
-          if (seg.kind === "reading") {
-            return (
-              <section key="reading" className="mt-10">
-                <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-                  Reading
-                </h2>
-                <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
-                  <ReadingExperience
-                    passage={job.reading_json ?? { passage_md: "", checkpoints: [] }}
-                  />
-                </div>
-              </section>
-            );
-          }
-          // final_challenge
-          return (
-            <section key="final_challenge" className="mt-10">
-              <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-                Final Challenge
-              </h2>
-              <div className="rounded-(--radius-lg) border border-(--color-accent-border) bg-[linear-gradient(135deg,var(--color-elevated),var(--color-accent-soft))] p-5">
-                <BossFight
-                  challenge={job.final_challenge_json ?? { starting_hp: 100, questions: [] }}
-                />
-              </div>
-            </section>
-          );
-        })}
-      </article>
+      {isFlowV2(job) ? <FlowV2Preview job={job} /> : <LegacyPreview job={job} id={id ?? ""} />}
     </>
   );
 }
