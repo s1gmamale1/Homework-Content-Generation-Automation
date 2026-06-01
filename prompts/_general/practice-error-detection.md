@@ -18,7 +18,7 @@ for `math_equation` they are the lines/steps of a worked solution; for
 One Error Detection task, emitted in the structured form the response schema
 requests. Fill every field:
 
-- `task_id` — short stable slug (e.g. `err_{{SUBJECT}}_g8_001`); optional.
+- `task_id` — short stable slug (e.g. `err_topic_g8_001`); optional.
 - `pattern` — exactly one of `math_equation`, `grammar_sentence`, `science_diagram`.
 - `concept_ids` — the lesson concept(s). Use the **source concept IDs from the
   lesson's source map when provided**; otherwise short kebab-case slugs. >=1.

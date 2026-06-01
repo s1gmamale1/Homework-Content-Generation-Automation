@@ -92,6 +92,10 @@ Use SVG for genuine diagrams (structures, processes, figures, charts) that carry
 }
 ```
 
+## Language
+
+All student-facing text in natural, formal Uzbek ("Siz", never "sen"). Preserve every term, formula, number, unit, and symbol exactly as in the source.
+
 ## Self-check
 
 1. ✓ Exactly 3 checkpoints?

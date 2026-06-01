@@ -25,7 +25,7 @@ Every item references the `flashcard_id` of the card it tests, and a `kind`.
 
 - **multiple_choice / choose_correct_explanation** — `options` is EXACTLY 4 objects, each `{text, is_correct, reason}`. Exactly ONE option has `is_correct: true`. Every WRONG option's `reason` names the real misconception it represents (for choose_correct_explanation, `reason` is the flawed reasoning that makes it tempting). Keep options similar in length/style so formatting never gives away the answer. No `blanks`.
 - **fill_blank** — put `_____` in the `prompt`; provide `blanks` = one or more `{answer, accepted_variations}` where `accepted_variations` lists other spellings/phrasings that should also count as correct. No `options`.
-- `why_prompt` + `expected_reasoning_keywords` — REQUIRED when the lesson's `{{SUBJECT}}` is a science (biology / physics / chemistry, or any subject whose `lesson_context` and source map are concept-and-mechanism based); optional otherwise.
+- `why_prompt` + `expected_reasoning_keywords` — REQUIRED when the lesson's {{SUBJECT}} is a science (biology / physics / chemistry, or any subject whose `lesson_context` and source map are concept-and-mechanism based); optional otherwise.
 - `correct_feedback` / `wrong_feedback` — short, encouraged.
 - Distractors are real misconceptions, never joke/filler answers. Each item must trace to a card the student studied; keep the kinds balanced (no more than ~60% one kind). Pass gate stays 60%.
 

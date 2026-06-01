@@ -12,7 +12,7 @@ response schema requests.
 
 One scenario object with these fields:
 
-- `scenario_id` — short stable slug, e.g. `rlc_{{SUBJECT}}_<concept>_001` (optional).
+- `scenario_id` — short stable slug, e.g. `rlc_topic_001` (optional).
 - `concept_ids` — the lesson concept(s) tested. Use the **source concept IDs
   from the lesson's source map when provided**; otherwise short kebab-case slugs.
   At least one. Pick concepts the student met earlier this session so
