@@ -27,8 +27,12 @@ from app.schemas.practice_games import (
     CbpModeGame,
     ErrorBlock,
     ErrorDetection,
+    GameChoice,
+    MemoryMatchPayload,
+    MemoryMatchPair,
     RealLifeChallenge,
     RlcDecision,
+    TicTacToePayload,
 )
 
 
@@ -200,132 +204,58 @@ def test_error_block_minimal() -> None:
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _checkpoint(**overrides) -> dict:
-    base = dict(
-        intent="identify",
-        form="mcq",
-        question="Qaysi ikki karta bir xil tushunchaga tegishli?",
-        options=["A juftlik", "B juftlik", "C juftlik", "D juftlik"],
-        correct_index=0,
-        feedback="To'g'ri.",
+def _ttt_cells():
+    return [GameChoice(label=f"c{i}", is_correct=(i == 0)) for i in range(9)]
+
+
+def _cbp_mode(**_overrides) -> dict:  # noqa: ANN202
+    """Stub — the old full-CBP CbpModeGame shape no longer exists.
+    Tests that call this will fail at runtime; they are updated in a later task.
+    """
+    raise NotImplementedError(
+        "_cbp_mode is removed: CbpModeGame is now a compact standalone schema. "
+        "Update callers to use the new shape (title, source_concept_ids, "
+        "interaction_mode, instruction, interaction_payload, why_prompt)."
     )
-    base.update(overrides)
-    return base
 
 
-_PAYLOAD_FOR = {
-    "memory_match": dict(pairs=[
-        dict(left="Parallelogramm", right="qarama-qarshi tomonlari parallel"),
-        dict(left="Romb", right="hamma tomonlari teng"),
-        dict(left="Kvadrat", right="hamma tomon teng + to'g'ri burchak"),
-        dict(left="Trapetsiya", right="bir juft parallel tomon"),
-    ]),
-    "jigsaw": dict(
-        pieces=[dict(id="p1", content="qarama-qarshi tomonlar"),
-                dict(id="p2", content="teng"),
-                dict(id="p3", content="parallel")],
-        allowed_assembly_types=["xossa", "ta'rif"],
-    ),
-    "sentence_fill": dict(
-        sentence="Parallelogrammning qarama-qarshi tomonlari _____.",
-        chips=[dict(label="teng va parallel", is_correct=True),
-               dict(label="faqat teng", is_correct=False, reason="parallellik ham shart"),
-               dict(label="perpendikular", is_correct=False, reason="bu noto'g'ri munosabat")],
-    ),
-    "tictactoe": dict(cells=[
-        dict(label="qarama-qarshi tomonlar teng", is_correct=True),
-        *[dict(label=f"chalg'ituvchi {i}", is_correct=False, reason="mavzuga aloqasiz") for i in range(8)],
-    ]),
-}
-
-
-def _cbp_mode(**overrides) -> dict:
-    base = dict(
+def test_cbp_mode_game_compact_valid():
+    g = CbpModeGame(
+        title="Match the terms",
+        source_concept_ids=["c1"],
         interaction_mode="memory_match",
-        title="Xotira moslashtirish: Hujayra qismlari",
-        student_role="laboratoriya yordamchisi",
-        case_type="Memory reconstruction case",
-        source_concept_ids=["mitochondria-function"],
-        case_setup=dict(
-            narrative="Siz hujayra qismlarini tartibga solishingiz kerak.",
-            student_role="laboratoriya yordamchisi",
-            task="Juftliklarni eslab qoling.",
-        ),
-        checkpoints=[
-            _checkpoint(intent="identify"),
-            _checkpoint(intent="decide"),
-            _checkpoint(intent="justify_or_avoid_mistake"),
-        ],
-        decision_process_explanation=dict(
-            prompt="Fikrlashingizni tushuntiring: tushuncha, ma'no, xato.",
-            expected_components=["concept", "method", "mistake"],
-            rubric={"full": "all three"},
-            sample_acceptable_answer="Mitoxondriya energiya ishlab chiqaradi...",
-        ),
-        learning_block_1=dict(
-            explanation="Ikki karta faqat manba ularni bog'laganda juftlik bo'ladi.",
-        ),
-        learning_block_2=dict(
-            explanation="Bog'lanishning yo'nalishi bor: A qism B ni qo'llab-quvvatlaydi.",
-        ),
-        final_simulation=dict(
-            correct_path="Talaba ma'noni qayta tiklaydi -> Recalled.",
-            wrong_path="Talaba faqat joyni eslaydi -> Position Memory Only.",
-            why_wrong_fails="Joy xotirasi tez unutiladi; faqat ma'no qayta tiklash qoladi.",
-        ),
-        feedback_summary=dict(
-            understood="Tushuncha ma'nosi.",
-            mistake="Joy xotirasi.",
-            review="Qayta ko'rib chiqish.",
-        ),
-        completion_rules=dict(
-            pass_condition="Ma'noni qayta tiklaydi.",
-            retry_condition="Faqat joyni eslaydi.",
-        ),
+        instruction="Match each term to its meaning.",
+        interaction_payload=MemoryMatchPayload(
+            pairs=[MemoryMatchPair(left=f"L{i}", right=f"R{i}") for i in range(4)]),
+        why_prompt="Explain why these pair up — the concept, the link, the trap.",
     )
-    base.update(overrides)
-    if base["interaction_mode"] in _PAYLOAD_FOR:
-        base.setdefault("interaction_payload", _PAYLOAD_FOR[base["interaction_mode"]])
-    return base
+    assert g.interaction_mode == "memory_match"
+    assert g.why_prompt
+    assert not hasattr(g, "checkpoints") and not hasattr(g, "case_setup")
+    assert not hasattr(g, "decision_process_explanation")
 
 
-def test_cbp_mode_valid() -> None:
-    game = CbpModeGame(**_cbp_mode())
-    assert game.interaction_mode == "memory_match"
-    assert len(game.checkpoints) == 3
-    # Inherits the CBP contract: source concepts, DPE, simulation present.
-    assert game.source_concept_ids
-    assert game.decision_process_explanation.options is None  # DPE never an MCQ
+def test_cbp_mode_game_requires_concept_ids_instruction_why():
+    import pytest
+    base = dict(title="T", interaction_mode="tictactoe",
+                interaction_payload=TicTacToePayload(cells=_ttt_cells()))
+    with pytest.raises(Exception):
+        CbpModeGame(**base, source_concept_ids=[], instruction="i", why_prompt="w")
+    with pytest.raises(Exception):
+        CbpModeGame(**base, source_concept_ids=["c1"], instruction="", why_prompt="w")
+    with pytest.raises(Exception):
+        CbpModeGame(**base, source_concept_ids=["c1"], instruction="i", why_prompt="")
 
 
-@pytest.mark.parametrize(
-    "mode", ["memory_match", "jigsaw", "sentence_fill", "tictactoe"]
-)
-def test_cbp_mode_accepts_all_four_interaction_modes(mode: str) -> None:
-    game = CbpModeGame(**_cbp_mode(interaction_mode=mode))
-    assert game.interaction_mode == mode
-
-
-def test_cbp_mode_rejects_unknown_interaction_mode() -> None:
-    with pytest.raises(ValidationError):
-        CbpModeGame(**_cbp_mode(interaction_mode="flashcards"))
-
-
-def test_cbp_mode_requires_exactly_three_checkpoints() -> None:
-    # Inherited from CaseBasedPreview: exactly 3 MCQ checkpoints.
-    with pytest.raises(ValidationError):
-        CbpModeGame(**_cbp_mode(checkpoints=[_checkpoint(), _checkpoint()]))
-
-
-def test_cbp_mode_requires_at_least_one_source_concept_id() -> None:
-    with pytest.raises(ValidationError):
-        CbpModeGame(**_cbp_mode(source_concept_ids=[]))
-
-
-def test_cbp_mode_requires_payload_matching_mode() -> None:
-    with pytest.raises(ValidationError):
-        CbpModeGame(**_cbp_mode(interaction_mode="jigsaw",
-                                interaction_payload=_PAYLOAD_FOR["memory_match"]))
+def test_cbp_mode_payload_must_match_mode():
+    import pytest
+    with pytest.raises(Exception):
+        CbpModeGame(
+            title="T", source_concept_ids=["c1"], interaction_mode="tictactoe",
+            instruction="i", why_prompt="w",
+            interaction_payload=MemoryMatchPayload(
+                pairs=[MemoryMatchPair(left=f"L{i}", right=f"R{i}") for i in range(4)]),
+        )
 
 
 def test_memory_match_payload_pair_count() -> None:
@@ -350,8 +280,3 @@ def test_tictactoe_requires_nine_cells_and_a_correct() -> None:
         TicTacToePayload(cells=[dict(label=f"c{i}", is_correct=(i == 0)) for i in range(4)])
 
 
-def test_cbp_mode_valid_with_each_mode_payload() -> None:
-    for mode in ("memory_match", "jigsaw", "sentence_fill", "tictactoe"):
-        g = CbpModeGame(**_cbp_mode(interaction_mode=mode))
-        assert g.interaction_mode == mode
-        assert g.interaction_payload is not None

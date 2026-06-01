@@ -33,7 +33,6 @@ from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.schemas.flow_v2 import CaseBasedPreview
 
 # ─────────────────────────────────────────────────────────────────────
 # Real-Life Challenge
@@ -208,19 +207,20 @@ _PAYLOAD_TYPE_FOR_MODE = {
 }
 
 
-class CbpModeGame(CaseBasedPreview):
-    """A Case-Based Preview interaction-mode game. These four games share the
-    exact CBP content contract (3 MCQ checkpoints -> DPE -> correct/wrong
-    simulation -> feedback) — their own spec files literally call them
-    "Case-Based Preview Interaction Mode". The only structural difference is
-    the interaction skin, captured by ``interaction_mode``. The flavour
-    (cards vs grid vs sentence) lives in the per-mode prompt, not the schema.
+class CbpModeGame(BaseModel):
+    """Compact interaction-mode practice game (Path B). NOT a full Case-Based
+    Preview — the standalone `case-based-preview` phase delivers the learning
+    case in the flow. Here: the game board + one lightweight reasoning prompt.
     """
-
+    title: str = Field(min_length=1)
+    source_concept_ids: list[str] = Field(min_length=1)   # source fidelity
     interaction_mode: PracticeInteractionMode
+    instruction: str = Field(min_length=1)                # 1–2 sentences: the task
     interaction_payload: Union[
         MemoryMatchPayload, JigsawPayload, SentenceFillPayload, TicTacToePayload
     ]
+    why_prompt: str = Field(min_length=1)                 # open "explain your reasoning" step
+    expected_reasoning_keywords: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _payload_matches_mode(self) -> "CbpModeGame":
