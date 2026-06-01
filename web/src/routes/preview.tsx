@@ -1,6 +1,7 @@
 import { BossFight } from "@/components/boss-fight/boss-fight";
 import { Eyebrow } from "@/components/eyebrow";
 import { FlashcardDeck } from "@/components/flashcards/flashcard-deck";
+import { PhaseBoundary } from "@/components/flow-v2/phase-boundary";
 import { SourceMapView } from "@/components/flow-v2/source-map";
 import { GameCard } from "@/components/games/game-card";
 import { MemorySprint } from "@/components/memory-sprint/memory-sprint";
@@ -258,7 +259,9 @@ function FlowV2Preview({ job }: { job: Job }) {
           <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
             Source Map
           </h2>
-          <SourceMapView map={job.source_map_json} />
+          <PhaseBoundary title="Source Map">
+            <SourceMapView map={job.source_map_json} />
+          </PhaseBoundary>
         </section>
       )}
       {byDivision.map(({ div, phases }) => (
@@ -269,7 +272,7 @@ function FlowV2Preview({ job }: { job: Job }) {
               <div key={p.key}>
                 <h3 className="mb-2 text-base font-semibold text-(--color-ink)">{p.title}</h3>
                 <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
-                  {p.render(job[p.column])}
+                  <PhaseBoundary title={p.title}>{p.render(job[p.column])}</PhaseBoundary>
                 </div>
               </div>
             ))}

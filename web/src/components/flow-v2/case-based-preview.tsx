@@ -84,9 +84,9 @@ export function CaseBasedPreviewView({ cbp }: { cbp: CaseBasedPreview }) {
       </ReviewCard>
 
       {cps[0] && <Checkpoint cp={cps[0]} n={1} />}
-      <Block lb={cbp.learning_block_1} n={1} />
+      {cbp.learning_block_1 && <Block lb={cbp.learning_block_1} n={1} />}
       {cps[1] && <Checkpoint cp={cps[1]} n={2} />}
-      <Block lb={cbp.learning_block_2} n={2} />
+      {cbp.learning_block_2 && <Block lb={cbp.learning_block_2} n={2} />}
       {cps.slice(2).map((cp, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: stable render order
         <Checkpoint key={i + 2} cp={cp} n={i + 3} />
