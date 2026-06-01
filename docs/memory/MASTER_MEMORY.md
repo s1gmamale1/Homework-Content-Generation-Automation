@@ -292,3 +292,20 @@ Plus **Part 2**: gemini (which reads PDFs natively) keeps the whole PDF attached
 **FINDING / REQUIRED FOLLOW-UP (no longer optional):** design a LIGHTER schema for the CBP-mode games — they likely need only a compact prompt/scenario + the interaction_payload (+ maybe one checkpoint + DPE), NOT the full CBP shell. This is a new mini-workstream (its own spec/plan). The current payload schema + prompts are correct and stay; the lightening is a separate change to `CbpModeGame`'s inherited shape. Per-homework latency (~25-35 min for HARD, driven by CBP ~12min + the heavy games) is the motivation — see the latency analysis.
 
 **Status:** WS4 schema/synth/prompts = DONE + green; live game generation NOT yet usable pending the lighter-skeleton follow-up. Remaining Flow v2: WS5 (Uzbek language contract) + the game-skeleton lightening follow-up. See [[0017]] [[0015]].
+
+## [0019] General Prompts MVP (Path A) — subject-parameterized prompts for ALL subjects + single GENERAL_FLOW + classify removed — 2026-06-01 (Nggaev-v2)
+**What:** Path A MVP. One set of general, subject-parameterized prompts now serves every subject (no more 7 per-subject prompt copies in the live path), the flow is a single linear sequence (no easy/hard, no classify), and the classify phase is gone from the generation path. Spec: docs/nets_general_prompts_mvp_design.md · Plan: docs/superpowers/plans/2026-06-01-general-prompts-mvp.md.
+
+**Shipped:**
+- **General prompts** — `prompts/_general/` (7 files), one per live phase, written subject-neutral with a `{{SUBJECT}}` token.
+- **Resolver** (`app/services/prompts.py`) — `get_prompt(subject, phase_name)` loads from `_general` by default and substitutes `{{SUBJECT}}` from `SUBJECT_LABELS` (e.g. `physics`→"Physics (Fizika)"). A `USE_SUBJECT_PROMPTS=False` switch (off for MVP) is the future override hook: when True it prefers `prompts/<subject>/<phase>.md` if that file exists, else falls back to `_general`. `get_prompt_hash` follows the same resolution for provenance.
+- **Single flow** (`app/services/flows.py`) — one `GENERAL_FLOW` + `flow_for()`; no easy/hard split, no classify step.
+- **Classify removed** — dropped from `STRUCTURED_PHASE_SCHEMAS` (agent.py) and from `pipeline.run()`; difficulty is now pinned `None` end-to-end (run() docstring de-staled to match).
+
+**Commits (Nggaev-v2):** `daa9008` (general `_general` prompts — Path A), `24a2b67` (general CBP language directive + prompt polish), `fe1bc6d` (`_general` resolver + `{{SUBJECT}}` substitution), `8a4a8a1` (single `GENERAL_FLOW`, drop easy/hard), `5a3660b` (drop classify from schema map), `b1d758c` (classify-free `run()`, difficulty pinned None), `6738336` (de-stale run() docstring + pinned-difficulty note).
+
+**Verification:** full suite **222 green** (`uv run python -m pytest tests/ -q`). Real claude-CLI smoke **PASS**: built `get_prompt("physics","boss-arena")` (asserted `{{SUBJECT}}` gone + "Physics" present), fed a hand-written Uzbek physics lesson_context (Nyutonning ikkinchi qonuni, F=ma) + a 3-concept source-map digest, ran the FAST boss-arena phase through the real `claude` CLI and `model_validate`'d the `BossArena` result → **5 questions, each non-empty why/how/what, concept_ids≥1** (out_tokens≈15.3k, ~4.5min). Throwaway `smoke_general.py` deleted (not committed).
+
+**DEAD-BUT-UNTOUCHED:** the per-subject prompt dirs (`prompts/<subject>/`) and each subject's `flow.md` / `instruction.md` / `classify.md` are now unused by the live path but were INTENTIONALLY LEFT ON DISK — they become the override layer the moment `USE_SUBJECT_PROMPTS` is flipped True.
+
+**Next workstream — Path B:** lighten `CbpModeGame` off the full `CaseBasedPreview` shell (the [[0018]] heaviness blocker — full CBP shell per game = ~20+min/call), then re-add a subject-matched game via a `SUBJECT_GAME` map + author the 4 CBP-mode general prompts. See [[0018]].
