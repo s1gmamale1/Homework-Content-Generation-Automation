@@ -43,7 +43,6 @@ from app.repositories import agent_usage as usage_repo
 from app.schemas import (
     BossArena,
     CaseBasedPreview,
-    ClassifyDecision,
     ExtractedTOC,
     FinalChallenge,
     FlashcardsPack,
@@ -112,7 +111,6 @@ def _resolve_model(provider: str, model: Optional[str]) -> Optional[str]:
 # in :mod:`app.services.gemini` so ``pipeline.py`` can read the same map
 # from either module during the migration.
 STRUCTURED_PHASE_SCHEMAS: dict[str, type[BaseModel]] = {
-    "classify": ClassifyDecision,
     "case-based-preview": CaseBasedPreview,
     "flashcards": FlashcardsPack,
     "memory-sprint": MemorySprintPack,

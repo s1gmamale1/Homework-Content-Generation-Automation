@@ -94,7 +94,6 @@ def test_structured_phase_schemas_keys_present() -> None:
     on the key set (not exact values) keeps this loose enough that adding
     a new phase doesn't fail this test."""
     expected = {
-        "classify",
         "flashcards",
         "memory-sprint",
         "game-breaks",

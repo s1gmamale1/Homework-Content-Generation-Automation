@@ -30,3 +30,8 @@ def test_phase_deps_have_no_reading_or_cbp_mode_games():
 def test_unknown_subject_raises():
     with pytest.raises(KeyError):
         flows.flow_for("chemistry-unknown")
+
+
+def test_classify_not_registered():
+    from app.services.agent import STRUCTURED_PHASE_SCHEMAS
+    assert "classify" not in STRUCTURED_PHASE_SCHEMAS
