@@ -404,7 +404,7 @@ def _utcnow() -> datetime:
 
 
 async def run(job_id: UUID) -> None:
-    """Execute a homework job: extract → classify? → content phases → assemble."""
+    """Execute a homework job: extract → content phases → assemble."""
     resource_id = f"job:{job_id}"
     log = logger.bind(job_id=str(job_id))
     t_start = perf_counter()
@@ -460,6 +460,7 @@ async def run(job_id: UUID) -> None:
             await jobs_repo.set_status(session, job_id, "running", started_at=_utcnow())
             await session.commit()
 
+        # pinned None — classify/easy-hard removed; kept in helper signatures to avoid wide surgery
         difficulty: Optional[str] = None
         prior_outputs: dict[str, str] = {}
         lesson_context: Optional[str] = None
