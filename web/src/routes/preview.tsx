@@ -78,7 +78,7 @@ const MD_COMPONENTS = {
   ),
 };
 
-function LegacyPreview({ job }: { job: Job; id: string }) {
+function LegacyPreview({ job }: { job: Job }) {
   // Split the assembled MD into ordered segments around the structured-phase
   // headings. Each segment is either an MD chunk or a structured renderer
   // placeholder. Plain MD wins when the *_json is empty (extraction failed),
@@ -344,7 +344,7 @@ export function PreviewPage() {
         </p>
       )}
 
-      {isFlowV2(job) ? <FlowV2Preview job={job} /> : <LegacyPreview job={job} id={id ?? ""} />}
+      {isFlowV2(job) ? <FlowV2Preview job={job} /> : <LegacyPreview job={job} />}
     </>
   );
 }

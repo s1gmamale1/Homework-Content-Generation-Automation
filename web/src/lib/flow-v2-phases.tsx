@@ -34,7 +34,7 @@ const gameDef = (title: string, column: keyof Job): FlowV2PhaseDef => ({
   column,
   title,
   division: "Practice Arc",
-  isEmpty: (d) => !d,
+  isEmpty: (d) => !d || !(d as CbpModeGame).interaction_mode,
   render: (d: CbpModeGame) => <CbpModeGameView game={d} />,
 });
 
