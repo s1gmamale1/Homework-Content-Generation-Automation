@@ -17,7 +17,7 @@ from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
 from app.services import agent, events_bus
 from app.services.flows import (
-    SUBJECT_FLOWS,
+    flow_for,
     file_needed_phases,
     filter_prior_outputs,
     max_output_tokens_for,
@@ -452,17 +452,9 @@ async def run(job_id: UUID) -> None:
             f"pages={section_data['page_start']}-{section_data['page_end']}"
         )
 
-        # ─── plan phase sequence ───────────────────────────────
-        flow = SUBJECT_FLOWS[subject]
-        sequence: list[str] = ["extract"]
-        if flow["has_classify"]:
-            sequence.append("classify")
-        else:
-            sequence.extend(flow["hard"])
-        log.info(
-            f"[job {job_id}] sequence planned | has_classify={flow['has_classify']} "
-            f"initial_phases={sequence}"
-        )
+        # ─── plan phase sequence (single flow — no classify/easy-hard) ──
+        sequence: list[str] = ["extract", *flow_for(subject)]
+        log.info(f"[job {job_id}] sequence planned | phases={sequence}")
 
         async with SessionLocal() as session:
             await jobs_repo.set_status(session, job_id, "running", started_at=_utcnow())
@@ -485,12 +477,10 @@ async def run(job_id: UUID) -> None:
             f"{sorted(file_phases) or '(none beyond extract)'}"
         )
 
-        # ─── head: extract + classify (sequential — everyone depends on them) ──
-        # Each step is sequential because the next step's content depends on
-        # this one's *output*: extract → lesson_context → classify → difficulty.
+        # ─── head: extract (sequential — every content phase depends on it) ──
+        # extract runs first because the next step's content depends on its
+        # *output*: extract → lesson_context → source map → content phases.
         head_phases: list[str] = ["extract"]
-        if flow["has_classify"]:
-            head_phases.append("classify")
 
         for idx, phase_name in enumerate(head_phases):
             try:
@@ -563,29 +553,6 @@ async def run(job_id: UUID) -> None:
                         f"[job {job_id}] source map extraction failed "
                         f"(non-fatal): {exc!r}"
                     )
-            elif phase_name == "classify":
-                # Schema-constrained classifier returns ClassifyDecision; the
-                # Literal[easy,hard] enum guarantees `difficulty` is one of
-                # those two strings. No substring matching, no defaulting.
-                if hasattr(_parsed, "difficulty"):
-                    difficulty = _parsed.difficulty
-                else:
-                    # Defensive fallback for any future case where structured
-                    # routing didn't fire (e.g., schema removed from map).
-                    difficulty = _parse_classify(output_md)
-                async with SessionLocal() as session:
-                    await jobs_repo.set_difficulty(session, job_id, difficulty)
-                    await session.commit()
-                await events_bus.publish(
-                    resource_id, "difficulty_classified", {"difficulty": difficulty}
-                )
-                appended = flow[difficulty]
-                sequence.extend(appended)
-                log.info(
-                    f"[job {job_id}] difficulty resolved={difficulty} | "
-                    f"appended_phases={appended} new_total={len(sequence)}"
-                )
-
         content_phases = sequence[len(head_phases):]
 
         # ─── tail: content phases (parallel, wave-based by PHASE_DEPS) ────────
