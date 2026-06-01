@@ -31,11 +31,12 @@ _LANG_ENGLISH = (
     "collocations, grammar items, and anything the learner must read or produce.\n"
     "- In formal Uzbek (\"Siz\"): all scaffolding — task instructions, framing, "
     "hints, explanations, feedback, and the DPE/reasoning prompts (the UZ bridge).\n"
-    "- CEFR (A1–B2): if the source shows a grade, level the English via "
-    "G5→A1, G6→A1+, G7→A2, G8→A2+, G9→B1, G10→B1+, G11→B2; otherwise infer the "
-    "level from the source's own complexity (default to A2 if truly indeterminate). "
-    "CEFR controls sentence length, tenses, and vocabulary range — never "
-    "exceed the level (no B2 vocabulary in an A1/G5 lesson)."
+    "- CEFR (A1–B1+): if the source shows a grade, level the English via "
+    "G5→A1, G6→A1+, G7→A2, G8→A2, G9→A2+, G10→B1, G11→B1+ (the Uzbek national "
+    "curriculum keeps A2 across the G5–9 band; B1 only after G9); otherwise infer "
+    "the level from the source's own complexity (default to A2 if truly "
+    "indeterminate). CEFR controls sentence length, tenses, and vocabulary range — "
+    "never exceed the level (no B1 vocabulary in an A1/G5 lesson)."
 )
 
 LANGUAGE_RULES = {"english": _LANG_ENGLISH, "_default": _LANG_UZBEK}
