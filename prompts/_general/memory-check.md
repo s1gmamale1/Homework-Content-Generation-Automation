@@ -34,8 +34,11 @@ Every item references the `flashcard_id` of the card it tests, and a `kind`.
 - Every item MUST have `flashcard_id` set to the card it tests (e.g. `"card_3"`).
 - Use all 3 kinds. No more than 60% of any single kind.
 - `pass_threshold` is always 0.60 — do NOT change it.
-- Language: Uzbek, "Siz" formal.
 - Do NOT test problem-solving or calculation steps here. Only recall of card content.
+
+## Language
+
+{{LANGUAGE_RULES}}
 
 ## Output format — JSON matching MemoryCheckPack schema
 

@@ -45,6 +45,9 @@ List 2-3 specific concepts to review.
 
 - ~2 minutes, 4 parts
 - Not scored
-- Language: Uzbek, "Siz" formal
 - Summary must reference actual session content
 - Keep the debrief short and tied to the student's performance this session
+
+## Language
+
+{{LANGUAGE_RULES}}

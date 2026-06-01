@@ -33,6 +33,8 @@ Rules:
 - Every card MUST set `type` and `difficulty`.
 - Diagrams: describe with a bracket `[Diagram: ...]` note — do NOT emit raw inline `<svg>`.
 
+For an English (L2) lesson: the card front is the English target item (word / phrase / grammar structure); the back, hint, and explanation are the Uzbek bridge (gloss / meaning / usage note). For every other subject, both sides follow the Language rules above (Uzbek).
+
 ## What to put on cards for {{SUBJECT}}
 
 Derive the card content types from this lesson's `lesson_context` and source map: cover the specific terms, names, structures, processes, rules, formulas, and classification terms that this {{SUBJECT}} chapter actually introduces. For each entry, put the cue on the `front` and its definition / value / function / rule on the `back`. Whatever a {{SUBJECT}} student must be able to recall from this chapter belongs on a card.
@@ -73,6 +75,9 @@ Flash cards are a simple reference tool, so describe any helpful diagram as a sh
 - Front = name. Back = definition/function + optional bracket `[Diagram: ...]` description. Put any explanation/example/misconception in their own fields, not crammed into `back`.
 - NO practice problems, NO questions, NO hooks, NO stories
 - Include formulas only when the {{SUBJECT}} chapter itself treats them as key facts to recall; otherwise keep cards to terms and definitions
-- Language: Uzbek, "Siz" formal
 - Cover every term, name, structure, process, rule, and classification term the {{SUBJECT}} student will encounter in the homework
 - Cards are returnable throughout the session — student can check them anytime
+
+## Language
+
+{{LANGUAGE_RULES}}

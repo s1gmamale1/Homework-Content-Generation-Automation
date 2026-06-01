@@ -56,6 +56,4 @@ universal SVG rules injected by the runtime (do not specify size or colors here)
 
 ## Language
 
-Write all student-facing text in natural, formal Uzbek ("Siz") — clear and
-student-friendly. Preserve every formula, number, unit, and the source meaning
-exactly; do not change them.
+{{LANGUAGE_RULES}}

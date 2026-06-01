@@ -63,5 +63,4 @@ runtime. Do NOT specify size or colours here. Exactly one block is wrong.
 
 ## Language
 
-Student-facing text (`hint`, `why_prompt`, feedback, block text) in natural,
-formal Uzbek ("Siz"). Preserve every term, formula, number, and unit exactly.
+{{LANGUAGE_RULES}}

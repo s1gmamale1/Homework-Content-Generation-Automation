@@ -67,5 +67,4 @@ not specify size or colors here). Add it only when the diagram carries the decis
 
 ## Language
 
-All student-facing text in natural, formal Uzbek ("Siz", never "sen"). Preserve
-every formula, number, unit, and symbol exactly.
+{{LANGUAGE_RULES}}
