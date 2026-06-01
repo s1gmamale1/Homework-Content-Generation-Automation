@@ -74,7 +74,7 @@ CLI router (`app/services/agent.py`). This is settled infrastructure — don't r
         │                         └────────┬─────────┘
         │                                  ▼
         │                         ┌──────────────────┐
-        │                         │  Pipeline        │  extract → classify →
+        │                         │  Pipeline        │  extract → source-map →
         └─────────────────────────│ (pipeline.py)    │  content phases (parallel) →
             phase-by-phase events  └────────┬─────────┘  assemble final packet
                                             ▼
@@ -98,8 +98,9 @@ The flow in words:
    happens in the web request** — it just enqueues.
 4. **Worker claims it.** A background worker polls the DB, locks the pending row, and runs
    the pipeline.
-5. **Pipeline runs the phases.** Extract the lesson text → classify difficulty → generate
-   all the content phases (many in parallel) → assemble everything into one markdown packet.
+5. **Pipeline runs the phases.** Extract the lesson text → build a structured source map →
+   generate all the content phases (many in parallel) → assemble everything into one markdown
+   packet. (Every subject runs the same sequence — there's no easy/hard split.)
 6. **Live updates.** Throughout, the browser is subscribed to a Server-Sent-Events stream
    and shows each phase lighting up as it completes.
 7. **Download / play.** When done, the packet is downloadable as markdown + a ZIP of JSON,
@@ -173,12 +174,12 @@ machine with three stages:
    (each with an id, label, and statement). This "source map" is later injected into every
    content phase so the AI stays faithful to the actual textbook instead of inventing
    material. *(Best-effort: if it fails the job still continues.)*
-3. **`classify`** (only some subjects) — decide if this lesson is **EASY** or **HARD**. That
-   choice picks which sequence of content phases runs. (Some subjects like English and
-   History are *always* HARD and skip this step.)
+
+   *(There used to be a third `classify` step that decided EASY vs HARD. It's gone — Flow v2
+   runs one sequence for every subject, so there's nothing to classify.)*
 
 ### Stage 2 — Tail (content phases, run in PARALLEL)
-This is where the actual homework gets generated. Each subject defines an ordered list of
+This is where the actual homework gets generated. Every subject runs the same ordered list of
 phases (see §7). But they don't all run one-after-another — that would be slow. Instead each
 phase declares **what earlier phases it depends on** (in `flows.PHASE_DEPS`), and a
 **wave-based scheduler** launches every phase whose dependencies are already done,
@@ -203,27 +204,44 @@ and the job flips to `done`.
 Supported subjects: **biology, english, geometriya-g7-11, history, kimyo-g7-11,
 math-algebra, physics**.
 
-Each subject has an entry in `SUBJECT_FLOWS` (`app/services/flows.py`) that lists its
-**easy** and **hard** phase sequences and whether it runs `classify`. Each subject also has
-a `prompts/<subject>/` folder with one `.md` prompt file per phase.
+**One flow for every subject (Flow v2 MVP).** There's no easy/hard split and no `classify`
+step. `flows.flow_for(subject)` returns the same **8-phase** sequence for everyone, differing
+only in *which single practice game* it includes:
 
-The Flow v2 packet is organized into four "divisions":
+```
+case-based-preview → flashcards → memory-check → practice-rlc →
+practice-error-detection → <one subject-matched game> → boss-arena → reflection
+```
+
+The packet is organized into four "divisions":
 
 - **Learning Sections** — `case-based-preview` (a scenario where the student plays a role and
-  makes decisions), `flashcards`, `memory-check`, and for English a `reading` passage.
-- **Practice Arc** — 2-3 *typed conceptual games* curated per subject (not a random grab-bag).
-  There are six game types backed by just **three schemas**:
-  - `practice-rlc` → **Real-Life Challenge** (own schema)
-  - `practice-error-detection` → **Error Detection** (own schema)
-  - `practice-memory-match`, `practice-tictactoe`, `practice-jigsaw`, `practice-sentence`
-    → all four are "interaction modes" sharing one **CbpModeGame** schema (a Case-Based
-    Preview plus an `interaction_mode` tag). One schema, four games.
-- **Boss Arena** — `boss-arena`, a Why→How→What reasoning "boss fight" quiz with HP/damage.
+  makes decisions, with two interleaved "learning blocks"), `flashcards`, `memory-check`.
+- **Practice Arc** — three games: `practice-rlc` (**Real-Life Challenge**),
+  `practice-error-detection` (**Error Detection**), plus **one subject-matched game** chosen
+  by the `SUBJECT_GAME` map (`app/services/flows.py`): `memory-match` for biology & history,
+  `tictactoe` for physics, kimyo & math-algebra, `jigsaw` for geometriya, `sentence` for
+  english. Those four interaction games share one **compact `CbpModeGame`** schema —
+  a game board (typed payload) + a single open "explain your reasoning" prompt (`why_prompt`).
+- **Boss Arena** — `boss-arena`, a Why→How→What reasoning "boss fight" quiz.
 - **Reflection** — a short `reflection` debrief.
 
-The point of the typed-game design: the New_Flow spec forbids "random disconnected games"
-that don't match the target skill, so each subject runs only the games that fit it (e.g.
-math runs error-detection + tictactoe + jigsaw; biology runs RLC + error + memory-match).
+Why only one interaction game per subject (not all four): the spec forbids "random
+disconnected games," *and* those four games used to inherit the **full** Case-Based-Preview
+shell — so heavy that one game could take 20+ minutes to generate. They were lightened to a
+board + one reasoning prompt (real-CLI generation dropped to ~70 seconds), and each subject
+runs only the single game that fits it.
+
+### Prompts: one general set, parameterized by subject
+All phases now read from **`prompts/_general/<phase>.md`** — a single set serving every
+subject. `app/services/prompts.py`'s `get_prompt(subject, phase)` substitutes two tokens:
+- `{{SUBJECT}}` → the subject label, so the same prompt knows what it's teaching.
+- `{{LANGUAGE_RULES}}` → the language directive: for `english`, **English target content with
+  Uzbek "Siz" scaffolding** (CEFR-leveled by grade); for every other subject, formal Uzbek.
+  There's no model-side language detection — the subject key selects the block at build time.
+
+The old per-subject `prompts/<subject>/` folders still exist but are **dead** — a future
+override layer gated behind `USE_SUBJECT_PROMPTS=False`.
 
 ### Two token-saving tricks worth knowing
 - **Dependency filtering:** a phase only receives the prior outputs it actually declared a
@@ -345,11 +363,17 @@ The routes mirror the user journey:
 - `section` → choose provider/model, click Generate.
 - `job` → live phase-by-phase progress via the SSE hook (`use-event-source.ts`).
 - `preview` → renders the finished interactive pieces — flashcard deck, memory match,
-  tile/sentence games, the boss fight, the reading experience — using the structured JSON
-  the pipeline produced (each has a component under `components/`).
+  tile/sentence games, the boss fight — using the structured JSON the pipeline produced (each
+  has a component under `components/`).
 - `usage` → the per-provider consumption dashboard.
 
 `lib/api.ts` is the typed client, `lib/types.ts` mirrors the backend schemas.
+
+> ⚠️ **The frontend still reflects the *older* flow and is being realigned to Flow v2 in a
+> separate workstream.** Some renderers (`memory-sprint`, `reading`, `adaptive-quiz`) map to
+> phases the backend no longer produces — e.g. there's no `reading` phase anymore, so that
+> component currently has no data to show. When this doc and the live `web/` disagree on the
+> interactive pieces, the backend's actual JSON columns (see §4) are the source of truth.
 
 ---
 
@@ -439,13 +463,14 @@ You also need the CLIs you intend to use installed and logged-in on `PATH`
 | You want to… | Go to |
 |--------------|-------|
 | Understand the per-job flow | `app/services/pipeline.py` (`run`) |
-| Change which phases a subject runs | `app/services/flows.py` (`SUBJECT_FLOWS`, `PHASE_DEPS`) |
+| Change the flow or which game a subject gets | `app/services/flows.py` (`flow_for`, `SUBJECT_GAME`, `PHASE_DEPS`) |
 | Add/remove a selectable model | `app/services/agent_models.py` (`MODEL_MANIFEST`) |
 | Change how a CLI is invoked or parsed | `app/services/providers/<cli>.py` |
 | Touch the spawn/usage logic | `app/services/agent.py` |
 | Add an API endpoint | `app/api/v1/jobs.py` or `books.py` |
 | Change the final packet layout | `pipeline._render_homework_md` |
-| Edit what the AI is told to do per phase | `prompts/<subject>/<phase>.md` |
+| Edit what the AI is told to do per phase | `prompts/_general/<phase>.md` (all subjects) |
+| Change language behavior (Uzbek / English-target) | `app/services/prompts.py` (`LANGUAGE_RULES`, `get_prompt`) |
 | Tweak queue/worker/timeout behavior | `app/config.py` + `app/services/worker.py` |
 | See the project's terse rules | `CLAUDE.md` |
 | Read the running worklog/history | `docs/memory/MASTER_MEMORY.md` |
