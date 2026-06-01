@@ -27,3 +27,4 @@ var/
 # ruflo MCP local store
 ruvector.db
 prompts.zip           # local backup archive
+Backend-terms.md
