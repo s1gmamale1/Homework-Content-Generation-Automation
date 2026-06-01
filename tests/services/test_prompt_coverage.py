@@ -4,7 +4,7 @@ import pytest
 from app.services import flows
 from app.services.prompts import get_prompt
 
-_PAIRS = [(s, p) for s in flows.SUPPORTED_SUBJECTS for p in flows.GENERAL_FLOW]
+_PAIRS = [(s, p) for s in flows.SUPPORTED_SUBJECTS for p in flows.flow_for(s)]
 
 
 @pytest.mark.parametrize("subject,phase", _PAIRS)

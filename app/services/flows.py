@@ -16,19 +16,30 @@ SUBJECTS: list[str] = [
     "kimyo-g7-11", "math-algebra", "physics",
 ]
 
-# One flow, all subjects. Learning sections -> practice arc (2 light games) ->
-# Boss -> Reflection. CBP-mode games are Path B (after CbpModeGame is lightened).
-GENERAL_FLOW: list[str] = [
+# Subject-matched CBP-mode game inserted at position 5. Each subject gets one
+# game that fits its content type: memory-match for factual recall, tictactoe
+# for concept application, jigsaw for spatial/structural reasoning, sentence
+# for language practice.
+SUBJECT_GAME: dict[str, str] = {
+    "biology": "practice-memory-match",
+    "history": "practice-memory-match",
+    "physics": "practice-tictactoe",
+    "kimyo-g7-11": "practice-tictactoe",
+    "math-algebra": "practice-tictactoe",
+    "geometriya-g7-11": "practice-jigsaw",
+    "english": "practice-sentence",
+}
+
+_BASE_PHASES: list[str] = [
     "case-based-preview", "flashcards", "memory-check",
     "practice-rlc", "practice-error-detection",
-    "boss-arena", "reflection",
 ]
 
 
 def flow_for(subject: str) -> list[str]:
     if subject not in SUBJECTS:
         raise KeyError(f"Unsupported subject: {subject}")
-    return list(GENERAL_FLOW)
+    return [*_BASE_PHASES, SUBJECT_GAME[subject], "boss-arena", "reflection"]
 
 
 SUPPORTED_SUBJECTS: list[str] = sorted(SUBJECTS)
@@ -49,6 +60,10 @@ PHASE_DEPS: dict[str, list[str]] = {
     "memory-check":             ["flashcards"],
     "practice-rlc":             ["case-based-preview", "flashcards"],
     "practice-error-detection": ["case-based-preview", "flashcards", "memory-check"],
+    "practice-memory-match":    ["flashcards", "memory-check"],
+    "practice-tictactoe":       ["case-based-preview", "flashcards"],
+    "practice-jigsaw":          ["case-based-preview", "flashcards"],
+    "practice-sentence":        ["case-based-preview", "flashcards"],
     "boss-arena":               ["case-based-preview", "flashcards", "memory-check"],
     "reflection":               ["case-based-preview", "boss-arena"],
 }
