@@ -208,16 +208,6 @@ def _ttt_cells():
     return [GameChoice(label=f"c{i}", is_correct=(i == 0)) for i in range(9)]
 
 
-def _cbp_mode(**_overrides) -> dict:  # noqa: ANN202
-    """Stub — the old full-CBP CbpModeGame shape no longer exists.
-    Tests that call this will fail at runtime; they are updated in a later task.
-    """
-    raise NotImplementedError(
-        "_cbp_mode is removed: CbpModeGame is now a compact standalone schema. "
-        "Update callers to use the new shape (title, source_concept_ids, "
-        "interaction_mode, instruction, interaction_payload, why_prompt)."
-    )
-
 
 def test_cbp_mode_game_compact_valid():
     g = CbpModeGame(

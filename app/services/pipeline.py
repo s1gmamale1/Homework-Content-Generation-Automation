@@ -287,51 +287,44 @@ def _synth_md_for_structured(phase_name: str, parsed: Any) -> str:
     if phase_name in _CBP_MODE_PHASES:
         mode = getattr(parsed, "interaction_mode", "") or ""
         title = getattr(parsed, "title", None) or "Practice Game"
-        role = getattr(parsed, "student_role", "") or ""
-        cps = getattr(parsed, "checkpoints", None) or []
-        dpe = getattr(parsed, "decision_process_explanation", None)
-        sim = getattr(parsed, "final_simulation", None)
-        out = [
-            f"## {title} _(CBP mode: {mode})_",
-            f"_Student role: {role}. {len(cps)} checkpoints + DPE._\n",
-        ]
-        out.extend(_render_checkpoints_and_blocks(parsed))
-        if dpe:
-            out.append(f"\n**Decision Process Explanation:** {dpe.prompt}")
-        if sim:
-            out.append("\n" + _teacher(f"Correct path: {sim.correct_path}"))
-            out.append(_teacher(f"Wrong path: {sim.wrong_path}"))
+        out = [f"## {title} _(mode: {mode})_", getattr(parsed, "instruction", "") or ""]
         payload = getattr(parsed, "interaction_payload", None)
-        mode = getattr(parsed, "interaction_mode", "")
-        if payload is not None:
-            if mode == "memory_match":
-                out.append("\n**Pairs to match:**")
-                for p in payload.pairs:
-                    out.append(f"   - {p.left} ↔ {p.right}")
-            elif mode == "jigsaw":
-                out.append(f"\n**Pieces** (assemble via: {', '.join(payload.allowed_assembly_types)}):")
-                for pc in payload.pieces:
-                    out.append(f"   - `{pc.id}` {pc.content}")
-            elif mode == "sentence_fill":
-                out.append(f"\n**Sentence:** {payload.sentence}")
-                for j, ch in enumerate(payload.chips):
-                    out.append(f"   - {chr(97 + j)}) {ch.label}")
-                correct = next((c for c in payload.chips if c.is_correct), None)
-                if correct is not None:
-                    out.append(f"   - {_teacher(f'Correct chip: {correct.label}')}")
-                for ch in payload.chips:
-                    if not ch.is_correct and ch.reason:
-                        out.append(f"   - {_teacher(f'{ch.label} — {ch.reason}')}")
-            elif mode == "tictactoe":
-                out.append("\n**Decision grid (3×3):**")
-                for r in range(3):
-                    row = payload.cells[r * 3:r * 3 + 3]
-                    out.append("   | " + " | ".join(c.label for c in row) + " |")
-                for c in payload.cells:
-                    if c.is_correct:
-                        out.append(f"   - {_teacher(f'Correct cell: {c.label}')}")
-                    elif c.reason:
-                        out.append(f"   - {_teacher(f'{c.label} — {c.reason}')}")
+        if mode == "memory_match" and payload is not None:
+            for pr in getattr(payload, "pairs", []):
+                out.append(f"- {pr.left} ↔ {pr.right}")
+        elif mode == "jigsaw" and payload is not None:
+            for pc in getattr(payload, "pieces", []):
+                out.append(f"- [{pc.id}] {pc.content}")
+            ats = getattr(payload, "allowed_assembly_types", [])
+            if ats:
+                out.append(f"_Assembly types: {', '.join(ats)}_")
+        elif mode == "sentence_fill" and payload is not None:
+            out.append(getattr(payload, "sentence", "") or "")
+            chips = getattr(payload, "chips", [])
+            for ch in chips:
+                out.append(f"- {ch.label}")
+            correct = next((c for c in chips if getattr(c, "is_correct", False)), None)
+            if correct is not None:
+                out.append("- " + _teacher(f"Correct chip: {correct.label}"))
+            for ch in chips:
+                if not getattr(ch, "is_correct", False) and getattr(ch, "reason", None):
+                    out.append("- " + _teacher(f"{ch.label} — {ch.reason}"))
+        elif mode == "tictactoe" and payload is not None:
+            cells = getattr(payload, "cells", [])
+            for r in range(0, 9, 3):
+                row = cells[r:r + 3]
+                out.append(" | ".join(c.label for c in row))
+            for c in cells:
+                if getattr(c, "is_correct", False):
+                    out.append("- " + _teacher(f"Correct cell: {c.label}"))
+                elif getattr(c, "reason", None):
+                    out.append("- " + _teacher(f"{c.label} — {c.reason}"))
+        cids = getattr(parsed, "source_concept_ids", None) or []
+        if cids:
+            out.append("- " + _teacher(f"concepts: {', '.join(cids)}"))
+        why = getattr(parsed, "why_prompt", "") or ""
+        if why:
+            out.append(f"\n**Reasoning:** {why}")
         return "\n".join(out)
 
     return ""
