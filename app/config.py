@@ -32,10 +32,11 @@ class Settings(BaseSettings):
     # Seconds between empty-queue polls. LISTEN/NOTIFY would zero this; for
     # now polling is simple and robust.
     worker_poll_interval: float = 2.0
-    # Hard ceiling per pipeline. Pipelines exceeding this are aborted and
-    # marked failed; a HARD biology run typically takes 60-90s, so 600 is
-    # ~10x headroom for really pathological cases.
-    job_timeout_seconds: int = 600
+    # A full Flow v2 claude job (CBP alone is ~274s, plus ~7 more phases) can
+    # run well past 600s; the worker kills it and retries to failure. 1800s
+    # (30 min) covers a full claude generation with headroom. Cheap models
+    # finish far sooner — a provider-aware timeout is a future refinement.
+    job_timeout_seconds: int = 1800
     # Max retry attempts before terminal failure. Each Gemini transient
     # error consumes one attempt. After exhaustion the job stays `failed`.
     queue_max_attempts: int = 3
