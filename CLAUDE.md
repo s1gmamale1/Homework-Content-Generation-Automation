@@ -8,9 +8,11 @@ FastAPI + React app that turns a textbook PDF into a multi-phase homework packet
 
 Everything LLM-facing goes through `app/services/agent.py` (the CLI router); there is no Gemini SDK, OpenAI SDK, or Anthropic SDK in the runtime path. The four CLIs must be installed on `PATH`.
 
-## Implementation workflow (follow this for ANY change)
+## Implementation workflow
 
-Every implementation goes through the same gated pipeline. **No code before an approved design.** Use the `superpowers` skills at each stage.
+**Substantial or ambiguous** changes go through the gated pipeline below — **no code before an approved design** — using the `superpowers` skills at each stage.
+
+**Exception — small, clear fixes:** when the root cause is already **verified and clear** and the change is low-risk, make it controller-direct: read the real code → fix → prove it (tests / `tsc --noEmit` / build), skipping brainstorm/spec/plan. The standing rules below still apply, and still log a worklog entry. If a "small" fix turns out to be ambiguous or risky once you're in it, stop and fall back to the full pipeline.
 
 1. **Brainstorm** *(hard gate)* — explore the real code, propose 2–3 approaches per decision with a recommendation, lock each choice with the user. Output a spec to `docs/superpowers/specs/YYYY-MM-DD-*.md`, commit it, and **let the user review it** before continuing.
 2. **Write the plan** — turn the approved spec into an ordered, **TDD-per-task** plan: exact file paths, real code, real tests, exact commands, **commit per task**, no placeholders. Self-review (spec coverage + type consistency). Save to `docs/superpowers/plans/…`, commit, **user approves**.
