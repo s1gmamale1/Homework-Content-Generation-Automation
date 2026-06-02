@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -83,12 +83,25 @@ class CaseCheckpoint(BaseModel):
     correct_index: Optional[int] = None
     feedback: str
 
+    @model_validator(mode="after")
+    def _checkpoint_well_formed(self) -> "CaseCheckpoint":
+        if not self.feedback.strip():
+            raise ValueError("checkpoint feedback must be non-empty")
+        if self.form in ("mcq", "choice", "short_select"):
+            if not self.options:
+                raise ValueError(f"form {self.form!r} requires options")
+            if self.correct_index is None or not (0 <= self.correct_index < len(self.options)):
+                raise ValueError(
+                    f"correct_index must be in [0, {len(self.options)}) for form {self.form!r}"
+                )
+        return self
+
 
 class CaseSimulation(BaseModel):
     """Final consequence. Must show both the correct and a common wrong path."""
 
-    correct_path: str
-    wrong_path: str
+    correct_path: str = Field(min_length=1)
+    wrong_path: str = Field(min_length=1)
     why_wrong_fails: str = Field(min_length=1)
 
 

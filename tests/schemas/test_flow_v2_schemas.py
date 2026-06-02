@@ -231,3 +231,29 @@ def test_cbp_requires_both_learning_blocks() -> None:
 def test_cbp_simulation_requires_why_wrong_fails() -> None:
     with pytest.raises(ValidationError):
         CaseSimulation(correct_path="ok", wrong_path="bad", why_wrong_fails="")
+
+
+def test_checkpoint_choice_form_needs_valid_options_and_index():
+    import pytest
+    from app.schemas.flow_v2 import CaseCheckpoint
+    with pytest.raises(Exception):
+        CaseCheckpoint(intent="identify", form="mcq", question="q", options=[],
+                       correct_index=None, feedback="ok")
+    with pytest.raises(Exception):
+        CaseCheckpoint(intent="identify", form="mcq", question="q",
+                       options=["a", "b"], correct_index=5, feedback="ok")
+    with pytest.raises(Exception):
+        CaseCheckpoint(intent="identify", form="mcq", question="q",
+                       options=["a", "b"], correct_index=0, feedback="")
+    cp = CaseCheckpoint(intent="identify", form="mcq", question="q",
+                        options=["a", "b"], correct_index=0, feedback="good")
+    assert cp.correct_index == 0
+
+
+def test_simulation_paths_non_empty():
+    import pytest
+    from app.schemas.flow_v2 import CaseSimulation
+    with pytest.raises(Exception):
+        CaseSimulation(correct_path="", wrong_path="x", why_wrong_fails="z")
+    with pytest.raises(Exception):
+        CaseSimulation(correct_path="x", wrong_path="", why_wrong_fails="z")

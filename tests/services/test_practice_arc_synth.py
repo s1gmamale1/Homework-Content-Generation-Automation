@@ -48,7 +48,8 @@ def _compact_game(mode):
             pairs=[MemoryMatchPair(left=f"L{i}", right=f"R{i}") for i in range(4)]),
         "jigsaw": JigsawPayload(
             pieces=[JigsawPiece(id=f"p{i}", content=f"piece {i}") for i in range(3)],
-            allowed_assembly_types=["theorem ↔ condition"]),
+            allowed_assembly_types=["theorem ↔ condition"],
+            solution=[["p0", "p1"]]),
         "sentence_fill": SentenceFillPayload(
             sentence="A ____ B",
             chips=[GameChoice(label="right", is_correct=True),

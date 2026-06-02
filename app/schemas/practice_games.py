@@ -143,6 +143,14 @@ class ErrorDetection(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _correction_differs_from_broken(self) -> "ErrorDetection":
+        broken = next((b for b in self.blocks if b.is_error), None)
+        if broken is not None and \
+                self.correct_answer_for_error_block.strip() == broken.content.strip():
+            raise ValueError("correct answer must differ from the broken block content")
+        return self
+
 
 # ─────────────────────────────────────────────────────────────────────
 # CBP-mode games — Memory Matching / Jigsaw / Sentence Filling / TicTacToe
@@ -163,9 +171,22 @@ class MemoryMatchPair(BaseModel):
     left: str = Field(min_length=1)
     right: str = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def _sides_differ(self) -> "MemoryMatchPair":
+        if self.left.strip() == self.right.strip():
+            raise ValueError("memory_match pair sides must differ")
+        return self
+
 
 class MemoryMatchPayload(BaseModel):
     pairs: list[MemoryMatchPair] = Field(min_length=4, max_length=8)
+
+    @model_validator(mode="after")
+    def _pairs_distinct(self) -> "MemoryMatchPayload":
+        seen = {(p.left, p.right) for p in self.pairs}
+        if len(seen) != len(self.pairs):
+            raise ValueError("memory_match pairs must be distinct")
+        return self
 
 
 class JigsawPiece(BaseModel):
@@ -176,6 +197,18 @@ class JigsawPiece(BaseModel):
 class JigsawPayload(BaseModel):
     pieces: list[JigsawPiece] = Field(min_length=3, max_length=6)
     allowed_assembly_types: list[str] = Field(min_length=1, max_length=3)
+    solution: list[list[str]] = Field(min_length=1)  # correct piece-id groupings
+
+    @model_validator(mode="after")
+    def _solution_ids_exist(self) -> "JigsawPayload":
+        ids = {p.id for p in self.pieces}
+        for group in self.solution:
+            if not group:
+                raise ValueError("jigsaw solution groups must be non-empty")
+            for pid in group:
+                if pid not in ids:
+                    raise ValueError(f"jigsaw solution references unknown piece id {pid!r}")
+        return self
 
 
 class SentenceFillPayload(BaseModel):
@@ -193,9 +226,12 @@ class TicTacToePayload(BaseModel):
     cells: list[GameChoice] = Field(min_length=9, max_length=9)
 
     @model_validator(mode="after")
-    def _at_least_one_correct(self) -> "TicTacToePayload":
-        if not any(c.is_correct for c in self.cells):
+    def _correct_count_bounded(self) -> "TicTacToePayload":
+        n = sum(1 for c in self.cells if c.is_correct)
+        if n < 1:
             raise ValueError("tictactoe needs at least one correct cell")
+        if n == len(self.cells):
+            raise ValueError("tictactoe cannot have every cell correct")
         return self
 
 

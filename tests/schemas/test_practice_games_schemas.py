@@ -304,3 +304,48 @@ def test_registry_maps_each_game_phase_to_its_mode_subclass():
         assert issubclass(cls, CbpModeGame)
 
 
+def test_memory_match_pair_distinct_sides_and_pairs():
+    import pytest
+    from app.schemas.practice_games import MemoryMatchPair, MemoryMatchPayload
+    with pytest.raises(Exception):
+        MemoryMatchPair(left="x", right="x")
+    dup = [MemoryMatchPair(left="a", right="b")] * 4
+    with pytest.raises(Exception):
+        MemoryMatchPayload(pairs=dup)
+
+
+def test_tictactoe_not_all_correct():
+    import pytest
+    from app.schemas.practice_games import TicTacToePayload, GameChoice
+    with pytest.raises(Exception):
+        TicTacToePayload(cells=[GameChoice(label=f"c{i}", is_correct=True) for i in range(9)])
+
+
+def test_jigsaw_requires_valid_solution():
+    import pytest
+    from app.schemas.practice_games import JigsawPayload, JigsawPiece
+    pieces = [JigsawPiece(id=f"p{i}", content=f"c{i}") for i in range(3)]
+    with pytest.raises(Exception):
+        JigsawPayload(pieces=pieces, allowed_assembly_types=["t"])
+    with pytest.raises(Exception):
+        JigsawPayload(pieces=pieces, allowed_assembly_types=["t"], solution=[["p0", "pX"]])
+    ok = JigsawPayload(pieces=pieces, allowed_assembly_types=["t"], solution=[["p0", "p1"]])
+    assert ok.solution == [["p0", "p1"]]
+
+
+def test_error_detection_correction_differs_from_broken_block():
+    import pytest
+    from app.schemas.practice_games import ErrorDetection, ErrorBlock, _WHY_REQUIRED_PATTERNS
+    pattern = next(iter(_WHY_REQUIRED_PATTERNS))  # a math/science pattern so why_prompt is required
+    blocks = [
+        ErrorBlock(id="b1", content="2x = 4", is_error=True),
+        ErrorBlock(id="b2", content="x = 2", is_error=False),
+        ErrorBlock(id="b3", content="check", is_error=False),
+    ]
+    with pytest.raises(Exception):
+        ErrorDetection(pattern=pattern, concept_ids=["c1"], blocks=blocks,
+                       correct_answer_for_error_block="2x = 4", hint="h",
+                       correct_feedback="c", wrong_correction_feedback="w",
+                       reveal_feedback="r", why_prompt="why because")
+
+

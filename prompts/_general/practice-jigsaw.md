@@ -62,7 +62,8 @@ Emit exactly one JSON object. Example (generic — replace with real lesson cont
       { "id": "p3", "content": "The hypotenuse is side c, opposite the right angle" },
       { "id": "p4", "content": "AC = 3, BC = 4 → AB = 5" }
     ],
-    "allowed_assembly_types": ["theorem ↔ condition", "given ↔ conclusion"]
+    "allowed_assembly_types": ["theorem ↔ condition", "given ↔ conclusion"],
+    "solution": [["p1", "p2"]]
   },
   "why_prompt": "Explain which theorem or concept you identified, why the relationship direction you chose is correct (for example, which piece is the condition and which is the theorem it enables), and what error a student would make by connecting pieces in the wrong direction or by matching on surface similarity alone.",
   "expected_reasoning_keywords": ["right angle", "hypotenuse", "condition", "theorem", "Pythagorean"]
