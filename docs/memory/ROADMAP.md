@@ -57,4 +57,6 @@
 
 ## Shipped / Closed
 
+- **R2–R8 — ALL SHIPPED 2026-06-02 (Nggaev-v2).** One ordered backend fix pass (brainstorm→spec→plan→subagent-driven, each commit controller-verified). Suite 227→240 green. R2 size-gate extract subset (`40dab51`); R3 reflection conform (`576a529`); R4 game phase→mode Literal subclasses (`aedea9d`); R5 fail-fast validators incl. new required `JigsawPayload.solution` (`3e5053e`); R6 TOC task-ref + >20MB guard hoist + stats-from-registry (`f40366b`); R7 timeout 600→1800 (`bebf730`); R8 trim `_SVG_PHASES` (`e3988a1`). See [[MASTER_MEMORY]] §0022. The per-item Issue/Root-cause/Deliverable detail above is retained for reference. **Open follow-up:** frontend adds optional `solution` to the jigsaw TS type (forward-only).
+
 - **R1 — inert subject-prompt leftovers — CLOSED 2026-06-01 (won't-fix, accepted).** The dead `prompts/<subject>/*` files (stale `classify.md` refs + RLC reverse-test) stay on disk, unused. No action needed; they don't affect the live general-prompt path. Only relevant if `USE_SUBJECT_PROMPTS` is ever flipped on — revisit then.
