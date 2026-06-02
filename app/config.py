@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -62,6 +63,12 @@ class Settings(BaseSettings):
     # buys nothing. Other phases keep using the job-level provider/model.
     extract_provider: str = "gemini"
     extract_model: str = "gemini-2.5-flash"
+
+    # ─── Notion archive (Phase 1 push) ───
+    notion_enabled: bool = False
+    notion_api_key: str = ""
+    # Keyed "{subject}|{grade}" → Notion subject-page ID. Parsed from JSON in env.
+    notion_subject_pages: dict[str, str] = Field(default_factory=dict)
 
     # ─── Per-provider call-count caps, per rolling window ─────────────────
     # 0 = unmetered (the /usage page renders a `—` instead of a percentage).
