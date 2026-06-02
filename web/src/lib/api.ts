@@ -64,10 +64,11 @@ export const api = {
     return unwrap<Book[]>(res);
   },
 
-  async uploadBook(file: File, subject: Subject): Promise<Book> {
+  async uploadBook(file: File, subject: Subject, grade?: string): Promise<Book> {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("subject", subject);
+    if (grade) fd.append("grade", grade);
     const res = await authFetch("/api/v1/books", { method: "POST", body: fd });
     return unwrap<Book>(res);
   },

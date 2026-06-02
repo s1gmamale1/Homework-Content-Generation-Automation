@@ -226,7 +226,7 @@ function AgentPicker({
             Model
           </span>
           <Select
-            value={model ?? undefined}
+            value={model ?? ""}
             onValueChange={(value) => onModelChange(value)}
             disabled={modelDisabled}
           >

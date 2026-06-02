@@ -17,10 +17,13 @@ import { api } from "@/lib/api";
 import { SUBJECTS, type Subject } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+const GRADES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"];
+
 export function UploadPage() {
   const navigate = useNavigate();
   const [file, setFile] = useState<File | null>(null);
   const [subject, setSubject] = useState<Subject | "">("");
+  const [grade, setGrade] = useState("");
   const [busy, setBusy] = useState(false);
 
   const onDrop = useCallback((accepted: File[]) => {
@@ -43,7 +46,7 @@ export function UploadPage() {
     }
     setBusy(true);
     try {
-      const book = await api.uploadBook(file, subject as Subject);
+      const book = await api.uploadBook(file, subject as Subject, grade || undefined);
       toast.success("Uploaded.");
       navigate(`/book/${book.id}`);
     } catch (err) {
@@ -83,6 +86,25 @@ export function UploadPage() {
               ))}
             </SelectContent>
           </Select>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="grade">Grade (optional)</Label>
+          <Select value={grade} onValueChange={setGrade} disabled={busy}>
+            <SelectTrigger id="grade">
+              <SelectValue placeholder="Choose a grade" />
+            </SelectTrigger>
+            <SelectContent>
+              {GRADES.map((g) => (
+                <SelectItem key={g} value={g}>
+                  {g}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="text-xs text-(--color-ink-muted)">
+            Files the homework into the matching Notion lesson page.
+          </span>
         </div>
 
         <div className="flex flex-col gap-2">

@@ -285,11 +285,27 @@ function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string 
   });
 
   const counts = useMemo(() => {
+    const practiceGames = [
+      job?.practice_rlc_json,
+      job?.practice_error_detection_json,
+      job?.practice_memory_match_json,
+      job?.practice_tictactoe_json,
+      job?.practice_jigsaw_json,
+      job?.practice_sentence_json,
+    ].filter(Boolean).length;
     return {
-      games: job?.games_json?.games?.length ?? 0,
       flashcards: job?.flashcards_json?.cards?.length ?? 0,
+      sourceConcepts: job?.source_map_json?.concepts?.length ?? 0,
+      caseCheckpoints: job?.cbp_json?.checkpoints?.length ?? 0,
+      memoryChecks: job?.memory_check_json?.items?.length ?? 0,
+      // v2 Boss Arena, falling back to the legacy final-challenge count
+      bossQuestions:
+        job?.boss_arena_json?.questions?.length ??
+        job?.final_challenge_json?.questions?.length ??
+        0,
+      // v2 practice-arc games + any legacy structured games
+      practiceGames: practiceGames + (job?.games_json?.games?.length ?? 0),
       memorySprint: job?.memory_sprint_json?.items?.length ?? 0,
-      finalChallenge: job?.final_challenge_json?.questions?.length ?? 0,
       readingCheckpoints: job?.reading_json?.checkpoints?.length ?? 0,
       assembledChars: job?.assembled_md?.length ?? 0,
     };
@@ -297,9 +313,12 @@ function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string 
 
   const stats: Array<{ label: string; value: number }> = [
     { label: "flashcards", value: counts.flashcards },
+    { label: "source concepts", value: counts.sourceConcepts },
+    { label: "case checkpoints", value: counts.caseCheckpoints },
+    { label: "memory checks", value: counts.memoryChecks },
+    { label: "boss questions", value: counts.bossQuestions },
+    { label: "practice games", value: counts.practiceGames },
     { label: "sprint items", value: counts.memorySprint },
-    { label: "games", value: counts.games },
-    { label: "boss questions", value: counts.finalChallenge },
     { label: "reading checkpoints", value: counts.readingCheckpoints },
   ].filter((s) => s.value > 0);
 
