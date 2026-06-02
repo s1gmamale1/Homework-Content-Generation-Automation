@@ -125,6 +125,15 @@ async def set_status(
         job.assembled_md = assembled_md
 
 
+async def set_notion_archived(
+    session: AsyncSession, job_id: UUID, notion_archived_at: datetime
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.notion_archived_at = notion_archived_at
+
+
 async def set_games_json(
     session: AsyncSession, job_id: UUID, games_json: dict[str, Any]
 ) -> None:

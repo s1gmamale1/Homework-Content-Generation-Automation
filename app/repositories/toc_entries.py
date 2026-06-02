@@ -41,6 +41,15 @@ async def get(session: AsyncSession, toc_entry_id: UUID) -> TOCEntry | None:
     return await session.get(TOCEntry, toc_entry_id)
 
 
+async def set_notion_homework_page_id(
+    session: AsyncSession, toc_entry_id: UUID, page_id: str
+) -> None:
+    entry = await session.get(TOCEntry, toc_entry_id)
+    if entry is None:
+        return
+    entry.notion_homework_page_id = page_id
+
+
 async def update(
     session: AsyncSession,
     toc_entry_id: UUID,
