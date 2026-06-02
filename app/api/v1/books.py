@@ -124,8 +124,8 @@ async def stream_toc(book_id: UUID, request: Request):
             if book.status in ("uploading", "toc_extracting"):
                 yield {"event": "status", "data": json.dumps({"status": book.status})}
             elif book.status == "toc_ready":
-                entries = [TOCEntryOut.model_validate(e).model_dump(mode="json")
-                           for e in book.toc_entries]
+                enriched = await _enriched_toc_entries(session, book)
+                entries = [eo.model_dump(mode="json") for eo in enriched]
                 yield {"event": "toc_ready", "data": json.dumps({"entries": entries})}
                 return
             elif book.status == "failed":
@@ -224,22 +224,31 @@ async def delete_toc_entry(
     await session.commit()
 
 
+async def _enriched_toc_entries(session: AsyncSession, book) -> list[TOCEntryOut]:
+    """TOC entries, each enriched with its latest homework-job id/status so the
+    frontend can show a per-row indicator (Ready / Running / Failed).
+
+    Shared by the REST book endpoint AND the SSE ``toc_ready`` replay so the two
+    cannot drift: the SSE path used to emit status-less entries that raced in and
+    wiped the section-list badges.
+    """
+    latest = await jobs_repo.latest_by_section(session, book.id)
+    entries: list[TOCEntryOut] = []
+    for e in book.toc_entries:
+        entry_out = TOCEntryOut.model_validate(e)
+        job = latest.get(e.id)
+        if job is not None:
+            entry_out.latest_job_id = job.id
+            entry_out.latest_job_status = job.status
+        entries.append(entry_out)
+    return entries
+
+
 async def _book_out_with_toc(session: AsyncSession, book_id: UUID) -> BookOut:
     book = await books_repo.get_with_toc(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
     out = BookOut.model_validate(book)
     if book.status == "toc_ready":
-        # Enrich each TOC entry with its latest homework-job status so the
-        # frontend can show a per-row indicator (Ready / Running / Failed).
-        latest = await jobs_repo.latest_by_section(session, book_id)
-        entries: list[TOCEntryOut] = []
-        for e in book.toc_entries:
-            entry_out = TOCEntryOut.model_validate(e)
-            job = latest.get(e.id)
-            if job is not None:
-                entry_out.latest_job_id = job.id
-                entry_out.latest_job_status = job.status
-            entries.append(entry_out)
-        out.toc = entries
+        out.toc = await _enriched_toc_entries(session, book)
     return out
