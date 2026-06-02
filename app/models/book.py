@@ -12,6 +12,7 @@ class Book(Base, UUIDPK, Timestamps):
     __tablename__ = "books"
 
     subject: Mapped[str] = mapped_column(String(64), nullable=False)
+    grade: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)

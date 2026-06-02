@@ -70,6 +70,9 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     practice_sentence_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    notion_archived_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # ─── queue bookkeeping ────────────────────────────────────────────────
     # Higher priority jobs claim first. User-triggered = 0 (default).

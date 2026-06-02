@@ -24,6 +24,7 @@ class TOCEntry(Base, UUIDPK, Timestamps):
     page_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     page_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    notion_homework_page_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     book: Mapped["Book"] = relationship(back_populates="toc_entries")
 
