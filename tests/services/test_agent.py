@@ -385,3 +385,21 @@ async def test_extract_toc_schema_retry_exhausts_and_raises(
     assert all(c["success"] is False for c in record_calls)
     assert record_calls[0]["extra_envelope"]["attempt"] == 1
     assert record_calls[1]["extra_envelope"]["attempt"] == 2
+
+
+# ─────────────────────────────────────────────────────────────────────
+# _should_subset_for_extract — R2 size gate
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_should_subset_for_extract_only_when_over_limit(tmp_path, monkeypatch):
+    from app.services import agent
+    pdf = tmp_path / "book.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n" + b"x" * 1000)  # ~1 KB
+    # Under the real 20 MB limit → no subsetting (attach full PDF).
+    assert agent._should_subset_for_extract(pdf) is False
+    # Force a tiny limit → now it should subset.
+    monkeypatch.setattr(agent, "_GEMINI_PDF_MAX_BYTES", 100)
+    assert agent._should_subset_for_extract(pdf) is True
+    # Missing file degrades to False (don't subset a file we can't stat).
+    assert agent._should_subset_for_extract(tmp_path / "nope.pdf") is False

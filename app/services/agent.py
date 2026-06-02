@@ -1300,6 +1300,17 @@ def _subset_pdf(
         return None
 
 
+def _should_subset_for_extract(pdf_path: Path) -> bool:
+    """R2: only carve a page subset when the full PDF would exceed the gemini
+    extractor's size limit. Below the limit we attach the whole book (the
+    printed page range is named in the extract prompt), which avoids the
+    printed-vs-physical page-offset bug entirely. Unstattable path → False."""
+    try:
+        return pdf_path.stat().st_size > _GEMINI_PDF_MAX_BYTES
+    except OSError:
+        return False
+
+
 async def extract_lesson_context(
     *,
     provider: str,
@@ -1329,11 +1340,13 @@ async def extract_lesson_context(
         rules=_NO_PREAMBLE,
     )
 
-    # Attach only the section's page window (a small subset PDF) so the extractor
-    # never hits the gemini >20 MB rejection that would poison downstream phases.
-    # Preserves diagrams (unlike a text-only read). Falls back to the full PDF
-    # when the subset can't be built. Cleaned up in the finally below.
-    subset_pdf = _subset_pdf(pdf_path, page_start, page_end)
+    # R2: only subset oversized PDFs; otherwise attach the full book and let the
+    # prompt name the printed page range (no physical-page-offset risk).
+    subset_pdf = (
+        _subset_pdf(pdf_path, page_start, page_end)
+        if _should_subset_for_extract(pdf_path)
+        else None
+    )
     attach_path = subset_pdf or pdf_path
     if subset_pdf is not None:
         logger.info(
