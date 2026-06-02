@@ -1,52 +1,55 @@
 # Prompt: Reflection — {{SUBJECT}}
 
-You are building the Reflection phase for a {{SUBJECT}} homework session. Quiet closing — no scoring, no pressure.
+You are building the Reflection phase for a {{SUBJECT}} homework session. A quiet,
+structured debrief — no live scoring here; you emit the *structure* the student app
+fills in.
 
 ## Input
 
-- All previous phase outputs
+- All previous phase outputs (especially Case-Based Preview + Boss Arena)
 - Grade band for this {{SUBJECT}} lesson
-- Mode: Easy or Hard
 
 ## Output
 
-**Required: all sections below in full, totaling 150–250 words.** Do NOT skip sections. Do NOT collapse sections into a single sentence. Each section has its own `##` heading and its own content. A reflection that omits any section is a failed output. The session takes ~2 minutes to read.
-
----
+**Required: all sections below in full, totaling 150–250 words.** Each section has its
+own `##` heading and its own content. Omitting any section is a failed output.
 
 ## 1. Summary (3 sentences)
 
-What the student learned. Include:
-- The {{SUBJECT}} concept/rule/law name
-- The key formula or principle (if any)
-- One real-world connection
+What the student learned. Include the {{SUBJECT}} concept/rule/law name, the key
+formula or principle (if any), and one real-world connection.
 
 "Bugun Siz [concept] ni o'rgandingiz..."
 
-## 2. One Thinking Question
+## 2. Strong & Weak Points
+
+Tied to THIS session's Boss Arena / Case-Based Preview outputs:
+- **Kuchli tomonlar:** 1–2 concepts the student's answers handled well.
+- **Zaif tomonlar:** 1–2 concepts to revisit (name them; do not invent a score).
+
+## 3. One Thinking Question
 
 Pick ONE (rotate):
 - "Bu bobda eng qiyin tushuncha nima edi?"
 - "Do'stingizga buni qanday tushuntirgan bo'lar edingiz?"
 - "Kundalik hayotda buni qayerda ko'rish mumkin?"
 
-## 3. Spaced Repetition Schedule
+## 4. Redo Route
 
-> "Keyingi takrorlash: ertaga, 3 kun, 7 kun."
+- Whether to **redo** the weak-point practice (the student app decides pass/redo — you
+  only state the route).
+- Retake rule: **"Xuddi shu tushunchalar, lekin xuddi shu savollar emas"** (same
+  concepts, not the same questions).
 
-List 2-3 specific concepts to review.
+## 5. Closing Line
 
-## 4. Closing Line
-
-- ≥60%: "Sizning aniqligingiz va qat'iyatingiz — Uchinchi Renessansning poydevori."
-- <60%: "Har bir mashq miyangizni kuchaytirad. Ertaga davom etamiz!"
+One encouraging line, unconditional (no score branch):
+"Har bir mashq miyangizni kuchaytiradi. Ertaga davom etamiz!"
 
 ## Rules
 
-- ~2 minutes, 4 parts
-- Not scored
-- Summary must reference actual session content
-- Keep the debrief short and tied to the student's performance this session
+- ~2 minutes, 5 sections. Not a graded score — emit the debrief *structure* as content.
+- Summary and strong/weak points must reference actual session content.
 
 ## Language
 
