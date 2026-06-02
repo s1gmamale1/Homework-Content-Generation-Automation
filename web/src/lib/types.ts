@@ -264,7 +264,7 @@ export interface GameChoice { label: string; is_correct?: boolean; reason?: stri
 export interface MemoryMatchPair { left: string; right: string; }
 export interface MemoryMatchPayload { pairs: MemoryMatchPair[]; }
 export interface JigsawPiece { id: string; content: string; }
-export interface JigsawPayload { pieces: JigsawPiece[]; allowed_assembly_types: string[]; }
+export interface JigsawPayload { pieces: JigsawPiece[]; allowed_assembly_types: string[]; solution?: string[][]; }
 export interface SentenceFillPayload { sentence: string; chips: GameChoice[]; }
 export interface TicTacToePayload { cells: GameChoice[]; }
 export type InteractionPayload =

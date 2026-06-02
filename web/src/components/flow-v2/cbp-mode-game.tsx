@@ -45,6 +45,13 @@ function Payload({
             ))}
           </ul>
           <Labeled label="Assembly types">{p.allowed_assembly_types.join(" · ")}</Labeled>
+          {p.solution && p.solution.length > 0 && (
+            <AnswerKey>
+              <Labeled label="Solution">
+                {p.solution.map((group) => group.join(" + ")).join(" · ")}
+              </Labeled>
+            </AnswerKey>
+          )}
         </ReviewCard>
       );
     }
