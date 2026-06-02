@@ -51,7 +51,7 @@ def _push_to_notion(
     lesson_title: str,
     assembled_md: str,
     content_json_bytes: bytes,
-    find_or_create: Callable = find_or_create,
+    find_or_create: Callable = find_or_create,  # injectable for tests
 ) -> str:
     """Synchronous Notion I/O. Returns the Homework page id. Idempotent:
     if the Homework page already has content, writes nothing."""
@@ -101,27 +101,29 @@ async def archive_job(job_id: UUID) -> None:
                     job.subject, book.grade,
                 )
                 return
-
+            section_id = section.id
             lesson_title = _lesson_title(section.section_number, section.section_title)
             content_json_bytes = json.dumps(
                 build_content_json(job, generated_at=_utcnow().isoformat()),
                 ensure_ascii=False, indent=2,
             ).encode("utf-8")
             assembled_md = job.assembled_md or ""
+        # session closed — do NOT hold a DB connection during the Notion push
 
-            client = NotionClientWrapper(api_key=settings.notion_api_key)
-            homework_id = await asyncio.to_thread(
-                _push_to_notion,
-                client=client,
-                subject_page_id=subject_page_id,
-                lesson_title=lesson_title,
-                assembled_md=assembled_md,
-                content_json_bytes=content_json_bytes,
-            )
+        client = NotionClientWrapper(api_key=settings.notion_api_key)
+        homework_id = await asyncio.to_thread(
+            _push_to_notion,
+            client=client,
+            subject_page_id=subject_page_id,
+            lesson_title=lesson_title,
+            assembled_md=assembled_md,
+            content_json_bytes=content_json_bytes,
+        )
 
-            await toc_repo.set_notion_homework_page_id(session, section.id, homework_id)
+        async with SessionLocal() as session:
+            await toc_repo.set_notion_homework_page_id(session, section_id, homework_id)
             await jobs_repo.set_notion_archived(session, job_id, _utcnow())
             await session.commit()
-            log.info("notion: archived job %s → Homework page %s", job_id, homework_id)
+        log.info("notion: archived job %s → Homework page %s", job_id, homework_id)
     except Exception:
         log.warning("notion: archive failed for job %s (non-fatal)", job_id, exc_info=True)
