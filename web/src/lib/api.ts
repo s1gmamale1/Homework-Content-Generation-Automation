@@ -147,7 +147,7 @@ export const api = {
       model?: string | null;
     } = {},
   ): Promise<Job> {
-    const { force = false, idempotencyKey, provider = "gemini", model = null } = opts;
+    const { force = false, idempotencyKey, provider = "claude", model = null } = opts;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
     const res = await authFetch(

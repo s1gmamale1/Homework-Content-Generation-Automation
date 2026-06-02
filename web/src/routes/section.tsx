@@ -30,7 +30,7 @@ export function SectionPage() {
   const { bookId, sectionId } = useParams<{ bookId: string; sectionId: string }>();
   const navigate = useNavigate();
   const [busy, setBusy] = useState<"new" | "regen" | null>(null);
-  const [provider, setProvider] = useState<string>("gemini");
+  const [provider, setProvider] = useState<string>("claude");
   const [model, setModel] = useState<string | null>(null);
 
   const { data: book, isLoading } = useQuery({
