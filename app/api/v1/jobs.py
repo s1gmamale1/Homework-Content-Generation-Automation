@@ -20,6 +20,7 @@ from app.repositories import toc_entries as toc_repo
 from app.schemas import GenerateRequest, JobOut, PhaseOut
 from app.services import events_bus
 from app.services.agent_models import MODEL_MANIFEST, is_valid
+from app.services.job_artifacts import structured_artifacts
 from app.services.providers import PROVIDERS
 
 router = APIRouter(tags=["jobs"])
@@ -301,24 +302,7 @@ async def download(
         )
 
     # Default: zip bundle (homework.md + structured JSONs for the interactive phases)
-    structured_files: dict[str, dict] = {
-        "games.json": job.games_json or {"games": []},
-        "flashcards.json": job.flashcards_json or {"cards": []},
-        "final-challenge.json": job.final_challenge_json or {"questions": []},
-        "memory-sprint.json": job.memory_sprint_json or {"items": []},
-        "reading.json": job.reading_json or {"passage_md": "", "checkpoints": []},
-        "case-based-preview.json": job.cbp_json or {},
-        "memory-check.json": job.memory_check_json or {"items": [], "pass_threshold": 0.60},
-        "boss-arena.json": job.boss_arena_json or {"questions": []},
-        "source-map.json": job.source_map_json or {"concepts": []},
-        # PR-3 Practice Arc games (only the ones a subject ran are non-empty).
-        "practice-rlc.json": job.practice_rlc_json or {},
-        "practice-error-detection.json": job.practice_error_detection_json or {},
-        "practice-memory-match.json": job.practice_memory_match_json or {},
-        "practice-tictactoe.json": job.practice_tictactoe_json or {},
-        "practice-jigsaw.json": job.practice_jigsaw_json or {},
-        "practice-sentence.json": job.practice_sentence_json or {},
-    }
+    structured_files = structured_artifacts(job)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("homework.md", job.assembled_md)
