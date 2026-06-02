@@ -15,7 +15,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
-from app.services import agent, events_bus
+from app.services import agent, events_bus, notion_archive
 from app.services.flows import (
     flow_for,
     file_needed_phases,
@@ -597,6 +597,11 @@ async def run(job_id: UUID) -> None:
             "job_completed",
             {"job_id": str(job_id), "download_url": f"/api/v1/jobs/{job_id}/download"},
         )
+
+        try:
+            await notion_archive.archive_job(job_id)
+        except Exception:
+            log.warning(f"[job {job_id}] notion archive hook failed (non-fatal)", exc_info=True)
 
         total_s = perf_counter() - t_start
         log.success(
