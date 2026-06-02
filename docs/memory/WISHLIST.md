@@ -23,8 +23,8 @@
 - _(audit)_ memory-check models 3 kinds vs spec's 6 question types (`schemas-8`) — extend `MemoryCheckKind` or record as an accepted deviation.
 - _(audit)_ `flow-1`: `pipeline.py:797` "scheduler stuck" diagnostic embeds the dep dict as literal f-string text (double-braces, never evaluated) — cosmetic, unreachable path.
 - _(dev warning)_ pre-existing React "Select uncontrolled→controlled" on the `<Select>` in `web/src/routes/section.tsx` / `upload.tsx` (provider/model/subject pickers) — give it a default `value=""`. Benign, not from the Flow v2 work.
-- _(audit)_ stale carried-over `main` test files break `pytest tests/` (`test_flows.py` imports removed `SUBJECT_FLOWS`; `test_providers_registry.py`/`test_agent_models.py` assert 4 providers; `test_api.py` needs :5432) — delete or port to the v2 API.
 
 ## Done / promoted
 
 - W1 — `opencode` as 5th CLI provider — ✅ DONE 2026-05-29 (commit 8a96435), see [[MASTER_MEMORY]] §0010. (Verification follow-up moved to Open above.)
+- ~~Stale `main` test files break `pytest tests/`~~ — **REMOVED 2026-06-01 (stale/not-applicable).** Those files (`test_flows.py`, `test_providers_registry.py`, `test_agent_models.py`, `test_api.py`) don't exist in our tree — they were the audit machine's untracked locals. Our suite is green (227); the only `SUBJECT_FLOWS` ref is a passing negative assertion (`test_general_flow.py:33`).
