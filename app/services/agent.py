@@ -264,18 +264,14 @@ _EXTRACT_PHASE_PROMPT = (
 # Phases that produce inline SVG diagrams (mirrors gemini.py:_SVG_PHASES).
 _SVG_PHASES: set[str] = {
     "preview-hard", "preview-easy", "preview",
-    "preview", "case-based-preview",
+    "case-based-preview",
     "real-life", "consolidation",
-    # NOTE: "flashcards" deliberately excluded. The Flow v2 plan keeps flashcards
-    # a "simple reference tool" (§3/§5: "keep, add stable IDs") and FlashcardsPack
-    # has no SVG field — cards carry bracket "[Diagram: ...]" descriptions, not
-    # inline <svg>. Including it here made claude emit a full SVG per card and
-    # exceed the claude CLI's 32k output-token ceiling, failing the job.
-    "game-breaks", "final-challenge", "boss-arena", "reading",
-    # Practice Arc games: each spec allows source-carrying SVG/CSS visuals
-    # (equation blocks, decision grids, assembly puzzles, science diagrams).
-    "practice-rlc", "practice-error-detection", "practice-memory-match",
-    "practice-tictactoe", "practice-jigsaw", "practice-sentence",
+    "game-breaks", "final-challenge", "reading",
+    # NOTE: "flashcards" deliberately excluded (no SVG field; emitting one
+    # blew the 32k claude ceiling). R8: boss-arena + the Practice-Arc games
+    # are ALSO excluded for the same reason — their schemas have no SVG field,
+    # so requesting SVG only leaked markup around the JSON and failed
+    # first-pass validation. Only case-based-preview has LearningBlock.visual_svg.
 }
 
 

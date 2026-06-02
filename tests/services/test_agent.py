@@ -403,3 +403,17 @@ def test_should_subset_for_extract_only_when_over_limit(tmp_path, monkeypatch):
     assert agent._should_subset_for_extract(pdf) is True
     # Missing file degrades to False (don't subset a file we can't stat).
     assert agent._should_subset_for_extract(tmp_path / "nope.pdf") is False
+
+
+# ─────────────────────────────────────────────────────────────────────
+# _SVG_PHASES — R8 structured-phase exclusions
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_svg_phases_only_for_schemas_with_svg_field():
+    from app.services.agent import _SVG_PHASES
+    for phase in ("boss-arena", "practice-rlc", "practice-error-detection",
+                  "practice-memory-match", "practice-tictactoe",
+                  "practice-jigsaw", "practice-sentence"):
+        assert phase not in _SVG_PHASES, f"{phase} has no SVG field; must not be in _SVG_PHASES"
+    assert "case-based-preview" in _SVG_PHASES
