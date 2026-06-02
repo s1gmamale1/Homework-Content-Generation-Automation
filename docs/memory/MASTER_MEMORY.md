@@ -375,3 +375,19 @@ Plus **Part 2**: gemini (which reads PDFs natively) keeps the whole PDF attached
 **Also this session:** re-verified the whole WISHLIST against current code (none stale) and reorganized `WISHLIST.md` Open into **Backend / Frontend** sections.
 
 **Deferred follow-ons:** frontend **grade input** on the upload form (UI sends no grade today → set `books.grade` via SQL); Notion **Phase 2 PULL** (fetch textbook from Notion to source generation) — its own future plan.
+
+## [0024] Frontend fixes — 3 WISHLIST items — 2026-06-02 (Nggaev-v2)
+**What:** Cleared the WISHLIST `Frontend` backlog (3 items) directly (controller, not subagent — small, well-understood). Read each call site first to ground the fixes; verified non-stale before editing. Commit `e582f53` (frontend) + `b57cc02` (docs/memory). **Not yet browser/live-verified — user is testing.**
+
+**Fixed (4 files):**
+- **`web/src/routes/job.tsx` — `DonePanel` (`frontend-6`):** counted only legacy columns → v2 jobs showed empty done-stats. Now counts the Flow v2 columns — `source_map_json.concepts`, `cbp_json.checkpoints`, `memory_check_json.items`, `boss_arena_json.questions` (falling back to legacy `final_challenge_json.questions`), and a `practiceGames` tally over the 6 `practice_*_json` columns + legacy `games_json.games`. Kept flashcards/sprint/reading. Stat pills still filter to `value > 0`, so legacy AND v2 jobs each show only their populated rows.
+- **`web/src/routes/upload.tsx` + `web/src/lib/api.ts` — grade input:** added an **optional** `Grade` `<Select>` (1–11, module-level `GRADES`), `grade` state, helper hint; `handleSubmit` passes `grade || undefined`. `api.uploadBook(file, subject, grade?)` now `fd.append("grade", grade)` when set. Backend already accepts the `grade` form field (worklog [[0023]] / commit `cc9a727`), so NEW uploads persist `books.grade` with no SQL. **Existing NULL-grade books still need the SQL update or a re-upload.**
+- **`web/src/routes/section.tsx` — Select warning:** model picker `value={model ?? undefined}` → `value={model ?? ""}` (always controlled), removing the React uncontrolled→controlled warning.
+
+**Verification:** `npx tsc -p tsconfig.app.json --noEmit` → **exit 0** (the real correctness gate — no FE test framework). `npm run build` → **exit 0**, `web/dist` rebuilt (gitignored; running uvicorn serves it on reload, no restart). `npx biome check` on the 4 files → exit 1 but **every violation is pre-existing** repo noise (CRLF line-endings dominant + import-order + the existing `noLabelWithoutControl` on section.tsx provider/model labels + `useExhaustiveDependencies` on job.tsx `upsert`) — none introduced by these edits (the new grade field is correctly `htmlFor`/`id`-associated). Consistent with the documented ~278 pre-existing lint errors left out of scope.
+
+**False alarm checked + cleared (operating bar):** Grep rendered `api.ts:71` as `authFetch("\api\v1\books"…)` (backslashes) — read the real bytes, it's `/api/v1/books` (forward slashes); a grep display artifact, not a bug.
+
+**Standing-error correction:** `docs/memory/` is **tracked by git**, not gitignored (the "Local-only (gitignored)" note in the file headers is inaccurate). I'd wrongly claimed it was gitignored for several turns; these worklog/roadmap/wishlist updates are real commits.
+
+**Left out of scope (noted, not fixed):** upload-form intro copy still says "classifies the lesson you choose" (classify was removed) — stale one-liner.
