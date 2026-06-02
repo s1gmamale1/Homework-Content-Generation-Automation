@@ -36,6 +36,10 @@ class TOCEntryUpdateRequest(BaseModel):
 
 router = APIRouter(prefix="/books", tags=["books"])
 
+# R6: retain references to fire-and-forget TOC tasks so the event loop can't GC
+# (and silently cancel) them mid-run. Mirrors the retain pattern in worker.py.
+_TOC_TASKS: set = set()
+
 
 @router.post("", status_code=201)
 async def upload_book(
@@ -77,7 +81,9 @@ async def upload_book(
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_path.write_bytes(body)
 
-    asyncio.create_task(toc_extractor.run(book.id, pdf_path, subject))
+    task = asyncio.create_task(toc_extractor.run(book.id, pdf_path, subject))
+    _TOC_TASKS.add(task)
+    task.add_done_callback(_TOC_TASKS.discard)
 
     return BookOut.model_validate(book)
 

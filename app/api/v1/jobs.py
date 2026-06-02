@@ -20,6 +20,7 @@ from app.repositories import toc_entries as toc_repo
 from app.schemas import GenerateRequest, JobOut, PhaseOut
 from app.services import events_bus
 from app.services.agent_models import MODEL_MANIFEST, is_valid
+from app.services.providers import PROVIDERS
 
 router = APIRouter(tags=["jobs"])
 
@@ -356,7 +357,7 @@ _STATS_WINDOWS: list[tuple[str, timedelta]] = [
     ("24h", timedelta(hours=24)),
     ("7d", timedelta(days=7)),
 ]
-_STATS_PROVIDERS = ("claude", "kimi", "codex", "gemini")
+_STATS_PROVIDERS = tuple(PROVIDERS.keys())
 
 
 def _limit_for(provider: str, window: str) -> int:

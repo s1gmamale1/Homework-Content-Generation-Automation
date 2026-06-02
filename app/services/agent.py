@@ -1099,18 +1099,19 @@ async def extract_toc(
             "markers, not textbook page numbers.\n\n"
             f"{toc_source_text}"
         )
-        # Gemini reads PDFs natively: for PDFs under its size limit, keep the
-        # whole PDF attached alongside the text excerpt so it can still locate a
-        # TOC the excerpt missed. Other providers (claude refuses copyrighted
-        # PDFs) or oversized PDFs fall back to text-only.
-        try:
-            pdf_size = pdf_path.stat().st_size
-        except OSError:
-            pdf_size = _GEMINI_PDF_MAX_BYTES + 1  # force text-only on stat failure
-        keep_pdf = provider == "gemini" and pdf_size <= _GEMINI_PDF_MAX_BYTES
-        if not keep_pdf:
-            attachment_preamble = ""
-            attachments = []
+    # R6: gemini reads PDFs natively — for PDFs under its size limit keep the
+    # whole PDF attached (alongside any text excerpt) so it can locate a TOC the
+    # excerpt missed. Other providers, or oversized PDFs, fall back to no
+    # attachment. This guard runs UNCONDITIONALLY so image-only PDFs (no local
+    # TOC text) also get the >20 MB protection instead of crashing on upload.
+    try:
+        pdf_size = pdf_path.stat().st_size
+    except OSError:
+        pdf_size = _GEMINI_PDF_MAX_BYTES + 1  # force no-attachment on stat failure
+    keep_pdf = provider == "gemini" and pdf_size <= _GEMINI_PDF_MAX_BYTES
+    if not keep_pdf:
+        attachment_preamble = ""
+        attachments = []
 
     base_prompt = _build_master_prompt(
         phase_prompt=instruction,
