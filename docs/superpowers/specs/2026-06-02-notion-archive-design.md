@@ -38,7 +38,9 @@ Class A Creative ▸ Class A Education (ClassAI) ▸ Lessons
    - **Phase 2 — PULL** (the automation transform): fetch the textbook PDF *from* the Notion subject page to source/trigger generation, closing the loop.
 4. **App owns lesson titles.** Create lessons with a **deterministic title derived from the `toc_entry`** (e.g. `"{section_number} {section_title}"`) — do not try to match human `N-dars` formatting. For app-owned subjects, humans should not also hand-create lessons (dup risk).
 5. **Tooling:** `notion-client` + `httpx` (cribbed from the reference). Notion is a data sink/source, **not an LLM** — does not violate the "no-SDK/CLI-only" rule (that's about LLM providers). New dependency + a secret.
-6. **Body content:** since `Homework` is a content page, write the homework **rendered into blocks** (markdown→Notion blocks, the reference's converter) **and/or attach `homework.md` + `content.json`** as the lossless record. Respect Notion limits (≤100 blocks/req, ≤2000 chars/text segment, ≥0.35s between calls, ~20 MB file cap).
+6. **Body content (LOCKED):** write the homework **rendered into blocks** (markdown→Notion blocks, the reference's converter) **AND attach `homework.md` + `content.json`** as the lossless record — both, not either/or. Respect Notion limits (≤100 blocks/req, ≤2000 chars/text segment, ≥0.35s between calls, ~20 MB file cap).
+7. **Build order (LOCKED):** **Phase 1 (push) ships first as its own plan**; Phase 2 (pull) is a separate later plan. This plan = Phase 1 only.
+8. **Grade source (LOCKED):** add a **real `grade` field** (not filename-parsing) — see §3/§4.
 
 ---
 
@@ -46,7 +48,7 @@ Class A Creative ▸ Class A Education (ClassAI) ▸ Lessons
 
 - **Anchor = the Notion SUBJECT page.**
   - **Phase 2 (book pulled from Notion):** we already hold the subject-page ID → anchor for free; grade+subject come from its ancestor-path. No mapping needed.
-  - **Phase 1 standalone (book uploaded manually):** resolve `{subject, grade} → subject-page ID` via a small config map **or** by matching the shared PDF `original_filename` against subject-page attachments. Grade parsed from the filename (`8-sinf`).
+  - **Phase 1 standalone (book uploaded manually) — LOCKED:** resolve `{subject, grade} → subject-page ID` via a **config map** (`notion_subject_pages` in config/.env). Deterministic, no live filename crawling. `subject` is already on the job/book; `grade` comes from the new real `grade` field (below). Onboarding a new subject = one config line. Filename-matching is dropped (unnecessary once `grade` is explicit).
 - **Under the subject:** `find_or_create_lesson(subject_page, deterministic_title)`.
 - **Under the lesson:** `find_or_create_subpage(lesson_page, "Homework")`.
 - **Idempotency (robust):** after first creation, **store the Homework page ID on the `toc_entry`** (`notion_homework_page_id`) and stamp **`homework_jobs.notion_archived_at`**. Re-runs write straight to the stored ID — no re-matching, no duplicates.
@@ -63,7 +65,7 @@ Class A Creative ▸ Class A Education (ClassAI) ▸ Lessons
   try: await notion_archive.archive_job(job)
   except Exception: log.warning("notion archive failed (non-fatal)")   # never re-raise
   ```
-- **Migrations:** add `homework_jobs.notion_archived_at` (nullable) + `toc_entries.notion_homework_page_id` (nullable). The NULL state enables a future retry/backfill sweep.
+- **Migrations:** add `homework_jobs.notion_archived_at` (nullable) + `toc_entries.notion_homework_page_id` (nullable) + **`books.grade` (nullable string, e.g. `"8"`)** populated at upload (Phase 1) / ingest (Phase 2). The NULL state on the archive columns enables a future retry/backfill sweep; NULL `grade` falls back to a warn-once skip of the archive (anchor can't be resolved).
 
 ### Phase 2 — pull / ingestion transform (the "fetch textbook from Notion" change)
 - **New ingestion path:** instead of (or alongside) manual PDF upload, **fetch the textbook from a Notion subject page** — read the subject page → get the attachment's expiring download URL → download → save to **`var/books/<book_id>/source.pdf`** (the path the pipeline already reads) → create the `books` row, inferring **subject + grade from the subject page's ancestor-path**.
@@ -94,13 +96,19 @@ Class A Creative ▸ Class A Education (ClassAI) ▸ Lessons
 
 ---
 
-## 8. Open items to confirm at plan time
-- Phase-1-standalone subject anchor: **config `{subject,grade}→page-ID` map vs filename-match** — pick one.
-- Deterministic **lesson-title format** (`"{section_number} {section_title}"`?).
-- **Grade source:** keep parsing `original_filename`, or add a real `grade` field to `books`/`toc_entries`.
-- Exact **`content.json`** artifact shape to attach (real serializer vs assemble from `*_json` columns, like the download endpoint).
-- **Body:** rendered-blocks vs attach-files vs both (reference has converter + upload for all three).
-- **Phase 2:** the Notion file **download-URL retrieval** path; the **ingestion trigger/policy**.
+## 8. Open items
+
+**Resolved (2026-06-02, folded into the spec above):**
+- ✅ Phase-1-standalone subject anchor → **config `{subject,grade}→page-ID` map** (§3, filename-match dropped).
+- ✅ **Grade source** → **real `grade` field on `books`** (§3/§4).
+- ✅ **Body** → **rendered blocks AND attached `homework.md` + `content.json`** (§2.6).
+- ✅ **Build order** → **Phase 1 push only** in this plan; Phase 2 separate (§2.7).
+- **Lesson-title format:** `"{section_number} {section_title}"` (e.g. `"1.1 Burchaklar"`) — adopt as default; the app OWNS this title (§2.4), so it only needs to be self-consistent for dedup, not match human `N-dars` formatting.
+- **`content.json` shape:** reuse the existing download-endpoint serializer (assembled from the job's `*_json` columns) rather than inventing a new artifact — confirm the exact function at task time.
+
+**Still open (Phase 2 only — out of scope for this plan):**
+- The Notion file **download-URL retrieval** path (expiring S3 URL via REST `file` object).
+- The **ingestion trigger/policy** (which subjects/lessons to auto-pull + generate).
 
 ---
 
