@@ -7,15 +7,6 @@
 
 ---
 
-## R1 — Inert subject prompts will mislead/break if the override layer is revived
-
-- **Issue:** the per-subject `prompts/<subject>/*` dirs are dead but on disk (the `USE_SUBJECT_PROMPTS=False` override layer). If that switch is ever flipped True, two stale artifacts surface: (a) English prompts reference the deleted `classify.md` for CEFR; (b) `practice-rlc.md` files still carry a "reverse-test variant" the RLC spec never defined.
-- **Root cause:** Path A (worklog 0019) intentionally left subject dirs untouched as a future override layer; `classify` was removed from the live path but not from those inert files; the spec-unsupported RLC reverse-test was only stripped from `_general/practice-rlc.md`, not the inert subject copies.
-  - Refs: `app/services/prompts.py` `_resolve_dir`/`USE_SUBJECT_PROMPTS`; `prompts/english/classify.md`; `prompts/<subject>/practice-rlc.md`.
-- **Deliverable:** when (if) the override layer is revived, scrub the inert subject prompts — remove `classify.md` CEFR references and the reverse-test variant — before flipping the switch.
-
----
-
 > R2–R6 below: confirmed findings from `docs/Flow_v2_Audit_2026-06-02.md`, each re-verified at source by adversarial sub-agents (2026-06-01). The audit's frontend section was STALE (already fixed by the pushed `web/` Flow v2 work) and is not logged here.
 
 ## R2 — `_subset_pdf` maps printed→physical pages 1:1 (can read the WRONG pages)
@@ -64,6 +55,6 @@
 
 ---
 
-## Shipped
+## Shipped / Closed
 
-_(none yet — move completed R-items here with their commit/worklog ref)_
+- **R1 — inert subject-prompt leftovers — CLOSED 2026-06-01 (won't-fix, accepted).** The dead `prompts/<subject>/*` files (stale `classify.md` refs + RLC reverse-test) stay on disk, unused. No action needed; they don't affect the live general-prompt path. Only relevant if `USE_SUBJECT_PROMPTS` is ever flipped on — revisit then.
