@@ -405,3 +405,20 @@ Plus **Part 2**: gemini (which reads PDFs natively) keeps the whole PDF attached
 **Extractor explicitly NOT touched:** the extract phase is pinned via `config.py` `settings.extract_provider` (`gemini`) / `settings.extract_model` (`gemini-2.5-flash`), independent of the manifest/picker. The user flagged this; confirmed `config.py` was not modified. Extract stays gemini.
 
 **Verification:** `pytest tests/services/test_agent.py tests/services/test_opencode_provider.py` → 26 passed (the `_resolve_model("gemini"/"kimi"/"codex", None) is None` leak-guard, `_resolve_model("claude", None)==sonnet`, and opus-still-resolvable all intact). `tsc -p tsconfig.app.json --noEmit` → 0. `npm run build` → OK (dist rebuilt). The new default is live once the server restarts (serves rebuilt dist).
+
+## [0026] Fix: section-list status badges vanishing — 2026-06-02 (Nggaev-v2)
+**What:** The "Pick a section" list badges (Ready/Running/Failed) showed on first load but **intermittently disappeared** after a hard refresh / navigate-away-and-back. Diagnosed with systematic-debugging (code trace, no repro-by-guess). Real bug, but **display-only** (the job status is correct in the DB and on the section page; only the list badges were unreliable). Commit `4c9fe63`.
+
+**Root cause:** `web/src/routes/book.tsx` sets its `entries` state from **two** backend sources that returned **different shapes**:
+- REST `GET /books/{id}` → `_book_out_with_toc` enriches each TOC entry with `latest_job_id/status` via `jobs_repo.latest_by_section` (had status ✅).
+- SSE `GET /{book_id}/toc/stream` `toc_ready` **replay** (`books.py:126-129`) built entries as plain `TOCEntryOut.model_validate(e)` with **no enrichment** (status = null ❌).
+
+On mount `entries=null` so the SSE is enabled; for an already-`toc_ready` book it emits `toc_ready` immediately. The SSE query is lighter/faster than the enriched REST query, so it raced in and `setEntries(status-less)` overwrote the enriched getBook data → badges wiped. The non-determinism (lighter query usually wins on a cold refresh) explains "show now, gone after refresh." The deeper cause = **duplicated enrichment logic that drifted** between the two endpoints.
+
+**Fix (root cause, DRY):** extracted one shared `async _enriched_toc_entries(session, book) -> list[TOCEntryOut]` in `books.py`; **both** `_book_out_with_toc` (REST) and the SSE `toc_ready` replay now call it. The two can no longer diverge, and the race is harmless (both paths carry status). No frontend change needed.
+
+**TDD + verification:** `tests/api/test_toc_status_enrichment.py` — fakes a book with 2 sections (one with a job, one without), mocks `jobs_repo.latest_by_section`, asserts the helper attaches `latest_job_status` to the section with a job and leaves the other null. Red (AttributeError) → green. Full suite **265 passed**, plus **1 PRE-EXISTING unrelated failure** `test_config_notion::test_notion_defaults_disabled` (local `.env` has `NOTION_ENABLED=true` and the test doesn't isolate via `_env_file=None` — code default is correctly False; it's the backlog NEXT #1, not from this change).
+
+**Note:** backend-only → the running server must be **restarted** to serve the new `books.py` before the badges stop flickering.
+
+**Bonus this turn:** the **Kimyo §3 Notion push was live-verified** (job `f8b1214c` `done`, `notion_archived_at=22:27:46`, no error) — the auto-push now works for a **2nd subject** end-to-end (after mapping `kimyo-g7-11|8` in `NOTION_SUBJECT_PAGES`).
