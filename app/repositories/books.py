@@ -16,9 +16,11 @@ async def create(
     content_sha256: str,
     file_size_bytes: int,
     status: str = "uploading",
+    grade: Optional[str] = None,
 ) -> Book:
     book = Book(
         subject=subject,
+        grade=grade,
         original_filename=original_filename,
         content_sha256=content_sha256,
         file_size_bytes=file_size_bytes,

@@ -45,6 +45,7 @@ _TOC_TASKS: set = set()
 async def upload_book(
     file: UploadFile = File(...),
     subject: str = Form(...),
+    grade: str | None = Form(default=None),
     session: AsyncSession = Depends(get_session),
     user: dict = Depends(get_current_user),
 ) -> BookOut:
@@ -66,6 +67,7 @@ async def upload_book(
     book = await books_repo.create(
         session,
         subject=subject,
+        grade=grade,
         original_filename=file.filename or "book.pdf",
         content_sha256=sha,
         file_size_bytes=len(body),
