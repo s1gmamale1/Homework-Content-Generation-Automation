@@ -8,6 +8,22 @@ FastAPI + React app that turns a textbook PDF into a multi-phase homework packet
 
 Everything LLM-facing goes through `app/services/agent.py` (the CLI router); there is no Gemini SDK, OpenAI SDK, or Anthropic SDK in the runtime path. The four CLIs must be installed on `PATH`.
 
+## Implementation workflow (follow this for ANY change)
+
+Every implementation goes through the same gated pipeline. **No code before an approved design.** Use the `superpowers` skills at each stage.
+
+1. **Brainstorm** *(hard gate)* — explore the real code, propose 2–3 approaches per decision with a recommendation, lock each choice with the user. Output a spec to `docs/superpowers/specs/YYYY-MM-DD-*.md`, commit it, and **let the user review it** before continuing.
+2. **Write the plan** — turn the approved spec into an ordered, **TDD-per-task** plan: exact file paths, real code, real tests, exact commands, **commit per task**, no placeholders. Self-review (spec coverage + type consistency). Save to `docs/superpowers/plans/…`, commit, **user approves**.
+3. **Subagent-driven execution** — one **fresh subagent per task** (give it full text + scene-setting; it does TDD → commits). **The controller personally stress-tests every commit** before moving on: read the diff AND re-run the tests — never just trust the subagent's report. Track tasks with TaskCreate/TaskUpdate.
+4. **Acceptance gate for anything that affects generation** — a **real CLI smoke** (actual `claude`/`gemini` call, in-process, no server needed) is the proof. Fact over theory: if a claim is about model behavior, run it; don't assert from prompt structure.
+5. **Finish** — full suite green (`uv run python -m pytest tests/ -q`), then `finishing-a-development-branch` (push/merge/keep/discard — user decides; usually push to the working branch). Then write a **worklog** entry to `docs/memory/MASTER_MEMORY.md` + a row in `docs/memory/INDEX.md`, and close shipped items in `docs/memory/ROADMAP.md`.
+
+**Standing rules underneath all of it:**
+- **90% bar** — push back when the user, a spec, or a plan is wrong, and explain why. Don't follow instructions blindly.
+- **Never claim what you haven't run.** Verify against real code/output, re-check for staleness, and distinguish verified fact from prediction.
+- **Stage only the files each task lists** — other sessions may be committing to the same branch (e.g. `web/`); never `git add -A`.
+- **Backlog discipline:** raw ideas → `docs/memory/WISHLIST.md` (one line, no analysis); worked-up (issue → root cause+refs → deliverable) → `docs/memory/ROADMAP.md`; shipped → worklog. `WISHLIST`/`ROADMAP` are local-only.
+
 ## Commands
 
 ```powershell
