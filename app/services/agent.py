@@ -48,6 +48,10 @@ from app.schemas import (
     FlashcardsPack,
     GamesPack,
     CbpModeGame,
+    MemoryMatchGame,
+    TicTacToeGame,
+    JigsawGame,
+    SentenceFillGame,
     ErrorDetection,
     MemoryCheckPack,
     MemorySprintPack,
@@ -123,10 +127,10 @@ STRUCTURED_PHASE_SCHEMAS: dict[str, type[BaseModel]] = {
     # Case-Based-Preview interaction modes sharing the CbpModeGame contract.
     "practice-rlc": RealLifeChallenge,
     "practice-error-detection": ErrorDetection,
-    "practice-memory-match": CbpModeGame,
-    "practice-tictactoe": CbpModeGame,
-    "practice-jigsaw": CbpModeGame,
-    "practice-sentence": CbpModeGame,
+    "practice-memory-match": MemoryMatchGame,
+    "practice-tictactoe": TicTacToeGame,
+    "practice-jigsaw": JigsawGame,
+    "practice-sentence": SentenceFillGame,
 }
 
 

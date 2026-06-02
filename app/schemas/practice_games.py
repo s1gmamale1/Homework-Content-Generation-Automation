@@ -231,3 +231,19 @@ class CbpModeGame(BaseModel):
                 f"{expected.__name__}, got {type(self.interaction_payload).__name__}"
             )
         return self
+
+
+class MemoryMatchGame(CbpModeGame):
+    interaction_mode: Literal["memory_match"] = "memory_match"
+
+
+class TicTacToeGame(CbpModeGame):
+    interaction_mode: Literal["tictactoe"] = "tictactoe"
+
+
+class JigsawGame(CbpModeGame):
+    interaction_mode: Literal["jigsaw"] = "jigsaw"
+
+
+class SentenceFillGame(CbpModeGame):
+    interaction_mode: Literal["sentence_fill"] = "sentence_fill"

@@ -21,6 +21,10 @@ from app.schemas.memory_check import MemoryCheckItem, MemoryCheckKind, MemoryChe
 from app.schemas.memory_sprint import MemorySprintItem, MemorySprintPack
 from app.schemas.practice_games import (
     CbpModeGame,
+    MemoryMatchGame,
+    TicTacToeGame,
+    JigsawGame,
+    SentenceFillGame,
     ErrorBlock,
     ErrorDetection,
     ErrorPattern,
@@ -77,5 +81,9 @@ __all__ = [
     "ErrorBlock",
     "ErrorPattern",
     "CbpModeGame",
+    "MemoryMatchGame",
+    "TicTacToeGame",
+    "JigsawGame",
+    "SentenceFillGame",
     "PracticeInteractionMode",
 ]

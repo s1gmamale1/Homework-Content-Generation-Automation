@@ -270,3 +270,37 @@ def test_tictactoe_requires_nine_cells_and_a_correct() -> None:
         TicTacToePayload(cells=[dict(label=f"c{i}", is_correct=(i == 0)) for i in range(4)])
 
 
+def test_phase_mode_subclasses_pin_interaction_mode():
+    import pytest
+    from app.schemas.practice_games import (
+        TicTacToeGame, MemoryMatchGame, TicTacToePayload, MemoryMatchPayload,
+        MemoryMatchPair, GameChoice,
+    )
+    ttt_payload = TicTacToePayload(
+        cells=[GameChoice(label=f"c{i}", is_correct=(i == 0)) for i in range(9)])
+    g = TicTacToeGame(title="T", source_concept_ids=["c1"], interaction_mode="tictactoe",
+                      instruction="i", interaction_payload=ttt_payload, why_prompt="w")
+    assert g.interaction_mode == "tictactoe"
+    with pytest.raises(Exception):  # wrong mode on a pinned subclass
+        TicTacToeGame(title="T", source_concept_ids=["c1"], interaction_mode="memory_match",
+                      instruction="i", interaction_payload=ttt_payload, why_prompt="w")
+    mm_payload = MemoryMatchPayload(
+        pairs=[MemoryMatchPair(left=f"L{i}", right=f"R{i}") for i in range(4)])
+    with pytest.raises(Exception):  # memory_match payload on tictactoe subclass
+        TicTacToeGame(title="T", source_concept_ids=["c1"], interaction_mode="tictactoe",
+                      instruction="i", interaction_payload=mm_payload, why_prompt="w")
+
+
+def test_registry_maps_each_game_phase_to_its_mode_subclass():
+    from app.services.agent import STRUCTURED_PHASE_SCHEMAS
+    from app.schemas.practice_games import (
+        MemoryMatchGame, TicTacToeGame, JigsawGame, SentenceFillGame, CbpModeGame,
+    )
+    assert STRUCTURED_PHASE_SCHEMAS["practice-memory-match"] is MemoryMatchGame
+    assert STRUCTURED_PHASE_SCHEMAS["practice-tictactoe"] is TicTacToeGame
+    assert STRUCTURED_PHASE_SCHEMAS["practice-jigsaw"] is JigsawGame
+    assert STRUCTURED_PHASE_SCHEMAS["practice-sentence"] is SentenceFillGame
+    for cls in (MemoryMatchGame, TicTacToeGame, JigsawGame, SentenceFillGame):
+        assert issubclass(cls, CbpModeGame)
+
+
