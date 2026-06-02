@@ -24,7 +24,7 @@ Everything LLM-facing goes through `app/services/agent.py` (the CLI router); the
 - **90% bar** — push back when the user, a spec, or a plan is wrong, and explain why. Don't follow instructions blindly.
 - **Never claim what you haven't run.** Verify against real code/output, re-check for staleness, and distinguish verified fact from prediction.
 - **Stage only the files each task lists** — other sessions may be committing to the same branch (e.g. `web/`); never `git add -A`.
-- **Backlog discipline:** raw ideas → `docs/memory/WISHLIST.md` (one line, no analysis); worked-up (issue → root cause+refs → deliverable) → `docs/memory/ROADMAP.md`; shipped → worklog. `WISHLIST`/`ROADMAP` are local-only.
+- **Backlog discipline:** raw ideas → `docs/memory/WISHLIST.md` (one line, no analysis); worked-up (issue → root cause+refs → deliverable) → `docs/memory/ROADMAP.md`; shipped → worklog. All `docs/memory/` files are tracked in git (committed alongside the work).
 
 ## Commands
 

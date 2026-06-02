@@ -3,7 +3,7 @@
 > Raw capture of bugs / issues / ideas — **just the idea itself**, one line each.
 > No analysis here. When an item is understood (root cause + deliverable), promote it
 > to [ROADMAP.md](./ROADMAP.md) and remove it from this list.
-> Local-only (gitignored `docs/memory/`).
+> Tracked in git (committed alongside the work).
 
 ## Open
 

@@ -3,7 +3,7 @@
 > Items promoted from [WISHLIST.md](./WISHLIST.md) once understood. Each entry states:
 > **Issue** (what's wrong / wanted) · **Root cause** (why, with code/doc references) ·
 > **Deliverable** (the concrete result after the fix). Move to "Shipped" when done.
-> Local-only (gitignored `docs/memory/`).
+> Tracked in git (committed alongside the work).
 
 ---
 
