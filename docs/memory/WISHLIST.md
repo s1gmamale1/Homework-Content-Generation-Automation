@@ -30,6 +30,11 @@
 - Boss Arena `hints` allows 0 / unstructured — would like a 3-tier hint ladder (Why → How → synthesis).
 - `mistake_provenance` tag (`source` | `inferred`) on the CBP common-mistake — deferred from WS1.
 - Confirm the English grade→CEFR ladder against the official Uzbek curriculum — needs curriculum-owner sign-off (external).
+- _(2026-06-02)_ SSE teardown noise: the book TOC stream (`/toc/stream`) logs a benign `Exception terminating connection … CancelledError` when an `EventSource` closes (asyncpg + sse-starlette session cleanup races the cancel). Request still 200 — cosmetic. Fix: swallow the cancel on the SSE session teardown.
+- _(2026-06-02)_ Stale `pending` jobs with `attempts == max_attempts` (e.g. `2848dbcb`) are never claimed → stuck in `pending` **forever** (misleading status; the claim query skips attempts-exhausted rows but never fails them). A startup/periodic sweep should mark attempts-exhausted `pending` rows `failed`.
+- _(2026-06-02)_ Orphan-reclaim window is hardcoded `job_timeout × 2` (`worker.py:235`, = 1 hr at 1800s). A manually-killed job can't be resumed/cleared without DB edits for ~1 hr. Add a separate `reclaim_stale_seconds` setting so dead-job recovery is faster **without** shortening the real job-execution timeout (the R7 concern).
+- _(2026-06-02)_ Notion anchor **auto-resolve** (ties to Phase 2): the Notion `{N}-sinf` page lists every subject by display name (Kimyo, Fizika, Algebra…), so the app could resolve the subject-page ID by crawling (grade → `{N}-sinf` → child whose title matches the subject label) instead of the hand-maintained `NOTION_SUBJECT_PAGES` map. Would eliminate the **silent per-subject skip** (Kimyo incident: an unmapped subject just logs "no subject-page mapping … skipping" and the homework never pushes). Surface unmapped skips in the UI/job result either way.
+- _(2026-06-02)_ Upload-form intro copy still says "classifies the lesson you choose" — classify was removed; reword.
 
 ### Frontend
 
