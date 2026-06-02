@@ -391,3 +391,17 @@ Plus **Part 2**: gemini (which reads PDFs natively) keeps the whole PDF attached
 **Standing-error correction:** `docs/memory/` is **tracked by git**, not gitignored (the "Local-only (gitignored)" note in the file headers is inaccurate). I'd wrongly claimed it was gitignored for several turns; these worklog/roadmap/wishlist updates are real commits.
 
 **Left out of scope (noted, not fixed):** upload-form intro copy still says "classifies the lesson you choose" (classify was removed) — stale one-liner.
+
+## [0025] Content-gen default provider → claude/sonnet-4-6 — 2026-06-02 (Nggaev-v2)
+**What:** Made **claude / claude-sonnet-4-6** the default content-generation provider+model in the operator UI (was gemini). Triggered by a Kimyo job accidentally run on `gemini-3.1-pro-preview`. Small/clear/verified → controller-direct per the workflow exception. Commit `18ff032`.
+
+**Root cause of the wrong default (investigated):** `section.tsx:33` initialized `provider="gemini"`; the model-init effect (`section.tsx:52`) picks `manifest.providers[provider][0]`, and the **frontend never consulted the server default** (`_PROVIDER_DEFAULT_MODEL`). Also a latent inconsistency: `agent_models.MODEL_MANIFEST["claude"][0]` was `claude-opus-4-7` (so `default_model("claude")`=opus) while `_PROVIDER_DEFAULT_MODEL["claude"]` is `claude-sonnet-4-6` — manifest "recommended" disagreed with the resolver default.
+
+**Fix (3 one-line edits):**
+- `app/services/agent_models.py` — reorder claude list so `claude-sonnet-4-6` is first (opus second, haiku third). Now `[0]`=sonnet → the frontend auto-default is sonnet AND `default_model("claude")` matches the resolver. Opus still fully available/selectable.
+- `web/src/routes/section.tsx:33` — picker default provider `gemini → claude`.
+- `web/src/lib/api.ts` — `generate()` options fallback `provider = "gemini" → "claude"` (rarely hit; section always passes provider explicitly, but kept consistent).
+
+**Extractor explicitly NOT touched:** the extract phase is pinned via `config.py` `settings.extract_provider` (`gemini`) / `settings.extract_model` (`gemini-2.5-flash`), independent of the manifest/picker. The user flagged this; confirmed `config.py` was not modified. Extract stays gemini.
+
+**Verification:** `pytest tests/services/test_agent.py tests/services/test_opencode_provider.py` → 26 passed (the `_resolve_model("gemini"/"kimi"/"codex", None) is None` leak-guard, `_resolve_model("claude", None)==sonnet`, and opus-still-resolvable all intact). `tsc -p tsconfig.app.json --noEmit` → 0. `npm run build` → OK (dist rebuilt). The new default is live once the server restarts (serves rebuilt dist).
