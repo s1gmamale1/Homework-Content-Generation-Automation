@@ -15,7 +15,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
-from app.services import agent, events_bus, notion_archive
+from app.services import agent, events_bus, notion_archive, phase_validator
 from app.services.flows import (
     flow_for,
     file_needed_phases,
@@ -508,45 +508,11 @@ async def run(job_id: UUID) -> None:
                 # extractor (no PDF re-read). Best-effort: a failure logs but
                 # does NOT fail the job (downstream phases don't consume the
                 # map yet; that wiring lands in later PRs).
-                try:
-                    source_map = await agent.extract_source_map(
-                        provider=settings.extract_provider,
-                        model=settings.extract_model,
-                        lesson_context=lesson_context,
-                        subject_family=subject,
-                        chapter=section_data.get("chapter") or "",
-                        section=section_data["title"],
-                        homework_job_id=job_id,
-                    )
-                    source_map_payload = source_map.model_dump(mode="json")
-                    async with SessionLocal() as session:
-                        await jobs_repo.set_source_map_json(
-                            session, job_id, source_map_payload
-                        )
-                        await session.commit()
-                    # Thread the map into downstream content phases (plan §10).
-                    source_map_digest = agent.format_source_map_digest(
-                        source_map_payload
-                    )
-                    source_map_ids = {
-                        c.get("id")
-                        for c in source_map_payload.get("concepts", [])
-                        if c.get("id")
-                    }
-                    log.info(
-                        f"[job {job_id}] source map captured | "
-                        f"concepts={len(source_map.concepts)}"
-                    )
-                    await events_bus.publish(
-                        resource_id,
-                        "source_map_ready",
-                        {"concepts": len(source_map.concepts)},
-                    )
-                except Exception as exc:
-                    log.warning(
-                        f"[job {job_id}] source map extraction failed "
-                        f"(non-fatal): {exc!r}"
-                    )
+                # Source map dropped (md-per-phase reshape): grounding now lives
+                # in each phase's own ## Source Extraction block. Keep the digest
+                # empty so downstream phases get no injected map.
+                source_map_digest = ""
+                source_map_ids = set()
         content_phases = sequence[len(head_phases):]
 
         # ─── tail: content phases (parallel, wave-based by PHASE_DEPS) ────────
@@ -580,16 +546,9 @@ async def run(job_id: UUID) -> None:
                     return
                 raise
 
-        # ─── assembly ──────────────────────────────────────────
-        log.info(f"[job {job_id}] assembling homework markdown")
-        assembled = await _assemble(job_id)
-
+        # No assembly — per-phase markdown in phase_outputs is the deliverable.
         async with SessionLocal() as session:
-            await jobs_repo.set_status(
-                session, job_id, "done",
-                completed_at=_utcnow(),
-                assembled_md=assembled,
-            )
+            await jobs_repo.set_status(session, job_id, "done", completed_at=_utcnow())
             await session.commit()
 
         await events_bus.publish(
@@ -606,7 +565,7 @@ async def run(job_id: UUID) -> None:
         total_s = perf_counter() - t_start
         log.success(
             f"[job {job_id}] pipeline complete | phases_run={len(sequence)} "
-            f"assembled_chars={len(assembled)} total_s={total_s:.1f}"
+            f"total_s={total_s:.1f}"
         )
         await _log_token_summary(job_id, log)
 
@@ -827,33 +786,6 @@ async def _run_content_phases_parallel(
                 continue
 
             prior_outputs[phase_name] = output_md
-            # Source fidelity (plan §10): a phase must only cite concept ids that
-            # exist in the job's source map. Surface invented ids loudly. Kept
-            # non-fatal — a single hallucinated id shouldn't discard an otherwise
-            # good multi-phase generation — but it's now detected and auditable
-            # rather than silently trusted.
-            if parsed_struct is not None:
-                invented = _unknown_concept_ids(parsed_struct, source_map_ids or set())
-                if invented:
-                    log.warning(
-                        f"[job {job_id}] {phase_name} cites concept_ids NOT in the "
-                        f"source map (plan §10 source-fidelity violation): {invented}"
-                    )
-                    await events_bus.publish(
-                        resource_id,
-                        "concept_fidelity_warning",
-                        {"phase_name": phase_name, "unknown_ids": invented},
-                    )
-            if parsed_struct is not None and phase_name in _JSON_COLUMN_SETTERS:
-                json_payload = parsed_struct.model_dump(mode="json")
-                setter = _JSON_COLUMN_SETTERS[phase_name]
-                async with SessionLocal() as session:
-                    await setter(session, job_id, json_payload)
-                    await session.commit()
-                log.info(
-                    f"[job {job_id}] {phase_name} JSON persisted | "
-                    f"keys={list(json_payload.keys())}"
-                )
 
     if failed:
         # Caller's surrounding try/except will see the original exception was
@@ -971,26 +903,6 @@ async def _execute_phase(
                 phase_output_id=po_id,
             )
             parsed_struct: Optional[Any] = None
-        elif phase_name in agent.STRUCTURED_PHASE_SCHEMAS:
-            # JSON-renderable phase: produce structured output in ONE call
-            # instead of MD-then-extract (which paid for two roundtrips).
-            phase_prompt = get_prompt(subject, phase_name)
-            parsed_struct, tin, tout = await agent.run_phase_prompt_structured(
-                provider=provider,
-                model=model,
-                phase_prompt=phase_prompt,
-                response_schema=agent.STRUCTURED_PHASE_SCHEMAS[phase_name],
-                attachments=[pdf_path] if attach_file else [],
-                lesson_context=lesson_context or "",
-                prior_outputs=prior_outputs,
-                difficulty=difficulty,
-                phase_name=phase_name,
-                max_output_tokens=max_output_tokens_for(phase_name),
-                homework_job_id=job_id,
-                phase_output_id=po_id,
-                source_map_digest=source_map_digest,
-            )
-            output_md = _synth_md_for_structured(phase_name, parsed_struct)
         else:
             phase_prompt = get_prompt(subject, phase_name)
             output_md, tin, tout = await agent.run_phase_prompt(
@@ -1018,6 +930,12 @@ async def _execute_phase(
             await session.commit()
         raise
 
+    warnings = (
+        phase_validator.validate(phase_name, output_md, subject=subject)
+        if phase_name != "extract" else []
+    )
+    if warnings:
+        logger.warning(f"[job {job_id}] {phase_name} validation warnings: {warnings}")
     async with SessionLocal() as session:
         await phase_repo.set_status(
             session, po_id, "done",
@@ -1025,6 +943,7 @@ async def _execute_phase(
             output_md=output_md,
             tokens_input=tin,
             tokens_output=tout,
+            validation_warnings=warnings or None,
         )
         await session.commit()
 
