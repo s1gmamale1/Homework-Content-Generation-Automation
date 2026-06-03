@@ -10,6 +10,35 @@ def test_resolve_subject_page_id_uses_subject_grade_key():
     assert na._resolve_subject_page_id(mapping, "biology-g7-11", "8") is None
 
 
+def test_resolve_subject_page_id_dict_matches_by_filename_keyword():
+    mapping = {"history|8": {"jahon": "page_jahon", "ozbekiston": "page_ozbek"}}
+    assert na._resolve_subject_page_id(
+        mapping, "history", "8", "8-sinf_Jahon_tarixi_2024_(elekton_darslikbot).pdf"
+    ) == "page_jahon"
+    assert na._resolve_subject_page_id(
+        mapping, "history", "8", "8-sinf_Ozbekiston_tarixi_2023_(elekton_darslikbot).pdf"
+    ) == "page_ozbek"
+    # apostrophe / diacritic variants fold to the same bare keyword
+    assert na._resolve_subject_page_id(
+        mapping, "history", "8", "9-sinf_O‘zbekiston_tarixi.pdf"
+    ) == "page_ozbek"
+
+
+def test_resolve_subject_page_id_dict_no_keyword_match_returns_none():
+    mapping = {"history|8": {"jahon": "page_jahon", "ozbekiston": "page_ozbek"}}
+    assert na._resolve_subject_page_id(
+        mapping, "history", "8", "8-sinf_Qandaydir_Kitob.pdf"
+    ) is None
+
+
+def test_resolve_subject_page_id_string_value_ignores_hint():
+    # A grade with a single combined history page → plain string, hint irrelevant.
+    mapping = {"history|5": "combined_tarix_page"}
+    assert na._resolve_subject_page_id(
+        mapping, "history", "5", "5-sinf_Tarix.pdf"
+    ) == "combined_tarix_page"
+
+
 def test_lesson_title_from_section():
     assert na._lesson_title("1.1", "Burchaklar") == "1.1 Burchaklar"
     assert na._lesson_title(None, "Kirish") == "Kirish"

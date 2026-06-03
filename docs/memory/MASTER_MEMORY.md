@@ -422,3 +422,23 @@ On mount `entries=null` so the SSE is enabled; for an already-`toc_ready` book i
 **Note:** backend-only → the running server must be **restarted** to serve the new `books.py` before the badges stop flickering.
 
 **Bonus this turn:** the **Kimyo §3 Notion push was live-verified** (job `f8b1214c` `done`, `notion_archived_at=22:27:46`, no error) — the auto-push now works for a **2nd subject** end-to-end (after mapping `kimyo-g7-11|8` in `NOTION_SUBJECT_PAGES`).
+
+## [0027] Notion subject-page map — full grade-8 + history split routing — 2026-06-03 (Nggaev-v2)
+**What:** Filled `NOTION_SUBJECT_PAGES` for all of grade 8 (biology, english, geometriya-g7-11, history, kimyo-g7-11, math-algebra, physics) and taught the resolver to route the **single app `history` subject** to the **two** Notion history pages (Jahon tarixi / O‘zbekiston tarixi) without splitting the subject or its prompt. Controller-direct (design locked with user, small + clear → CLAUDE.md small-fix exception), TDD.
+
+**Design (chosen with user, Option A refined):** the map value is now `str | {keyword: page-id}`.
+- string → used directly (every normal subject, **and** grades that have one combined history page).
+- object → the book filename is folded and substring-matched against each keyword; first hit wins; no hit → None so `archive_job` logs the existing "no subject-page mapping … skipping" and never mis-files. This keeps split-vs-combined a pure per-grade **config** decision (no code branch on grade).
+
+Rejected: (B) two map keys + per-book variant flag — needs upload/schema/UI changes; (C) conflate both into one page — throws away the separation Notion deliberately keeps.
+
+**Code:**
+- `app/services/notion_archive.py`: `_resolve_subject_page_id(mapping, subject, grade, hint="")` — string-passthrough / dict-keyword-match / None; new `_fold(s)` lowercases + strips `' ‘ ’ ʻ \`` so bare keyword `ozbekiston` matches `Ozbekiston` and `O‘zbekiston`. Call site passes `book.original_filename or ""`.
+- `app/config.py`: `notion_subject_pages: dict[str, str | dict[str, str]]`.
+- `.env` (gitignored): full grade-8 JSON; `history|8` = `{"jahon":…,"ozbekiston":…}`.
+
+**Page IDs (grade 8):** biology `2c4998381c7680d494ddc5ce159d85ae` · english `2c4998381c7680188d03c61c47bb7109` (page is a WIP placeholder — confirmed right target) · geometriya-g7-11 `2c4998381c7680a099fcfa8277758da9` · history → jahon `2c4998381c76804bbfc7cde7d88f87ff` / ozbekiston `2c4998381c7680c6adc3ee31c9f3016f` · kimyo-g7-11 `2c4998381c7680a1bc94ee04f90d8492` · math-algebra `2c4998381c768030ade2de43088235c4` · physics `2c4998381c76806fbe6bc8e8fdcf1a4e`. Grade-8 parent "8 - sinf" = `2c8998381c768062b478ca09bf03c0b9` (under 8 Grade → Lessons → Class A Education).
+
+**Verification:** 3 new resolver tests (dict-match incl. apostrophe variant, dict-no-match→None, string-ignores-hint) red→green; all 7 `test_notion_archive.py` pass. End-to-end against the real `.env` via `Settings`: union parses from env JSON (`history|8` loads as dict), both real history filenames route to the correct page, physics (string) resolves, unknown history book → None. The lone red `test_config_notion::test_notion_defaults_disabled` is the **pre-existing** backlog item (NEXT #1), not from this change.
+
+**Caveats / next:** only grade 8 is mapped — other grades need their own `{N}-sinf` child IDs (and some lower grades likely have one **combined** history page → just a string value). Not committed (user runs their own test/commit). This is the hand-maintained-map approach; the auto-resolve-by-crawl idea remains the WISHLIST/Phase-2 item.

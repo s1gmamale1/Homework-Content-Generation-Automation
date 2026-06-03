@@ -68,7 +68,10 @@ class Settings(BaseSettings):
     notion_enabled: bool = False
     notion_api_key: str = ""
     # Keyed "{subject}|{grade}" → Notion subject-page ID. Parsed from JSON in env.
-    notion_subject_pages: dict[str, str] = Field(default_factory=dict)
+    # Value is a page-id string, OR a {keyword: page-id} object for grades where
+    # one app-subject splits across several Notion pages (e.g. history → Jahon /
+    # O‘zbekiston tarixi), matched against the book filename at archive time.
+    notion_subject_pages: dict[str, str | dict[str, str]] = Field(default_factory=dict)
 
     # ─── Per-provider call-count caps, per rolling window ─────────────────
     # 0 = unmetered (the /usage page renders a `—` instead of a percentage).

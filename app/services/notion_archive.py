@@ -32,12 +32,37 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _fold(s: str) -> str:
+    """Lowercase + strip apostrophe/diacritic variants so a bare keyword like
+    ``ozbekiston`` matches filenames spelled ``Ozbekiston`` or ``O‘zbekiston``."""
+    return s.lower().translate({ord(c): None for c in "'‘’ʻ`"})
+
+
 def _resolve_subject_page_id(
-    mapping: dict[str, str], subject: str, grade: Optional[str]
+    mapping: dict[str, str | dict[str, str]],
+    subject: str,
+    grade: Optional[str],
+    hint: str = "",
 ) -> Optional[str]:
+    """Resolve the Notion subject-page id for a job.
+
+    The value at ``{subject}|{grade}`` is either a plain page-id string (the
+    normal case, incl. grades with a single combined history page), or a
+    ``{keyword: page-id}`` object for grades that split one app-subject across
+    several Notion pages (e.g. history → Jahon tarixi / O‘zbekiston tarixi). For
+    the object form, ``hint`` (the book filename) is folded and matched against
+    each keyword as a substring; no match returns None so the caller logs a skip
+    rather than mis-filing."""
     if not grade:
         return None
-    return mapping.get(f"{subject}|{grade}")
+    value = mapping.get(f"{subject}|{grade}")
+    if value is None or isinstance(value, str):
+        return value
+    folded = _fold(hint)
+    for keyword, page_id in value.items():
+        if _fold(keyword) in folded:
+            return page_id
+    return None
 
 
 def _lesson_title(section_number: Optional[str], section_title: str) -> str:
@@ -93,7 +118,8 @@ async def archive_job(job_id: UUID) -> None:
             if book is None or section is None:
                 return
             subject_page_id = _resolve_subject_page_id(
-                settings.notion_subject_pages, job.subject, book.grade
+                settings.notion_subject_pages, job.subject, book.grade,
+                book.original_filename or "",
             )
             if not subject_page_id:
                 log.warning(
