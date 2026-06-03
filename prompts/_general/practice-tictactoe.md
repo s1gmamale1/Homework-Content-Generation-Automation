@@ -7,17 +7,16 @@ which are wrong. The grid must be solvable **only through the lesson concept**, 
 by general intuition or test-taking logic.
 
 Derive all cells from the lesson's `lesson_context` and source map.
-Emit `interaction_mode = "tictactoe"` (the literal string — non-negotiable).
+Set `interaction_mode` to `tictactoe` (include this as a labelled field in your output — non-negotiable).
 
 ## What to produce
 
-One compact Tic-Tac-Toe game, emitted in the structured form the response schema
-requests. Fill every field below; invent no extra fields.
+One compact Tic-Tac-Toe game. Fill every field below; invent no extra fields.
 
 - `title` — short, names the concept + decision-grid framing.
 - `source_concept_ids` — array of ≥1 concept IDs taken directly from the provided
   source map. **Use real IDs from the source; do NOT invent.**
-- `interaction_mode` — the literal `"tictactoe"`.
+- `interaction_mode` — the literal `tictactoe`.
 - `instruction` — 1–2 sentences: what the student does (select all correct cells on the
   3×3 board; a cell is correct only when it applies the lesson concept correctly).
 - `interaction_payload` — `{ "cells": [ {"label": "...", "is_correct": true/false, "reason": "..."}, … ] }`.
@@ -43,31 +42,16 @@ requests. Fill every field below; invent no extra fields.
 
 ## Output format
 
-Emit exactly one JSON object. Example (generic — replace with real lesson content):
+Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
+title and `##`/`###` for the sections/items described above, in order. For visuals:
+emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
+generate, emit `![placeholder: <short description> — image gen required](placeholder)`
+— never fabricate an image and never invent an image URL.
 
-```json
-{
-  "title": "Newton's Second Law — Decision Grid",
-  "source_concept_ids": ["concept_newtons_second_law"],
-  "interaction_mode": "tictactoe",
-  "instruction": "Select all cells that correctly apply Newton's Second Law. A cell is correct only if the action follows directly from F = ma.",
-  "interaction_payload": {
-    "cells": [
-      { "label": "Double the force → double the acceleration (mass constant)", "is_correct": true },
-      { "label": "Double the mass → double the acceleration (force constant)", "is_correct": false, "reason": "Doubling mass halves acceleration when force is constant." },
-      { "label": "Halve the mass → double the acceleration (force constant)", "is_correct": true },
-      { "label": "Force and acceleration are independent", "is_correct": false, "reason": "F = ma shows they are directly proportional." },
-      { "label": "Larger mass requires less force for same acceleration", "is_correct": false, "reason": "More mass requires MORE force for the same acceleration." },
-      { "label": "Net force zero → acceleration zero", "is_correct": true },
-      { "label": "Acceleration depends on speed, not force", "is_correct": false, "reason": "Acceleration depends on net force and mass, not on current speed." },
-      { "label": "Force and velocity always point in the same direction", "is_correct": false, "reason": "Force gives acceleration; velocity direction is independent." },
-      { "label": "Tripling both force and mass leaves acceleration unchanged", "is_correct": true }
-    ]
-  },
-  "why_prompt": "Pick one correct cell and one wrong cell. Explain which concept from the lesson makes the correct cell right, why the wrong cell fails that same concept, and what error a student making an intuitive guess would fall into.",
-  "expected_reasoning_keywords": ["net force", "mass", "acceleration", "proportional"]
-}
-```
+Include these labelled fields in order: `title`, `source_concept_ids`,
+`interaction_mode` (value: `tictactoe`), `instruction`, then the 9 cells each with
+`label`, `is_correct`, and optional `reason`, followed by `why_prompt` and
+`expected_reasoning_keywords`.
 
 ## Language
 

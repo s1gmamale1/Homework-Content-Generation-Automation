@@ -6,17 +6,16 @@ The match must be meaningful — a term paired with its definition, a structure 
 with its function, or a cause paired with its effect — never a surface-similarity guess.
 
 Derive all pairs from the lesson's `lesson_context` and source map.
-Emit `interaction_mode = "memory_match"` (the literal string — non-negotiable).
+Set `interaction_mode` to `memory_match` (include this as a labelled field in your output — non-negotiable).
 
 ## What to produce
 
-One compact Memory Match game, emitted in the structured form the response schema
-requests. Fill every field below; invent no extra fields.
+One compact Memory Match game. Fill every field below; invent no extra fields.
 
 - `title` — short, names the concept set being matched.
 - `source_concept_ids` — array of ≥1 concept IDs taken directly from the provided
   source map. **Use real IDs from the source; do NOT invent.**
-- `interaction_mode` — the literal `"memory_match"`.
+- `interaction_mode` — the literal `memory_match`.
 - `instruction` — 1–2 sentences: what the student does (flip cards, find the matching
   pair based on meaning, not position).
 - `interaction_payload` — `{ "pairs": [ {"left": "...", "right": "..."}, … ] }`.
@@ -42,26 +41,16 @@ requests. Fill every field below; invent no extra fields.
 
 ## Output format
 
-Emit exactly one JSON object. Example (generic — replace with real lesson content):
+Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
+title and `##`/`###` for the sections/items described above, in order. For visuals:
+emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
+generate, emit `![placeholder: <short description> — image gen required](placeholder)`
+— never fabricate an image and never invent an image URL.
 
-```json
-{
-  "title": "Cell Organelles — Structure and Function Match",
-  "source_concept_ids": ["concept_mitochondria", "concept_ribosome"],
-  "interaction_mode": "memory_match",
-  "instruction": "Flip the cards and find each matching pair. Match every term to its correct function — not to its neighbour on the board.",
-  "interaction_payload": {
-    "pairs": [
-      { "left": "Mitochondria", "right": "Produces ATP through cellular respiration" },
-      { "left": "Ribosome", "right": "Synthesises proteins from mRNA instructions" },
-      { "left": "Nucleus", "right": "Stores and transmits genetic information" },
-      { "left": "Cell membrane", "right": "Regulates what enters and exits the cell" }
-    ]
-  },
-  "why_prompt": "Choose one pair you matched. Explain which concept links those two cards, why that relationship holds according to the source, and what error a student would make if they matched by position or by a surface clue instead.",
-  "expected_reasoning_keywords": ["function", "source concept", "structure", "role"]
-}
-```
+Include these labelled fields in order: `title`, `source_concept_ids`,
+`interaction_mode` (value: `memory_match`), `instruction`, then the pairs listed
+as `left` / `right` entries, followed by `why_prompt` and
+`expected_reasoning_keywords`.
 
 ## Language
 

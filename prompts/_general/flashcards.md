@@ -78,6 +78,14 @@ Flash cards are a simple reference tool, so describe any helpful diagram as a sh
 - Cover every term, name, structure, process, rule, and classification term the {{SUBJECT}} student will encounter in the homework
 - Cards are returnable throughout the session — student can check them anytime
 
+## Output format
+
+Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
+title and `##`/`###` for the sections/items described above, in order. For visuals:
+emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
+generate, emit `![placeholder: <short description> — image gen required](placeholder)`
+— never fabricate an image and never invent an image URL.
+
 ## Language
 
 {{LANGUAGE_RULES}}

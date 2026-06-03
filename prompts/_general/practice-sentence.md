@@ -7,17 +7,16 @@ according to the lesson concept — exactly one chip is correct; the others are
 plausible distractors that fail for concept-level reasons.
 
 Derive the sentence and chips from the lesson's `lesson_context` and source map.
-Emit `interaction_mode = "sentence_fill"` (the literal string — non-negotiable).
+Set `interaction_mode` to `sentence_fill` (include this as a labelled field in your output — non-negotiable).
 
 ## What to produce
 
-One compact Sentence Fill game, emitted in the structured form the response schema
-requests. Fill every field below; invent no extra fields.
+One compact Sentence Fill game. Fill every field below; invent no extra fields.
 
 - `title` — short, names the concept or skill being tested.
 - `source_concept_ids` — array of ≥1 concept IDs taken directly from the provided
   source map. **Use real IDs from the source; do NOT invent.**
-- `interaction_mode` — the literal `"sentence_fill"`.
+- `interaction_mode` — the literal `sentence_fill`.
 - `instruction` — 1–2 sentences: what the student does (read the sentence, choose the
   one chip that fills the blank correctly according to the lesson).
 - `interaction_payload` — object with two fields:
@@ -48,27 +47,16 @@ requests. Fill every field below; invent no extra fields.
 
 ## Output format
 
-Emit exactly one JSON object. Example (generic — replace with real lesson content):
+Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
+title and `##`/`###` for the sections/items described above, in order. For visuals:
+emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
+generate, emit `![placeholder: <short description> — image gen required](placeholder)`
+— never fabricate an image and never invent an image URL.
 
-```json
-{
-  "title": "Photosynthesis — Reactants and Products",
-  "source_concept_ids": ["concept_photosynthesis"],
-  "interaction_mode": "sentence_fill",
-  "instruction": "Choose the one chip that correctly completes the sentence based on the lesson. Only one chip matches the source concept.",
-  "interaction_payload": {
-    "sentence": "During photosynthesis, plants use sunlight to convert carbon dioxide and water into glucose and ____.",
-    "chips": [
-      { "label": "oxygen", "is_correct": true, "reason": "" },
-      { "label": "nitrogen", "is_correct": false, "reason": "Nitrogen is not a product of photosynthesis; it is fixed by bacteria." },
-      { "label": "carbon monoxide", "is_correct": false, "reason": "Carbon monoxide is not produced; oxygen gas is released." },
-      { "label": "water vapour only", "is_correct": false, "reason": "Water vapour may transpire but is not the primary by-product of the light reactions." }
-    ]
-  },
-  "why_prompt": "Explain which concept from the lesson tells you why 'oxygen' is the correct answer, why each of the other chips fails at the concept level (not just because they sound wrong), and what error a student guessing by elimination alone would be likely to make.",
-  "expected_reasoning_keywords": ["photosynthesis", "light reactions", "by-product", "oxygen", "carbon dioxide"]
-}
-```
+Include these labelled fields in order: `title`, `source_concept_ids`,
+`interaction_mode` (value: `sentence_fill`), `instruction`, `sentence` (with `____`
+blank), then each chip with `label`, `is_correct`, and `reason`, followed by
+`why_prompt` and `expected_reasoning_keywords`.
 
 ## Language
 

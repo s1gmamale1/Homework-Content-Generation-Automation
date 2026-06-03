@@ -58,39 +58,19 @@ Use SVG for genuine diagrams (structures, processes, figures, charts) that carry
 
 `source_concept_ids` must map to concepts in this lesson. Do not invent. At least one.
 
-## Output format — JSON matching CaseBasedPreview schema
+## Output format
 
-```json
-{
-  "title": "...",
-  "student_role": "...",
-  "case_type": "...",
-  "source_concept_ids": ["..."],
-  "case_setup": { "narrative": "...", "student_role": "...", "task": "..." },
-  "checkpoints": [
-    { "intent": "identify", "form": "mcq", "question": "...", "options": [...], "correct_index": 0, "feedback": "..." },
-    { "intent": "decide", ... },
-    { "intent": "justify_or_avoid_mistake", ... }
-  ],
-  "learning_block_1": { "explanation": "...", "title": "...", "visual_svg": null, "source_concept_id": "..." },
-  "learning_block_2": { "explanation": "...", "title": "...", "visual_svg": null, "source_concept_id": "..." },
-  "decision_process_explanation": {
-    "prompt": "Walk through your reasoning: (1) Which concept did you spot? (2) Why this mechanism over alternatives? (3) What wrong interpretation was avoided?",
-    "expected_components": ["concept", "method", "mistake"],
-    "rubric": { "concept": 1, "method": 1, "mistake": 1 },
-    "sample_acceptable_answer": "...",
-    "eval_mode": "ai",
-    "min_chars": 60,
-    "options": null
-  },
-  "final_simulation": { "correct_path": "...", "wrong_path": "...", "why_wrong_fails": "..." },
-  "feedback_summary": { "understood": "...", "mistake": "...", "review": "..." },
-  "completion_rules": {
-    "pass_condition": "≥2/3 checkpoints correct + DPE attempted",
-    "retry_condition": "Fewer than 2 correct checkpoints — retry the case"
-  }
-}
-```
+Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
+title and `##`/`###` for the sections/items described above, in order. For visuals:
+emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
+generate, emit `![placeholder: <short description> — image gen required](placeholder)`
+— never fabricate an image and never invent an image URL.
+
+The sections to emit, in order: title, student_role, case_type, source_concept_ids,
+case_setup (narrative / student_role / task), checkpoint 1, learning_block_1,
+checkpoint 2, learning_block_2, checkpoint 3, decision_process_explanation,
+final_simulation (correct_path / wrong_path / why_wrong_fails), feedback_summary,
+completion_rules.
 
 ## Language
 

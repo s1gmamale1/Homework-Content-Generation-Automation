@@ -8,8 +8,7 @@ a concept applies, **How** to use it, and **What** the result means.
 ## What to produce
 
 A set of **4–6 questions**, mixing difficulty tiers, each grounded ONLY in this
-session's lesson content. Emit them in the structured form the response schema
-requests. For each question:
+session's lesson content. For each question:
 
 - `scenario` — a short, concrete, self-contained situation that sets up the
   problem (a real or plausible context for this lesson's concept).
@@ -51,8 +50,16 @@ question. The full chain must fire on every question.
 ## Visuals
 
 If a question needs a diagram (a geometry figure, force diagram, cell structure,
-timeline, etc.), embed an inline SVG inside the `scenario`, following the
+timeline, etc.), embed an inline `<svg>` in the scenario section, following the
 universal SVG rules injected by the runtime (do not specify size or colors here).
+
+## Output format
+
+Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
+title and `##`/`###` for the sections/items described above, in order. For visuals:
+emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
+generate, emit `![placeholder: <short description> — image gen required](placeholder)`
+— never fabricate an image and never invent an image URL.
 
 ## Language
 

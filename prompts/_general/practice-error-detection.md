@@ -15,8 +15,7 @@ for `math_equation` they are the lines/steps of a worked solution; for
 
 ## What to produce
 
-One Error Detection task, emitted in the structured form the response schema
-requests. Fill every field:
+One Error Detection task. Fill every field:
 
 - `task_id` — short stable slug (e.g. `err_topic_g8_001`); optional.
 - `pattern` — exactly one of `math_equation`, `grammar_sentence`, `science_diagram`.
@@ -57,9 +56,17 @@ requests. Fill every field:
 ## Visuals
 
 If the chosen `pattern` is `science_diagram` (or any block needs a figure), embed
-the diagram as **inline SVG** — either inside the relevant block's `content` or in
-a leading non-error block — following the universal SVG rules injected by the
+the diagram as **inline `<svg>`** — either in the relevant block's text or in a
+leading non-error block — following the universal SVG rules injected by the
 runtime. Do NOT specify size or colours here. Exactly one block is wrong.
+
+## Output format
+
+Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
+title and `##`/`###` for the sections/items described above, in order. For visuals:
+emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
+generate, emit `![placeholder: <short description> — image gen required](placeholder)`
+— never fabricate an image and never invent an image URL.
 
 ## Language
 

@@ -7,17 +7,16 @@ conclusion, or step ↔ result. Surface similarity is never enough; the relation
 must be traceable to the lesson source.
 
 Derive all pieces and relationships from the lesson's `lesson_context` and source map.
-Emit `interaction_mode = "jigsaw"` (the literal string — non-negotiable).
+Set `interaction_mode` to `jigsaw` (include this as a labelled field in your output — non-negotiable).
 
 ## What to produce
 
-One compact Jigsaw Assembly game, emitted in the structured form the response schema
-requests. Fill every field below; invent no extra fields.
+One compact Jigsaw Assembly game. Fill every field below; invent no extra fields.
 
 - `title` — short, names the concept set and assembly framing.
 - `source_concept_ids` — array of ≥1 concept IDs taken directly from the provided
   source map. **Use real IDs from the source; do NOT invent.**
-- `interaction_mode` — the literal `"jigsaw"`.
+- `interaction_mode` — the literal `jigsaw`.
 - `instruction` — 1–2 sentences: what the student does (drag pieces into connected
   pairs using only the relationship types provided; pieces connect only when the source
   supports it).
@@ -47,28 +46,16 @@ requests. Fill every field below; invent no extra fields.
 
 ## Output format
 
-Emit exactly one JSON object. Example (generic — replace with real lesson content):
+Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
+title and `##`/`###` for the sections/items described above, in order. For visuals:
+emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
+generate, emit `![placeholder: <short description> — image gen required](placeholder)`
+— never fabricate an image and never invent an image URL.
 
-```json
-{
-  "title": "Pythagorean Theorem — Condition and Application Assembly",
-  "source_concept_ids": ["concept_pythagorean_theorem"],
-  "interaction_mode": "jigsaw",
-  "instruction": "Connect each piece to the piece it belongs with, using only the relationship types listed. A connection is valid only when the source supports it — not when pieces look similar.",
-  "interaction_payload": {
-    "pieces": [
-      { "id": "p1", "content": "Triangle ABC has a right angle at C" },
-      { "id": "p2", "content": "a² + b² = c²" },
-      { "id": "p3", "content": "The hypotenuse is side c, opposite the right angle" },
-      { "id": "p4", "content": "AC = 3, BC = 4 → AB = 5" }
-    ],
-    "allowed_assembly_types": ["theorem ↔ condition", "given ↔ conclusion"],
-    "solution": [["p1", "p2"]]
-  },
-  "why_prompt": "Explain which theorem or concept you identified, why the relationship direction you chose is correct (for example, which piece is the condition and which is the theorem it enables), and what error a student would make by connecting pieces in the wrong direction or by matching on surface similarity alone.",
-  "expected_reasoning_keywords": ["right angle", "hypotenuse", "condition", "theorem", "Pythagorean"]
-}
-```
+Include these labelled fields in order: `title`, `source_concept_ids`,
+`interaction_mode` (value: `jigsaw`), `instruction`, then the pieces (each with
+`id` and `content`), `allowed_assembly_types`, `solution` (connected pair IDs),
+followed by `why_prompt` and `expected_reasoning_keywords`.
 
 ## Language
 

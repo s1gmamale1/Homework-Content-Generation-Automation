@@ -40,42 +40,19 @@ Every item references the `flashcard_id` of the card it tests, and a `kind`.
 
 {{LANGUAGE_RULES}}
 
-## Output format — JSON matching MemoryCheckPack schema
+## Output format
 
-```json
-{
-  "items": [
-    {
-      "flashcard_id": "card_1",
-      "kind": "multiple_choice",
-      "prompt": "Fotosintez jarayonida qaysi organoid ishtirok etadi?",
-      "options": [
-        { "text": "Xloroplast", "is_correct": true, "reason": "Xloroplastlar xlorofill pigmentini o'z ichiga oladi va yorug'lik energiyasini tutib oladi." },
-        { "text": "Mitoxondriya", "is_correct": false, "reason": "Mitoxondriya nafas olish uchun ishlatiladi, fotosintez uchun emas — bu ikkisini adashtirish keng tarqalgan xato." },
-        { "text": "Ribosoma", "is_correct": false, "reason": "Ribosomalar oqsil sintezi bilan shug'ullanadi, fotosintez bilan emas." },
-        { "text": "Lizosoma", "is_correct": false, "reason": "Lizosomalar hujayraviy hazm qilish organoidlari bo'lib, fotosintezga aloqasi yo'q." }
-      ],
-      "why_prompt": "Nega aynan xloroplast fotosintezda ishtirok etadi?",
-      "expected_reasoning_keywords": ["xlorofill", "yorug'lik", "pigment"],
-      "correct_feedback": "To'g'ri! Xloroplast xlorofill tufayli yorug'likni yutadi.",
-      "wrong_feedback": "Qayta o'qing: fotosintez xloroplastda sodir bo'ladi."
-    },
-    {
-      "flashcard_id": "card_2",
-      "kind": "fill_blank",
-      "prompt": "Hujayraning energiya markazi _____ deb ataladi.",
-      "blanks": [
-        { "answer": "mitoxondriya", "accepted_variations": ["mitoxondriyalar", "mitochondria"] }
-      ],
-      "why_prompt": "Nega mitoxondriya 'energiya markazi' deb ataladi?",
-      "expected_reasoning_keywords": ["ATF", "nafas olish", "oksidlanish"],
-      "correct_feedback": "Ajoyib! Mitoxondriya ATF ishlab chiqaradi.",
-      "wrong_feedback": "Eslab qoling: ATF mitoxondriyada hosil bo'ladi."
-    }
-  ],
-  "pass_threshold": 0.60
-}
-```
+Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
+title and `##`/`###` for the sections/items described above, in order. For visuals:
+emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
+generate, emit `![placeholder: <short description> — image gen required](placeholder)`
+— never fabricate an image and never invent an image URL.
+
+Emit each item as a `###` block with these fields: `flashcard_id`, `kind`, `prompt`,
+`options` (for multiple_choice / choose_correct_explanation — 4 objects each with
+`text`, `is_correct`, `reason`) or `blanks` (for fill_blank — each with `answer`,
+`accepted_variations`), `why_prompt`, `expected_reasoning_keywords`, `correct_feedback`,
+`wrong_feedback`. End with a `pass_threshold: 0.60` line.
 
 ## Self-check
 

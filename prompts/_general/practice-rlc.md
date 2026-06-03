@@ -5,8 +5,7 @@ student is NOT answering questions *about* a scenario — they ARE the expert
 inside it. They predict, decide, and justify; the system evaluates whether their
 reasoning would hold up if a real practitioner read it. Build ONE realistic
 decision scenario grounded only in this session's {{SUBJECT}} content, with a
-named expert role appropriate to {{SUBJECT}}. Emit the structured form the
-response schema requests.
+named expert role appropriate to {{SUBJECT}}.
 
 ## What to produce
 
@@ -61,9 +60,17 @@ One scenario object with these fields:
 
 ## Visuals
 
-If a decision needs a diagram, embed an inline SVG inside the relevant `context`
-or `question` text, following the universal SVG rules injected by the runtime (do
+If a decision needs a diagram, embed an inline `<svg>` in the relevant context or
+question section, following the universal SVG rules injected by the runtime (do
 not specify size or colors here). Add it only when the diagram carries the decision.
+
+## Output format
+
+Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
+title and `##`/`###` for the sections/items described above, in order. For visuals:
+emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
+generate, emit `![placeholder: <short description> — image gen required](placeholder)`
+— never fabricate an image and never invent an image URL.
 
 ## Language
 
