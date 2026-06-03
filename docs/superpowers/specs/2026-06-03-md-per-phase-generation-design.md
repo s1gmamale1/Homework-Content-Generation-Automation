@@ -118,6 +118,11 @@ job done →
   `page_has_content`. Drop `content.json` and the single-page assembled render.
 - Phase title mapping: a small `PHASE_TITLES` dict (`case-based-preview → "Case-Based
   Preview"`, etc.).
+- **Placeholder handling (REQUIRED):** the markdown→blocks renderer MUST convert a
+  non-resolving image — `![placeholder: … ](placeholder)` (target literally `placeholder`,
+  or any non-`http(s)` URL) — into a **callout/text block** carrying the alt text, never
+  an image block (an unresolvable image URL errors or renders broken in Notion). See
+  "Visual handling" below.
 
 **5. Console (`web/src/`)**
 - `preview.tsx`: drop `assembled_md` gate (gate on "job done + has phase outputs");
@@ -147,6 +152,33 @@ job done →
 - `app/schemas/` phase modules no longer referenced (flashcards, memory_check,
   boss_arena, practice_games, reading, games, final_challenge, memory_sprint, flow_v2);
   remove once nothing imports them.
+
+### Visual handling (images & SVG) — REQUIRED
+
+The `Infra_prompts` specs are explicit (and this is a must-have): the model does **not**
+generate raster artwork. It either emits an inline diagram or leaves a placeholder.
+
+- **Convention (adopted verbatim from the specs):**
+  - **Diagrams (structural/numeric — figures, vectors, maps, cross-sections):** emit
+    **inline `<svg>`** in the markdown.
+  - **Raster/photo (real scenes, organisms, apparatus, portraits):** emit a placeholder
+    markdown image, never a fabricated picture:
+    `![placeholder: <description> — image gen required](placeholder)`
+    (the `— SVG required` variant is used when even an SVG can't be produced).
+- **Console (`preview.tsx`):** `ReactMarkdown` + `rehypeRaw` already renders inline
+  `<svg>`. A `![…](placeholder)` image naturally renders as its alt text — acceptable;
+  optionally style it as a dim "visual placeholder" chip so reviewers spot it.
+- **Notion (`notion/blocks.py`):** the renderer MUST detect a placeholder/non-resolving
+  image (target `placeholder` or any non-`http(s)` URL) and emit a **callout or text
+  block** with the alt text — NOT an `image` block. (Inline `<svg>` keeps its existing
+  behaviour — rendered as escaped text per the accepted R9 limit.)
+- **Validator rules (deterministic):**
+  - A well-formed `![placeholder: … ](placeholder)` is **valid and expected** — never warn
+    on it.
+  - **Warn** on a malformed/real-broken image: an image whose URL is empty or non-`http(s)`
+    but is *not* the `placeholder` sentinel (catches accidental broken links).
+  - (Effort B, per-phase) optionally **warn** when a phase whose spec expects a visual has
+    neither an inline `<svg>` nor a placeholder.
 
 ### Data flow (one phase)
 
@@ -196,7 +228,10 @@ job done →
 - **Effort B (separate spec):** rewrite the 8 `prompts/_general/*.md` to the
   `Infra_prompts` specs (CBP, Flashcards, Quizlet-style Memory Check, the 7 Gamified
   Practices, Boss Arena, Reflection) + author each phase's full deterministic validator
-  rule set + the Uzbek Foundation language rules. Per-phase, smoke-tested.
+  rule set + the Uzbek Foundation language rules. **Adopt the visual convention in every
+  prompt** — inline `<svg>` for diagrams, `![placeholder: … — image gen required](placeholder)`
+  for raster (replacing the current `[Diagram: …]` bracket-note convention). Per-phase,
+  smoke-tested.
 
 ## Risks & open items
 
