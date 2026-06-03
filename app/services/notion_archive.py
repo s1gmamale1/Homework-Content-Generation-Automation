@@ -95,7 +95,8 @@ def _push_to_notion(
     sub-page per phase (rendered md blocks + that phase's .md attached).
     Idempotent: a phase sub-page that already has content is left untouched.
     Returns the Homework page id."""
-    homework_id, _ = find_or_create(client, subject_page_id, "Homework")
+    lesson_id, _ = find_or_create(client, subject_page_id, lesson_title)
+    homework_id, _ = find_or_create(client, lesson_id, "Homework")
 
     for display_title, phase_name, md in phases:
         page_id, _ = find_or_create(client, homework_id, display_title)
@@ -157,17 +158,13 @@ async def archive_job(job_id: UUID) -> None:
             return
 
         client = NotionClientWrapper(api_key=settings.notion_api_key)
-
-        def _run_push() -> str:
-            lesson_id, _ = find_or_create(client, subject_page_id, lesson_title)
-            return _push_to_notion(
-                client=client,
-                subject_page_id=lesson_id,
-                lesson_title=lesson_title,
-                phases=phases,
-            )
-
-        homework_id = await asyncio.to_thread(_run_push)
+        homework_id = await asyncio.to_thread(
+            _push_to_notion,
+            client=client,
+            subject_page_id=subject_page_id,
+            lesson_title=lesson_title,
+            phases=phases,
+        )
 
         async with SessionLocal() as session:
             await toc_repo.set_notion_homework_page_id(session, section_id, homework_id)

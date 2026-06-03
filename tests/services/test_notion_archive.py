@@ -48,8 +48,8 @@ def test_push_creates_one_subpage_per_phase():
     client = MagicMock()
     client.page_has_content.return_value = False  # each new subpage empty
     client.upload_bytes.return_value = "upl_x"
-    # find_or_create returns (page_id, created) — Homework + 2 phase subpages
-    na_find = MagicMock(side_effect=[("hw_1", True), ("p_cbp", True), ("p_fc", True)])
+    # find_or_create returns (page_id, created) — lesson + Homework + 2 phase subpages
+    na_find = MagicMock(side_effect=[("lesson_1", True), ("hw_1", True), ("p_cbp", True), ("p_fc", True)])
     phases = [
         ("Case-Based Preview", "case-based-preview", "# Case\n\nbody"),
         ("Flashcards", "flashcards", "# Flashcards\n\nbody"),
@@ -58,7 +58,7 @@ def test_push_creates_one_subpage_per_phase():
         client=client, subject_page_id="subj_1", lesson_title="1.1 Burchaklar",
         phases=phases, find_or_create=na_find,
     )
-    assert na_find.call_count == 3            # 1 Homework + 2 phase subpages
+    assert na_find.call_count == 4            # lesson + Homework + 2 phase subpages
     assert client.upload_bytes.call_count == 2
     assert client.append_block_children.call_count == 2
 
@@ -66,7 +66,7 @@ def test_push_creates_one_subpage_per_phase():
 def test_push_skips_phase_subpage_already_populated():
     client = MagicMock()
     client.page_has_content.return_value = True   # already populated → skip writes
-    na_find = MagicMock(side_effect=[("hw_1", False), ("p_cbp", False)])
+    na_find = MagicMock(side_effect=[("lesson_1", False), ("hw_1", False), ("p_cbp", False)])
     na._push_to_notion(
         client=client, subject_page_id="subj_1", lesson_title="1.1",
         phases=[("Case-Based Preview", "case-based-preview", "# Case")],
