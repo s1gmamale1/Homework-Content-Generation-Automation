@@ -1,9 +1,8 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, text
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, Timestamps, UUIDPK
@@ -27,47 +26,6 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     current_phase: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    assembled_md: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # Structured games extracted from the game-breaks phase output. Shape:
-    # {"games": [{"type": "adaptive_quiz" | "tile_match" | "memory_match" |
-    #             "sentence_fill", "title": str, ...type-specific fields}]}
-    games_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    # Structured flashcards extracted from the flashcards phase. Shape:
-    # {"cards": [{"front": str, "back": str, "hint"?: str, "cluster"?: str}]}
-    flashcards_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    # Boss-fight-style HP quiz extracted from final-challenge.
-    # {"title", "starting_hp", "questions": [{prompt, kind, options, correct_index, damage, hints, ...}]}
-    final_challenge_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    # Quick recognition quiz extracted from memory-sprint.
-    # {"items": [{prompt, kind, options, correct_index, explanation}]}
-    memory_sprint_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    # English-only reading passage with inline checkpoints.
-    # {"passage_md", "checkpoints": [{after_paragraph, prompt, options, correct_index}], "cefr_level"}
-    reading_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    # PR-1 (Flow v2): structured source map derived from the extract — the
-    # factual anchor downstream phases cite. Shape:
-    # {"subject_family", "chapter", "section",
-    #  "concepts": [{"id","label","statement","kind","source_ref?"}]}
-    source_map_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    # PR-4 (Flow v2): Boss Arena — reasoning Why->How->What questions. Shape:
-    # {"title","starting_hp","questions":[{concept_ids,difficulty,scenario,why,how,what,
-    #   base_damage,hints,correct_feedback,partial_feedback,wrong_feedback}]}
-    boss_arena_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    # PR-2 (Flow v2) Learning Sections: Case-Based Preview + Memory Check.
-    # cbp_json mirrors the CaseBasedPreview schema; memory_check_json the
-    # MemoryCheckPack ({"items":[{flashcard_id,prompt,kind,...}], "pass_threshold"}).
-    cbp_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    memory_check_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    # PR-3 (Flow v2) Practice Arc games. One column per game phase; a subject
-    # only fills the columns for the games in its flow. The two standalone
-    # mechanics (RealLifeChallenge, ErrorDetection) and the four CbpModeGame
-    # interaction modes each persist their structured output here.
-    practice_rlc_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    practice_error_detection_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    practice_memory_match_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    practice_tictactoe_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    practice_jigsaw_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    practice_sentence_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     notion_archived_at: Mapped[Optional[datetime]] = mapped_column(
