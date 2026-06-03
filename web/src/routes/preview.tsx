@@ -1,18 +1,9 @@
-import { BossFight } from "@/components/boss-fight/boss-fight";
 import { Eyebrow } from "@/components/eyebrow";
-import { FlashcardDeck } from "@/components/flashcards/flashcard-deck";
-import { PhaseBoundary } from "@/components/flow-v2/phase-boundary";
-import { SourceMapView } from "@/components/flow-v2/source-map";
-import { GameCard } from "@/components/games/game-card";
-import { MemorySprint } from "@/components/memory-sprint/memory-sprint";
-import { ReadingExperience } from "@/components/reading/reading-experience";
 import { api } from "@/lib/api";
-import { DIVISION_ORDER, FLOW_V2_PHASES, isFlowV2 } from "@/lib/flow-v2-phases";
 import type { Job } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Download, Loader2 } from "lucide-react";
-import { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 import rehypeRaw from "rehype-raw";
@@ -79,203 +70,50 @@ const MD_COMPONENTS = {
   ),
 };
 
-function LegacyPreview({ job }: { job: Job }) {
-  // Split the assembled MD into ordered segments around the structured-phase
-  // headings. Each segment is either an MD chunk or a structured renderer
-  // placeholder. Plain MD wins when the *_json is empty (extraction failed),
-  // so users still see *something* per phase.
-  type SegmentKind =
-    | "md"
-    | "flashcards"
-    | "memory_sprint"
-    | "games"
-    | "final_challenge"
-    | "reading";
+const PHASE_TITLES: Record<string, string> = {
+  "case-based-preview": "Case-Based Preview",
+  flashcards: "Flashcards",
+  "memory-check": "Memory Check",
+  "practice-rlc": "Real-Life Challenge",
+  "practice-error-detection": "Error Detection",
+  "practice-memory-match": "Memory Matching",
+  "practice-tictactoe": "TicTacToe",
+  "practice-jigsaw": "Jigsaw Matching",
+  "practice-sentence": "Sentence Filling",
+  "boss-arena": "Boss Arena",
+  reflection: "Reflection",
+};
 
-  type Segment = { kind: "md"; content: string } | { kind: Exclude<SegmentKind, "md"> };
-
-  const segments = useMemo<Segment[]>(() => {
-    const md = job.assembled_md ?? "";
-    if (!md) return [];
-
-    const has = {
-      flashcards: (job.flashcards_json?.cards ?? []).length > 0,
-      memory_sprint: (job.memory_sprint_json?.items ?? []).length > 0,
-      games: (job.games_json?.games ?? []).length > 0,
-      final_challenge: (job.final_challenge_json?.questions ?? []).length > 0,
-      reading: Boolean(job.reading_json?.passage_md),
-    };
-
-    // Heading regex per phase. `.title()` in Python converts e.g.
-    // "memory-sprint" → "Memory Sprint", "final-challenge" → "Final Challenge".
-    const HEADINGS: Array<[Exclude<SegmentKind, "md">, RegExp]> = [
-      ["flashcards", /^##\s+Flashcards\s*$/im],
-      ["memory_sprint", /^##\s+Memory\s+Sprint\s*$/im],
-      ["games", /^##\s+Game\s+Breaks\s*$/im],
-      ["reading", /^##\s+Reading\s*$/im],
-      ["final_challenge", /^##\s+Final\s+Challenge\s*$/im],
-    ];
-
-    interface Marker {
-      idx: number;
-      end: number;
-      kind: Exclude<SegmentKind, "md">;
-    }
-    const markers: Marker[] = [];
-
-    for (const [kind, re] of HEADINGS) {
-      if (!has[kind]) continue;
-      const m = md.match(re);
-      if (!m || m.index === undefined) continue;
-      const after = md.slice(m.index);
-      const nextH = after.search(/\n##\s+\S/);
-      const end = nextH >= 0 ? m.index + nextH : md.length;
-      markers.push({ idx: m.index, end, kind });
-    }
-
-    if (markers.length === 0) return [{ kind: "md", content: md }];
-
-    markers.sort((a, b) => a.idx - b.idx);
-    const out: Segment[] = [];
-    let cursor = 0;
-    for (const mk of markers) {
-      if (mk.idx > cursor) {
-        out.push({ kind: "md", content: md.slice(cursor, mk.idx) });
-      }
-      out.push({ kind: mk.kind });
-      cursor = mk.end;
-    }
-    if (cursor < md.length) out.push({ kind: "md", content: md.slice(cursor) });
-    return out;
-  }, [
-    job.assembled_md,
-    job.flashcards_json,
-    job.memory_sprint_json,
-    job.games_json,
-    job.final_challenge_json,
-    job.reading_json,
-  ]);
-
-  return (
-    <article className="mt-8 leading-relaxed text-(--color-ink-soft)">
-      {segments.map((seg, i) => {
-        if (seg.kind === "md") {
-          return (
-            <ReactMarkdown
-              // biome-ignore lint/suspicious/noArrayIndexKey: stable segment order
-              key={`md-${i}`}
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeRaw]}
-              components={MD_COMPONENTS}
-            >
-              {seg.content}
-            </ReactMarkdown>
-          );
-        }
-        if (seg.kind === "flashcards") {
-          return (
-            <section key="flashcards" className="mt-10">
-              <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-                Flashcards
-              </h2>
-              <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
-                <FlashcardDeck cards={job.flashcards_json?.cards ?? []} />
-              </div>
-            </section>
-          );
-        }
-        if (seg.kind === "memory_sprint") {
-          return (
-            <section key="memory_sprint" className="mt-10">
-              <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-                Memory Sprint
-              </h2>
-              <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
-                <MemorySprint pack={job.memory_sprint_json ?? { items: [] }} />
-              </div>
-            </section>
-          );
-        }
-        if (seg.kind === "games") {
-          return (
-            <section key="games" className="mt-10">
-              <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-                Game Breaks
-              </h2>
-              <div className="flex flex-col gap-5">
-                {(job.games_json?.games ?? []).map((g, gi) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: order is stable
-                  <GameCard key={gi} game={g} />
-                ))}
-              </div>
-            </section>
-          );
-        }
-        if (seg.kind === "reading") {
-          return (
-            <section key="reading" className="mt-10">
-              <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-                Reading
-              </h2>
-              <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
-                <ReadingExperience
-                  passage={job.reading_json ?? { passage_md: "", checkpoints: [] }}
-                />
-              </div>
-            </section>
-          );
-        }
-        // final_challenge
-        return (
-          <section key="final_challenge" className="mt-10">
-            <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-              Final Challenge
-            </h2>
-            <div className="rounded-(--radius-lg) border border-(--color-accent-border) bg-[linear-gradient(135deg,var(--color-elevated),var(--color-accent-soft))] p-5">
-              <BossFight
-                challenge={job.final_challenge_json ?? { starting_hp: 100, questions: [] }}
-              />
-            </div>
-          </section>
-        );
-      })}
-    </article>
-  );
-}
-
-function FlowV2Preview({ job }: { job: Job }) {
-  const byDivision = DIVISION_ORDER.map((div) => ({
-    div,
-    phases: FLOW_V2_PHASES.filter((p) => p.division === div).filter((p) => {
-      const data = job[p.column];
-      return data != null && !p.isEmpty(data);
-    }),
-  })).filter((g) => g.phases.length > 0);
+function PhasesPreview({ job }: { job: Job }) {
+  const phases = job.phases
+    .filter((p) => p.phase_name !== "extract" && p.status === "done" && p.output_md)
+    .sort((a, b) => a.phase_order - b.phase_order);
 
   return (
     <article className="mt-8 flex flex-col gap-10">
-      {job.source_map_json && (
-        <section>
-          <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">
-            Source Map
-          </h2>
-          <PhaseBoundary title="Source Map">
-            <SourceMapView map={job.source_map_json} />
-          </PhaseBoundary>
-        </section>
-      )}
-      {byDivision.map(({ div, phases }) => (
-        <section key={div}>
-          <h2 className="mb-4 text-xl font-semibold tracking-tight text-(--color-ink)">{div}</h2>
-          <div className="flex flex-col gap-6">
-            {phases.map((p) => (
-              <div key={p.key}>
-                <h3 className="mb-2 text-base font-semibold text-(--color-ink)">{p.title}</h3>
-                <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5">
-                  <PhaseBoundary title={p.title}>{p.render(job[p.column])}</PhaseBoundary>
-                </div>
-              </div>
-            ))}
+      {phases.map((p) => (
+        <section key={p.phase_name}>
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <h2 className="text-xl font-semibold tracking-tight text-(--color-ink)">
+              {PHASE_TITLES[p.phase_name] ?? p.phase_name}
+            </h2>
+            {p.validation_warnings && p.validation_warnings.length > 0 && (
+              <span className="rounded-(--radius-xs) bg-(--color-warn-soft,#fef3c7) px-2 py-0.5 text-[0.7rem] font-medium text-(--color-warn,#92400e)">
+                ⚠ {p.validation_warnings.length}
+              </span>
+            )}
+          </div>
+          {p.validation_warnings && p.validation_warnings.length > 0 && (
+            <ul className="mb-3 list-disc pl-5 text-xs text-(--color-ink-muted)">
+              {p.validation_warnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          )}
+          <div className="rounded-(--radius-lg) border border-(--color-border) bg-(--color-elevated) p-5 leading-relaxed text-(--color-ink-soft)">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]} components={MD_COMPONENTS}>
+              {p.output_md ?? ""}
+            </ReactMarkdown>
           </div>
         </section>
       ))}
@@ -303,7 +141,7 @@ export function PreviewPage() {
     );
   }
 
-  if (error || !job || !job.assembled_md) {
+  if (error || !job || job.status !== "done") {
     return (
       <>
         <Eyebrow>Preview</Eyebrow>
@@ -347,7 +185,7 @@ export function PreviewPage() {
         </p>
       )}
 
-      {isFlowV2(job) ? <FlowV2Preview job={job} /> : <LegacyPreview job={job} />}
+      <PhasesPreview job={job} />
     </>
   );
 }

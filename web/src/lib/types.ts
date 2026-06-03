@@ -59,6 +59,7 @@ export interface PhaseOut {
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;
+  validation_warnings: string[] | null;
 }
 
 export interface Job {

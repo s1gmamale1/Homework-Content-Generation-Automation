@@ -284,43 +284,16 @@ function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string 
     queryFn: () => api.getJob(jobId),
   });
 
-  const counts = useMemo(() => {
-    const practiceGames = [
-      job?.practice_rlc_json,
-      job?.practice_error_detection_json,
-      job?.practice_memory_match_json,
-      job?.practice_tictactoe_json,
-      job?.practice_jigsaw_json,
-      job?.practice_sentence_json,
-    ].filter(Boolean).length;
-    return {
-      flashcards: job?.flashcards_json?.cards?.length ?? 0,
-      sourceConcepts: job?.source_map_json?.concepts?.length ?? 0,
-      caseCheckpoints: job?.cbp_json?.checkpoints?.length ?? 0,
-      memoryChecks: job?.memory_check_json?.items?.length ?? 0,
-      // v2 Boss Arena, falling back to the legacy final-challenge count
-      bossQuestions:
-        job?.boss_arena_json?.questions?.length ??
-        job?.final_challenge_json?.questions?.length ??
-        0,
-      // v2 practice-arc games + any legacy structured games
-      practiceGames: practiceGames + (job?.games_json?.games?.length ?? 0),
-      memorySprint: job?.memory_sprint_json?.items?.length ?? 0,
-      readingCheckpoints: job?.reading_json?.checkpoints?.length ?? 0,
-      assembledChars: job?.assembled_md?.length ?? 0,
-    };
+  const stats = useMemo(() => {
+    const done = (job?.phases ?? []).filter(
+      (p) => p.phase_name !== "extract" && p.status === "done",
+    );
+    const warnings = done.reduce((n, p) => n + (p.validation_warnings?.length ?? 0), 0);
+    return [
+      { label: "phases", value: done.length },
+      { label: "warnings", value: warnings },
+    ].filter((s) => s.value > 0 || s.label === "phases");
   }, [job]);
-
-  const stats: Array<{ label: string; value: number }> = [
-    { label: "flashcards", value: counts.flashcards },
-    { label: "source concepts", value: counts.sourceConcepts },
-    { label: "case checkpoints", value: counts.caseCheckpoints },
-    { label: "memory checks", value: counts.memoryChecks },
-    { label: "boss questions", value: counts.bossQuestions },
-    { label: "practice games", value: counts.practiceGames },
-    { label: "sprint items", value: counts.memorySprint },
-    { label: "reading checkpoints", value: counts.readingCheckpoints },
-  ].filter((s) => s.value > 0);
 
   return (
     <section className="mt-7 overflow-hidden rounded-(--radius-md) border border-(--color-accent-border) bg-(--color-accent-soft)">
@@ -351,8 +324,7 @@ function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string 
       {stats.length > 0 && (
         <div className="bg-(--color-canvas) px-5 py-4">
           <p className="mb-3 text-xs text-(--color-ink-muted)">
-            Interactive components are rendered in the full preview — open it to flip flashcards,
-            run the sprint, and fight the boss.
+            Open the full preview to read each generated phase.
           </p>
           <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {stats.map((s) => (
@@ -369,9 +341,6 @@ function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string 
               </div>
             ))}
           </dl>
-          <p className="mt-3 font-mono text-[0.66rem] text-(--color-ink-muted)">
-            assembled markdown · {counts.assembledChars.toLocaleString()} chars
-          </p>
         </div>
       )}
     </section>

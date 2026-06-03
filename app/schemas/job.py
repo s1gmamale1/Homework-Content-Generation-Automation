@@ -17,6 +17,7 @@ class PhaseOut(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
+    validation_warnings: Optional[list[str]] = None
 
 
 class JobOut(BaseModel):
