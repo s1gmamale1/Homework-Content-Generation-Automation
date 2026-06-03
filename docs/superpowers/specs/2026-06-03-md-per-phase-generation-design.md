@@ -34,7 +34,7 @@ all to reconstruct what the model can just write as markdown.
 - **Phases (general flow):** `case-based-preview, flashcards, memory-check, practice-rlc,
   practice-error-detection, <subject game>, boss-arena, reflection` (`flows.py:33-42`).
   Subject game chosen by `SUBJECT_GAME` (`flows.py:23-31`).
-- **Structured generation:** `agent.STRUCTURED_PHASE_SCHEMAS` (`agent.py:117-134`) maps 13
+- **Structured generation:** `agent.STRUCTURED_PHASE_SCHEMAS` (`agent.py:117-134`) maps 14
   phase names to Pydantic classes; `pipeline._execute_phase` (`pipeline.py:974-993`) calls
   `run_phase_prompt_structured` for those, then `_synth_md_for_structured` to make a
   human-readable `output_md`. Only `reflection` already takes the free-text md path.
@@ -237,6 +237,26 @@ generate raster artwork. It either emits an inline diagram or leaves a placehold
   prompt** — inline `<svg>` for diagrams, `![placeholder: … — image gen required](placeholder)`
   for raster (replacing the current `[Diagram: …]` bracket-note convention). Per-phase,
   smoke-tested.
+
+## Implementation sequencing (constraints for the plan)
+
+These are not inherited automatically — the plan that implements Effort A must respect them:
+
+- **Frontend + download land before the destructive migration.** Dropping `assembled_md`
+  and the `*_json` columns breaks the running `FlowV2Preview` console and the
+  structured-zip download until the md-render rework is in place. Sequence the
+  column-drop migration and the dead-symbol removals as **late tasks** — after the new
+  pipeline, validator, Notion sub-pages, console md-render, and download rework — or accept
+  a knowingly-broken window. Adding `phase_outputs.validation_warnings` is non-destructive
+  and can land early.
+- **Expect a long task list; group the teardown.** Effort A spans pipeline + new validator
+  + a destructive migration + Notion rewrite + frontend deletion + download rewrite +
+  cross-file removals. Keep the schema-drop and symbol removals as their own late cleanup
+  tasks so every earlier task stays green.
+- **Don't judge content quality at the Effort-A acceptance gate.** Effort A keeps the
+  prompts as minimal JSON→md conversions, so the smoke output is rough markdown until
+  Effort B's faithful rewrite. The gate proves the *flow* (N md files → console → Notion
+  sub-pages), not the prose.
 
 ## Risks & open items
 
