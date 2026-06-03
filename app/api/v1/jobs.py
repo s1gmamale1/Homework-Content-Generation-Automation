@@ -6,7 +6,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -20,7 +20,6 @@ from app.repositories import toc_entries as toc_repo
 from app.schemas import GenerateRequest, JobOut, PhaseOut
 from app.services import events_bus
 from app.services.agent_models import MODEL_MANIFEST, is_valid
-from app.services.job_artifacts import structured_artifacts
 from app.services.providers import PROVIDERS
 
 router = APIRouter(tags=["jobs"])
@@ -56,6 +55,17 @@ def _idempotency_set(key: str, job_id: UUID) -> None:
         for k, _ in sorted_keys[: _IDEMPOTENCY_MAX_ENTRIES // 10]:
             _IDEMPOTENCY_CACHE.pop(k, None)
     _IDEMPOTENCY_CACHE[key] = (job_id, time.time() + _IDEMPOTENCY_TTL_SECONDS)
+
+
+def _phase_zip(phase_outputs) -> bytes:
+    """Zip one `<NN>-<phase>.md` per completed, non-extract phase that has md."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in sorted(phase_outputs, key=lambda p: p.phase_order):
+            if p.phase_name == "extract" or p.status != "done" or not (p.output_md or "").strip():
+                continue
+            zf.writestr(f"{p.phase_order:02d}-{p.phase_name}.md", p.output_md)
+    return buf.getvalue()
 
 
 @router.post("/books/{book_id}/sections/{toc_entry_id}/generate", status_code=201)
@@ -281,36 +291,17 @@ async def stream_job(job_id: UUID, request: Request):
 @router.get("/jobs/{job_id}/download")
 async def download(
     job_id: UUID,
-    format: str = "zip",
     session: AsyncSession = Depends(get_session),
 ):
-    """Download the assembled homework. Default format is `zip` (homework.md
-    + games.json packaged together). Pass `?format=md` for the bare markdown."""
-    job = await jobs_repo.get(session, job_id)
+    """Download the homework as a zip of one markdown file per phase."""
+    job = await jobs_repo.get_with_phases(session, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
-    if job.status != "done" or job.assembled_md is None:
+    if job.status != "done":
         raise HTTPException(404, "homework not ready")
-
-    if format == "md":
-        return PlainTextResponse(
-            job.assembled_md,
-            media_type="text/markdown; charset=utf-8",
-            headers={
-                "Content-Disposition": f'attachment; filename="homework-{job_id}.md"'
-            },
-        )
-
-    # Default: zip bundle (homework.md + structured JSONs for the interactive phases)
-    structured_files = structured_artifacts(job)
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("homework.md", job.assembled_md)
-        for filename, payload in structured_files.items():
-            zf.writestr(filename, json.dumps(payload, ensure_ascii=False, indent=2))
-    buf.seek(0)
+    data = _phase_zip(job.phase_outputs)
     return StreamingResponse(
-        buf,
+        io.BytesIO(data),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="homework-{job_id}.zip"'},
     )
