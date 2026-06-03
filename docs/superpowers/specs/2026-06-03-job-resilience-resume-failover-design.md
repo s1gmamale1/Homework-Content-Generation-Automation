@@ -90,7 +90,7 @@ and a **failover driver** acts:
 
 | Class | Example signals | Action |
 |---|---|---|
-| **transient** | `socket connection closed unexpectedly`; `temporarily limiting requests … not your usage limit`; network timeout | **retry SAME provider**, exponential backoff — up to **2** retries (~5s, ~30s) |
+| **transient** | `socket connection closed unexpectedly`; `temporarily limiting requests … not your usage limit`; network timeout | **retry SAME provider**, exponential backoff — up to **2** retries (~5s, ~30s); **if both still fail → escalate to failover** (treat as hard) |
 | **allocation wall** | 5-hour / weekly cap reached message | **fail over immediately** (retrying same is futile) |
 | **hard / unknown** | any other nonzero exit, parse failure, unrecognized error | failover after **1** same-provider retry; **unknown defaults to failover** (safe) |
 
@@ -107,25 +107,63 @@ and a **failover driver** acts:
 - `FAILOVER_PROVIDER_ORDER` is config so the list can change without code (e.g. drop `opencode`
   once verified, or reorder when the budget-governor lands).
 
-**Caveat recorded:** `opencode` is **unverified** (WISHLIST — never run against a real install;
-possible stdin/positional hang). As the **last** fallback it's low-risk (if it fails the phase was
-failing anyway) but it is **not a reliable rescue** until smoke-tested. It occupies a placeholder
-slot in the chain.
+**Extract is special — NOT on the generic chain.** The `extract` phase is pinned to
+`settings.extract_provider` (gemini) and has hard input constraints (kimi has **no** native PDF
+support; gemini rejects PDFs **>20 MB** — both per CLAUDE.md). The generic
+`[codex, gemini, kimi, opencode]` order would fail an extract over to a provider that *cannot read
+the PDF* → garbage or hang. So **extract does NOT cross-provider failover**: transient-retry only on
+its pinned provider; on a wall/hard failure the job fails (extract is cheap + cross-job-cached, so
+re-doing it later is fine). A PDF-capable fallback, if ever wanted, needs its own PDF-capable list —
+never the generic chain.
+
+**Per-attempt timeout (bounds the `opencode` hang).** `opencode` is **unverified** (WISHLIST) and
+its known failure mode is a **stdin/positional hang**, not a clean `rc=1`. A hang in the failover
+loop would tie up the slot until `job_timeout` (~30 min) — worse than a quick fail. So **every
+provider attempt inside the failover loop gets its own bounded timeout** (`per_attempt_timeout_seconds`,
+e.g. 8–10 min): a hung/slow attempt is killed and the loop moves to the next provider, instead of
+stalling the whole phase. opencode stays the **last** slot and is not a reliable rescue until
+smoke-tested.
+
+**Backoff must release the concurrency slot.** A transient retry's backoff sleep must **not** hold
+the `gemini_max_concurrency` subprocess semaphore idle — sleep *outside* the held slot — so a burst
+of concurrent throttles doesn't starve the subprocess pool with sleeping-but-slot-holding calls.
 
 **Per-phase failover budget vs. job `attempts`:** failover retries happen **within a single phase
 execution** and must **not** consume job-level `attempts` (which guards whole-job retries). The
 phase-level attempt budget is bounded by (1 requested + same-provider transient retries +
 one-per-eligible-fallback).
 
-### 3. Faster orphan reclaim
+### 3. Faster orphan reclaim — REQUIRES a claim heartbeat
 
-- Add `reclaim_stale_seconds` setting (default **300s** = 5 min), **separate** from
-  `job_timeout_seconds × 2`. The worker's periodic reclaim uses `reclaim_stale_seconds` for the
-  orphan window so a dead-worker job recovers in minutes, not an hour — **without** shortening the
-  real per-job execution timeout (`job_timeout_seconds`, the R7 concern).
-- The startup sweep (`main.py`) **also resets orphaned `running` jobs → `pending`** (today it only
-  fails books/phase_outputs), so a server restart recovers immediately instead of waiting for the
-  window. Combined with resume, a restart picks up exactly where it left off.
+> **⚠ Corrected 2026-06-03 (review):** the first draft proposed `reclaim_stale_seconds=300`
+> decoupled from `job_timeout`. **That is a duplicate-execution bug.** `claimed_at` is set once at
+> claim (`jobs.py:231`) and **never refreshed** — there is no heartbeat. The current
+> `job_timeout × 2` (= 3600s) window is safe *only because* it exceeds the max alive runtime: a
+> worker times its own pipeline out at `job_timeout` (=1800s, `worker.py:177`), so a healthy job's
+> `claimed_at` can never get older than 1800s. Any `reclaim_stale_seconds < job_timeout` would
+> reclaim a **still-running** job mid-flight → two workers execute the same job, `create_or_reset`
+> clobbers shared phase rows, and `attempts` burns on every false reclaim (the ~17-min Kimyo smoke
+> would be falsely reclaimed ~3×).
+
+Two independent recovery paths; only the periodic one needs the heartbeat.
+
+- **(a) Startup sweep — safe with NO heartbeat.** The `main.py` boot sweep **also resets orphaned
+  `running` jobs → `pending`** (today it only fails books/phase_outputs). On restart there are no
+  live workers, so resetting jobs is unconditionally safe and recovers a restart-killed job
+  **immediately** (resume then picks up where it left off). This alone covers the user's incident
+  (host/session death → restart).
+
+- **(b) Periodic short-window reclaim — ONLY safe with a claim heartbeat.** Add a heartbeat: the
+  worker refreshes `claimed_at = now()` every `heartbeat_seconds` (~30s) while `pipeline.run`
+  executes (a small async task running alongside the pipeline). `reclaim_stale_seconds` then becomes
+  a true **lease TTL** — set it to a small multiple of the heartbeat (e.g. `heartbeat_seconds=30`,
+  `reclaim_stale_seconds=120` = 4 missed beats). A live worker keeps its claim fresh; only a **dead**
+  worker lets the lease lapse. `reclaim_stale_seconds` is tied to the **heartbeat interval, NOT** to
+  `job_timeout`, so it can be minutes regardless of how long a healthy job legitimately runs.
+
+- **Without the heartbeat, do NOT shorten the window.** If the heartbeat is descoped, keep periodic
+  reclaim at `> job_timeout` (the current `× 2`) and ship only path (a). The heartbeat is the
+  prerequisite that makes fast *periodic* reclaim correct.
 
 ### 4. Per-phase provider attribution
 
@@ -146,11 +184,14 @@ one-per-eligible-fallback).
   "wall" | "hard"` from exit code + stderr/result snippet. Deterministic, unit-testable.
 - `app/services/agent.py` — surface enough of the CLI failure (exit code + error snippet) for the
   classifier; `run_phase_prompt` accepts a per-call provider override (the failover driver picks it).
-- `app/services/worker.py` + `app/config.py` — `reclaim_stale_seconds`; reclaim uses it.
-- `main.py` — startup sweep resets orphaned `running` jobs → `pending`.
+- `app/services/worker.py` + `app/config.py` — **claim heartbeat** (refresh `claimed_at` every
+  `heartbeat_seconds` while `pipeline.run` runs) + `reclaim_stale_seconds` as a **lease TTL**
+  (`> heartbeat_seconds`, NOT tied to `job_timeout`); reclaim uses it; `per_attempt_timeout_seconds`
+  for the failover loop.
+- `main.py` — startup sweep **also resets orphaned `running` jobs → `pending`**.
 - `app/models/phase_output.py` + migration — `phase_outputs.provider` (additive).
-- `app/repositories/phase_outputs.py` / `jobs.py` — load-for-resume query; provider write;
-  reclaim query already exists.
+- `app/repositories/phase_outputs.py` / `jobs.py` — load-for-resume query; provider write; a
+  heartbeat `UPDATE claimed_at=now WHERE id=…` (touch-claim); reclaim query already exists.
 
 ## Data flow
 
@@ -161,8 +202,9 @@ one-per-eligible-fallback).
    continues. All providers exhausted → phase fails → job fails (recoverable).
 
 **Case B (worker died):**
-1. Job orphaned `running`. Reclaim (≤5 min via `reclaim_stale_seconds`, or immediately on restart
-   via the sweep) → `pending`.
+1. Job orphaned `running`. Recovery: **immediately on restart** via the startup sweep, or — once the
+   heartbeat lands — via the periodic **lease-TTL** reclaim (`reclaim_stale_seconds`, a small
+   multiple of the heartbeat; safe because a live worker keeps `claimed_at` fresh) → `pending`.
 2. Re-claimed → `pipeline.run()` → scheduler loads phase rows → done phases skipped + re-injected
    into `prior_outputs` → only unfinished phases scheduled.
 3. The unfinished phase runs; if its original provider is still down, Case-A failover completes it
@@ -175,8 +217,10 @@ one-per-eligible-fallback).
   exhaustion → raise) with a stubbed runner; assert claude never appears as a fallback.
 - **Resume seeding** — unit/iso test that, given phase rows where some are `done`, the scheduler
   schedules only the not-done ones and pre-loads done `output_md` into `prior_outputs`.
-- **Reclaim** — `reclaim_stale_seconds` window honored; startup sweep flips orphaned `running` →
-  `pending` (DB-free where the suite is signature/logic-level; real round-trip for the migration).
+- **Reclaim + heartbeat** — startup sweep flips orphaned `running` → `pending`; the heartbeat keeps a
+  **live** job's `claimed_at` fresh so it is **never** reclaimed mid-run, while a job whose heartbeat
+  lapsed (dead worker) **is** reclaimed after `reclaim_stale_seconds`. The failover loop honors
+  `per_attempt_timeout_seconds`. (DB-free at signature/logic level; real round-trip for the migration.)
 - **Attribution** — `phase_outputs.provider` persists the producing provider; additive migration
   up/down round-trip.
 - **Acceptance (CLI smoke)** — (a) kill a job mid-run, confirm reclaim + resume re-runs only the
@@ -190,7 +234,11 @@ one-per-eligible-fallback).
   above is the starting set); unknown-defaults-to-failover keeps it safe meanwhile.
 - **`force` vs `resume` carrier** — the exact job-level signal that distinguishes a fresh/forced
   generate from a reclaim/retry is finalized in the plan; the *semantics* are fixed here.
-- **`opencode` unverified** — placeholder fallback slot until smoke-tested (accepted).
+- **`opencode` unverified** — placeholder fallback slot until smoke-tested; bounded by
+  `per_attempt_timeout_seconds` so its hang can't stall a phase (accepted).
+- **Faster reclaim depends on the heartbeat** (review-corrected): without the claim heartbeat,
+  `reclaim_stale_seconds` MUST stay `> job_timeout` or live jobs are reclaimed mid-run (duplicate
+  execution). The heartbeat is the prerequisite; if descoped, ship only the startup-sweep path.
 - **Multi-provider-per-job** is an accepted, intended consequence (attribution moves to the
   phase/call grain; job badge = requested provider).
 
