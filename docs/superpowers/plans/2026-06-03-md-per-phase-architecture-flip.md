@@ -55,59 +55,39 @@
 
 ```python
 # tests/repositories/test_phase_validation_warnings.py
-import asyncio
-from uuid import uuid4
+import inspect
 
 from app.models import PhaseOutput
 from app.repositories import phase_outputs as phase_repo
 
 
-def test_set_status_persists_validation_warnings(db_session_factory):
-    async def run():
-        async with db_session_factory() as s:
-            job_id = await _make_job(s)  # helper from conftest creating a HomeworkJob
-            po = await phase_repo.create_or_reset(
-                s, job_id=job_id, phase_name="flashcards", phase_order=1,
-                prompt_hash="h", model_name="m",
-            )
-            await s.commit()
-            await phase_repo.set_status(
-                s, po.id, "done", validation_warnings=["missing top-level heading"],
-            )
-            await s.commit()
-            got = await s.get(PhaseOutput, po.id)
-            assert got.validation_warnings == ["missing top-level heading"]
-
-    asyncio.run(run())
+def test_set_status_accepts_validation_warnings_param():
+    # The repo suite is DB-free (see tests/conftest.py) — assert the seam by
+    # signature, the way test_notion_repo_methods.py / test_books_grade.py do.
+    assert "validation_warnings" in inspect.signature(phase_repo.set_status).parameters
 
 
-def test_create_or_reset_clears_validation_warnings(db_session_factory):
-    async def run():
-        async with db_session_factory() as s:
-            job_id = await _make_job(s)
-            po = await phase_repo.create_or_reset(
-                s, job_id=job_id, phase_name="flashcards", phase_order=1,
-                prompt_hash="h", model_name="m",
-            )
-            await phase_repo.set_status(s, po.id, "done", validation_warnings=["w"])
-            await s.commit()
-            po2 = await phase_repo.create_or_reset(
-                s, job_id=job_id, phase_name="flashcards", phase_order=1,
-                prompt_hash="h2", model_name="m",
-            )
-            await s.commit()
-            assert po2.id == po.id
-            assert po2.validation_warnings is None
+def test_model_has_validation_warnings_attribute():
+    po = PhaseOutput(
+        job_id=None, phase_name="flashcards", phase_order=1,
+        prompt_hash="h", model_name="m", status="pending",
+    )
+    # Column attribute is addressable and defaults to None before flush.
+    assert po.validation_warnings is None
 
-    asyncio.run(run())
+
+def test_create_or_reset_clears_validation_warnings():
+    # No DB in this harness, so assert the reset is present in the source —
+    # create_or_reset must zero per-attempt fields, including the new one.
+    assert "validation_warnings = None" in inspect.getsource(phase_repo.create_or_reset)
 ```
 
-> **Scene-setting:** `tests/` has a Postgres-backed async session fixture used by other repo tests (see `tests/repositories/test_notion_repo_methods.py` for the fixture name in this repo and a `_make_job` helper pattern). Reuse the existing fixture/helper names rather than inventing new ones; if a `_make_job` helper does not already exist in `conftest.py`, add a minimal one that inserts a `HomeworkJob` with required FKs (book + toc_entry) — mirror how `test_notion_repo_methods.py` seeds rows.
+> **Harness note:** this repo's test suite is **DB-free** — `tests/conftest.py` only injects sentinel env (`"no real database is wired up here"`), and the existing repo tests (`test_notion_repo_methods.py`, `test_books_grade.py`) assert by `inspect.signature`, not a session. Do **not** write a session-backed test or invent a `db_session_factory`/`_make_job` fixture. The migration round-trip in Step 6 (real `alembic upgrade`) is the DB-level proof; these unit tests cover the seam (signature + model attribute + reset-in-source).
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `& ".\.venv\Scripts\python.exe" -m pytest tests/repositories/test_phase_validation_warnings.py -q`
-Expected: FAIL — `TypeError: set_status() got an unexpected keyword argument 'validation_warnings'` (and `AttributeError: validation_warnings` on the model).
+Expected: FAIL — `test_set_status_accepts_validation_warnings_param` fails (`validation_warnings` not in signature), `test_model_has_validation_warnings_attribute` fails (`AttributeError`), and the reset-source check fails.
 
 - [ ] **Step 3: Add the model column**
 
@@ -454,7 +434,7 @@ def test_push_skips_phase_subpage_already_populated():
 Run: `& ".\.venv\Scripts\python.exe" -m pytest tests/services/test_notion_archive.py -q`
 Expected: FAIL — `_push_to_notion` has no `phases=` parameter.
 
-- [ ] **Step 3: Implement `_push_to_notion`** — replace the existing function (notion_archive.py:47-72) with:
+- [ ] **Step 3: Implement `_push_to_notion`** — replace the existing function (notion_archive.py:72-97) with:
 
 ```python
 PHASE_TITLES: dict[str, str] = {
@@ -500,7 +480,7 @@ def _push_to_notion(
     return homework_id
 ```
 
-- [ ] **Step 4: Implement `archive_job` phase loading** — in `app/services/notion_archive.py`, replace the block that builds `content_json_bytes` / `assembled_md` (lines ~104-110) and the `asyncio.to_thread` call (lines ~113-121) with phase loading + the new signature:
+- [ ] **Step 4: Implement `archive_job` phase loading** — in `app/services/notion_archive.py`, replace the block that builds `content_json_bytes` / `assembled_md` (lines 132-136) and the `asyncio.to_thread` call (lines 140-147) with phase loading + the new signature:
 
 ```python
             section_id = section.id
@@ -754,7 +734,9 @@ Replace the `counts`/`stats` `useMemo` block (job.tsx:287-323) with phase-derive
   }, [job]);
 ```
 
-(The `stats.map` render below stays; it already iterates `{label, value}`.)
+The `stats.map` render (job.tsx:357-371) stays; it already iterates `{label, value}`. **But removing `counts` breaks two now-dangling references in the same component — fix both or `tsc` fails:**
+- Delete the footer `<p>` at job.tsx:372-374 (`assembled markdown · {counts.assembledChars.toLocaleString()} chars`) — there is no `assembled_md` anymore.
+- Update the stale intro `<p>` at job.tsx:353-356 ("…open it to flip flashcards, run the sprint, and fight the boss.") to phase-neutral copy, e.g. "Open the full preview to read each generated phase." (It references the deleted interactive views.)
 
 - [ ] **Step 5: Delete the structured view modules**
 
@@ -848,7 +830,7 @@ Replace the assembly block (pipeline.py:583-593) with a plain done-mark (no `ass
 
 - [ ] **Step 5: Stop computing the source map**
 
-Find the `extract_source_map` call (grep `extract_source_map` in `pipeline.py`, ~lines 512-535) and remove it along with the `source_map_ids` / `source_map_digest` locals; pass `source_map_digest=""` wherever `_execute_phase` is launched (the scheduler call at pipeline.py:793). The `_unknown_concept_ids` import/helper becomes dead — leave it for Task 10.
+`source_map_digest` is built around pipeline.py:528 (`source_map_digest = agent.format_source_map_digest(...)`) and threaded through ~10 sites (462/528/573/655/688/743/793/878/991/1008), **all already defaulting to `""`**. Make the minimal change: **stop building it** — short-circuit the computation at ~528 so `source_map_digest` stays `""`, and stop populating `source_map_json` (grep `source_map_json`/`extract_source_map` in `pipeline.py` to find the setter in the head/extract section and skip it). **Do not touch the `source_map_digest` parameters** on the threaded signatures — they default to `""`, so leaving them is harmless and keeps this task small. Defer removing those params, `format_source_map_digest`, `extract_source_map`, and the now-dead `_unknown_concept_ids` helper to Task 10.
 
 - [ ] **Step 6: Sanity-import + full suite**
 
@@ -873,7 +855,7 @@ git commit -m "feat(pipeline): md-only phases + validator; drop assembly + sourc
 
 - [ ] **Step 1: For each prompt, replace the JSON/schema output instruction with a markdown one**
 
-In each file, find the output-format section (e.g. `case-based-preview.md:75-76` shows a JSON object; `flashcards.md:24,34` references JSON; `practice-error-detection.md:60`, `boss-arena.md:54`, `practice-rlc.md:64` reference inline-SVG-in-JSON). Replace the "respond with JSON / this schema" wording with:
+(Line numbers below are indicative only — grep each file for its JSON / `schema` / "Respond with" output instruction and verify before editing.) In each file, find the output-format section (e.g. `case-based-preview.md:75-76` shows a JSON object; `flashcards.md:24,34` references JSON; `practice-error-detection.md:60`, `boss-arena.md:54`, `practice-rlc.md:64` reference inline-SVG-in-JSON). Replace the "respond with JSON / this schema" wording with:
 
 ```markdown
 ## Output format
@@ -983,6 +965,7 @@ git commit -m "feat(db): drop assembled_md + structured *_json columns"
 - `app/repositories/jobs.py`: the `set_*_json` setters + the `assembled_md` arg path in `set_status`.
 - `app/schemas/job.py`: remove the `*_json` + `assembled_md` fields from `JobOut`.
 - `web/src/lib/types.ts`: remove the `*_json` + `assembled_md` fields from `Job` and the now-unused interfaces (`GamesPack`, `FinalChallenge`, `SourceMap`, `CaseBasedPreview`, `CbpModeGame`, etc.) if unreferenced.
+- `web/src/components/`: the structured-render components lose their only consumer when T6 deletes `LegacyPreview`/`FlowV2Preview` — `flashcards/flashcard-deck.tsx`, `boss-fight/`, `games/game-card.tsx`, `memory-sprint/`, `reading/reading-experience.tsx`. Grep `web/src` first; `git rm` each only if it has no remaining importer. (Unused files don't fail `tsc` — cleanup, not a blocker.)
 - `app/schemas/`: delete phase modules no longer imported (`flow_v2.py`, `games.py`, `final_challenge.py`, `memory_sprint.py`, `reading.py`, `boss_arena.py`, `practice_games.py`, `flashcards.py`, `memory_check.py`) — only those with **no** remaining importers.
 - `tests/`: delete/adjust tests asserting `*_json` population, `assembled_md`, `_synth_md_for_structured`, `structured_artifacts`, or `extract_source_map`.
 
