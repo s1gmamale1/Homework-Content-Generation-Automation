@@ -45,3 +45,22 @@ def test_file_upload_block_shape():
     assert b["file"]["type"] == "file_upload"
     assert b["file"]["file_upload"]["id"] == "upl_123"
     assert b["file"]["name"] == "homework.md"
+
+
+def test_placeholder_image_becomes_callout():
+    out = blocks.markdown_to_notion_blocks("![a lab bench — image gen required](placeholder)")
+    assert len(out) == 1
+    assert out[0]["type"] == "callout"
+    text = out[0]["callout"]["rich_text"][0]["text"]["content"]
+    assert "a lab bench" in text
+
+
+def test_non_http_image_becomes_callout():
+    out = blocks.markdown_to_notion_blocks("![scene](scene.png)")
+    assert out[0]["type"] == "callout"
+
+
+def test_http_image_becomes_external_image_block():
+    out = blocks.markdown_to_notion_blocks("![x](https://example.com/i.png)")
+    assert out[0]["type"] == "image"
+    assert out[0]["image"]["external"]["url"] == "https://example.com/i.png"

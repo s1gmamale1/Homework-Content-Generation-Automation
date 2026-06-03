@@ -42,6 +42,24 @@ def make_divider() -> dict:
     return {"object": "block", "type": "divider", "divider": {}}
 
 
+def make_callout(text: str, emoji: str = "🖼️") -> dict:
+    return {
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "rich_text": [{"type": "text", "text": {"content": text[:_MAX_SEG]}}],
+            "icon": {"type": "emoji", "emoji": emoji},
+        },
+    }
+
+
+def make_external_image(url: str) -> dict:
+    return {"object": "block", "type": "image", "image": {"type": "external", "external": {"url": url}}}
+
+
+_IMAGE_LINE_RE = re.compile(r"^!\[(?P<alt>[^\]]*)\]\((?P<url>[^)]*)\)$")
+
+
 def make_file_upload_block(upload_id: str, name: str = "") -> dict:
     block: dict = {
         "object": "block",
@@ -105,6 +123,18 @@ def markdown_to_notion_blocks(text: str) -> list[dict]:
         if re.match(r"^-{3,}\s*$", stripped):
             _flush()
             out.append(make_divider())
+            continue
+        img = _IMAGE_LINE_RE.match(stripped)
+        if img:
+            _flush()
+            url = img.group("url").strip()
+            alt = img.group("alt").strip()
+            if url.startswith(("http://", "https://")):
+                out.append(make_external_image(url))
+            else:
+                # placeholder / non-resolving target → carry the description as a
+                # callout (never an image block with an unresolvable URL).
+                out.append(make_callout(alt or "visual placeholder"))
             continue
         h = re.match(r"^(#{1,3})\s+(.+)$", stripped)
         if h:
