@@ -139,12 +139,17 @@ job done →
 **6. Download (`jobs.py`)**
 - `download`: gate on "done + phase outputs exist". Default zip = one
   `<phase_order>-<phase_name>.md` per phase from `phase_outputs.output_md`. Drop the
-  `*.json` members and `structured_artifacts` import. `?format=md` → either remove, or
-  return the phases concatenated with `## <title>` headers (decide in plan; lean: keep a
-  concatenated convenience md built on the fly, not persisted).
+  `*.json` members and `structured_artifacts` import. **`?format=md` is dropped** — the
+  zip of per-phase `.md` files is the only download (the console already provides the
+  single scrollable view).
 
 **7. Removals (dead after the above)**
 - `agent.STRUCTURED_PHASE_SCHEMAS` and `run_phase_prompt_structured` (if unused elsewhere).
+- `agent.extract_source_map` + the `source_map_digest` grounding injected into phases +
+  the source-fidelity concept_id check. Source grounding **relocates into each phase's
+  `## Source Extraction` markdown block** (authored in Effort B) — the per-phase approach
+  the `Infra_prompts` specs use, replacing the global JSON source map. `SourceMapView` and
+  the console Source Map section go with it.
 - `pipeline._JSON_COLUMN_SETTERS`, `_synth_md_for_structured`, `_assemble`,
   `_render_homework_md`.
 - `job_artifacts.structured_artifacts` / `build_content_json`.
@@ -241,8 +246,9 @@ generate raster artwork. It either emits an inline diagram or leaves a placehold
 - **Dropping columns is destructive.** Existing jobs lose their structured render; they
   still have `phase_outputs.output_md`. Acceptable (dev data); migration is one-way for
   data but reversible in schema.
-- **`?format=md` semantics** with no assembled packet — resolve in the plan (concatenate
-  on the fly vs drop).
+- ~~`?format=md` semantics~~ — **resolved: dropped** (zip of per-phase md only).
+- ~~Source Map keep-vs-drop~~ — **resolved: dropped**; grounding moves into each phase's
+  `## Source Extraction` block (Effort B).
 - **Frontend payload size:** sending every phase's `output_md` inline is fine for a
   single-job review view (already how `assembled_md` was sent).
 
