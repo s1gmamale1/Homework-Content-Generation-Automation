@@ -42,6 +42,15 @@
 
 _None open — the 3 prior frontend items were fixed 2026-06-02 (see **Done / promoted** below)._
 
+### Database / Persistence
+
+> Catalogue of data-model / persistence / job-lifecycle issues. Scope = schema shape,
+> column semantics, row lifecycle, data integrity, and how persisted state is (or isn't)
+> used on retry/resume. NOTE: items here may have their *fix* in pipeline/worker code
+> even when the *symptom* is about persisted state — tag each with where the fix lives.
+
+- _(2026-06-03)_ **No phase-level resume on job retry** (fix lives in **`pipeline.py`**, NOT a schema change — the schema is already sufficient). When a job is retried/reclaimed (e.g. worker died mid-job on a session/throttle limit), the scheduler rebuilds `pending = set(content_phases)` (`pipeline.py:351`) with **no filter for already-`done` phases**, and `create_or_reset` (`pipeline.py:468`) **wipes each existing phase row** (clears `output_md`, status→pending). So all content phases regenerate from scratch — a job that completed 8/9 phases and only lost `reflection` re-runs all 8 good phases (~16 min + budget) to recover the one missing phase. **Only `extract` is reused** (cross-job cache, `find_latest_extract`). The DB is fine — `phase_outputs` already persists per-phase `output_md` + `status`, exactly what a resume needs; the gap is that the pipeline doesn't *read* prior `done` rows and skip them. **Desired:** on (re)start, skip phases already `done` for this job (re-inject their `output_md` into `prior_outputs`), only run `pending`/`failed` ones. High-value for 24/7 autonomy (a mid-job throttle currently wastes all prior phases) — ties to the autonomous-generation reliability section ([[PRODUCTION_AUTONOMOUS_GENERATION]] §3).
+
 ## Done / promoted
 
 - **Frontend trio — ✅ FIXED 2026-06-02 (Nggaev-v2, commit `e582f53`; tsc + vite build clean. Pending: user browser-verify).** (1) `frontend-6` — `job.tsx` `DonePanel` now counts the v2 columns (source concepts · case checkpoints · memory checks · Boss Arena questions w/ legacy final-challenge fallback · practice-arc games), so v2 jobs show real done-stats. (2) **Grade input** — optional Grade select (1–11) added to `upload.tsx`, wired `api.uploadBook → POST /books` `grade` field (no more SQL for new uploads). (3) `<Select>` uncontrolled→controlled — model picker `section.tsx` now `value={model ?? ""}`.
