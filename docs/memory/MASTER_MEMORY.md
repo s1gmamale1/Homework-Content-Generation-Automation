@@ -464,3 +464,19 @@ Rejected: (B) two map keys + per-book variant flag — needs upload/schema/UI ch
 **Finding (→ WISHLIST / Effort B):** `reflection.md` outputs `##`-level headings (no top-level `#`), so the validator flags **every** reflection with "missing top-level heading". Trivial fix: give reflection a `#` title, or exempt reflection from that rule.
 
 **Safety:** local backup branch `backup/md-per-phase-pre-teardown` at `dc4a99a` (pre-teardown state). Commits: 15e9e19·7333bf0·6aadefe·31cdbcf·abf6b7d·934a9fd·8731ccf·52dfa58·dc4a99a·1ac49de·7ba2143 (+ spec/plan docs).
+
+## [0029] Notion homework page regroup + attachments-at-top — 2026-06-03 (Nggaev-v2)
+**What:** Restructured the Notion `Homework` sub-tree from 8 flat per-phase pages into a grouped layout (user request). Driven by a declarative `_HOMEWORK_LAYOUT` in `app/services/notion_archive.py`:
+- **Case-Based Preview** — own page (unchanged).
+- **Flashcards** — one page rendering `flashcards` + `memory-check` **inline** (both `.md` attached at top, then both content sections divider-separated).
+- **Gamified Practices** — a **container** page (no body) holding one child sub-page per present game: Real-Life Challenge, Error Detection, and the subject game (memory-match / tictactoe / jigsaw / sentence).
+- **Boss Arena** — own page, **excluded** from the games grouping (unchanged).
+- **Reflection** — own page (unchanged).
+
+**Attachments moved to the very TOP** of every content page (above the rendered markdown), mirroring how the textbook PDF sits atop a lesson page. One `.md` per phase, kept.
+
+**Code:** `_push_to_notion` signature changed `phases: list[(title,phase,md)]` → `phase_md: dict[phase_name,str]`; new `_leaf_blocks(client, present)` builds attachments-first + content sections; `_HOMEWORK_LAYOUT` (leaf vs container entries) drives the tree; `archive_job` builds the `phase_md` dict. Idempotent per page (skip if `page_has_content`); a job only ever has one practice game so absent game phases are skipped.
+
+**Verification:** TDD — `test_push_builds_grouped_structure` (asserts exact find_or_create title sequence: lesson, Homework, CBP, Flashcards, Gamified Practices, RLC, Error Detection, TicTacToe, Boss Arena, Reflection; 8 uploads, 7 content pages), `test_flashcards_page_attachments_at_top_then_content` (first two blocks are `file`), `test_push_skips_pages_already_populated`. 8 `test_notion_archive.py` pass; full suite **180 passed + 1 pre-existing** (`test_notion_defaults_disabled`). **LIVE-verified** against real Notion: pushed the existing Kimyo §1 job's phase-md into a throwaway lesson under the Kimyo subject page, read the tree back via `NotionClientWrapper` (5 top-level pages; Flashcards first blocks `['file','file','divider','heading_1',…]`; Gamified Practices container → 3 game child pages each `['file','divider','heading_1',…]`), then archived/deleted the throwaway.
+
+**Scope note:** only **new** archives use this layout; previously-archived lessons keep the old flat 8-page structure — no Notion migration of existing pages was in scope.
