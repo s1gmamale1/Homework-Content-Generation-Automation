@@ -15,10 +15,11 @@ def test_flow_is_8_phases_with_subject_game():
 
 def test_every_subject_game_is_registered_and_has_prompt():
     import pathlib
-    from app.services.agent import STRUCTURED_PHASE_SCHEMAS
+    from app.services.prompts import get_prompt
     gdir = pathlib.Path(flows.__file__).resolve().parents[2] / "prompts" / "_general"
     for subject, game in flows.SUBJECT_GAME.items():
-        assert game in STRUCTURED_PHASE_SCHEMAS, f"{game} not registered"
+        prompt = get_prompt(subject, game)
+        assert prompt, f"{game} has no prompt for subject {subject}"
         assert (gdir / f"{game}.md").is_file(), f"{game}.md missing in _general"
 
 
@@ -42,6 +43,3 @@ def test_unknown_subject_raises():
         flows.flow_for("chemistry-unknown")
 
 
-def test_classify_not_registered():
-    from app.services.agent import STRUCTURED_PHASE_SCHEMAS
-    assert "classify" not in STRUCTURED_PHASE_SCHEMAS

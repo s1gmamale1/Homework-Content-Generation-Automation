@@ -107,7 +107,6 @@ async def set_status(
     completed_at: Optional[datetime] = None,
     error_message: Optional[str] = None,
     current_phase: Optional[str] = None,
-    assembled_md: Optional[str] = None,
 ) -> None:
     job = await session.get(HomeworkJob, job_id)
     if job is None:
@@ -121,8 +120,6 @@ async def set_status(
         job.error_message = error_message
     if current_phase is not None:
         job.current_phase = current_phase
-    if assembled_md is not None:
-        job.assembled_md = assembled_md
 
 
 async def set_notion_archived(
@@ -132,144 +129,6 @@ async def set_notion_archived(
     if job is None:
         return
     job.notion_archived_at = notion_archived_at
-
-
-async def set_games_json(
-    session: AsyncSession, job_id: UUID, games_json: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.games_json = games_json
-
-
-async def set_flashcards_json(
-    session: AsyncSession, job_id: UUID, flashcards_json: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.flashcards_json = flashcards_json
-
-
-async def set_final_challenge_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.final_challenge_json = payload
-
-
-async def set_memory_sprint_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.memory_sprint_json = payload
-
-
-async def set_reading_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.reading_json = payload
-
-
-async def set_source_map_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.source_map_json = payload
-
-
-async def set_boss_arena_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.boss_arena_json = payload
-
-
-async def set_cbp_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.cbp_json = payload
-
-
-async def set_memory_check_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.memory_check_json = payload
-
-
-# ─── PR-3 Practice Arc games ───────────────────────────────────────────
-
-
-async def set_practice_rlc_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.practice_rlc_json = payload
-
-
-async def set_practice_error_detection_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.practice_error_detection_json = payload
-
-
-async def set_practice_memory_match_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.practice_memory_match_json = payload
-
-
-async def set_practice_tictactoe_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.practice_tictactoe_json = payload
-
-
-async def set_practice_jigsaw_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.practice_jigsaw_json = payload
-
-
-async def set_practice_sentence_json(
-    session: AsyncSession, job_id: UUID, payload: dict[str, Any]
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.practice_sentence_json = payload
 
 
 async def set_difficulty(session: AsyncSession, job_id: UUID, difficulty: str) -> None:

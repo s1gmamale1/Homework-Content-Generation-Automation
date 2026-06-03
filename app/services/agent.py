@@ -41,23 +41,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.repositories import agent_usage as usage_repo
 from app.schemas import (
-    BossArena,
-    CaseBasedPreview,
     ExtractedTOC,
-    FinalChallenge,
-    FlashcardsPack,
-    GamesPack,
-    CbpModeGame,
-    MemoryMatchGame,
-    TicTacToeGame,
-    JigsawGame,
-    SentenceFillGame,
-    ErrorDetection,
-    MemoryCheckPack,
-    MemorySprintPack,
-    ReadingPassage,
-    RealLifeChallenge,
-    SourceMap,
 )
 from app.services.providers import Provider, get_provider
 
@@ -109,29 +93,6 @@ def _resolve_model(provider: str, model: Optional[str]) -> Optional[str]:
     if model:
         return model
     return _PROVIDER_DEFAULT_MODEL.get(provider)
-
-
-# Phases that emit JSON directly via a Pydantic schema. Mirror of the dict
-# in :mod:`app.services.gemini` so ``pipeline.py`` can read the same map
-# from either module during the migration.
-STRUCTURED_PHASE_SCHEMAS: dict[str, type[BaseModel]] = {
-    "case-based-preview": CaseBasedPreview,
-    "flashcards": FlashcardsPack,
-    "memory-sprint": MemorySprintPack,
-    "memory-check": MemoryCheckPack,
-    "game-breaks": GamesPack,
-    "final-challenge": FinalChallenge,
-    "boss-arena": BossArena,
-    "reading": ReadingPassage,
-    # Flow v2 Practice Arc games (PR-3). Two standalone mechanics + four
-    # Case-Based-Preview interaction modes sharing the CbpModeGame contract.
-    "practice-rlc": RealLifeChallenge,
-    "practice-error-detection": ErrorDetection,
-    "practice-memory-match": MemoryMatchGame,
-    "practice-tictactoe": TicTacToeGame,
-    "practice-jigsaw": JigsawGame,
-    "practice-sentence": SentenceFillGame,
-}
 
 
 _TOC_TEXT_MAX_PAGES = 40        # front scan ceiling (physical pages)
@@ -505,41 +466,6 @@ async def _record_usage(
 # ─────────────────────────────────────────────────────────────────────
 # Prompt assembly
 # ─────────────────────────────────────────────────────────────────────
-
-
-def format_source_map_digest(source_map: Optional[dict]) -> str:
-    """Render the persisted source map (``source_map_json`` shape) into a compact
-    authoritative-concept-list block for injection into every content phase's
-    prompt (plan §10 — source fidelity).
-
-    The digest is the grounding contract: *cover these concepts, invent nothing*.
-    Concept IDs are for grounding/cross-referencing only — the per-phase prompts
-    already instruct the model to put them in ``concept_ids`` /
-    ``source_concept_ids`` and never in student-facing text.
-
-    Returns ``""`` when there is no map (or it has no concepts) so callers can
-    unconditionally pass the result and the prompt stays unchanged.
-    """
-    if not source_map:
-        return ""
-    concepts = source_map.get("concepts") or []
-    if not concepts:
-        return ""
-    lines = [
-        "",
-        "--- SOURCE MAP (authoritative concept list) ---",
-        "Cover these source concepts and invent nothing beyond them. Reference "
-        "them by id in `concept_ids` / `source_concept_ids`. The ids are for "
-        "grounding only — never print an id in student-facing text.",
-        "",
-    ]
-    for c in concepts:
-        cid = c.get("id", "")
-        label = c.get("label", "")
-        statement = c.get("statement", "")
-        lines.append(f"- [{cid}] {label}: {statement}")
-    lines.append("--- END SOURCE MAP ---")
-    return "\n".join(lines)
 
 
 def _build_master_prompt(
@@ -1472,70 +1398,6 @@ async def extract_lesson_context(
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Public API: source map (PR-1 — structured concepts from the extract)
-# ─────────────────────────────────────────────────────────────────────
-
-
-_SOURCE_MAP_PROMPT = (
-    "You are building the SOURCE MAP for a {subject_family} lesson — the factual "
-    "anchor every downstream homework phase will cite.\n\n"
-    "From the lesson context below (already extracted from the textbook section "
-    '"{section}" of chapter "{chapter}"), produce a structured source map:\n'
-    '- Set subject_family to "{subject_family}", chapter to "{chapter}", '
-    'section to "{section}".\n'
-    "- Add one `concepts` entry per atomic thing the lesson teaches, each with:\n"
-    '  - `id`: a short stable kebab-case slug (e.g. "divide-fraction-by-whole"), '
-    "unique within this map;\n"
-    "  - `label`: a short human name;\n"
-    "  - `statement`: the atomic fact / definition / rule, faithful to the source "
-    "— do NOT invent facts;\n"
-    "  - `kind`: one of concept | term | formula | process | skill | fact;\n"
-    "  - `source_ref`: a page/section pointer if known, else omit.\n"
-    "Cover the key terms, rules/formulas, processes, and the common-mistake fact. "
-    "Stay strictly within the lesson content; invent nothing."
-)
-
-
-async def extract_source_map(
-    *,
-    provider: str,
-    model: Optional[str],
-    lesson_context: str,
-    subject_family: str,
-    chapter: str,
-    section: str,
-    homework_job_id: Optional[UUID] = None,
-    phase_output_id: Optional[UUID] = None,
-) -> SourceMap:
-    """Derive a structured :class:`SourceMap` from the already-extracted
-    ``lesson_context`` (PR-1).
-
-    Text-only — it does NOT re-read the PDF; it re-structures the lesson context
-    the ``extract`` phase already produced, so it's cheap and stays grounded in
-    the same source. Callers pin ``provider``/``model`` to the cheap extractor.
-    Wraps :func:`run_phase` in schema mode, inheriting its one-shot repair retry
-    and ``AgentUsage`` recording.
-    """
-    prompt = _SOURCE_MAP_PROMPT.format(
-        subject_family=subject_family, chapter=chapter, section=section
-    )
-    result = await run_phase(
-        provider=provider,
-        model=model,
-        phase_prompt=prompt,
-        phase_name="source-map",
-        homework_job_id=homework_job_id,
-        phase_output_id=phase_output_id,
-        lesson_context=lesson_context,
-        schema=SourceMap,
-    )
-    # run_phase raises in schema mode before returning parsed=None, so this is
-    # always a validated SourceMap here.
-    assert isinstance(result.parsed, SourceMap)
-    return result.parsed
-
-
-# ─────────────────────────────────────────────────────────────────────
 # Compatibility shims: pipeline.py migrates to these incrementally
 # ─────────────────────────────────────────────────────────────────────
 
@@ -1578,50 +1440,6 @@ async def run_phase_prompt(
     return result.text, pt or None, ot or None
 
 
-async def run_phase_prompt_structured(
-    *,
-    provider: str,
-    model: Optional[str] = None,
-    phase_prompt: str,
-    response_schema: type[BaseModel],
-    lesson_context: str,
-    prior_outputs: dict[str, str],
-    difficulty: Optional[str],
-    phase_name: str = "?",
-    max_output_tokens: Optional[int] = None,
-    homework_job_id: Optional[UUID] = None,
-    phase_output_id: Optional[UUID] = None,
-    attachments: list[Path] = (),
-    source_map_digest: str = "",
-) -> tuple[BaseModel, Optional[int], Optional[int]]:
-    """Structured-output phase. Wraps :func:`run_phase` and returns
-    ``(parsed, prompt_tokens, output_tokens)`` to match the gemini equivalent."""
-    result = await run_phase(
-        provider=provider,
-        model=model,
-        phase_prompt=phase_prompt,
-        phase_name=phase_name,
-        homework_job_id=homework_job_id,
-        phase_output_id=phase_output_id,
-        lesson_context=lesson_context,
-        prior_outputs=prior_outputs,
-        attachments=list(attachments),
-        schema=response_schema,
-        difficulty=difficulty,
-        max_output_tokens=max_output_tokens,
-        source_map_digest=source_map_digest,
-    )
-    if result.parsed is None:
-        # Should be unreachable: run_phase raises before returning a
-        # PhaseResult with parsed=None when a schema is supplied.
-        raise RuntimeError(
-            f"run_phase_prompt_structured: parsed is None for {phase_name}"
-        )
-    pt = int(result.usage.get("prompt_tokens") or 0)
-    ot = int(result.usage.get("output_tokens") or 0)
-    return result.parsed, pt or None, ot or None
-
-
 # ─────────────────────────────────────────────────────────────────────
 # Cross-job extract-reuse marker
 # ─────────────────────────────────────────────────────────────────────
@@ -1662,14 +1480,11 @@ async def record_cached_lesson_extract(
 
 __all__ = [
     "PhaseResult",
-    "STRUCTURED_PHASE_SCHEMAS",
     "_PROVIDER_DEFAULT_MODEL",
     "_resolve_model",
     "run_phase",
     "extract_toc",
     "extract_lesson_context",
-    "extract_source_map",
     "run_phase_prompt",
-    "run_phase_prompt_structured",
     "record_cached_lesson_extract",
 ]

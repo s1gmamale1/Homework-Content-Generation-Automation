@@ -3,7 +3,6 @@
 Coverage:
 - ``_resolve_model`` regression guard (Gemini default must be ``None``;
   no provider's default may leak into another's resolution path).
-- ``STRUCTURED_PHASE_SCHEMAS`` shape (key set + values are pydantic models).
 - The schema-validation retry path in ``run_phase``: the first attempt
   returns invalid JSON, the second returns valid JSON, and exactly two
   ``AgentUsage`` rows are persisted (success=False, then success=True).
@@ -36,7 +35,6 @@ from pydantic import BaseModel
 
 from app.services import agent as agent_module
 from app.services.agent import (
-    STRUCTURED_PHASE_SCHEMAS,
     _PROVIDER_DEFAULT_MODEL,
     _resolve_model,
     extract_toc,
@@ -82,33 +80,6 @@ def test_provider_default_model_table_keys() -> None:
     assert set(_PROVIDER_DEFAULT_MODEL.keys()) == {
         "claude", "kimi", "codex", "gemini", "opencode",
     }
-
-
-# ─────────────────────────────────────────────────────────────────────
-# STRUCTURED_PHASE_SCHEMAS
-# ─────────────────────────────────────────────────────────────────────
-
-
-def test_structured_phase_schemas_keys_present() -> None:
-    """Every phase that emits structured JSON must be registered. Asserting
-    on the key set (not exact values) keeps this loose enough that adding
-    a new phase doesn't fail this test."""
-    expected = {
-        "flashcards",
-        "memory-sprint",
-        "game-breaks",
-        "final-challenge",
-        "reading",
-    }
-    assert expected.issubset(set(STRUCTURED_PHASE_SCHEMAS.keys()))
-
-
-def test_structured_phase_schemas_values_are_pydantic_models() -> None:
-    for phase, schema in STRUCTURED_PHASE_SCHEMAS.items():
-        assert isinstance(schema, type), f"{phase} → {schema!r} is not a class"
-        assert issubclass(schema, BaseModel), (
-            f"{phase} → {schema.__name__} is not a pydantic BaseModel subclass"
-        )
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -405,15 +376,3 @@ def test_should_subset_for_extract_only_when_over_limit(tmp_path, monkeypatch):
     assert agent._should_subset_for_extract(tmp_path / "nope.pdf") is False
 
 
-# ─────────────────────────────────────────────────────────────────────
-# _SVG_PHASES — R8 structured-phase exclusions
-# ─────────────────────────────────────────────────────────────────────
-
-
-def test_svg_phases_only_for_schemas_with_svg_field():
-    from app.services.agent import _SVG_PHASES
-    for phase in ("boss-arena", "practice-rlc", "practice-error-detection",
-                  "practice-memory-match", "practice-tictactoe",
-                  "practice-jigsaw", "practice-sentence"):
-        assert phase not in _SVG_PHASES, f"{phase} has no SVG field; must not be in _SVG_PHASES"
-    assert "case-based-preview" in _SVG_PHASES

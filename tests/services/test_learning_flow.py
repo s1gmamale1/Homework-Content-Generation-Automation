@@ -1,14 +1,12 @@
 """Regression tests for the Learning Sections flow (PR-2).
 
 Confirms the single general flow uses `case-based-preview` + `memory-check`
-instead of the legacy `preview-*` / `memory-sprint`, the new phases are
-registered + persisted, and dependencies are repointed.
+instead of the legacy `preview-*` / `memory-sprint`, and dependencies are
+repointed.
 """
 
 from __future__ import annotations
 
-from app.services import agent
-from app.services import pipeline
 from app.services.flows import PHASE_DEPS, SUBJECTS, flow_for
 
 
@@ -25,13 +23,6 @@ def test_general_flow_uses_cbp_and_memory_check_not_legacy() -> None:
 def test_learning_phases_present_in_general_flow() -> None:
     for phase in ("case-based-preview", "flashcards", "memory-check"):
         assert phase in flow_for("physics")
-
-
-def test_learning_phases_registered_and_persisted() -> None:
-    assert "case-based-preview" in agent.STRUCTURED_PHASE_SCHEMAS
-    assert "memory-check" in agent.STRUCTURED_PHASE_SCHEMAS
-    assert "case-based-preview" in pipeline._JSON_COLUMN_SETTERS
-    assert "memory-check" in pipeline._JSON_COLUMN_SETTERS
 
 
 def test_memory_check_depends_on_flashcards() -> None:
