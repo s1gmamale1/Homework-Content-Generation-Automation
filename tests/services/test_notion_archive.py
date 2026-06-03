@@ -44,32 +44,75 @@ def test_lesson_title_from_section():
     assert na._lesson_title(None, "Kirish") == "Kirish"
 
 
-def test_push_creates_one_subpage_per_phase():
+def _fake_find(c, parent, title):
+    # find_or_create(client, parent_id, title) -> (page_id, created)
+    return (f"id::{title}", True)
+
+
+def test_push_builds_grouped_structure():
+    """Homework → Case-Based Preview · Flashcards(=flashcards+memory-check) ·
+    Gamified Practices(container → game children) · Boss Arena · Reflection."""
     client = MagicMock()
-    client.page_has_content.return_value = False  # each new subpage empty
-    client.upload_bytes.return_value = "upl_x"
-    # find_or_create returns (page_id, created) — lesson + Homework + 2 phase subpages
-    na_find = MagicMock(side_effect=[("lesson_1", True), ("hw_1", True), ("p_cbp", True), ("p_fc", True)])
-    phases = [
-        ("Case-Based Preview", "case-based-preview", "# Case\n\nbody"),
-        ("Flashcards", "flashcards", "# Flashcards\n\nbody"),
-    ]
+    client.page_has_content.return_value = False
+    client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    na_find = MagicMock(side_effect=_fake_find)
+    phase_md = {
+        "case-based-preview": "# CBP",
+        "flashcards": "# FC",
+        "memory-check": "# MC",
+        "practice-rlc": "# RLC",
+        "practice-error-detection": "# ED",
+        "practice-tictactoe": "# TTT",   # this job's subject game
+        "boss-arena": "# BOSS",
+        "reflection": "# REF",
+    }
     na._push_to_notion(
-        client=client, subject_page_id="subj_1", lesson_title="1.1 Burchaklar",
-        phases=phases, find_or_create=na_find,
+        client=client, subject_page_id="subj", lesson_title="1-§ x",
+        phase_md=phase_md, find_or_create=na_find,
     )
-    assert na_find.call_count == 4            # lesson + Homework + 2 phase subpages
-    assert client.upload_bytes.call_count == 2
-    assert client.append_block_children.call_count == 2
+    titles = [call.args[2] for call in na_find.call_args_list]
+    assert titles == [
+        "1-§ x", "Homework",
+        "Case-Based Preview",
+        "Flashcards",
+        "Gamified Practices",
+        "Real-Life Challenge", "Error Detection", "TicTacToe",
+        "Boss Arena",
+        "Reflection",
+    ]
+    # one upload per phase (all 8 present)
+    assert client.upload_bytes.call_count == 8
+    # content written to 7 leaf pages; the Gamified Practices container gets none
+    assert client.append_block_children.call_count == 7
 
 
-def test_push_skips_phase_subpage_already_populated():
+def test_flashcards_page_attachments_at_top_then_content():
+    client = MagicMock()
+    client.page_has_content.return_value = False
+    client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    na_find = MagicMock(side_effect=_fake_find)
+    na._push_to_notion(
+        client=client, subject_page_id="subj", lesson_title="L",
+        phase_md={"flashcards": "# FC\n\nbody", "memory-check": "# MC\n\nbody"},
+        find_or_create=na_find,
+    )
+    fc_call = next(
+        c for c in client.append_block_children.call_args_list if c.args[0] == "id::Flashcards"
+    )
+    body = fc_call.args[1]
+    # both attachments sit at the very top of the page
+    assert body[0]["type"] == "file"
+    assert body[1]["type"] == "file"
+    assert client.upload_bytes.call_count == 2  # one .md per phase, both on this page
+
+
+def test_push_skips_pages_already_populated():
     client = MagicMock()
     client.page_has_content.return_value = True   # already populated → skip writes
-    na_find = MagicMock(side_effect=[("lesson_1", False), ("hw_1", False), ("p_cbp", False)])
+    na_find = MagicMock(side_effect=lambda c, parent, title: (f"id::{title}", False))
     na._push_to_notion(
-        client=client, subject_page_id="subj_1", lesson_title="1.1",
-        phases=[("Case-Based Preview", "case-based-preview", "# Case")],
+        client=client, subject_page_id="subj", lesson_title="L",
+        phase_md={"case-based-preview": "# CBP", "boss-arena": "# B"},
         find_or_create=na_find,
     )
     client.append_block_children.assert_not_called()
