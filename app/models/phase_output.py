@@ -3,6 +3,7 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, UUIDPK
@@ -23,6 +24,9 @@ class PhaseOutput(Base, UUIDPK):
     tokens_output: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Deterministic validator output for this phase's markdown (list[str]).
+    # Warn-only — never blocks generation. Surfaced per-phase in the console.
+    validation_warnings: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
