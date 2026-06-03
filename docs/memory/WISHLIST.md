@@ -8,6 +8,8 @@
 ## Open
 
 > All items below re-verified against current code **2026-06-02** — none stale (all still present). Worked-up items live in [ROADMAP.md](./ROADMAP.md): **R9** (Notion SVG/tables→escaped text), **R10** (broken-font PDF → near-empty TOC). Larger planned work (WS5 full Uzbek contract; Notion **Phase 2 pull**) tracked in `next-steps-flow-v2` memory.
+>
+> _**2026-06-03** — md-per-phase architecture flip SHIPPED + live-verified (worklog **0028**). Major next workstream = **Effort B**: faithful rewrite of the 8 `prompts/_general/*.md` to the `docs/Infra_prompts` specs + author each phase's per-phase deterministic validator rules (`phase_validator.RULES`) + the Uzbek Foundation language contract. **Quick Effort-B win:** `reflection.md` outputs `##`-level headings (no top-level `#`), so the warn-only validator flags **every** reflection with "missing top-level heading" — give reflection a `#` title (or exempt it from that rule)._
 
 ### Backend
 
