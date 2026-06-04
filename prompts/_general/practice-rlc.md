@@ -7,69 +7,74 @@ reasoning would hold up if a real practitioner read it. Build ONE realistic
 decision scenario grounded only in this session's {{SUBJECT}} content, with a
 named expert role appropriate to {{SUBJECT}}.
 
+## Primary rules
+
+- **Draw the concepts from this lesson.** Every decision must turn on a concept,
+  rule, or formula taught in this session's {{SUBJECT}} content. Pick concepts
+  the student already met earlier this session so mistake-repair is possible.
+  Do not invent concepts the lesson never covered.
+- **Strip Test (load-bearing concept).** The lesson concept must be the reason
+  the decision succeeds. Remove that concept and the scenario must STOP working
+  — the student should be unable to decide correctly. If everyday intuition (or
+  swapping a local place name for a generic one) answers it, regenerate.
+
 ## What to produce
 
-One scenario object with these fields:
+Write the scenario as Markdown sections, in this order:
 
-- `scenario_id` — short stable slug, e.g. `rlc_topic_001` (optional).
-- `concept_ids` — the lesson concept(s) tested. Use the **source concept IDs
-  from the lesson's source map when provided**; otherwise short kebab-case slugs.
-  At least one. Pick concepts the student met earlier this session so
-  mistake-repair is possible.
-- `role` — a named, specific expert identity appropriate to this {{SUBJECT}}
-  lesson, derived from its `lesson_context` and source map (e.g. a practitioner,
-  analyst, or specialist who would really make this call). Never a generic "Siz
-  olimsiz" — give a concrete professional role.
-- `task` — one sentence naming the decision the student was called in to make.
-- `grade_band` / `pisa` — e.g. `"G7-9"` / `"L4"` (optional but set them).
-- `context` — 2–4 sentences: the situation, the constraints, and the
+- **Role** — a named, specific expert identity appropriate to this {{SUBJECT}}
+  lesson (a practitioner, analyst, technician, or specialist who would really
+  make this call). Never a generic "Siz olimsiz" — give a concrete professional
+  role.
+- **Task** — one sentence naming the decision the student was called in to make.
+- **Context** — 2–4 sentences: the situation, the constraints, and the
   information/readings available. Include exact numbers, units, and formulas as
-  given when the {{SUBJECT}} lesson involves them.
-- `prediction_prompt` — "Hisoblashdan oldin, natija qanday chiqishini kutyapsiz?"
-  Mandatory — the student predicts the outcome before deciding.
-- `decisions` — **2 to 4** decision objects (3 for G7-9). Each has:
-  - `question` — the call, applying the concept/rule/formula.
-  - `options` — 3–4 actions. The wrong ones are **real {{SUBJECT}} misconceptions
+  given when the {{SUBJECT}} lesson involves them. For G7+ include ONE irrelevant
+  datum the student must dismiss, and note (to yourself, in the final summary)
+  that it is the red herring.
+- **Prediction** — a mandatory prompt asking the student what they expect to
+  find or happen *before* deciding, e.g. "Hisoblashdan oldin, natija qanday
+  chiqishini kutyapsiz?"
+- **Decisions** — **2 to 4** decision points (3 for G7–9). Each decision is its
+  own `###` subsection containing:
+  - The **call** to make, applying the concept/rule/formula.
+  - **3–4 options.** The wrong ones are **real {{SUBJECT}} misconceptions
     students actually hold** (drawn from the lesson's typical confusions), not
-    nonsense.
-  - `correct_option` — 0-based index into `options`.
-  - `why_required` — `true`. Student justifies in 1–2 sentences.
-  - `confidence_required` — `true`. Student rates Sure / Maybe / Guess.
-  - `expected_reasoning` — keyword list the Why text should hit.
-  - `correct_feedback` — senior-expert voice affirming the reasoning.
-  - `partial_feedback` — right action, names the weak link (e.g. a missed step,
+    nonsense. Mark which option is correct.
+  - A mandatory **Why** prompt — the student justifies the call in 1–2 sentences.
+    Name the reasoning a sound Why should reach.
+  - A mandatory **confidence** prompt — the student rates Sure / Maybe / Guess.
+  - **Correct feedback** — senior-expert voice affirming the reasoning.
+  - **Partial feedback** — for the right action with a weak link (a missed step,
     units, a skipped factor).
-  - `wrong_feedback` — MUST open with **"Hali emas"** (never "Noto'g'ri"); re-aim
-    with a guiding question, not the answer.
-- `red_herring` — for G7+ include ONE irrelevant datum in the context the student
-  must dismiss, named here. Lower grades: `null`.
-- `final_summary` — what an expert would have done, what strong reasoning looks
-  like (concept/rule/formula applied, not numbers plugged blindly), likely misses.
+  - **Wrong feedback** — MUST open with **"Hali emas"** (never "Noto'g'ri");
+    re-aim with a guiding question, not the answer.
+- **Final summary** — what an expert would have done, what strong reasoning looks
+  like (concept/rule/formula applied, not numbers plugged blindly), the likely
+  misses, and (G7+) which datum was the red herring and why it didn't matter.
 
 ## Non-negotiables
 
-- **Strip Test:** remove the lesson concept and the scenario must STOP working.
-  If everyday intuition answers it, regenerate.
 - The student is the expert: first person, named role, specific decisions — never
   generic "What do you think?" role-play.
 - Prediction checkpoint, Why justification, and confidence rating fire on every
   decision. None optional.
 - Distractors are genuine {{SUBJECT}} misconceptions, not filler.
-- **No within-scenario branching** — same decision sequence for all students.
+- **No within-scenario branching** — the same decision sequence for all students.
 - Feedback is in-character senior-expert voice, not a rubric read aloud.
 
 ## Visuals
 
 If a decision needs a diagram, embed an inline `<svg>` in the relevant context or
-question section, following the universal SVG rules injected by the runtime (do
+decision section, following the universal SVG rules injected by the runtime (do
 not specify size or colors here). Add it only when the diagram carries the decision.
 
 ## Output format
 
 Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
-title and `##`/`###` for the sections/items described above, in order. For visuals:
-emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
-generate, emit `![placeholder: <short description> — image gen required](placeholder)`
+title and `##`/`###` for the sections/decisions described above, in order. For
+visuals: emit inline `<svg>` for diagrams; for a photo/raster you would otherwise
+need to generate, emit `![placeholder: <short description> — image gen required](placeholder)`
 — never fabricate an image and never invent an image URL.
 
 ## Language

@@ -67,6 +67,17 @@ def test_memory_check_clean_and_consistent():
     assert "all 3 kinds" not in body
 
 
+def test_rlc_and_error_detection_clean_with_strip_test():
+    for subj, phase, path in [
+        ("biology", "practice-rlc", "practice-rlc.md"),
+        ("biology", "practice-error-detection", "practice-error-detection.md"),
+    ]:
+        body = (pathlib.Path(__file__).resolve().parents[2]
+                / "prompts" / "_general" / path).read_text(encoding="utf-8")
+        _assert_clean(_gp(subj, phase))
+        assert "strip" in body.lower(), f"{path} missing the Strip Test rule"
+
+
 @pytest.mark.parametrize("subject,phase", _PAIRS)
 def test_every_flow_phase_has_a_general_prompt(subject, phase):
     body = get_prompt(subject, phase)
