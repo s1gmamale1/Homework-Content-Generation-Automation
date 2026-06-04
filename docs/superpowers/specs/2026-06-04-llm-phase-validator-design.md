@@ -224,14 +224,16 @@ generate output_md  (existing agent.run_phase_prompt path)
 
 ### 6. Integration with the job-resilience effort (the seam that must be explicit)
 
-This effort and the **active** job-resilience effort both edit the **same** non-extract branch
-of `_execute_phase` (`pipeline.py:542-558`). Resilience Task 6 wraps the generation call in
-`_run_with_failover(...)` and returns a `produced_by` (the provider that actually produced the
-phase after any failover); this effort inserts judge → regen → re-judge around that same call,
-and the regen re-invokes generation. "No coupling" in Scope-OUT is true of the failover
-*driver* and job `attempts`, but the two are operationally adjacent and must compose.
+**Job-resilience is already SHIPPED and live on `Nggaev-v2`** (commits `6beb25d…213574f`, verified
+2026-06-04). So this is concrete integration, not a hypothetical. The live `_execute_phase`
+non-extract branch (`pipeline.py:626-648`) already wraps generation in a **`_run(prov, mdl)`
+closure** → `_run_with_failover(requested_provider=provider, model=model, run_fn=_run)` →
+`(output_md, tin, tout, produced_by)`. The judge slots in where `phase_validator.validate(...)`
+is called today (`pipeline.py:659-664`), and the final `set_status` (`:665-675`) already records
+`validation_warnings=… , provider=produced_by`. "No coupling" in Scope-OUT remains true of the
+failover *driver internals* and job `attempts`; the two simply share the function and compose.
 
-**Decisions (proposed — to ratify with the resilience effort):**
+**Decisions (ratified against the live code):**
 - **Key the judge off the *actual producer*, not the requested provider.** `gen_provider /
   gen_model` passed to `phase_judge.judge` and `model_tiers.judge_model_for` = `produced_by`
   (the model that generated the output under review) when a failover occurred, else the
@@ -242,11 +244,15 @@ and the regen re-invokes generation. "No coupling" in Scope-OUT is true of the f
   calls `_run_with_failover` again (it may itself fail over), and its `produced_by` becomes the
   new attribution. Re-pinning the regen to the *requested* provider risks re-hitting the
   provider that already failed.
-- **Order of landing.** Whichever effort lands second integrates at this branch. If resilience
-  lands first: generation already returns `(output_md, tin, tout, produced_by)`; the validator
-  consumes `produced_by`. If the validator lands first: generation is a plain
-  `run_phase_prompt` on the job provider/model and `produced_by == requested`; resilience later
-  swaps the inner call for `_run_with_failover` and feeds its `produced_by` into the judge/regen.
+- **Regen path (live).** The regen re-runs through `_run_with_failover` with the **same `_run`
+  closure** (its `phase_prompt` augmented with the cited failures), keyed
+  `requested_provider=produced_by`. Its new `produced_by`/tokens replace the prior ones and are
+  written to the final `set_status` (which keeps `provider=produced_by`). The re-judge then keys
+  off the regen's `produced_by`.
+- **R11 is non-blocking and stays separate.** The judge keys off the **in-memory** producer,
+  never `phase_outputs.model_name`, so R11(a)'s stale `model_name` cannot corrupt judge
+  selection. R11 (model_name staleness, unlogged timed-out attempts, no failover trail) remains
+  its own LOW-PRIORITY backlog item; this plan does not touch it.
 - **Attempt budgets stay separate.** The judge's one regen does not consume job-level `attempts`
   (whole-job retry guard) and the failover same-provider retries do not consume the judge's
   regen budget. They are independent loops at different scopes.
