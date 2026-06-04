@@ -124,3 +124,21 @@ def test_every_general_prompt_has_language_token():
     missing = [p.name for p in gdir.glob("*.md")
                if "{{LANGUAGE_RULES}}" not in p.read_text(encoding="utf-8")]
     assert not missing, f"prompts missing language token: {missing}"
+
+
+def test_no_dead_json_vocab_anywhere_in_general_prompts():
+    gdir = pathlib.Path(__file__).resolve().parents[2] / "prompts" / "_general"
+    offenders = {}
+    for p in gdir.glob("*.md"):
+        low = p.read_text(encoding="utf-8").lower()
+        hits = [tok for tok in _DEAD_VOCAB if tok.lower() in low]
+        if hits:
+            offenders[p.name] = hits
+    assert not offenders, f"dead JSON vocab remains: {offenders}"
+
+
+def test_no_unreplaced_tokens_for_any_pair():
+    for subj in flows.SUPPORTED_SUBJECTS:
+        for phase in flows.flow_for(subj):
+            out = _gp(subj, phase)
+            assert "{{" not in out, f"unreplaced token in {subj}/{phase}"

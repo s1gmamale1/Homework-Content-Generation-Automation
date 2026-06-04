@@ -12,7 +12,8 @@ def tmp_prompts(tmp_path, monkeypatch):
         "SUBJECT-SPECIFIC physics boss.", encoding="utf-8")
     monkeypatch.setattr(P, "PROMPTS_DIR", tmp_path)
     P._cache.clear(); P._hash_cache.clear()
-    return tmp_path
+    yield tmp_path
+    P._cache.clear(); P._hash_cache.clear()
 
 
 def test_general_only_and_subject_substitution(tmp_prompts):
@@ -41,7 +42,8 @@ def tmp_lang(tmp_path, monkeypatch):
         "Title for {{SUBJECT}}.\n\n{{LANGUAGE_RULES}}\n", encoding="utf-8")
     monkeypatch.setattr(P, "PROMPTS_DIR", tmp_path)
     P._cache.clear(); P._hash_cache.clear()
-    return tmp_path
+    yield tmp_path
+    P._cache.clear(); P._hash_cache.clear()
 
 
 def test_english_subject_gets_english_language_block(tmp_lang):
@@ -83,7 +85,8 @@ def tmp_family(tmp_path, monkeypatch):
         "_default": "DEFAULT-BLOCK",
     }})
     P._cache.clear(); P._hash_cache.clear()
-    return tmp_path
+    yield tmp_path
+    P._cache.clear(); P._hash_cache.clear()
 
 
 def test_family_token_resolves_per_subject(tmp_family):
