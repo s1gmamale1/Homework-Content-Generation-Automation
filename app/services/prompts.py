@@ -41,6 +41,24 @@ _LANG_ENGLISH = (
 
 LANGUAGE_RULES = {"english": _LANG_ENGLISH, "_default": _LANG_UZBEK}
 
+_SUBJECT_FAMILY = {
+    "biology": "sciences",
+    "kimyo-g7-11": "sciences",
+    "physics": "sciences",
+    "math-algebra": "math",
+    "geometriya-g7-11": "math",
+    "english": "languages",
+    "history": "humanities",
+}
+
+# Family-varying prompt blocks, keyed [phase_name][family] with a phase-level
+# "_default". Only CBP + flashcards vary by family; authored in Tasks 2-3.
+# Resolution never leaks one family's block to another (see get_prompt).
+FAMILY_RULES: dict[str, dict[str, str]] = {
+    "case-based-preview": {},   # filled in Task 2
+    "flashcards": {},           # filled in Task 3
+}
+
 _cache: dict[str, dict[str, str]] = {}
 _hash_cache: dict[str, dict[str, str]] = {}
 
@@ -93,6 +111,10 @@ def get_prompt(subject: str, phase_name: str, provider_suffix: str = "") -> str:
         "{{LANGUAGE_RULES}}",
         LANGUAGE_RULES.get(subject, LANGUAGE_RULES["_default"]),
     )
+    phase_blocks = FAMILY_RULES.get(phase_name, {})
+    family = _SUBJECT_FAMILY.get(subject)
+    family_block = phase_blocks.get(family) or phase_blocks.get("_default", "")
+    body = body.replace("{{FAMILY_RULES}}", family_block)
     if provider_suffix:
         body = body + "\n\n" + provider_suffix
     return body
