@@ -69,6 +69,17 @@
 
 ---
 
+## R11 — Provider failover is not legibly recorded (which model ran a phase, and that it switched)
+
+- **Issue:** after per-phase provider failover (shipped on `Nggaev-v2` 2026-06-04, job-resilience branch), you can tell which provider *finished* a phase but not cleanly that it **switched** or which model actually ran. **Observed live 2026-06-04** (resume+failover smoke, job `6a760767`, history): `case-based-preview`/`flashcards` failed over `opencode → codex → gemini`; the DB shows the end state but not the journey.
+- **Root cause (verified in the live data):** three gaps.
+  - (a) **`phase_outputs.model_name` goes stale on failover.** `_execute_phase` sets `model_name = phase_model_label` (the *requested* model) at `create_or_reset` time; the new `set_status(provider=produced_by)` corrects `provider` but **not** `model_name`. Live: the gemini-produced rows read `provider=gemini` yet `model_name=opencode/mimo-v2.5-free` — self-contradictory. Refs: `app/services/pipeline.py` `_execute_phase` (create_or_reset model_name + final `set_status`).
+  - (b) **A timed-out/cancelled attempt leaves NO `agent_usages` row.** `_run_with_failover` wraps each attempt in `asyncio.wait_for(per_attempt_timeout)`; on timeout it **cancels** `run_phase_prompt` before that call records its usage row. Live: `agent_usages` for the phase shows `codex(f)×2 → gemini(t)` but **no opencode row at all** (the 600s hang is only in the ephemeral server log). Refs: `_run_with_failover` TimeoutError branch (`pipeline.py`), usage recording inside `agent.run_phase_prompt`.
+  - (c) **No explicit "failed over" signal.** A switch is only *inferred* by comparing `phase_outputs.provider` ≠ the job's requested provider, or by counting `agent_usages` rows per `phase_output_id`. There is no failover flag/count or ordered provider trail.
+- **Deliverable (LOW PRIORITY — failover is rare under the current single-host/claude-default usage; matters for the 24/7 autonomous effort's *observability* pillar, see `docs/PRODUCTION_AUTONOMOUS_GENERATION.md` §5):** (1) on failover success, update `phase_outputs.model_name` to the producing model so provider+model agree (needs `run_phase_prompt` to surface the resolved model, since fallbacks pass `model=None` → provider default); (2) record an `agent_usages` (or dedicated failover-event) row for timed-out/cancelled/failed attempts so the full chain is captured; (3) optionally a structured per-phase trail (e.g. `["opencode:timeout","codex:hard","gemini:ok"]`) or a `failover_count` on `phase_outputs`.
+
+---
+
 ## Shipped / Closed
 
 - **R2–R8 — ALL SHIPPED 2026-06-02 (Nggaev-v2).** One ordered backend fix pass (brainstorm→spec→plan→subagent-driven, each commit controller-verified). Suite 227→240 green. R2 size-gate extract subset (`40dab51`); R3 reflection conform (`576a529`); R4 game phase→mode Literal subclasses (`aedea9d`); R5 fail-fast validators incl. new required `JigsawPayload.solution` (`3e5053e`); R6 TOC task-ref + >20MB guard hoist + stats-from-registry (`f40366b`); R7 timeout 600→1800 (`bebf730`); R8 trim `_SVG_PHASES` (`e3988a1`). See [[MASTER_MEMORY]] §0022. The per-item Issue/Root-cause/Deliverable detail above is retained for reference. **Open follow-up:** frontend adds optional `solution` to the jigsaw TS type (forward-only).
