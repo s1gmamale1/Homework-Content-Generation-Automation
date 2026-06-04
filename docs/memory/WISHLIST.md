@@ -23,7 +23,7 @@
 
 **Robustness / data / features**
 - Scanned / image-only PDFs: TOC extraction unsupported (only text PDFs decode; image pages rely on gemini native read). Sibling of R10. (`toc_extractor.py` unchanged.)
-- `opencode` provider implemented but never run against a real install — first action: one real generation (watch the stdin/positional hang). Detail: [[MASTER_MEMORY]] §0010. (Also the last fallback slot in the job-resilience failover chain — unverified there too.)
+- `opencode` is **too flaky to be a *primary* provider** — live-run 2026-06-04 (job `6a760767`, §0031): hung the full **600s** per-attempt timeout on **every** failover wave, blowing the 1800s job budget → failover+resume rescued it but burned 2 attempts (~35 min wall). Keep as last-resort fallback ONLY; never *request* it. Consider a shorter per-attempt timeout for known-flaky providers (the failover chain + resume already handle it gracefully). (Was: "never run against a real install" — now run, and it hangs.)
 - Bad book data: math-algebra book `9e7833bc…` has a 4 KB stub PDF (not a real textbook) — clean up or replace.
 - Confirm the English grade→CEFR ladder against the official Uzbek curriculum — needs curriculum-owner sign-off (external).
 - _(2026-06-02)_ SSE teardown noise: `/toc/stream` (`books.py:113-150`) logs a benign asyncpg / sse-starlette `CancelledError` when an `EventSource` closes; request still 200 — cosmetic. Guard the cancel on session teardown.
