@@ -679,7 +679,8 @@ async def _execute_phase(
         if outcome.available and not outcome.passed:
             logger.info(
                 f"[job {job_id}] {phase_name} judge rejected "
-                f"({len(outcome.warnings)} issue(s)) — regenerating once"
+                f"({len(outcome.warnings)} issue(s)) — regenerating once. "
+                f"Issues: {outcome.warnings}"
             )
             # The regen runs through the failover driver, which CAN exhaust all
             # providers and raise. This block is OUTSIDE the generation try/except
