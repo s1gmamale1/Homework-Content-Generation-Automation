@@ -9,21 +9,11 @@
 
 > Audited against current code **2026-06-03** (post-Effort-A md-per-phase flip). Items that referenced now-deleted code (structured schemas, source-map, source-fidelity) were removed as moot — see **Done / promoted**. Worked-up items live in [ROADMAP.md](./ROADMAP.md): **R9** (Notion SVG/tables→escaped text), **R10** (broken-font PDF → near-empty TOC). Larger planned work (WS5 full Uzbek contract; Notion **Phase 2 pull**) tracked in `next-steps-flow-v2` memory.
 
-### Effort B — family/subject-specific prompt rewrite (NOT yet decided)
+### Effort B — faithful Infra-spec prompt rewrite — ✅ SHIPPED (worklog [0030], 2026-06-04)
 
-> Faithful rewrite of the phase prompts to the `docs/Infra_prompts` specs (markdown output). **Status: open — no architecture chosen, no commitment to timing.** The earlier "defer + do it subject-specific" was a tentative lean, never an actual decision.
+> Done: **Option A** `{{FAMILY_RULES}}` token (family-of-4, not subject-of-7); CBP + Flashcards rewritten family-aware (**humanities CBP authored** — no source spec); light/compact/polish passes on the other 9 phases; all folded-in fixes (memory-check **≥2-of-3**, flashcards **in-prompt enum** since `FlashcardType` is deleted, reflection **`#` title**). Live-verified on real gemini history output (validator-clean, 0 dead-vocab). Full detail in worklog [0030]; spec `0dbb34a`, plan `61dc6c6`.
 >
-> **Corrected design framing (2026-06-03):** the Infra specs vary by **family (4)** — sciences / math / languages / humanities — **NOT by subject (7)**. Within a family the spec is identical (biology = kimyo = physics → "sciences"). So:
-> - **Option A — `{{FAMILY_RULES}}` token (recommended, the true "once & clean"):** one shared prompt per phase + the family-varying block (visuals / case framing) injected per job, mirroring `{{LANGUAGE_RULES}}`. DRY; matches the real granularity; ~10 lines in `prompts.py`.
-> - **Option B — inline branches:** one general prompt per phase carrying all 4 families' rules inline. Zero backend; longer prompts (model reads 3 irrelevant branches).
-> - **Option C — subject-specific dirs** (`USE_SUBJECT_PROMPTS=True`, `prompts/<subject>/`): **duplicates** each family prompt across its subjects (~56 files, DRY violation). The earlier "subject-specific" lean was actually *this* — not the clean option, as first implied.
-> - Per-subject content (biology organism-scope, chemistry safety…) is **language-contract** territory (`{{LANGUAGE_RULES}}`), explicitly OUT of Effort B scope — so family-level loses nothing in-scope.
->
-> **Prompt issues to fix DURING the rewrite** (folded in — pointless to fix standalone since the rewrite replaces these files): (1) `prompts/_general/memory-check.md` contradiction — line 35 "Use all 3 kinds" vs self-check line 63 "at least 2 of the 3"; (2) `prompts/_general/flashcards.md` type enum (line 24) — decide the canonical type set (old `FlashcardType` schema is deleted, so it's now a pure prompt-content choice).
->
-> **Quick win, independent of Effort B:** `reflection.md` outputs `##` headings (no top-level `#`) → the validator flags every reflection "missing top-level heading". Give reflection a `#` title, or exempt it from that rule.
->
-> **Validator note:** warn-only today (logged + stored on `phase_outputs.validation_warnings` + shown in console; never blocks). Per-phase rules (`phase_validator.RULES`) + the Uzbek language contract belong to this same future effort, AFTER the prompt rewrite (rules derive from the finalized prompts). Future option: a per-rule `blocking` flag that regenerates a phase on hard violation — promote rules only once proven.
+> **Still pending (the follow-on, NOT shipped):** per-phase `phase_validator.RULES` (derive from the now-finalized prompts) + the **WS5 Uzbek language contract**. Validator stays warn-only until rules are written; a per-rule `blocking` flag (regenerate a phase on a hard violation) is a future option — promote rules only once proven.
 
 ### Backend
 
