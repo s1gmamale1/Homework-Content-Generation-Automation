@@ -39,6 +39,27 @@ def test_cbp_family_visual_defaults_distinct_and_clean():
     assert sci != mat and lan != hum and sci != hum
 
 
+def test_flashcards_has_family_token_and_canonical_enum():
+    body = (pathlib.Path(__file__).resolve().parents[2]
+            / "prompts" / "_general" / "flashcards.md").read_text(encoding="utf-8")
+    assert "{{FAMILY_RULES}}" in body
+    for t in ("definition", "term_to_meaning", "process_step",
+              "question_answer", "misconception", "image_label"):
+        assert t in body, f"canonical type {t} missing"
+    assert "FlashcardType" not in body
+
+
+def test_flashcards_families_distinct_and_clean():
+    sci = _gp("physics", "flashcards")
+    lan = _gp("english", "flashcards")
+    hum = _gp("history", "flashcards")
+    mat = _gp("geometriya-g7-11", "flashcards")
+    for r in (sci, lan, hum, mat):
+        assert "{{FAMILY_RULES}}" not in r
+        _assert_clean(r)
+    assert sci != lan and lan != hum and sci != mat
+
+
 @pytest.mark.parametrize("subject,phase", _PAIRS)
 def test_every_flow_phase_has_a_general_prompt(subject, phase):
     body = get_prompt(subject, phase)

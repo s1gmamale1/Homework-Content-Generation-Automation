@@ -157,6 +157,134 @@ _CBP_DEFAULT = (
     "textbook does not state."
 )
 
+# --- Flashcards family blocks (injected at {{FAMILY_RULES}}) ------------------
+# Each ~12-25 lines: family card types (incl. extensions) + atomisation example
+# + visual policy (with placeholder sentinel for IMAGE-default families) +
+# family forbids. Ported from docs/Infra_prompts/Flashcards/Flashcard Prompts/*.
+
+_FC_SCIENCES = (
+    "**Card types:** core set plus `formula`. Use `definition`, `term_to_meaning`, "
+    "`process_step`, `question_answer`, `misconception`, `image_label` (labelled "
+    "anatomy / circuits / glassware / apparatus), and `formula` for equations and "
+    "laws.\n\n"
+    "**Atomisation:** photosynthesis becomes **6 cards**, not one paragraph back: "
+    "(1) `definition` — what photosynthesis is; (2) `question_answer` — where it "
+    "happens; (3) `question_answer` — inputs; (4) `question_answer` — outputs; "
+    "(5) `formula` — the word equation `CO₂ + H₂O → glucose + O₂`; (6) `definition` "
+    "— role of chlorophyll. One retrievable atom per card.\n\n"
+    "**Visual policy:** Sciences default to **IMAGE** — real organisms, lab "
+    "apparatus, and phenomena (lightning, eclipse) read better as photographs. Use "
+    "inline `<svg>` for the structural layer: equations, reaction mechanisms, force "
+    "and circuit diagrams, process flowcharts (photosynthesis stages, digestion), "
+    "and labelled schematics where the label, not the realism, is what matters. If "
+    "you would otherwise generate a raster, emit `![placeholder: <short "
+    "description> — image gen required](placeholder)` — never fabricate an image or "
+    "invent an image URL.\n\n"
+    "**Avoid:** biology cards that demand numerical calculation (biology is "
+    "observation + explanation + prediction); physics formula cards that drop their "
+    "units (`F = 10` is wrong; `F = 10 N` is complete); unbalanced chemistry "
+    "equations; decorative clipart that does not label the actual structure; copying "
+    "textbook artwork; SVGs with unreadable labels; lab-safety facts stuffed into a "
+    "`misconception` field."
+)
+
+_FC_MATH = (
+    "**Card types:** core set plus `formula`. Use `definition`, `formula`, "
+    "`process_step`, `question_answer`, and `misconception`. The `example` type is "
+    "rare here — most worked examples live inside another card's `example` field.\n\n"
+    "**Atomisation:** the quadratic formula becomes **3 cards**, not one paragraph "
+    "back: (1) `definition` — quadratic equation in standard form `ax² + bx + c = "
+    "0`, `a ≠ 0`; (2) `formula` — the quadratic formula itself; (3) `misconception` "
+    "— dropping the ± loses a root. Caveats go in `explanation` / `misconception`, "
+    "never welded into `back`.\n\n"
+    "**Visual policy:** Math defaults to **SVG** — numbers and structure render "
+    "better as diagrams than photos. Use inline `<svg>` for fraction/area bars, "
+    "coordinate planes, graphs, geometric figures (triangles, polygons, circles, "
+    "angles, constructions), number lines, and formula visualisations. Geometry has "
+    "the strongest visual demand — every figure, angle, or construction is SVG. An "
+    "image is for genuine real-world context only and is usually overkill on an "
+    "atomic flashcard; if one is unavailable, emit `![placeholder: <short "
+    "description> — image gen required](placeholder)`.\n\n"
+    "**Avoid:** changing numbers, variables, formulas, units, or calculation order; "
+    "word-problem flashcards (scenarios belong in the Case-Based Preview — flashcards "
+    "are atomic facts); decorative SVGs that don't carry the problem; SVGs with tiny "
+    "unreadable labels; copying textbook artwork; process-step cards that chain "
+    "multiple sub-steps past 25 words (each step is its own card); using an image "
+    "where SVG would carry the math better."
+)
+
+_FC_LANGUAGES = (
+    "**Card types:** core set plus `vocabulary` and `grammar`. Use `vocabulary` "
+    "(L2 word → L1 meaning), `grammar` (pattern → rule), `term_to_meaning`, "
+    "`definition`, `misconception` (L1-interference / false friend), and "
+    "`image_label` for picture vocabulary.\n\n"
+    "**Atomisation:** Present Perfect plus its irregulars becomes **4 cards**, not "
+    "one paragraph back: (1) `grammar` — the formula `have/has + V3`; (2) `grammar` "
+    "— when to use Present Perfect; (3) `vocabulary` — past participle of *go* → "
+    "*gone*; (4) `grammar` — `since` vs `for`. The English target sits on the "
+    "front; the Uzbek bridge sits on back / hint / explanation.\n\n"
+    "**Visual policy:** Languages default to **IMAGE** — communication is "
+    "contextual, and a real scene (classroom, market, café, office) gives a word its "
+    "meaning; picture-vocabulary cards are `image_label`. Use inline `<svg>` for the "
+    "linguistic layer: sentence-structure blocks (subject | verb | object), "
+    "conjugation tables, tense timelines, and wrong → corrected comparisons. If a "
+    "scene image is unavailable, emit `![placeholder: <short description> — image "
+    "gen required](placeholder)` — never invent an image URL.\n\n"
+    "**Avoid:** tenses, structures, or vocabulary above the target CEFR / grade "
+    "level — not even inside example sentences; authoring a fresh passage when the "
+    "textbook has one; cliché cowboy/cricket contexts unless the textbook is about "
+    "them; Russian/English calques (translate idiomatically, not word-for-word); "
+    "false-friend cards with no `misconception` warning; example sentences no native "
+    "speaker would actually say."
+)
+
+_FC_HUMANITIES = (
+    "**Card types:** core set. Use `definition`, `term_to_meaning`, "
+    "`question_answer` (name → role, date → event, place → significance), "
+    "`process_step` (one link of a causal chain per card), `misconception` "
+    "(conflations between figures / eras / places), and `image_label` (portraits, "
+    "maps, artifacts).\n\n"
+    "**Atomisation:** Amir Temur becomes **6 cards**, not one paragraph back: "
+    "(1) `question_answer` — his capital → Samarqand; (2) `question_answer` — year "
+    "of death → 1405; (3) `definition` — the Timurid empire; (4) `image_label` — "
+    "Bibi-Khanym mosque → his architectural commission; (5) `process_step` — his "
+    "first major campaign; (6) `misconception` — Amir Temur is not Babur. A causal "
+    "chain never lives on one card — split it into `process_step` links.\n\n"
+    "**Visual policy:** Humanities default to **SVG** for the structural layer — "
+    "timelines, causal chains (event A → event B → event C), labelled outline maps, "
+    "comparison tables, and dynasty/family trees. Use an image for real figures and "
+    "objects: portraits the textbook uses, monuments, and artifacts (coins, "
+    "manuscripts). If you would otherwise generate such a raster, emit "
+    "`![placeholder: <short description> — image gen required](placeholder)` — never "
+    "fabricate an image or invent an image URL.\n\n"
+    "**Avoid:** invented causality — only write 'A caused B' when the textbook "
+    "asserts it, otherwise present sequence without claimed causation; misquoted "
+    "primary sources (reproduce exactly or mark the `example` as paraphrase); "
+    "anachronistic state/place names for pre-modern entities; one-sided framing of "
+    "contested figures (mirror the textbook, or stay neutral); geography statistics "
+    "with no year; decorative imagery instead of the specific monument/artifact the "
+    "lesson is about."
+)
+
+_FC_DEFAULT = (
+    "**Card types:** the canonical core set — `definition`, `term_to_meaning`, "
+    "`process_step`, `question_answer`, `misconception`, `image_label`. Add a "
+    "`formula` type only if the lesson is genuinely formula-bearing.\n\n"
+    "**Atomisation:** never pack a whole topic into one back. Split a multi-part "
+    "concept into one card per retrievable atom — definition on one card, the rule "
+    "or formula on another, the common error as its own `misconception` card — and "
+    "move supporting context into the `explanation` / `example` / `misconception` "
+    "fields.\n\n"
+    "**Visual policy:** choose the medium that carries the recall. Use inline "
+    "`<svg>` for genuine diagrams — figures, processes, charts, timelines — and an "
+    "image only for a real-life object or scene. When you would otherwise generate a "
+    "raster, emit `![placeholder: <short description> — image gen "
+    "required](placeholder)` — never fabricate an image or invent an image URL.\n\n"
+    "**Avoid:** paragraph-length backs; folding explanation / example / misconception "
+    "into `back`; decorative visuals that don't carry the concept; copying textbook "
+    "artwork; inventing facts the textbook does not state."
+)
+
 # Family-varying prompt blocks, keyed [phase_name][family] with a phase-level
 # "_default". Only CBP + flashcards vary by family; authored in Tasks 2-3.
 # Resolution never leaks one family's block to another (see get_prompt).
@@ -168,7 +296,13 @@ FAMILY_RULES: dict[str, dict[str, str]] = {
         "humanities": _CBP_HUMANITIES,
         "_default": _CBP_DEFAULT,
     },
-    "flashcards": {},           # filled in Task 3
+    "flashcards": {
+        "sciences": _FC_SCIENCES,
+        "math": _FC_MATH,
+        "languages": _FC_LANGUAGES,
+        "humanities": _FC_HUMANITIES,
+        "_default": _FC_DEFAULT,
+    },
 }
 
 _cache: dict[str, dict[str, str]] = {}
