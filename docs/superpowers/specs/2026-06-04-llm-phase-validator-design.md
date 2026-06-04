@@ -156,6 +156,15 @@ one; the requirement is that the judge sees the contract + inputs and nothing ph
    hallucination and discard it.
 3. Emit only the survivors.
 
+**Visual-placeholder rule (do NOT over-flag).** The contract instructs the generator to emit
+`![placeholder: <desc> — image gen required](placeholder)` for any raster/photo instead of
+fabricating one. A correctly-emitted placeholder is **compliant** — the prescribed terminal
+state, not a defect — so the judge must never raise a "missing image / incomplete visual"
+failure over it (a regen cannot produce the raster anyway; image-gen happens downstream).
+Conversely, a **fabricated image or an invented `http(s)` image URL IS a violation** the judge
+should catch — the contract explicitly forbids it. The meta-prompt states both halves so the
+judge neither loops on a legitimate placeholder nor lets an invented URL pass.
+
 **Structured `Verdict`** (pydantic, parsed via `model_validate_json` + one reparse retry):
 ```
 Verdict:
