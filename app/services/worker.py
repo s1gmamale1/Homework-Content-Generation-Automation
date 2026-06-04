@@ -29,6 +29,7 @@ Failure handling:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import socket
 import signal
@@ -169,9 +170,21 @@ class Worker:
             logger.exception(f"worker {self.id} claim failed")
             return None
 
+    async def _heartbeat(self, job_id: UUID) -> None:
+        """Periodically refresh the job's claim while its pipeline runs."""
+        while True:
+            await asyncio.sleep(settings.heartbeat_seconds)
+            try:
+                async with SessionLocal() as session:
+                    await jobs_repo.touch_claim(session, job_id)
+                    await session.commit()
+            except Exception:
+                logger.warning(f"worker {self.id} heartbeat failed for job={job_id}")
+
     async def _execute_job(self, job_id: UUID) -> None:
         """Run one pipeline. Releases the slot in `finally` so the next
         iteration of the main loop can claim another job."""
+        hb = asyncio.create_task(self._heartbeat(job_id))
         try:
             try:
                 await asyncio.wait_for(
@@ -197,6 +210,9 @@ class Worker:
                 )
                 await self._mark_failed(job_id, f"{type(exc).__name__}: {exc}")
         finally:
+            hb.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await hb   # let the cancellation settle — avoids a stray "Task destroyed" warning
             self._slots.release()
 
     async def _mark_failed(self, job_id: UUID, error_message: str) -> None:

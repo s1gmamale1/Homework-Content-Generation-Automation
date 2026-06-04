@@ -239,6 +239,18 @@ async def claim_next_job(
     return await session.get(HomeworkJob, job_id)
 
 
+async def touch_claim(session: AsyncSession, job_id: UUID) -> None:
+    """Heartbeat: refresh claimed_at on a still-running job so the lease-TTL
+    reclaim never treats a live worker's job as orphaned. No-ops once the job
+    leaves `running` (done/failed), so it can't resurrect a finished row."""
+    await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.id == job_id)
+        .where(HomeworkJob.status == "running")
+        .values(claimed_at=datetime.now(timezone.utc))
+    )
+
+
 async def reclaim_stuck_jobs(
     session: AsyncSession, *, stale_after_seconds: int
 ) -> int:
