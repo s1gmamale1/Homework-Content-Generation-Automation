@@ -15,7 +15,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
-from app.services import agent, events_bus, notion_archive, phase_validator
+from app.services import agent, events_bus, failure_classifier, notion_archive, phase_validator
 from app.services.flows import (
     flow_for,
     file_needed_phases,
@@ -429,6 +429,58 @@ async def _run_content_phases_parallel(
         raise RuntimeError("content phase failed")
 
 
+def _failover_chain(requested_provider: str) -> list[str]:
+    """Requested provider first, then settings.failover_provider_order, skipping
+    the requested one and any dup. claude is absent from the configured order, so
+    a claude job tries claude first but never falls *back* to claude."""
+    chain = [requested_provider]
+    for p in settings.failover_provider_order:
+        if p != requested_provider and p not in chain:
+            chain.append(p)
+    return chain
+
+
+# Same-provider retry budget per failure class before moving to the next provider.
+_SAME_RETRY_BUDGET = {"transient": 2, "hard": 1, "wall": 0}
+
+
+async def _run_with_failover(*, requested_provider: str, model: Optional[str], run_fn):
+    """Run a phase across the failover chain. `run_fn(provider, model)` returns
+    (output_md, tokens_in, tokens_out). On failure, classify → retry same (per
+    budget, exp backoff) or move to the next provider. Each attempt is bounded by
+    settings.per_attempt_timeout_seconds (kills a hung CLI). Fallback providers
+    get model=None (the job's model is provider-specific; None → provider default,
+    preserving the _resolve_model no-leak invariant). Returns
+    (output_md, tin, tout, produced_by); raises the last error when all fail."""
+    last_exc: Optional[Exception] = None
+    for prov in _failover_chain(requested_provider):
+        attempt_model = model if prov == requested_provider else None
+        same = 0
+        while True:
+            try:
+                out, tin, tout = await asyncio.wait_for(
+                    run_fn(prov, attempt_model),
+                    timeout=settings.per_attempt_timeout_seconds,
+                )
+                return out, tin, tout, prov
+            except asyncio.TimeoutError as exc:
+                # Attempt blew per_attempt_timeout — the provider is hung / too slow.
+                # str(asyncio.TimeoutError()) == "" would misclassify as "hard"; and
+                # retrying a hung provider is futile → fail over immediately (no
+                # same-provider retry). Intercept BEFORE the classifier.
+                last_exc = exc
+                break
+            except Exception as exc:  # noqa: BLE001 — classify, don't swallow
+                budget = _SAME_RETRY_BUDGET[failure_classifier.classify(exc)]
+                if same < budget:
+                    same += 1
+                    await asyncio.sleep(2 ** same)  # ~2s, ~4s — slot already released
+                    continue
+                last_exc = exc
+                break  # exhausted this provider → next in chain
+    raise last_exc or RuntimeError(f"{requested_provider}: all providers exhausted")
+
+
 async def _execute_phase(
     *,
     job_id: UUID,
@@ -538,22 +590,29 @@ async def _execute_phase(
                 homework_job_id=job_id,
                 phase_output_id=po_id,
             )
+            produced_by = settings.extract_provider
             parsed_struct: Optional[Any] = None
         else:
             phase_prompt = get_prompt(subject, phase_name)
-            output_md, tin, tout = await agent.run_phase_prompt(
-                provider=provider,
-                model=model,
-                phase_prompt=phase_prompt,
-                attachments=[pdf_path] if attach_file else [],
-                lesson_context=lesson_context or "",
-                prior_outputs=prior_outputs,
-                difficulty=difficulty,
-                phase_name=phase_name,
-                max_output_tokens=max_output_tokens_for(phase_name),
-                homework_job_id=job_id,
-                phase_output_id=po_id,
-                source_map_digest=source_map_digest,
+
+            async def _run(prov: str, mdl: Optional[str]):
+                return await agent.run_phase_prompt(
+                    provider=prov,
+                    model=mdl,
+                    phase_prompt=phase_prompt,
+                    attachments=[pdf_path] if attach_file else [],
+                    lesson_context=lesson_context or "",
+                    prior_outputs=prior_outputs,
+                    difficulty=difficulty,
+                    phase_name=phase_name,
+                    max_output_tokens=max_output_tokens_for(phase_name),
+                    homework_job_id=job_id,
+                    phase_output_id=po_id,
+                    source_map_digest=source_map_digest,
+                )
+
+            output_md, tin, tout, produced_by = await _run_with_failover(
+                requested_provider=provider, model=model, run_fn=_run,
             )
             parsed_struct = None
     except Exception as exc:
@@ -580,6 +639,7 @@ async def _execute_phase(
             tokens_input=tin,
             tokens_output=tout,
             validation_warnings=warnings or None,
+            provider=produced_by,
         )
         await session.commit()
 
