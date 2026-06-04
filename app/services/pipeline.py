@@ -15,7 +15,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
-from app.services import agent, events_bus, failure_classifier, notion_archive, phase_validator
+from app.services import agent, events_bus, failure_classifier, notion_archive, phase_judge
 from app.services.flows import (
     flow_for,
     file_needed_phases,
@@ -624,26 +624,28 @@ async def _execute_phase(
             produced_by = settings.extract_provider
             parsed_struct: Optional[Any] = None
         else:
-            phase_prompt = get_prompt(subject, phase_name)
+            base_phase_prompt = get_prompt(subject, phase_name)
 
-            async def _run(prov: str, mdl: Optional[str]):
-                return await agent.run_phase_prompt(
-                    provider=prov,
-                    model=mdl,
-                    phase_prompt=phase_prompt,
-                    attachments=[pdf_path] if attach_file else [],
-                    lesson_context=lesson_context or "",
-                    prior_outputs=prior_outputs,
-                    difficulty=difficulty,
-                    phase_name=phase_name,
-                    max_output_tokens=max_output_tokens_for(phase_name),
-                    homework_job_id=job_id,
-                    phase_output_id=po_id,
-                    source_map_digest=source_map_digest,
-                )
+            def _make_run(prompt_text: str):
+                async def _run(prov: str, mdl: Optional[str]):
+                    return await agent.run_phase_prompt(
+                        provider=prov,
+                        model=mdl,
+                        phase_prompt=prompt_text,
+                        attachments=[pdf_path] if attach_file else [],
+                        lesson_context=lesson_context or "",
+                        prior_outputs=prior_outputs,
+                        difficulty=difficulty,
+                        phase_name=phase_name,
+                        max_output_tokens=max_output_tokens_for(phase_name),
+                        homework_job_id=job_id,
+                        phase_output_id=po_id,
+                        source_map_digest=source_map_digest,
+                    )
+                return _run
 
             output_md, tin, tout, produced_by = await _run_with_failover(
-                requested_provider=provider, model=model, run_fn=_run,
+                requested_provider=provider, model=model, run_fn=_make_run(base_phase_prompt),
             )
             parsed_struct = None
     except Exception as exc:
@@ -656,12 +658,60 @@ async def _execute_phase(
             await session.commit()
         raise
 
-    warnings = (
-        phase_validator.validate(phase_name, output_md, subject=subject)
-        if phase_name != "extract" else []
-    )
-    if warnings:
-        logger.warning(f"[job {job_id}] {phase_name} validation warnings: {warnings}")
+    warnings: list[str] = []
+    if phase_name != "extract":
+        # Judge against the phase's own contract, keyed off the ACTUAL producer
+        # (produced_by + its resolved model). One regen with cited failures fed
+        # back; still failing -> accept with warnings. Never blocks the job.
+        def _gen_model_of(prod: str) -> Optional[str]:
+            # After failover, the fallback ran on model=None (provider default), so
+            # tier selection uses the provider's DEFAULT model — errs toward a
+            # stronger judge (safe per "judge >= generator"), not the CLI's exact
+            # default. Approximate-but-safe; do not mistake it for exact.
+            return model if prod == provider else None
+
+        outcome = await phase_judge.judge(
+            subject=subject, phase_name=phase_name, output_md=output_md,
+            lesson_context=lesson_context, prior_outputs=prior_outputs,
+            gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+            homework_job_id=job_id, phase_output_id=po_id,
+        )
+        if outcome.available and not outcome.passed:
+            logger.info(
+                f"[job {job_id}] {phase_name} judge rejected "
+                f"({len(outcome.warnings)} issue(s)) — regenerating once"
+            )
+            # The regen runs through the failover driver, which CAN exhaust all
+            # providers and raise. This block is OUTSIDE the generation try/except
+            # (which marks the phase failed), so an unguarded raise here would fail
+            # the whole job — violating "validation never fails a job". Guard it: on
+            # regen failure keep the judge-rejected-but-complete original output +
+            # its warnings and proceed to `done`.
+            try:
+                regen_prompt = base_phase_prompt + outcome.feedback
+                r_md, r_tin, r_tout, r_prod = await _run_with_failover(
+                    requested_provider=produced_by,
+                    model=_gen_model_of(produced_by),
+                    run_fn=_make_run(regen_prompt),
+                )
+                # Commit to the regenerated output only after it actually succeeded.
+                output_md, tin, tout, produced_by = r_md, r_tin, r_tout, r_prod
+                outcome = await phase_judge.judge(
+                    subject=subject, phase_name=phase_name, output_md=output_md,
+                    lesson_context=lesson_context, prior_outputs=prior_outputs,
+                    gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+                    homework_job_id=job_id, phase_output_id=po_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job
+                logger.warning(
+                    f"[job {job_id}] {phase_name} regen failed ({exc!r}); "
+                    f"keeping the judge-rejected original output + warnings"
+                )
+                # output_md/tin/tout/produced_by and `outcome` retain their original
+                # pre-regen values — the phase still completes `done` with warnings.
+        warnings = outcome.warnings
+        if warnings:
+            logger.warning(f"[job {job_id}] {phase_name} validation warnings: {warnings}")
     async with SessionLocal() as session:
         await phase_repo.set_status(
             session, po_id, "done",
