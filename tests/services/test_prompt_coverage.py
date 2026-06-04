@@ -78,6 +78,16 @@ def test_rlc_and_error_detection_clean_with_strip_test():
         assert "strip" in body.lower(), f"{path} missing the Strip Test rule"
 
 
+def test_boss_arena_clean_with_adaptation():
+    body = (pathlib.Path(__file__).resolve().parents[2]
+            / "prompts" / "_general" / "boss-arena.md").read_text(encoding="utf-8")
+    _assert_clean(_gp("biology", "boss-arena"))
+    low = body.lower()
+    assert "weak" in low, "missing weak-skill adaptation rule"
+    for part in ("why", "how", "what"):
+        assert part in low
+
+
 @pytest.mark.parametrize("subject,phase", _PAIRS)
 def test_every_flow_phase_has_a_general_prompt(subject, phase):
     body = get_prompt(subject, phase)
