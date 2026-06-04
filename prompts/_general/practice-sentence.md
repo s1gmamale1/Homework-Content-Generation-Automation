@@ -1,62 +1,63 @@
 # Prompt: Practice Game — Sentence Fill — {{SUBJECT}}
 
-You are generating a **Sentence Fill** practice game for a {{SUBJECT}} homework
-session. The student sees a sentence with one blank (marked `____`) and a set of
-word/phrase chips. They must choose the chip that correctly completes the sentence
-according to the lesson concept — exactly one chip is correct; the others are
-plausible distractors that fail for concept-level reasons.
+You are generating ONE compact **Sentence Fill** practice game for this {{SUBJECT}}
+lesson. The student sees a sentence with one blank (marked `____`) and a set of
+word/phrase choices. Exactly one choice correctly completes the sentence according to
+the lesson concept; the others are plausible distractors that fail for concept-level
+reasons — wrong term, wrong cause/effect, too broad, too narrow, reversed meaning, or
+wrong register.
 
-Derive the sentence and chips from the lesson's `lesson_context` and source map.
-Set `interaction_mode` to `sentence_fill` (include this as a labelled field in your output — non-negotiable).
+Keep this a single short game. Do NOT expand it into a multi-step case with learning
+blocks, MCQ checkpoints, or a final consequence panel.
+
+## Primary rules
+
+- **Draw the sentence and choices from this lesson.** The sentence must test a real
+  concept, rule, definition, or relationship taught in this session's {{SUBJECT}}
+  content — not a trivial detail — and must not contradict the lesson's Flashcards
+  terminology.
+- **Concept-level distractors.** Each wrong choice must be wrong for a concept reason
+  (too broad, too narrow, conceptually reversed, wrong register, or
+  plausible-but-incorrect), not an arbitrary one. The sentence must fail with a wrong
+  choice because of the lesson concept, not because of random grammar weirdness.
+- **Anti-leak.** The correct choice must not stand out by length, grammar fit, or word
+  similarity to the sentence — only by meaning. Wrong choices should be tempting: close
+  in meaning or wording, never obviously silly.
 
 ## What to produce
 
-One compact Sentence Fill game. Fill every field below; invent no extra fields.
+Write the game as Markdown sections, in this order:
 
-- `title` — short, names the concept or skill being tested.
-- `source_concept_ids` — array of ≥1 concept IDs taken directly from the provided
-  source map. **Use real IDs from the source; do NOT invent.**
-- `interaction_mode` — the literal `sentence_fill`.
-- `instruction` — 1–2 sentences: what the student does (read the sentence, choose the
-  one chip that fills the blank correctly according to the lesson).
-- `interaction_payload` — object with two fields:
-  - `"sentence"` — the sentence string containing exactly one blank marked as `____`.
-    The sentence must be meaningful with the blank in place and must test a real
-    lesson concept, not a trivial detail.
-  - `"chips"` — array of **≥3** chip objects, each `{"label": "...", "is_correct": true/false, "reason": "..."}`.
-    **EXACTLY ONE chip** must have `"is_correct": true`. Every wrong chip's `reason`
-    names specifically why it fails (too broad, too narrow, conceptually reversed,
-    wrong register, plausible-but-incorrect). All chips must be non-empty strings.
-- `why_prompt` — ONE open reasoning question (non-empty). Ask the student to explain:
-  which concept from the lesson makes the correct chip the right choice, why the other
-  chips fail (pointing to the concept, not just grammar), and what mistake a student
-  guessing by surface similarity or word length would make. Keep it to a single open
-  prompt.
-- `expected_reasoning_keywords` — optional array of a few concept words a sound
-  answer would contain.
+- **Title** — short; names the concept or skill being tested.
+- **How to play** — 1–2 sentences: the student reads the sentence and picks the one
+  choice that fills the blank correctly according to the lesson.
+- **Sentence** — one sentence containing exactly one blank marked `____`, meaningful
+  with the blank in place.
+- **Choices** — **3 or more** word/phrase choices. Mark which one is correct (exactly
+  one). For each wrong choice, give a brief note of why it fails at the concept level
+  (the note may live in an answer-key section below the choices, not beside each
+  choice on the face). Every choice must be a non-empty string.
+- **Why prompt** — for math/science lessons this is **mandatory**; for other subjects
+  include it whenever the choice turns on reasoning. ONE open question asking the
+  student to explain which concept makes the correct choice right, why the others fail
+  (pointing to the concept, not just grammar), and what mistake a student guessing by
+  surface similarity or word length would make. A short note (to yourself) of the
+  concept words a sound answer should reach is fine, but keep it to a single open prompt.
 
 ## Non-negotiables
 
-- The blank is clearly marked `____` in the sentence string.
-- Exactly one chip is correct — wrong chips must be incorrect for concept-level
-  reasons, not arbitrary ones.
-- Wrong chips must be tempting — close in meaning or wording, never obviously silly.
-- `source_concept_ids` must trace to real concepts in this lesson's source map.
-- This is the compact game schema. Do NOT add full-CBP fields
-  (no multi-step scaffolding, no open-ended DPE, no simulation panels).
+- Exactly one blank, clearly marked `____`; exactly one correct choice; 3+ choices total.
+- Wrong choices fail for concept-level reasons and are tempting near-misses — never random filler.
+- Terminology aligns with the lesson's Flashcards.
+- Stay compact: one game, no MCQ checkpoints, no learning blocks, no consequence panel.
 
 ## Output format
 
 Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
-title and `##`/`###` for the sections/items described above, in order. For visuals:
+title and `##`/`###` for the sections described above, in order. For visuals:
 emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
 generate, emit `![placeholder: <short description> — image gen required](placeholder)`
 — never fabricate an image and never invent an image URL.
-
-Include these labelled fields in order: `title`, `source_concept_ids`,
-`interaction_mode` (value: `sentence_fill`), `instruction`, `sentence` (with `____`
-blank), then each chip with `label`, `is_correct`, and `reason`, followed by
-`why_prompt` and `expected_reasoning_keywords`.
 
 ## Language
 

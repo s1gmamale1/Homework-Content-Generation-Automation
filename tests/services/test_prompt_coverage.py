@@ -88,6 +88,21 @@ def test_boss_arena_clean_with_adaptation():
         assert part in low
 
 
+_GAMES = [
+    ("biology", "practice-memory-match"),
+    ("physics", "practice-tictactoe"),
+    ("geometriya-g7-11", "practice-jigsaw"),
+    ("english", "practice-sentence"),
+]
+
+
+def test_games_clean_and_compact():
+    for subj, phase in _GAMES:
+        rendered = _gp(subj, phase)
+        _assert_clean(rendered)
+        assert "checkpoint 3" not in rendered.lower(), f"{phase} ballooned into a CBP case"
+
+
 @pytest.mark.parametrize("subject,phase", _PAIRS)
 def test_every_flow_phase_has_a_general_prompt(subject, phase):
     body = get_prompt(subject, phase)
