@@ -60,6 +60,13 @@ def test_flashcards_families_distinct_and_clean():
     assert sci != lan and lan != hum and sci != mat
 
 
+def test_memory_check_clean_and_consistent():
+    body = (pathlib.Path(__file__).resolve().parents[2]
+            / "prompts" / "_general" / "memory-check.md").read_text(encoding="utf-8")
+    _assert_clean(_gp("biology", "memory-check"))
+    assert "all 3 kinds" not in body
+
+
 @pytest.mark.parametrize("subject,phase", _PAIRS)
 def test_every_flow_phase_has_a_general_prompt(subject, phase):
     body = get_prompt(subject, phase)
