@@ -571,6 +571,7 @@ async def run_phase(
     difficulty: Optional[str] = None,
     max_output_tokens: Optional[int] = None,  # noqa: ARG001 — providers ignore today
     source_map_digest: str = "",
+    operation: str = "phase.run",
 ) -> PhaseResult:
     """Run one phase and return the result + usage envelope.
 
@@ -639,7 +640,7 @@ async def run_phase(
 
         if spawn_failed is not None:
             await _record_usage(
-                operation="phase.run",
+                operation=operation,
                 provider=provider,
                 model_name=resolved_model,
                 usage=usage,
@@ -656,7 +657,7 @@ async def run_phase(
         if rc != 0:
             err = f"{provider} CLI exited rc={rc}"
             await _record_usage(
-                operation="phase.run",
+                operation=operation,
                 provider=provider,
                 model_name=resolved_model,
                 usage=usage,
@@ -680,7 +681,7 @@ async def run_phase(
             # blank phase as success.
             if not text.strip():
                 await _record_usage(
-                    operation="phase.run",
+                    operation=operation,
                     provider=provider,
                     model_name=resolved_model,
                     usage=usage,
@@ -711,7 +712,7 @@ async def run_phase(
 
             # Non-empty markdown. Record success, return.
             await _record_usage(
-                operation="phase.run",
+                operation=operation,
                 provider=provider,
                 model_name=resolved_model,
                 usage=usage,
@@ -745,7 +746,7 @@ async def run_phase(
         except ValidationError as exc:
             last_error = exc
             await _record_usage(
-                operation="phase.run",
+                operation=operation,
                 provider=provider,
                 model_name=resolved_model,
                 usage=usage,
@@ -780,7 +781,7 @@ async def run_phase(
 
         # Validated. Record success and return.
         await _record_usage(
-            operation="phase.run",
+            operation=operation,
             provider=provider,
             model_name=resolved_model,
             usage=usage,
