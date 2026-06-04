@@ -172,10 +172,15 @@ branch can return a different family's block.)
 Run: `uv run python -m pytest tests/services/test_prompts_resolver.py -k family -v`
 Expected: PASS (4 tests).
 
-- [ ] **Step 5: Run the full resolver + coverage suite (no regressions)**
+- [ ] **Step 5: Run each file separately (no regressions)**
 
-Run: `uv run python -m pytest tests/services/test_prompts_resolver.py tests/services/test_prompt_coverage.py -q`
-Expected: PASS (existing tests still green; `{{FAMILY_RULES}}` is a no-op for prompts that don't contain the token).
+Run: `uv run python -m pytest tests/services/test_prompts_resolver.py -q` → PASS, and
+`uv run python -m pytest tests/services/test_prompt_coverage.py -q` → PASS.
+(Do NOT run the two files in one command: a pre-existing fixture bug — the `tmp_*`
+fixtures monkeypatch `PROMPTS_DIR` and clear `_cache` with no teardown — leaves stale
+temp-dir state cached when resolver runs before coverage in the same process, causing
+false `KeyError` failures. The full suite is unaffected because pytest runs coverage
+before resolver alphabetically. The fixture teardown is fixed in Task 9.)
 
 - [ ] **Step 6: Commit**
 
@@ -595,6 +600,26 @@ git commit -m "fix(prompts): reflection — emit top-level # title, markdown-onl
 
 **Files:**
 - Test: `tests/services/test_prompt_coverage.py`
+- Modify: `tests/services/test_prompts_resolver.py` (fixture teardown fix)
+
+- [ ] **Step 0: Fix the pre-existing fixture cache-pollution bug**
+
+The `tmp_prompts`, `tmp_lang`, and `tmp_family` fixtures in `test_prompts_resolver.py`
+monkeypatch `P.PROMPTS_DIR` and call `P._cache.clear()` at setup, but never restore the
+cache on teardown — so when this file runs before `test_prompt_coverage.py` in the same
+process, the real `_general` phases resolve against stale temp-dir cache and raise
+`KeyError`. Convert each of the three fixtures from `return tmp_path` to a generator that
+clears the caches on the way out:
+
+```python
+    P._cache.clear(); P._hash_cache.clear()
+    yield tmp_path
+    P._cache.clear(); P._hash_cache.clear()
+```
+
+Verify the previously-failing combined run is now green:
+Run: `uv run python -m pytest tests/services/test_prompts_resolver.py tests/services/test_prompt_coverage.py -q`
+Expected: PASS (no `KeyError`, order-independent).
 
 - [ ] **Step 1: Write the failing global test**
 
