@@ -32,6 +32,21 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _done_phase_md(rows) -> dict[str, str]:
+    """Phase rows that are `done` with non-empty markdown — the resumable set."""
+    return {
+        r.phase_name: r.output_md
+        for r in rows
+        if r.status == "done" and (r.output_md or "").strip()
+    }
+
+
+def _pending_phases(content_phases: list[str], prior_outputs: dict[str, str]) -> set[str]:
+    """Content phases still to run: everything not already in prior_outputs
+    (done phases get pre-injected, so they're excluded and serve as deps)."""
+    return {p for p in content_phases if p not in prior_outputs}
+
+
 async def run(job_id: UUID) -> None:
     """Execute a homework job: extract → content phases → assemble."""
     resource_id = f"job:{job_id}"
@@ -92,6 +107,13 @@ async def run(job_id: UUID) -> None:
         # pinned None — classify/easy-hard removed; kept in helper signatures to avoid wide surgery
         difficulty: Optional[str] = None
         prior_outputs: dict[str, str] = {}
+
+        async with SessionLocal() as session:
+            _existing_rows = await phase_repo.list_for_job(session, job_id)
+        _done_md = _done_phase_md(_existing_rows)
+        if _done_md:
+            log.info(f"[job {job_id}] resume: {len(_done_md)} done phase(s) skipped: {sorted(_done_md)}")
+
         lesson_context: Optional[str] = None
         # PR-1/plan §10: the source map digest threaded into every content
         # phase prompt as the authoritative concept list (source fidelity).
@@ -113,6 +135,11 @@ async def run(job_id: UUID) -> None:
         head_phases: list[str] = ["extract"]
 
         for idx, phase_name in enumerate(head_phases):
+            if phase_name in _done_md:
+                if phase_name == "extract":
+                    lesson_context = _done_md["extract"]
+                    log.info(f"[job {job_id}] resume: reused extract ({len(lesson_context)} chars)")
+                continue
             try:
                 output_md, _tin, _tout, _parsed = await _execute_one_phase(
                     job_id=job_id,
@@ -150,6 +177,10 @@ async def run(job_id: UUID) -> None:
                 source_map_digest = ""
                 source_map_ids = set()
         content_phases = sequence[len(head_phases):]
+
+        for _name, _md in _done_md.items():
+            if _name not in head_phases:
+                prior_outputs[_name] = _md
 
         # ─── tail: content phases (parallel, wave-based by PHASE_DEPS) ────────
         # Everything from sequence[len(head_phases):] is a content phase. They
@@ -348,7 +379,7 @@ async def _run_content_phases_parallel(
     Phase order (used by the frontend to display curriculum-order rows) stays
     stable: it's the position in `content_phases` plus the head offset.
     """
-    pending: set[str] = set(content_phases)
+    pending: set[str] = _pending_phases(content_phases, prior_outputs)
     in_flight: dict[str, asyncio.Task] = {}
     phase_order_map: dict[str, int] = {
         name: phase_order_offset + i for i, name in enumerate(content_phases)
