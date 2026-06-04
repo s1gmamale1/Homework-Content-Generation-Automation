@@ -45,3 +45,63 @@ def test_judge_is_async_and_returns_outcome_type():
     assert inspect.iscoroutinefunction(pj.judge)
     src = inspect.getsource(pj.judge)
     assert "judge-unavailable" in src
+
+
+import asyncio
+from types import SimpleNamespace
+
+from app.services import agent
+
+
+def _fake_run_phase(verdict):
+    async def _run(**kwargs):
+        return SimpleNamespace(parsed=verdict)
+    return _run
+
+
+def _call_judge():
+    return asyncio.run(pj.judge(
+        subject="biology", phase_name="case-based-preview", output_md="x",
+        lesson_context=None, prior_outputs={},
+        gen_provider="claude", gen_model="claude-sonnet-4-6",
+    ))
+
+
+def test_judge_pass_outcome(monkeypatch):
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    monkeypatch.setattr(agent, "run_phase", _fake_run_phase(pj.Verdict(passed=True)))
+    out = _call_judge()
+    assert out.available and out.passed
+    assert out.warnings == [] and out.feedback == ""
+
+
+def test_judge_failure_outcome_has_warnings_and_feedback(monkeypatch):
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    v = pj.Verdict(passed=False, failures=[pj.Failure(requirement="Exactly 3", evidence="found 4")])
+    monkeypatch.setattr(agent, "run_phase", _fake_run_phase(v))
+    out = _call_judge()
+    assert out.available and not out.passed
+    assert out.warnings == ["Exactly 3 — found 4"]
+    assert "Exactly 3 — found 4" in out.feedback
+
+
+def test_judge_degrades_when_run_phase_raises(monkeypatch):
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+
+    async def _boom(**kwargs):
+        raise RuntimeError("CLI exploded")
+
+    monkeypatch.setattr(agent, "run_phase", _boom)
+    out = _call_judge()
+    assert out.available is False and out.passed is True
+    assert out.warnings == ["judge-unavailable: RuntimeError"]
+
+
+def test_judge_degrades_when_get_prompt_raises(monkeypatch):
+    def _boom_prompt(s, p):
+        raise KeyError("no such phase")
+
+    monkeypatch.setattr(pj, "get_prompt", _boom_prompt)
+    # run_phase should never be reached; if it is, this would error loudly
+    out = _call_judge()
+    assert out.available is False   # the Critical fix: get_prompt raise must degrade

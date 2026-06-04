@@ -98,12 +98,12 @@ async def judge(
     phase_output_id: Optional[UUID] = None,
 ) -> JudgeOutcome:
     """Grade `output_md` against its phase contract. Returns a JudgeOutcome;
-    never raises (CLI/parse failure -> degraded 'unavailable')."""
-    judge_provider, judge_model = model_tiers.judge_model_for(gen_provider, gen_model)
-    contract = get_prompt(subject, phase_name)
-    judge_prompt = _build_judge_prompt(contract=contract, output_md=output_md)
-
+    NEVER raises — any error (bad subject/phase, CLI failure, unparseable
+    verdict) degrades to 'unavailable' so validation can't block generation."""
     try:
+        judge_provider, judge_model = model_tiers.judge_model_for(gen_provider, gen_model)
+        contract = get_prompt(subject, phase_name)
+        judge_prompt = _build_judge_prompt(contract=contract, output_md=output_md)
         result = await agent.run_phase(
             provider=judge_provider,
             model=judge_model,
@@ -118,8 +118,9 @@ async def judge(
             phase_output_id=phase_output_id,
         )
         verdict = result.parsed
-        assert isinstance(verdict, Verdict)
-    except Exception as exc:  # noqa: BLE001 — judge must never block generation
+        if not isinstance(verdict, Verdict):
+            raise RuntimeError("judge produced no parsed Verdict")
+    except Exception as exc:  # noqa: BLE001 — judge must NEVER block generation
         logger.warning(f"phase_judge unavailable for {phase_name}: {exc!r}")
         return JudgeOutcome(
             available=False, passed=True,
@@ -128,7 +129,6 @@ async def judge(
 
     if verdict.passed or not verdict.failures:
         return JudgeOutcome(available=True, passed=True, warnings=[], feedback="")
-
     warnings = _serialize_failures(verdict.failures)
     return JudgeOutcome(
         available=True, passed=False, warnings=warnings,
