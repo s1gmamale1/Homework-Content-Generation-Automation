@@ -80,8 +80,12 @@ Confirm `Field` is imported at the top of `app/config.py` (`from pydantic import
     # ONLY because the heartbeat keeps live jobs fresh (spec §3).
     reclaim_stale_seconds: int = 120
     # Hard timeout for ONE failover attempt (one provider try), so a hung CLI
-    # (e.g. opencode stdin hang) cannot stall a phase until job_timeout.
-    per_attempt_timeout_seconds: int = 300
+    # (e.g. opencode stdin hang) cannot stall a phase until job_timeout. MUST be
+    # well above the slowest real phase: CBP alone is ~274s (see job_timeout
+    # comment) and run_phase_prompt may internally retry, so 300s would kill a
+    # legitimately-slow CBP → asyncio.TimeoutError → misclassified failover off
+    # claude. 600s clears that with headroom while still bounding a true hang.
+    per_attempt_timeout_seconds: int = 600
     # Fallback provider order for per-phase failover. claude is intentionally
     # ABSENT — reserved for the user's Claude Max allocation (provider isolation).
     failover_provider_order: list[str] = Field(
@@ -144,7 +148,7 @@ Expected: FAIL — `provider` not in signature; `AttributeError`; getsource chec
 
 - [ ] **Step 3: Add the model column**
 
-In `app/models/phase_output.py`, after the `model_name` column (line 20) add:
+In `app/models/phase_output.py`, after the `model_name` column (line 21 — `String`/`Optional` already imported) add:
 
 ```python
     # The provider that ACTUALLY produced this phase (may differ from the job's
@@ -156,20 +160,20 @@ In `app/models/phase_output.py`, after the `model_name` column (line 20) add:
 
 - [ ] **Step 4: Thread it through the repo**
 
-In `app/repositories/phase_outputs.py` `set_status` signature, after `error_message: Optional[str] = None,` add:
+In `app/repositories/phase_outputs.py` `set_status` (signature spans `:97-127`), after the last param `validation_warnings: Optional[list] = None,` (line 108) add:
 
 ```python
     provider: Optional[str] = None,
 ```
 
-and in the body, after the `error_message` block (line ~123):
+and in the body, after the `validation_warnings` block (line 127):
 
 ```python
     if provider is not None:
         po.provider = provider
 ```
 
-In `create_or_reset`, inside the `if existing is not None:` reset block (after `existing.completed_at = None`, line 73) add:
+In `create_or_reset`, inside the `if existing is not None:` reset block (after `existing.completed_at = None`, line 74) add:
 
 ```python
         existing.provider = None
@@ -404,9 +408,11 @@ and the following log line (`:240`) from `{self.job_timeout * 2}s` to:
                     f"(stale > {settings.reclaim_stale_seconds}s)"
 ```
 
+Also update the now-stale `_sweep_stuck_jobs` docstring at `worker.py:228` ("Reclaim any `running` jobs whose claim is older than 2x the job timeout") to reference the lease window (`reclaim_stale_seconds`) instead of `2x job_timeout`.
+
 - [ ] **Step 4: Reset orphaned `running` jobs on startup**
 
-In `main.py`, inside `lifespan`, after the existing `phase_outputs` sweep (after line 47, before the `log.info("Orphan sweep complete …")`) add a job reset and import `jobs_repo`:
+In `main.py`, inside `lifespan`, the sweep runs inside `async with SessionLocal() as session:` whose **only commit is `await session.commit()` at line 47**; `log.info("Orphan sweep complete …")` at line 48 is **outside** the block. Insert the job reset **after the `phase_outputs` loop (line 46) and BEFORE `await session.commit()` (line 47)** — inside the `with` block — so it is part of that commit. (Placing it *after* line 47 runs the UPDATE post-commit → rolled back on block exit, silently no-op; *after* line 48 `session` is out of scope.) Also import `jobs_repo`:
 
 ```python
         n = await jobs_repo.reclaim_stuck_jobs(session, stale_after_seconds=0)
@@ -465,6 +471,15 @@ def test_unknown_defaults_to_hard():
 
 def test_accepts_exception_object():
     assert fc.classify(RuntimeError("temporarily limiting requests")) == "transient"
+
+
+def test_asyncio_timeout_message_is_empty_falls_to_hard():
+    import asyncio
+    # str(asyncio.TimeoutError()) == "" → no signal → "hard". Documented, NOT relied
+    # on: the failover driver (_run_with_failover) intercepts asyncio.TimeoutError
+    # before it ever reaches the classifier (immediate failover). This test pins the
+    # fallthrough so the interaction is a conscious choice, not an accident.
+    assert fc.classify(asyncio.TimeoutError()) == "hard"
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -541,7 +556,7 @@ git commit -m "feat(resilience): deterministic CLI failure classifier (transient
 
 > The driver is a **pure, injectable** helper (takes a `run_fn(provider, model)` coroutine), so it's unit-testable with no DB and no CLI. `_execute_phase` supplies the real `run_fn`. The backoff sleep is OUTSIDE `run_fn`, so it does **not** hold the `gemini_max_concurrency` slot (the slot is held only inside `agent.run_phase_prompt`) — satisfies the spec's "backoff releases the slot."
 >
-> **Timeout-budget interaction — RATIFIED (review-flagged, accepted 2026-06-03):** the per-phase failover budget can exceed `job_timeout`. Worst case = 5-provider chain × (1 + transient-budget 2) attempts × `per_attempt_timeout_seconds` (300s) + backoff ≈ 4500s, past `job_timeout` (1800s) → the worker's outer `asyncio.wait_for` fires → whole-job hard-fail → reclaim + **resume recovers it** (re-runs only the still-unfinished phase). So it's **self-healing, not fatal**, and realistic failures are fast (rc=1 in seconds), not 300s hangs — the worst case needs multiple providers each *hanging* (which `per_attempt_timeout` already bounds). **Decision: ACCEPTED** — `job_timeout` is the backstop, resume recovers, no per-phase total-failover deadline added. Revisit only if a real smoke shows a timeout collision (a one-line `asyncio.wait_for(_run_with_failover(...), timeout=job_timeout - margin)` is the escape hatch if ever needed).
+> **Timeout-budget interaction — RATIFIED (review-flagged, accepted 2026-06-03):** the per-phase failover budget can exceed `job_timeout`. Worst case ≈ 5-provider chain × `per_attempt_timeout_seconds` (600s — a hung attempt fails over immediately, no same-provider retry on a timeout) ≈ 3000s, past `job_timeout` (1800s) → the worker's outer `asyncio.wait_for` fires → whole-job hard-fail → reclaim + **resume recovers it** (re-runs only the still-unfinished phase). So it's **self-healing, not fatal**, and realistic failures are fast (rc=1 in seconds), not 300s hangs — the worst case needs multiple providers each *hanging* (which `per_attempt_timeout` already bounds). **Decision: ACCEPTED** — `job_timeout` is the backstop, resume recovers, no per-phase total-failover deadline added. Revisit only if a real smoke shows a timeout collision (a one-line `asyncio.wait_for(_run_with_failover(...), timeout=job_timeout - margin)` is the escape hatch if ever needed).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -597,6 +612,25 @@ def test_wall_fails_over_with_no_same_retry():
     assert calls.count("claude") == 1     # wall = 0 same-provider retries
 
 
+def test_attempt_timeout_fails_over_immediately():
+    # Simulate the per-attempt cap firing: asyncio.wait_for raises asyncio.TimeoutError,
+    # which propagates the same way a run_fn raising it does — exercising the dedicated
+    # except branch with no real-time sleep / no settings mutation (robust + fast).
+    calls = []
+
+    async def run_fn(provider, model):
+        calls.append(provider)
+        if provider == "claude":
+            raise asyncio.TimeoutError()       # the per-attempt timeout
+        return f"# ok from {provider}", 0, 0
+
+    out, _tin, _tout, produced = asyncio.run(
+        _run_with_failover(requested_provider="claude", model="m", run_fn=run_fn)
+    )
+    assert produced == "codex"                 # hung claude → immediate failover
+    assert calls.count("claude") == 1          # NO same-provider retry on a timeout
+
+
 def test_all_providers_exhausted_raises():
     async def run_fn(provider, model):
         raise RuntimeError("weekly usage limit reached")  # wall everywhere
@@ -649,6 +683,13 @@ async def _run_with_failover(*, requested_provider: str, model: Optional[str], r
                     timeout=settings.per_attempt_timeout_seconds,
                 )
                 return out, tin, tout, prov
+            except asyncio.TimeoutError as exc:
+                # Attempt blew per_attempt_timeout — the provider is hung / too slow.
+                # str(asyncio.TimeoutError()) == "" would misclassify as "hard"; and
+                # retrying a hung provider is futile → fail over immediately (no
+                # same-provider retry). Intercept BEFORE the classifier.
+                last_exc = exc
+                break
             except Exception as exc:  # noqa: BLE001 — classify, don't swallow
                 budget = _SAME_RETRY_BUDGET[failure_classifier.classify(exc)]
                 if same < budget:
@@ -736,7 +777,7 @@ git commit -m "feat(pipeline): per-phase provider failover (classify → retry/s
 - Modify: `app/services/pipeline.py` (`run` head `:85-152`; scheduler `pending` seed `:351`)
 - Test: `tests/services/test_resume_seed.py` (new)
 
-> Resume is **always on** and needs no flag: a reclaimed job keeps its `done` phase rows; a fresh/forced job is a brand-new `homework_jobs` row (`force=True` skips the find-active idempotency and creates a fresh job — the logic is `jobs.py:134` `if not body.force:`) with no rows, so nothing is skipped. The carrier is the presence of `done` rows with `output_md`.
+> Resume is **always on** and needs no flag: a reclaimed job keeps its `done` phase rows; a fresh/forced job is a brand-new `homework_jobs` row (`force=True` skips the find-active idempotency and creates a fresh job — the logic is `app/api/v1/jobs.py:134` `if not body.force:` — the API layer, **not** `repositories/jobs.py:134` which is `set_difficulty`) with no rows, so nothing is skipped. The carrier is the presence of `done` rows with `output_md`.
 >
 > **Behavior note — RATIFIED (review-flagged, verified, accepted 2026-06-03):** the manual `POST /jobs/{id}/retry` endpoint (`api/v1/jobs.py:186`) calls `reset_for_retry` (`jobs.py:141`), which flips the job to `pending` but **deliberately leaves `done` phase rows intact** (its docstring: "no phase-output cleanup is needed here"). Pre-resume, a retry regenerated **all** phases; with always-on resume it now **skips `done` phases and re-runs only the failed/unfinished ones** — this is the **intended** behavior. Rationale: `/retry` only acts on `failed` jobs, so resuming finishes what's left instead of wasting weekly-allocation budget redoing good phases. A full clean regenerate from scratch is **already available** via `POST /generate` with `force=true` (creates a brand-new job, all phases fresh) — so `/retry` (cheap resume) and `force`-generate (full redo) are complementary. No code change to `reset_for_retry`.
 
