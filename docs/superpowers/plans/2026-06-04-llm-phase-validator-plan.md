@@ -514,6 +514,8 @@ def test_execute_phase_invokes_the_judge():
     assert "produced_by" in src
     # regen path reuses the failover driver a second time
     assert src.count("_run_with_failover") >= 2
+    # the regen is GUARDED — an exhausted regen must not fail the job
+    assert "regen failed" in src
 
 
 def test_execute_phase_no_longer_calls_deterministic_validator():
@@ -538,17 +540,22 @@ Expected: FAIL — `phase_judge.judge` not in source; `phase_validator` still im
 
 - [ ] **Step 3: Add the import + remove the old one**
 
-In `app/services/pipeline.py`, change the services import line
+In `app/services/pipeline.py`, change the services import line (note: it includes
+`failure_classifier`, added by the shipped resilience work — **keep it**, only swap
+`phase_validator → phase_judge`):
 
 ```python
-from app.services import agent, events_bus, notion_archive, phase_validator
+from app.services import agent, events_bus, failure_classifier, notion_archive, phase_validator
 ```
 
 to
 
 ```python
-from app.services import agent, events_bus, notion_archive, phase_judge
+from app.services import agent, events_bus, failure_classifier, notion_archive, phase_judge
 ```
+
+(Dropping `failure_classifier` here would NameError in `_run_with_failover`, which calls
+`failure_classifier.classify(...)`.)
 
 - [ ] **Step 4: Make the non-extract generation regen-capable**
 
@@ -632,6 +639,10 @@ with:
         # (produced_by + its resolved model). One regen with cited failures fed
         # back; still failing -> accept with warnings. Never blocks the job.
         def _gen_model_of(prod: str) -> Optional[str]:
+            # After failover, the fallback ran on model=None (provider default), so
+            # tier selection uses the provider's DEFAULT model — errs toward a
+            # stronger judge (safe per "judge >= generator"), not the CLI's exact
+            # default. Approximate-but-safe; do not mistake it for exact.
             return model if prod == provider else None
 
         outcome = await phase_judge.judge(
@@ -645,18 +656,34 @@ with:
                 f"[job {job_id}] {phase_name} judge rejected "
                 f"({len(outcome.warnings)} issue(s)) — regenerating once"
             )
-            regen_prompt = base_phase_prompt + outcome.feedback
-            output_md, tin, tout, produced_by = await _run_with_failover(
-                requested_provider=produced_by,
-                model=_gen_model_of(produced_by),
-                run_fn=_make_run(regen_prompt),
-            )
-            outcome = await phase_judge.judge(
-                subject=subject, phase_name=phase_name, output_md=output_md,
-                lesson_context=lesson_context, prior_outputs=prior_outputs,
-                gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
-                homework_job_id=job_id, phase_output_id=po_id,
-            )
+            # The regen runs through the failover driver, which CAN exhaust all
+            # providers and raise. This block is OUTSIDE the generation try/except
+            # (which marks the phase failed at :649-657), so an unguarded raise
+            # here would fail the whole job — violating "validation never fails a
+            # job". Guard it: on regen failure keep the judge-rejected-but-complete
+            # original output + its warnings and proceed to `done`.
+            try:
+                regen_prompt = base_phase_prompt + outcome.feedback
+                r_md, r_tin, r_tout, r_prod = await _run_with_failover(
+                    requested_provider=produced_by,
+                    model=_gen_model_of(produced_by),
+                    run_fn=_make_run(regen_prompt),
+                )
+                # Commit to the regenerated output only after it actually succeeded.
+                output_md, tin, tout, produced_by = r_md, r_tin, r_tout, r_prod
+                outcome = await phase_judge.judge(
+                    subject=subject, phase_name=phase_name, output_md=output_md,
+                    lesson_context=lesson_context, prior_outputs=prior_outputs,
+                    gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+                    homework_job_id=job_id, phase_output_id=po_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job
+                logger.warning(
+                    f"[job {job_id}] {phase_name} regen failed ({exc!r}); "
+                    f"keeping the judge-rejected original output + warnings"
+                )
+                # output_md/tin/tout/produced_by and `outcome` retain their original
+                # pre-regen values — the phase still completes `done` with warnings.
         warnings = outcome.warnings
         if warnings:
             logger.warning(f"[job {job_id}] {phase_name} validation warnings: {warnings}")
@@ -744,7 +771,7 @@ note the `run_phase` `operation` param, that R11 stays open/separate, and the ju
 
 ## Self-review
 
-**Spec coverage:** single LLM judge, no deterministic layer (T3 + T4 retire `phase_validator`) ✓ · prompt-derived via `get_prompt` (T3 `judge`) ✓ · judge sees generator's exact inputs — contract + lesson_context + declared prior_outputs + output (T3 + T4 pass `prior_outputs`/`lesson_context`) ✓ · tier-up, non-claude designates, no-self (T1) ✓ · single-call cite-then-refute (T3 `_INSTRUCTIONS`) ✓ · retry-then-warn, non-blocking, extract-exempt (T4 `if phase_name != "extract"`) ✓ · graceful degradation (T3 `judge-unavailable`) ✓ · `operation="judge:<phase>"` attribution (T2 + T3) ✓ · `list[str]` storage (T3 `_serialize_failures` → existing `validation_warnings`) ✓ · placeholder-compliant / invented-URL-violation rule (T3 `_INSTRUCTIONS`) ✓ · live resilience integration: key off `produced_by`, regen via `_run_with_failover` (T4) ✓ · R11 untouched (T4 keys off in-memory producer) ✓ · neutral `phase_name` avoids `_SVG_PHASES`/`case-based-preview` (T3) ✓.
+**Spec coverage:** single LLM judge, no deterministic layer (T3 + T4 retire `phase_validator`) ✓ · prompt-derived via `get_prompt` (T3 `judge`) ✓ · judge sees generator's exact inputs — contract + lesson_context + declared prior_outputs + output (T3 + T4 pass `prior_outputs`/`lesson_context`) ✓ · tier-up, non-claude designates, no-self (T1) ✓ · single-call cite-then-refute (T3 `_INSTRUCTIONS`) ✓ · retry-then-warn, non-blocking, extract-exempt (T4 `if phase_name != "extract"`) ✓ · graceful degradation (T3 `judge-unavailable`) ✓ · **regen failure guarded** — keeps the original output + warnings, never fails the job (T4 Step 5 try/except, asserted by the wiring test) ✓ · `operation="judge:<phase>"` attribution (T2 + T3) ✓ · `list[str]` storage (T3 `_serialize_failures` → existing `validation_warnings`) ✓ · placeholder-compliant / invented-URL-violation rule (T3 `_INSTRUCTIONS`) ✓ · live resilience integration: key off `produced_by`, regen via `_run_with_failover` (T4) ✓ · R11 untouched (T4 keys off in-memory producer) ✓ · neutral `phase_name` avoids `_SVG_PHASES`/`case-based-preview` (T3) ✓.
 
 **Placeholder scan:** no TBD/TODO; every code step shows complete code; the LLM-behaviour steps (T3 `judge`, T5) are verified by pure-helper tests + `inspect.getsource` + the real CLI smoke (DB-free harness, per CLAUDE.md).
 
