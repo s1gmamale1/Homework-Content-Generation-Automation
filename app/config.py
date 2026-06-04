@@ -50,6 +50,27 @@ class Settings(BaseSettings):
     agent_max_concurrency: int = 8  # process-wide cap on concurrent CLI subprocesses
     gemini_max_concurrency: int = 8  # DEPRECATED — kept for backwards-compat with agent.py
 
+    # ─── Resilience: job resume + provider failover ───────────────────────
+    # Worker refreshes claimed_at every heartbeat_seconds while a job runs, so a
+    # live long job's claim never looks stale. MUST be << reclaim_stale_seconds.
+    heartbeat_seconds: int = 30
+    # Lease TTL: a `running` job whose claimed_at is older than this is treated
+    # as orphaned (dead worker) → reclaimed to `pending`. Safe BELOW job_timeout
+    # ONLY because the heartbeat keeps live jobs fresh (spec §3).
+    reclaim_stale_seconds: int = 120
+    # Hard timeout for ONE failover attempt (one provider try), so a hung CLI
+    # (e.g. opencode stdin hang) cannot stall a phase until job_timeout. MUST be
+    # well above the slowest real phase: CBP alone is ~274s (see job_timeout
+    # comment) and run_phase_prompt may internally retry, so 300s would kill a
+    # legitimately-slow CBP → asyncio.TimeoutError → misclassified failover off
+    # claude. 600s clears that with headroom while still bounding a true hang.
+    per_attempt_timeout_seconds: int = 600
+    # Fallback provider order for per-phase failover. claude is intentionally
+    # ABSENT — reserved for the user's Claude Max allocation (provider isolation).
+    failover_provider_order: list[str] = Field(
+        default_factory=lambda: ["codex", "gemini", "kimi", "opencode"]
+    )
+
     # ─── Filesystem ───────────────────────────────────────────────────────
     # Where PDFs are persisted on disk.
     var_dir: str = "var"  # relative to project root; PDFs persist at <var_dir>/books/<book_id>/source.pdf
