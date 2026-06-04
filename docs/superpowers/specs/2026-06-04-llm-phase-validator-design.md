@@ -81,11 +81,18 @@ rubric, and the judge reads them.
 - **`app/services/phase_judge.py` (new)** — `async judge(*, subject, phase_name, output_md,
   lesson_context, prior_outputs, gen_provider, gen_model) -> Verdict`. Resolves the judge
   model, builds the meta-prompt, calls the CLI through the existing `agent` plumbing, parses a
-  structured `Verdict` (`model_validate_json` + one reparse retry, mirroring `run_phase`).
+  structured `Verdict` (`model_validate_json` + one reparse retry — `run_phase` already
+  implements exactly this schema-mode reparse at `agent.py:742-779`, so the judge can reuse
+  `run_phase(schema=Verdict)` rather than re-implement it; see §3 for the prompt-shape caveats
+  that come with that reuse).
 - **`app/services/phase_validator.py` (retire the rule engine)** — delete `_non_empty` /
-  `_has_top_heading` / `_visuals_resolve` / `RULES` / `validate`. Keep nothing but what the
-  judge path needs; the `phase_outputs.validation_warnings` column and the console strip stay
-  as the verdict's storage + display.
+  `_has_top_heading` / `_visuals_resolve` / `RULES` / `validate`, and replace the
+  `phase_validator.validate(...)` call at `pipeline.py:570`. Keep nothing but what the judge
+  path needs; the `phase_outputs.validation_warnings` column and the `preview.tsx` console
+  strip stay as the verdict's storage + display. **Retire the orphaned rule tests**
+  `tests/services/test_phase_validator.py` (they assert on `pv.validate(...)`); the
+  column/plumbing test `tests/repositories/test_phase_validation_warnings.py` stays — the
+  column is unchanged.
 
 ### 2. Judge selection — tier-up map (coarse tiers, jump one)
 
@@ -130,6 +137,15 @@ citation rather than guessed:
   flashcards markdown for memory-check / games / boss-arena), keeping tokens bounded to deps,
 - the phase `output_md` under review.
 
+**Prompt-shape caveat (if reusing `run_phase`).** `run_phase` builds its prompt via
+`_build_master_prompt`, which appends phase-shaped extras keyed off `phase_name`: the
+universal `_SVG_RULES` when `phase_name in _SVG_PHASES` (`agent.py:525`), the provider
+visual-policy suffix, and the `--- LESSON CONTEXT ---` framing. Those are noise for a judge.
+The judge must therefore either (a) pass a **neutral `phase_name`** (not in `_SVG_PHASES`) and
+suppress the provider suffix, assembling the contract/context itself, or (b) use a **dedicated
+judge spawn** (`_spawn` + `parse_envelope`) that builds only the meta-prompt. The plan picks
+one; the requirement is that the judge sees the contract + inputs and nothing phase-decorative.
+
 **Meta-prompt instructs a single call to do both passes:**
 1. List every requirement stated in the contract that the output **violates** — each candidate
    failure MUST cite the **exact offending text** from the output (or the exact missing element,
@@ -167,6 +183,12 @@ generate output_md  (existing agent.run_phase_prompt path)
   warnings (richer than today). Validation never *fails* a job.
 - **Bounded cost.** Success path: +1 judge call per phase. Failure path: +1 regen +1 re-judge,
   exactly once (`judge_max_retries = 1`).
+- **Storage shape — `list[str]`, not dicts.** The surviving `failures` are flattened to
+  strings (`f"{requirement} — {evidence}"`) before being written to `validation_warnings`. The
+  column feeds the frontend, which types it `validation_warnings: string[] | null`
+  (`web/src/lib/types.ts:62`) and renders each entry directly (`preview.tsx:108` `.map`);
+  writing `Failure` dicts would break that strip ("Objects are not valid as a React child").
+  The structured `Verdict` lives only in-memory for the retry decision.
 - **`extract` exempt** (same carve-out as today's validator: `phase_name != "extract"`).
 - **Graceful degradation.** If the judge CLI call itself errors (provider down / quota /
   unparseable after reparse), keep the generated output, mark the phase `done`, and record a
@@ -177,18 +199,57 @@ generate output_md  (existing agent.run_phase_prompt path)
 
 ### 5. Attribution & usage
 
-- Each judge call goes through the normal `agent` spawn, so it writes one `agent_usages` row.
-  Operation label `judge:<phase_name>`, with the judge's own provider/model — so the
-  token/usage dashboards stay honest and the cost of validation is visible.
-- The producing phase row keeps recording its **generator** model/provider (and, once the
-  resilience column lands, its generator provider). The judge model is not the phase's provider.
+- Each judge call writes one `agent_usages` row labelled `operation="judge:<phase_name>"`,
+  with the judge's own provider/model — so the dashboards stay honest and the cost of
+  validation is visible. **This is NOT free as written:** `run_phase` hardcodes
+  `operation="phase.run"` at all six `_record_usage` call sites (`agent.py:642/659/683/714/748/783`)
+  and has no `operation` parameter. The plan must add an `operation` arg to `run_phase` and
+  thread it to those sites — small, because `_record_usage` already accepts `operation=`
+  (`agent.py:421`). (A dedicated judge spawn would set the label directly and avoid touching
+  `run_phase`; either path is acceptable, but one of them is required.)
+- **Token accounting.** Judge tokens are recorded only on their own `agent_usages` row — never
+  folded into the phase's returned `tin/tout`. On a regeneration, the phase's returned counts
+  reflect the **regenerated** output (the last generation that was stored).
+- The producing phase row keeps recording its **generator** model/provider. The judge model is
+  not the phase's provider.
+
+### 6. Integration with the job-resilience effort (the seam that must be explicit)
+
+This effort and the **active** job-resilience effort both edit the **same** non-extract branch
+of `_execute_phase` (`pipeline.py:542-558`). Resilience Task 6 wraps the generation call in
+`_run_with_failover(...)` and returns a `produced_by` (the provider that actually produced the
+phase after any failover); this effort inserts judge → regen → re-judge around that same call,
+and the regen re-invokes generation. "No coupling" in Scope-OUT is true of the failover
+*driver* and job `attempts`, but the two are operationally adjacent and must compose.
+
+**Decisions (proposed — to ratify with the resilience effort):**
+- **Key the judge off the *actual producer*, not the requested provider.** `gen_provider /
+  gen_model` passed to `phase_judge.judge` and `model_tiers.judge_model_for` = `produced_by`
+  (the model that generated the output under review) when a failover occurred, else the
+  job's requested provider/model. Rationale: "judge ≥ generator" only means something relative
+  to the model that *actually* wrote the output.
+- **Regen on the producer, with failover still available.** The validator's single regen runs
+  through the same generation path as the original — i.e. if resilience is present, the regen
+  calls `_run_with_failover` again (it may itself fail over), and its `produced_by` becomes the
+  new attribution. Re-pinning the regen to the *requested* provider risks re-hitting the
+  provider that already failed.
+- **Order of landing.** Whichever effort lands second integrates at this branch. If resilience
+  lands first: generation already returns `(output_md, tin, tout, produced_by)`; the validator
+  consumes `produced_by`. If the validator lands first: generation is a plain
+  `run_phase_prompt` on the job provider/model and `produced_by == requested`; resilience later
+  swaps the inner call for `_run_with_failover` and feeds its `produced_by` into the judge/regen.
+- **Attempt budgets stay separate.** The judge's one regen does not consume job-level `attempts`
+  (whole-job retry guard) and the failover same-provider retries do not consume the judge's
+  regen budget. They are independent loops at different scopes.
 
 ## Data flow
 
-1. `_execute_phase` generates `output_md` on the job's provider/model (unchanged).
-2. `phase_judge.judge(...)` resolves the judge model via `model_tiers`, assembles
-   `get_prompt + lesson_context + filtered prior_outputs + output_md`, runs the single-call
-   self-verifying judge, returns a `Verdict`.
+1. `_execute_phase` generates `output_md` on the job's provider/model (unchanged; under
+   resilience this is `_run_with_failover`, yielding `produced_by`).
+2. `phase_judge.judge(...)` resolves the judge model via `model_tiers` (keyed off the
+   **actual producer** — `produced_by` under resilience, else the requested provider/model),
+   assembles `get_prompt + lesson_context + filtered prior_outputs + output_md`, runs the
+   single-call self-verifying judge, returns a `Verdict`.
 3. `passed` → write `done`. Failures → augment the prompt with the cited failures, regenerate
    once, re-judge.
 4. Surviving failures (if any) are stored in `validation_warnings`; the phase is marked `done`
@@ -201,10 +262,15 @@ generate output_md  (existing agent.run_phase_prompt path)
     designate; claude is never a judge; a top-tier generator gets a peer; judge ≠ generator
     (alternate kicks in when they'd collide).
   - meta-prompt builder — includes the resolved contract, lesson_context, and the declared
-    prior outputs; instructs the cite-then-refute protocol.
+    prior outputs; instructs the cite-then-refute protocol; and is free of phase-decorative
+    noise (no `_SVG_RULES`, no provider visual-policy suffix).
   - `Verdict` parsing — valid JSON parses; malformed triggers exactly one reparse; still-bad
     degrades to "judge-unavailable".
+  - failures serialize to `list[str]` (`"requirement — evidence"`) before storage.
   - degradation branch — a raising judge yields a `done` phase + one warning, never raises.
+- **Retire** the orphaned rule tests in `tests/services/test_phase_validator.py` (they assert
+  `pv.validate(...)`, which no longer exists). The repository column test
+  `tests/repositories/test_phase_validation_warnings.py` is unaffected and stays.
 - **Real CLI smoke (acceptance gate, per CLAUDE.md — generation-affecting behaviour proven by a
   real run):**
   - (a) a deliberately broken output (e.g. a CBP with 4 checkpoints) → judge returns a
