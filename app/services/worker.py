@@ -241,19 +241,22 @@ class Worker:
             )
 
     async def _sweep_stuck_jobs(self) -> None:
-        """Reclaim any `running` jobs whose claim is older than 2x the job
-        timeout. Cheap query, runs at startup + every sweep_interval."""
+        """Reclaim any `running` jobs whose claim is older than the lease
+        window (`settings.reclaim_stale_seconds`). With heartbeats keeping
+        live jobs fresh, this window can safely be shorter than the old 2x
+        job-timeout heuristic. Cheap query, runs at startup + every
+        sweep_interval."""
         try:
             async with SessionLocal() as session:
                 async with session.begin():
                     n = await jobs_repo.reclaim_stuck_jobs(
                         session,
-                        stale_after_seconds=self.job_timeout * 2,
+                        stale_after_seconds=settings.reclaim_stale_seconds,
                     )
             if n > 0:
                 logger.warning(
                     f"worker {self.id} reclaimed {n} stuck job(s) "
-                    f"(stale > {self.job_timeout * 2}s)"
+                    f"(stale > {settings.reclaim_stale_seconds}s)"
                 )
         except Exception:
             logger.exception(f"worker {self.id} stuck-job sweep failed")

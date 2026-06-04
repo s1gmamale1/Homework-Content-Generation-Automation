@@ -15,6 +15,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.log import configure as configure_logging
 from app.repositories import books as books_repo
+from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.services.prompts import load_all as load_prompts
 from app.services.worker import Worker, build_worker_from_settings
@@ -44,6 +45,13 @@ async def lifespan(app: FastAPI):
                 completed_at=datetime.now(timezone.utc),
                 error_message="orphaned: worker restarted",
             )
+        # Single-host / embedded assumption (spec §3a): no workers are alive at
+        # boot, so every `running` row is genuinely orphaned → reset all to
+        # `pending`. NOT safe for multi-pod (a restarting pod would reset a live
+        # peer's heartbeated job); for that, use settings.reclaim_stale_seconds.
+        n = await jobs_repo.reclaim_stuck_jobs(session, stale_after_seconds=0)
+        if n:
+            log.info(f"Startup: reclaimed {n} orphaned running job(s) -> pending")
         await session.commit()
     log.info("Orphan sweep complete (books + phase_outputs)")
 
