@@ -19,6 +19,9 @@ class PhaseOutput(Base, UUIDPK):
     phase_order: Mapped[int] = mapped_column(Integer, nullable=False)
     prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    # The provider that ACTUALLY produced this phase (may differ from the job's
+    # requested provider after failover). Nullable; job badge = requested.
+    provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     output_md: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tokens_input: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     tokens_output: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

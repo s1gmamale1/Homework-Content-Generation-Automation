@@ -70,6 +70,7 @@ async def create_or_reset(
         existing.tokens_output = None
         existing.error_message = None
         existing.validation_warnings = None
+        existing.provider = None
         existing.started_at = None
         existing.completed_at = None
         await session.flush()
@@ -106,6 +107,7 @@ async def set_status(
     tokens_output: Optional[int] = None,
     error_message: Optional[str] = None,
     validation_warnings: Optional[list] = None,
+    provider: Optional[str] = None,
 ) -> None:
     po = await session.get(PhaseOutput, phase_output_id)
     if po is None:
@@ -125,6 +127,8 @@ async def set_status(
         po.error_message = error_message
     if validation_warnings is not None:
         po.validation_warnings = validation_warnings
+    if provider is not None:
+        po.provider = provider
 
 
 async def list_running_for_sweep(session: AsyncSession) -> list[PhaseOutput]:
