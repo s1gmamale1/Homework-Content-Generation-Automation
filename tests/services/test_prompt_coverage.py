@@ -103,6 +103,15 @@ def test_games_clean_and_compact():
         assert "checkpoint 3" not in rendered.lower(), f"{phase} ballooned into a CBP case"
 
 
+def test_reflection_instructs_top_heading_and_markdown_only():
+    body = (pathlib.Path(__file__).resolve().parents[2]
+            / "prompts" / "_general" / "reflection.md").read_text(encoding="utf-8")
+    low = body.lower()
+    assert "# " in body and ("top-level" in low or "begin your output with a single `#" in low)
+    assert "markdown only" in low, "missing explicit markdown-only instruction"
+    assert "omitting any section" in low, "missing all-sections gate"
+
+
 @pytest.mark.parametrize("subject,phase", _PAIRS)
 def test_every_flow_phase_has_a_general_prompt(subject, phase):
     body = get_prompt(subject, phase)

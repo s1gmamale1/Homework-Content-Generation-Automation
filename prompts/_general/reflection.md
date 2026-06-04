@@ -11,8 +11,13 @@ fills in.
 
 ## Output
 
-**Required: all sections below in full, totaling 150–250 words.** Each section has its
-own `##` heading and its own content. Omitting any section is a failed output.
+Respond in **Markdown only** — no JSON, no code fences around the whole output.
+
+Begin your output with a single top-level `# ` reflection title, then the five `##`
+sections below.
+
+**Required: all five sections below in full, totaling 150–250 words.** Each section has
+its own `##` heading and its own content. **Omitting any section is a failed output.**
 
 ## 1. Summary (3 sentences)
 
