@@ -23,6 +23,7 @@ from app.repositories import phase_outputs as phase_repo
 from app.services.notion import blocks
 from app.services.notion.client import NotionClientWrapper
 from app.services.notion.page_creator import find_or_create
+from app.services.notion.lesson_match import match_lesson, CONTAINER_TITLE
 
 log = logging.getLogger("notion.archive")
 
@@ -130,7 +131,13 @@ def _push_to_notion(
     memory-check inline), Gamified Practices (container of game sub-pages), Boss
     Arena, Reflection. Idempotent: a page that already has content is skipped.
     Returns the Homework page id."""
-    lesson_id, _ = find_or_create(client, subject_page_id, lesson_title)
+    human_pages = client.get_child_pages(subject_page_id)
+    hit = match_lesson(lesson_title, human_pages)
+    if hit is not None:
+        lesson_id = hit
+    else:
+        container_id, _ = find_or_create(client, subject_page_id, CONTAINER_TITLE)
+        lesson_id, _ = find_or_create(client, container_id, lesson_title)
     homework_id, _ = find_or_create(client, lesson_id, "Homework")
 
     def _write_leaf(parent_id: str, title: str, present: list[tuple[str, str]]) -> None:
