@@ -14,10 +14,10 @@ Live (job `8d7c31f9`, history): the gemini CLI could no longer read `var/books/�
 
 ## Current state (verified against code)
 
-- **`extract_lesson_context` (`agent.py:1260-1304`)** attaches the **full PDF** (or a page-subset only for >20MB via `_should_subset_for_extract`/`_subset_pdf`) and lets the model locate the lesson by title + printed range. The comment at `1271-1277` does this *deliberately* to dodge R2: *"otherwise attach the full book and let the prompt name the printed page range (no physical-page-offset risk)."* The model reads the file via the gemini CLI's `read_file` tool — **this is the read that gitignore now blocks.**
+- **`extract_lesson_context` (def `agent.py:1242`)** attaches the **full PDF** (or a page-subset only for >20MB via `_should_subset_for_extract`/`_subset_pdf`) and lets the model locate the lesson by title + printed range. The comment at `1271-1277` does this *deliberately* to dodge R2: *"otherwise attach the full book and let the prompt name the printed page range (no physical-page-offset risk)."* The model reads the file via the gemini CLI's `read_file` tool — **this is the read that gitignore now blocks.**
 - **R2 (open in ROADMAP):** `_subset_pdf` slices `page_start-1..page_end` (printed numbers) as physical indices, with no front-matter offset correction → wrong pages for any offset book. **We cannot trust `page_start`/`page_end` as physical.**
 - **>20MB / 43% (worklog 0033):** gemini rejects >20MB; ~20 of 47 books exceed it (one 497MB scanned, one 93.6MB). Large-book generation is the planned **subset-TOC/auto-shrink** effort.
-- **Helpers exist:** `_read_pdf_pages` (`agent.py:864`), `_decode_glyph_text` (`840`), `_run_with_failover` (`pipeline.py`), `_subset_pdf`/`_should_subset_for_extract`. Cross-job extract cache key `prompt_hash = "builtin:extract:v1"` (`pipeline.py:881`).
+- **Helpers exist:** `_read_pdf_pages` (`agent.py:863`), `_decode_glyph_text` (`839`), `_run_with_failover` (`pipeline.py`), `_subset_pdf`/`_should_subset_for_extract`. Cross-job extract cache key `prompt_hash = "builtin:extract:v1"` (`pipeline.py:532`, single occurrence inside `_execute_phase`).
 - **0033 did NOT touch extract/TOC/generate** — only added a PDF source + an `ingest_pdf` refactor. PDF path unchanged: `var/books/<id>/source.pdf`.
 
 ## Design
@@ -57,18 +57,24 @@ Extract failure modes are simple and detectable without a model, so a determinis
 
 ### Failover
 
-- Reuse `_run_with_failover(requested_provider=settings.extract_provider, model=settings.extract_model, run_fn=…)`. Chain falls over `codex → gemini → kimi → opencode`. **claude stays excluded** (already absent from `failover_provider_order`) — correct hygiene; note this is *not* fixing a live budget leak (extract already never touches claude).
-- Gate B lives **inside** `run_fn`, so a junk summary RAISES and the driver fails over. To make a refusal fail over **immediately** (skip the generic `"hard" → 1 same-provider retry`), `run_fn` raises a **typed `ExtractRefusal`** error and the driver/classifier treats it as immediate-failover (0 same-provider retries).
+- Reuse `_run_with_failover(requested_provider=settings.extract_provider, model=settings.extract_model, run_fn=…)`. The actual chain is `gemini (requested → deduped to front) → codex → kimi → opencode` (NOT the raw `failover_provider_order` order `[codex, gemini, kimi, opencode]`; `_failover_chain` puts the requested provider first). **claude stays excluded** (already absent from `failover_provider_order`) — correct hygiene; note this is *not* fixing a live budget leak (extract already never touches claude).
+- Gate B lives **inside** `run_fn`, so a junk summary RAISES and the driver fails over. To make a refusal fail over **immediately** (skip the generic `"hard" → 1 same-provider retry`), `run_fn` raises a **typed `ExtractRefusal`** error and the driver/classifier treats it as immediate-failover (0 same-provider retries) — the plan picks the classifier class (a dedicated budget-0 class, or reuse the existing `"wall"`).
+- **Per-attempt visibility:** each failover attempt should write an `agent_usages` row so the switch is auditable — this inherits **R11**'s gap (a timed-out/refused attempt may not log a row). Cross-reference R11; don't re-solve it here.
 
 ### Failure handling (the core fix — never silent garbage)
 
-- **Terminal** (Size gate, Gate A): unfixable input. Mark the job `failed` with a clear reason ("oversize — needs subset" / "unreadable — no text layer") and **do NOT consume `max_attempts`** (retrying the same input can't help). Surface as a non-retry "bad input," not a transient failure.
-- **Recoverable** (Gate B exhaustion): every provider refused/failed — mark `failed`, **`/retry`-eligible** (may be transient provider quota/capacity).
-- Either path: the extract **never proceeds downstream with bad output.**
+**Verified flow (no new retry mechanism):** extract is a head phase. On any failure, `_execute_one_phase` marks the job `failed` + raises → `pipeline.run`'s head loop catches it and `return`s cleanly (`pipeline.py:161-164`) → no exception reaches the worker → `mark_failed_with_retry` is **never** called. So extract failures **already neither consume `max_attempts` nor auto-retry** — the job sits `failed` until a manual `/retry` (which works on any `failed` job). There is no existing mechanism separating "terminal" from "recoverable," and this spec does **not** invent one.
+
+The distinction is therefore **message-only** (the real value, zero new code) — set a clear, distinct failure REASON:
+- Size gate → `"book too large for whole-text extract — needs subset-TOC/shrink"`.
+- Gate A → `"unreadable PDF (no text layer)"`.
+- Gate B exhaustion → `"all extract providers refused/failed"`.
+
+Either path, the extract **never proceeds downstream with bad output** — that's the whole point. (Making Gate-A/size jobs genuinely *un-retryable* — e.g. `/retry` rejecting jobs whose failure reason is terminal — would be a *new* mechanism and is **out of scope** here.)
 
 ### Cache
 
-- Bump the extract cache key `prompt_hash` from `"builtin:extract:v1"` → `"builtin:extract:v2"` (`pipeline.py:881`) so pre-rework cached extracts are not silently reused for new jobs.
+- Bump the extract cache key `prompt_hash` from `"builtin:extract:v1"` → `"builtin:extract:v2"` (**`pipeline.py:532`**, inside `_execute_phase`) so pre-rework cached extracts are not silently reused for new jobs.
 
 ## Components touched
 
@@ -99,4 +105,5 @@ Extract failure modes are simple and detectable without a model, so a determinis
 - **Title-locate** relies on the model finding the lesson title within the whole-book text — robust for normal books, and the size gate bounds the input. A title that recurs many times could in theory confuse the model; the printed-page **hint** mitigates this. Low risk.
 - **Scanned PDFs** (no text layer) are **terminal** here by design — they need native image read / OCR, which belongs to the subset-TOC/shrink effort, not this one.
 - **Refusal heuristic (Gate B)** is a tuned blocklist — start anchored and tight; treat false-failovers/misses as tuning, not redesign.
-- **Token budget** (`extract_max_text_tokens`) value to be set against gemini-flash's context and real book sizes during the plan (a conservative default that comfortably fits a normal <20MB textbook's text).
+- **Whole-book cost & coverage (state plainly):** we inject the whole book's text **per lesson** (×N lessons) — bounded by the size gate and amortised by the cross-job extract cache, tolerable on cheap gemini-flash but a real cost. And by choosing whole-book over a page-band (for full R2-immunity), **any book whose text exceeds `extract_max_text_tokens` terminal-fails at extract by design.** Since ~43% of the corpus is already >20MB, a real slice becomes non-extractable here until the subset-TOC/shrink effort lands. This is an accepted, explicit trade-off (correctness over coverage), not an oversight.
+- **Token budget** (`extract_max_text_tokens`) value to be set against gemini-flash's context and real book sizes during the plan — a conservative default that comfortably fits a normal <20MB textbook's text, biased so small books always pass and only genuinely-huge ones fail.
