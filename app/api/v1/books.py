@@ -41,18 +41,20 @@ router = APIRouter(prefix="/books", tags=["books"])
 _TOC_TASKS: set = set()
 
 
-@router.post("", status_code=201)
-async def upload_book(
-    file: UploadFile = File(...),
-    subject: str = Form(...),
-    grade: str | None = Form(default=None),
-    session: AsyncSession = Depends(get_session),
-    user: dict = Depends(get_current_user),
+async def ingest_pdf(
+    session: AsyncSession,
+    *,
+    body: bytes,
+    subject: str,
+    grade: str | None,
+    filename: str,
 ) -> BookOut:
+    """Shared book-creation path for both upload and Notion-fetch. Mirrors the
+    original inline upload logic EXACTLY, including its two return shapes:
+    dedup hit -> _book_out_with_toc; new book -> plain BookOut."""
     if subject not in SUPPORTED_SUBJECTS:
         raise HTTPException(400, f"unknown subject; allowed: {SUPPORTED_SUBJECTS}")
 
-    body = await file.read()
     if len(body) > settings.max_file_mb * 1024 * 1024:
         raise HTTPException(413, f"file too large (>{settings.max_file_mb} MB)")
     if len(body) == 0:
@@ -68,7 +70,7 @@ async def upload_book(
         session,
         subject=subject,
         grade=grade,
-        original_filename=file.filename or "book.pdf",
+        original_filename=filename,
         content_sha256=sha,
         file_size_bytes=len(body),
         status="uploading",
@@ -88,6 +90,24 @@ async def upload_book(
     task.add_done_callback(_TOC_TASKS.discard)
 
     return BookOut.model_validate(book)
+
+
+@router.post("", status_code=201)
+async def upload_book(
+    file: UploadFile = File(...),
+    subject: str = Form(...),
+    grade: str | None = Form(default=None),
+    session: AsyncSession = Depends(get_session),
+    user: dict = Depends(get_current_user),
+) -> BookOut:
+    body = await file.read()
+    return await ingest_pdf(
+        session,
+        body=body,
+        subject=subject,
+        grade=grade,
+        filename=file.filename or "book.pdf",
+    )
 
 
 @router.get("")
