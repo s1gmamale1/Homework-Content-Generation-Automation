@@ -31,3 +31,9 @@ def test_asyncio_timeout_message_is_empty_falls_to_hard():
     # before it ever reaches the classifier (immediate failover). This test pins the
     # fallthrough so the interaction is a conscious choice, not an accident.
     assert fc.classify(asyncio.TimeoutError()) == "hard"
+
+
+def test_extract_refusal_is_immediate_failover():
+    from app.services.failure_classifier import ExtractRefusal, classify
+    # ExtractRefusal must classify as "wall" → budget 0 → no same-provider retry.
+    assert classify(ExtractRefusal("Gate B: summary too short")) == "wall"

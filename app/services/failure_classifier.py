@@ -10,6 +10,13 @@ anything unrecognized falls to `hard`, which the failover driver treats as
 
 from __future__ import annotations
 
+
+class ExtractRefusal(Exception):
+    """A produced extract summary failed deterministic Gate B (refusal / too
+    short / junk). Classified as a wall → immediate provider failover (0
+    same-provider retries), never a same-provider retry."""
+
+
 # Checked FIRST. NOTE: 'not your usage limit' must be matched here before the
 # 'usage limit' wall substring below, or a transient server-shed is miscaught.
 _TRANSIENT = (
@@ -34,6 +41,8 @@ _WALL = (
 
 def classify(error: "str | BaseException") -> str:
     """-> 'transient' | 'wall' | 'hard'. Transient is checked before wall."""
+    if isinstance(error, ExtractRefusal):
+        return "wall"
     msg = str(error).lower()
     if any(s in msg for s in _TRANSIENT):
         return "transient"
