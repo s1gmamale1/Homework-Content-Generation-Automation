@@ -80,6 +80,17 @@
 
 ---
 
+## R12 — Extract phase is a single point of failure (no failover · empty-provider crash · gitignore-blocked PDF read)
+
+- **Issue:** the pinned `extract` phase fails the WHOLE job on any hiccup, with zero fault tolerance. Three live gaps surfaced 2026-06-05 (history book `41aec815`, while tuning the extractor):
+  - (a) **empty `EXTRACT_PROVIDER=` crashes extract.** A blank `.env` value (e.g. trying to "remove" an override but leaving the key) makes pydantic read `""`, which **overrides** the `config.py` `gemini` default (`KEY=` ≠ deleting the line) → `extract_lesson_context(provider="")` → `get_provider("")` raises `KeyError "unknown provider ''"` → every attempt dies in ~30ms.
+  - (b) **no failover.** Extract is pinned single-provider (`settings.extract_provider/model`); content phases got `_run_with_failover` (§0031) but extract did NOT — so a CLI error / 429 / bad model string fails the whole job with no fallback.
+  - (c) **gemini CLI refuses the PDF when gitignored.** `var/` is in `.gitignore:22`; gemini-cli's `read_file` honors gitignore (`respectGitIgnore` default true) and the provider's `--include-directories` (`gemini.py:72`) does NOT override it → *"ignored by configured ignore patterns"*. Hit live on `gemini-3.1-pro-preview` (which ALSO 429-rate-limited — pro-preview quota). `gemini-2.5-flash` (the cheap pin) worked historically; **UNCONFIRMED** whether flash still works post-CLI-update — isolation test pending (reverted `.env` to flash; re-run to confirm).
+- **Root cause refs:** `app/services/agent.py:1260` `get_provider(provider)` (no empty guard); `config.py:85-86` extract pin defaults; `app/services/pipeline.py` `_execute_phase` extract branch (no `_run_with_failover`); `app/services/providers/gemini.py:72` `--include-directories`; `.gitignore:22` `var/`.
+- **Deliverable:** (a) treat empty `extract_provider`/`extract_model` as "use default" — `get_provider(provider or _DEFAULT)` or a config validator that maps blank→default (cheap, high-value footgun removal); (b) consider an extract fallback provider so a transient extractor failure doesn't kill the job; (c) IF flash also hits the gitignore block → relocate PDFs out of `var/` (preferred) or gemini-cli `respectGitIgnore:false` (⚠ exposes `.env` secrets to the CLI — avoid). **Workaround in place:** `.env` = `gemini` / `gemini-2.5-flash`.
+
+---
+
 ## Shipped / Closed
 
 - **R2–R8 — ALL SHIPPED 2026-06-02 (Nggaev-v2).** One ordered backend fix pass (brainstorm→spec→plan→subagent-driven, each commit controller-verified). Suite 227→240 green. R2 size-gate extract subset (`40dab51`); R3 reflection conform (`576a529`); R4 game phase→mode Literal subclasses (`aedea9d`); R5 fail-fast validators incl. new required `JigsawPayload.solution` (`3e5053e`); R6 TOC task-ref + >20MB guard hoist + stats-from-registry (`f40366b`); R7 timeout 600→1800 (`bebf730`); R8 trim `_SVG_PHASES` (`e3988a1`). See [[MASTER_MEMORY]] §0022. The per-item Issue/Root-cause/Deliverable detail above is retained for reference. **Open follow-up:** frontend adds optional `solution` to the jigsaw TS type (forward-only).
