@@ -9,6 +9,9 @@
 
 > Audited against current code **2026-06-04** (post job-resilience [0031] + lesson-matching [0032]). Items that referenced now-deleted code (structured schemas, source-map, source-fidelity) were removed as moot — see **Done / promoted**. Worked-up items live in [ROADMAP.md](./ROADMAP.md): **R9** (Notion SVG/tables→escaped text), **R10** (broken-font PDF → near-empty TOC), **R11** (provider failover not legibly recorded). Larger planned work (WS5 full Uzbek contract; Notion **Phase 2 pull**) tracked in `next-steps-flow-v2` memory. NOTE: a few inline `pipeline.py:NNN` line-refs below predate the resilience resume code growing `run()` — treat them as approximate.
 
+- `fetch-1`: **Fetch From Notion >20MB ceiling hits ~43% of textbooks** (20/47 supported-subject books exceed 20MB; one grade-9 Jahon tarixi is 497MB). Today they're rejected with a clear message and no book row — but it's the top product gap. Deliverable: **subset-TOC** (extract just the picked lesson's pages, like R2's `_subset_pdf` but as a pre-extract shrink) or auto-downscale, so big books are still fetchable. Quantified live in worklog [0033].
+- `fetch-2`: Fetch From Notion takes the **first PDF in page order** when a subject page has multiple attachments (e.g. "Student book + workbook") — prefer the textbook (`darslik`) over the workbook (`ish daftari`). Low priority. (worklog [0033])
+
 ### Effort B — faithful Infra-spec prompt rewrite — ✅ SHIPPED (worklog [0030], 2026-06-04)
 
 > Done: **Option A** `{{FAMILY_RULES}}` token (family-of-4, not subject-of-7); CBP + Flashcards rewritten family-aware (**humanities CBP authored** — no source spec); light/compact/polish passes on the other 9 phases; all folded-in fixes (memory-check **≥2-of-3**, flashcards **in-prompt enum** since `FlashcardType` is deleted, reflection **`#` title**). Live-verified on real gemini history output (validator-clean, 0 dead-vocab). Full detail in worklog [0030]; spec `0dbb34a`, plan `61dc6c6`.
