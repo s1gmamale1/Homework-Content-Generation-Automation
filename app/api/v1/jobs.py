@@ -21,6 +21,7 @@ from app.schemas import GenerateRequest, JobOut, PhaseOut
 from app.services import events_bus
 from app.services.agent_models import MODEL_MANIFEST, is_valid
 from app.services.providers import PROVIDERS
+from app.services.worker import RUNNING_JOBS
 
 router = APIRouter(tags=["jobs"])
 
@@ -215,6 +216,35 @@ async def retry_job(
         raise HTTPException(404, "job not found")
     await session.commit()
     return await _job_out(session, job_id)
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    user: dict = Depends(get_current_user),
+) -> JobOut:
+    """Cancel a job. A queued job is cancelled atomically (never starts). A
+    running job is flagged `cancelling` and its in-process task (if this process
+    owns it) is cancelled immediately; otherwise the owning worker self-cancels
+    on its next heartbeat. Terminal jobs (done/failed/cancelled) -> 409."""
+    if await jobs_repo.cancel_if_pending(session, job_id):
+        await session.commit()
+        job = await jobs_repo.get(session, job_id)
+        return JobOut.model_validate(job)
+
+    if await jobs_repo.request_cancel(session, job_id):
+        await session.commit()
+        task = RUNNING_JOBS.get(job_id)
+        if task is not None:
+            task.cancel()  # same-process: instant
+        job = await jobs_repo.get(session, job_id)
+        return JobOut.model_validate(job)
+
+    job = await jobs_repo.get(session, job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    raise HTTPException(409, f"cannot cancel a job with status={job.status!r}")
 
 
 @router.get("/jobs/{job_id}/stream")
