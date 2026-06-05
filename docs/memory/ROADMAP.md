@@ -83,6 +83,8 @@
 
 ## R12 — Extract phase is a single point of failure (no failover · empty-provider crash · gitignore-blocked PDF read)
 
+> **STATUS 2026-06-05 (worklog [0035]):** (b) and (c) **RESOLVED** by the extract-robustness effort — extract now runs through `_run_with_failover` (claude still excluded) and reads the book TEXT locally via pypdf (no CLI file-read → the gitignore block can't bite; obsoletes the `respectGitIgnore:false` workaround). (a) is now **mitigated** (a blank-provider first attempt simply fails over) but the clean footgun-removal — blank→default config validator — is **still OPEN** and the only remaining R12 work. Live-confirmed: gemini-flash produced a real 1,544-char summary on `41aec815` via injected local text (not the 275-char refusal).
+
 - **Issue:** the pinned `extract` phase fails the WHOLE job on any hiccup, with zero fault tolerance. Three live gaps surfaced 2026-06-05 (history book `41aec815`, while tuning the extractor):
   - (a) **empty `EXTRACT_PROVIDER=` crashes extract.** A blank `.env` value (e.g. trying to "remove" an override but leaving the key) makes pydantic read `""`, which **overrides** the `config.py` `gemini` default (`KEY=` ≠ deleting the line) → `extract_lesson_context(provider="")` → `get_provider("")` raises `KeyError "unknown provider ''"` → every attempt dies in ~30ms.
   - (b) **no failover.** Extract is pinned single-provider (`settings.extract_provider/model`); content phases got `_run_with_failover` (§0031) but extract did NOT — so a CLI error / 429 / bad model string fails the whole job with no fallback.
