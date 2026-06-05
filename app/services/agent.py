@@ -45,6 +45,7 @@ from app.schemas import (
     ExtractedTOC,
 )
 from app.services.providers import Provider, get_provider
+from app.services.proc_tree import kill_tree
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -344,7 +345,7 @@ async def _spawn(
         try:
             stdout_b, stderr_b = await proc.communicate(prompt.encode("utf-8"))
         except asyncio.CancelledError:
-            proc.kill()
+            kill_tree(proc.pid)   # whole tree - provider CLIs spawn helpers
             try:
                 last_msg_path.unlink(missing_ok=True)
             except OSError:
