@@ -529,7 +529,7 @@ async def _execute_phase(
     source_map_digest: str = "",
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     if phase_name == "extract":
-        prompt_hash = "builtin:extract:v1"
+        prompt_hash = "builtin:extract:v2"
     else:
         prompt_hash = get_prompt_hash(subject, phase_name)
 
@@ -607,22 +607,38 @@ async def _execute_phase(
                 )
                 return cached_extract.output_md, 0, 0, prompt_hash, None
 
-            # Pin lesson.extract to the cheap-extractor model regardless of
-            # the job's per-phase provider/model: it's a high-input/low-value
-            # factual summary, paying smart-tier rates here saves nothing.
-            output_md, tin, tout = await agent.extract_lesson_context(
-                provider=settings.extract_provider,
+            # Pin lesson.extract to the cheap-extractor model regardless of the
+            # job's per-phase provider/model: high-input/low-value factual summary.
+            # Local whole-book text — no CLI file-read (dodges the gitignore block
+            # + the >20MB ceiling). The model locates the lesson by title (R2-immune).
+            book_text = await asyncio.to_thread(agent.read_whole_book_text, pdf_path)
+            if agent.extract_text_is_oversize(book_text):
+                raise RuntimeError(
+                    "lesson.extract: book too large for whole-text extract — "
+                    "needs subset-TOC/shrink"
+                )
+            gate_a = agent.validate_extract_text(book_text)
+            if gate_a is not None:
+                raise RuntimeError(f"lesson.extract: {gate_a}")
+
+            async def _extract_run(prov: str, mdl: Optional[str]):
+                out, tin_, tout_ = await agent.summarize_lesson(
+                    provider=prov, model=mdl, book_text=book_text,
+                    section_title=section["title"], section_number=section["number"],
+                    page_start=section["page_start"], page_end=section["page_end"],
+                    homework_job_id=job_id, phase_output_id=po_id,
+                )
+                reason = agent.validate_extract_summary(out)
+                if reason is not None:
+                    raise failure_classifier.ExtractRefusal(f"lesson.extract Gate B: {reason}")
+                return out, tin_, tout_
+
+            output_md, tin, tout, produced_by = await _run_with_failover(
+                requested_provider=settings.extract_provider,
                 model=settings.extract_model,
-                pdf_path=pdf_path,
-                section_title=section["title"],
-                section_number=section["number"],
-                page_start=section["page_start"],
-                page_end=section["page_end"],
-                homework_job_id=job_id,
-                phase_output_id=po_id,
+                run_fn=_extract_run,
             )
-            produced_by = settings.extract_provider
-            parsed_struct: Optional[Any] = None
+            parsed_struct = None
         else:
             base_phase_prompt = get_prompt(subject, phase_name)
 
