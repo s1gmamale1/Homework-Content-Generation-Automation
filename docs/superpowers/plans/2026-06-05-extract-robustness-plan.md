@@ -268,17 +268,25 @@ git commit -m "feat(extract): deterministic Gate A (raw text) + Gate B (summary)
 # tests/services/test_read_whole_book.py
 import inspect
 
-from app.services.agent import read_whole_book_text
+from app.config import settings
+from app.services.agent import read_whole_book_text, extract_text_is_oversize
 
 
 def test_read_whole_book_signature_and_budget_param():
     sig = inspect.signature(read_whole_book_text)
     assert "pdf_path" in sig.parameters
-    # honors the configured char budget (caps runaway-size books)
     src = inspect.getsource(read_whole_book_text)
+    # reads a MARGIN past the budget so overflow is detectable (the blocker fix)
+    assert "_EXTRACT_OVERSIZE_MARGIN" in src
     assert "extract_max_text_chars" in src
     assert "_read_pdf_pages" in src        # reuses the proven page reader
     assert "PdfReader" in src              # pypdf, not pdfplumber
+
+
+def test_extract_text_is_oversize():
+    # over-budget text → terminal "too large" path; normal text → proceeds
+    assert extract_text_is_oversize("x" * (settings.extract_max_text_chars + 1)) is True
+    assert extract_text_is_oversize("a normal short lesson text") is False
 ```
 
 > Scene-setting: the suite is DB-free and avoids heavy fixtures; a real multi-page PDF fixture is awkward cross-platform. Assert structurally (signature + source reuse of the proven helpers) like the repo's other `inspect`-based tests (`test_phase_validation_warnings.py`, `test_worker_heartbeat.py`). The real end-to-end read is proven by the Task 7 CLI smoke on an actual textbook.
@@ -291,21 +299,35 @@ Expected: FAIL — `ImportError: cannot import name 'read_whole_book_text'`.
 - [ ] **Step 3: Implement** (add after `_read_pdf_pages`; confirm `from pypdf import PdfReader` is imported at the top of `agent.py` — the TOC path already uses pypdf, so it is; if the import is local to a function, add a module-level one)
 
 ```python
+# Read a MARGIN past the gate threshold so an oversize book is DETECTABLE.
+# _read_pdf_pages truncates exactly to its budget, so reading only to the
+# threshold would make "len > threshold" never fire (the strip even drops 2
+# chars) → the size gate would silently miss every oversize book.
+_EXTRACT_OVERSIZE_MARGIN = 65_536
+
+
 def read_whole_book_text(pdf_path: Path) -> str:
     """Read the WHOLE book's text locally via pypdf (no CLI, no file-read by any
-    model → dodges the gitignore block and the >20MB CLI ceiling), capped at
-    settings.extract_max_text_chars. Glyph-decoded per page. Returns the joined
-    text (page-labeled chunks); '' if the PDF yields no text (scanned/broken)."""
+    model → dodges the gitignore block and the >20MB CLI ceiling). Reads up to
+    settings.extract_max_text_chars + _EXTRACT_OVERSIZE_MARGIN so the size gate
+    can SEE overflow. Glyph-decoded per page. '' if the PDF yields no text."""
     reader = PdfReader(str(pdf_path))
     n = len(reader.pages)
     chunks, _pages = _read_pdf_pages(
         reader,
         range(1, n + 1),
-        budget=settings.extract_max_text_chars,
+        budget=settings.extract_max_text_chars + _EXTRACT_OVERSIZE_MARGIN,
         already=set(),
         pdf_name=pdf_path.name,
     )
     return "".join(chunks).strip()
+
+
+def extract_text_is_oversize(text: str) -> bool:
+    """True if the local text exceeds the whole-text budget → terminal 'too
+    large, needs subset'. Pure (unit-testable); read_whole_book_text reads a
+    margin past the budget so this comparison is meaningful for huge books."""
+    return len((text or "").strip()) > settings.extract_max_text_chars
 ```
 
 - [ ] **Step 4: Run to verify it passes**
@@ -466,7 +488,7 @@ git commit -m "feat(extract): summarize_lesson — single-provider text-injected
             # Local whole-book text — no CLI file-read (dodges the gitignore block
             # + the >20MB ceiling). The model locates the lesson by title (R2-immune).
             book_text = await asyncio.to_thread(agent.read_whole_book_text, pdf_path)
-            if len(book_text) >= settings.extract_max_text_chars:
+            if agent.extract_text_is_oversize(book_text):
                 raise RuntimeError(
                     "lesson.extract: book too large for whole-text extract — "
                     "needs subset-TOC/shrink"
@@ -522,7 +544,7 @@ git commit -m "feat(pipeline): extract via local-text + Gate A + failover-summar
   - downstream phases get real content (the LLM judge stops emitting "Dars konteksti mavjud emas" rejections);
   - `agent_usages` shows `lesson.extract` succeeding on gemini with **no PDF attachment**.
 
-- [ ] **Step 3: Failure smokes** — (a) point at a scanned/no-text PDF (or temporarily lower `extract_min_text_chars`) → job `failed` with reason `"unreadable PDF (no text layer)"`, **not** a silent proceed. (b) Force a Gate-B refusal (e.g. a provider that returns junk) → confirm immediate failover to the next provider in `agent_usages`.
+- [ ] **Step 3: Failure smokes** — (a) point at a scanned/no-text PDF (or temporarily lower `extract_min_text_chars`) → job `failed` with reason `"unreadable PDF (no text layer)"`, **not** a silent proceed. (b) Force a Gate-B refusal (e.g. a provider that returns junk) → confirm immediate failover to the next provider in `agent_usages`. (c) **Oversize:** point at a book whose extracted text exceeds `extract_max_text_chars` (a >20MB text book, or temporarily set the budget very low) → job `failed` with reason `"book too large for whole-text extract — needs subset-TOC/shrink"` (the terminal oversize path the unit test in T4 covers), NOT a truncated silent proceed.
 
 - [ ] **Step 4: Worklog** — add a worklog entry to `docs/memory/MASTER_MEMORY.md` + an `INDEX.md` row; close/mark **R10** (subsumed by Gate A) and note **R12(c)** resolved (local-text bypasses the gitignore block). Flag the TOC-extraction follow-up (same gitignore risk, separate path) in WISHLIST.
 
