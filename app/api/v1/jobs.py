@@ -199,16 +199,20 @@ async def retry_job(
     it as a fresh attempt. The pipeline is idempotent against existing phase
     rows, so no cleanup is needed.
 
-    Refuses anything other than `failed` with 409 — there's no point retrying
-    a pending/running/done job.
+    Retry *resumes*: it reuses completed phase rows (worklog 0031 resume) and
+    re-runs only the rest. Use `force=true` on `/generate` for a clean
+    from-scratch redo.
+
+    Accepts `failed` or `cancelled`; refuses anything else with 409 — there's
+    no point retrying a pending/running/done job.
     """
     job = await jobs_repo.get(session, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
-    if job.status != "failed":
+    if job.status not in ("failed", "cancelled"):
         raise HTTPException(
             409,
-            f"only failed jobs can be retried; current status={job.status!r}",
+            f"only failed or cancelled jobs can be retried; current status={job.status!r}",
         )
     updated = await jobs_repo.reset_for_retry(session, job_id)
     if updated is None:
