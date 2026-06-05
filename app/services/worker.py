@@ -297,9 +297,14 @@ class Worker:
                         session,
                         stale_after_seconds=settings.reclaim_stale_seconds,
                     )
-            if n > 0:
+                    n_cancel = await jobs_repo.reclaim_stale_cancelling(
+                        session,
+                        stale_after_seconds=settings.reclaim_stale_seconds,
+                    )
+            if n > 0 or n_cancel > 0:
                 logger.warning(
                     f"worker {self.id} reclaimed {n} stuck job(s) "
+                    f"and finalized {n_cancel} stale-cancelling job(s) "
                     f"(stale > {settings.reclaim_stale_seconds}s)"
                 )
         except Exception:
