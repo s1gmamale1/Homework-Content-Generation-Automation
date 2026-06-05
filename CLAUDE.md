@@ -133,3 +133,25 @@ Token-based via `Authorization: Bearer <token>` (REST) or `?token=<>` query para
 - Don't bypass `phase_repo.create_or_reset` with raw `phase_repo.create` for retried jobs — you'll trip `uq_phase_output_job_order`.
 - Don't add per-call provider/model overrides anywhere except where they already exist (extract pin via `settings.extract_*`); keeping job-level provider stable across the rest of the pipeline is what makes `agent_usages` and the UI badge mean something.
 - Don't `unlink` the PDF after TOC extraction — every subsequent phase re-reads it.
+
+
+<!-- ruflo-memory-convention:start -->
+## Ruflo Memory Convention
+
+**Store memories** with namespace `"patterns"` (the canonical namespace):
+```
+memory_store(key, value, namespace: "patterns", upsert: true)
+```
+
+**Retrieve memories** with `memory_search_unified` — it sweeps ALL namespaces
+(`default`, `pattern`, `patterns`, `feedback`, …) and returns relevant results:
+```
+memory_search_unified(query)
+```
+
+> Do NOT use plain `memory_search` without a namespace — it defaults to the
+> near-empty `"default"` namespace and returns ~nothing useful.
+
+After completing a task, store a short verdict (what worked / what to apply next)
+to namespace `"patterns"` with key `verdict:<taskId>` or `verdict:<sessionId>`.
+<!-- ruflo-memory-convention:end -->
