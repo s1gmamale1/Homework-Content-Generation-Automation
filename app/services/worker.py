@@ -213,13 +213,40 @@ class Worker:
                 )
                 await self._mark_failed(job_id, f"timeout after {self.job_timeout}s")
             except asyncio.CancelledError:
-                # Worker is shutting down. Don't transition the job — the
-                # row stays `running`, the next worker reclaims it via the
-                # stuck-job sweep. Re-raise so the task ends cleanly.
-                logger.warning(
-                    f"worker {self.id} job={job_id} CANCELLED during shutdown"
-                )
-                raise
+                # Distinguish a user-cancel from a worker-shutdown cancel.
+                cancelling = False
+                try:
+                    async with SessionLocal() as session:
+                        cancelling = (await jobs_repo.get_status(session, job_id)) == "cancelling"
+                except Exception:
+                    logger.warning(f"worker {self.id} job={job_id} cancel status read failed")
+                if cancelling:
+                    # User cancel. Clear our own cancellation so a rare
+                    # double-cancel (idempotent endpoint hit twice, or shutdown
+                    # racing the user-cancel) can't re-fire a CancelledError at
+                    # the finalize awaits - `except Exception` can't catch it
+                    # (CancelledError is BaseException). Python 3.13 uncancel().
+                    # shield() is belt-and-suspenders; task 8's stale-cancelling
+                    # sweep is the ultimate backstop for anything that slips past.
+                    current = asyncio.current_task()
+                    if current is not None:
+                        current.uncancel()
+
+                    async def _finalize() -> None:
+                        async with SessionLocal() as session:
+                            await jobs_repo.mark_cancelled(session, job_id)
+                            await session.commit()
+
+                    try:
+                        await asyncio.shield(_finalize())
+                        logger.warning(f"worker {self.id} job={job_id} CANCELLED by user")
+                    except Exception:
+                        logger.exception(f"worker {self.id} job={job_id} cancel finalize failed")
+                    # do NOT re-raise: the job is finalized cancelled.
+                else:
+                    # Shutdown cancel - leave the row running for reclaim.
+                    logger.warning(f"worker {self.id} job={job_id} CANCELLED during shutdown")
+                    raise
             except Exception as exc:
                 logger.exception(
                     f"worker {self.id} job={job_id} CRASHED: {exc!r}"
