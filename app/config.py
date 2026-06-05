@@ -71,6 +71,17 @@ class Settings(BaseSettings):
         default_factory=lambda: ["codex", "gemini", "kimi", "opencode"]
     )
 
+    # ─── Phase validator (LLM judge) ──────────────────────────────────────
+    # The model that grades each generated phase against its prompt contract.
+    # Default claude-opus-4-7 — the strongest model, so it is >= every generator
+    # ("judge must be at least as capable as the generator" trivially holds).
+    # NOTE: this draws the shared claude Max pool on EVERY content phase
+    # (~8/job + regens) — the opposite of the earlier "spare claude" default.
+    # Set JUDGE_PROVIDER=gemini / JUDGE_MODEL=gemini-3.1-pro-preview to move
+    # judging off claude.
+    judge_provider: str = "claude"
+    judge_model: str = "claude-opus-4-7"
+
     # ─── Extract robustness (local-text + gates) ──────────────────────────
     # Whole-book local text is injected into the extract prompt; if the book's
     # text exceeds this it terminal-fails here by design (large-book generation
