@@ -102,7 +102,14 @@ class TextbookTooLarge(Exception):
 
 
 def download_textbook(client, subject_page_id: str) -> tuple[bytes, str]:
-    """Resolve the subject page's first PDF block, reject >20 MB, return (bytes, filename)."""
+    """Resolve the subject page's first PDF block, reject >20 MB, return (bytes, filename).
+
+    Notion attachment URLs are S3 links presigned for GET only -- a HEAD request
+    against them 403s (the signature covers the GET method, not HEAD). So we open
+    a STREAMING GET, read Content-Length from the response headers, and reject an
+    oversize file BEFORE consuming its body; a post-read length check covers the
+    rare case where the header is absent.
+    """
     block = _first_pdf_block(client.get_block_children(subject_page_id))
     if block is None:
         raise NoTextbook(subject_page_id)
@@ -110,12 +117,12 @@ def download_textbook(client, subject_page_id: str) -> tuple[bytes, str]:
     payload = block.get(block.get("type"), {})
     filename = (payload.get("name") or "textbook.pdf").strip() or "textbook.pdf"
     with httpx.Client(timeout=60.0) as http:
-        head = http.head(url, follow_redirects=True)
-        head.raise_for_status()
-        size = int(head.headers.get("Content-Length") or 0)
-        if size > _TOC_MAX_BYTES:
-            raise TextbookTooLarge(f"{size / 1048576:.1f} MB > 20 MB")
-        body = http.get(url, follow_redirects=True).content
+        with http.stream("GET", url, follow_redirects=True) as resp:
+            resp.raise_for_status()
+            size = int(resp.headers.get("Content-Length") or 0)
+            if size > _TOC_MAX_BYTES:
+                raise TextbookTooLarge(f"{size / 1048576:.1f} MB > 20 MB")
+            body = resp.read()
     if len(body) > _TOC_MAX_BYTES:        # fallback when Content-Length absent
         raise TextbookTooLarge(f"{len(body) / 1048576:.1f} MB > 20 MB")
     return body, filename

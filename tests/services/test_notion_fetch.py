@@ -111,15 +111,44 @@ def test_download_rejects_when_no_pdf_block():
         download_textbook(c, "sub")
 
 
-def test_download_rejects_oversize_via_content_length(monkeypatch):
-    c = _client({}, blocks_by_page={"sub": [{"type": "pdf", "pdf": {"file": {"url": "http://x/b.pdf"}}}]})
-    class _Resp:
-        headers = {"Content-Length": str(21 * 1024 * 1024)}
-        def raise_for_status(self): pass
+def _stub_http(stream_obj):
+    """Build a stubbed httpx.Client whose .stream(...) yields stream_obj."""
     class _HTTP:
         def __enter__(self): return self
         def __exit__(self, *a): pass
-        def head(self, url, follow_redirects=True): return _Resp()
-    monkeypatch.setattr("app.services.notion_fetch.httpx.Client", lambda **k: _HTTP())
+        def stream(self, method, url, follow_redirects=True): return stream_obj
+    return lambda **k: _HTTP()
+
+
+def test_download_rejects_oversize_via_content_length(monkeypatch):
+    # Notion S3 URLs are presigned for GET only (HEAD 403s), so the size check
+    # reads Content-Length off a streaming GET and rejects BEFORE reading the body.
+    c = _client({}, blocks_by_page={"sub": [{"type": "pdf", "pdf": {"file": {"url": "http://x/b.pdf"}}}]})
+
+    class _Stream:
+        headers = {"Content-Length": str(21 * 1024 * 1024)}
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def raise_for_status(self): pass
+        def read(self): raise AssertionError("must reject oversize before reading the body")
+
+    monkeypatch.setattr("app.services.notion_fetch.httpx.Client", _stub_http(_Stream()))
     with pytest.raises(TextbookTooLarge):
         download_textbook(c, "sub")
+
+
+def test_download_returns_bytes_via_streaming_get(monkeypatch):
+    c = _client({}, blocks_by_page={
+        "sub": [{"type": "file", "file": {"name": "tb.pdf", "file": {"url": "http://x/b.pdf"}}}]})
+
+    class _Stream:
+        headers = {"Content-Length": "9"}
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def raise_for_status(self): pass
+        def read(self): return b"%PDF-1.4 "
+
+    monkeypatch.setattr("app.services.notion_fetch.httpx.Client", _stub_http(_Stream()))
+    body, filename = download_textbook(c, "sub")
+    assert body == b"%PDF-1.4 "
+    assert filename == "tb.pdf"
