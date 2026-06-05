@@ -391,68 +391,80 @@ async def _run_content_phases_parallel(
 
     failed = False
 
-    while pending or in_flight:
-        # Launch every phase whose deps are now satisfied. Multiple phases can
-        # become ready in a single iteration (e.g., when an upstream completes
-        # and unblocks two siblings).
-        if not failed:
-            ready_now = sorted(p for p in pending if _ready(p))
-            for name in ready_now:
-                pending.remove(name)
-                in_flight[name] = asyncio.create_task(
-                    _execute_one_phase(
-                        job_id=job_id,
-                        resource_id=resource_id,
-                        log=log,
-                        phase_name=name,
-                        phase_order=phase_order_map[name],
-                        total_phases_hint=phase_order_offset + len(content_phases),
-                        subject=subject,
-                        provider=provider,
-                        model=model,
-                        pdf_path=pdf_path,
-                        file_phases=file_phases,
-                        section_data=section_data,
-                        lesson_context=lesson_context,
-                        prior_outputs=prior_outputs,
-                        difficulty=difficulty,
-                        source_map_digest=source_map_digest,
-                    ),
-                    name=f"phase:{name}",
-                )
+    try:
+        while pending or in_flight:
+            # Launch every phase whose deps are now satisfied. Multiple phases can
+            # become ready in a single iteration (e.g., when an upstream completes
+            # and unblocks two siblings).
+            if not failed:
+                ready_now = sorted(p for p in pending if _ready(p))
+                for name in ready_now:
+                    pending.remove(name)
+                    in_flight[name] = asyncio.create_task(
+                        _execute_one_phase(
+                            job_id=job_id,
+                            resource_id=resource_id,
+                            log=log,
+                            phase_name=name,
+                            phase_order=phase_order_map[name],
+                            total_phases_hint=phase_order_offset + len(content_phases),
+                            subject=subject,
+                            provider=provider,
+                            model=model,
+                            pdf_path=pdf_path,
+                            file_phases=file_phases,
+                            section_data=section_data,
+                            lesson_context=lesson_context,
+                            prior_outputs=prior_outputs,
+                            difficulty=difficulty,
+                            source_map_digest=source_map_digest,
+                        ),
+                        name=f"phase:{name}",
+                    )
 
-        if not in_flight:
-            if pending and not failed:
-                raise RuntimeError(
-                    f"Phase scheduler stuck — pending={sorted(pending)} but no phase is ready. "
-                    f"Resolved deps: {{p: list(resolve_phase_deps(p, content_phases)) for p in sorted(pending)}}"
-                )
-            break
+            if not in_flight:
+                if pending and not failed:
+                    raise RuntimeError(
+                        f"Phase scheduler stuck — pending={sorted(pending)} but no phase is ready. "
+                        f"Resolved deps: {{p: list(resolve_phase_deps(p, content_phases)) for p in sorted(pending)}}"
+                    )
+                break
 
-        # Wait for the next phase to finish — first-completed semantics so we
-        # can launch newly-unblocked successors as soon as possible.
-        done, _ = await asyncio.wait(
-            list(in_flight.values()), return_when=asyncio.FIRST_COMPLETED
-        )
+            # Wait for the next phase to finish — first-completed semantics so we
+            # can launch newly-unblocked successors as soon as possible.
+            done, _ = await asyncio.wait(
+                list(in_flight.values()), return_when=asyncio.FIRST_COMPLETED
+            )
 
-        for task in done:
-            phase_name = next(n for n, t in in_flight.items() if t is task)
-            del in_flight[phase_name]
-            try:
-                output_md, _tin, _tout, parsed_struct = task.result()
-            except Exception:
-                # Already logged + marked failed by _execute_one_phase. Cancel
-                # any peers still in flight and stop launching new phases.
-                failed = True
-                for peer in in_flight.values():
-                    peer.cancel()
-                # Drain cancellations so we don't leak tasks
-                if in_flight:
-                    await asyncio.gather(*in_flight.values(), return_exceptions=True)
-                    in_flight.clear()
-                continue
+            for task in done:
+                phase_name = next(n for n, t in in_flight.items() if t is task)
+                del in_flight[phase_name]
+                try:
+                    output_md, _tin, _tout, parsed_struct = task.result()
+                except Exception:
+                    # Already logged + marked failed by _execute_one_phase. Cancel
+                    # any peers still in flight and stop launching new phases.
+                    failed = True
+                    for peer in in_flight.values():
+                        peer.cancel()
+                    # Drain cancellations so we don't leak tasks
+                    if in_flight:
+                        await asyncio.gather(*in_flight.values(), return_exceptions=True)
+                        in_flight.clear()
+                    continue
 
-            prior_outputs[phase_name] = output_md
+                prior_outputs[phase_name] = output_md
+    except asyncio.CancelledError:
+        # External cancel (user pressed Cancel). asyncio.wait() does NOT cancel
+        # its awaitables, so we must cancel every in-flight phase and gather
+        # them - that lets each _execute_phase -> _spawn run its
+        # `except CancelledError: kill_tree(...)` before we unwind.
+        for t in in_flight.values():
+            t.cancel()
+        if in_flight:
+            await asyncio.gather(*in_flight.values(), return_exceptions=True)
+            in_flight.clear()
+        raise
 
     if failed:
         # Caller's surrounding try/except will see the original exception was
