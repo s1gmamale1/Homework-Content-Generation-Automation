@@ -861,6 +861,47 @@ def _decode_glyph_text(text: str) -> str:
     return _GLYPH_NAME_RE.sub(_sub, text)
 
 
+# Refusal phrases (lowercased) that, when they appear NEAR THE START of a short
+# output, mark a non-summary. Anchored to the first chars + short length so a
+# legitimate "...ma'lumot mavjud emas" inside a real summary never false-fires.
+_EXTRACT_REFUSAL_MARKERS = (
+    "ignore pattern", "ignore sozlama", "couldn't read", "could not read",
+    "o'qib bo'lmadi", "o`qib bo'lmadi", "konteksti mavjud emas",
+    "konteksti bo'sh", "konteksti bo`sh", "manba fayli", "no text layer",
+    "no lesson content",
+)
+_REFUSAL_HEAD_CHARS = 240
+
+
+def validate_extract_text(text: str) -> Optional[str]:
+    """Gate A — deterministic check on the RAW local PDF text. Returns a failure
+    reason string, or None if the text looks like real, readable content.
+    Terminal: a failure here means the input is unreadable (scanned / broken
+    font), which no provider can fix."""
+    stripped = (text or "").strip()
+    if len(stripped) < settings.extract_min_text_chars:
+        return f"unreadable PDF (no text layer): only {len(stripped)} chars extracted"
+    letters = sum(c.isalpha() for c in stripped)
+    ratio = letters / len(stripped)
+    if ratio < settings.extract_min_printable_ratio:
+        return f"unreadable PDF (no text layer): printable-letter ratio {ratio:.2f}"
+    return None
+
+
+def validate_extract_summary(summary: str) -> Optional[str]:
+    """Gate B — deterministic check on a produced summary. Returns a failure
+    reason, or None if it looks like a real summary. A failure triggers
+    failover (the run_fn raises ExtractRefusal)."""
+    stripped = (summary or "").strip()
+    if len(stripped) < settings.extract_min_summary_chars:
+        return f"summary too short ({len(stripped)} chars) — likely a refusal"
+    head = stripped[:_REFUSAL_HEAD_CHARS].lower()
+    for marker in _EXTRACT_REFUSAL_MARKERS:
+        if marker in head:
+            return f"refusal marker in summary head: {marker!r}"
+    return None
+
+
 def _read_pdf_pages(
     reader, indices, *, budget: int, already: set[int], pdf_name: str
 ) -> tuple[list[str], list[int]]:
