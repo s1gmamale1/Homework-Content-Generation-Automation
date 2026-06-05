@@ -54,3 +54,35 @@ def _url_from_block(block: dict) -> str | None:
     """Resolve a file/pdf block's URL (Notion-hosted signed OR external)."""
     payload = block.get(block.get("type"), {})
     return (payload.get("file") or {}).get("url") or (payload.get("external") or {}).get("url")
+
+
+_SINF_RE = re.compile(r"-\s*sinf\b", re.IGNORECASE)
+
+
+def list_grades(client, lessons_root: str) -> list[dict]:
+    """Grade pages under the Lessons root, excluding the 'Rules' page."""
+    out = []
+    for g in client.get_child_pages(lessons_root):
+        if _fold(g["title"]).strip() == "rules":
+            continue
+        out.append({"title": g["title"].strip(), "page_id": g["id"]})
+    return out
+
+
+def list_subjects(client, grade_page_id: str) -> list[dict]:
+    """Subjects under the grade's Uzbek 'N - sinf' child (klass ignored). Each:
+    {notion_title, page_id, app_subject|None, has_textbook}."""
+    sinf = next((c for c in client.get_child_pages(grade_page_id)
+                 if _SINF_RE.search(c["title"])), None)
+    if sinf is None:
+        return []
+    out = []
+    for s in client.get_child_pages(sinf["id"]):
+        blocks = client.get_block_children(s["id"])
+        out.append({
+            "notion_title": s["title"].strip(),
+            "page_id": s["id"],
+            "app_subject": _map_subject(s["title"]),
+            "has_textbook": _first_pdf_block(blocks) is not None,
+        })
+    return out
