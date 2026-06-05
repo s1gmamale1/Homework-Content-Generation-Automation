@@ -238,6 +238,14 @@ def test_first_pdf_block_none_when_absent():
     assert _first_pdf_block([{"type": "paragraph"}, {"type": "image"}]) is None
 
 
+def test_first_pdf_block_skips_non_pdf_file():
+    blocks = [
+        {"type": "file", "file": {"name": "cover.png", "file": {"url": "u-img"}}},
+        {"type": "pdf", "pdf": {"file": {"url": "u-tb"}}},
+    ]
+    assert _first_pdf_block(blocks) is blocks[1]  # non-.pdf file skipped, pdf chosen
+
+
 def test_url_from_block_shapes():
     assert _url_from_block({"type": "file", "file": {"file": {"url": "A"}}}) == "A"
     assert _url_from_block({"type": "file", "file": {"external": {"url": "B"}}}) == "B"
@@ -289,10 +297,17 @@ def _map_subject(title: str) -> str | None:
 
 
 def _first_pdf_block(blocks: list[dict]) -> dict | None:
-    """First file/pdf block in page order that carries a PDF, else None."""
+    """First textbook PDF in page order, else None. A `pdf` block is inherently a
+    PDF; a `file` block must have a `.pdf` filename — a subject page may also attach
+    a cover image / .docx, which must NOT be fed to the extractor as a 'textbook'."""
     for b in blocks:
-        if b.get("type") in ("file", "pdf") and _url_from_block(b):
+        t = b.get("type")
+        if t == "pdf" and _url_from_block(b):
             return b
+        if t == "file" and _url_from_block(b):
+            name = (b.get("file", {}).get("name") or "").lower()
+            if name.endswith(".pdf"):
+                return b
     return None
 
 
@@ -596,15 +611,17 @@ git commit -m "feat(api): /notion read-only grades+subjects router (auth-gated)"
 
 ## Task 7: `POST /books/from-notion` (download + ingest)
 
-**Files:** Modify `app/api/v1/books.py`. Test: `tests/api/test_from_notion.py`.
+**Files:** Modify `app/api/v1/books.py`, `app/services/notion/client.py` (add `get_page_title`). Test: `tests/api/test_from_notion.py`.
 
 - [ ] **Step 1: Write the failing tests** (patch the service + ingest; override auth)
 
 ```python
+from uuid import uuid4
 from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 from main import app
 from app.auth import get_current_user
+from app.schemas import BookOut
 import app.services.notion_fetch as nf
 
 app.dependency_overrides[get_current_user] = lambda: {"user": "test"}
@@ -630,11 +647,15 @@ def test_from_notion_oversize_422():
 
 
 def test_from_notion_happy_path_calls_ingest():
+    # ingest_pdf is the response_model BookOut path, so the mock must return a
+    # real BookOut (a bare dict fails FastAPI response validation -> 500).
+    fake = BookOut(id=uuid4(), subject="math-algebra",
+                   original_filename="alg.pdf", status="uploading")
     with patch("app.api.v1.books.NotionClientWrapper"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(b"%PDF-1.4 x", "alg.pdf")), \
-         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value={"id": "bk1"})) as ing:
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "alg", "grade": "9"})
     assert r.status_code == 201
@@ -644,11 +665,24 @@ def test_from_notion_happy_path_calls_ingest():
 
 - [ ] **Step 2: Run, verify fail.** `… tests/api/test_from_notion.py -v` → FAIL (404).
 
-- [ ] **Step 3: Implement.** In `app/api/v1/books.py` add imports + a request model + helper + endpoint:
+- [ ] **Step 3a: Add a rate-limited `get_page_title` to the wrapper.** In `app/services/notion/client.py`, add a method (keeps every SDK call behind `_rate_limit`, like the others):
+
+```python
+    def get_page_title(self, page_id: str) -> str:
+        """The page's own title text. Rate-limited (the only title-read path)."""
+        self._rate_limit()
+        page = self.client.pages.retrieve(page_id)
+        props = page.get("properties", {})
+        title_prop = next(
+            (v for v in props.values() if v.get("type") == "title"), {"title": []})
+        parts = title_prop.get("title", [])
+        return "".join(p.get("plain_text", "") for p in parts).strip() or ""
+```
+
+- [ ] **Step 3b: Implement the endpoint.** In `app/api/v1/books.py` add imports + a request model + a thin title helper (delegates to the wrapper) + the endpoint:
 
 ```python
 # add to imports
-import asyncio  # already imported
 from app.services import notion_fetch
 from app.services.notion.client import NotionClientWrapper
 
@@ -659,14 +693,8 @@ class FromNotionRequest(BaseModel):
 
 
 def _notion_subject_title(client: NotionClientWrapper, subject_page_id: str) -> str:
-    """The subject page's own title (its parent's child entry). Run in a thread."""
-    # The page title is fetched via the block itself; NotionClientWrapper exposes
-    # get_child_pages on a parent, so resolve via the page object.
-    page = client.client.pages.retrieve(subject_page_id)
-    props = page.get("properties", {})
-    title_prop = next((v for v in props.values() if v.get("type") == "title"), {"title": []})
-    parts = title_prop.get("title", [])
-    return "".join(p.get("plain_text", "") for p in parts).strip() or ""
+    """Subject page title via the rate-limited wrapper (patched in tests)."""
+    return client.get_page_title(subject_page_id)
 
 
 @router.post("/from-notion", status_code=201)
@@ -700,7 +728,7 @@ async def book_from_notion(
 - [ ] **Step 6: Commit**
 
 ```bash
-git add app/api/v1/books.py tests/api/test_from_notion.py
+git add app/api/v1/books.py app/services/notion/client.py tests/api/test_from_notion.py
 git commit -m "feat(api): POST /books/from-notion - download attachment, map subject, ingest"
 ```
 
