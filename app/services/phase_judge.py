@@ -13,7 +13,7 @@ error the judge degrades to "unavailable" and never blocks generation.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from loguru import logger
@@ -24,8 +24,9 @@ from app.services.prompts import get_prompt
 
 
 class Failure(BaseModel):
-    requirement: str   # the contract rule the output violates
-    evidence: str      # the exact quote (or quoted absence) proving it
+    requirement: str                       # the contract rule the output violates
+    evidence: str                          # the exact quote (or quoted absence) proving it
+    severity: Literal["major", "minor"]    # major -> regenerate; minor -> warn only
 
 
 class Verdict(BaseModel):
@@ -35,10 +36,11 @@ class Verdict(BaseModel):
 
 @dataclass
 class JudgeOutcome:
-    available: bool         # False = judge CLI/parse failed (degraded)
-    passed: bool            # meaningful only when available
-    warnings: list[str]     # serialized failures, OR ["judge-unavailable: …"]
-    feedback: str           # regen prompt addendum (empty when passed/unavailable)
+    available: bool          # False = judge CLI/parse failed (degraded)
+    passed: bool             # meaningful only when available
+    warnings: list[str]      # serialized failures, OR ["judge-unavailable: …"]
+    feedback: str            # regen prompt addendum (empty when passed/unavailable)
+    has_major: bool = False  # any MAJOR failure -> triggers the one regen
 
 
 _INSTRUCTIONS = (
@@ -52,7 +54,16 @@ _INSTRUCTIONS = (
     "2. Then challenge your own list: for each candidate, confirm it is genuinely "
     "violated by the quoted evidence. DROP any item you cannot substantiate with a "
     "direct citation — treat anything you cannot quote as your own hallucination.\n"
-    "3. Output ONLY the survivors.\n\n"
+    "3. Output ONLY the survivors.\n"
+    "4. For each survivor, set `severity`:\n"
+    "   - `major` = breaks the learning purpose or correctness: wrong or missing "
+    "content, an answer leaked by a hint, a wrong count of REQUIRED structural "
+    "elements (sections / checkpoints / cards / etc.), or omitted key concepts from "
+    "the lesson.\n"
+    "   - `minor` = stylistic / length / wording / formatting nits that do not harm "
+    "the output's usefulness.\n"
+    "   Be conservative: mark `major` ONLY when the issue genuinely degrades the "
+    "student's learning; default borderline length/wording issues to `minor`.\n\n"
     "Visual rule (do NOT over-flag): the CONTRACT tells the generator to emit "
     "`![placeholder: … — image gen required](placeholder)` for any raster/photo "
     "instead of creating one. A correctly-emitted placeholder is COMPLIANT — never "
@@ -72,7 +83,7 @@ def _build_judge_prompt(*, contract: str, output_md: str) -> str:
 
 
 def _serialize_failures(failures: list[Failure]) -> list[str]:
-    return [f"{f.requirement} — {f.evidence}" for f in failures]
+    return [f"[{f.severity}] {f.requirement} — {f.evidence}" for f in failures]
 
 
 def _build_feedback(warnings: list[str]) -> str:
@@ -130,7 +141,8 @@ async def judge(
     if verdict.passed or not verdict.failures:
         return JudgeOutcome(available=True, passed=True, warnings=[], feedback="")
     warnings = _serialize_failures(verdict.failures)
+    has_major = any(f.severity == "major" for f in verdict.failures)
     return JudgeOutcome(
         available=True, passed=False, warnings=warnings,
-        feedback=_build_feedback(warnings),
+        feedback=_build_feedback(warnings), has_major=has_major,
     )

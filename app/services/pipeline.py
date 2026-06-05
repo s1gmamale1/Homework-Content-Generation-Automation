@@ -692,10 +692,12 @@ async def _execute_phase(
             gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
             homework_job_id=job_id, phase_output_id=po_id,
         )
-        if outcome.available and not outcome.passed:
+        # Regenerate ONLY on a MAJOR issue; minor (stylistic/length) nits are
+        # recorded as warnings but never trigger an expensive regen.
+        if outcome.available and outcome.has_major:
             logger.info(
-                f"[job {job_id}] {phase_name} judge rejected "
-                f"({len(outcome.warnings)} issue(s)) — regenerating once. "
+                f"[job {job_id}] {phase_name} judge found major issue(s) "
+                f"({len(outcome.warnings)} total) — regenerating once. "
                 f"Issues: {outcome.warnings}"
             )
             # The regen runs through the failover driver, which CAN exhaust all

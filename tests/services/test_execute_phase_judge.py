@@ -10,6 +10,8 @@ def test_execute_phase_invokes_the_judge():
     assert src.count("_run_with_failover") >= 2
     # the regen is GUARDED — an exhausted regen must not fail the job
     assert "regen failed" in src
+    # regen is gated on a MAJOR issue, not merely "not passed" (minor nits only warn)
+    assert "has_major" in src
 
 
 def test_execute_phase_no_longer_calls_deterministic_validator():

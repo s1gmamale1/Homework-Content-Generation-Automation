@@ -4,17 +4,21 @@ from app.services import phase_judge as pj
 
 
 def test_verdict_models_shape():
-    v = pj.Verdict(passed=False, failures=[pj.Failure(requirement="r", evidence="e")])
+    v = pj.Verdict(
+        passed=False,
+        failures=[pj.Failure(requirement="r", evidence="e", severity="major")],
+    )
     assert v.passed is False
     assert v.failures[0].requirement == "r" and v.failures[0].evidence == "e"
+    assert v.failures[0].severity == "major"
     assert pj.Verdict(passed=True).failures == []
 
 
-def test_serialize_failures_to_strings():
+def test_serialize_failures_prefixes_severity():
     out = pj._serialize_failures(
-        [pj.Failure(requirement="Exactly 3 checkpoints", evidence="found 4")]
+        [pj.Failure(requirement="Exactly 3 checkpoints", evidence="found 4", severity="major")]
     )
-    assert out == ["Exactly 3 checkpoints — found 4"]
+    assert out == ["[major] Exactly 3 checkpoints — found 4"]
 
 
 def test_build_judge_prompt_contains_contract_output_and_protocol():
@@ -24,6 +28,7 @@ def test_build_judge_prompt_contains_contract_output_and_protocol():
     assert "cite" in low or "quote" in low
     assert "refute" in low or "substantiate" in low or "cannot substantiate" in low
     assert "placeholder" in low
+    assert "major" in low and "minor" in low   # severity rubric present
     assert "VISUAL / SVG RULES" not in p
 
 
@@ -75,14 +80,30 @@ def test_judge_pass_outcome(monkeypatch):
     assert out.warnings == [] and out.feedback == ""
 
 
-def test_judge_failure_outcome_has_warnings_and_feedback(monkeypatch):
+def test_judge_major_failure_has_warnings_feedback_and_flags_major(monkeypatch):
     monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
-    v = pj.Verdict(passed=False, failures=[pj.Failure(requirement="Exactly 3", evidence="found 4")])
+    v = pj.Verdict(passed=False, failures=[
+        pj.Failure(requirement="Exactly 3", evidence="found 4", severity="major"),
+    ])
     monkeypatch.setattr(agent, "run_phase", _fake_run_phase(v))
     out = _call_judge()
     assert out.available and not out.passed
-    assert out.warnings == ["Exactly 3 — found 4"]
+    assert out.has_major is True
+    assert out.warnings == ["[major] Exactly 3 — found 4"]
     assert "Exactly 3 — found 4" in out.feedback
+
+
+def test_judge_minor_only_does_not_flag_major(monkeypatch):
+    """A minor-only verdict records a warning but must NOT trigger a regen."""
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    v = pj.Verdict(passed=False, failures=[
+        pj.Failure(requirement="Back is concise", evidence="padded filler", severity="minor"),
+    ])
+    monkeypatch.setattr(agent, "run_phase", _fake_run_phase(v))
+    out = _call_judge()
+    assert out.available and not out.passed
+    assert out.has_major is False
+    assert out.warnings == ["[minor] Back is concise — padded filler"]
 
 
 def test_judge_degrades_when_run_phase_raises(monkeypatch):
