@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Console — crafted direction</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;450;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --f-ui:"Hanken Grotesk",-apple-system,system-ui,sans-serif;
+    --f-display:"Newsreader",Georgia,serif;
+    --f-mono:"JetBrains Mono",ui-monospace,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0a0a0c;font-family:var(--f-ui);-webkit-font-smoothing:antialiased;padding:34px 20px 70px}
+  .stage{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:30px}
+  .head{color:#e7e7ea;font-family:var(--f-ui);text-align:center;margin-bottom:2px}
+  .head h1{font-size:19px;font-weight:600;letter-spacing:-.01em}
+  .head p{font-size:13.5px;color:#85858f;margin-top:6px}
+
+  .pick{position:relative;border-radius:20px;cursor:pointer;transition:transform .25s cubic-bezier(.16,1,.3,1),box-shadow .25s}
+  .pick:hover{transform:translateY(-3px)}
+  .pick.selected{outline:2px solid #c98a3f;outline-offset:6px}
+  .pick .tag{position:absolute;top:14px;left:16px;z-index:5;font-family:var(--f-mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;padding:5px 10px;border-radius:7px;backdrop-filter:blur(8px)}
+
+  /* ============================== APP FRAME ============================== */
+  .app{border-radius:18px;overflow:hidden;font-size:15px;line-height:1.5}
+
+  /* ---- header ---- */
+  .top{display:flex;align-items:center;justify-content:space-between;height:60px;padding:0 24px;backdrop-filter:blur(20px)}
+  .brand{display:flex;align-items:center;gap:11px}
+  .mark{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-family:var(--f-mono);font-weight:500;font-size:13px}
+  .brandname{font-weight:600;font-size:15px;letter-spacing:-.015em}
+  .nav{display:flex;gap:2px;margin-left:18px}
+  .nav a{font-size:13.5px;font-weight:450;padding:7px 12px;border-radius:8px;text-decoration:none;transition:.15s}
+  .topright{display:flex;align-items:center;gap:16px}
+  .meter{display:flex;align-items:center;gap:9px;font-family:var(--f-mono);font-size:11px}
+  .meter .bar{width:54px;height:5px;border-radius:3px;overflow:hidden}
+  .meter .fill{height:100%;border-radius:3px}
+  .newbtn{font-size:13px;font-weight:500;padding:8px 15px;border-radius:9px;display:flex;align-items:center;gap:7px}
+
+  /* ---- body ---- */
+  .body{padding:30px 28px 36px}
+  .pagehead{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:22px}
+  .pagehead h2{font-family:var(--f-display);font-weight:500;font-size:34px;letter-spacing:-.01em}
+  .pagehead .count{font-family:var(--f-mono);font-size:12px;letter-spacing:.04em;margin-left:14px}
+  .seg{display:flex;gap:3px;padding:3px;border-radius:11px}
+  .seg button{font-size:12.5px;font-weight:500;padding:6px 13px;border-radius:8px;border:0;background:transparent;cursor:pointer;font-family:var(--f-ui)}
+
+  /* ---- running hero ---- */
+  .hero{border-radius:16px;padding:18px 20px;margin-bottom:14px;position:relative;overflow:hidden}
+  .hero .live{display:flex;align-items:center;gap:8px;font-family:var(--f-mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase}
+  .blip{width:7px;height:7px;border-radius:50%;position:relative}
+  .blip::after{content:"";position:absolute;inset:-4px;border-radius:50%;animation:pulse 1.8s ease-out infinite}
+  @keyframes pulse{0%{transform:scale(.6);opacity:.7}100%{transform:scale(1.7);opacity:0}}
+  .hero h3{font-size:18px;font-weight:600;letter-spacing:-.01em;margin:9px 0 3px}
+  .hero .hsub{font-size:13px}
+  .pipeline{display:flex;gap:5px;margin-top:15px}
+  .seglet{flex:1;height:5px;border-radius:3px}
+  .pipemeta{display:flex;justify-content:space-between;margin-top:9px;font-family:var(--f-mono);font-size:11px}
+
+  /* ---- list ---- */
+  .list{display:flex;flex-direction:column}
+  .item{display:flex;align-items:center;gap:16px;padding:15px 6px}
+  .ico{width:38px;height:38px;border-radius:11px;flex:none;display:grid;place-items:center;font-family:var(--f-display);font-size:17px;font-weight:500}
+  .item .info{flex:1;min-width:0}
+  .item .name{font-size:15px;font-weight:550;letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
+  .item .meta{font-family:var(--f-mono);font-size:11.5px;margin-top:2px}
+  .stat{font-family:var(--f-mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:6px;font-weight:500}
+  .act{font-size:13px;font-weight:500;padding:8px 16px;border-radius:9px;transition:.15s}
+
+  /* ================= LIGHT ================= */
+  .light .app{background:#F6F4EF;color:#1c1b18;box-shadow:0 1px 0 #fff inset,0 30px 60px -28px rgba(60,40,10,.35)}
+  .light .top{background:rgba(246,244,239,.72);border-bottom:1px solid #e7e2d8}
+  .light .mark{background:#1c1b18;color:#f6f4ef}
+  .light .brandname{color:#1c1b18}
+  .light .nav a{color:#7c7669}
+  .light .nav a.on{color:#1c1b18;background:#ece7dd}
+  .light .meter{color:#9a9384}.light .meter .bar{background:#e7e2d8}.light .meter .fill{background:#b9742e}
+  .light .newbtn{background:#1c1b18;color:#f6f4ef}
+  .light .pagehead h2{color:#1c1b18}.light .pagehead .count{color:#a89f8e}
+  .light .seg{background:#ece7dd}.light .seg button.on{background:#fff;color:#1c1b18;box-shadow:0 1px 2px rgba(0,0,0,.06)}.light .seg button{color:#8a8473}
+  .light .hero{background:linear-gradient(180deg,#fffdf8,#fbf7ee);border:1px solid #ece3d1;box-shadow:0 8px 22px -16px rgba(150,100,20,.4)}
+  .light .hero .live{color:#b9742e}.light .blip{background:#cf8a3a}.light .blip::after{background:#cf8a3a}
+  .light .hero h3{color:#1c1b18}.light .hero .hsub{color:#857e6f}
+  .light .seglet{background:#e7ddc8}.light .seglet.done{background:#b9742e}.light .seglet.now{background:#cf8a3a}
+  .light .pipemeta{color:#9a9384}.light .pipemeta b{color:#b9742e}
+  .light .item{border-bottom:1px solid #ebe6dc}
+  .light .ico{background:#efe9dc;color:#9a6a2a}
+  .light .name{color:#1c1b18}.light .meta{color:#a39a88}
+  .light .stat.ready{background:#e8efe6;color:#4a7c52}.light .stat.work{background:#f6ecdb;color:#b9742e}
+  .light .act{background:#1c1b18;color:#f6f4ef}
+  .light .act.ghost{background:transparent;color:#a39a88}
+
+  /* ================= DARK ================= */
+  .dark .app{background:#161310;color:#f1ece3;box-shadow:0 0 0 1px rgba(255,255,255,.04) inset,0 30px 70px -30px rgba(0,0,0,.8)}
+  .dark .top{background:rgba(22,19,16,.7);border-bottom:1px solid rgba(255,255,255,.06)}
+  .dark .mark{background:linear-gradient(135deg,#eaa758,#c47e34);color:#231a0e}
+  .dark .brandname{color:#f1ece3}
+  .dark .nav a{color:#938b7e}
+  .dark .nav a.on{color:#f1ece3;background:rgba(255,255,255,.06)}
+  .dark .meter{color:#7c746a}.dark .meter .bar{background:rgba(255,255,255,.08)}.dark .meter .fill{background:#e0a155}
+  .dark .newbtn{background:#f1ece3;color:#161310}
+  .dark .pagehead h2{color:#f6f1e9}.dark .pagehead .count{color:#7c746a}
+  .dark .seg{background:rgba(255,255,255,.05)}.dark .seg button.on{background:rgba(255,255,255,.1);color:#f1ece3}.dark .seg button{color:#938b7e}
+  .dark .hero{background:radial-gradient(120% 140% at 0% 0%,rgba(224,161,85,.12),transparent 55%),#1d1915;border:1px solid rgba(255,255,255,.07)}
+  .dark .hero .live{color:#e0a155}.dark .blip{background:#e0a155}.dark .blip::after{background:#e0a155}
+  .dark .hero h3{color:#f6f1e9}.dark .hero .hsub{color:#9a9183}
+  .dark .seglet{background:rgba(255,255,255,.08)}.dark .seglet.done{background:#e0a155}.dark .seglet.now{background:#f3bd78}
+  .dark .pipemeta{color:#7c746a}.dark .pipemeta b{color:#e0a155}
+  .dark .item{border-bottom:1px solid rgba(255,255,255,.05)}
+  .dark .ico{background:rgba(224,161,85,.12);color:#e0a155}
+  .dark .name{color:#f1ece3}.dark .meta{color:#857d70}
+  .dark .stat.ready{background:rgba(120,180,120,.14);color:#86c08e}.dark .stat.work{background:rgba(224,161,85,.14);color:#e9b572}
+  .dark .act{background:#f1ece3;color:#161310}
+  .dark .act.ghost{background:transparent;color:#857d70}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="head">
+    <h1>One crafted direction — “Quiet Precision”</h1>
+    <p>Editorial-clean, content-first, real material depth. Same screen in light &amp; dark. Click the ground you want to build on.</p>
+  </div>
+
+  <!-- ================= LIGHT ================= -->
+  <div class="pick light" data-choice="light" onclick="toggleSelect(this)">
+    <span class="tag" style="background:rgba(255,255,255,.6);color:#9a6a2a">Light</span>
+    <div class="app">
+      <div class="top">
+        <div class="brand" style="display:flex;align-items:center">
+          <span class="mark">H</span><span class="brandname">Homework&nbsp;Builder</span>
+          <nav class="nav"><a>Upload</a><a class="on">Library</a><a>Usage</a></nav>
+        </div>
+        <div class="topright">
+          <div class="meter"><span style="color:inherit">claude</span><span class="bar"><span class="fill" style="width:38%"></span></span><span>38%</span></div>
+          <span class="newbtn">+ New session</span>
+        </div>
+      </div>
+      <div class="body">
+        <div class="pagehead">
+          <div style="display:flex;align-items:baseline"><h2>Library</h2><span class="count">12 BOOKS · 1 RUNNING</span></div>
+          <div class="seg"><button class="on">Books</button><button>Jobs</button></div>
+        </div>
+
+        <div class="hero">
+          <div class="live"><span class="blip"></span>Generating</div>
+          <h3>Fizika · §3.2 — Jismlarning o‘zaro ta’siri</h3>
+          <div class="hsub">9-sinf · hard · gemini-2.5-flash · 1m 48s elapsed</div>
+          <div class="pipeline">
+            <span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet now"></span><span class="seglet"></span><span class="seglet"></span><span class="seglet"></span>
+          </div>
+          <div class="pipemeta"><span>extract · classify · preview · flashcards · memory · <b>boss-arena</b></span><span><b>6</b> / 9 phases</span></div>
+        </div>
+
+        <div class="list">
+          <div class="item"><span class="ico">K</span><div class="info"><div class="name">Kimyo <span class="stat ready">TOC ready</span></div><div class="meta">9-sinf · 14 sections · uploaded 2d ago</div></div><span class="act">Generate</span></div>
+          <div class="item"><span class="ico">B</span><div class="info"><div class="name">Biologiya <span class="stat ready">TOC ready</span></div><div class="meta">8-sinf · 11 sections · uploaded 2d ago</div></div><span class="act">Generate</span></div>
+          <div class="item"><span class="ico">J</span><div class="info"><div class="name">Jahon tarixi <span class="stat work">Extracting</span></div><div class="meta">7-sinf · fetched from Notion · 41s</div></div><span class="act ghost">···</span></div>
+          <div class="item"><span class="ico">A</span><div class="info"><div class="name">Algebra <span class="stat ready">TOC ready</span></div><div class="meta">9-sinf · 18 sections · uploaded 5d ago</div></div><span class="act">Generate</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= DARK ================= -->
+  <div class="pick dark" data-choice="dark" onclick="toggleSelect(this)">
+    <span class="tag" style="background:rgba(0,0,0,.4);color:#e0a155">Dark</span>
+    <div class="app">
+      <div class="top">
+        <div class="brand" style="display:flex;align-items:center">
+          <span class="mark">H</span><span class="brandname">Homework&nbsp;Builder</span>
+          <nav class="nav"><a>Upload</a><a class="on">Library</a><a>Usage</a></nav>
+        </div>
+        <div class="topright">
+          <div class="meter"><span>claude</span><span class="bar"><span class="fill" style="width:38%"></span></span><span>38%</span></div>
+          <span class="newbtn">+ New session</span>
+        </div>
+      </div>
+      <div class="body">
+        <div class="pagehead">
+          <div style="display:flex;align-items:baseline"><h2>Library</h2><span class="count">12 BOOKS · 1 RUNNING</span></div>
+          <div class="seg"><button class="on">Books</button><button>Jobs</button></div>
+        </div>
+
+        <div class="hero">
+          <div class="live"><span class="blip"></span>Generating</div>
+          <h3>Fizika · §3.2 — Jismlarning o‘zaro ta’siri</h3>
+          <div class="hsub">9-sinf · hard · gemini-2.5-flash · 1m 48s elapsed</div>
+          <div class="pipeline">
+            <span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet now"></span><span class="seglet"></span><span class="seglet"></span><span class="seglet"></span>
+          </div>
+          <div class="pipemeta"><span>extract · classify · preview · flashcards · memory · <b>boss-arena</b></span><span><b>6</b> / 9 phases</span></div>
+        </div>
+
+        <div class="list">
+          <div class="item"><span class="ico">K</span><div class="info"><div class="name">Kimyo <span class="stat ready">TOC ready</span></div><div class="meta">9-sinf · 14 sections · uploaded 2d ago</div></div><span class="act">Generate</span></div>
+          <div class="item"><span class="ico">B</span><div class="info"><div class="name">Biologiya <span class="stat ready">TOC ready</span></div><div class="meta">8-sinf · 11 sections · uploaded 2d ago</div></div><span class="act">Generate</span></div>
+          <div class="item"><span class="ico">J</span><div class="info"><div class="name">Jahon tarixi <span class="stat work">Extracting</span></div><div class="meta">7-sinf · fetched from Notion · 41s</div></div><span class="act ghost">···</span></div>
+          <div class="item"><span class="ico">A</span><div class="info"><div class="name">Algebra <span class="stat ready">TOC ready</span></div><div class="meta">9-sinf · 18 sections · uploaded 5d ago</div></div><span class="act">Generate</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
