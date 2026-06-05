@@ -178,11 +178,19 @@ class Worker:
             return None
 
     async def _heartbeat(self, job_id: UUID) -> None:
-        """Periodically refresh the job's claim while its pipeline runs."""
+        """Refresh the job's claim while its pipeline runs, AND notice a
+        cross-process cancel: if the API (possibly in another pod) flipped the
+        job to `cancelling`, self-cancel the local task so its CLIs die."""
         while True:
             await asyncio.sleep(settings.heartbeat_seconds)
             try:
                 async with SessionLocal() as session:
+                    status = await jobs_repo.get_status(session, job_id)
+                    if status == "cancelling":
+                        task = RUNNING_JOBS.get(job_id)
+                        if task is not None:
+                            task.cancel()
+                        return  # nothing more to do; the task will finalize
                     await jobs_repo.touch_claim(session, job_id)
                     await session.commit()
             except Exception:
