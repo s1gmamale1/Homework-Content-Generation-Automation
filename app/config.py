@@ -71,6 +71,20 @@ class Settings(BaseSettings):
         default_factory=lambda: ["codex", "gemini", "kimi", "opencode"]
     )
 
+    # ─── Extract robustness (local-text + gates) ──────────────────────────
+    # Whole-book local text is injected into the extract prompt; if the book's
+    # text exceeds this it terminal-fails here by design (large-book generation
+    # is the separate subset-TOC/shrink effort). ~600K chars ≈ ~150K tokens —
+    # fits a normal <20MB textbook comfortably inside gemini-flash's context.
+    extract_max_text_chars: int = 600_000
+    # Gate A (raw local text): below this many chars, or below this printable-
+    # letter ratio, the PDF is treated as unreadable (scanned / broken font).
+    extract_min_text_chars: int = 500
+    extract_min_printable_ratio: float = 0.55
+    # Gate B (summary): a real lesson summary is thousands of chars; the silent
+    # refusal that motivated this was 275. Below this → reject → fail over.
+    extract_min_summary_chars: int = 400
+
     # ─── Filesystem ───────────────────────────────────────────────────────
     # Where PDFs are persisted on disk.
     var_dir: str = "var"  # relative to project root; PDFs persist at <var_dir>/books/<book_id>/source.pdf
