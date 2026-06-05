@@ -44,6 +44,13 @@ from app.repositories import jobs as jobs_repo
 from app.services import pipeline
 
 
+# Maps job_id -> the in-flight _execute_job task, so a same-process cancel
+# endpoint can cancel the exact running job instantly. Process-local: in a
+# separate-pod deployment the API's registry is empty and the owning worker
+# self-cancels via the heartbeat (see _heartbeat).
+RUNNING_JOBS: dict[UUID, asyncio.Task] = {}
+
+
 def _worker_id() -> str:
     """Stable identity for `claimed_by`. Hostname:pid is enough to attribute
     a stuck job to a specific process in logs / Kubernetes pod listings."""
@@ -184,6 +191,7 @@ class Worker:
     async def _execute_job(self, job_id: UUID) -> None:
         """Run one pipeline. Releases the slot in `finally` so the next
         iteration of the main loop can claim another job."""
+        RUNNING_JOBS[job_id] = asyncio.current_task()
         hb = asyncio.create_task(self._heartbeat(job_id))
         try:
             try:
@@ -210,6 +218,7 @@ class Worker:
                 )
                 await self._mark_failed(job_id, f"{type(exc).__name__}: {exc}")
         finally:
+            RUNNING_JOBS.pop(job_id, None)
             hb.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await hb   # let the cancellation settle — avoids a stray "Task destroyed" warning
