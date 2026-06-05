@@ -36,6 +36,7 @@ from uuid import UUID
 
 from loguru import logger
 from pydantic import BaseModel, ValidationError
+from pypdf import PdfReader
 
 from app.config import settings
 from app.db import SessionLocal
@@ -935,6 +936,37 @@ def _read_pdf_pages(
         if chars >= budget:
             break
     return chunks, pages_read
+
+
+# Read a MARGIN past the gate threshold so an oversize book is DETECTABLE.
+# _read_pdf_pages truncates exactly to its budget, so reading only to the
+# threshold would make "len > threshold" never fire (the strip even drops 2
+# chars) → the size gate would silently miss every oversize book.
+_EXTRACT_OVERSIZE_MARGIN = 65_536
+
+
+def read_whole_book_text(pdf_path: Path) -> str:
+    """Read the WHOLE book's text locally via pypdf (no CLI, no file-read by any
+    model → dodges the gitignore block and the >20MB CLI ceiling). Reads up to
+    settings.extract_max_text_chars + _EXTRACT_OVERSIZE_MARGIN so the size gate
+    can SEE overflow. Glyph-decoded per page. '' if the PDF yields no text."""
+    reader = PdfReader(str(pdf_path))
+    n = len(reader.pages)
+    chunks, _pages = _read_pdf_pages(
+        reader,
+        range(1, n + 1),
+        budget=settings.extract_max_text_chars + _EXTRACT_OVERSIZE_MARGIN,
+        already=set(),
+        pdf_name=pdf_path.name,
+    )
+    return "".join(chunks).strip()
+
+
+def extract_text_is_oversize(text: str) -> bool:
+    """True if the local text exceeds the whole-text budget → terminal 'too
+    large, needs subset'. Pure (unit-testable); read_whole_book_text reads a
+    margin past the budget so this comparison is meaningful for huge books."""
+    return len((text or "").strip()) > settings.extract_max_text_chars
 
 
 def _extract_toc_source_text(pdf_path: Path) -> tuple[str, dict[str, Any]]:
