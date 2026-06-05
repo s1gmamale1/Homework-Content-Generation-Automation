@@ -19,8 +19,8 @@ Flash Cards are a simple active-recall tool: one retrievable atom per card, stud
 
 Each card emits these fields:
 - `id` — stable sequential `card_1, card_2, …` (never skip or reuse).
-- `front` — the cue (term / question / prompt). **3–14 words.**
-- `back` — the answer (definition / value / rule). **5–22 words, never over 25** (a formula or process step may run longer).
+- `front` — the cue (term / question / prompt). A bare term is ideal; **keep it short, up to ~14 words. No minimum — a 1–2 word term is a perfectly good cue.**
+- `back` — the answer (definition / value / rule). **Concise; never over 25 words** (a formula or process step may run longer). **No minimum — a short, complete answer is fine.**
 - `type` — REQUIRED. One of: `definition`, `term_to_meaning`, `process_step`, `question_answer`, `misconception`, `image_label`. These are the canonical core types, defined in-prompt; family-specific types may be added in the family rules below. (There is no validating schema for these — flashcards are markdown, so the type is a label you set on the card, not a JSON enum.)
 - `difficulty` — REQUIRED. One of: `easy | medium | hard`.
 - `hint` (optional) — a nudge, ≤12 words, never gives away the answer.
