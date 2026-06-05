@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import re
 
+import httpx
+
 # Folded-substring map, LONGEST keyword first so a double-hit is deterministic.
 # "matematika" is intentionally absent (lower-grade math != the app's algebra).
 _SUBJECT_KEYWORDS: list[tuple[str, str]] = [
@@ -86,3 +88,34 @@ def list_subjects(client, grade_page_id: str) -> list[dict]:
             "has_textbook": _first_pdf_block(blocks) is not None,
         })
     return out
+
+
+_TOC_MAX_BYTES = 20 * 1024 * 1024  # Gemini TOC ceiling (CLAUDE.md); distinct from upload's 50 MB
+
+
+class NoTextbook(Exception):
+    """Subject page has no downloadable PDF block."""
+
+
+class TextbookTooLarge(Exception):
+    """Attachment exceeds the 20 MB Gemini TOC limit."""
+
+
+def download_textbook(client, subject_page_id: str) -> tuple[bytes, str]:
+    """Resolve the subject page's first PDF block, reject >20 MB, return (bytes, filename)."""
+    block = _first_pdf_block(client.get_block_children(subject_page_id))
+    if block is None:
+        raise NoTextbook(subject_page_id)
+    url = _url_from_block(block)
+    payload = block.get(block.get("type"), {})
+    filename = (payload.get("name") or "textbook.pdf").strip() or "textbook.pdf"
+    with httpx.Client(timeout=60.0) as http:
+        head = http.head(url, follow_redirects=True)
+        head.raise_for_status()
+        size = int(head.headers.get("Content-Length") or 0)
+        if size > _TOC_MAX_BYTES:
+            raise TextbookTooLarge(f"{size / 1048576:.1f} MB > 20 MB")
+        body = http.get(url, follow_redirects=True).content
+    if len(body) > _TOC_MAX_BYTES:        # fallback when Content-Length absent
+        raise TextbookTooLarge(f"{len(body) / 1048576:.1f} MB > 20 MB")
+    return body, filename

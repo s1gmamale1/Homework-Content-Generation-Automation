@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.notion_fetch import _map_subject, _first_pdf_block, _url_from_block
 
 
@@ -98,3 +100,26 @@ def test_list_subjects_sinf_only_with_flags():
 def test_list_subjects_no_sinf_child_returns_empty():
     c = _client({"g1": [{"id": "ru", "title": "1 - класс"}]})
     assert nf.list_subjects(c, "g1") == []
+
+
+from app.services.notion_fetch import download_textbook, TextbookTooLarge, NoTextbook
+
+
+def test_download_rejects_when_no_pdf_block():
+    c = _client({}, blocks_by_page={"sub": [{"type": "paragraph"}]})
+    with pytest.raises(NoTextbook):
+        download_textbook(c, "sub")
+
+
+def test_download_rejects_oversize_via_content_length(monkeypatch):
+    c = _client({}, blocks_by_page={"sub": [{"type": "pdf", "pdf": {"file": {"url": "http://x/b.pdf"}}}]})
+    class _Resp:
+        headers = {"Content-Length": str(21 * 1024 * 1024)}
+        def raise_for_status(self): pass
+    class _HTTP:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def head(self, url, follow_redirects=True): return _Resp()
+    monkeypatch.setattr("app.services.notion_fetch.httpx.Client", lambda **k: _HTTP())
+    with pytest.raises(TextbookTooLarge):
+        download_textbook(c, "sub")
