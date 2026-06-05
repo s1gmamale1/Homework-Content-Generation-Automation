@@ -30,7 +30,9 @@ class Book(Base, UUIDPK, Timestamps):
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     toc_entries: Mapped[list["TOCEntry"]] = relationship(
-        back_populates="book", cascade="all, delete-orphan"
+        back_populates="book",
+        cascade="all, delete-orphan",
+        order_by="TOCEntry.order_index",
     )
 
     __table_args__ = (Index("ix_books_content_sha256", "content_sha256"),)
