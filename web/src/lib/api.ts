@@ -3,6 +3,8 @@ import type {
   AgentStats,
   Book,
   Job,
+  NotionGrade,
+  NotionSubject,
   ProviderModelManifest,
   Subject,
   TOCEntry,
@@ -188,6 +190,27 @@ export const api = {
       { method: "POST" },
     );
     return unwrap<Job>(res);
+  },
+
+  async listNotionGrades(): Promise<NotionGrade[]> {
+    const res = await authFetch("/api/v1/notion/grades");
+    return unwrap<NotionGrade[]>(res);
+  },
+
+  async listNotionSubjects(gradePageId: string): Promise<NotionSubject[]> {
+    const res = await authFetch(
+      `/api/v1/notion/grades/${encodeURIComponent(gradePageId)}/subjects`,
+    );
+    return unwrap<NotionSubject[]>(res);
+  },
+
+  async fetchBookFromNotion(subjectPageId: string, grade: string): Promise<Book> {
+    const res = await authFetch("/api/v1/books/from-notion", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subject_page_id: subjectPageId, grade }),
+    });
+    return unwrap<Book>(res);
   },
 
   jobDownloadUrl(jobId: string): string {

@@ -46,6 +46,18 @@ export interface Book {
   toc: TOCEntry[] | null;
 }
 
+export interface NotionGrade {
+  title: string;
+  page_id: string;
+}
+
+export interface NotionSubject {
+  notion_title: string;
+  page_id: string;
+  app_subject: string | null;
+  has_textbook: boolean;
+}
+
 export type JobStatus = "pending" | "running" | "done" | "failed";
 export type Difficulty = "easy" | "hard";
 
