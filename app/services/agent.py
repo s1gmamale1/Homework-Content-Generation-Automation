@@ -1472,6 +1472,82 @@ async def extract_lesson_context(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# summarize_lesson — single-provider, whole-book TEXT injected (no PDF)
+# ─────────────────────────────────────────────────────────────────────
+
+_SUMMARIZE_LESSON_PROMPT = """You are given the full text of a textbook below. \
+Locate the lesson titled "{title}" (section {number}; it is printed around pages \
+{ps}-{pe} — treat the page numbers only as a hint, find it by its TITLE) and write \
+a concise, factual summary of THAT lesson's content for downstream homework \
+generation. Summarize only that lesson. {rules}
+
+===== FULL TEXTBOOK TEXT =====
+{book_text}
+===== END TEXTBOOK TEXT ====="""
+
+
+async def summarize_lesson(
+    *,
+    provider: str,
+    model: Optional[str],
+    book_text: str,
+    section_title: str,
+    section_number: str,
+    page_start: int,
+    page_end: int,
+    homework_job_id: UUID,
+    phase_output_id: UUID,
+) -> tuple[str, int, int]:
+    """Single-provider extract: inject the whole-book TEXT (no PDF attached),
+    model locates the lesson by title and summarizes. Returns (text, prompt_tokens,
+    output_tokens). Raises on CLI failure. NO Gate B / NO failover here (the
+    _execute_phase extract branch wraps this in _run_with_failover + Gate B)."""
+    prov = get_provider(provider)
+    resolved_model = _resolve_model(provider, model)
+    instruction = _SUMMARIZE_LESSON_PROMPT.format(
+        title=section_title,
+        number=section_number,
+        ps=page_start if page_start is not None else "?",
+        pe=page_end if page_end is not None else "?",
+        rules=_NO_PREAMBLE,
+        book_text=book_text,
+    )
+    prompt = _build_master_prompt(
+        phase_prompt=instruction,
+        phase_name="lesson.extract",
+        lesson_context=None,
+        prior_outputs=None,
+        difficulty=None,
+        schema=None,
+        provider_suffix=prov.prompt_suffix(None),
+        attachment_preamble="",   # no attachment preamble — text is inline
+    )
+    started_at = datetime.now(timezone.utc)
+    t0 = perf_counter()
+    rc, text, usage, stderr = await _spawn(
+        provider=prov, model=resolved_model, prompt=prompt, attachments=[],
+    )
+    duration_s = perf_counter() - t0
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    ok = rc == 0
+    await _record_usage(
+        operation="lesson.extract", provider=provider, model_name=resolved_model,
+        usage=usage, duration_s=duration_s, started_at=started_at, success=ok,
+        homework_job_id=homework_job_id, phase_output_id=phase_output_id,
+        error_message=None if ok else f"{provider} CLI exited rc={rc}",
+        extra_envelope={"section_number": section_number, "section_title": section_title},
+    )
+    if not ok:
+        raise RuntimeError(f"lesson.extract: {provider} CLI exited rc={rc} :: {_failure_preview(stderr, text)}")
+    logger.success(
+        f"agent.lesson.extract done | provider={provider} section={section_number} "
+        f"chars={len(text)} input={prompt_tokens:,} output={output_tokens:,} duration_ms={duration_s * 1000:.0f}"
+    )
+    return text, prompt_tokens, output_tokens
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Compatibility shims: pipeline.py migrates to these incrementally
 # ─────────────────────────────────────────────────────────────────────
 
