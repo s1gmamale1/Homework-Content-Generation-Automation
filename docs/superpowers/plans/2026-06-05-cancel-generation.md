@@ -562,6 +562,8 @@ def test_cancel_finalize_is_shielded_and_status_gated():
     assert "mark_cancelled" in src
     # the finalize write must survive the already-delivered CancelledError
     assert "shield" in src, "wrap the cancelled finalize in asyncio.shield"
+    # double-cancel hardening: clear our own cancel state before the finalize
+    assert "uncancel" in src, "uncancel() before finalize so a double-cancel can't skip the write"
 ```
 
 - [ ] **Step 2: Run, verify FAIL.** `.\.venv\Scripts\python.exe -m pytest tests/services/test_cancel_finalize.py -q` → FAIL.
@@ -578,8 +580,16 @@ def test_cancel_finalize_is_shielded_and_status_gated():
                 except Exception:
                     logger.warning(f"worker {self.id} job={job_id} cancel status read failed")
                 if cancelling:
-                    # User cancel. The finalize write must survive the
-                    # already-delivered cancellation -> shield it.
+                    # User cancel. Clear our own cancellation so a rare
+                    # double-cancel (idempotent endpoint hit twice, or shutdown
+                    # racing the user-cancel) can't re-fire a CancelledError at
+                    # the finalize awaits — `except Exception` can't catch it
+                    # (CancelledError is BaseException). Python 3.13 uncancel().
+                    # shield() is belt-and-suspenders; T8's reclaim_stale_cancelling
+                    # sweep is the ultimate backstop for anything that slips past.
+                    current = asyncio.current_task()
+                    if current is not None:
+                        current.uncancel()
                     async def _finalize() -> None:
                         async with SessionLocal() as session:
                             await jobs_repo.mark_cancelled(session, job_id)
@@ -686,14 +696,14 @@ client = TestClient(app)
 
 
 def _job_out(status):
-    return JobOut(id=uuid4(), book_id=uuid4(), subject="kimyo-g7-11", status=status)
+    return JobOut(id=uuid4(), book_id=uuid4(), toc_entry_id=uuid4(), subject="kimyo-g7-11", status=status)
 
 
 def test_cancel_pending_is_atomic():
     jid = uuid4()
     with patch("app.api.v1.jobs.jobs_repo.cancel_if_pending", AsyncMock(return_value=True)), \
          patch("app.api.v1.jobs.jobs_repo.get", AsyncMock(return_value=SimpleNamespace(
-             id=jid, book_id=uuid4(), subject="kimyo-g7-11", status="cancelled"))):
+             id=jid, book_id=uuid4(), toc_entry_id=uuid4(), subject="kimyo-g7-11", status="cancelled"))):
         r = client.post(f"/api/v1/jobs/{jid}/cancel")
     assert r.status_code == 200
     assert r.json()["status"] == "cancelled"
@@ -706,7 +716,7 @@ def test_cancel_running_sets_cancelling_and_cancels_task():
          patch("app.api.v1.jobs.jobs_repo.request_cancel", AsyncMock(return_value=True)), \
          patch.dict("app.services.worker.RUNNING_JOBS", {jid: fake_task}, clear=False), \
          patch("app.api.v1.jobs.jobs_repo.get", AsyncMock(return_value=SimpleNamespace(
-             id=jid, book_id=uuid4(), subject="kimyo-g7-11", status="cancelling"))):
+             id=jid, book_id=uuid4(), toc_entry_id=uuid4(), subject="kimyo-g7-11", status="cancelling"))):
         r = client.post(f"/api/v1/jobs/{jid}/cancel")
     assert r.status_code == 200
     assert getattr(fake_task, "cancelled", False) is True
@@ -798,7 +808,7 @@ client = TestClient(app)
 def test_retry_allows_cancelled():
     jid = uuid4()
     job = SimpleNamespace(id=jid, status="cancelled")
-    updated = SimpleNamespace(id=jid, book_id=uuid4(), subject="kimyo-g7-11", status="pending")
+    updated = SimpleNamespace(id=jid, book_id=uuid4(), toc_entry_id=uuid4(), subject="kimyo-g7-11", status="pending")
     with patch("app.api.v1.jobs.jobs_repo.get", AsyncMock(return_value=job)), \
          patch("app.api.v1.jobs.jobs_repo.reset_for_retry", AsyncMock(return_value=updated)):
         r = client.post(f"/api/v1/jobs/{jid}/retry")
