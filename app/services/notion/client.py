@@ -69,6 +69,16 @@ class NotionClientWrapper:
                 )
         return pages
 
+    def get_page_title(self, page_id: str) -> str:
+        """The page's own title text. Rate-limited (the only title-read path)."""
+        self._rate_limit()
+        page = self.client.pages.retrieve(page_id)
+        props = page.get("properties", {})
+        title_prop = next(
+            (v for v in props.values() if v.get("type") == "title"), {"title": []})
+        parts = title_prop.get("title", [])
+        return "".join(p.get("plain_text", "") for p in parts).strip() or ""
+
     def page_has_content(self, page_id: str) -> bool:
         """True if the page already has any non-child_page block (idempotency guard)."""
         for block in self.get_block_children(page_id):

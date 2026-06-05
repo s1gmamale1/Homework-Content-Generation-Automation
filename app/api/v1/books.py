@@ -17,8 +17,9 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import BookOut, TOCEntryOut
-from app.services import events_bus, toc_extractor
+from app.services import events_bus, notion_fetch, toc_extractor
 from app.services.flows import SUPPORTED_SUBJECTS
+from app.services.notion.client import NotionClientWrapper
 
 
 class BookUpdateRequest(BaseModel):
@@ -108,6 +109,40 @@ async def upload_book(
         grade=grade,
         filename=file.filename or "book.pdf",
     )
+
+
+class FromNotionRequest(BaseModel):
+    subject_page_id: str
+    grade: str | None = None
+
+
+def _notion_subject_title(client: NotionClientWrapper, subject_page_id: str) -> str:
+    """Subject page title via the rate-limited wrapper (patched in tests)."""
+    return client.get_page_title(subject_page_id)
+
+
+@router.post("/from-notion", status_code=201)
+async def book_from_notion(
+    req: FromNotionRequest,
+    session: AsyncSession = Depends(get_session),
+    user: dict = Depends(get_current_user),
+) -> BookOut:
+    if not settings.notion_api_key:
+        raise HTTPException(503, "Notion not configured")
+    client = NotionClientWrapper(api_key=settings.notion_api_key)
+    title = await asyncio.to_thread(_notion_subject_title, client, req.subject_page_id)
+    subject = notion_fetch._map_subject(title)
+    if subject is None:
+        raise HTTPException(422, f"subject '{title}' is not supported for generation")
+    try:
+        body, filename = await asyncio.to_thread(
+            notion_fetch.download_textbook, client, req.subject_page_id)
+    except notion_fetch.TextbookTooLarge as exc:
+        raise HTTPException(422, f"textbook too large ({exc}) - shrink and upload manually")
+    except notion_fetch.NoTextbook:
+        raise HTTPException(422, "this subject has no attached textbook")
+    return await ingest_pdf(
+        session, body=body, subject=subject, grade=req.grade, filename=filename)
 
 
 @router.get("")
