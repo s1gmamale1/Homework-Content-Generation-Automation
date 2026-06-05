@@ -6,7 +6,7 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import HomeworkJob
+from app.models import HomeworkJob, PhaseOutput
 
 
 async def create(
@@ -343,3 +343,77 @@ async def queue_depth(session: AsyncSession) -> int:
         .where(HomeworkJob.scheduled_at <= datetime.now(timezone.utc))
     )
     return int((await session.execute(stmt)).scalar_one())
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Cancellation
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def cancel_if_pending(session: AsyncSession, job_id: UUID) -> bool:
+    """Atomically cancel a still-queued job. Returns True iff it transitioned
+    pending->cancelled (so the worker can never have claimed it). False means
+    it was already claimed/running/done — caller falls through to request_cancel."""
+    result = await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.id == job_id)
+        .where(HomeworkJob.status == "pending")
+        .values(status="cancelled", completed_at=datetime.now(timezone.utc))
+    )
+    return result.rowcount > 0
+
+
+async def request_cancel(session: AsyncSession, job_id: UUID) -> bool:
+    """Signal cancel for a RUNNING job: running->cancelling. Returns True iff it
+    transitioned (the owning worker / same-process registry then cancels the
+    task and finalizes). False means it wasn't running (done/failed/etc)."""
+    result = await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.id == job_id)
+        .where(HomeworkJob.status == "running")
+        .values(status="cancelling")
+    )
+    return result.rowcount > 0
+
+
+async def get_status(session: AsyncSession, job_id: UUID) -> Optional[str]:
+    """Lightweight status read (used by the heartbeat to notice a cancel)."""
+    return (
+        await session.execute(
+            select(HomeworkJob.status).where(HomeworkJob.id == job_id)
+        )
+    ).scalar_one_or_none()
+
+
+async def mark_cancelled(session: AsyncSession, job_id: UUID) -> None:
+    """Finalize a user-cancelled job: job -> cancelled; any non-done phase rows
+    -> failed (they were interrupted/killed). DONE phases are preserved so a
+    later /retry can resume (worklog 0031)."""
+    await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.id == job_id)
+        .values(status="cancelled", completed_at=datetime.now(timezone.utc))
+    )
+    await session.execute(
+        update(PhaseOutput)
+        .where(PhaseOutput.job_id == job_id)
+        .where(PhaseOutput.status != "done")
+        .values(status="failed")
+    )
+
+
+async def reclaim_stale_cancelling(
+    session: AsyncSession, stale_after_seconds: int
+) -> int:
+    """Finalize jobs stuck in `cancelling` whose claim is older than the lease
+    window — i.e. the owning worker crashed mid-cancel. They're excluded from
+    both claim (pending) and reclaim (running) sweeps, so without this they'd
+    hang forever. The intent was to cancel, so -> cancelled."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
+    result = await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.status == "cancelling")
+        .where(HomeworkJob.claimed_at < cutoff)
+        .values(status="cancelled", completed_at=datetime.now(timezone.utc))
+    )
+    return result.rowcount
