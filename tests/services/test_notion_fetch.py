@@ -123,10 +123,14 @@ def _stub_http(stream_obj):
 def test_download_rejects_oversize_via_content_length(monkeypatch):
     # Notion S3 URLs are presigned for GET only (HEAD 403s), so the size check
     # reads Content-Length off a streaming GET and rejects BEFORE reading the body.
+    # Oversize is relative to the upload cap (settings.max_file_mb), not a
+    # hardcoded 20 MB.
+    from app.config import settings
     c = _client({}, blocks_by_page={"sub": [{"type": "pdf", "pdf": {"file": {"url": "http://x/b.pdf"}}}]})
+    oversize = (settings.max_file_mb + 5) * 1024 * 1024
 
     class _Stream:
-        headers = {"Content-Length": str(21 * 1024 * 1024)}
+        headers = {"Content-Length": str(oversize)}
         def __enter__(self): return self
         def __exit__(self, *a): pass
         def raise_for_status(self): pass
@@ -135,6 +139,26 @@ def test_download_rejects_oversize_via_content_length(monkeypatch):
     monkeypatch.setattr("app.services.notion_fetch.httpx.Client", _stub_http(_Stream()))
     with pytest.raises(TextbookTooLarge):
         download_textbook(c, "sub")
+
+
+def test_download_accepts_above_old_20mb_cap(monkeypatch):
+    # Fetch ceiling raised 20 MB -> the upload cap (settings.max_file_mb) and tied
+    # so they can't drift. A 30 MB book (rejected under the old cap) now passes.
+    from app.config import settings
+    assert settings.max_file_mb >= 50
+    c = _client({}, blocks_by_page={"sub": [{"type": "pdf", "pdf": {"file": {"url": "http://x/b.pdf"}}}]})
+
+    class _Stream:
+        headers = {"Content-Length": str(30 * 1024 * 1024)}
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def raise_for_status(self): pass
+        def read(self): return b"%PDF-1.4 small body"
+
+    monkeypatch.setattr("app.services.notion_fetch.httpx.Client", _stub_http(_Stream()))
+    body, filename = download_textbook(c, "sub")
+    assert body == b"%PDF-1.4 small body"
+    assert filename == "textbook.pdf"
 
 
 def test_download_returns_bytes_via_streaming_get(monkeypatch):

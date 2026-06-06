@@ -22,10 +22,10 @@ def test_from_notion_oversize_422():
     with patch("app.api.v1.books.NotionClientWrapper"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               side_effect=nf.TextbookTooLarge("26.4 MB > 20 MB")):
+               side_effect=nf.TextbookTooLarge("60.0 MB > 50 MB")):
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "alg", "grade": "9"})
-    assert r.status_code == 422 and "20 MB" in r.text
+    assert r.status_code == 422 and "50 MB" in r.text
 
 
 def test_from_notion_happy_path_calls_ingest():

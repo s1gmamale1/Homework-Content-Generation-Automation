@@ -8,6 +8,8 @@ import re
 
 import httpx
 
+from app.config import settings
+
 # Folded-substring map, LONGEST keyword first so a double-hit is deterministic.
 # "matematika" is intentionally absent (lower-grade math != the app's algebra).
 _SUBJECT_KEYWORDS: list[tuple[str, str]] = [
@@ -90,19 +92,20 @@ def list_subjects(client, grade_page_id: str) -> list[dict]:
     return out
 
 
-_TOC_MAX_BYTES = 20 * 1024 * 1024  # Gemini TOC ceiling (CLAUDE.md); distinct from upload's 50 MB
-
-
 class NoTextbook(Exception):
     """Subject page has no downloadable PDF block."""
 
 
 class TextbookTooLarge(Exception):
-    """Attachment exceeds the 20 MB Gemini TOC limit."""
+    """Attachment exceeds the ingest ceiling (settings.max_file_mb, shared with
+    upload). Raised from the old hardcoded 20 MB Gemini-TOC limit and tied to the
+    upload cap so the two can't drift: TOC extraction handles >20 MB via local
+    pypdf text, so there's no reason to cap fetch below upload."""
 
 
 def download_textbook(client, subject_page_id: str) -> tuple[bytes, str]:
-    """Resolve the subject page's first PDF block, reject >20 MB, return (bytes, filename).
+    """Resolve the subject page's first PDF block, reject files larger than the
+    upload cap (settings.max_file_mb), return (bytes, filename).
 
     Notion attachment URLs are S3 links presigned for GET only -- a HEAD request
     against them 403s (the signature covers the GET method, not HEAD). So we open
@@ -110,6 +113,7 @@ def download_textbook(client, subject_page_id: str) -> tuple[bytes, str]:
     oversize file BEFORE consuming its body; a post-read length check covers the
     rare case where the header is absent.
     """
+    max_bytes = settings.max_file_mb * 1024 * 1024
     block = _first_pdf_block(client.get_block_children(subject_page_id))
     if block is None:
         raise NoTextbook(subject_page_id)
@@ -120,9 +124,9 @@ def download_textbook(client, subject_page_id: str) -> tuple[bytes, str]:
         with http.stream("GET", url, follow_redirects=True) as resp:
             resp.raise_for_status()
             size = int(resp.headers.get("Content-Length") or 0)
-            if size > _TOC_MAX_BYTES:
-                raise TextbookTooLarge(f"{size / 1048576:.1f} MB > 20 MB")
+            if size > max_bytes:
+                raise TextbookTooLarge(f"{size / 1048576:.1f} MB > {settings.max_file_mb} MB")
             body = resp.read()
-    if len(body) > _TOC_MAX_BYTES:        # fallback when Content-Length absent
-        raise TextbookTooLarge(f"{len(body) / 1048576:.1f} MB > 20 MB")
+    if len(body) > max_bytes:        # fallback when Content-Length absent
+        raise TextbookTooLarge(f"{len(body) / 1048576:.1f} MB > {settings.max_file_mb} MB")
     return body, filename
