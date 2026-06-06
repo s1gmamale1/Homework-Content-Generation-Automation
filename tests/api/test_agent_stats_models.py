@@ -18,10 +18,13 @@ def test_get_agent_stats_nests_models_with_computed_success_pct():
          "duration_secs": 0.5, "prompt_tokens": 10, "output_tokens": 5,
          "cached_tokens": 0, "success_count": 1},
     ]
+    series = {"calls": [], "tokens": [], "duration_secs": [], "success_pct": []}
     with patch.object(jobs_mod.agent_usage_repo, "stats_by_provider",
                       AsyncMock(return_value=prov_rows)), \
          patch.object(jobs_mod.agent_usage_repo, "stats_by_provider_model",
-                      AsyncMock(return_value=model_rows)):
+                      AsyncMock(return_value=model_rows)), \
+         patch.object(jobs_mod.agent_usage_repo, "series_by_window",
+                      AsyncMock(return_value=series)):
         resp = asyncio.run(jobs_mod.get_agent_stats(session=None))
 
     claude_24h = resp["providers"]["claude"]["24h"]

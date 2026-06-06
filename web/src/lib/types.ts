@@ -120,9 +120,16 @@ export interface ProviderStatsWindow {
   pct_of_limit: number | null;
   models: ProviderModelStat[];
 }
+export interface UsageSeries {
+  calls: number[];
+  tokens: number[];
+  duration_secs: number[];
+  success_pct: number[];
+}
 export interface AgentStats {
   windows: string[];
   providers: Record<string, Record<string, ProviderStatsWindow>>;
+  series: Record<string, UsageSeries>;
   now: string;
 }
 

@@ -234,3 +234,63 @@ async def stats_by_provider_model(
         }
         for r in rows
     ]
+
+
+async def series_by_window(
+    session: AsyncSession,
+    *,
+    since: datetime,
+    now: datetime,
+    buckets: int = 12,
+) -> dict:
+    """Bucket agent_usages rows into ``buckets`` equal time slices across
+    [since, now] and aggregate per slice — a real time-series for sparklines.
+
+    Returns four ``buckets``-length arrays: calls, tokens (prompt+output+cached),
+    duration_secs, success_pct. Rows are fetched once and bucketed in Python
+    (handles the string ``duration`` column cleanly; row counts per window are
+    small). Every point is genuine data — empty slices are 0.
+    """
+    rows = (
+        await session.execute(
+            select(
+                AgentUsage.started_at,
+                AgentUsage.duration,
+                AgentUsage.prompt_tokens,
+                AgentUsage.output_tokens,
+                AgentUsage.cached_tokens,
+                AgentUsage.success,
+            ).where(AgentUsage.started_at >= since)
+        )
+    ).all()
+
+    calls = [0] * buckets
+    tokens = [0] * buckets
+    dur = [0.0] * buckets
+    succ = [0] * buckets
+
+    since_epoch = since.timestamp()
+    width = max((now - since).total_seconds() / buckets, 1e-9)
+
+    for started_at, duration, prompt_t, output_t, cached_t, success in rows:
+        i = int((started_at.timestamp() - since_epoch) // width)
+        if i < 0:
+            i = 0
+        elif i >= buckets:
+            i = buckets - 1
+        calls[i] += 1
+        tokens[i] += int(prompt_t or 0) + int(output_t or 0) + int(cached_t or 0)
+        dur[i] += _parse_duration_seconds(duration)
+        if success:
+            succ[i] += 1
+
+    success_pct = [
+        round(100.0 * succ[i] / calls[i], 1) if calls[i] else 0.0
+        for i in range(buckets)
+    ]
+    return {
+        "calls": calls,
+        "tokens": tokens,
+        "duration_secs": [round(d, 1) for d in dur],
+        "success_pct": success_pct,
+    }

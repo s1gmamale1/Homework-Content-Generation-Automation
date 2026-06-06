@@ -413,8 +413,12 @@ async def get_agent_stats(
 
     # Each window is one independent SQL aggregate. Three queries total.
     providers: dict[str, dict[str, dict]] = {p: {} for p in _STATS_PROVIDERS}
+    series: dict[str, dict] = {}
     for window_label, delta in _STATS_WINDOWS:
         since = now - delta
+        series[window_label] = await agent_usage_repo.series_by_window(
+            session, since=since, now=now
+        )
         rows = await agent_usage_repo.stats_by_provider(session, since=since)
         by_provider = {row["provider"]: row for row in rows}
         model_rows = await agent_usage_repo.stats_by_provider_model(session, since=since)
@@ -469,6 +473,8 @@ async def get_agent_stats(
     return {
         "windows": [w for w, _ in _STATS_WINDOWS],
         "providers": providers,
+        # Per-window time-series (12 buckets) for the summary sparklines.
+        "series": series,
         # Strip microseconds and tag UTC so the response reads naturally
         # ('2026-05-06T03:14:22Z') and matches the docstring example.
         "now": now.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
