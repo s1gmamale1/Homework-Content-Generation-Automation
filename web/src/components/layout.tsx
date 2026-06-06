@@ -1,4 +1,4 @@
-import { Gauge, Library, Plus } from "lucide-react";
+import { Gauge, Library, Moon, Plus } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Nameplate } from "./nameplate";
 import { cn } from "@/lib/utils";
@@ -50,6 +50,14 @@ export function Layout() {
             <span className="hidden font-mono text-[0.66rem] font-medium uppercase tracking-[0.14em] text-(--color-ink-muted) sm:inline">
               v0
             </span>
+            <button
+              type="button"
+              aria-label="Dark theme"
+              title="Dark theme"
+              className="grid size-9 place-items-center rounded-full border border-white/[0.12] bg-white/[0.06] text-white/70 transition-colors hover:bg-white/[0.1] hover:text-white"
+            >
+              <Moon className="size-4" />
+            </button>
           </div>
         </div>
       </header>
