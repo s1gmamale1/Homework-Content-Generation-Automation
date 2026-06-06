@@ -884,7 +884,15 @@ def validate_extract_text(text: str) -> Optional[str]:
     if len(stripped) < settings.extract_min_text_chars:
         return f"unreadable PDF (no text layer): only {len(stripped)} chars extracted"
     letters = sum(c.isalpha() for c in stripped)
-    ratio = letters / len(stripped)
+    # Ratio over VISIBLE (non-whitespace) chars, not total. Math/science books
+    # extract with huge layout whitespace (equations, spacing) — dividing by
+    # total wrongly sank a readable algebra book to 0.44 and terminal-failed it.
+    # "of the actual glyphs, how many are letters" is the real readability
+    # signal and is immune to layout whitespace. Real books score >=0.68 here;
+    # broken-font / glyph soup still scores <0.40, so the 0.55 floor separates
+    # them cleanly.
+    visible = sum(1 for c in stripped if not c.isspace())
+    ratio = letters / visible if visible else 0.0
     if ratio < settings.extract_min_printable_ratio:
         return f"unreadable PDF (no text layer): printable-letter ratio {ratio:.2f}"
     return None

@@ -18,6 +18,21 @@ def test_gate_a_rejects_glyph_garbage():
     assert validate_extract_text(garbage) is not None
 
 
+def test_gate_a_accepts_math_textbook_with_heavy_whitespace():
+    # Regression (worklog 0039->0040): a real algebra book extracted with ~35%
+    # layout whitespace + digits + symbols scored letters/total = 0.44 and was
+    # wrongly terminal-failed. The ratio must be over VISIBLE chars: of the
+    # actual glyphs, ~68% are letters here, so it must PASS.
+    math_line = "Tenglama   x  +  2  =  5   yechimi   x  =  3 .    "  # spacey, digits, symbols
+    text = math_line * 300
+    # Sanity: this DOES have heavy whitespace (the old metric would have failed it)
+    stripped = text.strip()
+    letters = sum(c.isalpha() for c in stripped)
+    assert letters / len(stripped) < 0.55, "test fixture must reproduce the old false-reject"
+    # The shipped gate (visible-char denominator) must accept it.
+    assert validate_extract_text(text) is None
+
+
 def test_gate_b_accepts_real_summary():
     summary = "# Franklar davlati\n\n" + ("Bu darsda muhim tarixiy voqealar bor. " * 50)
     assert validate_extract_summary(summary) is None
