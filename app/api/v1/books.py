@@ -172,21 +172,35 @@ async def stream_toc(book_id: UUID, request: Request):
     async def event_gen():
         async with SessionLocal() as session:
             book = await books_repo.get_with_toc(session, book_id)
+            # Snapshot inside the session block, release the connection, THEN
+            # yield — a yield while the session is checked out can orphan the
+            # pooled connection on an abrupt client disconnect (GC then reaps it
+            # with a "non-checked-in connection" warning).
+            initial: list[dict] = []
+            terminal = False
             if book is None:
-                yield {"event": "error", "data": json.dumps({"message": "book not found"})}
-                return
-
-            if book.status in ("uploading", "toc_extracting"):
-                yield {"event": "status", "data": json.dumps({"status": book.status})}
+                initial.append({"event": "error",
+                                "data": json.dumps({"message": "book not found"})})
+                terminal = True
+            elif book.status in ("uploading", "toc_extracting"):
+                initial.append({"event": "status",
+                                "data": json.dumps({"status": book.status})})
             elif book.status == "toc_ready":
                 enriched = await _enriched_toc_entries(session, book)
                 entries = [eo.model_dump(mode="json") for eo in enriched]
-                yield {"event": "toc_ready", "data": json.dumps({"entries": entries})}
-                return
+                initial.append({"event": "toc_ready",
+                                "data": json.dumps({"entries": entries})})
+                terminal = True
             elif book.status == "failed":
-                yield {"event": "error",
-                       "data": json.dumps({"message": book.error_message or "failed"})}
-                return
+                initial.append({"event": "error",
+                                "data": json.dumps({"message": book.error_message or "failed"})})
+                terminal = True
+
+        # Session released — safe to yield without holding a pooled connection.
+        for ev in initial:
+            yield ev
+        if terminal:
+            return
 
         q = events_bus.subscribe(resource_id)
         try:

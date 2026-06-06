@@ -258,52 +258,64 @@ async def stream_job(job_id: UUID, request: Request):
     async def event_gen():
         async with SessionLocal() as session:
             job = await jobs_repo.get_with_phases(session, job_id)
-            if job is None:
-                yield {"event": "error", "data": json.dumps({"message": "job not found"})}
-                return
-
-            for p in job.phase_outputs:
-                if p.status == "done":
-                    yield {
-                        "event": "phase_completed",
+            # Snapshot everything we need into plain dicts INSIDE the session
+            # block, then release the connection BEFORE yielding. Yielding while
+            # the session is still checked out can orphan the pooled connection
+            # if the client disconnects mid-yield (the async generator is GC'd
+            # without a clean aclose()), which SQLAlchemy later reaps with a
+            # "non-checked-in connection" warning.
+            missing = job is None
+            initial: list[dict] = []
+            terminal: dict | None = None
+            if not missing:
+                for p in job.phase_outputs:
+                    if p.status == "done":
+                        initial.append({
+                            "event": "phase_completed",
+                            "data": json.dumps({
+                                "phase_name": p.phase_name,
+                                "phase_order": p.phase_order,
+                                "output_md": p.output_md or "",
+                                "tokens_input": p.tokens_input,
+                                "tokens_output": p.tokens_output,
+                            }),
+                        })
+                    elif p.status == "running":
+                        initial.append({
+                            "event": "phase_started",
+                            "data": json.dumps({
+                                "phase_name": p.phase_name,
+                                "phase_order": p.phase_order,
+                            }),
+                        })
+                if job.difficulty is not None:
+                    initial.append({
+                        "event": "difficulty_classified",
+                        "data": json.dumps({"difficulty": job.difficulty}),
+                    })
+                if job.status == "done":
+                    terminal = {
+                        "event": "job_completed",
                         "data": json.dumps({
-                            "phase_name": p.phase_name,
-                            "phase_order": p.phase_order,
-                            "output_md": p.output_md or "",
-                            "tokens_input": p.tokens_input,
-                            "tokens_output": p.tokens_output,
+                            "job_id": str(job_id),
+                            "download_url": f"/api/v1/jobs/{job_id}/download",
                         }),
                     }
-                elif p.status == "running":
-                    yield {
-                        "event": "phase_started",
-                        "data": json.dumps({
-                            "phase_name": p.phase_name,
-                            "phase_order": p.phase_order,
-                        }),
+                elif job.status == "failed":
+                    terminal = {
+                        "event": "error",
+                        "data": json.dumps({"message": job.error_message or "failed"}),
                     }
 
-            if job.difficulty is not None:
-                yield {
-                    "event": "difficulty_classified",
-                    "data": json.dumps({"difficulty": job.difficulty}),
-                }
-
-            if job.status == "done":
-                yield {
-                    "event": "job_completed",
-                    "data": json.dumps({
-                        "job_id": str(job_id),
-                        "download_url": f"/api/v1/jobs/{job_id}/download",
-                    }),
-                }
-                return
-            if job.status == "failed":
-                yield {
-                    "event": "error",
-                    "data": json.dumps({"message": job.error_message or "failed"}),
-                }
-                return
+        # Session released — safe to yield without holding a pooled connection.
+        if missing:
+            yield {"event": "error", "data": json.dumps({"message": "job not found"})}
+            return
+        for ev in initial:
+            yield ev
+        if terminal is not None:
+            yield terminal
+            return
 
         q = events_bus.subscribe(resource_id)
         try:
