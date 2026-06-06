@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-FastAPI + React app that turns a textbook PDF into a multi-phase homework packet (preview, flashcards, memory sprint, mini-games, boss-fight quiz, reading, reflection). Background workers run a DAG-parallel pipeline that drives **CLI subprocesses** of one of four LLM providers — `claude`, `kimi`, `codex`, `gemini` — chosen per job by the user.
+FastAPI + React app that turns a textbook PDF into a multi-phase homework packet (preview, flashcards, memory sprint, mini-games, boss-fight quiz, reading, reflection). Background workers run a DAG-parallel pipeline that drives **CLI subprocesses** of one of five LLM providers — `claude`, `kimi`, `codex`, `gemini`, `opencode` — chosen per job by the user.
 
-Everything LLM-facing goes through `app/services/agent.py` (the CLI router); there is no Gemini SDK, OpenAI SDK, or Anthropic SDK in the runtime path. The four CLIs must be installed on `PATH`.
+Everything LLM-facing goes through `app/services/agent.py` (the CLI router); there is no Gemini SDK, OpenAI SDK, or Anthropic SDK in the runtime path. The five CLIs must be installed on `PATH`.
 
 ## Implementation workflow
 
@@ -62,7 +62,7 @@ Local dev uses port **5433** for Postgres, not 5432, because the Windows host ty
 
 ### Provider router (`app/services/providers/` + `app/services/agent.py`)
 
-`Provider` is an abstract base (`base.py`) with one subclass per CLI (`claude.py`, `kimi.py`, `codex.py`, `gemini.py`). Each provider implements:
+`Provider` is an abstract base (`base.py`) with one subclass per CLI (`claude.py`, `kimi.py`, `codex.py`, `gemini.py`, `opencode.py`). Each provider implements:
 - `build_argv(...)` — argv vector for `asyncio.create_subprocess_exec`. Adds `--model X` only when truthy. Adds attachment scope flags (`--add-dir`, `--include-directories`) per CLI.
 - `parse_envelope(stdout, last_msg_path)` — returns `(text, usage)` where usage has normalized keys `prompt_tokens`, `output_tokens`, `cached_tokens`, `total_tokens`, `raw`.
 - `format_attachments(paths)` — provider-specific prompt preamble that names attached files. Claude returns `""` (consumes attachments via positional `@<path>` argv); the others return text instructing the CLI which tool to use to read the file.
@@ -105,13 +105,13 @@ Postgres-backed via `SELECT … FOR UPDATE SKIP LOCKED`. The API process embeds 
 
 ### Token / usage tracking
 
-Every CLI call writes one row to `agent_usages` with `provider`, `model_name`, normalized token counts, `duration`, `success`, `raw_envelope`. The `/api/v1/agent/stats` endpoint aggregates by provider over rolling 1h/24h/7d windows; the `/usage` SPA route renders progress bars against per-provider caps configured via `AGENT_LIMIT_<PROVIDER>_<WINDOW>` env vars. These are local consumption, not real provider quotas — the four CLIs don't expose quota in headless mode.
+Every CLI call writes one row to `agent_usages` with `provider`, `model_name`, normalized token counts, `duration`, `success`, `raw_envelope`. The `/api/v1/agent/stats` endpoint aggregates by provider over rolling 1h/24h/7d windows; the `/usage` SPA route renders progress bars against per-provider caps configured via `AGENT_LIMIT_<PROVIDER>_<WINDOW>` env vars. These are local consumption, not real provider quotas — the CLIs don't expose quota in headless mode.
 
 **Kimi gap**: kimi 1.30 stream-json doesn't report token counts; rows have `prompt_tokens=0`, `output_tokens=0`, `cached_tokens=0`. Duration and call counts still work.
 
 ## Database (key tables)
 
-- `homework_jobs` — one row per generation request. Has `provider`, `model`, `attempts`, `current_phase`, `status` (`pending`/`running`/`done`/`failed`), structured-output JSON columns.
+- `homework_jobs` — one row per generation request. Has `provider`, `model`, `attempts`, `current_phase`, `status` (`pending`/`running`/`done`/`failed`/`cancelling`/`cancelled`), structured-output JSON columns.
 - `phase_outputs` — one row per phase per job (`uq_phase_output_job_order` enforces no duplicates). Use `phase_repo.create_or_reset`, not `create`.
 - `agent_usages` — one row per CLI subprocess call. The token-summary log at end-of-job reads these.
 - `books` — has legacy `gemini_file_uri` / `gemini_cache_*` columns that are unused but kept nullable for backwards-compat. The PDF lives on disk at `var/books/<book_id>/source.pdf`.

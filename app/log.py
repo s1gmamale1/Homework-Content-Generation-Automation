@@ -20,7 +20,7 @@ _FMT = (
 
 
 def configure(level: str = "INFO") -> None:
-    """Reset the default loguru handler and install our colored stderr sink."""
+    """Reset the default loguru handler and install our stderr + rotating-file sinks."""
     logger.remove()
     logger.add(
         sys.stderr,
@@ -30,4 +30,15 @@ def configure(level: str = "INFO") -> None:
         enqueue=True,        # thread-safe; SSE handlers and background tasks log concurrently
         backtrace=False,     # avoid leaking variable values into logs by default
         diagnose=False,      # ditto
+    )
+    logger.add(
+        "var/server.log",
+        level=level,
+        format=_FMT,
+        colorize=False,      # plain text on disk
+        enqueue=True,
+        backtrace=False,
+        diagnose=False,
+        rotation="20 MB",    # roll over at 20 MB
+        retention="7 days",  # prune logs older than a week
     )

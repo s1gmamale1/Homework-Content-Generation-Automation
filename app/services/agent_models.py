@@ -7,6 +7,7 @@ from __future__ import annotations
 MODEL_MANIFEST: dict[str, list[str]] = {
     "claude": [
         "claude-sonnet-4-6",
+        "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-haiku-4-5-20251001",
     ],
@@ -22,6 +23,7 @@ MODEL_MANIFEST: dict[str, list[str]] = {
     ],
     "gemini": [
         "gemini-3.1-pro-preview",
+        "gemini-3.5-flash",
         "gemini-3-flash-preview",
         "gemini-3.1-flash-lite-preview",
         "gemini-2.5-pro",
