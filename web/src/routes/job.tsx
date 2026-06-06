@@ -177,6 +177,35 @@ export function JobPage() {
     enabled: !downloadUrl && !error && status !== "cancelled",
   });
 
+  /**
+   * Poll to terminal while a job is `cancelling`. Cancellation publishes no
+   * terminal SSE event — `pipeline.run`'s `finally: events_bus.close()` tears
+   * the stream down BEFORE the worker commits `cancelled`, so the live stream
+   * just ends with `onerror`. A single refetch-on-close would race that commit
+   * and could re-read stale `cancelling`; polling until the status is terminal
+   * is race-free. Also covers landing on a mid-cancel job via reload.
+   */
+  useEffect(() => {
+    if (!id || status !== "cancelling") return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const j = await api.getJob(id);
+        if (stopped || j.status === "cancelling") return;
+        setStatus(j.status);
+        if (j.status === "done") setDownloadUrl(api.jobDownloadUrl(id));
+      } catch {
+        // transient; the interval will retry
+      }
+    };
+    const timer = setInterval(poll, 1500);
+    void poll();
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [id, status]);
+
   const visiblePhases = order
     .map((name) => phases[name])
     .filter((p): p is PhaseUi => Boolean(p))

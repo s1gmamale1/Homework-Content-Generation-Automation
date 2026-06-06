@@ -306,6 +306,17 @@ async def stream_job(job_id: UUID, request: Request):
                         "event": "error",
                         "data": json.dumps({"message": job.error_message or "failed"}),
                     }
+                elif job.status in ("cancelling", "cancelled"):
+                    # Cancellation publishes NO terminal event to the live bus:
+                    # ``pipeline.run``'s ``finally: events_bus.close()`` tears the
+                    # bus down before the worker commits ``cancelled``. So a fresh
+                    # stream for an already-cancelled/cancelling job must return
+                    # terminally from the initial replay instead of subscribing to
+                    # a dead bus and blocking on ``q.get()`` forever.
+                    terminal = {
+                        "event": "job_cancelled",
+                        "data": json.dumps({"job_id": str(job_id)}),
+                    }
 
         # Session released — safe to yield without holding a pooled connection.
         if missing:
