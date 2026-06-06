@@ -17,7 +17,10 @@ def test_allocation_wall():
 
 
 def test_unknown_defaults_to_hard():
-    assert fc.classify("codex CLI exited rc=1 :: ModelNotFoundError") == "hard"
+    # A genuinely unrecognized failure (no known signal) -> one same-provider
+    # retry. NOTE: model-not-found is now special-cased to "wall" (see below),
+    # so it can't be the example here anymore.
+    assert fc.classify("codex CLI exited rc=1 :: malformed response envelope") == "hard"
 
 
 def test_accepts_exception_object():
@@ -37,3 +40,14 @@ def test_extract_refusal_is_immediate_failover():
     from app.services.failure_classifier import ExtractRefusal, classify
     # ExtractRefusal must classify as "wall" → budget 0 → no same-provider retry.
     assert classify(ExtractRefusal("Gate B: summary too short")) == "wall"
+
+
+def test_model_not_found_is_immediate_failover():
+    # A non-existent model (phantom manifest entry / typo) returns the SAME error
+    # on every retry, so retrying the same provider is pure waste → classify as
+    # "wall" (0 same-provider retries → immediate failover). Seen live: a job on
+    # the phantom "gemini-3.5-flash" → ModelNotFoundError on every gemini phase.
+    assert fc.classify(
+        "Error talking to Gemini API ... ModelNotFoundError: Requested entity was not found."
+    ) == "wall"
+    assert fc.classify("requested entity was not found") == "wall"

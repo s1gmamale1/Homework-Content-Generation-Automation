@@ -37,6 +37,15 @@ _WALL = (
     "quota",
     "rate limit reached",
 )
+# Permanent "this model/endpoint does not exist" errors (phantom manifest entry
+# or typo). The SAME bad model is requested on every same-provider retry, so a
+# retry can never succeed — treat as a wall (0 same-provider retries → immediate
+# failover to the next provider) instead of wasting the "hard" retry.
+_MODEL_NOT_FOUND = (
+    "modelnotfounderror",
+    "requested entity was not found",
+    "model not found",
+)
 
 
 def classify(error: "str | BaseException") -> str:
@@ -44,6 +53,10 @@ def classify(error: "str | BaseException") -> str:
     if isinstance(error, ExtractRefusal):
         return "wall"
     msg = str(error).lower()
+    # Permanent model-not-found wins over everything (no coincidental transient
+    # match should grant a doomed same-provider retry).
+    if any(s in msg for s in _MODEL_NOT_FOUND):
+        return "wall"
     if any(s in msg for s in _TRANSIENT):
         return "transient"
     if any(s in msg for s in _WALL):

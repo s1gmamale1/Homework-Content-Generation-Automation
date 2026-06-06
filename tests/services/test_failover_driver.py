@@ -23,7 +23,7 @@ def test_failover_switches_provider_on_hard_failure():
     async def run_fn(provider, model):
         calls.append(provider)
         if provider == "claude":
-            raise RuntimeError("claude CLI exited rc=1 :: ModelNotFoundError")  # hard
+            raise RuntimeError("claude CLI exited rc=1 :: malformed response envelope")  # hard
         return f"# ok from {provider}", 1, 2
 
     out, tin, tout, produced = asyncio.run(
@@ -32,6 +32,25 @@ def test_failover_switches_provider_on_hard_failure():
     assert produced == "codex"
     assert out == "# ok from codex"
     assert calls.count("claude") == 2 and calls[-1] == "codex"
+
+
+def test_model_not_found_fails_over_immediately():
+    # A phantom / non-existent model returns the SAME error on every retry, so
+    # the driver must fail over on the FIRST failure — no wasted same-provider
+    # retry. (Regression guard for the phantom gemini-3.5-flash incident.)
+    calls = []
+
+    async def run_fn(provider, model):
+        calls.append(provider)
+        if provider == "claude":
+            raise RuntimeError(
+                "claude CLI exited rc=1 :: ModelNotFoundError: Requested entity was not found")
+        return f"# ok from {provider}", 1, 2
+
+    out, tin, tout, produced = asyncio.run(
+        _run_with_failover(requested_provider="claude", model="bogus-model", run_fn=run_fn)
+    )
+    assert calls.count("claude") == 1 and produced == "codex"
 
 
 def test_wall_fails_over_with_no_same_retry():
