@@ -100,6 +100,15 @@ export interface ProviderModelManifest {
 }
 
 /* /api/v1/agent/stats — per-provider rolling consumption against caps */
+export interface ProviderModelStat {
+  model_name: string;
+  calls: number;
+  duration_secs: number;
+  prompt_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  success_pct: number;
+}
 export interface ProviderStatsWindow {
   calls: number;
   duration_secs: number;
@@ -109,6 +118,7 @@ export interface ProviderStatsWindow {
   success_pct: number;
   limit_calls_per_window: number | null;
   pct_of_limit: number | null;
+  models: ProviderModelStat[];
 }
 export interface AgentStats {
   windows: string[];
