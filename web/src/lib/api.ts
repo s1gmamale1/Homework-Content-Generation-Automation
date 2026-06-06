@@ -192,6 +192,19 @@ export const api = {
     return unwrap<Job>(res);
   },
 
+  /**
+   * Request cancellation of a pending or running job — see
+   * `POST /api/v1/jobs/<id>/cancel`. A queued job moves straight to
+   * `cancelled`; a running one transitions to `cancelling` while the worker
+   * tears the task down, then settles to `cancelled`.
+   */
+  async cancelJob(jobId: string): Promise<Job> {
+    const res = await authFetch(`/api/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: "POST",
+    });
+    return unwrap<Job>(res);
+  },
+
   async listNotionGrades(): Promise<NotionGrade[]> {
     const res = await authFetch("/api/v1/notion/grades");
     return unwrap<NotionGrade[]>(res);

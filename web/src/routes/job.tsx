@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
+  Ban,
   CheckCircle2,
   ChevronDown,
   CircleX,
@@ -20,7 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useEventSource } from "@/hooks/use-event-source";
 import { api } from "@/lib/api";
-import type { Difficulty } from "@/lib/types";
+import type { Difficulty, JobStatus } from "@/lib/types";
 import { cn, formatPhaseName, formatTokens } from "@/lib/utils";
 
 type PhaseUiStatus = "running" | "done" | "failed";
@@ -43,7 +44,9 @@ export function JobPage() {
   const [error, setError] = useState<string | null>(null);
   const [parents, setParents] = useState<{ bookId: string; sectionId: string } | null>(null);
   const [agent, setAgent] = useState<{ provider: string; model: string | null } | null>(null);
+  const [status, setStatus] = useState<JobStatus | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const queryClient = useQueryClient();
 
   /**
@@ -65,11 +68,34 @@ export function JobPage() {
       setPhases({});
       setOrder([]);
       setDifficulty(null);
+      setStatus(updated.status);
       toast.success("Retry queued — pipeline restarting");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Retry failed");
     } finally {
       setRetrying(false);
+    }
+  }
+
+  /**
+   * Cancel a pending or running job — see `POST /api/v1/jobs/<id>/cancel`.
+   * A queued job comes back `cancelled`; a running one comes back
+   * `cancelling` while the worker tears the task down. We mirror the
+   * returned status locally so the badge/timeline reflect it immediately,
+   * and seed the react-query cache the same way the retry path does.
+   */
+  async function handleCancel() {
+    if (!id) return;
+    setCancelling(true);
+    try {
+      const updated = await api.cancelJob(id);
+      queryClient.setQueryData(["job", id], updated);
+      setStatus(updated.status);
+      toast.success("Cancelling…");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Cancel failed");
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -107,6 +133,7 @@ export function JobPage() {
           });
         }
         if (j.difficulty) setDifficulty(j.difficulty);
+        setStatus(j.status);
         if (j.status === "done") setDownloadUrl(api.jobDownloadUrl(id));
         if (j.status === "failed") setError(j.error_message ?? "Job failed.");
       })
@@ -132,12 +159,14 @@ export function JobPage() {
         setDifficulty(data?.difficulty ?? null);
       },
       job_completed: (data: any) => {
+        setStatus("done");
         setDownloadUrl(data?.download_url ?? (id ? api.jobDownloadUrl(id) : null));
       },
       error: (data: any) => {
         if (data?.phase_name) {
           upsert(data.phase_name, { status: "failed" });
         }
+        setStatus("failed");
         setError(data?.message ?? "Stream failed.");
       },
     }),
@@ -145,7 +174,7 @@ export function JobPage() {
   );
 
   useEventSource(id ? api.jobStreamUrl(id) : null, handlers, {
-    enabled: !downloadUrl && !error,
+    enabled: !downloadUrl && !error && status !== "cancelled",
   });
 
   const visiblePhases = order
@@ -176,6 +205,29 @@ export function JobPage() {
             <Badge variant="neutral">
               {doneCount}/{totalCount}
             </Badge>
+          )}
+          {(status === "cancelling" || status === "cancelled") && (
+            <Badge variant="neutral">{status}</Badge>
+          )}
+          {(status === "pending" || status === "running") && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleCancel}
+              disabled={cancelling}
+            >
+              {cancelling ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin" />
+                  Cancelling…
+                </>
+              ) : (
+                <>
+                  <Ban className="size-3.5" />
+                  Cancel
+                </>
+              )}
+            </Button>
           )}
         </div>
       </div>
@@ -239,6 +291,37 @@ export function JobPage() {
               </Button>
             </div>
           )}
+        </>
+      )}
+
+      {status === "cancelled" && !downloadUrl && (
+        <>
+          <div className="mt-6 inline-flex items-center gap-2 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-3 py-2 text-sm text-(--color-ink-muted)">
+            <Ban className="size-3.5" />
+            This job was cancelled.
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button onClick={handleRetry} disabled={retrying}>
+              {retrying ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin" />
+                  Resuming…
+                </>
+              ) : (
+                <>
+                  <RefreshCcw className="size-3.5" />
+                  Resume this job
+                </>
+              )}
+            </Button>
+            {parents && (
+              <Button asChild variant="secondary">
+                <Link to={`/book/${parents.bookId}/section/${parents.sectionId}`}>
+                  Start fresh
+                </Link>
+              </Button>
+            )}
+          </div>
         </>
       )}
     </>

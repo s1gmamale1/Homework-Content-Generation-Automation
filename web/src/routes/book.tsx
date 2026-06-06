@@ -1,5 +1,6 @@
 import {
   ArrowRight,
+  Ban,
   Check,
   CheckCircle2,
   CircleDot,
@@ -431,6 +432,16 @@ function SectionStatusBadge({ status }: { status: JobStatus | null }) {
       label: "Failed",
       icon: <CircleX className="size-3" />,
       cls: "border-[oklch(0.70_0.16_25_/_30%)] bg-[oklch(0.70_0.16_25_/_10%)] text-(--color-error)",
+    },
+    cancelling: {
+      label: "Cancelling",
+      icon: <Loader2 className="size-3 animate-spin" />,
+      cls: "border-(--color-border) bg-(--color-elevated) text-(--color-ink-muted)",
+    },
+    cancelled: {
+      label: "Cancelled",
+      icon: <Ban className="size-3" />,
+      cls: "border-(--color-border) bg-(--color-elevated) text-(--color-ink-muted)",
     },
   };
   const m = map[status];

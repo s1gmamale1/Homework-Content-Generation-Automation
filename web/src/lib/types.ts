@@ -58,7 +58,13 @@ export interface NotionSubject {
   has_textbook: boolean;
 }
 
-export type JobStatus = "pending" | "running" | "done" | "failed";
+export type JobStatus =
+  | "pending"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelling"
+  | "cancelled";
 export type Difficulty = "easy" | "hard";
 
 export interface PhaseOut {
