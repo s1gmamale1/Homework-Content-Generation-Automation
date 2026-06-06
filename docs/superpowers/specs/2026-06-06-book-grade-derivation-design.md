@@ -64,6 +64,7 @@ Explicit caller grade always wins. The dedup hit returns earlier (`:67-68`), so 
 
 **Schema** — Alembic migration adding a nullable column to `homework_jobs`:
 - `notion_skip_reason VARCHAR NULL` — human-readable reason the archive skipped, or NULL when archived / not-yet-attempted / archiving disabled.
+- `upgrade()` = `op.add_column(...)`; `downgrade()` = `op.drop_column("homework_jobs", "notion_skip_reason")`. (This is a schema migration with a real downgrade — do NOT copy the *backfill* migration's no-op downgrade pattern.)
 
 **`archive_job` wiring** — set/clear the reason ONLY on resolvable outcomes:
 
@@ -77,7 +78,10 @@ Explicit caller grade always wins. The dedup hit returns earlier (`:67-68`), so 
 | no completed phase outputs (`:201`) | **SET** reason `"no completed phase outputs"` |
 | successful archive (`:214-217`) | **CLEAR** reason (set NULL) alongside `set_notion_archived` |
 
-Implementation note: the no-phases branch (`:201`) executes *after* the session block closes, so stamping it needs a fresh short session (snapshot pattern, consistent with the SSE-session discipline). The no-mapping and missing-row branches are inside the open session and can stamp directly before returning.
+Implementation notes:
+- **The first session block (`:174-199`) is read-only and never commits** — the success path commits in a *separate* fresh session at `:214-217`. So the in-block stamps (no-mapping `:187`, missing-row `:181`) MUST `await session.commit()` before returning, or the stamp silently rolls back and Commit 2 no-ops on exactly the no-mapping path we are fixing. This is the load-bearing detail.
+- The no-phases branch (`:201`) executes *after* that block closes, so it stamps via a fresh short session (snapshot pattern, consistent with the SSE-session discipline) and commits there.
+- The success-path clear of `notion_skip_reason` rides the existing commit at `:214-217` (same session as `set_notion_archived`).
 
 **Repository** — add `jobs_repo.set_notion_skip_reason(session, job_id, reason: str | None)`. `set_notion_archived` also clears the reason (NULL).
 
