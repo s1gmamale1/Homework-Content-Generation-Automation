@@ -1,17 +1,20 @@
-"""Regression: the `flashcards` phase must NOT receive the heavy inline-SVG
-rules block. The Flow v2 plan keeps flashcards a "simple reference tool"
-(plan §3/§5: "keep, add stable IDs") and the FlashcardsPack schema has no SVG
-field — cards carry bracket `[Diagram: ...]` descriptions, not raw <svg>.
+"""Regression: content phases use the placeholder visual policy, never the old
+inline-SVG rules. `flashcards` (atomic reference cards) gets no visual-rules block
+at all; a real visual phase (case-based-preview) gets the placeholder rules.
 
-When flashcards was (wrongly) in `_SVG_PHASES`, claude generated a full inline
-SVG per card and blew past the claude CLI's 32k output-token ceiling, failing
-the job after a 29-minute call. These tests pin the fix.
+History: flashcards once sat in the SVG-rules set and claude emitted a full inline
+SVG per card, blowing the 32k output ceiling. The engine now never emits <svg> —
+phases describe visuals as `![visual: … ](placeholder)` instead.
 """
 
-from app.services.agent import _SVG_PHASES, _SVG_RULES, _build_master_prompt
+from app.services.agent import (
+    _PLACEHOLDER_RULES,
+    _VISUAL_PHASES,
+    _build_master_prompt,
+)
 
-# A stable, unambiguous marker that only appears inside the SVG rules block.
-_SVG_MARKER = "VISUAL / SVG RULES"
+# Marker that only appears inside the placeholder rules block.
+_RULES_MARKER = "VISUAL RULES (placeholders only"
 
 
 def _prompt_for(phase_name: str) -> str:
@@ -26,18 +29,20 @@ def _prompt_for(phase_name: str) -> str:
     )
 
 
-def test_flashcards_not_in_svg_phases():
-    assert "flashcards" not in _SVG_PHASES
+def test_flashcards_not_in_visual_phases():
+    assert "flashcards" not in _VISUAL_PHASES
 
 
-def test_flashcards_prompt_has_no_svg_rules():
+def test_flashcards_prompt_has_no_visual_rules():
     prompt = _prompt_for("flashcards")
-    assert _SVG_MARKER not in prompt
+    assert _RULES_MARKER not in prompt
 
 
-def test_svg_marker_actually_present_in_svg_phase():
-    # Guard against the marker string drifting: a real SVG phase must still
-    # carry the rules, otherwise the negative assertions above are vacuous.
-    assert _SVG_MARKER in _SVG_RULES
+def test_placeholder_rules_forbid_svg_and_reach_visual_phase():
+    # The rules must forbid <svg> and carry the sentinel format, and a real
+    # visual phase must actually receive them.
+    assert _RULES_MARKER in _PLACEHOLDER_RULES
+    assert "never emit `<svg>`" in _PLACEHOLDER_RULES
+    assert "](placeholder)" in _PLACEHOLDER_RULES
     prompt = _prompt_for("case-based-preview")
-    assert _SVG_MARKER in prompt
+    assert _RULES_MARKER in prompt

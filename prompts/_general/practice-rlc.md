@@ -65,17 +65,20 @@ Write the scenario as Markdown sections, in this order:
 
 ## Visuals
 
-If a decision needs a diagram, embed an inline `<svg>` in the relevant context or
-decision section, following the universal SVG rules injected by the runtime (do
-not specify size or colors here). Add it only when the diagram carries the decision.
+If a decision genuinely needs a diagram, describe it as a placeholder (see Output
+format) in the relevant context or decision section — never emit `<svg>`. Add one
+only when the diagram carries the decision; default to none.
 
 ## Output format
 
 Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
 title and `##`/`###` for the sections/decisions described above, in order. For
-visuals: emit inline `<svg>` for diagrams; for a photo/raster you would otherwise
-need to generate, emit `![placeholder: <short description> — image gen required](placeholder)`
-— never fabricate an image and never invent an image URL.
+visuals: do NOT emit `<svg>` or any image/HTML markup. For ANY visual (diagram OR
+photo), emit a described placeholder instead — never the visual itself:
+`![visual: <diagram|photo> — <what to depict, with every label, value, and axis> — image gen required](placeholder)`
+The description must name the medium and every label/value/axis so the visual can be
+produced from the text alone. Never output raw `<svg>`, never fabricate an image,
+never invent an image URL.
 
 ## Language
 

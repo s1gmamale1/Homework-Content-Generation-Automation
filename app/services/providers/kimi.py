@@ -17,8 +17,9 @@ from .base import Provider
 
 
 _KIMI_VISUAL_SUFFIX = (
-    "\n\nVisual policy: delegate raster diagrams to $imagegen via Codex; "
-    "SVG inline only.\n"
+    "\n\nVisual policy: never emit `<svg>`, images, or $imagegen output. Describe "
+    "any visual as a placeholder: "
+    "`![visual: <diagram|photo> — <what to depict> — image gen required](placeholder)`.\n"
 )
 
 

@@ -125,84 +125,24 @@ _NO_PREAMBLE = (
 )
 
 
-# Universal SVG rules (lifted verbatim from gemini.py:301–378).
-_SVG_RULES = (
-    "\n\n## VISUAL / SVG RULES (when you embed inline <svg>)\n"
-    "Every <svg> you generate MUST follow these rules. They override any "
-    "size or styling guidance in the system prompt above. The #1 failure "
-    "mode is cramped diagrams where labels overlap shapes or each other — "
-    "if in doubt, pick a LARGER frame, not smaller.\n\n"
-
-    "### 1. White background, always\n"
-    "First child of every <svg> must be:\n"
-    "  `<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\" rx=\"6\"/>`\n\n"
-
-    "### 2. Size scales with content — default to LARGER\n"
-    "Pick width/height/viewBox to give every label and shape generous room. "
-    "A diagram with extra whitespace is readable; a diagram with overlapping "
-    "labels is unusable.\n"
-    "  - Simple (1–3 labeled parts): width=320 height=220 "
-    "viewBox=\"0 0 320 220\"\n"
-    "  - Medium (4–8 labeled parts): width=520 height=340 "
-    "viewBox=\"0 0 520 340\"\n"
-    "  - Detailed (9+ parts, comparative diagrams, multi-step flows): "
-    "width=720 height=480 viewBox=\"0 0 720 480\"\n"
-    "If a frame would be cramped at the chosen tier, BUMP UP to the next "
-    "tier. If even Detailed would crowd, emit TWO svgs (overview + zoom-in) "
-    "instead of cramming into one.\n\n"
-
-    "### 3. Padding & spacing budget (anti-overlap)\n"
-    "  - **20px** minimum from every viewBox edge to the first stroke or "
-    "text — never let content butt against the frame.\n"
-    "  - **8px** minimum gap between any text label and the shape it "
-    "labels (so they don't visually merge).\n"
-    "  - **18px** minimum vertical gap between two stacked text lines.\n"
-    "  - **40px** minimum width AND height for any shape that contains "
-    "text INSIDE it. Smaller shapes need EXTERNAL labels (see §6).\n"
-    "  - **30px** minimum gap between two labeled parts that sit "
-    "side-by-side (e.g., comparative anatomy panels, before/after).\n\n"
-
-    "### 4. Text rules — labels must be legible, never overlap\n"
-    "  - Default: `<text font-size=\"14\" fill=\"#111827\" "
-    "font-family=\"sans-serif\">`\n"
-    "  - Centered text: include BOTH `text-anchor=\"middle\"` AND "
-    "`dominant-baseline=\"middle\"` — without these, text drifts off-center "
-    "and overlaps adjacent shapes.\n"
-    "  - Left-aligned: `text-anchor=\"start\"`. Right-aligned: "
-    "`text-anchor=\"end\"`.\n"
-    "  - Multi-word labels too wide for one line: split with "
-    "`<tspan x=\"...\" dy=\"1.2em\">word</tspan>` — never let text "
-    "visually run off a shape.\n"
-    "  - **Never let two text elements touch.** If they would, move one "
-    "or enlarge the frame. If still impossible, use leader lines (§6).\n"
-    "  - Long names (>12 chars) inside small shapes don't fit — put them "
-    "OUTSIDE with a leader line.\n\n"
-
-    "### 5. High-contrast strokes against white\n"
-    "  - Default outline: `stroke=\"#1f2937\" stroke-width=\"2\" "
-    "fill=\"none\"`\n"
-    "  - Filled regions: `#fde68a` (highlight), `#bae6fd` (cool/water), "
-    "`#bbf7d0` (plant/calm), `#fecaca` (warm/warning)\n"
-    "  - Emphasis stroke: `#0ea5e9` or `#dc2626`\n"
-    "  - NEVER use light grays (#ccc, #eee) or near-white pastels "
-    "(#f0f8ff, #f8fafc) — they vanish on white.\n\n"
-
-    "### 6. Leader-line pattern (for crowded diagrams)\n"
-    "When labels can't fit inside their shapes, place them in the margins "
-    "with a thin leader line connecting label to part:\n"
-    "  `<line x1=\"shapeX\" y1=\"shapeY\" x2=\"labelX\" y2=\"labelY\" "
-    "stroke=\"#1f2937\" stroke-width=\"1\"/>`\n"
-    "  `<text x=\"labelX\" y=\"labelY\" text-anchor=\"start\">Label</text>`\n"
-    "Use leader lines for cell organelles, anatomy parts, and any 4+ part "
-    "diagram where internal labels would overlap.\n\n"
-
-    "### 7. Clean output\n"
-    "  - No raster `<image>`, no `<foreignObject>`, no external fonts.\n"
-    "  - Group related parts with `<g id=\"...\">...</g>`.\n"
-    "  - Add a small legend (corner) when colors carry meaning.\n"
-    "  - Two-space indent for children.\n"
-    "  - Place each <svg> directly after the prose it illustrates — never "
-    "inside a code fence."
+# Placeholder visual rules: phases never emit <svg>/images, only described
+# placeholders the frontend renders (see web/src/components/rich-text.tsx).
+# Replaces the old _SVG_RULES styling block.
+_PLACEHOLDER_RULES = (
+    "\n\n## VISUAL RULES (placeholders only \u2014 never emit `<svg>` or images)\n"
+    "Do NOT output inline `<svg>`, raster images, `<img>`, `<foreignObject>`, or "
+    "any image/HTML markup. When a visual genuinely helps, emit ONE described "
+    "placeholder the runtime will render:\n"
+    "  `![visual: <diagram|photo> \u2014 <what to depict> \u2014 image gen required](placeholder)`\n"
+    "Description rules:\n"
+    "  - Name the medium: `diagram` (figure/chart/timeline/structure) or `photo` "
+    "(real scene/object).\n"
+    "  - Be self-sufficient: state every label, value, axis, part, and "
+    "relationship so the visual can be built from the text alone.\n"
+    "  - Keep the link target literally `](placeholder)` \u2014 it is the sentinel "
+    "the renderer matches on.\n"
+    "  - Default to NO visual; add one only when it carries the concept. Never "
+    "fabricate an image, never invent an image URL."
 )
 
 
@@ -224,17 +164,14 @@ _EXTRACT_PHASE_PROMPT = (
 )
 
 
-# Phases that produce inline SVG diagrams (mirrors gemini.py:_SVG_PHASES).
-_SVG_PHASES: set[str] = {
+# Phases that may include a visual -> get the placeholder rules appended.
+# (Same membership as the old _SVG_PHASES; flashcards/boss-arena/games are
+# omitted — they are atomic and rarely need a figure.)
+_VISUAL_PHASES: set[str] = {
     "preview-hard", "preview-easy", "preview",
     "case-based-preview",
     "real-life", "consolidation",
     "game-breaks", "final-challenge", "reading",
-    # NOTE: "flashcards" deliberately excluded (no SVG field; emitting one
-    # blew the 32k claude ceiling). R8: boss-arena + the Practice-Arc games
-    # are ALSO excluded for the same reason — their schemas have no SVG field,
-    # so requesting SVG only leaked markup around the JSON and failed
-    # first-pass validation. Only case-based-preview has LearningBlock.visual_svg.
 }
 
 
@@ -522,10 +459,10 @@ def _build_master_prompt(
     parts.append("")
     parts.append(f"Difficulty: {difficulty or 'unspecified'}")
 
-    # SVG rules: only useful for phases that actually emit diagrams. Other
+    # Placeholder rules: only for phases that may include a visual. Other
     # phases (memory-sprint, reflection, classify) get a slimmer prompt.
-    if phase_name in _SVG_PHASES:
-        parts.append(_SVG_RULES)
+    if phase_name in _VISUAL_PHASES:
+        parts.append(_PLACEHOLDER_RULES)
 
     if schema is not None:
         # JSON-schema mode: the deliverable IS the JSON. Skip NO_PREAMBLE

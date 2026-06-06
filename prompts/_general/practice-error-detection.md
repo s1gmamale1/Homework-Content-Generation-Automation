@@ -60,18 +60,19 @@ Write the task as Markdown sections, in this order:
 
 ## Visuals
 
-If you chose the labelled-diagram type (or any block needs a figure), embed the
-diagram as **inline `<svg>`** — either in the relevant block's text or in a
-leading non-error block — following the universal SVG rules injected by the
-runtime. Do NOT specify size or colours here. Exactly one block is wrong.
+If you chose the labelled-diagram type (or any block needs a figure), describe the
+diagram as a **placeholder** (see Output format) — either in the relevant block's
+text or in a leading non-error block — never emit `<svg>`. Exactly one block is wrong.
 
 ## Output format
 
 Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
-title and `##`/`###` for the sections/items described above, in order. For visuals:
-emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
-generate, emit `![placeholder: <short description> — image gen required](placeholder)`
-— never fabricate an image and never invent an image URL.
+title and `##`/`###` for the sections/items described above, in order. For visuals: do NOT emit `<svg>` or any image/HTML markup. For ANY visual (diagram
+OR photo), emit a described placeholder instead — never the visual itself:
+`![visual: <diagram|photo> — <what to depict, with every label, value, and axis> — image gen required](placeholder)`
+The description must be self-sufficient: name the medium and every label/value/axis
+so the visual can be produced from the text alone. Never output raw `<svg>`, never
+fabricate an image, never invent an image URL.
 
 ## Language
 

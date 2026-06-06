@@ -71,17 +71,19 @@ missing any of the three parts, rewrite it or drop it.
 
 ## Visuals
 
-If a question needs a diagram (a geometry figure, force diagram, cell structure,
-timeline, etc.), embed an inline `<svg>` in the scenario, following the
-universal SVG rules injected by the runtime (do not specify size or colors here).
+If a question genuinely needs a diagram (a geometry figure, force diagram, cell
+structure, timeline, etc.), describe it as a placeholder (see Output format) in the
+scenario — never emit `<svg>`. Add one only when it carries the question; default to none.
 
 ## Output format
 
 Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
-title and `##`/`###` for the sections/items described above, in order. For visuals:
-emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
-generate, emit `![placeholder: <short description> — image gen required](placeholder)`
-— never fabricate an image and never invent an image URL.
+title and `##`/`###` for the sections/items described above, in order. For visuals: do NOT emit `<svg>` or any image/HTML markup. For ANY visual (diagram
+OR photo), emit a described placeholder instead — never the visual itself:
+`![visual: <diagram|photo> — <what to depict, with every label, value, and axis> — image gen required](placeholder)`
+The description must be self-sufficient: name the medium and every label/value/axis
+so the visual can be produced from the text alone. Never output raw `<svg>`, never
+fabricate an image, never invent an image URL.
 
 ## Language
 

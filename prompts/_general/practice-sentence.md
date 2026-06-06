@@ -54,10 +54,12 @@ Write the game as Markdown sections, in this order:
 ## Output format
 
 Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
-title and `##`/`###` for the sections described above, in order. For visuals:
-emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
-generate, emit `![placeholder: <short description> — image gen required](placeholder)`
-— never fabricate an image and never invent an image URL.
+title and `##`/`###` for the sections described above, in order. For visuals: do NOT emit `<svg>` or any image/HTML markup. For ANY visual (diagram
+OR photo), emit a described placeholder instead — never the visual itself:
+`![visual: <diagram|photo> — <what to depict, with every label, value, and axis> — image gen required](placeholder)`
+The description must be self-sufficient: name the medium and every label/value/axis
+so the visual can be produced from the text alone. Never output raw `<svg>`, never
+fabricate an image, never invent an image URL.
 
 ## Language
 

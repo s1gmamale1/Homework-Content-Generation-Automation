@@ -17,7 +17,9 @@ from .base import Provider
 
 
 _CODEX_VISUAL_SUFFIX = (
-    "\n\nVisual policy: use native $imagegen for raster, SVG inline.\n"
+    "\n\nVisual policy: never emit `<svg>`, images, or $imagegen output. Describe "
+    "any visual as a placeholder: "
+    "`![visual: <diagram|photo> — <what to depict> — image gen required](placeholder)`.\n"
 )
 
 

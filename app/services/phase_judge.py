@@ -119,7 +119,7 @@ async def judge(
             provider=judge_provider,
             model=judge_model,
             phase_prompt=judge_prompt,
-            phase_name="__judge__",          # NOT in _SVG_PHASES -> no SVG noise
+            phase_name="__judge__",          # NOT in _VISUAL_PHASES -> no visual-rules noise
             schema=Verdict,
             lesson_context=lesson_context,
             prior_outputs=prior_outputs,

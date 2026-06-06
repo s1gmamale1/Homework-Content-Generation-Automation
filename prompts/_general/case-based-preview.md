@@ -53,9 +53,9 @@ Two short teaching moments — call them Learning Block 1 and Learning Block 2.
   concept the student just identified, grounded in the textbook.
 - **Learning Block 2** (after Checkpoint 2): a 1–3 sentence explanation that shows
   the method or relationship to apply.
-- Keep them text-first and short. Add a small inline `<svg>` only if a diagram is
-  essential and not already shown in the case; otherwise a brief `[Diagram: …]` note
-  is preferred. This protects the output-token budget.
+- Keep them text-first and short. Describe a visual as a placeholder (see Output
+  format) only if a diagram is essential and not already shown in the case — never
+  emit `<svg>`; a brief `[Diagram: …]` note is preferred. This protects the budget.
 - Do NOT name the governing method/formula in Learning Block 1 if Checkpoint 2 still
   expects the student to commit to it first.
 
@@ -97,10 +97,12 @@ and note which textbook concept the case is built on.
 ## Output format
 
 Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
-title and `##`/`###` for the sections/items described above, in order. For visuals:
-emit inline `<svg>` for diagrams; for a photo/raster you would otherwise need to
-generate, emit `![placeholder: <short description> — image gen required](placeholder)`
-— never fabricate an image and never invent an image URL.
+title and `##`/`###` for the sections/items described above, in order. For visuals: do NOT emit `<svg>` or any image/HTML markup. For ANY visual (diagram
+OR photo), emit a described placeholder instead — never the visual itself:
+`![visual: <diagram|photo> — <what to depict, with every label, value, and axis> — image gen required](placeholder)`
+The description must be self-sufficient: name the medium and every label/value/axis
+so the visual can be produced from the text alone. Never output raw `<svg>`, never
+fabricate an image, never invent an image URL.
 
 ## Self-check
 
