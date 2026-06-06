@@ -102,6 +102,22 @@
   }
 }
 
+/* Light theme — scoped to the dashboard (usage) view via the layout shell.
+   Apple light surface: grouped-grey canvas, white cards, near-black text.
+   Overrides the global dark tokens for this subtree only. */
+.theme-light {
+  --color-canvas: #f4f4f7;
+  --color-elevated: #ffffff;
+  --color-elevated-hover: #f0f0f3;
+  --color-border: rgba(0, 0, 0, 0.1);
+  --color-ink: #1d1d1f;
+  --color-ink-soft: rgba(60, 60, 67, 0.78);
+  --color-ink-muted: #6e6e73;
+  --color-accent: #c2740a;
+  --color-success: #248a3d;
+  --color-error: #d70015;
+}
+
 @keyframes tile-rise {
   from {
     opacity: 0;

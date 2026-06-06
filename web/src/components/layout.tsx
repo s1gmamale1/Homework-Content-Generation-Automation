@@ -11,7 +11,12 @@ export function Layout() {
   const wide = pathname.startsWith("/usage");
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div
+      className={cn(
+        "flex min-h-screen flex-col bg-(--color-canvas)",
+        wide && "theme-light",
+      )}
+    >
       <header className="sticky top-0 z-20 border-b border-(--color-border) bg-(--color-canvas)/90 backdrop-blur-md">
         <div
           className={cn(

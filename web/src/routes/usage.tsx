@@ -88,13 +88,13 @@ export function UsagePage() {
         className="pointer-events-none fixed inset-0 z-0"
         style={{
           background:
-            "radial-gradient(80% 65% at 85% -8%, oklch(0.58 0.19 285 / 0.42), transparent 60%), radial-gradient(75% 65% at 8% 0%, oklch(0.56 0.17 250 / 0.34), transparent 62%), radial-gradient(120% 85% at 50% 118%, oklch(0.50 0.16 305 / 0.26), transparent 66%)",
+            "radial-gradient(80% 60% at 85% -10%, oklch(0.88 0.08 285 / 0.60), transparent 60%), radial-gradient(75% 60% at 8% 0%, oklch(0.91 0.06 235 / 0.55), transparent 62%), radial-gradient(120% 80% at 50% 120%, oklch(0.92 0.05 330 / 0.45), transparent 66%)",
         }}
       />
       {/* Fine film grain — premium texture, hides gradient banding. */}
       <div
         aria-hidden
-        className="pointer-events-none fixed inset-0 z-0 opacity-[0.05] mix-blend-soft-light"
+        className="pointer-events-none fixed inset-0 z-0 opacity-[0.035] mix-blend-soft-light"
         style={{
           backgroundImage:
             "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")",
@@ -209,15 +209,15 @@ function ProviderTile({
   return (
     <div
       className={cn(
-        "animate-tile-rise relative overflow-hidden rounded-3xl border border-white/10 p-5 shadow-2xl backdrop-blur-xl transition-transform hover:-translate-y-0.5",
+        "animate-tile-rise relative overflow-hidden rounded-3xl border border-black/[0.08] p-5 shadow-[0_10px_34px_-16px_rgba(0,0,0,0.30)] backdrop-blur-xl transition-transform hover:-translate-y-0.5",
         expanded && "sm:col-span-2",
         dim && "opacity-60",
       )}
-      style={{ animationDelay: `${index * 60}ms`, background: "oklch(0.19 0.005 260 / 72%)" }}
+      style={{ animationDelay: `${index * 60}ms`, background: "rgba(255, 255, 255, 0.72)" }}
     >
       <div
         aria-hidden
-        className="pointer-events-none absolute -right-16 -top-20 size-44 rounded-full opacity-[0.30] blur-3xl"
+        className="pointer-events-none absolute -right-16 -top-20 size-44 rounded-full opacity-[0.22] blur-2xl"
         style={{ background: `radial-gradient(circle, ${from}, ${to})` }}
       />
 
@@ -319,7 +319,7 @@ function ActivityRing({
         aria-label={`${Math.round(pct)}% of call cap`}
         style={{ transform: "rotate(-90deg)", transformOrigin: "center" }}
       >
-        <circle cx="44" cy="44" r={r} fill="none" stroke="oklch(1 0 0 / 8%)" strokeWidth="9" />
+        <circle cx="44" cy="44" r={r} fill="none" stroke="oklch(0 0 0 / 10%)" strokeWidth="9" />
         <circle
           cx="44"
           cy="44"
@@ -354,7 +354,7 @@ function ActivityRing({
 
 function TokenPill({ label, value }: { label: string; value: number }) {
   return (
-    <div className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
+    <div className="flex-1 rounded-xl border border-black/[0.08] bg-black/[0.025] px-3 py-2">
       <div className="font-mono text-[0.66rem] uppercase tracking-[0.13em] text-(--color-ink-muted)">
         {label}
       </div>
@@ -373,7 +373,7 @@ function ModelTable({
   tokensMissing: boolean;
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-1">
+    <div className="rounded-2xl border border-black/[0.08] bg-black/[0.015] p-1">
       <div className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.8fr_0.8fr] gap-3 px-3 pb-2 pt-3 font-mono text-[0.64rem] uppercase tracking-[0.12em] text-(--color-ink-muted)">
         <span>Model</span>
         <span className="text-right">Input</span>
@@ -384,7 +384,7 @@ function ModelTable({
       {models.map((m) => (
         <div
           key={m.model_name}
-          className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.8fr_0.8fr] items-center gap-3 border-t border-white/[0.06] px-3 py-2.5"
+          className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.8fr_0.8fr] items-center gap-3 border-t border-black/[0.06] px-3 py-2.5"
         >
           <span className="truncate font-mono text-[0.8rem] font-medium text-(--color-ink-soft)">
             {m.model_name}
