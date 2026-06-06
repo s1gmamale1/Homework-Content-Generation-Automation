@@ -179,6 +179,9 @@ async def archive_job(job_id: UUID) -> None:
             book = await books_repo.get(session, job.book_id)
             section = await toc_repo.get(session, job.toc_entry_id)
             if book is None or section is None:
+                await jobs_repo.set_notion_skip_reason(
+                    session, job_id, "book/section row missing")
+                await session.commit()
                 return
             subject_page_id = _resolve_subject_page_id(
                 settings.notion_subject_pages, job.subject, book.grade,
@@ -189,6 +192,9 @@ async def archive_job(job_id: UUID) -> None:
                     "notion: no subject-page mapping for subject=%s grade=%s — skipping",
                     job.subject, book.grade,
                 )
+                await jobs_repo.set_notion_skip_reason(
+                    session, job_id, f"no Notion page for {job.subject}|{book.grade}")
+                await session.commit()
                 return
             section_id = section.id
             lesson_title = _lesson_title(section.section_number, section.section_title)
@@ -200,6 +206,10 @@ async def archive_job(job_id: UUID) -> None:
         # session closed — do NOT hold a DB connection during the Notion push
         if not phase_md:
             log.info("notion: job %s has no completed phase outputs — skipping", job_id)
+            async with SessionLocal() as session:
+                await jobs_repo.set_notion_skip_reason(
+                    session, job_id, "no completed phase outputs")
+                await session.commit()
             return
 
         client = NotionClientWrapper(api_key=settings.notion_api_key)
