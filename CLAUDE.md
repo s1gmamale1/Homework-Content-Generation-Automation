@@ -82,9 +82,9 @@ The single source of truth for which `(provider, model)` pairs the API and front
 
 Per-job state machine:
 
-1. **Head (sequential)**: `extract` → `classify` (if `flow.has_classify`).
+1. **Head (sequential)**: `extract` only (`pipeline.py:135`). `classify` / easy-hard was **removed** — there is a single flow per subject (`flows.flow_for`); `difficulty` is pinned `None` (`pipeline.py:107`).
 2. **Tail (DAG-parallel)**: every phase declares its deps in `flows.PHASE_DEPS`; a wave-based scheduler launches phases concurrently when their deps are met. Typical 2× speedup over sequential.
-3. **Assembly**: combines phase outputs into a single markdown packet plus structured JSON columns for interactive renders.
+3. **No assembly**: per-phase markdown in `phase_outputs` **is** the deliverable (`pipeline.py:216`), graded by the LLM judge. (The old assembly + structured-JSON-columns step was removed with the md-per-phase flip.)
 
 Three things this pipeline does that aren't obvious from a single file:
 - **`extract` phase is pinned** to `settings.extract_provider` / `settings.extract_model` (default `gemini` / `gemini-2.5-flash`) regardless of which provider the user picked for the job. Extract is high-input/low-value (whole-PDF read → flat factual summary), so paying smart-tier rates buys nothing. All other phases honor `job.provider` / `job.model`.
@@ -93,8 +93,8 @@ Three things this pipeline does that aren't obvious from a single file:
 
 ### Subject flows (`app/services/flows.py` + `prompts/<subject>/`)
 
-Each supported subject (biology, english, geometriya-g7-11, history, kimyo-g7-11, math-algebra, physics) has:
-- An entry in `SUBJECT_FLOWS` (easy / hard sequences, whether `classify` runs).
+Each supported subject (biology, english, geometriya-g7-11, history, kimyo-g7-11, math-algebra, physics — `flows.SUBJECTS`) has:
+- A single phase sequence from `flows.flow_for(subject)` (`flows.py:39`): `_BASE_PHASES` + one subject-matched game (`flows.SUBJECT_GAME`) + `boss-arena` + `reflection`. **No `SUBJECT_FLOWS`, no easy/hard, no `classify`** — MVP single flow (`flows.py:1`).
 - A directory `prompts/<subject>/` with one `.md` per phase plus `flow.md` (documentation only).
 
 `flows.PHASE_DEPS` declares which prior phase outputs each phase consumes; the parallel scheduler reads it. SVG blocks in prior outputs are stripped with `_strip_svgs` before injection (they cost ~800 input tokens each and downstream phases need the concept, not the picture).
