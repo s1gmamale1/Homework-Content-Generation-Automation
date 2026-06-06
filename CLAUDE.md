@@ -69,10 +69,10 @@ Local dev uses port **5433** for Postgres, not 5432, because the Windows host ty
 - `prompt_suffix(ctx)` — visual-policy suffix (e.g., "use $imagegen for raster, SVG inline").
 
 `agent.py` exposes:
-- `run_phase`, `extract_toc`, `extract_lesson_context` — primary call surface used by the pipeline.
+- `run_phase_prompt` (content phases → markdown), `extract_toc`, and `summarize_lesson` + `read_whole_book_text` (the extract path since the worklog-0035 local-text rewrite) — the primary call surface used by the pipeline. `run_phase` is the lower-level CLI wrapper underneath `run_phase_prompt`; `extract_lesson_context` is legacy and no longer called by the pipeline (dead since 0035).
 - `_resolve_model(provider, model)` — provider→default-model lookup. **Critical invariant**: `_resolve_model("gemini", None) is None` (and same for kimi/codex). Only `claude` has a default. This guards a real regression where a single shared default once leaked across providers; there is a unit test for it.
 - `_PROVIDER_DEFAULT_MODEL` — the table the resolver reads.
-- `STRUCTURED_PHASE_SCHEMAS` — phase name → Pydantic class for JSON-mode phases. JSON Schema is embedded into the prompt and the response is `model_validate_json`'d; on `ValidationError` we retry once with the error appended.
+- **Content phases are markdown-only.** The md-per-phase flip removed the old `STRUCTURED_PHASE_SCHEMAS` (phase→Pydantic) JSON-mode table; each phase's markdown output is graded by the LLM judge (`phase_judge.py`, worklog 0037), which regenerates once on a MAJOR verdict. `run_phase` still has a `schema=` JSON-validation mode (`model_validate_json` + one retry) used by structured callers like the judge — content phases no longer use it.
 
 ### MODEL_MANIFEST (`app/services/agent_models.py`)
 

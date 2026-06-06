@@ -45,13 +45,13 @@ This is the difference between "a tool" and "a content factory".
   4) **and** `GEMINI_MAX_CONCURRENCY` (process-wide concurrent CLI subprocesses, default
   8). Raising jobs alone just makes more jobs contend for the same subprocess pool.
 - **Gotcha:** `config.py` defines `agent_max_concurrency` and labels
-  `gemini_max_concurrency` "DEPRECATED", but the live semaphore at `agent.py:303` still
+  `gemini_max_concurrency` "DEPRECATED", but the live semaphore at `agent.py:266` still
   reads `gemini_max_concurrency`. So `AGENT_MAX_CONCURRENCY` is currently a **dead
   setting** — set `GEMINI_MAX_CONCURRENCY`. (Both default 8, so behaviour is fine today;
   the trap is tuning the wrong one.)
 - **Horizontal:** `worker_concurrency=0` + separate worker pods (compose already has a
   scaled worker profile).
-- **Provider load-balancing** — spread jobs across all four CLIs (provider is currently
+- **Provider load-balancing** — spread jobs across all five CLIs (provider is currently
   fixed per job). Under subscription mode this is the single highest-leverage move (see §4).
 
 ---
@@ -141,7 +141,7 @@ Effort B prompt reshape) is the right foundation — finish it before scaling ge
 
 ## 7. Infra hardening (the hard truths)
 
-- **CLI auth is the #1 production risk.** The four providers are interactive-auth CLI
+- **CLI auth is the #1 production risk.** The five providers are interactive-auth CLI
   subprocesses. Running them in N pods, 24/7, re-authenticating on token expiry, is more
   operationally fragile than the queue. Solve this before scaling pods.
 - **Local-disk PDFs block multi-pod.** `var/books/<id>/source.pdf` is on local disk;

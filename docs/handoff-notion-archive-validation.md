@@ -2,13 +2,13 @@
 
 **Audience:** the session planning the content validator.
 **Purpose:** so the validator can confirm a generated homework packet was archived into Notion correctly.
-**Status:** written 2026-06-04. The lesson-matching *placement* logic is on branch `lesson-matching` (pending merge to `Nggaev-v2`); the `Homework` subtree it describes is already on `Nggaev-v2` (shipped worklog 0029).
+**Status:** written 2026-06-04. The lesson-matching *placement* logic has **shipped to `Nggaev-v2`** (worklog 0032; originally branch `lesson-matching`); the `Homework` subtree it describes was already on `Nggaev-v2` (shipped worklog 0029).
 
 ## 1. What this work changed (and what it didn't)
 
 Two layers — keep them separate:
 
-- **Lesson-page *placement* (NEW, branch `lesson-matching`):** decides *where the `Homework` page hangs* under a subject. It either **adopts a human-built lesson page** (when the app's lesson title uniquely word-matches one) or creates an app-owned **`Generated Lessons`** container and puts the lesson there.
+- **Lesson-page *placement* (NEW — shipped worklog 0032):** decides *where the `Homework` page hangs* under a subject. It either **adopts a human-built lesson page** (when the app's lesson title uniquely word-matches one) or creates an app-owned **`Generated Lessons`** container and puts the lesson there.
 - **The `Homework` subtree itself (UNCHANGED — shipped worklog 0029):** the grouped page layout under `Homework`. The validator mostly cares about *this*, and it is identical on `Nggaev-v2` and the branch.
 
 So: **the structure the validator checks is stable; only the lesson page's parent changed.**
@@ -96,7 +96,7 @@ WHERE j.id = :job_id;
 - **Best-effort:** a `done` job may legitimately be un-archived (Notion down/disabled) — `notion_archived_at` NULL ≠ generation failure.
 - **Idempotent at the leaf level:** re-archiving **skips any page that already has content** (`page_has_content`), and skips the whole job if `notion_archived_at` is set. So the validator should not expect re-runs to overwrite.
 - **Rate limits:** the Notion client is throttled (~3 req/s); large structure reads paginate (cursor-looped) — no silent truncation.
-- **Branch status:** the lesson-matching placement logic is on branch `lesson-matching` pending merge to `Nggaev-v2`; the `Homework` subtree (everything the structure check inspects) is already on `Nggaev-v2`.
+- **Merge status:** the lesson-matching placement logic **shipped to `Nggaev-v2`** (worklog 0032); the `Homework` subtree (everything the structure check inspects) was already on `Nggaev-v2`.
 
 ## 8. Key code locations
 
