@@ -1,4 +1,5 @@
 import {
+  ArrowLeft,
   ArrowRight,
   Ban,
   Check,
@@ -11,14 +12,18 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Eyebrow } from "@/components/eyebrow";
+import { SpaceBackdrop } from "@/components/space-backdrop";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useEventSource } from "@/hooks/use-event-source";
 import { api } from "@/lib/api";
-import type { JobStatus, TOCEntry } from "@/lib/types";
+import { fadeUpItem, staggerContainer } from "@/lib/motion";
+import { subjectLabel } from "@/lib/subjects";
+import type { JobStatus, Subject, TOCEntry } from "@/lib/types";
+import { INPUT_GLASS } from "@/lib/ui";
 import { cn, formatPages } from "@/lib/utils";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -32,12 +37,14 @@ export function BookPage() {
   const [entries, setEntries] = useState<TOCEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [meta, setMeta] = useState<{ name: string; subject: Subject } | null>(null);
 
   useEffect(() => {
     if (!id) return;
     api
       .getBook(id)
       .then((b) => {
+        setMeta({ name: b.original_filename, subject: b.subject });
         if (b.status === "toc_ready" && b.toc) {
           setEntries(b.toc);
           setStatusText("");
@@ -91,68 +98,97 @@ export function BookPage() {
   }
 
   return (
-    <>
-      <Eyebrow>Sections</Eyebrow>
-      <h1 className="mt-3 text-3xl font-semibold tracking-tight text-(--color-ink)">
-        Pick a section
-      </h1>
+    <div className="relative min-h-[calc(100vh-9rem)]">
+      <SpaceBackdrop />
 
-      {entries && entries.length > 0 && (
-        <div className="relative mt-6 max-w-md">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-(--color-ink-muted)" />
-          <Input
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder={`Filter ${entries.length} section${entries.length === 1 ? "" : "s"}`}
-            className="pl-9"
-          />
-        </div>
-      )}
-
-      {!entries && !error && (
-        <div className="mt-7 flex items-center gap-2 text-sm text-(--color-ink-muted)">
-          <Loader2 className="size-3.5 animate-spin text-(--color-accent)" />
-          {statusText}
-        </div>
-      )}
-
-      {error && (
-        <div className="mt-7 rounded-(--radius-md) border border-[oklch(0.70_0.16_25_/_30%)] bg-[oklch(0.70_0.16_25_/_8%)] px-3 py-2 text-sm text-(--color-error)">
-          {error}
-        </div>
-      )}
-
-      {!entries && !error && (
-        <div className="mt-7 flex flex-col gap-2">
-          {Array.from({ length: 6 }).map((_, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: skeleton placeholder
-            <Skeleton key={i} className="h-14 w-full" />
-          ))}
-        </div>
-      )}
-
-      {filtered && id && (
-        <ol className="mt-7 flex flex-col gap-1.5">
-          {filtered.map((entry, idx) => (
-            <li key={entry.id}>
-              <TocRow
-                bookId={id}
-                entry={entry}
-                idx={idx}
-                onUpdated={applyEntryUpdate}
-                onDeleted={applyEntryDelete}
-              />
-            </li>
-          ))}
-
-          {filtered.length === 0 && (
-            <div className="rounded-(--radius-md) border border-dashed border-(--color-border) px-4 py-8 text-center text-sm text-(--color-ink-muted)">
-              No sections match "{filter}".
-            </div>
+      <div className="relative z-10">
+        {/* Back nav + subject */}
+        <div className="flex items-center justify-between gap-3">
+          <Link
+            to="/library"
+            className="group inline-flex items-center gap-2 rounded-xl border border-white/[0.12] bg-white/[0.05] px-3 py-2 text-sm font-medium text-white/75 transition-colors hover:bg-white/[0.1] hover:text-white"
+          >
+            <ArrowLeft className="size-4 shrink-0 transition-transform group-hover:-translate-x-0.5" />
+            Library
+          </Link>
+          {meta && (
+            <span className="shrink-0 rounded-md bg-white/[0.07] px-2.5 py-1 font-mono text-[0.66rem] uppercase tracking-[0.12em] text-white/60">
+              {subjectLabel(meta.subject)}
+            </span>
           )}
-        </ol>
-      )}
-    </>
+        </div>
+
+        {meta && (
+          <p className="mt-6 truncate font-mono text-[0.72rem] uppercase tracking-[0.16em] text-white/50">
+            {meta.name}
+          </p>
+        )}
+        <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+          Pick a section
+        </h1>
+
+        {entries && entries.length > 0 && (
+          <div className="relative mt-6 max-w-md">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-white/40" />
+            <Input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder={`Filter ${entries.length} section${entries.length === 1 ? "" : "s"}`}
+              className={cn(INPUT_GLASS, "pl-9")}
+            />
+          </div>
+        )}
+
+        {!entries && !error && (
+          <div className="mt-7 flex items-center gap-2 text-sm text-white/60">
+            <Loader2 className="size-3.5 animate-spin text-[#5b8dff]" />
+            {statusText}
+          </div>
+        )}
+
+        {error && (
+          <div className="mt-7 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            {error}
+          </div>
+        )}
+
+        {!entries && !error && (
+          <div className="mt-7 flex flex-col gap-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: skeleton placeholder
+              <Skeleton key={i} className="h-14 w-full rounded-2xl" />
+            ))}
+          </div>
+        )}
+
+        {filtered && id && (
+          <motion.ol
+            className="mt-7 flex flex-col gap-2"
+            variants={staggerContainer}
+            initial="hidden"
+            animate="show"
+          >
+            {filtered.map((entry, idx) => (
+              <motion.li key={entry.id} variants={fadeUpItem}>
+                <TocRow
+                  bookId={id}
+                  entry={entry}
+                  idx={idx}
+                  onUpdated={applyEntryUpdate}
+                  onDeleted={applyEntryDelete}
+                />
+              </motion.li>
+            ))}
+
+            {filtered.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-white/[0.14] bg-white/[0.03] px-4 py-8 text-center text-sm text-white/50 backdrop-blur-xl">
+                No sections match "{filter}".
+              </div>
+            )}
+          </motion.ol>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -244,36 +280,36 @@ function TocRow({ bookId, entry, idx, onUpdated, onDeleted }: TocRowProps) {
     return (
       <div
         className={cn(
-          "flex flex-col gap-2 rounded-(--radius-md) border bg-(--color-elevated) px-3.5 py-3",
-          actionError ? "border-[oklch(0.70_0.16_25_/_50%)]" : "border-(--color-accent)",
+          "flex flex-col gap-2 rounded-2xl border bg-white/[0.06] px-3.5 py-3 backdrop-blur-xl",
+          actionError ? "border-rose-500/50" : "border-[#5b8dff]/70",
         )}
       >
-        <div className="flex items-center gap-2 font-mono text-[0.66rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
+        <div className="flex items-center gap-2 font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/55">
           <Pencil className="size-3" />
           Editing section #{idx + 1}
         </div>
         <div className="grid grid-cols-[auto_1fr] items-center gap-2 sm:grid-cols-[auto_minmax(0,1fr)_auto_minmax(0,2fr)]">
-          <label className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
+          <label className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/45">
             Number
           </label>
           <Input
             value={draft.section_number}
             onChange={(e) => setDraft((d) => ({ ...d, section_number: e.target.value }))}
             disabled={busy}
-            className="h-8"
+            className={cn(INPUT_GLASS, "h-8")}
           />
-          <label className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
+          <label className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/45">
             Title
           </label>
           <Input
             value={draft.section_title}
             onChange={(e) => setDraft((d) => ({ ...d, section_title: e.target.value }))}
             disabled={busy}
-            className="h-8"
+            className={cn(INPUT_GLASS, "h-8")}
           />
         </div>
         <div className="grid grid-cols-[auto_1fr] items-center gap-2 sm:grid-cols-[auto_minmax(0,2fr)_auto_minmax(0,1fr)_auto_minmax(0,1fr)]">
-          <label className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
+          <label className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/45">
             Chapter
           </label>
           <Input
@@ -281,9 +317,9 @@ function TocRow({ bookId, entry, idx, onUpdated, onDeleted }: TocRowProps) {
             onChange={(e) => setDraft((d) => ({ ...d, chapter_title: e.target.value }))}
             disabled={busy}
             placeholder="(optional)"
-            className="h-8"
+            className={cn(INPUT_GLASS, "h-8")}
           />
-          <label className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
+          <label className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/45">
             P.start
           </label>
           <Input
@@ -292,9 +328,9 @@ function TocRow({ bookId, entry, idx, onUpdated, onDeleted }: TocRowProps) {
             value={draft.page_start}
             onChange={(e) => setDraft((d) => ({ ...d, page_start: e.target.value }))}
             disabled={busy}
-            className="h-8"
+            className={cn(INPUT_GLASS, "h-8")}
           />
-          <label className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
+          <label className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/45">
             P.end
           </label>
           <Input
@@ -303,18 +339,18 @@ function TocRow({ bookId, entry, idx, onUpdated, onDeleted }: TocRowProps) {
             value={draft.page_end}
             onChange={(e) => setDraft((d) => ({ ...d, page_end: e.target.value }))}
             disabled={busy}
-            className="h-8"
+            className={cn(INPUT_GLASS, "h-8")}
           />
         </div>
         {actionError && (
-          <p className="text-[0.7rem] text-(--color-error)">{actionError}</p>
+          <p className="text-[0.7rem] text-rose-300">{actionError}</p>
         )}
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={saveEdit}
             disabled={busy || !draft.section_title.trim()}
-            className="inline-flex items-center gap-1.5 rounded-(--radius-sm) bg-(--color-accent) px-3 py-1.5 text-xs font-medium text-[oklch(0.18_0.04_55)] transition-colors hover:bg-(--color-accent-deep) disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] px-3 py-1.5 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50 disabled:hover:translate-y-0"
           >
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
             Save
@@ -323,7 +359,7 @@ function TocRow({ bookId, entry, idx, onUpdated, onDeleted }: TocRowProps) {
             type="button"
             onClick={cancelEdit}
             disabled={busy}
-            className="inline-flex items-center gap-1.5 rounded-(--radius-sm) border border-(--color-border) bg-(--color-elevated) px-3 py-1.5 text-xs font-medium text-(--color-ink) transition-colors hover:bg-(--color-elevated-hover)"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.12] bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-white/70 transition-colors hover:bg-white/[0.1] hover:text-white"
           >
             <X className="size-3.5" />
             Cancel
@@ -338,22 +374,22 @@ function TocRow({ bookId, entry, idx, onUpdated, onDeleted }: TocRowProps) {
       <Link
         to={`/book/${bookId}/section/${entry.id}`}
         className={cn(
-          "grid w-full grid-cols-[auto_1fr_auto] items-center gap-3 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-3.5 py-2.5 text-left transition-colors",
-          "hover:bg-(--color-elevated-hover) hover:border-(--color-border-hover)",
-          busy && "opacity-50 pointer-events-none",
+          "grid w-full grid-cols-[auto_1fr_auto] items-center gap-3 rounded-2xl border border-white/[0.09] bg-white/[0.04] px-3.5 py-3 text-left shadow-[0_18px_50px_-40px_rgba(0,0,0,0.95)] backdrop-blur-xl transition-all",
+          "hover:-translate-y-0.5 hover:border-white/[0.16] hover:bg-white/[0.06]",
+          busy && "pointer-events-none opacity-50",
         )}
       >
-        <span className="font-mono text-[0.7rem] text-(--color-ink-muted) tabular-nums w-7">
+        <span className="w-7 font-mono text-[0.7rem] tabular-nums text-white/40">
           {String(idx + 1).padStart(2, "0")}
         </span>
 
         <div className="flex min-w-0 flex-col gap-0.5">
           {entry.chapter_title && (
-            <span className="truncate font-mono text-[0.6rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
+            <span className="truncate font-mono text-[0.6rem] uppercase tracking-[0.14em] text-white/45">
               {entry.chapter_title}
             </span>
           )}
-          <span className="truncate text-sm font-medium text-(--color-ink)">
+          <span className="truncate text-sm font-medium text-white">
             {entry.section_number ? `${entry.section_number} · ` : ""}
             {entry.section_title}
           </span>
@@ -362,22 +398,22 @@ function TocRow({ bookId, entry, idx, onUpdated, onDeleted }: TocRowProps) {
         <span className="flex items-center gap-2.5">
           <SectionStatusBadge status={entry.latest_job_status ?? null} />
           {entry.page_start && (
-            <span className="hidden font-mono text-[0.66rem] text-(--color-ink-muted) sm:inline">
+            <span className="hidden font-mono text-[0.66rem] text-white/45 sm:inline">
               {formatPages(entry.page_start, entry.page_end)}
             </span>
           )}
-          <ArrowRight className="size-3.5 text-(--color-ink-muted) group-hover:text-(--color-accent)" />
+          <ArrowRight className="size-3.5 text-white/35 transition-colors group-hover:text-[#9cc0ff]" />
         </span>
       </Link>
 
       {/* Floating edit/delete actions; visible on row hover. */}
-      <span className="absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 md:flex md:opacity-0 md:transition-opacity md:[&:has(button:focus)]:opacity-100 group-hover:md:opacity-100">
+      <span className="absolute right-2.5 top-1/2 hidden -translate-y-1/2 items-center gap-1 md:flex md:opacity-0 md:transition-opacity md:[&:has(button:focus)]:opacity-100 group-hover:md:opacity-100">
         <button
           type="button"
           onClick={startEdit}
           disabled={busy}
           title="Edit section"
-          className="grid size-7 place-items-center rounded-(--radius-sm) border border-(--color-border) bg-(--color-canvas)/95 text-(--color-ink-muted) backdrop-blur transition-colors hover:border-(--color-accent) hover:text-(--color-accent)"
+          className="grid size-7 place-items-center rounded-lg border border-white/[0.12] bg-black/40 text-white/60 backdrop-blur transition-colors hover:border-[#5b8dff]/70 hover:text-white"
         >
           <Pencil className="size-3.5" />
         </button>
@@ -386,7 +422,7 @@ function TocRow({ bookId, entry, idx, onUpdated, onDeleted }: TocRowProps) {
           onClick={confirmDelete}
           disabled={busy}
           title="Delete section"
-          className="grid size-7 place-items-center rounded-(--radius-sm) border border-(--color-border) bg-(--color-canvas)/95 text-(--color-ink-muted) backdrop-blur transition-colors hover:border-(--color-error) hover:text-(--color-error)"
+          className="grid size-7 place-items-center rounded-lg border border-white/[0.12] bg-black/40 text-white/60 backdrop-blur transition-colors hover:border-rose-500/70 hover:text-rose-300"
         >
           {busy ? (
             <Loader2 className="size-3.5 animate-spin" />
@@ -397,7 +433,7 @@ function TocRow({ bookId, entry, idx, onUpdated, onDeleted }: TocRowProps) {
       </span>
 
       {actionError && (
-        <p className="mt-1 px-3.5 text-[0.7rem] text-(--color-error)">{actionError}</p>
+        <p className="mt-1 px-3.5 text-[0.7rem] text-rose-300">{actionError}</p>
       )}
     </div>
   );
@@ -416,32 +452,32 @@ function SectionStatusBadge({ status }: { status: JobStatus | null }) {
     done: {
       label: "Ready",
       icon: <CheckCircle2 className="size-3" />,
-      cls: "border-[oklch(0.78_0.10_145_/_30%)] bg-[oklch(0.78_0.10_145_/_10%)] text-(--color-success)",
+      cls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300",
     },
     running: {
       label: "Running",
       icon: <Loader2 className="size-3 animate-spin" />,
-      cls: "border-(--color-accent-border) bg-(--color-accent-soft) text-(--color-accent)",
+      cls: "border-[#5b8dff]/30 bg-[#5b8dff]/10 text-[#9cc0ff]",
     },
     pending: {
       label: "Queued",
       icon: <CircleDot className="size-3" />,
-      cls: "border-(--color-accent-border) bg-(--color-accent-soft) text-(--color-accent)",
+      cls: "border-[#5b8dff]/30 bg-[#5b8dff]/10 text-[#9cc0ff]",
     },
     failed: {
       label: "Failed",
       icon: <CircleX className="size-3" />,
-      cls: "border-[oklch(0.70_0.16_25_/_30%)] bg-[oklch(0.70_0.16_25_/_10%)] text-(--color-error)",
+      cls: "border-rose-500/30 bg-rose-500/10 text-rose-300",
     },
     cancelling: {
       label: "Cancelling",
       icon: <Loader2 className="size-3 animate-spin" />,
-      cls: "border-(--color-border) bg-(--color-elevated) text-(--color-ink-muted)",
+      cls: "border-white/[0.12] bg-white/[0.05] text-white/50",
     },
     cancelled: {
       label: "Cancelled",
       icon: <Ban className="size-3" />,
-      cls: "border-(--color-border) bg-(--color-elevated) text-(--color-ink-muted)",
+      cls: "border-white/[0.12] bg-white/[0.05] text-white/50",
     },
   };
   const m = map[status];

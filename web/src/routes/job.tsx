@@ -10,18 +10,19 @@ import {
   Loader2,
   RefreshCcw,
 } from "lucide-react";
+import { motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
+import { Link, useParams } from "react-router-dom";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
-import { Eyebrow } from "@/components/eyebrow";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { SpaceBackdrop } from "@/components/space-backdrop";
 import { useEventSource } from "@/hooks/use-event-source";
 import { api } from "@/lib/api";
+import { fadeUpItem, staggerContainer } from "@/lib/motion";
 import type { Difficulty, JobStatus } from "@/lib/types";
+import { BACK_PILL, GLASS_BTN, PRIMARY_BTN } from "@/lib/ui";
 import { cn, formatPhaseName, formatTokens } from "@/lib/utils";
 
 type PhaseUiStatus = "running" | "done" | "failed";
@@ -33,6 +34,14 @@ interface PhaseUi {
   output?: string;
   tokens_input?: number | null;
   tokens_output?: number | null;
+}
+
+function Chip({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="rounded-md bg-white/[0.07] px-2.5 py-1 font-mono text-[0.66rem] uppercase tracking-[0.12em] text-white/60">
+      {children}
+    </span>
+  );
 }
 
 export function JobPage() {
@@ -217,151 +226,169 @@ export function JobPage() {
   const totalCount = visiblePhases.length;
 
   return (
-    <>
-      {parents && (
-        <Link
-          to={`/book/${parents.bookId}/section/${parents.sectionId}`}
-          className="inline-flex items-center gap-1.5 font-mono text-[0.7rem] uppercase tracking-[0.14em] text-(--color-ink-muted) transition-colors hover:text-(--color-ink)"
-        >
-          <ArrowLeft className="size-3.5" />
-          Back to section
-        </Link>
-      )}
+    <div className="relative min-h-[calc(100vh-9rem)]">
+      <SpaceBackdrop />
 
-      <div className="mt-4 flex items-center justify-between gap-3">
-        <Eyebrow>Composing</Eyebrow>
-        <div className="flex items-center gap-2">
-          {difficulty && <Badge variant="accent">difficulty · {difficulty}</Badge>}
-          {totalCount > 0 && (
-            <Badge variant="neutral">
-              {doneCount}/{totalCount}
-            </Badge>
-          )}
-          {(status === "cancelling" || status === "cancelled") && (
-            <Badge variant="neutral">{status}</Badge>
-          )}
-          {(status === "pending" || status === "running") && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={handleCancel}
-              disabled={cancelling}
-            >
-              {cancelling ? (
-                <>
-                  <Loader2 className="size-3.5 animate-spin" />
-                  Cancelling…
-                </>
-              ) : (
-                <>
-                  <Ban className="size-3.5" />
-                  Cancel
-                </>
-              )}
-            </Button>
-          )}
-        </div>
-      </div>
+      <div className="relative z-10">
+        {parents && (
+          <Link to={`/book/${parents.bookId}/section/${parents.sectionId}`} className={BACK_PILL}>
+            <ArrowLeft className="size-4 shrink-0 transition-transform group-hover:-translate-x-0.5" />
+            Back to section
+          </Link>
+        )}
 
-      {agent && (
-        <p className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <span className="font-mono text-[0.7rem] uppercase tracking-[0.16em] text-(--color-ink-muted)">
-            Agent
+        <div className="mt-5 flex items-center justify-between gap-3">
+          <span className="font-mono text-[0.68rem] font-medium uppercase tracking-[0.16em] text-white/45">
+            Composing
           </span>
-          <span className="font-mono text-[0.75rem] text-(--color-ink-soft)">
-            {agent.provider} · {agent.model ?? "default"}
-          </span>
-        </p>
-      )}
-
-      <h1 className="mt-3 text-3xl font-semibold tracking-tight text-(--color-ink)">
-        {downloadUrl ? "Homework ready" : "Generating homework"}
-      </h1>
-      <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-(--color-ink-soft)">
-        Each phase reads the lesson and produces one section of the assembled study packet.
-      </p>
-
-      {visiblePhases.length === 0 && !error && !downloadUrl ? (
-        <PipelineWarmup />
-      ) : (
-        <ol className="mt-7 flex flex-col gap-1.5">
-          {visiblePhases.map((phase) => (
-            <li key={phase.name}>
-              <PhaseRow phase={phase} />
-            </li>
-          ))}
-        </ol>
-      )}
-
-      {downloadUrl && id && <DonePanel jobId={id} downloadUrl={downloadUrl} />}
-
-      {error && !downloadUrl && (
-        <>
-          <div className="mt-6 rounded-(--radius-md) border border-[oklch(0.70_0.16_25_/_30%)] bg-[oklch(0.70_0.16_25_/_8%)] px-3 py-2 text-sm text-(--color-error)">
-            {error}
+          <div className="flex items-center gap-2">
+            {difficulty && <Chip>difficulty · {difficulty}</Chip>}
+            {totalCount > 0 && (
+              <Chip>
+                {doneCount}/{totalCount}
+              </Chip>
+            )}
+            {(status === "cancelling" || status === "cancelled") && <Chip>{status}</Chip>}
+            {(status === "pending" || status === "running") && (
+              <button
+                type="button"
+                onClick={handleCancel}
+                disabled={cancelling}
+                className={cn(GLASS_BTN, "px-3 py-1.5 text-xs")}
+              >
+                {cancelling ? (
+                  <>
+                    <Loader2 className="size-3.5 animate-spin" />
+                    Cancelling…
+                  </>
+                ) : (
+                  <>
+                    <Ban className="size-3.5" />
+                    Cancel
+                  </>
+                )}
+              </button>
+            )}
           </div>
-          {parents && (
+        </div>
+
+        {agent && (
+          <p className="mt-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <span className="font-mono text-[0.7rem] uppercase tracking-[0.16em] text-white/45">
+              Agent
+            </span>
+            <span className="font-mono text-[0.75rem] text-white/70">
+              {agent.provider} · {agent.model ?? "default"}
+            </span>
+          </p>
+        )}
+
+        <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+          {downloadUrl ? "Homework ready" : "Generating homework"}
+        </h1>
+        <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-white/55">
+          Each phase reads the lesson and produces one section of the assembled study packet.
+        </p>
+
+        {visiblePhases.length === 0 && !error && !downloadUrl ? (
+          <PipelineWarmup />
+        ) : (
+          <motion.ol
+            className="mt-7 flex flex-col gap-2"
+            variants={staggerContainer}
+            initial="hidden"
+            animate="show"
+          >
+            {visiblePhases.map((phase) => (
+              <motion.li key={phase.name} variants={fadeUpItem}>
+                <PhaseRow phase={phase} />
+              </motion.li>
+            ))}
+          </motion.ol>
+        )}
+
+        {downloadUrl && id && <DonePanel jobId={id} downloadUrl={downloadUrl} />}
+
+        {error && !downloadUrl && (
+          <>
+            <div className="mt-6 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+              {error}
+            </div>
+            {parents && (
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleRetry}
+                  disabled={retrying}
+                  className={PRIMARY_BTN}
+                >
+                  {retrying ? (
+                    <>
+                      <Loader2 className="size-3.5 animate-spin" />
+                      Retrying…
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCcw className="size-3.5" />
+                      Retry this job
+                    </>
+                  )}
+                </button>
+                <Link
+                  to={`/book/${parents.bookId}/section/${parents.sectionId}`}
+                  className={GLASS_BTN}
+                >
+                  Start fresh
+                </Link>
+              </div>
+            )}
+          </>
+        )}
+
+        {status === "done" && notionSkip && (
+          <div className="mt-4 inline-flex items-center gap-2 rounded-xl border border-white/[0.12] bg-white/[0.05] px-3 py-2 text-sm text-white/55">
+            Not archived to Notion: {notionSkip}
+          </div>
+        )}
+
+        {status === "cancelled" && !downloadUrl && (
+          <>
+            <div className="mt-6 inline-flex items-center gap-2 rounded-xl border border-white/[0.12] bg-white/[0.05] px-3 py-2 text-sm text-white/55">
+              <Ban className="size-3.5" />
+              This job was cancelled.
+            </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              <Button onClick={handleRetry} disabled={retrying}>
+              <button
+                type="button"
+                onClick={handleRetry}
+                disabled={retrying}
+                className={PRIMARY_BTN}
+              >
                 {retrying ? (
                   <>
                     <Loader2 className="size-3.5 animate-spin" />
-                    Retrying…
+                    Resuming…
                   </>
                 ) : (
                   <>
                     <RefreshCcw className="size-3.5" />
-                    Retry this job
+                    Resume this job
                   </>
                 )}
-              </Button>
-              <Button asChild variant="secondary">
-                <Link to={`/book/${parents.bookId}/section/${parents.sectionId}`}>
+              </button>
+              {parents && (
+                <Link
+                  to={`/book/${parents.bookId}/section/${parents.sectionId}`}
+                  className={GLASS_BTN}
+                >
                   Start fresh
                 </Link>
-              </Button>
-            </div>
-          )}
-        </>
-      )}
-
-      {status === "done" && notionSkip && (
-        <div className="mt-4 inline-flex items-center gap-2 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-3 py-2 text-sm text-(--color-ink-muted)">
-          Not archived to Notion: {notionSkip}
-        </div>
-      )}
-
-      {status === "cancelled" && !downloadUrl && (
-        <>
-          <div className="mt-6 inline-flex items-center gap-2 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-3 py-2 text-sm text-(--color-ink-muted)">
-            <Ban className="size-3.5" />
-            This job was cancelled.
-          </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button onClick={handleRetry} disabled={retrying}>
-              {retrying ? (
-                <>
-                  <Loader2 className="size-3.5 animate-spin" />
-                  Resuming…
-                </>
-              ) : (
-                <>
-                  <RefreshCcw className="size-3.5" />
-                  Resume this job
-                </>
               )}
-            </Button>
-            {parents && (
-              <Button asChild variant="secondary">
-                <Link to={`/book/${parents.bookId}/section/${parents.sectionId}`}>
-                  Start fresh
-                </Link>
-              </Button>
-            )}
-          </div>
-        </>
-      )}
-    </>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -372,25 +399,25 @@ function PipelineWarmup() {
   const placeholders = [0, 1, 2, 3];
   return (
     <div className="mt-7">
-      <div className="inline-flex items-center gap-2 font-mono text-[0.7rem] font-medium uppercase tracking-[0.16em] text-(--color-accent)">
+      <div className="inline-flex items-center gap-2 font-mono text-[0.7rem] font-medium uppercase tracking-[0.16em] text-[#9cc0ff]">
         <Loader2 className="size-3.5 animate-spin" />
         Warming up the pipeline
       </div>
-      <p className="mt-2 max-w-[55ch] text-sm leading-relaxed text-(--color-ink-soft)">
+      <p className="mt-2 max-w-[55ch] text-sm leading-relaxed text-white/55">
         Queueing the section, classifying difficulty, and reserving a worker. The first phase
         usually starts within a few seconds.
       </p>
-      <ol className="mt-5 flex flex-col gap-1.5" aria-hidden>
+      <ol className="mt-5 flex flex-col gap-2" aria-hidden>
         {placeholders.map((i) => (
           <li
             key={i}
-            className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-3.5 py-2.5"
+            className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-2xl border border-white/[0.09] bg-white/[0.04] px-3.5 py-3 backdrop-blur-xl"
           >
-            <span className="font-mono text-[0.7rem] tabular-nums w-7 text-(--color-ink-muted)">
+            <span className="w-7 font-mono text-[0.7rem] tabular-nums text-white/40">
               {String(i + 1).padStart(2, "0")}
             </span>
-            <span className="h-3 rounded-(--radius-sm) bg-(--color-border)/60 animate-pulse" />
-            <Loader2 className="size-3 animate-spin text-(--color-ink-muted)" />
+            <span className="h-3 animate-pulse rounded-md bg-white/[0.08]" />
+            <Loader2 className="size-3 animate-spin text-white/40" />
           </li>
         ))}
       </ol>
@@ -416,16 +443,16 @@ function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string 
   }, [job]);
 
   return (
-    <section className="mt-7 overflow-hidden rounded-(--radius-md) border border-(--color-accent-border) bg-(--color-accent-soft)">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-(--color-accent-border) px-4 py-3">
-        <span className="inline-flex items-center gap-2 font-mono text-[0.7rem] font-medium uppercase tracking-[0.16em] text-(--color-accent)">
-          <CheckCircle2 className="size-3.5 text-(--color-success)" />
+    <section className="mt-7 overflow-hidden rounded-2xl border border-emerald-400/25 bg-emerald-400/[0.06] shadow-[0_18px_50px_-36px_rgba(0,0,0,0.95)] backdrop-blur-xl">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-400/20 px-5 py-3">
+        <span className="inline-flex items-center gap-2 font-mono text-[0.7rem] font-medium uppercase tracking-[0.16em] text-emerald-300">
+          <CheckCircle2 className="size-3.5" />
           Homework ready
         </span>
         <div className="flex items-center gap-2">
           <Link
             to={`/preview/${jobId}`}
-            className="inline-flex items-center gap-1.5 rounded-(--radius-sm) border border-(--color-border) bg-(--color-elevated) px-3 py-1.5 text-xs font-medium text-(--color-ink) transition-colors hover:bg-(--color-elevated-hover)"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.12] bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-white/80 transition-colors hover:bg-white/[0.1] hover:text-white"
           >
             <Eye className="size-3.5" />
             Open full preview
@@ -433,7 +460,7 @@ function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string 
           <a
             href={downloadUrl}
             download
-            className="inline-flex items-center gap-1.5 rounded-(--radius-sm) bg-(--color-accent) px-3 py-1.5 text-xs font-medium text-[oklch(0.18_0.04_55)] transition-colors hover:bg-(--color-accent-deep)"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] px-3 py-1.5 text-xs font-medium text-white transition-transform hover:-translate-y-0.5"
           >
             <Download className="size-3.5" />
             Download .zip
@@ -442,20 +469,20 @@ function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string 
       </header>
 
       {stats.length > 0 && (
-        <div className="bg-(--color-canvas) px-5 py-4">
-          <p className="mb-3 text-xs text-(--color-ink-muted)">
+        <div className="px-5 py-4">
+          <p className="mb-3 text-xs text-white/50">
             Open the full preview to read each generated phase.
           </p>
           <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {stats.map((s) => (
               <div
                 key={s.label}
-                className="rounded-(--radius-sm) border border-(--color-border) bg-(--color-elevated) px-3 py-2"
+                className="rounded-xl border border-white/[0.08] bg-black/20 px-3 py-2"
               >
-                <dt className="font-mono text-[0.65rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
+                <dt className="font-mono text-[0.65rem] uppercase tracking-[0.14em] text-white/45">
                   {s.label}
                 </dt>
-                <dd className="mt-0.5 text-lg font-semibold tabular-nums text-(--color-ink)">
+                <dd className="mt-0.5 text-lg font-semibold tabular-nums text-white">
                   {s.value}
                 </dd>
               </div>
@@ -472,29 +499,24 @@ function PhaseRow({ phase }: { phase: PhaseUi }) {
   const status = phase.status;
 
   return (
-    <article className="rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated)">
+    <article className="overflow-hidden rounded-2xl border border-white/[0.09] bg-white/[0.04] backdrop-blur-xl">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         disabled={!phase.output}
-        className="grid w-full grid-cols-[auto_1fr_auto_auto] items-center gap-3 px-3.5 py-2.5 text-left disabled:cursor-default"
+        className="grid w-full grid-cols-[auto_1fr_auto_auto] items-center gap-3 px-3.5 py-3 text-left disabled:cursor-default"
       >
-        <span className="font-mono text-[0.7rem] text-(--color-ink-muted) tabular-nums w-7">
+        <span className="w-7 font-mono text-[0.7rem] tabular-nums text-white/40">
           {String(phase.order + 1).padStart(2, "0")}
         </span>
 
-        <span className="text-sm font-medium text-(--color-ink)">
-          {formatPhaseName(phase.name)}
-        </span>
+        <span className="text-sm font-medium text-white">{formatPhaseName(phase.name)}</span>
 
         <PhaseStatus status={status} />
 
         {phase.output ? (
           <ChevronDown
-            className={cn(
-              "size-3.5 text-(--color-ink-muted) transition-transform",
-              open && "rotate-180",
-            )}
+            className={cn("size-3.5 text-white/40 transition-transform", open && "rotate-180")}
           />
         ) : (
           <span className="size-3.5" />
@@ -502,14 +524,14 @@ function PhaseRow({ phase }: { phase: PhaseUi }) {
       </button>
 
       {open && phase.output && (
-        <div className="border-t border-(--color-border) px-3.5 py-3">
-          <div className="prose prose-invert prose-sm max-h-72 overflow-auto rounded-(--radius-sm) bg-(--color-canvas) p-3 leading-relaxed text-(--color-ink-soft) [&>*]:my-1 [&_h1]:mb-2 [&_h2]:mb-2 [&_h3]:mb-1 [&_pre]:bg-black/40 [&_pre]:p-2 [&_pre]:rounded-md [&_code]:font-mono [&_code]:text-[0.85em]">
+        <div className="border-t border-white/[0.08] px-3.5 py-3">
+          <div className="max-h-72 overflow-auto rounded-xl bg-black/30 p-3 leading-relaxed text-white/70 [&>*]:my-1 [&_code]:font-mono [&_code]:text-[0.85em] [&_h1]:mb-2 [&_h1]:text-white [&_h2]:mb-2 [&_h2]:text-white [&_h3]:mb-1 [&_h3]:text-white [&_pre]:rounded-md [&_pre]:bg-black/50 [&_pre]:p-2 [&_strong]:text-white">
             <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
               {phase.output}
             </ReactMarkdown>
           </div>
 
-          <div className="mt-2 flex flex-wrap gap-3 font-mono text-[0.66rem] text-(--color-ink-muted)">
+          <div className="mt-2 flex flex-wrap gap-3 font-mono text-[0.66rem] text-white/45">
             <span>↓ {formatTokens(phase.tokens_input)} in</span>
             <span>↑ {formatTokens(phase.tokens_output)} out</span>
           </div>
@@ -522,7 +544,7 @@ function PhaseRow({ phase }: { phase: PhaseUi }) {
 function PhaseStatus({ status }: { status: PhaseUiStatus }) {
   if (status === "running") {
     return (
-      <span className="inline-flex items-center gap-1.5 text-[0.7rem] font-medium text-(--color-ink-muted)">
+      <span className="inline-flex items-center gap-1.5 text-[0.7rem] font-medium text-white/55">
         <Loader2 className="size-3 animate-spin" />
         Running
       </span>
@@ -530,14 +552,14 @@ function PhaseStatus({ status }: { status: PhaseUiStatus }) {
   }
   if (status === "done") {
     return (
-      <span className="inline-flex items-center gap-1.5 text-[0.7rem] font-medium text-(--color-success)">
+      <span className="inline-flex items-center gap-1.5 text-[0.7rem] font-medium text-emerald-300">
         <CheckCircle2 className="size-3.5" />
         Ready
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1.5 text-[0.7rem] font-medium text-(--color-error)">
+    <span className="inline-flex items-center gap-1.5 text-[0.7rem] font-medium text-rose-300">
       <CircleX className="size-3.5" />
       Failed
     </span>

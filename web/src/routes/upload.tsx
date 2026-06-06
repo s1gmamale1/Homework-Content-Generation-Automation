@@ -6,13 +6,12 @@ import {
   Loader2,
   Upload as UploadIcon,
 } from "lucide-react";
+import { motion } from "motion/react";
 import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Eyebrow } from "@/components/eyebrow";
-import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
+import { SpaceBackdrop } from "@/components/space-backdrop";
 import {
   Select,
   SelectContent,
@@ -21,15 +20,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import { fadeUpItem, staggerContainer, tapScale } from "@/lib/motion";
+import { subjectLabel } from "@/lib/subjects";
 import {
   type NotionGrade,
   type NotionSubject,
   SUBJECTS,
   type Subject,
 } from "@/lib/types";
+import { GHOST_BTN, GLASS_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
 const GRADES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"];
+const LBL = "text-sm font-medium text-white/75";
 
 export function UploadPage() {
   const navigate = useNavigate();
@@ -110,287 +113,302 @@ export function UploadPage() {
   }
 
   return (
-    <>
-      <Eyebrow>New session</Eyebrow>
+    <div className="relative min-h-[calc(100vh-9rem)]">
+      <SpaceBackdrop />
 
-      {source === "choose" && (
-        <>
-          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-(--color-ink)">
-            Start a new session
-          </h1>
-          <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-(--color-ink-soft)">
-            Fetch a curriculum book straight from Notion, or upload your own PDF. Either way the
-            system extracts the table of contents and assembles a homework packet aligned to the
-            source material.
-          </p>
+      <div className="relative z-10">
+        <span className="font-mono text-[0.68rem] font-medium uppercase tracking-[0.16em] text-white/45">
+          New session
+        </span>
 
-          <div className="mt-8 grid gap-4 sm:grid-cols-2">
-            <button
-              type="button"
-              onClick={enterNotion}
-              className={cn(
-                "flex flex-col items-start gap-2 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-5 py-6 text-left transition-colors",
-                "hover:bg-(--color-elevated-hover) hover:border-(--color-border-hover)",
-              )}
+        {source === "choose" && (
+          <>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+              Start a new session
+            </h1>
+            <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-white/55">
+              Fetch a curriculum book straight from Notion, or upload your own PDF. Either way the
+              system extracts the table of contents and assembles a homework packet aligned to the
+              source material.
+            </p>
+
+            <motion.div
+              className="mt-8 grid gap-4 sm:grid-cols-2"
+              variants={staggerContainer}
+              initial="hidden"
+              animate="show"
             >
-              <Library className="size-6 text-(--color-accent)" />
-              <span className="text-base font-medium text-(--color-ink)">Fetch From Notion</span>
-              <span className="text-sm text-(--color-ink-soft)">
-                Pick a grade and subject; the textbook is pulled from the Notion library.
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setSource("upload")}
-              className={cn(
-                "flex flex-col items-start gap-2 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-5 py-6 text-left transition-colors",
-                "hover:bg-(--color-elevated-hover) hover:border-(--color-border-hover)",
-              )}
-            >
-              <UploadIcon className="size-6 text-(--color-accent)" />
-              <span className="text-base font-medium text-(--color-ink)">Upload a Book</span>
-              <span className="text-sm text-(--color-ink-soft)">
-                Drop in your own PDF and choose the subject and grade manually.
-              </span>
-            </button>
-          </div>
-        </>
-      )}
-
-      {source === "upload" && (
-        <>
-          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-(--color-ink)">
-            Upload a curriculum book
-          </h1>
-          <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-(--color-ink-soft)">
-            The system extracts the table of contents, classifies the lesson you choose, and
-            assembles a homework packet aligned to the source material.
-          </p>
-
-          <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-5">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="subject">Subject</Label>
-              <Select
-                value={subject}
-                onValueChange={(v) => setSubject(v as Subject)}
-                disabled={busy}
-              >
-                <SelectTrigger id="subject">
-                  <SelectValue placeholder="Choose a subject" />
-                </SelectTrigger>
-                <SelectContent>
-                  {SUBJECTS.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {s}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="grade">Grade (optional)</Label>
-              <Select value={grade} onValueChange={setGrade} disabled={busy}>
-                <SelectTrigger id="grade">
-                  <SelectValue placeholder="Choose a grade" />
-                </SelectTrigger>
-                <SelectContent>
-                  {GRADES.map((g) => (
-                    <SelectItem key={g} value={g}>
-                      {g}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <span className="text-xs text-(--color-ink-muted)">
-                Files the homework into the matching Notion lesson page.
-              </span>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label>PDF</Label>
-              <div
-                {...dz.getRootProps()}
-                className={cn(
-                  "cursor-pointer rounded-(--radius-md) border border-dashed bg-(--color-elevated) px-4 py-7 text-center transition-colors",
-                  "hover:bg-(--color-elevated-hover) hover:border-(--color-border-hover)",
-                  dz.isDragActive
-                    ? "border-(--color-accent) bg-(--color-accent-soft)"
-                    : "border-(--color-border)",
-                  busy && "pointer-events-none opacity-60",
-                )}
-              >
-                <input {...dz.getInputProps()} />
-                {file ? (
-                  <div className="flex items-center justify-center gap-2.5">
-                    <FileText className="size-4 text-(--color-accent)" />
-                    <span className="text-sm font-medium text-(--color-ink)">{file.name}</span>
-                    <span className="font-mono text-[0.7rem] text-(--color-ink-muted)">
-                      · {(file.size / 1024 / 1024).toFixed(1)}MB · click to replace
-                    </span>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center gap-1.5">
-                    <UploadIcon className="size-5 text-(--color-ink-muted)" />
-                    <span className="text-sm text-(--color-ink)">
-                      {dz.isDragActive ? "Drop the file" : "Drop a PDF, or click to browse"}
-                    </span>
-                    <span className="font-mono text-[0.66rem] text-(--color-ink-muted)">
-                      Up to 50 MB
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <Button type="submit" disabled={busy} className="self-start">
-                {busy ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    Uploading…
-                  </>
-                ) : (
-                  <>
-                    Upload
-                    <ArrowRight className="size-4" />
-                  </>
-                )}
-              </Button>
-              <Button
+              <motion.button
                 type="button"
-                variant="ghost"
+                onClick={enterNotion}
+                variants={fadeUpItem}
+                whileTap={tapScale}
+                className="flex flex-col items-start gap-2 rounded-2xl border border-white/[0.09] bg-white/[0.04] px-5 py-6 text-left shadow-[0_18px_50px_-40px_rgba(0,0,0,0.95)] backdrop-blur-xl transition-colors hover:border-white/[0.16] hover:bg-white/[0.06]"
+              >
+                <span className="grid size-11 place-items-center rounded-xl border border-white/[0.12] bg-gradient-to-br from-[#7c5cff]/40 to-[#4d9bff]/30">
+                  <Library className="size-5 text-white" />
+                </span>
+                <span className="mt-1 text-base font-semibold text-white">Fetch From Notion</span>
+                <span className="text-sm text-white/55">
+                  Pick a grade and subject; the textbook is pulled from the Notion library.
+                </span>
+              </motion.button>
+
+              <motion.button
+                type="button"
+                onClick={() => setSource("upload")}
+                variants={fadeUpItem}
+                whileTap={tapScale}
+                className="flex flex-col items-start gap-2 rounded-2xl border border-white/[0.09] bg-white/[0.04] px-5 py-6 text-left shadow-[0_18px_50px_-40px_rgba(0,0,0,0.95)] backdrop-blur-xl transition-colors hover:border-white/[0.16] hover:bg-white/[0.06]"
+              >
+                <span className="grid size-11 place-items-center rounded-xl border border-white/[0.12] bg-gradient-to-br from-[#57e4a5]/40 to-[#3bd6d0]/30">
+                  <UploadIcon className="size-5 text-white" />
+                </span>
+                <span className="mt-1 text-base font-semibold text-white">Upload a Book</span>
+                <span className="text-sm text-white/55">
+                  Drop in your own PDF and choose the subject and grade manually.
+                </span>
+              </motion.button>
+            </motion.div>
+          </>
+        )}
+
+        {source === "upload" && (
+          <>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+              Upload a curriculum book
+            </h1>
+            <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-white/55">
+              The system extracts the table of contents, classifies the lesson you choose, and
+              assembles a homework packet aligned to the source material.
+            </p>
+
+            <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-5">
+              <div className="flex flex-col gap-2">
+                <label htmlFor="subject" className={LBL}>
+                  Subject
+                </label>
+                <Select
+                  value={subject}
+                  onValueChange={(v) => setSubject(v as Subject)}
+                  disabled={busy}
+                >
+                  <SelectTrigger id="subject" className={SELECT_TRIGGER}>
+                    <SelectValue placeholder="Choose a subject" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SUBJECTS.map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {subjectLabel(s)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label htmlFor="grade" className={LBL}>
+                  Grade (optional)
+                </label>
+                <Select value={grade} onValueChange={setGrade} disabled={busy}>
+                  <SelectTrigger id="grade" className={SELECT_TRIGGER}>
+                    <SelectValue placeholder="Choose a grade" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {GRADES.map((g) => (
+                      <SelectItem key={g} value={g}>
+                        {g}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <span className="text-xs text-white/45">
+                  Files the homework into the matching Notion lesson page.
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <span className={LBL}>PDF</span>
+                <div
+                  {...dz.getRootProps()}
+                  className={cn(
+                    "cursor-pointer rounded-2xl border border-dashed px-4 py-8 text-center backdrop-blur-xl transition-colors",
+                    dz.isDragActive
+                      ? "border-[#5b8dff]/70 bg-[#5b8dff]/[0.08]"
+                      : "border-white/[0.18] bg-white/[0.03] hover:border-white/[0.3] hover:bg-white/[0.06]",
+                    busy && "pointer-events-none opacity-60",
+                  )}
+                >
+                  <input {...dz.getInputProps()} />
+                  {file ? (
+                    <div className="flex items-center justify-center gap-2.5">
+                      <FileText className="size-4 text-[#9cc0ff]" />
+                      <span className="text-sm font-medium text-white">{file.name}</span>
+                      <span className="font-mono text-[0.7rem] text-white/45">
+                        · {(file.size / 1024 / 1024).toFixed(1)}MB · click to replace
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-1.5">
+                      <UploadIcon className="size-5 text-white/40" />
+                      <span className="text-sm text-white/80">
+                        {dz.isDragActive ? "Drop the file" : "Drop a PDF, or click to browse"}
+                      </span>
+                      <span className="font-mono text-[0.66rem] text-white/40">Up to 50 MB</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button type="submit" disabled={busy} className={PRIMARY_BTN}>
+                  {busy ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      Uploading…
+                    </>
+                  ) : (
+                    <>
+                      Upload
+                      <ArrowRight className="size-4" />
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setSource("choose")}
+                  className={GHOST_BTN}
+                >
+                  <ArrowLeft className="size-4" />
+                  Back
+                </button>
+              </div>
+            </form>
+          </>
+        )}
+
+        {source === "notion" && (
+          <>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+              Fetch from Notion
+            </h1>
+            <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-white/55">
+              Pick a grade, then a subject. The textbook is pulled from the Notion library and a new
+              session is created for it.
+            </p>
+
+            <div className="mt-8 flex flex-col gap-5">
+              {nErr ? (
+                <div className="flex flex-col items-start gap-3 rounded-2xl border border-white/[0.09] bg-white/[0.04] px-4 py-5 backdrop-blur-xl">
+                  <span className="text-sm text-white/60">{nErr}</span>
+                  <button type="button" onClick={() => setSource("upload")} className={GLASS_BTN}>
+                    Use upload instead
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-col gap-2">
+                    <label htmlFor="notion-grade" className={LBL}>
+                      Grade
+                    </label>
+                    {grades === null ? (
+                      <div className="flex items-center gap-2 text-sm text-white/50">
+                        <Loader2 className="size-4 animate-spin" />
+                        Loading grades…
+                      </div>
+                    ) : (
+                      <Select
+                        onValueChange={(pageId) => {
+                          const g = grades.find((x) => x.page_id === pageId);
+                          if (g) void pickGrade(g.page_id, g.title);
+                        }}
+                        disabled={busy}
+                      >
+                        <SelectTrigger id="notion-grade" className={SELECT_TRIGGER}>
+                          <SelectValue placeholder="Choose a grade" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {grades.map((g) => (
+                            <SelectItem key={g.page_id} value={g.page_id}>
+                              {g.title}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+
+                  {nGrade !== "" && (
+                    <div className="flex flex-col gap-2">
+                      <span className={LBL}>Subject</span>
+                      {subjects === null ? (
+                        <div className="flex items-center gap-2 text-sm text-white/50">
+                          <Loader2 className="size-4 animate-spin" />
+                          Loading subjects…
+                        </div>
+                      ) : subjects.length === 0 ? (
+                        <span className="text-sm text-white/50">
+                          No subjects found for this grade.
+                        </span>
+                      ) : (
+                        <div className="flex flex-col gap-2">
+                          {subjects.map((s) => {
+                            const usable = !!s.app_subject && s.has_textbook;
+                            const reason = !s.has_textbook
+                              ? "no textbook"
+                              : !s.app_subject
+                                ? "unsupported"
+                                : null;
+                            return (
+                              <button
+                                key={s.page_id}
+                                type="button"
+                                disabled={!usable || busy}
+                                onClick={() => void pickSubject(s)}
+                                className={cn(
+                                  "flex items-center justify-between gap-3 rounded-2xl border border-white/[0.09] bg-white/[0.04] px-4 py-3 text-left backdrop-blur-xl transition-all",
+                                  usable
+                                    ? "hover:-translate-y-0.5 hover:border-white/[0.16] hover:bg-white/[0.06]"
+                                    : "cursor-not-allowed opacity-50",
+                                  busy && "pointer-events-none opacity-60",
+                                )}
+                              >
+                                <span className="text-sm font-medium text-white">
+                                  {s.notion_title}
+                                </span>
+                                {reason ? (
+                                  <span className="font-mono text-[0.66rem] text-white/45">
+                                    {reason}
+                                  </span>
+                                ) : busy ? (
+                                  <Loader2 className="size-4 animate-spin text-white/45" />
+                                ) : (
+                                  <ArrowRight className="size-4 text-white/45" />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+
+              <button
+                type="button"
                 disabled={busy}
                 onClick={() => setSource("choose")}
+                className={cn(GHOST_BTN, "self-start")}
               >
                 <ArrowLeft className="size-4" />
                 Back
-              </Button>
+              </button>
             </div>
-          </form>
-        </>
-      )}
-
-      {source === "notion" && (
-        <>
-          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-(--color-ink)">
-            Fetch from Notion
-          </h1>
-          <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-(--color-ink-soft)">
-            Pick a grade, then a subject. The textbook is pulled from the Notion library and a new
-            session is created for it.
-          </p>
-
-          <div className="mt-8 flex flex-col gap-5">
-            {nErr ? (
-              <div className="flex flex-col items-start gap-3 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-4 py-5">
-                <span className="text-sm text-(--color-ink-soft)">{nErr}</span>
-                <Button type="button" variant="secondary" onClick={() => setSource("upload")}>
-                  Use upload instead
-                </Button>
-              </div>
-            ) : (
-              <>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="notion-grade">Grade</Label>
-                  {grades === null ? (
-                    <div className="flex items-center gap-2 text-sm text-(--color-ink-muted)">
-                      <Loader2 className="size-4 animate-spin" />
-                      Loading grades…
-                    </div>
-                  ) : (
-                    <Select
-                      onValueChange={(pageId) => {
-                        const g = grades.find((x) => x.page_id === pageId);
-                        if (g) void pickGrade(g.page_id, g.title);
-                      }}
-                      disabled={busy}
-                    >
-                      <SelectTrigger id="notion-grade">
-                        <SelectValue placeholder="Choose a grade" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {grades.map((g) => (
-                          <SelectItem key={g.page_id} value={g.page_id}>
-                            {g.title}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                </div>
-
-                {nGrade !== "" && (
-                  <div className="flex flex-col gap-2">
-                    <Label>Subject</Label>
-                    {subjects === null ? (
-                      <div className="flex items-center gap-2 text-sm text-(--color-ink-muted)">
-                        <Loader2 className="size-4 animate-spin" />
-                        Loading subjects…
-                      </div>
-                    ) : subjects.length === 0 ? (
-                      <span className="text-sm text-(--color-ink-muted)">
-                        No subjects found for this grade.
-                      </span>
-                    ) : (
-                      <div className="flex flex-col gap-2">
-                        {subjects.map((s) => {
-                          const usable = !!s.app_subject && s.has_textbook;
-                          const reason = !s.has_textbook
-                            ? "no textbook"
-                            : !s.app_subject
-                              ? "unsupported"
-                              : null;
-                          return (
-                            <button
-                              key={s.page_id}
-                              type="button"
-                              disabled={!usable || busy}
-                              onClick={() => void pickSubject(s)}
-                              className={cn(
-                                "flex items-center justify-between gap-3 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-4 py-3 text-left transition-colors",
-                                usable
-                                  ? "hover:bg-(--color-elevated-hover) hover:border-(--color-border-hover)"
-                                  : "cursor-not-allowed opacity-60",
-                                busy && "pointer-events-none opacity-60",
-                              )}
-                            >
-                              <span className="text-sm font-medium text-(--color-ink)">
-                                {s.notion_title}
-                              </span>
-                              {reason ? (
-                                <span className="font-mono text-[0.66rem] text-(--color-ink-muted)">
-                                  {reason}
-                                </span>
-                              ) : busy ? (
-                                <Loader2 className="size-4 animate-spin text-(--color-ink-muted)" />
-                              ) : (
-                                <ArrowRight className="size-4 text-(--color-ink-muted)" />
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={busy}
-              onClick={() => setSource("choose")}
-              className="self-start"
-            >
-              <ArrowLeft className="size-4" />
-              Back
-            </Button>
-          </div>
-        </>
-      )}
-    </>
+          </>
+        )}
+      </div>
+    </div>
   );
 }

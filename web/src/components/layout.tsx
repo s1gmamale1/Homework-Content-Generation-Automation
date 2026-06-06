@@ -1,21 +1,28 @@
 import { Gauge, Library, Moon, Plus } from "lucide-react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { NavLink, useLocation, useOutlet } from "react-router-dom";
 import { Nameplate } from "./nameplate";
+import { tapScale } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 
 export function Layout() {
   const { pathname } = useLocation();
-  const wide = pathname.startsWith("/usage");
+  const reduce = useReducedMotion();
+  // Snapshot the matched route element. Rendering this frozen element (rather
+  // than <Outlet/>, which re-reads context to the *current* route) lets the
+  // exiting copy keep the OLD page during its cross-fade — so each route
+  // mounts exactly once and SSE/query effects don't double-subscribe.
+  const outlet = useOutlet();
+  const wide =
+    pathname.startsWith("/usage") || pathname.startsWith("/library");
 
   return (
     <div className="flex min-h-screen flex-col bg-(--color-canvas)">
       <header className="sticky top-3 z-20 px-3 sm:px-5">
         <div
           className={cn(
-            "mx-auto flex h-14 w-full items-center justify-between gap-6 rounded-2xl border px-4 shadow-[0_18px_50px_-32px_rgba(0,0,0,0.75)] backdrop-blur-xl sm:px-5",
-            wide
-              ? "max-w-[1200px] border-white/[0.09] bg-white/[0.065]"
-              : "max-w-[960px] border-(--color-border) bg-(--color-elevated)/90",
+            "mx-auto flex h-14 w-full items-center justify-between gap-6 rounded-2xl border border-white/[0.09] bg-white/[0.065] px-4 shadow-[0_18px_50px_-32px_rgba(0,0,0,0.75)] backdrop-blur-xl sm:px-5",
+            wide ? "max-w-[1200px]" : "max-w-[960px]",
           )}
         >
           <div className="flex min-w-0 items-center gap-5">
@@ -50,14 +57,15 @@ export function Layout() {
             <span className="hidden font-mono text-[0.66rem] font-medium uppercase tracking-[0.14em] text-(--color-ink-muted) sm:inline">
               v0
             </span>
-            <button
+            <motion.button
               type="button"
               aria-label="Dark theme"
               title="Dark theme"
+              whileTap={tapScale}
               className="grid size-9 place-items-center rounded-full border border-white/[0.12] bg-white/[0.06] text-white/70 transition-colors hover:bg-white/[0.1] hover:text-white"
             >
               <Moon className="size-4" />
-            </button>
+            </motion.button>
           </div>
         </div>
       </header>
@@ -68,7 +76,19 @@ export function Layout() {
           wide ? "max-w-[1200px]" : "max-w-[720px]",
         )}
       >
-        <Outlet />
+        {/* Cross-fade between routes. Opacity only — a transform here would
+            create a containing block and break the fixed SpaceBackdrop. */}
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={pathname}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reduce ? 0 : 0.18, ease: "easeOut" }}
+          >
+            {outlet}
+          </motion.div>
+        </AnimatePresence>
       </main>
 
       <footer className="border-t border-(--color-border) py-4 text-center font-mono text-[0.64rem] uppercase tracking-[0.16em] text-(--color-ink-muted)">
@@ -95,7 +115,7 @@ function NavItem({
       end={end}
       className={({ isActive }) =>
         cn(
-          "relative inline-flex h-9 items-center gap-2 rounded-xl px-3 text-sm font-medium transition-colors",
+          "relative inline-flex h-9 items-center gap-2 rounded-xl px-3 text-sm font-medium transition-[color,background-color,transform] active:scale-95",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--color-accent)/70 focus-visible:ring-offset-2 focus-visible:ring-offset-(--color-canvas)",
           isActive
             ? "bg-white/[0.11] text-(--color-ink)"

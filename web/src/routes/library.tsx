@@ -1,24 +1,40 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowRight,
   BookOpen,
-  Check,
+  CheckCheck,
+  HardDrive,
+  Layers,
+  Library,
   Loader2,
   Pencil,
   Plus,
   Trash2,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { motion } from "motion/react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Eyebrow } from "@/components/eyebrow";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { SpaceBackdrop } from "@/components/space-backdrop";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { fadeUpItem, staggerContainer } from "@/lib/motion";
+import { subjectLabel } from "@/lib/subjects";
 import type { Book, BookStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+// Per-subject signature gradient [from, to] — mirrors Usage's provider accents.
+const SUBJECT_ACCENTS: Record<string, [string, string]> = {
+  biology: ["#57e4a5", "#34d399"],
+  english: ["#64a8ff", "#4d8dff"],
+  "geometriya-g7-11": ["#c18cff", "#8268ff"],
+  history: ["#f6d365", "#fda085"],
+  "kimyo-g7-11": ["#4ee8d5", "#43c6ac"],
+  "math-algebra": ["#ff9466", "#ff5f7f"],
+  physics: ["#7c8cff", "#5fb0ff"],
+};
+function accentOf(subject: string): [string, string] {
+  return SUBJECT_ACCENTS[subject] ?? ["#8aa0c6", "#5f6f93"];
+}
 
 export function LibraryPage() {
   const {
@@ -37,67 +53,163 @@ export function LibraryPage() {
     },
   });
 
+  const totalBooks = books?.length ?? 0;
+  const readyCount = books?.filter((b) => b.status === "toc_ready").length ?? 0;
+  const totalBytes =
+    books?.reduce((sum, b) => sum + (b.file_size_bytes ?? 0), 0) ?? 0;
+  const totalSections =
+    books?.reduce((sum, b) => sum + (b.toc?.length ?? 0), 0) ?? 0;
+
   return (
-    <>
-      <div className="flex items-center justify-between gap-3">
-        <Eyebrow>Library</Eyebrow>
-        <Button asChild size="sm" variant="secondary">
-          <Link to="/">
-            <Plus className="size-3.5" />
+    <div className="relative min-h-[calc(100vh-9rem)]">
+      <SpaceBackdrop />
+
+      <div className="relative z-10 space-y-7">
+        {/* Hero */}
+        <header className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-4">
+            <span className="grid size-14 shrink-0 place-items-center rounded-2xl border border-white/[0.12] bg-gradient-to-br from-[#7c5cff]/40 to-[#4d9bff]/30 shadow-[0_18px_40px_-18px_rgba(124,92,255,0.8)]">
+              <Library className="size-7 text-white" />
+            </span>
+            <div>
+              <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-[2.75rem]">
+                Library
+              </h1>
+              <p className="mt-2 max-w-[58ch] text-sm leading-6 text-white/55">
+                Every uploaded textbook. Open one to browse its table of contents,
+                or hover a card to rename or delete it.
+              </p>
+            </div>
+          </div>
+
+          <Link
+            to="/"
+            className="inline-flex shrink-0 items-center gap-2 rounded-2xl bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] px-4 py-2.5 text-sm font-medium text-white shadow-[0_10px_26px_-12px_rgba(99,102,241,0.9)] transition-transform hover:-translate-y-0.5"
+          >
+            <Plus className="size-4" />
             Upload book
           </Link>
-        </Button>
-      </div>
+        </header>
 
-      <h1 className="mt-3 text-3xl font-semibold tracking-tight text-(--color-ink)">
-        Uploaded books
-      </h1>
-      <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-(--color-ink-soft)">
-        Pick a book to open its table of contents. Hover a row to rename or delete it.
-      </p>
+        {error && (
+          <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            Failed to load library: {(error as Error).message}
+          </div>
+        )}
 
-      {error && (
-        <div className="mt-7 rounded-(--radius-md) border border-[oklch(0.70_0.16_25_/_30%)] bg-[oklch(0.70_0.16_25_/_8%)] px-3 py-2 text-sm text-(--color-error)">
-          Failed to load library: {(error as Error).message}
-        </div>
-      )}
+        {/* Summary strip */}
+        {books && books.length > 0 && (
+          <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+            <SummaryStat
+              icon={<BookOpen className="size-5" />}
+              tint="#4d9bff"
+              label="Total Books"
+              value={String(totalBooks)}
+              caption="In the library"
+            />
+            <SummaryStat
+              icon={<CheckCheck className="size-5" />}
+              tint="#34d399"
+              label="Ready"
+              value={`${readyCount} / ${totalBooks}`}
+              caption="TOC extracted"
+            />
+            <SummaryStat
+              icon={<HardDrive className="size-5" />}
+              tint="#fb923c"
+              label="Total Size"
+              value={formatSize(totalBytes)}
+              caption="On-disk PDFs"
+            />
+            <SummaryStat
+              icon={<Layers className="size-5" />}
+              tint="#a78bfa"
+              label="Sections"
+              value={formatNum(totalSections)}
+              caption="Indexed across books"
+            />
+          </div>
+        )}
 
-      {isLoading && (
-        <div className="mt-7 flex flex-col gap-2">
-          {Array.from({ length: 4 }).map((_, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: skeleton placeholder
-            <Skeleton key={i} className="h-[60px] w-full" />
-          ))}
-        </div>
-      )}
+        {isLoading && (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {Array.from({ length: 8 }).map((_, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: skeleton placeholder
+              <Skeleton key={i} className="h-[150px] w-full rounded-2xl" />
+            ))}
+          </div>
+        )}
 
-      {books && books.length === 0 && (
-        <div className="mt-7 flex flex-col items-center gap-3 rounded-(--radius-md) border border-dashed border-(--color-border) px-6 py-12 text-center">
-          <BookOpen className="size-5 text-(--color-ink-muted)" />
-          <span className="text-sm text-(--color-ink-soft)">No books yet.</span>
-          <Button asChild size="sm" className="mt-1">
-            <Link to="/">
-              <Plus className="size-3.5" />
+        {books && books.length === 0 && (
+          <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-white/[0.14] bg-white/[0.03] px-6 py-16 text-center backdrop-blur-xl">
+            <BookOpen className="size-6 text-white/40" />
+            <span className="text-sm text-white/55">No books yet.</span>
+            <Link
+              to="/"
+              className="mt-1 inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] px-4 py-2.5 text-sm font-medium text-white shadow-[0_10px_26px_-12px_rgba(99,102,241,0.9)] transition-transform hover:-translate-y-0.5"
+            >
+              <Plus className="size-4" />
               Upload your first book
             </Link>
-          </Button>
-        </div>
-      )}
+          </div>
+        )}
 
-      {books && books.length > 0 && (
-        <ul className="mt-7 flex flex-col gap-1.5">
-          {books.map((book) => (
-            <li key={book.id}>
-              <BookRow book={book} />
-            </li>
-          ))}
-        </ul>
-      )}
-    </>
+        {books && books.length > 0 && (
+          <motion.div
+            className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+            variants={staggerContainer}
+            initial="hidden"
+            animate="show"
+          >
+            {books.map((book) => (
+              <motion.div key={book.id} variants={fadeUpItem} className="h-full">
+                <BookCard book={book} />
+              </motion.div>
+            ))}
+          </motion.div>
+        )}
+      </div>
+    </div>
   );
 }
 
-function BookRow({ book }: { book: Book }) {
+/* ── Summary stat card ──────────────────────────────────────────────── */
+
+function SummaryStat({
+  icon,
+  tint,
+  label,
+  value,
+  caption,
+}: {
+  icon: ReactNode;
+  tint: string;
+  label: string;
+  value: string;
+  caption: string;
+}) {
+  return (
+    <div className="relative overflow-hidden rounded-2xl border border-white/[0.09] bg-white/[0.045] p-4 shadow-[0_18px_50px_-34px_rgba(0,0,0,0.9)] backdrop-blur-xl">
+      <div className="flex items-center gap-2.5">
+        <span
+          className="grid size-9 place-items-center rounded-xl"
+          style={{ background: `${tint}22`, color: tint, border: `1px solid ${tint}33` }}
+        >
+          {icon}
+        </span>
+        <span className="text-sm font-medium text-white/70">{label}</span>
+      </div>
+      <div className="mt-3 font-mono text-3xl font-bold tabular-nums tracking-tight text-white">
+        {value}
+      </div>
+      <p className="mt-1 text-xs text-white/45">{caption}</p>
+    </div>
+  );
+}
+
+/* ── Book card ──────────────────────────────────────────────────────── */
+
+function BookCard({ book }: { book: Book }) {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(book.original_filename);
@@ -122,9 +234,11 @@ function BookRow({ book }: { book: Book }) {
     onError: (err: Error) => setActionError(err.message),
   });
 
+  const [from, to] = accentOf(book.subject);
   const ready = book.status === "toc_ready";
   const inFlight = ["uploading", "toc_extracting"].includes(book.status);
   const busy = renameMutation.isPending || deleteMutation.isPending;
+  const sections = book.toc?.length ?? 0;
 
   function startEdit(e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault();
@@ -170,104 +284,111 @@ function BookRow({ book }: { book: Book }) {
     return (
       <div
         className={cn(
-          "grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-(--radius-md) border bg-(--color-elevated) px-3.5 py-2.5",
-          actionError ? "border-[oklch(0.70_0.16_25_/_50%)]" : "border-(--color-accent)",
+          "flex flex-col gap-3 rounded-2xl border bg-white/[0.06] p-4 shadow-[0_18px_50px_-36px_rgba(0,0,0,0.95)] backdrop-blur-xl",
+          actionError ? "border-rose-500/50" : "border-[#5b8dff]/70",
         )}
       >
-        <span className="grid size-8 place-items-center rounded-(--radius-sm) bg-(--color-canvas) text-(--color-accent)">
-          <Pencil className="size-4" />
-        </span>
-        <Input
-          autoFocus
-          value={draftName}
-          onChange={(e) => setDraftName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") saveEdit(e);
-            if (e.key === "Escape") cancelEdit(e);
-          }}
-          disabled={busy}
-          placeholder="book filename"
-          className="h-8"
-        />
-        <span className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2.5">
+          <span
+            className="grid size-9 shrink-0 place-items-center rounded-xl text-[#16131f]"
+            style={{ background: `linear-gradient(135deg, ${from}, ${to})` }}
+          >
+            <Pencil className="size-4" />
+          </span>
+          <input
+            // biome-ignore lint/a11y/noAutofocus: rename field should focus on open
+            autoFocus
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") saveEdit(e);
+              if (e.key === "Escape") cancelEdit(e);
+            }}
+            disabled={busy}
+            placeholder="book filename"
+            className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.12] bg-black/30 px-3 text-sm text-white outline-none transition-colors placeholder:text-white/30 focus:border-[#5b8dff]/70"
+          />
+        </div>
+        <div className="flex items-center justify-end gap-1.5">
           <button
             type="button"
             onClick={saveEdit}
             disabled={busy || !draftName.trim()}
             title="Save (Enter)"
-            className="grid size-7 place-items-center rounded-(--radius-sm) bg-(--color-accent) text-[oklch(0.18_0.04_55)] transition-colors hover:bg-(--color-accent-deep) disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] px-3 py-1.5 text-[0.78rem] font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
           >
             {renameMutation.isPending ? (
               <Loader2 className="size-3.5 animate-spin" />
             ) : (
-              <Check className="size-3.5" />
+              <CheckCheck className="size-3.5" />
             )}
+            Save
           </button>
           <button
             type="button"
             onClick={cancelEdit}
             disabled={busy}
             title="Cancel (Esc)"
-            className="grid size-7 place-items-center rounded-(--radius-sm) border border-(--color-border) bg-(--color-elevated) text-(--color-ink-muted) transition-colors hover:bg-(--color-elevated-hover)"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.12] bg-white/[0.05] px-3 py-1.5 text-[0.78rem] font-medium text-white/70 transition-colors hover:bg-white/[0.1]"
           >
             <X className="size-3.5" />
+            Cancel
           </button>
-        </span>
+        </div>
         {actionError && (
-          <span className="col-span-3 text-[0.7rem] text-(--color-error)">{actionError}</span>
+          <span className="text-[0.7rem] text-rose-300">{actionError}</span>
         )}
       </div>
     );
   }
 
   return (
-    <div className="relative">
+    <div className="group relative h-full">
       <Link
         to={`/book/${book.id}`}
         className={cn(
-          "group grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-3.5 py-2.5 transition-colors",
-          "hover:bg-(--color-elevated-hover) hover:border-(--color-border-hover)",
-          deleteMutation.isPending && "opacity-50 pointer-events-none",
+          "flex h-full flex-col overflow-hidden rounded-2xl border border-white/[0.09] bg-white/[0.04] p-4 shadow-[0_18px_50px_-36px_rgba(0,0,0,0.95)] backdrop-blur-xl transition-all hover:-translate-y-0.5 hover:border-white/[0.16] hover:bg-white/[0.06]",
+          deleteMutation.isPending && "pointer-events-none opacity-50",
         )}
       >
-        <span className="grid size-8 place-items-center rounded-(--radius-sm) bg-(--color-canvas) text-(--color-ink-muted)">
-          <BookOpen className="size-4" />
-        </span>
-
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium text-(--color-ink)">
+        <div className="flex items-start gap-2.5">
+          <span
+            className="grid size-10 shrink-0 place-items-center rounded-xl text-sm font-bold text-[#16131f]"
+            style={{ background: `linear-gradient(135deg, ${from}, ${to})` }}
+          >
+            {subjectLabel(book.subject).charAt(0)}
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="line-clamp-2 text-sm font-semibold leading-snug text-white">
               {book.original_filename}
+            </h2>
+            <span className="mt-0.5 block font-mono text-[0.6rem] uppercase tracking-[0.14em] text-white/45">
+              {subjectLabel(book.subject)}
             </span>
-            <span className="hidden font-mono text-[0.6rem] uppercase tracking-[0.14em] text-(--color-ink-muted) sm:inline">
-              · {book.subject}
-            </span>
-          </div>
-          <div className="flex items-center gap-2 font-mono text-[0.66rem] text-(--color-ink-muted)">
-            {book.created_at && <span>{formatRelative(book.created_at)}</span>}
-            {book.file_size_bytes && (
-              <span>· {(book.file_size_bytes / 1024 / 1024).toFixed(1)} MB</span>
-            )}
           </div>
         </div>
 
-        <span className="flex items-center gap-2.5">
+        <div className="mt-4 flex items-center justify-between gap-2 border-t border-white/[0.07] pt-3">
           <StatusBadge status={book.status} />
-          {ready && (
-            <ArrowRight className="size-3.5 text-(--color-ink-muted) group-hover:text-(--color-accent)" />
-          )}
-          {inFlight && <Loader2 className="size-3.5 animate-spin text-(--color-accent)" />}
-        </span>
+          <span className="flex items-center gap-2 font-mono text-[0.66rem] text-white/45">
+            {book.created_at && <span>{formatRelative(book.created_at)}</span>}
+            {book.file_size_bytes != null && (
+              <span>· {formatSize(book.file_size_bytes)}</span>
+            )}
+            {ready && sections > 0 && <span>· {sections} sec</span>}
+            {inFlight && <Loader2 className="size-3 animate-spin text-[#5b8dff]" />}
+          </span>
+        </div>
       </Link>
 
-      {/* Action buttons floated over the right side; visible on row hover. */}
-      <span className="absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-[.hover]:flex md:flex md:opacity-0 md:transition-opacity md:[&:has(button:focus)]:opacity-100 md:hover:opacity-100">
+      {/* Action buttons — fade in on card hover (top-right). */}
+      <span className="absolute right-3 top-3 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
         <button
           type="button"
           onClick={startEdit}
           disabled={busy}
           title="Rename"
-          className="grid size-7 place-items-center rounded-(--radius-sm) border border-(--color-border) bg-(--color-canvas)/95 text-(--color-ink-muted) backdrop-blur transition-colors hover:border-(--color-accent) hover:text-(--color-accent)"
+          className="grid size-7 place-items-center rounded-lg border border-white/[0.12] bg-black/40 text-white/60 backdrop-blur transition-colors hover:border-[#5b8dff]/70 hover:text-white"
         >
           <Pencil className="size-3.5" />
         </button>
@@ -276,7 +397,7 @@ function BookRow({ book }: { book: Book }) {
           onClick={confirmDelete}
           disabled={busy}
           title="Delete"
-          className="grid size-7 place-items-center rounded-(--radius-sm) border border-(--color-border) bg-(--color-canvas)/95 text-(--color-ink-muted) backdrop-blur transition-colors hover:border-(--color-error) hover:text-(--color-error)"
+          className="grid size-7 place-items-center rounded-lg border border-white/[0.12] bg-black/40 text-white/60 backdrop-blur transition-colors hover:border-rose-500/70 hover:text-rose-300"
         >
           {deleteMutation.isPending ? (
             <Loader2 className="size-3.5 animate-spin" />
@@ -287,17 +408,47 @@ function BookRow({ book }: { book: Book }) {
       </span>
 
       {actionError && (
-        <p className="mt-1 text-[0.7rem] text-(--color-error)">{actionError}</p>
+        <p className="mt-1 px-1 text-[0.7rem] text-rose-300">{actionError}</p>
       )}
     </div>
   );
 }
 
 function StatusBadge({ status }: { status: BookStatus }) {
-  if (status === "toc_ready") return <Badge variant="success">ready</Badge>;
-  if (status === "failed") return <Badge variant="error">failed</Badge>;
-  if (status === "uploading") return <Badge variant="accent">uploading</Badge>;
-  return <Badge variant="accent">indexing</Badge>;
+  const map: Record<BookStatus, { label: string; cls: string }> = {
+    toc_ready: { label: "ready", cls: "bg-emerald-400/15 text-emerald-300" },
+    failed: { label: "failed", cls: "bg-rose-500/15 text-rose-300" },
+    uploading: { label: "uploading", cls: "bg-sky-400/15 text-sky-300" },
+    toc_extracting: { label: "indexing", cls: "bg-amber-400/15 text-amber-200" },
+  };
+  // Fall back to "indexing" for any status outside the known union (matches the
+  // pre-rewrite catch-all; guards against a backend status the FE type predates).
+  const { label, cls } = map[status] ?? map.toc_extracting;
+  return (
+    <span
+      className={cn(
+        "rounded-md px-2 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wide",
+        cls,
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
+/* ── helpers ────────────────────────────────────────────────────────── */
+
+function formatNum(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
+  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${bytes} B`;
 }
 
 function formatRelative(iso: string): string {

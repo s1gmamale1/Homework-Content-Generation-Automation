@@ -1,7 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Clock3, Database, PhoneCall, Rocket, ShieldCheck } from "lucide-react";
+import { motion } from "motion/react";
 import { useMemo, useState, type ReactNode } from "react";
+import { SpaceBackdrop } from "@/components/space-backdrop";
 import { Skeleton } from "@/components/ui/skeleton";
+import { fadeUpItem, staggerContainer } from "@/lib/motion";
 import { api } from "@/lib/api";
 import type {
   AgentStats,
@@ -110,25 +113,7 @@ export function UsagePage() {
 
   return (
     <div className="relative min-h-[calc(100vh-9rem)]">
-      {/* Deep-space backdrop: navy base + purple/blue aurora */}
-      <div
-        aria-hidden
-        className="pointer-events-none fixed inset-0 z-0"
-        style={{
-          background:
-            "radial-gradient(55% 45% at 0% 0%, oklch(0.50 0.20 290 / 0.35), transparent 60%), radial-gradient(45% 40% at 100% 14%, oklch(0.55 0.17 250 / 0.28), transparent 60%), radial-gradient(60% 50% at 50% 112%, oklch(0.46 0.16 285 / 0.24), transparent 66%), linear-gradient(160deg, oklch(0.165 0.022 275), oklch(0.12 0.016 268) 55%, oklch(0.15 0.02 250))",
-        }}
-      />
-      {/* Starfield */}
-      <div
-        aria-hidden
-        className="pointer-events-none fixed inset-0 z-0 opacity-70"
-        style={{
-          backgroundImage:
-            "radial-gradient(1.5px 1.5px at 30px 40px, rgba(255,255,255,0.35), transparent), radial-gradient(1px 1px at 130px 120px, rgba(255,255,255,0.22), transparent), radial-gradient(1px 1px at 220px 70px, rgba(255,255,255,0.18), transparent), radial-gradient(1.5px 1.5px at 300px 200px, rgba(255,255,255,0.28), transparent)",
-          backgroundSize: "260px 260px, 200px 200px, 340px 340px, 420px 420px",
-        }}
-      />
+      <SpaceBackdrop />
 
       <div className="relative z-10 space-y-7">
         {/* Hero */}
@@ -251,18 +236,24 @@ export function UsagePage() {
               </span>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <motion.div
+              className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5"
+              variants={staggerContainer}
+              initial="hidden"
+              animate="show"
+            >
               {ids.map((id) => (
-                <ProviderCard
-                  key={id}
-                  providerId={id}
-                  label={PROVIDER_LABELS[id] ?? id}
-                  stats={data.providers[id]?.[selectedWindow]}
-                  active={id === activeId}
-                  onSelect={() => setChosen(id)}
-                />
+                <motion.div key={id} variants={fadeUpItem} className="h-full">
+                  <ProviderCard
+                    providerId={id}
+                    label={PROVIDER_LABELS[id] ?? id}
+                    stats={data.providers[id]?.[selectedWindow]}
+                    active={id === activeId}
+                    onSelect={() => setChosen(id)}
+                  />
+                </motion.div>
               ))}
-            </div>
+            </motion.div>
 
             {activeId && activeStats && (
               <DetailPanel
@@ -390,7 +381,7 @@ function ProviderCard({
       type="button"
       onClick={onSelect}
       className={cn(
-        "group relative overflow-hidden rounded-2xl border p-4 text-left shadow-[0_18px_50px_-36px_rgba(0,0,0,0.95)] backdrop-blur-xl transition-all hover:-translate-y-0.5",
+        "group relative h-full overflow-hidden rounded-2xl border p-4 text-left shadow-[0_18px_50px_-36px_rgba(0,0,0,0.95)] backdrop-blur-xl transition-all hover:-translate-y-0.5",
         active
           ? "border-[#5b8dff]/70 bg-white/[0.07] shadow-[0_0_0_1px_rgba(91,141,255,0.35),0_22px_55px_-32px_rgba(91,141,255,0.7)]"
           : "border-white/[0.09] bg-white/[0.04] hover:border-white/[0.16] hover:bg-white/[0.06]",

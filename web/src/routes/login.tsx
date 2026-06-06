@@ -1,10 +1,13 @@
 import { KeyRound, LogIn } from "lucide-react";
+import { motion } from "motion/react";
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Eyebrow } from "@/components/eyebrow";
-import { Button } from "@/components/ui/button";
+import { SpaceBackdrop } from "@/components/space-backdrop";
 import { Input } from "@/components/ui/input";
 import { setToken } from "@/lib/auth";
+import { tapScale } from "@/lib/motion";
+import { CARD, INPUT_GLASS, PRIMARY_BTN } from "@/lib/ui";
+import { cn } from "@/lib/utils";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -30,54 +33,63 @@ export function LoginPage() {
   }
 
   return (
-    <div className="mx-auto mt-20 flex max-w-md flex-col gap-6">
-      <div>
-        <Eyebrow>Authentication</Eyebrow>
-        <h1 className="mt-3 text-3xl font-semibold tracking-tight text-(--color-ink)">
-          Sign in with token
-        </h1>
-        <p className="mt-2 text-sm leading-relaxed text-(--color-ink-soft)">
-          Paste the access token issued by your platform team. The token is
-          stored only in this browser session — it disappears when you close
-          the tab.
-        </p>
-      </div>
+    <div className="relative min-h-[calc(100vh-9rem)]">
+      <SpaceBackdrop />
 
-      <form
-        onSubmit={onSubmit}
-        className="flex flex-col gap-3 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) p-5"
-      >
-        <label
-          htmlFor="auth-token"
-          className="font-mono text-[0.66rem] uppercase tracking-[0.16em] text-(--color-ink-muted)"
-        >
-          <KeyRound className="mr-1.5 inline-block size-3" />
-          Access token
-        </label>
-        <Input
-          id="auth-token"
-          type="password"
-          autoFocus
-          autoComplete="off"
-          spellCheck={false}
-          value={token}
-          onChange={(e) => {
-            setTokenInput(e.target.value);
-            if (error) setError(null);
-          }}
-          placeholder="paste your token"
-          className="font-mono"
-        />
-        {error && (
-          <p className="text-[0.7rem] text-(--color-error)" role="alert">
-            {error}
+      <div className="relative z-10 mx-auto mt-20 flex max-w-md flex-col gap-6">
+        <div>
+          <span className="font-mono text-[0.68rem] font-medium uppercase tracking-[0.16em] text-white/45">
+            Authentication
+          </span>
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+            Sign in with token
+          </h1>
+          <p className="mt-2 text-sm leading-relaxed text-white/55">
+            Paste the access token issued by your platform team. The token is
+            stored only in this browser session — it disappears when you close
+            the tab.
           </p>
-        )}
-        <Button type="submit" disabled={!token.trim()} className="mt-1 self-start">
-          <LogIn className="size-3.5" />
-          Continue
-        </Button>
-      </form>
+        </div>
+
+        <form onSubmit={onSubmit} className={cn(CARD, "flex flex-col gap-3")}>
+          <label
+            htmlFor="auth-token"
+            className="font-mono text-[0.66rem] uppercase tracking-[0.16em] text-white/45"
+          >
+            <KeyRound className="mr-1.5 inline-block size-3" />
+            Access token
+          </label>
+          <Input
+            id="auth-token"
+            type="password"
+            // biome-ignore lint/a11y/noAutofocus: token field should focus on the login screen
+            autoFocus
+            autoComplete="off"
+            spellCheck={false}
+            value={token}
+            onChange={(e) => {
+              setTokenInput(e.target.value);
+              if (error) setError(null);
+            }}
+            placeholder="paste your token"
+            className={cn(INPUT_GLASS, "font-mono")}
+          />
+          {error && (
+            <p className="text-[0.7rem] text-rose-300" role="alert">
+              {error}
+            </p>
+          )}
+          <motion.button
+            type="submit"
+            disabled={!token.trim()}
+            whileTap={tapScale}
+            className={cn(PRIMARY_BTN, "mt-1 self-start")}
+          >
+            <LogIn className="size-3.5" />
+            Continue
+          </motion.button>
+        </form>
+      </div>
     </div>
   );
 }
