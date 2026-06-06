@@ -79,14 +79,26 @@ export function UsagePage() {
 
   return (
     <div className="relative">
-      {/* Clean, restrained backdrop — color recedes, content leads (Apple HIG).
-          One soft near-neutral sheen at the top instead of decorative color mesh. */}
+      {/* Rich, cohesive aurora — full-viewport so the whole page reads modern,
+          not just the content column. Analogous cool hues (blue→indigo→violet)
+          blended large and smooth so it's vivid without going muddy. Fixed, so
+          content scrolls over it for subtle depth. */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-x-0 -top-16 z-0 h-[460px]"
+        className="pointer-events-none fixed inset-0 z-0"
         style={{
           background:
-            "radial-gradient(75% 100% at 50% -20%, oklch(0.32 0.018 255 / 30%), transparent 70%)",
+            "radial-gradient(80% 65% at 85% -8%, oklch(0.58 0.19 285 / 0.42), transparent 60%), radial-gradient(75% 65% at 8% 0%, oklch(0.56 0.17 250 / 0.34), transparent 62%), radial-gradient(120% 85% at 50% 118%, oklch(0.50 0.16 305 / 0.26), transparent 66%)",
+        }}
+      />
+      {/* Fine film grain — premium texture, hides gradient banding. */}
+      <div
+        aria-hidden
+        className="pointer-events-none fixed inset-0 z-0 opacity-[0.05] mix-blend-soft-light"
+        style={{
+          backgroundImage:
+            "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")",
+          backgroundSize: "140px 140px",
         }}
       />
       <div className="relative z-10">
@@ -205,7 +217,7 @@ function ProviderTile({
     >
       <div
         aria-hidden
-        className="pointer-events-none absolute -right-16 -top-20 size-40 rounded-full opacity-[0.18] blur-3xl"
+        className="pointer-events-none absolute -right-16 -top-20 size-44 rounded-full opacity-[0.30] blur-3xl"
         style={{ background: `radial-gradient(circle, ${from}, ${to})` }}
       />
 
