@@ -4,24 +4,18 @@ import { Nameplate } from "./nameplate";
 import { cn } from "@/lib/utils";
 
 export function Layout() {
-  // Dashboard-style routes (the usage console) get a wide container; the
-  // reading-focused pages (upload/library/preview) keep the narrow ~720px
-  // column that's comfortable for prose.
   const { pathname } = useLocation();
   const wide = pathname.startsWith("/usage");
 
   return (
-    <div
-      className={cn(
-        "flex min-h-screen flex-col bg-(--color-canvas)",
-        wide && "theme-light",
-      )}
-    >
-      <header className="sticky top-0 z-20 border-b border-(--color-border) bg-(--color-canvas)/90 backdrop-blur-md">
+    <div className="flex min-h-screen flex-col bg-(--color-canvas)">
+      <header className="sticky top-3 z-20 px-3 sm:px-5">
         <div
           className={cn(
-            "mx-auto flex h-14 w-full items-center justify-between gap-6 px-5 sm:px-8",
-            wide ? "max-w-[1200px]" : "max-w-[960px]",
+            "mx-auto flex h-14 w-full items-center justify-between gap-6 rounded-2xl border px-4 shadow-[0_18px_50px_-32px_rgba(0,0,0,0.75)] backdrop-blur-xl sm:px-5",
+            wide
+              ? "max-w-[1200px] border-white/[0.09] bg-white/[0.065]"
+              : "max-w-[960px] border-(--color-border) bg-(--color-elevated)/90",
           )}
         >
           <div className="flex min-w-0 items-center gap-5">
@@ -30,6 +24,7 @@ export function Layout() {
               aria-hidden
               className="hidden h-5 w-px bg-(--color-border) sm:block"
             />
+
             <nav aria-label="Primary" className="flex items-center gap-1">
               <NavItem to="/" end icon={<Plus className="size-4" />}>
                 Upload
@@ -61,7 +56,7 @@ export function Layout() {
 
       <main
         className={cn(
-          "mx-auto w-full flex-1 px-6 pb-24 pt-12 sm:px-8",
+          "mx-auto w-full flex-1 px-6 pb-24 pt-10 sm:px-8",
           wide ? "max-w-[1200px]" : "max-w-[720px]",
         )}
       >
@@ -92,11 +87,11 @@ function NavItem({
       end={end}
       className={({ isActive }) =>
         cn(
-          "relative inline-flex h-9 items-center gap-2 rounded-(--radius-sm) px-3 text-sm font-medium transition-colors",
+          "relative inline-flex h-9 items-center gap-2 rounded-xl px-3 text-sm font-medium transition-colors",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--color-accent)/70 focus-visible:ring-offset-2 focus-visible:ring-offset-(--color-canvas)",
           isActive
-            ? "text-(--color-ink) bg-(--color-elevated)"
-            : "text-(--color-ink-muted) hover:text-(--color-ink) hover:bg-(--color-elevated)/60",
+            ? "bg-white/[0.11] text-(--color-ink)"
+            : "text-(--color-ink-muted) hover:bg-white/[0.07] hover:text-(--color-ink)",
         )
       }
     >
