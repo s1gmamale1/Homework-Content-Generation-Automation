@@ -630,6 +630,8 @@ function ActivityRing({
         width="88"
         height="88"
         viewBox="0 0 88 88"
+        role="img"
+        aria-label={`${Math.round(pct)}% of call cap`}
         style={{ transform: "rotate(-90deg)", transformOrigin: "center" }}
       >
         <circle cx="44" cy="44" r={r} fill="none" stroke="oklch(1 0 0 / 8%)" strokeWidth="9" />
