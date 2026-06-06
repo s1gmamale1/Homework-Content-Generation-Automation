@@ -31,6 +31,11 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     notion_archived_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Why a `done` job was NOT pushed to Notion (resolvable causes only:
+    # no subject-page mapping, no completed phases, missing book/section).
+    # NULL = archived, not-yet-attempted, or archiving disabled. Cleared on a
+    # successful archive. Makes the silent-skip failure mode visible.
+    notion_skip_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # ─── queue bookkeeping ────────────────────────────────────────────────
     # Higher priority jobs claim first. User-triggered = 0 (default).
