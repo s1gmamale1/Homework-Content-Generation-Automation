@@ -130,12 +130,19 @@ The `/usage` page tracks *local* token consumption, not health.
 
 ---
 
-## 6. Quality gates — the autonomy risk
+## 6. Quality gates — mostly resolved; one safeguard remains
 
-No human in the loop + a **warn-only validator** = mass-producing un-reviewed content
-straight to Notion. Either give the validator teeth (block/regenerate on hard violations)
-or add a **sampling QA** pass. This is why the in-flight md-per-phase flip (validator +
-Effort B prompt reshape) is the right foundation — finish it before scaling generation.
+The original risk (no human + a warn-only validator → un-reviewed content straight to
+Notion) is **largely closed**: the deterministic warn-only `phase_validator` was replaced
+by an **LLM judge with teeth** (`phase_judge.py`, worklog 0037) that grades every content
+phase against its prompt contract and **regenerates once on a MAJOR verdict** (minor nits
+warn-only). The **Effort B** faithful-prompt reshape also shipped (worklog 0030) — so
+"finish the md-per-phase flip" is **done**. Two things still matter before unattended
+mass-gen: **(a)** write autonomous output to a **draft/staging Notion state, not straight
+to live** (a bad batch otherwise pollutes the real workspace); **(b)** a periodic
+**sampling spot-check** (the judge has teeth but is one LLM call per phase). **Note:** the
+judge defaults to **claude-opus** (0037), so judging now spends the reserved claude-Max
+pool — compounds the provider-isolation concern in #2 of the controller-review notes.
 
 ---
 
@@ -153,7 +160,7 @@ Effort B prompt reshape) is the right foundation — finish it before scaling ge
 
 ## Recommended order
 
-1. **Finish the md-per-phase flip** (validator + Effort B prompts) — the quality foundation.
+1. **Quality foundation — DONE** (md-per-phase flip: LLM judge with severity gate, 0037, + Effort B prompts, 0030). Remaining safeguard before mass-gen: draft/staging Notion output.
 2. **Harden the 3 reliability bugs** (stuck `pending`, retry/backoff, Notion silent skip).
 3. **Build the curriculum driver** (enumerator + backfill + budget-governor + provider failover).
 4. **Then scale** (object storage → CLI-auth-at-scale → worker pods → observability/alerting).
@@ -168,14 +175,15 @@ Agreements: the driver-is-the-centerpiece framing, the allocation-not-concurrenc
 ceiling, and the quality → reliability → driver → scale order are all correct. Five
 refinements / corrections:
 
-1. **§6 quality gate is now a PRECONDITION, not a risk — and it grew.** Effort B (the
-   faithful prompt reshape) was **deferred** on 2026-06-03 (see WISHLIST / worklog 0028),
-   and the validator shipped **warn-only with only generic rules** (`phase_validator.RULES`
-   is empty). So the "quality foundation" this doc assumes is *not* finished. Before any
-   unattended mass-gen, require **either** validator teeth (block/regenerate on hard
-   violations) **or** a sampling-QA pass — **plus** write autonomous output to a
+1. **§6 quality gate — now largely RESOLVED (updated 2026-06-06).** The earlier state
+   (Effort B deferred; validator shipped warn-only, `phase_validator.RULES` empty) no longer
+   holds: **Effort B shipped** (worklog 0030) and the warn-only `phase_validator` was
+   **deleted and replaced by the LLM judge** (`phase_judge.py`, worklog 0037) — a severity
+   gate that **regenerates on MAJOR** verdicts. So the "quality foundation" is built. The
+   remaining safeguards before unattended mass-gen: write autonomous output to a
    **draft/staging state, not straight to live Notion** (a bad batch otherwise pollutes the
-   real workspace). Promote §6 from "risk" to "gate".
+   real workspace), plus an optional **sampling-QA** spot-check. Caveat: opus-judging draws
+   on the reserved claude-Max pool (see #2).
 
 2. **Provider isolation > a reserve threshold (elevate §4).** The factory runs on the SAME
    Claude Max sub used to *develop this project*, so flat-out runs can lock the user out of
