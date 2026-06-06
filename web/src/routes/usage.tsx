@@ -420,9 +420,9 @@ function ProviderCard({
 
       <div className="mt-4 flex items-center gap-3">
         {showRing ? (
-          <Ring pct={pct ?? 0} from={from} to={to} size={64} calls={calls} cap={cap} />
+          <Ring pct={pct ?? 0} from={from} to={to} size={84} calls={calls} cap={cap} />
         ) : (
-          <div className="grid size-16 shrink-0 place-items-center rounded-full border border-white/[0.08] bg-black/20 text-center">
+          <div className="grid size-20 shrink-0 place-items-center rounded-full border border-white/[0.08] bg-black/20 text-center">
             <span className="font-mono text-base font-bold text-white">{calls}</span>
           </div>
         )}
@@ -677,13 +677,18 @@ function Ring({
           </linearGradient>
         </defs>
       </svg>
-      <div className="absolute inset-0 grid place-items-center text-center">
+      <div className="absolute inset-0 grid place-items-center px-1 text-center">
         <div>
           <div className={cn("font-bold leading-none tabular-nums text-white", big ? "text-3xl" : "text-base")}>
             {Math.round(pct)}%
           </div>
-          <div className={cn("mt-1 font-mono uppercase tracking-[0.1em] text-white/50", big ? "text-[0.66rem]" : "text-[0.55rem]")}>
-            {cap !== null ? `${calls} / ${cap}` : `${calls} calls`}
+          <div
+            className={cn(
+              "mt-1 whitespace-nowrap font-mono leading-none tabular-nums text-white/50",
+              big ? "text-[0.66rem] uppercase tracking-[0.1em]" : "text-[0.5rem]",
+            )}
+          >
+            {cap !== null ? `${calls}/${cap}` : `${calls} calls`}
           </div>
         </div>
       </div>
