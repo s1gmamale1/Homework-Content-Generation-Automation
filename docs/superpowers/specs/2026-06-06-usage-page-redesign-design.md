@@ -46,6 +46,10 @@ The `/usage` page is hard to read. It stacks all three windows (1h/24h/7d) insid
 ```
 No model-level cap/`pct_of_limit` (the cap is per-provider). Providers with no calls in a window get `models: []`.
 
+Two implementation details:
+- `stats_by_provider_model` returns `success_count` (not a pct); `get_agent_stats` computes each model's `success_pct = round(100 * success_count / calls, 1)` (calls>0 else 0.0), mirroring the existing provider-level math — do **not** pass `success_count` straight through.
+- While editing `get_agent_stats`, fix its stale comment (`jobs.py:383-384`) that still says "the four CLIs (claude, kimi, codex, gemini)" → five, incl. `opencode` (doc-currency; same staleness already fixed in CLAUDE.md).
+
 **Response shape (per provider per window) becomes:**
 ```
 calls, duration_secs, prompt_tokens, output_tokens, cached_tokens,
