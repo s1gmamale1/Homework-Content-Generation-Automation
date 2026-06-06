@@ -129,6 +129,16 @@ async def set_notion_archived(
     if job is None:
         return
     job.notion_archived_at = notion_archived_at
+    job.notion_skip_reason = None   # success clears any prior skip marker
+
+
+async def set_notion_skip_reason(
+    session: AsyncSession, job_id: UUID, reason: Optional[str]
+) -> None:
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return
+    job.notion_skip_reason = reason
 
 
 async def set_difficulty(session: AsyncSession, job_id: UUID, difficulty: str) -> None:
