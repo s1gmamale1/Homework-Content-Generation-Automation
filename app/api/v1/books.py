@@ -19,6 +19,7 @@ from app.repositories import toc_entries as toc_repo
 from app.schemas import BookOut, TOCEntryOut
 from app.services import events_bus, notion_fetch, toc_extractor
 from app.services.flows import SUPPORTED_SUBJECTS
+from app.services.grade import derive_grade_from_filename
 from app.services.notion.client import NotionClientWrapper
 
 
@@ -66,6 +67,12 @@ async def ingest_pdf(
     existing = await books_repo.find_ready_by_hash(session, sha, subject)
     if existing is not None:
         return await _book_out_with_toc(session, existing.id)
+
+    # Derive grade from the filename when the caller didn't supply one — a NULL
+    # grade silently defeats Notion archiving ({subject}|{grade} key). Explicit
+    # grade always wins; the dedup hit above already returned, so this only runs
+    # for genuinely new books.
+    grade = grade or derive_grade_from_filename(filename)
 
     book = await books_repo.create(
         session,
