@@ -79,12 +79,14 @@ export function UsagePage() {
 
   return (
     <div className="relative">
+      {/* Clean, restrained backdrop — color recedes, content leads (Apple HIG).
+          One soft near-neutral sheen at the top instead of decorative color mesh. */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-x-0 -top-12 z-0 h-[440px]"
+        className="pointer-events-none absolute inset-x-0 -top-16 z-0 h-[460px]"
         style={{
           background:
-            "radial-gradient(40% 60% at 12% 0%, oklch(0.6 0.18 30 / 14%), transparent 70%), radial-gradient(40% 55% at 90% 6%, oklch(0.65 0.16 250 / 12%), transparent 70%), radial-gradient(40% 50% at 65% 100%, oklch(0.6 0.17 300 / 10%), transparent 70%)",
+            "radial-gradient(75% 100% at 50% -20%, oklch(0.32 0.018 255 / 30%), transparent 70%)",
         }}
       />
       <div className="relative z-10">
@@ -199,11 +201,11 @@ function ProviderTile({
         expanded && "sm:col-span-2",
         dim && "opacity-60",
       )}
-      style={{ animationDelay: `${index * 60}ms`, background: "oklch(0.24 0.012 265 / 50%)" }}
+      style={{ animationDelay: `${index * 60}ms`, background: "oklch(0.19 0.005 260 / 72%)" }}
     >
       <div
         aria-hidden
-        className="pointer-events-none absolute -right-14 -top-16 size-48 rounded-full opacity-50 blur-3xl"
+        className="pointer-events-none absolute -right-16 -top-20 size-40 rounded-full opacity-[0.18] blur-3xl"
         style={{ background: `radial-gradient(circle, ${from}, ${to})` }}
       />
 
