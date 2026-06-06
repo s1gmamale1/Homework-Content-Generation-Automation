@@ -103,7 +103,7 @@ export function UsagePage() {
             </span>
           )}
         </p>
-        <p className="mt-1.5 font-mono text-[0.68rem] text-(--color-ink-muted)">
+        <p className="mt-1.5 font-mono text-[0.72rem] text-(--color-ink-muted)">
           Input = tokens read · Cached = reused input (cheaper) · Output = tokens generated
         </p>
 
@@ -329,7 +329,7 @@ function ActivityRing({
           <div className="text-lg font-bold leading-none tabular-nums text-(--color-ink)">
             {Math.round(pct)}%
           </div>
-          <div className="mt-1 font-mono text-[0.55rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
+          <div className="mt-1 font-mono text-[0.6rem] uppercase tracking-[0.14em] text-(--color-ink-muted)">
             of cap
           </div>
         </div>
@@ -341,10 +341,10 @@ function ActivityRing({
 function TokenPill({ label, value }: { label: string; value: number }) {
   return (
     <div className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
-      <div className="font-mono text-[0.6rem] uppercase tracking-[0.13em] text-(--color-ink-muted)">
+      <div className="font-mono text-[0.66rem] uppercase tracking-[0.13em] text-(--color-ink-muted)">
         {label}
       </div>
-      <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-(--color-ink)">
+      <div className="mt-1 font-mono text-base font-semibold tabular-nums text-(--color-ink)">
         {formatNum(value)}
       </div>
     </div>
@@ -360,7 +360,7 @@ function ModelTable({
 }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-1">
-      <div className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.8fr_0.8fr] gap-3 px-3 pb-2 pt-3 font-mono text-[0.58rem] uppercase tracking-[0.12em] text-(--color-ink-muted)">
+      <div className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.8fr_0.8fr] gap-3 px-3 pb-2 pt-3 font-mono text-[0.64rem] uppercase tracking-[0.12em] text-(--color-ink-muted)">
         <span>Model</span>
         <span className="text-right">Input</span>
         <span className="text-right">Cached</span>
@@ -372,19 +372,19 @@ function ModelTable({
           key={m.model_name}
           className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.8fr_0.8fr] items-center gap-3 border-t border-white/[0.06] px-3 py-2.5"
         >
-          <span className="truncate font-mono text-[0.72rem] font-medium text-(--color-ink-soft)">
+          <span className="truncate font-mono text-[0.8rem] font-medium text-(--color-ink-soft)">
             {m.model_name}
           </span>
-          <span className="text-right font-mono text-[0.72rem] tabular-nums text-(--color-ink-soft)">
+          <span className="text-right font-mono text-[0.8rem] tabular-nums text-(--color-ink-soft)">
             {tokensMissing ? "—" : formatNum(m.prompt_tokens)}
           </span>
-          <span className="text-right font-mono text-[0.72rem] tabular-nums text-(--color-ink-soft)">
+          <span className="text-right font-mono text-[0.8rem] tabular-nums text-(--color-ink-soft)">
             {tokensMissing ? "—" : formatNum(m.cached_tokens)}
           </span>
-          <span className="text-right font-mono text-[0.72rem] tabular-nums text-(--color-ink-soft)">
+          <span className="text-right font-mono text-[0.8rem] tabular-nums text-(--color-ink-soft)">
             {tokensMissing ? "—" : formatNum(m.output_tokens)}
           </span>
-          <span className="text-right font-mono text-[0.72rem] tabular-nums text-(--color-ink-muted)">
+          <span className="text-right font-mono text-[0.8rem] tabular-nums text-(--color-ink-muted)">
             {m.calls} · {m.success_pct}%
           </span>
         </div>

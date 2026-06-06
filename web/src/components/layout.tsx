@@ -1,13 +1,24 @@
 import { Gauge, Library, Plus } from "lucide-react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Nameplate } from "./nameplate";
 import { cn } from "@/lib/utils";
 
 export function Layout() {
+  // Dashboard-style routes (the usage console) get a wide container; the
+  // reading-focused pages (upload/library/preview) keep the narrow ~720px
+  // column that's comfortable for prose.
+  const { pathname } = useLocation();
+  const wide = pathname.startsWith("/usage");
+
   return (
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-20 border-b border-(--color-border) bg-(--color-canvas)/90 backdrop-blur-md">
-        <div className="mx-auto flex h-14 w-full max-w-[960px] items-center justify-between gap-6 px-5 sm:px-8">
+        <div
+          className={cn(
+            "mx-auto flex h-14 w-full items-center justify-between gap-6 px-5 sm:px-8",
+            wide ? "max-w-[1200px]" : "max-w-[960px]",
+          )}
+        >
           <div className="flex min-w-0 items-center gap-5">
             <Nameplate />
             <span
@@ -43,7 +54,12 @@ export function Layout() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-[720px] flex-1 px-6 pb-24 pt-12 sm:px-8">
+      <main
+        className={cn(
+          "mx-auto w-full flex-1 px-6 pb-24 pt-12 sm:px-8",
+          wide ? "max-w-[1200px]" : "max-w-[720px]",
+        )}
+      >
         <Outlet />
       </main>
 
