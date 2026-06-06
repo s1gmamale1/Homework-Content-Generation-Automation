@@ -92,6 +92,7 @@ export interface Job {
   phases: PhaseOut[];
   provider?: string;
   model?: string | null;
+  notion_skip_reason?: string | null;
 }
 
 export interface ProviderModelManifest {

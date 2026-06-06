@@ -34,6 +34,7 @@ class JobOut(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     phases: list[PhaseOut] = []
+    notion_skip_reason: Optional[str] = None
 
 
 class GenerateRequest(BaseModel):

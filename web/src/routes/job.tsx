@@ -45,6 +45,7 @@ export function JobPage() {
   const [parents, setParents] = useState<{ bookId: string; sectionId: string } | null>(null);
   const [agent, setAgent] = useState<{ provider: string; model: string | null } | null>(null);
   const [status, setStatus] = useState<JobStatus | null>(null);
+  const [notionSkip, setNotionSkip] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const queryClient = useQueryClient();
@@ -134,6 +135,7 @@ export function JobPage() {
         }
         if (j.difficulty) setDifficulty(j.difficulty);
         setStatus(j.status);
+        setNotionSkip(j.notion_skip_reason ?? null);
         if (j.status === "done") setDownloadUrl(api.jobDownloadUrl(id));
         if (j.status === "failed") setError(j.error_message ?? "Job failed.");
       })
@@ -321,6 +323,12 @@ export function JobPage() {
             </div>
           )}
         </>
+      )}
+
+      {status === "done" && notionSkip && (
+        <div className="mt-4 inline-flex items-center gap-2 rounded-(--radius-md) border border-(--color-border) bg-(--color-elevated) px-3 py-2 text-sm text-(--color-ink-muted)">
+          Not archived to Notion: {notionSkip}
+        </div>
       )}
 
       {status === "cancelled" && !downloadUrl && (
