@@ -380,8 +380,8 @@ async def list_agent_models():
 
 # ─── Usage dashboard ──────────────────────────────────────────────────────
 # Per-provider rolling stats over fixed windows. Surfaces local consumption
-# (calls + duration + tokens) issued by THIS app — the four CLIs (claude,
-# kimi, codex, gemini) don't expose real quota APIs in headless mode, so
+# (calls + duration + tokens) issued by THIS app — the five CLIs (claude,
+# kimi, codex, gemini, opencode) don't expose real quota APIs in headless mode, so
 # we track what we've driven through them and compare against user-set
 # caps in `settings.agent_limit_*` to estimate headroom.
 _STATS_WINDOWS: list[tuple[str, timedelta]] = [
@@ -417,6 +417,22 @@ async def get_agent_stats(
         since = now - delta
         rows = await agent_usage_repo.stats_by_provider(session, since=since)
         by_provider = {row["provider"]: row for row in rows}
+        model_rows = await agent_usage_repo.stats_by_provider_model(session, since=since)
+        models_by_provider: dict[str, list[dict]] = {}
+        for mr in model_rows:
+            m_calls = int(mr["calls"])
+            models_by_provider.setdefault(mr["provider"], []).append({
+                "model_name": mr["model_name"] or "(default)",
+                "calls": m_calls,
+                "duration_secs": round(float(mr["duration_secs"]), 1),
+                "prompt_tokens": int(mr["prompt_tokens"]),
+                "output_tokens": int(mr["output_tokens"]),
+                "cached_tokens": int(mr["cached_tokens"]),
+                "success_pct": (
+                    round(100.0 * int(mr["success_count"]) / m_calls, 1)
+                    if m_calls > 0 else 0.0
+                ),
+            })
         for provider in _STATS_PROVIDERS:
             row = by_provider.get(provider)
             calls = int(row["calls"]) if row else 0
@@ -447,6 +463,7 @@ async def get_agent_stats(
                 "success_pct": success_pct,
                 "limit_calls_per_window": limit_value,
                 "pct_of_limit": pct_of_limit,
+                "models": models_by_provider.get(provider, []),
             }
 
     return {
