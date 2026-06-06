@@ -179,3 +179,58 @@ async def stats_by_provider(
         }
         for r in rows
     ]
+
+
+async def stats_by_provider_model(
+    session: AsyncSession,
+    *,
+    since: datetime,
+) -> list[dict]:
+    """Like `stats_by_provider`, but one row per (provider, model_name).
+
+    Returns dicts with: provider, model_name (may be None for provider-default),
+    calls, duration_secs, prompt_tokens, output_tokens, cached_tokens,
+    success_count. Duration is summed in Python keyed by (provider, model_name),
+    mirroring `stats_by_provider`.
+    """
+    stmt = (
+        select(
+            AgentUsage.provider.label("provider"),
+            AgentUsage.model_name.label("model_name"),
+            func.count().label("calls"),
+            func.coalesce(func.sum(AgentUsage.prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(AgentUsage.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(AgentUsage.cached_tokens), 0).label("cached_tokens"),
+            func.coalesce(
+                func.sum(case((AgentUsage.success.is_(True), 1), else_=0)), 0
+            ).label("success_count"),
+        )
+        .where(AgentUsage.started_at >= since)
+        .group_by(AgentUsage.provider, AgentUsage.model_name)
+    )
+    rows = (await session.execute(stmt)).all()
+
+    dur_stmt = (
+        select(AgentUsage.provider, AgentUsage.model_name, AgentUsage.duration)
+        .where(AgentUsage.started_at >= since)
+        .where(AgentUsage.duration.is_not(None))
+    )
+    dur_rows = (await session.execute(dur_stmt)).all()
+    duration_by: dict[tuple, float] = {}
+    for provider, model_name, duration in dur_rows:
+        key = (provider, model_name)
+        duration_by[key] = duration_by.get(key, 0.0) + _parse_duration_seconds(duration)
+
+    return [
+        {
+            "provider": r.provider,
+            "model_name": r.model_name,
+            "calls": int(r.calls),
+            "duration_secs": round(duration_by.get((r.provider, r.model_name), 0.0), 1),
+            "prompt_tokens": int(r.prompt_tokens),
+            "output_tokens": int(r.output_tokens),
+            "cached_tokens": int(r.cached_tokens),
+            "success_count": int(r.success_count),
+        }
+        for r in rows
+    ]
