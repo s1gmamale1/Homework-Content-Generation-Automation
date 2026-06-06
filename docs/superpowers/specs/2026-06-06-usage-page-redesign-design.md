@@ -25,7 +25,10 @@ The `/usage` page is hard to read. It stacks all three windows (1h/24h/7d) insid
 ## Decisions (locked, with adjustable defaults)
 
 - **Limit basis:** calls-per-window (existing). Headroom bar = `pct_of_limit` (calls/cap). Unmetered (cap 0/null) → no bar, "unmetered" note.
-- **Layout:** window tabs (segmented `1h | 24h | 7d`) + one row per provider; each row expands to per-model sub-rows. (Direction "A" from the mockups.)
+- **Layout ("Control Center"):** Apple-style segmented window control (`1h | 24h | 7d`) + a **2-column grid of frosted-glass provider tiles** over an ambient gradient-mesh background. Each tile is keyed to a per-provider signature color (gradient badge + soft corner glow) and shows an **Apple activity-ring** for calls-vs-cap headroom (% in the ring center), big tabular `calls / cap`, and three **Input/Cached/Output** stat pills. The **busiest provider in the selected window auto-expands to a full-width "hero" tile** with its per-model table beside the ring; other tiles are compact and expand in place (full-width, `grid-column: 1 / -1`) on click. Degraded tiles (no calls / unmetered) dim.
+- **Fonts:** reuse the app's existing **Geist / Geist Mono** (`--font-sans` / `--font-mono`, already loaded in `index.html`) — do NOT introduce new web fonts; that would clash with the rest of the console.
+- **Per-provider accent palette** (new page-local constants; gradient `[from, to]`): claude `#ff7a4d→#ff4d6d`, gemini `#4d9bff→#42e8e0`, kimi `#b07bff→#7a5cff`, codex `#46e0a0→#2bd4c4`, opencode/unknown `slate (--color-ink-muted)`.
+- **Activity-ring color:** the provider's brand gradient normally; **tone overrides** when near/over cap — amber (`--color-accent`) at ≥80%, red (`--color-error`) at >100% — so headroom danger still reads.
 - **Default window:** `24h` (more populated than 1h, less noisy). Adjustable.
 - **Token labels:** rename chips to **Input** (`prompt_tokens`), **Cached** (`cached_tokens`), **Output** (`output_tokens`), with a one-line legend under the page intro: *"Input = tokens read · Cached = reused input (cheaper) · Output = tokens generated."* Tooltips optional.
 - **Color thresholds:** reuse existing `pickTone` — `ok` <50%, `warn` 50–79%, `hot` ≥80%, `over` >100% (red). Unchanged.
@@ -60,13 +63,16 @@ success_pct, limit_calls_per_window, pct_of_limit, models[]
 
 **`web/src/lib/types.ts`** — add `ProviderModelStat` (the model entry above) and `models: ProviderModelStat[]` to `ProviderStatsWindow`.
 
-**`web/src/routes/usage.tsx`** — rewrite:
-- **Window selector:** segmented control (`1h | 24h | 7d`) from `data.windows`; local `selectedWindow` state (default `24h` if present, else first).
-- **Providers rendered dynamically:** iterate `Object.keys(data.providers)` in a display order — a preferred array `["claude","gemini","kimi","codex","opencode"]` with any not-listed provider appended — so a new provider shows automatically.
-- **Provider row** (for the selected window): name + status dot; calls-vs-cap headroom bar (reusing `ProgressBar`/`pickTone`); right side `calls / cap (pct%) · {duration}s · {success}% ok`; token chips **Input/Cached/Output** (or the Kimi note); a chevron to expand.
-- **Per-model sub-rows** (on expand): one indented row per `models[]` entry — `model_name` (or `(default)`), its Input/Cached/Output + duration + success, and its call count. Collapsed shows "· N models".
-- **Legend** line under the intro defining Input/Cached/Output. Keep the existing ".env / AGENT_LIMIT_*" caption and `synced {relative}` stamp.
-- Loading/error states preserved.
+**`web/src/routes/usage.tsx`** — rewrite to the Control Center design:
+- **Ambient background:** a fixed, behind-content layer of soft radial gradient glows (page-local; doesn't touch the app shell).
+- **Segmented window control** from `data.windows` (`1h | 24h | 7d`); local `selectedWindow` state (default `24h` if present, else first). Active segment = light fill / dark text.
+- **Providers rendered dynamically:** iterate `Object.keys(data.providers)` in display order — preferred `["claude","gemini","kimi","codex","opencode"]` then any unknown appended — so a new provider appears automatically.
+- **`ActivityRing`** subcomponent: SVG ring, `r=34`, circumference `2πr`, `stroke-dashoffset = C·(1 − pct/100)`; stroke = provider gradient, overridden to amber ≥80% / red >100%; `%` + "of cap" in the center. Unmetered/no-calls → no ring.
+- **Provider tile:** frosted glass (`backdrop-blur`, hairline border, soft shadow, hover-lift, staggered load), gradient badge + corner glow in the provider color; ring + big tabular `calls / cap` + `{success}% ok · {duration}` meta; three **Input/Cached/Output** stat pills (or the Kimi "tokens not reported" note); a "N models" chip when `models.length`.
+- **Hero + expand:** the provider with the **max calls** in the selected window starts expanded as a full-width tile (`grid-column: 1 / -1`) showing the **per-model table** (Model · Input · Cached · Output · Calls·success) beside the ring; any tile toggles expand on click; expanded = full width. If no provider has calls, all tiles stay compact.
+- **Legend** line defining Input/Cached/Output; keep the `.env / AGENT_LIMIT_*` caption and `synced {relative}` stamp.
+- Loading (tile skeletons) / error states preserved.
+- Uses the app's `--color-*` tokens + `--font-sans`/`--font-mono` (Geist); per-provider gradients via inline style from the accent palette.
 
 ## Data flow
 
