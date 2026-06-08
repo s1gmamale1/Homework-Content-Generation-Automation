@@ -12,7 +12,7 @@
 
 ## Implementation Decisions (locked before tasks)
 
-1. **Dynamic intervals → `func.make_interval(secs=N)`**, NOT the spec's `text("interval '…'")`. The cutoffs (`stale_after_seconds`) and backoff (`delay`) are dynamic Python ints; `make_interval` binds them as real query parameters (`make_interval(secs => :p)`), which `text("interval '…'")` cannot do without string-interpolating an int into SQL. This supersedes the spec §6 caveat (which assumed a constant interval). The real-DB test (Task 1) proves the rendered SQL runs on Postgres.
+1. **Dynamic intervals → positional `func.make_interval(0, 0, 0, 0, 0, 0, N)`** (N = seconds, the 7th positional arg), NOT the spec's `text("interval '…'")` and NOT the kwargs form `make_interval(secs=N)`. The cutoffs (`stale_after_seconds`) and backoff (`delay`) are dynamic Python ints; positional `make_interval` binds N as a real query parameter — renders `make_interval(0, 0, 0, 0, 0, 0, :p)` — which `text("interval '…'")` cannot do without string-interpolating an int into SQL. **Verified empirically:** the kwargs form `func.make_interval(secs=N)` raises `TypeError: Function.__init__() got an unexpected keyword argument 'secs'` at construction time (SQLAlchemy's `func.X(key=value)` does NOT emit PG's `name => value` named-arg syntax); the positional form compiles and runs on real Postgres. This supersedes the spec §6 caveat (which assumed a constant interval). The real-DB test (Task 1) proves the rendered SQL runs on Postgres.
 2. **`is_online` stays a pure, unit-tested helper with an injected reference clock.** Signature gains a required keyword `now: datetime`; `list_with_liveness` fetches `db_now = SELECT now()` and passes it. Heartbeats are DB-stamped (`func.now()`), so both sides of the freshness comparison are on the head-DB clock, while the helper remains DB-free and unit-testable (the 4 existing unit cases are updated to inject `now`). Rejected alternative: a raw SQL `online` column expression — it would delete the pure helper and its focused unit tests for no correctness gain.
 3. **Scope = the 7 verified timing-comparison spots only.** `completed_at` writes at `jobs.py:320` (terminal fail), `:371` (cancel_if_pending), `:405` (mark_cancelled), `:427` (reclaim_stale_cancelling) are record-only and stay `datetime.now(timezone.utc)` — EXCEPT `:427`'s sibling `claimed_at < cutoff` filter (spot 6), which IS converted. Leaving record-only writes alone keeps the diff focused on the fragility.
 
@@ -235,7 +235,7 @@ In `reclaim_stuck_jobs` (currently `:264-292`), delete the `cutoff = datetime.no
         .where(HomeworkJob.status == "running")
         .where(
             (HomeworkJob.claimed_at.is_(None))
-            | (HomeworkJob.claimed_at < func.now() - func.make_interval(secs=stale_after_seconds))
+            | (HomeworkJob.claimed_at < func.now() - func.make_interval(0, 0, 0, 0, 0, 0, stale_after_seconds))
         )
         .values(
             status="pending",
@@ -260,7 +260,7 @@ In `mark_failed_with_retry`, the retry branch (currently `:329-343`) only: repla
         .where(HomeworkJob.id == job_id)
         .values(
             status="pending",
-            scheduled_at=func.now() + func.make_interval(secs=delay),
+            scheduled_at=func.now() + func.make_interval(0, 0, 0, 0, 0, 0, delay),
             last_error=error_message,
             current_phase=None,
             claimed_at=None,
@@ -286,7 +286,7 @@ In `reclaim_stale_cancelling` (currently `:415-429`), delete the `cutoff = ...` 
     result = await session.execute(
         update(HomeworkJob)
         .where(HomeworkJob.status == "cancelling")
-        .where(HomeworkJob.claimed_at < func.now() - func.make_interval(secs=stale_after_seconds))
+        .where(HomeworkJob.claimed_at < func.now() - func.make_interval(0, 0, 0, 0, 0, 0, stale_after_seconds))
         .values(status="cancelled", completed_at=datetime.now(timezone.utc))
     )
     return result.rowcount
