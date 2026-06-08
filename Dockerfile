@@ -43,7 +43,10 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 COPY --from=web-build /web/dist ./web/dist
 
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
+# `sed` strips any CR so a Windows (CRLF) checkout can't break the
+# `#!/usr/bin/env sh` shebang inside the Linux image (env: 'sh\r': not found).
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+ && chmod +x /usr/local/bin/docker-entrypoint.sh \
  && chown -R app:app /app
 USER app
 

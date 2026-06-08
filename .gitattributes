@@ -1,0 +1,5 @@
+# Shell scripts must stay LF even when the repo is checked out on Windows
+# (core.autocrlf=true). A CRLF docker-entrypoint.sh breaks the
+# `#!/usr/bin/env sh` shebang inside the Linux image: env: 'sh\r': not found.
+*.sh text eol=lf
+docker-entrypoint.sh text eol=lf

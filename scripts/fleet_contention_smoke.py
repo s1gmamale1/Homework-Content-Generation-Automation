@@ -14,6 +14,13 @@ contention proof is Task 1. Run AFTER bringing up postgres + >=2 workers.
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
+
+# Allow running as a plain script (`python scripts/fleet_contention_smoke.py`):
+# put the repo root on sys.path so `import app...` resolves. Python otherwise
+# only adds the script's own dir (scripts/), not the repo root.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import delete, select
 
