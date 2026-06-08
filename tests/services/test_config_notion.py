@@ -1,8 +1,13 @@
 from app.config import Settings
 
 
-def test_notion_defaults_disabled():
-    s = Settings(database_url="postgresql+asyncpg://x/y")
+def test_notion_defaults_disabled(monkeypatch):
+    # Assert the CODE defaults, not the dev .env. Without this isolation the
+    # test reads the local .env (NOTION_ENABLED=true) and the dev environment,
+    # so disable env-file loading and clear any ambient NOTION_* overrides.
+    for var in ("NOTION_ENABLED", "NOTION_API_KEY", "NOTION_SUBJECT_PAGES"):
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None, database_url="postgresql+asyncpg://x/y")
     assert s.notion_enabled is False
     assert s.notion_api_key == ""
     assert s.notion_subject_pages == {}
