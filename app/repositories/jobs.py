@@ -18,6 +18,7 @@ async def create(
     status: str = "pending",
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    batch_id: Optional[UUID] = None,
 ) -> HomeworkJob:
     kwargs: dict[str, Any] = dict(
         book_id=book_id,
@@ -29,6 +30,8 @@ async def create(
         kwargs["provider"] = provider
     if model is not None:
         kwargs["model"] = model
+    if batch_id is not None:
+        kwargs["batch_id"] = batch_id
     job = HomeworkJob(**kwargs)
     session.add(job)
     await session.flush()
