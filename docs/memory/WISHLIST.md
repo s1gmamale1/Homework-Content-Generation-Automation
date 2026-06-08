@@ -15,6 +15,32 @@
 - `extract-1`: **TOC extraction — broken-font `/Gxx` glyph-loss case still poisons the TOC** (verified 2026-06-05, code-checked). Scope is NARROW: the heading-garble case (case-scramble, letters intact) is **already FIXED** (worklog [0036], `1fde640` — de-garble clause live at `extract_toc:1079-1085`). Only the **`/Gxx` glyph-loss** case is open: PDFs with no ToUnicode map → `_decode_glyph_text` (`agent.py:841`) substitutes glyph codes to cp1252 bytes; when the code≠byte it yields **real-looking WRONG letters**, and `has_local_toc_text=bool(text)` (`:1060`) is a non-empty check, not a readability one → garbage injected as authoritative TOC → near-empty/nonsense lesson list (e.g. Geometriya 2019). **NOT a clean drop-in fix** (assessed, deliberately not done): (a) **no false-positive-proof detector** — after decode the garbage looks like letters, and the prose Gate A (`validate_extract_text`, printable-ratio 0.55) would FALSE-POSITIVE on normal page-number/dot-leader-heavy TOC text → risks breaking *every* upload; (b) the obvious remediation "drop local text → fall through to gemini native PDF read" is the SAME path the gitignore block defeats, so detection may only turn garbage→empty, not garbage→correct. Needs a short brainstorm on TWO decisions: **how to detect glyph-loss without false-positiving normal TOCs**, and **loud-fail vs try-anyway**. LOW URGENCY — rare, and self-evident when it hits (near-empty lesson list). Ties to R10's open glyph-ID manifestation + the "scanned / image-only PDFs → needs OCR/vision" WISHLIST item (same no-usable-text-layer class — dedupe when picked up).
 - `fe-redesign`: **Operator console (`web/`) full redesign — DEFERRED mid-brainstorm 2026-06-05.** Driver: looks dated/generic + clunky + missing things + unfinished. Agreed **3-slice sequencing** (each ships working, own spec→plan cycle): **Slice 1 Foundation** = delete dead student-play code (`components/boss-fight, games/, flashcards, memory-sprint, reading` — none routed) + establish design language + clean component kit; **Slice 2 IA/workflow** = restructure nav + upload→generate→monitor→review flow, job/queue visibility; **Slice 3 capabilities** = batch generation, live queue dashboard, Notion archive/validation status. **Start with Slice 1.** Aesthetic direction explored & user said "sounds good": **"Quiet Precision"** — editorial-clean, content-first, real material depth; *Newsreader* serif (display) + *Hanken Grotesk* (UI) + *JetBrains Mono* (metadata); restrained bronze/amber accent (keeps brand); the **live-generation hero** (9-phase pipeline progress) as the centerpiece for the "lose track of what's running" pain. Light-vs-dark NOT yet chosen. **Crafted mockup preserved → `docs/design/2026-06-05-console-redesign-quiet-precision.html`** (open in a browser — light & dark, same Library screen). Resume = re-enter brainstorming on Slice 1 from this mockup.
 
+### Fleet — autonomous generation fleet (deferred from Phase 3 brainstorm 2026-06-08)
+
+> Phases 0 / 1 / 0.5 / 2 SHIPPED (worklogs [0047]–[0050], `feat/autonomous-fleet-engine` worktree). **Phase 3 scope locked to BARE MINIMUM** — launch a batch + watch rollups + PC liveness, pure frontend, zero new backend (per-lesson Cancel/Retry stays on the existing job page). Everything below was surfaced in the brainstorm and deferred. Phase 4 = generation-accounts / cost (spec §6).
+
+**Batch / fleet controls (deferred from Phase 3):**
+- `fleet-ctrl-1`: Batch **Cancel-all** endpoint (`POST /jobs/batch/{id}/cancel`) — cancel every non-terminal lesson in one atomic call (Phase 3 = per-job cancel only).
+- `fleet-ctrl-2`: Batch **Retry-failed** endpoint (`POST /jobs/batch/{id}/retry`) — re-enqueue all failed lessons in a batch in one call.
+- `fleet-ctrl-3`: **Pause / Resume a batch** — stop the fleet claiming its pending lessons without cancelling (the budget-saver); teach `claim_next_job` to skip paused batches (a batch-status gate on the hot claim path). Highest-value deferred control.
+- `fleet-ctrl-4`: **PC-level drain** — gracefully stop one worker claiming new jobs + let its in-flight job finish, before taking it offline.
+
+**Dashboard UX (beyond the bare-minimum view):**
+- `fleet-ui-1`: **Batch lesson-list drill-in** — expand a batch to its individual lessons (per-lesson status + Cancel / Retry / link); needs a "list a batch's jobs" read endpoint (the rollup returns counts only today). *(The (b) option not taken in the Phase 3 MVP.)*
+- `fleet-ui-2`: **Live SSE dashboard** — push batch-funnel + PC-card updates instead of polling `GET /jobs/batches` + `/workers`.
+- `fleet-ui-3`: **Past / historical batches view** + filter / search (Phase 3 MVP focuses on active batches).
+- `fleet-ui-4`: Richer **PC cards** — current job, throughput, runtime, attempts (beyond online / idle / busy).
+
+**Generation accounts / cost (spec Phase 4):**
+- `fleet-api-1`: **Gemini-API provider** inside the CLI router (SDK behind a flag, same `(text, usage)` envelope) + the **CLI / API mode toggle** in the launch UX.
+- `fleet-api-2`: **Credential pool** — rotate multiple Google API keys across the fleet.
+- `fleet-api-3`: **Cost ledger + kill-switch** — track $ per batch / provider, auto-halt on a cap.
+- `fleet-api-4`: **Never-pay-twice idempotency** for API-mode generation (don't re-bill a re-run lesson).
+
+**Infra / ops (spec §8 / §9.1):**
+- `fleet-infra-1`: **PgBouncer + hardened head** — the Phase-0 published-Postgres-on-LAN is dev-only; a production head needs connection pooling + lockdown.
+- `fleet-infra-2`: **Worker discovery file / movable head** (≤60s reconnect) — workers find the head via a discovery file, not just a static `DATABASE_URL`.
+
 ### Effort B — faithful Infra-spec prompt rewrite — ✅ SHIPPED (worklog [0030], 2026-06-04)
 
 > Done: **Option A** `{{FAMILY_RULES}}` token (family-of-4, not subject-of-7); CBP + Flashcards rewritten family-aware (**humanities CBP authored** — no source spec); light/compact/polish passes on the other 9 phases; all folded-in fixes (memory-check **≥2-of-3**, flashcards **in-prompt enum** since `FlashcardType` is deleted, reflection **`#` title**). Live-verified on real gemini history output (validator-clean, 0 dead-vocab). Full detail in worklog [0030]; spec `0dbb34a`, plan `61dc6c6`.
