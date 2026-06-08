@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { BatchFunnel } from "@/components/fleet/batch-funnel";
 import { FleetLauncher } from "@/components/fleet/launcher";
 import { WorkerCards } from "@/components/fleet/worker-cards";
 import { SpaceBackdrop } from "@/components/space-backdrop";
@@ -21,7 +22,7 @@ export function FleetPage() {
           <FleetLauncher books={books.data} batches={batches.data} />
           <WorkerCards data={workers.data} />
         </div>
-        {/* Task 4: <BatchFunnel batches={batches.data} /> */}
+        <BatchFunnel batches={batches.data} />
       </div>
     </>
   );
