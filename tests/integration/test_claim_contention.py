@@ -40,7 +40,7 @@ async def test_two_concurrent_claims_never_collide():
             original_filename="contention-test.pdf",
             content_sha256="0" * 64,
             file_size_bytes=1,
-            status="ready",
+            status="toc_ready",
         )
         s.add(book)
         await s.flush()

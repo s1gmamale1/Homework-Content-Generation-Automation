@@ -31,7 +31,7 @@ async def _seed_section(s):
         original_filename="clock-skew.pdf",
         content_sha256="1" * 64,
         file_size_bytes=1,
-        status="ready",
+        status="toc_ready",
     )
     s.add(book)
     await s.flush()
