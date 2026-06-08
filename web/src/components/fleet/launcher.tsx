@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Rocket } from "lucide-react";
+import { ListChecks, Loader2, Rocket } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
@@ -12,7 +12,7 @@ import {
 import { api } from "@/lib/api";
 import { subjectLabel } from "@/lib/subjects";
 import type { BatchSummary, Book } from "@/lib/types";
-import { CARD, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
+import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
 const LBL = "text-xs font-medium uppercase tracking-[0.12em] text-white/45";
@@ -228,6 +228,8 @@ export function FleetLauncher({
 function ReadyRow({ book }: { book: Book }) {
   const qc = useQueryClient();
   const [provider, setProvider] = useState("claude");
+  const [choosing, setChoosing] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const modelsQ = useQuery({
     queryKey: ["agent-models"],
@@ -237,12 +239,21 @@ function ReadyRow({ book }: { book: Book }) {
     queryKey: ["book", book.id],
     queryFn: () => api.getBook(book.id),
   });
+  const toc = detail.data?.toc ?? [];
   const lessons = detail.data?.toc?.length;
+  const subset = choosing && selected.size > 0;
 
   const launch = useMutation({
-    mutationFn: () => api.launchBatch({ book_id: book.id, provider }),
+    mutationFn: () =>
+      api.launchBatch({
+        book_id: book.id,
+        provider,
+        ...(subset ? { toc_entry_ids: [...selected] } : {}),
+      }),
     onSuccess: (r) => {
       toast.success(`Launched ${r.jobs_created} lessons`);
+      setChoosing(false);
+      setSelected(new Set());
       qc.invalidateQueries({ queryKey: ["batches"] });
       qc.invalidateQueries({ queryKey: ["books"] });
     },
@@ -252,40 +263,89 @@ function ReadyRow({ book }: { book: Book }) {
   const providers = Object.keys(modelsQ.data?.providers ?? {});
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2.5">
-      <div className="min-w-0">
-        <div className="text-sm font-medium text-white">
-          {subjectLabel(book.subject)}
+    <div className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-white">
+            {subjectLabel(book.subject)}
+          </div>
+          <div className="text-xs text-white/45">{lessons ?? "…"} lessons</div>
         </div>
-        <div className="text-xs text-white/45">{lessons ?? "…"} lessons</div>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            className={cn(GHOST_BTN, "h-9 px-2.5 text-xs")}
+            onClick={() => {
+              setChoosing((c) => !c);
+              setSelected(new Set());
+            }}
+          >
+            <ListChecks className="size-3.5" />
+            {choosing ? `Choosing (${selected.size})` : "Choose lessons"}
+          </button>
+          <Select value={provider} onValueChange={setProvider}>
+            <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[8.5rem]")}>
+              <SelectValue placeholder="claude" />
+            </SelectTrigger>
+            <SelectContent>
+              {(providers.length > 0 ? providers : ["claude"]).map((p) => (
+                <SelectItem key={p} value={p}>
+                  {p}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <button
+            type="button"
+            className={PRIMARY_BTN}
+            disabled={launch.isPending || (choosing && selected.size === 0)}
+            onClick={() => launch.mutate()}
+          >
+            {launch.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Rocket className="size-4" />
+            )}
+            {subset ? `Launch ${selected.size}` : "Launch"}
+          </button>
+        </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <Select value={provider} onValueChange={setProvider}>
-          <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[8.5rem]")}>
-            <SelectValue placeholder="claude" />
-          </SelectTrigger>
-          <SelectContent>
-            {(providers.length > 0 ? providers : ["claude"]).map((p) => (
-              <SelectItem key={p} value={p}>
-                {p}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <button
-          type="button"
-          className={PRIMARY_BTN}
-          disabled={launch.isPending}
-          onClick={() => launch.mutate()}
-        >
-          {launch.isPending ? (
-            <Loader2 className="size-4 animate-spin" />
+
+      {choosing && (
+        <div className="mt-2 w-full space-y-1 rounded-xl border border-white/[0.08] bg-black/20 p-2">
+          {toc.length === 0 ? (
+            <div className="px-1 py-1 text-xs text-white/45">No lessons found.</div>
           ) : (
-            <Rocket className="size-4" />
+            toc.map((t) => {
+              const on = selected.has(t.id);
+              return (
+                <label
+                  key={t.id}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1 text-xs text-white/80 hover:bg-white/[0.04]"
+                >
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={() =>
+                      setSelected((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(t.id)) next.delete(t.id);
+                        else next.add(t.id);
+                        return next;
+                      })
+                    }
+                    className="size-3.5 shrink-0 accent-[#7c5cff]"
+                  />
+                  <span className="shrink-0 font-mono text-white/35">
+                    #{t.order_index}
+                  </span>
+                  <span className="min-w-0 truncate">{t.section_title}</span>
+                </label>
+              );
+            })
           )}
-          Launch
-        </button>
-      </div>
+        </div>
+      )}
     </div>
   );
 }
