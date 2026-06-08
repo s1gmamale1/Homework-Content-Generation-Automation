@@ -121,3 +121,33 @@ async def test_retry_backoff_schedules_in_the_future_server_side():
             from app.models.book import Book
             await s.execute(delete(Book).where(Book.id == book_id))
             await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_is_db_stamped_and_reports_online():
+    """upsert_heartbeat stamps the DB clock; list_with_liveness evaluates against
+    the DB clock -> a just-beaten worker is online, and its stored last_heartbeat
+    matches the DB now() (not the host clock) within a small window."""
+    from sqlalchemy import func, select
+
+    from app.db import SessionLocal
+    from app.models.worker import WorkerNode
+    from app.repositories import workers as workers_repo
+
+    pc = "skew-host:5555"
+    try:
+        async with SessionLocal() as s:
+            await workers_repo.upsert_heartbeat(s, pc)
+            await s.commit()
+        async with SessionLocal() as s:
+            db_now = await s.scalar(select(func.now()))
+            row = await s.scalar(select(WorkerNode).where(WorkerNode.pc_id == pc))
+            # DB-stamped: within 5s of the DB's own now(), independent of host clock.
+            assert abs((db_now - row.last_heartbeat).total_seconds()) < 5
+            rows = await workers_repo.list_with_liveness(s, stale_after_seconds=90)
+        mine = [r for r in rows if r["pc_id"] == pc]
+        assert mine and mine[0]["online"] is True
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc))
+            await s.commit()
