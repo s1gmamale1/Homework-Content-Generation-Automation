@@ -66,9 +66,9 @@ This is the difference between "a tool" and "a content factory".
 - **Notion silent per-subject skip** (Kimyo incident): an unmapped subject just logs
   "no subject-page mapping … skipping" and the homework never pushes — must be surfaced,
   or autonomous output silently vanishes.
-- `reclaim_stale_seconds` — the orphan-reclaim window is hardcoded `job_timeout × 2`
-  (~1 hr); add a separate setting so dead-job recovery is faster without shortening the
-  real execution timeout.
+- ~~`reclaim_stale_seconds`~~ — **DONE (worklog 0031).** A separate `reclaim_stale_seconds`
+  setting (default 120s) plus a per-job heartbeat now reclaim orphaned `running` jobs fast,
+  without shortening the real execution timeout.
 
 ---
 

@@ -37,7 +37,7 @@ uv run alembic revision -m "describe"   # new migration
 uv run uvicorn main:app --host 0.0.0.0 --port 8000   # API + SPA + embedded worker
 
 # Tests
-uv run python -m pytest tests/ -q                    # all (~41 tests)
+uv run python -m pytest tests/ -q                    # all (~330 tests)
 uv run python -m pytest tests/services/test_agent.py -q     # single file
 uv run python -m pytest tests/services/test_agent.py::test_resolve_model_no_default_leak -v   # one test
 
@@ -66,7 +66,7 @@ Local dev uses port **5433** for Postgres, not 5432, because the Windows host ty
 - `build_argv(...)` — argv vector for `asyncio.create_subprocess_exec`. Adds `--model X` only when truthy. Adds attachment scope flags (`--add-dir`, `--include-directories`) per CLI.
 - `parse_envelope(stdout, last_msg_path)` — returns `(text, usage)` where usage has normalized keys `prompt_tokens`, `output_tokens`, `cached_tokens`, `total_tokens`, `raw`.
 - `format_attachments(paths)` — provider-specific prompt preamble that names attached files. Claude returns `""` (consumes attachments via positional `@<path>` argv); the others return text instructing the CLI which tool to use to read the file.
-- `prompt_suffix(ctx)` — visual-policy suffix (e.g., "use $imagegen for raster, SVG inline").
+- `prompt_suffix(ctx)` — extra per-CLI policy text appended to the prompt. Claude and gemini return `""`; codex/kimi carry a short visual-policy line. Visual policy itself (described placeholders, never inline `<svg>`) lives in the prompts + `agent._PLACEHOLDER_RULES`.
 
 `agent.py` exposes:
 - `run_phase_prompt` (content phases → markdown), `extract_toc`, and `summarize_lesson` + `read_whole_book_text` (the extract path since the worklog-0035 local-text rewrite) — the primary call surface used by the pipeline. `run_phase` is the lower-level CLI wrapper underneath `run_phase_prompt`; `extract_lesson_context` is legacy and no longer called by the pipeline (dead since 0035).

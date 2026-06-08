@@ -74,9 +74,9 @@ CLI router (`app/services/agent.py`). This is settled infrastructure — don't r
         │                         └────────┬─────────┘
         │                                  ▼
         │                         ┌──────────────────┐
-        │                         │  Pipeline        │  extract → source-map →
-        └─────────────────────────│ (pipeline.py)    │  content phases (parallel) →
-            phase-by-phase events  └────────┬─────────┘  assemble final packet
+        │                         │  Pipeline        │  extract →
+        └─────────────────────────│ (pipeline.py)    │  content phases (parallel);
+            phase-by-phase events  └────────┬─────────┘  each phase → markdown
                                             ▼
                                    ┌──────────────────┐
                                    │  Agent router    │  builds argv, spawns the CLI,
@@ -98,13 +98,14 @@ The flow in words:
    happens in the web request** — it just enqueues.
 4. **Worker claims it.** A background worker polls the DB, locks the pending row, and runs
    the pipeline.
-5. **Pipeline runs the phases.** Extract the lesson text → build a structured source map →
-   generate all the content phases (many in parallel) → assemble everything into one markdown
-   packet. (Every subject runs the same sequence — there's no easy/hard split.)
+5. **Pipeline runs the phases.** Extract the lesson text → generate all the content phases
+   (many in parallel), each producing its own markdown. (Every subject runs the same
+   sequence — there's no easy/hard split, and no separate assembly step: the per-phase
+   markdown *is* the deliverable.)
 6. **Live updates.** Throughout, the browser is subscribed to a Server-Sent-Events stream
    and shows each phase lighting up as it completes.
-7. **Download / play.** When done, the packet is downloadable as markdown + a ZIP of JSON,
-   and the interactive pieces (flashcards, games, quiz) render in the browser.
+7. **Download / review.** When done, the packet downloads as a ZIP of one markdown file per
+   phase, and the operator console renders each phase's markdown for review.
 
 ---
 
@@ -117,7 +118,7 @@ Windows often already runs its own Postgres on 5432). Five tables matter:
 |-------|--------------|-------|
 | `books` | uploaded PDF | subject, filename, file hash, status. The PDF itself lives on **disk** at `var/books/<book_id>/source.pdf`, not in the DB. |
 | `toc_entries` | chapter section | chapter/section number + title, page range. This is what the user picks to generate homework from. |
-| `homework_jobs` | generation request | the chosen `provider`/`model`, `status` (pending/running/done/failed), `current_phase`, the final `assembled_md`, and a column of structured JSON per interactive phase (`flashcards_json`, `cbp_json`, `boss_arena_json`, the `practice_*_json` games, etc.). |
+| `homework_jobs` | generation request | the chosen `provider`/`model`, `status` (pending/running/done/failed/cancelling/cancelled), `current_phase`, the queue columns (`attempts`, `claimed_at`, …), and Notion-archive markers. The generated content lives on `phase_outputs`, **not** here — there are no structured-JSON columns. |
 | `phase_outputs` | one phase of one job | the phase name, order, status, its markdown output, token counts. A unique constraint (`uq_phase_output_job_order`) forbids two rows for the same (job, order). |
 | `agent_usages` | one CLI subprocess call | provider, model, normalized token counts, duration, success/failure, and the raw envelope. This is how the usage dashboard and the end-of-job cost table are built. |
 
@@ -148,9 +149,10 @@ The worker can run **two ways**:
 - **Standalone**: `python -m app.services.worker` runs only the worker, no web server — for
   scaling out to separate worker machines/pods.
 
-**Crash safety:** if a worker dies mid-job, the row is stuck in `running`. On startup and
-every 60s, the worker sweeps for `running` rows older than 2× the timeout and resets them to
-`pending`, so another worker re-claims them. Nothing is silently lost.
+**Crash safety:** if a worker dies mid-job, the row is stuck in `running`. A live worker
+refreshes its claim every `heartbeat_seconds` (30s); any `running` row whose claim is older
+than `reclaim_stale_seconds` (120s) is treated as orphaned and reset to `pending`, so another
+worker re-claims it. Nothing is silently lost.
 
 There's also retry-with-backoff (up to `queue_max_attempts`), a per-job timeout, and
 **backpressure**: if more than ~50 jobs are already waiting, `/generate` returns `503` instead
@@ -161,22 +163,20 @@ of letting the queue grow forever.
 ## 6. The pipeline — how one job becomes a packet
 
 `app/services/pipeline.py`'s `run(job_id)` is the heart of the system. It's a small state
-machine with three stages:
+machine with two stages (a head and a parallel tail):
 
-### Stage 1 — Head (runs in strict order, because each step feeds the next)
-1. **`extract`** — read the chosen pages of the PDF and produce a flat factual summary of
-   the lesson ("lesson_context"). This is **pinned to a cheap model** (`gemini` /
-   `gemini-2.5-flash`) regardless of which provider the user picked, because it's a
-   high-input / low-creativity task — paying premium rates here buys nothing.
+### Stage 1 — Head (the `extract` step)
+1. **`extract`** — read the chosen lesson and produce a flat factual summary of it
+   ("lesson_context"). This is **pinned to a cheap model** (`gemini` / `gemini-2.5-flash`)
+   regardless of which provider the user picked, because it's a high-input / low-creativity
+   task — paying premium rates here buys nothing. It has its own readability gates and fails
+   over if the pinned provider can't read the book.
    *(Also: results are cached across jobs. If the same section was already extracted, the
    prior output is reused for free.)*
-2. **`source-map`** — from that summary, build a structured list of the ~30 key concepts
-   (each with an id, label, and statement). This "source map" is later injected into every
-   content phase so the AI stays faithful to the actual textbook instead of inventing
-   material. *(Best-effort: if it fails the job still continues.)*
 
-   *(There used to be a third `classify` step that decided EASY vs HARD. It's gone — Flow v2
-   runs one sequence for every subject, so there's nothing to classify.)*
+   *(Two steps that used to live here are gone: a `classify` step that decided EASY vs HARD,
+   and a `source-map` step that built a concept list for injection. Flow v2 runs one sequence
+   for every subject, and grounding now comes from the lesson summary itself.)*
 
 ### Stage 2 — Tail (content phases, run in PARALLEL)
 This is where the actual homework gets generated. Every subject runs the same ordered list of
@@ -186,16 +186,17 @@ phase declares **what earlier phases it depends on** (in `flows.PHASE_DEPS`), an
 concurrently. As each finishes, newly-unblocked phases launch. Typically ~2× faster than
 sequential. If any phase fails, in-flight peers are cancelled and the job is marked failed.
 
-Each phase's result is saved two ways: a human-readable markdown blurb (`output_md` on the
-phase row) **and**, for interactive phases, a structured JSON blob in its dedicated column on
-the job (so the browser can render the real interactive widget).
+Each phase's result is saved as markdown (`output_md` on its `phase_outputs` row), tagged
+with the provider that produced it. There is no per-phase JSON column — the markdown is the
+deliverable. Each produced phase is also graded by the LLM judge (see `phase_judge.py`)
+before the job moves on.
 
-### Stage 3 — Assembly
-`_render_homework_md` stitches everything into one markdown document with a fixed structure:
-title → book/chapter/section → extracted summary → source map → **Learning Sections** →
-**Practice Arc** → **Boss Arena** → **Reflection**. It's a *pure* function (data in,
-string out, no DB) so it's easy to test. The result is saved to `homework_jobs.assembled_md`
-and the job flips to `done`.
+### (No assembly stage)
+There is **no** assembly step that stitches phases into one document. Each phase's markdown
+stands alone on its `phase_outputs` row; once every phase is done the job flips to `done`.
+The download endpoint zips those per-phase markdown files on demand. *(An earlier design had
+a `_render_homework_md` assembler writing `homework_jobs.assembled_md`; both were removed in
+the markdown-per-phase reshape.)*
 
 ---
 
@@ -269,7 +270,8 @@ There's an abstract `Provider` base class (`base.py`) and one subclass per CLI: 
 
 Plus two prompt-shaping helpers: `format_attachments` (how to tell *this* CLI about attached
 files — Claude takes them as `@path` arguments and returns `""`; others get a text
-instruction to read the file) and `prompt_suffix` (visual/SVG policy text).
+instruction to read the file) and `prompt_suffix` (extra per-CLI policy text; the claude and
+gemini suffixes are currently empty — visual policy lives in the prompts).
 
 Because providers are pure, they're trivially unit-testable: feed in a fake stdout string,
 assert on the parsed result. No subprocess needed in tests.
@@ -287,8 +289,9 @@ This is the orchestrator that the pipeline calls. Its job per call:
 A **process-wide semaphore** caps how many CLI subprocesses run at once across the whole app
 (worker slots × per-job parallelism could otherwise fan out and trip rate limits).
 
-The functions the pipeline actually calls: `extract_toc`, `extract_lesson_context`,
-`extract_source_map`, `run_phase` / `run_phase_prompt[_structured]`.
+The functions the pipeline actually calls: `extract_toc` (TOC at upload time),
+`summarize_lesson` / `read_whole_book_text` (the per-section extract), and `run_phase` /
+`run_phase_prompt` (the content phases).
 
 ### A critical invariant (there's a test guarding it)
 `_resolve_model(provider, None)` returns a default model **only** for `claude` (and now
@@ -297,11 +300,12 @@ returns `None` — meaning "let the CLI pick its own default," no `--model` flag
 This guards a real past bug where one provider's default leaked into another's. **Do not**
 give gemini/kimi/codex a hardcoded default here.
 
-### Structured (JSON) phases
-Many phases need machine-readable output (so the browser can render a real flashcard deck,
-not a paragraph). For those, `STRUCTURED_PHASE_SCHEMAS` maps the phase name to a Pydantic
-class. The JSON Schema is embedded into the prompt, the response is validated with
-`model_validate_json`, and on a validation error it retries **once** with the error appended.
+### Optional JSON-schema mode
+Content phases produce **markdown**, not structured JSON (the old per-phase schema table,
+`STRUCTURED_PHASE_SCHEMAS`, was removed). `run_phase` still has a generic, opt-in `schema=`
+mode — when a caller passes a Pydantic model, the JSON Schema is embedded in the prompt and
+the response is `model_validate_json`'d with one retry. It's used for structured *internal*
+calls (e.g. TOC extraction and the LLM judge's verdict), not the homework phases.
 
 ### `agent_models.py` — the menu
 `MODEL_MANIFEST` is the single source of truth for which `(provider, model)` pairs are
@@ -333,8 +337,8 @@ Key endpoints:
   happened (so a late-joining browser catches up), then streams new phase events live until
   the job completes or fails.
 - `POST /jobs/{id}/retry` — re-run a *failed* job in place (same row, same provider).
-- `GET /jobs/{id}/download?format=zip|md` — download the packet. ZIP = the markdown plus a
-  JSON file per interactive phase.
+- `GET /jobs/{id}/download` — download the packet as a ZIP of one markdown file per completed
+  (non-extract) phase. There's also `POST /jobs/{id}/cancel` to stop a running job.
 - `GET /agent/models` / `GET /agent/stats` — the model menu, and per-provider rolling usage
   stats for the `/usage` dashboard.
 
@@ -362,18 +366,18 @@ The routes mirror the user journey:
 - `book` → a book's TOC; pick a section.
 - `section` → choose provider/model, click Generate.
 - `job` → live phase-by-phase progress via the SSE hook (`use-event-source.ts`).
-- `preview` → renders the finished interactive pieces — flashcard deck, memory match,
-  tile/sentence games, the boss fight — using the structured JSON the pipeline produced (each
-  has a component under `components/`).
+- `preview` / `job` → render each finished phase's **markdown** (via the `RichText`
+  component) plus any validation warnings. (Older interactive renderers under `components/`
+  predate the markdown-per-phase flip.)
 - `usage` → the per-provider consumption dashboard.
 
 `lib/api.ts` is the typed client, `lib/types.ts` mirrors the backend schemas.
 
-> ⚠️ **The frontend still reflects the *older* flow and is being realigned to Flow v2 in a
-> separate workstream.** Some renderers (`memory-sprint`, `reading`, `adaptive-quiz`) map to
-> phases the backend no longer produces — e.g. there's no `reading` phase anymore, so that
-> component currently has no data to show. When this doc and the live `web/` disagree on the
-> interactive pieces, the backend's actual JSON columns (see §4) are the source of truth.
+> ⚠️ The console now renders each phase's **markdown** (`output_md`) rather than bespoke
+> interactive widgets. Some renderers under `components/` (`memory-sprint`, `reading`,
+> `adaptive-quiz`) predate that flip and map to phases the backend no longer produces — they
+> are not on the live render path. When this doc and the live `web/` disagree, the backend's
+> actual `phase_outputs.output_md` (see §4) is the source of truth.
 
 ---
 
@@ -405,9 +409,10 @@ you configure to match your plan.
 - **Claude refuses copyrighted textbooks.** Claude Code's copyright filter will reject
   extracting from a real published textbook. That's *why* extraction is pinned to gemini —
   claude is only used for the *derived* content, never the raw textbook read.
-- **TOC currently reads only the first ~10 pages / ~60k chars** of the PDF. If a book puts
-  its contents at the *back* (common in some Uzbek textbooks), auto-extraction returns zero
-  entries — you then add the section by hand. (Known follow-up: widen that window.)
+- **TOC extraction scans both ends of the PDF** — the front pages *and* the last ~15 pages —
+  because some Uzbek textbooks print their "Mundarija" (contents) at the back. It also
+  glyph-decodes broken font subsets. Very large or scanned/OCR-less books can still come back
+  empty; you then add the section by hand.
 
 ---
 
@@ -468,7 +473,7 @@ You also need the CLIs you intend to use installed and logged-in on `PATH`
 | Change how a CLI is invoked or parsed | `app/services/providers/<cli>.py` |
 | Touch the spawn/usage logic | `app/services/agent.py` |
 | Add an API endpoint | `app/api/v1/jobs.py` or `books.py` |
-| Change the final packet layout | `pipeline._render_homework_md` |
+| Change what a phase outputs | `prompts/_general/<phase>.md` (there's no assembly step) |
 | Edit what the AI is told to do per phase | `prompts/_general/<phase>.md` (all subjects) |
 | Change language behavior (Uzbek / English-target) | `app/services/prompts.py` (`LANGUAGE_RULES`, `get_prompt`) |
 | Tweak queue/worker/timeout behavior | `app/config.py` + `app/services/worker.py` |
