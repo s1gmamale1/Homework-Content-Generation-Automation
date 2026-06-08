@@ -87,11 +87,14 @@ async def test_workers_endpoint_returns_liveness():
             await s.commit()
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
-            resp = await c.get("/api/v1/workers")
+            resp = await c.get(
+                "/api/v1/workers",
+                headers={"Authorization": "Bearer 123"},
+            )
         assert resp.status_code == 200
         body = resp.json()
         assert any(w["pc_id"] == pc and w["online"] is True for w in body["workers"])
     finally:
         async with SessionLocal() as s:
-            await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == w.id))
+            await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc))
             await s.commit()

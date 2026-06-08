@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 
-from app.api.v1 import books, health, jobs, notion
+from app.api.v1 import books, health, jobs, notion, workers
 from app.auth import get_current_user
 
 # Health stays public (deployment liveness probes don't need a token).
@@ -11,3 +11,4 @@ api_v1_router.include_router(health.router, tags=["meta"])
 api_v1_router.include_router(books.router, dependencies=[Depends(get_current_user)])
 api_v1_router.include_router(jobs.router, dependencies=[Depends(get_current_user)])
 api_v1_router.include_router(notion.router, dependencies=[Depends(get_current_user)])
+api_v1_router.include_router(workers.router, dependencies=[Depends(get_current_user)])
