@@ -1,6 +1,8 @@
 import { clearToken, getToken } from "./auth";
 import type {
   AgentStats,
+  BatchLessonRow,
+  BatchSummary,
   Book,
   Job,
   NotionGrade,
@@ -8,6 +10,7 @@ import type {
   ProviderModelManifest,
   Subject,
   TOCEntry,
+  Worker,
 } from "./types";
 
 class ApiError extends Error {
@@ -224,6 +227,31 @@ export const api = {
       body: JSON.stringify({ subject_page_id: subjectPageId, grade }),
     });
     return unwrap<Book>(res);
+  },
+
+  async listBatches(): Promise<BatchSummary[]> {
+    const res = await authFetch("/api/v1/jobs/batches");
+    return (await unwrap<{ batches: BatchSummary[] }>(res)).batches;
+  },
+  async getBatch(batchId: string): Promise<BatchSummary> {
+    const res = await authFetch(`/api/v1/jobs/batches/${encodeURIComponent(batchId)}`);
+    return unwrap<BatchSummary>(res);
+  },
+  async batchJobs(batchId: string): Promise<BatchLessonRow[]> {
+    const res = await authFetch(`/api/v1/jobs/batches/${encodeURIComponent(batchId)}/jobs`);
+    return (await unwrap<{ jobs: BatchLessonRow[] }>(res)).jobs;
+  },
+  async launchBatch(body: {
+    book_id: string; toc_entry_ids?: string[]; provider?: string; model?: string | null;
+  }): Promise<BatchSummary & { jobs_created: number; jobs_adopted: number; jobs_skipped: number }> {
+    const res = await authFetch("/api/v1/jobs/batch", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    return unwrap(res);
+  },
+  async listWorkers(): Promise<{ workers: Worker[]; total: number; online: number; stale_after_seconds: number }> {
+    const res = await authFetch("/api/v1/workers");
+    return unwrap(res);
   },
 
   jobDownloadUrl(jobId: string): string {

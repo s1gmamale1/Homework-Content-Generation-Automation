@@ -1,4 +1,4 @@
-import { Gauge, Library, Moon, Plus } from "lucide-react";
+import { Gauge, Library, Moon, Plus, Rocket } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { NavLink, useLocation, useOutlet } from "react-router-dom";
 import { Nameplate } from "./nameplate";
@@ -14,7 +14,7 @@ export function Layout() {
   // mounts exactly once and SSE/query effects don't double-subscribe.
   const outlet = useOutlet();
   const wide =
-    pathname.startsWith("/usage") || pathname.startsWith("/library");
+    pathname.startsWith("/usage") || pathname.startsWith("/library") || pathname.startsWith("/fleet");
 
   return (
     <div className="flex min-h-screen flex-col bg-(--color-canvas)">
@@ -41,6 +41,9 @@ export function Layout() {
               </NavItem>
               <NavItem to="/usage" icon={<Gauge className="size-4" />}>
                 Usage
+              </NavItem>
+              <NavItem to="/fleet" icon={<Rocket className="size-4" />}>
+                Fleet
               </NavItem>
             </nav>
           </div>

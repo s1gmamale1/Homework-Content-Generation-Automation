@@ -261,3 +261,37 @@ export type JobStreamEvent =
   | { event: "difficulty_classified"; data: { difficulty: Difficulty } }
   | { event: "job_completed"; data: { job_id: string; download_url: string } }
   | { event: "error"; data: { phase_name?: string; message: string } };
+
+export interface Worker {
+  pc_id: string;
+  last_heartbeat: string | null;
+  status: string;
+  notes: string | null;
+  online: boolean;
+}
+
+export type BatchRollup = Partial<Record<JobStatus, number>>;
+
+export interface BatchSummary {
+  batch_id: string;
+  book_id: string;
+  subject: string;
+  grade: string | null;
+  provider: string;
+  model: string | null;
+  rollup: BatchRollup;
+  lessons_covered: number;
+  complete: boolean;
+  created_at: string;
+}
+
+export interface BatchLessonRow {
+  job_id: string;
+  toc_entry_id: string;
+  section_title: string;
+  order_index: number;
+  status: JobStatus;
+  attempts: number;
+  current_phase: string | null;
+  error_message: string | null;
+}
