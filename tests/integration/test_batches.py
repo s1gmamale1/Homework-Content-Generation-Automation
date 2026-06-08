@@ -255,3 +255,19 @@ async def test_batch_jobs_drilldown_is_per_lesson_latest():
         assert nf.status_code == 404
     finally:
         await _cleanup(book_id)
+
+
+@pytest.mark.asyncio
+async def test_batches_list_not_shadowed_by_job_route():
+    """Regression: the static `/jobs/batches` list must win over jobs' dynamic
+    `/jobs/{job_id}`. Before the router-include reorder it parsed "batches" as a
+    job_id and 422'd — which broke the /fleet funnel (its first consumer)."""
+    book_id, _ = await _seed_book("z", n=2)
+    try:
+        async with _client() as c:
+            await c.post("/api/v1/jobs/batch", headers=_HDR, json={"book_id": str(book_id)})
+            r = await c.get("/api/v1/jobs/batches", headers=_HDR)
+        assert r.status_code == 200, f"shadowed by /jobs/{{job_id}}? got {r.status_code}: {r.text}"
+        assert any(b["book_id"] == str(book_id) for b in r.json()["batches"])
+    finally:
+        await _cleanup(book_id)
