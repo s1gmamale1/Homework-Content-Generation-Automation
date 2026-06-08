@@ -41,7 +41,7 @@
 | Per-lesson cancel / retry | `POST /api/v1/jobs/{id}/cancel` · `/retry` | drill-in row actions |
 | Per-lesson detail link | existing `/job/:id` route | drill-in "open" |
 
-All of the above are already wired in `web/src/lib/api.ts` (`listBooks`, `fromNotion`, `cancelJob`, `retryJob`, notion helpers, …) or trivially added there.
+All of the above are already wired in `web/src/lib/api.ts` (`listBooks`, `fetchBookFromNotion(subjectPageId, grade)`, `cancelJob`, `retryJob`, notion helpers, …) or trivially added there. **`api` is an object of methods** — new calls (`listBatches`, `getBatch`, `batchJobs`, `launchBatch`, `listWorkers`) are added as methods on it, not free `export const`s.
 
 ---
 
@@ -49,7 +49,7 @@ All of the above are already wired in `web/src/lib/api.ts` (`listBooks`, `fromNo
 
 The drill-in needs **one row per lesson** (its latest job), consistent with the rollup's per-lesson-latest semantics. Implemented with the same `DISTINCT ON (toc_entry_id)` pattern as `batches_repo.rollup_for_batch` / `jobs.latest_by_section`, joined to `toc_entries` for the lesson title.
 
-**Response:** `{ "batch_id": "...", "jobs": [ { toc_entry_id, section_title, order_index, job_id, status, attempts, current_phase, last_error } , … ] }` — ordered by `order_index`. 404 if the batch doesn't exist.
+**Response:** `{ "batch_id": "...", "jobs": [ { toc_entry_id, section_title, order_index, job_id, status, attempts, current_phase, error_message } , … ] }` — ordered by `order_index`. 404 if the batch doesn't exist. *(Use `error_message`, not the queue's `last_error` — the FE `Job` type and the `/job/:id` page already display `error_message`, so the drill-in stays consistent. Both fields exist on the model; `last_error` is the per-attempt queue error, available if we ever want it.)*
 
 - New repo fn `batches_repo.list_jobs(session, batch_id)` — `DISTINCT ON (toc_entry_id) … WHERE batch_id = X ORDER BY toc_entry_id, created_at DESC` selecting the job + its `TOCEntry.section_title`/`order_index`, then re-sorted by `order_index`.
 - New route in `app/api/v1/batch.py` (auth-gated, same router).
@@ -68,14 +68,14 @@ Single route `/fleet`, added to `web/src/App.tsx` (protected, under the existing
   - `toc_ready` (no batch yet) → "N lessons" + provider picker + **Launch** (`POST /jobs/batch`).
   - `failed` → the book's `error_message` inline + **Retry** (re-prepare) / **Dismiss**.
   - An **already-`toc_ready`** subject (reused book) appears straight in the ready state — no wait.
-- **Durability:** tray state is derived from book status in the DB, so it survives a refresh and is the same for any operator (not just client-side). *(Which books count as "in the tray" = a frontend filter over `GET /books`; see §6 open detail.)*
+- **Durability:** tray membership is fully derived from server state (book status + which `book_id`s already have a batch) — survives a refresh, identical for any operator, no client-remembered state. See §6 for the exact derivation.
 - **Subset (optional):** the ready row's primary action is **Launch all N**; a secondary "choose lessons" reveals the lesson-list component (§4c) with checkboxes → launches `toc_entry_ids`. Cheap because the lesson-list component already exists for the drill-in.
 
 ### 4b. Fleet PC cards
 Grid of worker cards from `GET /workers`: `pc_id`, online/offline dot (from the `online` flag), `last_heartbeat` ("3m ago"), and a header "online X / N". (Current-job/throughput enrichment = deferred `fleet-ui-4`.)
 
 ### 4c. Batches funnel + drill-in
-- **Funnel:** `GET /jobs/batches` → one card per batch: subject·grade, a segmented rollup bar (done/running/pending/failed using the theme status colors), "41 / 50 · 82%", derived `complete`.
+- **Funnel:** `GET /jobs/batches` → one card per batch: subject·grade, a segmented rollup bar, "41 / 50 · 82%", derived `complete`. **The bar must render EVERY status `rollup_for_batch` can return** — `done`/`running`/`pending`/`failed` **plus `cancelling`/`cancelled`** (the rollup is a bare `GROUP BY status`, no whitelist). Map: done=green, running=blue, pending=`white/14`, failed=red, cancelling=in-flight (group with running or its own amber), cancelled=muted grey. Otherwise cancelled lessons sit in the `lessons_covered` denominator but in no segment → the bar visually under-counts.
 - **Drill-in:** clicking a batch card expands (or routes to `/fleet/batch/:id`) and calls the new `GET /jobs/batches/{id}/jobs` → a **lesson list**: per-lesson `section_title`, status chip, attempts, and row actions **Cancel** (`POST /jobs/{id}/cancel`, when pending/running) / **Retry** (`POST /jobs/{id}/retry`, when failed) / **Open** (`/job/:id`). This lesson-list is a reusable component (also used by the launcher's subset picker).
 
 ---
@@ -93,7 +93,10 @@ Match the existing space-dashboard kit exactly (already validated in the v2/v3 m
 - **Header/nav:** the existing floating glass header (`components/layout.tsx`) — add the "Fleet" pill.
 - Reuse `subjectLabel` (`lib/subjects.ts`) for subject display.
 
-**Open detail to settle in the plan (not blocking):** which books appear in the launcher tray. Default proposal: books with `status = toc_extracting` (always) + `toc_ready` books that have **no batch yet** (launchable) + recently `failed` Notion-fetched books — a client-side filter over `GET /books`. If "no batch yet" needs a flag the list doesn't carry, fall back to: show `toc_extracting` + the most-recently-prepared book this session (client-remembered) until launched.
+**Tray membership — fully server-derivable (no client-memory).** The tray = a filter over two existing reads, so it's durable + identical for any operator:
+- `toc_extracting` books → **preparing** (always shown).
+- `failed` books (recently fetched) → **failed** row.
+- `toc_ready` books **whose `book_id` is absent from `GET /jobs/batches`** → **ready, no batch yet** (launchable). `GET /jobs/batches` already returns each batch's `book_id` (`batch.py:33`), so "no batch yet" is `toc_ready_books − batched_book_ids` — derivable, no new flag, no client-remembered state. Once a book is launched it gains a batch and drops out of the tray into the funnel. *(A `toc_ready` book that already has a batch is past the launcher — it lives in the funnel, not the tray.)*
 
 ---
 
@@ -108,7 +111,7 @@ Match the existing space-dashboard kit exactly (already validated in the v2/v3 m
 - Create `web/src/routes/fleet.tsx` — the page (launcher + funnel + PC cards), composing the pieces below.
 - Create components: `FleetLauncher` (prepare card + tray), `BatchFunnel` (rollup cards), `BatchLessonList` (reusable drill-in + subset picker), `WorkerCards`.
 - Modify `web/src/App.tsx` (route) + `components/layout.tsx` (nav link).
-- Modify `web/src/lib/api.ts` — add `listBatches`, `getBatch`, `batchJobs(id)`, `launchBatch(...)`, `listWorkers()` (and reuse existing `fromNotion`, `listBooks`, `cancelJob`, `retryJob`, notion helpers).
+- Modify `web/src/lib/api.ts` — add methods (on the `api` object, not free exports) `listBatches`, `getBatch`, `batchJobs(id)`, `launchBatch(...)`, `listWorkers()` (and reuse existing `fetchBookFromNotion(subjectPageId, grade)`, `listBooks`, `cancelJob`, `retryJob`, notion helpers).
 - Modify `web/src/lib/types.ts` — `Batch`, `BatchRollup`, `BatchLessonRow`, `Worker` types.
 - A `usePolling` hook in `web/src/hooks` if one doesn't already exist.
 
