@@ -24,6 +24,9 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # Specific model id within the provider (e.g. "gemini-2.5-flash", "gpt-5-mini"). Optional
     # because some providers default at the SDK level.
     model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    batch_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey("batches.id"), nullable=True
+    )
     current_phase: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -65,6 +68,7 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     __table_args__ = (
         Index("ix_homework_jobs_book_toc", "book_id", "toc_entry_id"),
         Index("ix_homework_jobs_status", "status"),
+        Index("ix_homework_jobs_batch_id", "batch_id"),
         # Partial queue index: only rows a worker actually scans.
         Index(
             "ix_homework_jobs_queue",
