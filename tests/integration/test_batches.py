@@ -222,3 +222,36 @@ async def test_force_regenerates():
             assert r2.json()["rollup"].get("pending") == 5
     finally:
         await _cleanup(book_id)
+
+
+@pytest.mark.asyncio
+async def test_batch_jobs_drilldown_is_per_lesson_latest():
+    from app.db import SessionLocal
+    from app.models.homework_job import HomeworkJob
+    book_id, toc_ids = await _seed_book("k", n=4)
+    try:
+        async with _client() as c:
+            r = await c.post("/api/v1/jobs/batch", headers=_HDR, json={"book_id": str(book_id)})
+            bid = r.json()["batch_id"]
+            # fail lesson 0's job, then re-launch -> a NEW (newer) job for lesson 0
+            async with SessionLocal() as s:
+                jid = (await s.execute(
+                    select(HomeworkJob.id).where(HomeworkJob.toc_entry_id == toc_ids[0]))
+                ).scalar_one()
+                (await s.get(HomeworkJob, jid)).status = "failed"
+                await s.commit()
+            await c.post("/api/v1/jobs/batch", headers=_HDR, json={"book_id": str(book_id)})
+            g = await c.get(f"/api/v1/jobs/batches/{bid}/jobs", headers=_HDR)
+        assert g.status_code == 200
+        rows = g.json()["jobs"]
+        assert len(rows) == 4, f"one row per lesson, got {len(rows)}"
+        assert [row["order_index"] for row in rows] == [0, 1, 2, 3], "ordered by order_index"
+        lesson0 = next(r for r in rows if r["order_index"] == 0)
+        assert lesson0["status"] == "pending", "shows the NEWEST job (the retry), not the failed one"
+        assert all("section_title" in r and "job_id" in r and "attempts" in r for r in rows)
+        # 404 for an unknown batch
+        async with _client() as c:
+            nf = await c.get("/api/v1/jobs/batches/00000000-0000-0000-0000-000000000099/jobs", headers=_HDR)
+        assert nf.status_code == 404
+    finally:
+        await _cleanup(book_id)

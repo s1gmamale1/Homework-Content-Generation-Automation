@@ -74,3 +74,47 @@ async def list_with_rollups(session: AsyncSession) -> list[dict]:
         tally = await rollup_for_batch(session, b.id)
         out.append({"batch": b, "rollup": tally})
     return out
+
+
+async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
+    """Per-lesson-latest rows for a batch: one row per toc_entry (its newest job),
+    joined to the lesson title, ordered by order_index. Mirrors rollup_for_batch's
+    DISTINCT ON but returns rows; row count == the rollup denominator."""
+    from app.models.toc_entry import TOCEntry
+    latest = (
+        select(
+            HomeworkJob.id.label("job_id"),
+            HomeworkJob.toc_entry_id.label("toc_entry_id"),
+            HomeworkJob.status.label("status"),
+            HomeworkJob.attempts.label("attempts"),
+            HomeworkJob.current_phase.label("current_phase"),
+            HomeworkJob.error_message.label("error_message"),
+        )
+        .where(HomeworkJob.batch_id == batch_id)
+        .order_by(HomeworkJob.toc_entry_id, HomeworkJob.created_at.desc())
+        .distinct(HomeworkJob.toc_entry_id)
+        .subquery()
+    )
+    stmt = (
+        select(
+            latest.c.job_id, latest.c.toc_entry_id, latest.c.status,
+            latest.c.attempts, latest.c.current_phase, latest.c.error_message,
+            TOCEntry.section_title, TOCEntry.order_index,
+        )
+        .join(TOCEntry, TOCEntry.id == latest.c.toc_entry_id)
+        .order_by(TOCEntry.order_index)
+    )
+    rows = await session.execute(stmt)
+    return [
+        {
+            "job_id": str(r.job_id),
+            "toc_entry_id": str(r.toc_entry_id),
+            "section_title": r.section_title,
+            "order_index": r.order_index,
+            "status": r.status,
+            "attempts": r.attempts,
+            "current_phase": r.current_phase,
+            "error_message": r.error_message,
+        }
+        for r in rows
+    ]

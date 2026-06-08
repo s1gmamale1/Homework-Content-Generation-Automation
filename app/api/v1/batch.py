@@ -119,3 +119,12 @@ async def get_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)
         raise HTTPException(404, "batch not found")
     tally = await batches_repo.rollup_for_batch(session, batch_id)
     return _rollup_payload(batch, tally)
+
+
+@router.get("/jobs/batches/{batch_id}/jobs")
+async def list_batch_jobs(batch_id: UUID, session: AsyncSession = Depends(get_session)):
+    from app.models.batch import Batch
+    batch = await session.get(Batch, batch_id)
+    if batch is None:
+        raise HTTPException(404, "batch not found")
+    return {"batch_id": str(batch_id), "jobs": await batches_repo.list_jobs(session, batch_id)}
