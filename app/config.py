@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # as orphaned (dead worker) → reclaimed to `pending`. Safe BELOW job_timeout
     # ONLY because the heartbeat keeps live jobs fresh (spec §3).
     reclaim_stale_seconds: int = 120
+    # Fleet registry: a worker upserts its `workers.last_heartbeat` every
+    # `heartbeat_seconds` (30s); the head treats it offline if older than this.
+    # 90s = 3 missed beats — tolerant of a slow loop without lying about death.
+    worker_registry_stale_seconds: int = 90
     # Hard timeout for ONE failover attempt (one provider try), so a hung CLI
     # (e.g. opencode stdin hang) cannot stall a phase until job_timeout. MUST be
     # well above the slowest real phase: CBP alone is ~274s (see job_timeout

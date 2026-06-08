@@ -41,6 +41,7 @@ from loguru import logger
 from app.config import settings
 from app.db import SessionLocal
 from app.repositories import jobs as jobs_repo
+from app.repositories import workers as workers_repo
 from app.services import pipeline
 
 
@@ -93,6 +94,10 @@ class Worker:
         # handful.
         await self._sweep_stuck_jobs()
 
+        # Registry heartbeat on its OWN task so a busy worker (all slots full)
+        # still reports alive — the main loop blocks while slots are occupied.
+        registry_hb = asyncio.create_task(self._registry_heartbeat_loop())
+
         try:
             while not self._stop_event.is_set():
                 # Throttle sweep to once per `sweep_interval_seconds`. Doing
@@ -127,6 +132,9 @@ class Worker:
                 self._tasks.add(task)
                 task.add_done_callback(self._tasks.discard)
         finally:
+            registry_hb.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await registry_hb   # let the cancellation settle (matches _execute_job)
             await self._drain()
             logger.info(f"worker {self.id} stopped")
 
@@ -309,6 +317,31 @@ class Worker:
                 )
         except Exception:
             logger.exception(f"worker {self.id} stuck-job sweep failed")
+
+    async def _registry_heartbeat(self) -> None:
+        """Register this worker / refresh its heartbeat in the fleet `workers`
+        table so the head-side liveness view knows this PC is alive.
+        Best-effort: a failed beat is logged, never fatal."""
+        try:
+            async with SessionLocal() as session:
+                await workers_repo.upsert_heartbeat(session, self.id)
+                await session.commit()
+        except Exception:
+            logger.warning(f"worker {self.id} registry heartbeat failed")
+
+    async def _registry_heartbeat_loop(self) -> None:
+        """Beat on its OWN task — NOT the main loop — so a busy worker (all
+        slots full with long jobs, main loop blocked in _wait_for_slot_or_stop)
+        still reports alive. Mirrors the per-job _heartbeat; shutdown-aware via
+        stop_event so it exits promptly."""
+        await self._registry_heartbeat()  # register immediately on startup
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=settings.heartbeat_seconds
+                )
+            except asyncio.TimeoutError:
+                await self._registry_heartbeat()
 
     async def _drain(self) -> None:
         """Wait for in-flight tasks to finish before returning. Bounded by
