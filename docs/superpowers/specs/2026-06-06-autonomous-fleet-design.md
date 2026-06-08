@@ -1,8 +1,9 @@
 # Autonomous Generation Fleet — Design Spec
 
-> **Status:** Approved for `writing-plans`, rev 4 (adds per-batch CLI/API mode toggle + dedicated-claude-account model; rounds 1–2 verified). Brainstormed 2026-06-06.
-> **Sibling reference:** NETS / Creative-Content-Automation (`dhost` @ `205cf6f`). We port its *automation logic*, not its full infrastructure (§10).
-> **Companion (binding):** `docs/PRODUCTION_AUTONOMOUS_GENERATION.md` — its Claude-allocation-isolation constraint gates Phases 0–3 (§1a).
+> **Status:** Approved for `writing-plans`, rev 5 (round-3 fixes: real pipeline shape `extract → content phases`, `owner_pc` removed, `generation_mode`→`provider` mapping, NETS-unverified caveat; rounds 1–3 verified). Brainstormed 2026-06-06.
+> **Sibling reference:** NETS / Creative-Content-Automation (`dhost` @ `205cf6f`). We port its *automation logic*, not its full infrastructure (§1, §8).
+> **⚠ NETS claims are unverified from THIS repo.** Everything attributed to NETS (credential-pool schema, commit `205cf6f`, "doesn't run Swarm", `head-address.txt`, "skipped encryption-at-rest", the 6 worker types) describes an **external repo not accessible from this codebase** — treat as **verify-at-port-time, not ground truth**, especially at **Phase 4b** (credential-pool ported verbatim).
+> **Companion:** `docs/PRODUCTION_AUTONOMOUS_GENERATION.md` — informs §1a (judge always Opus; dedicated fleet Claude accounts).
 
 **Goal:** Let an operator point the system at a scope (a Notion subject → its lessons) and have a fleet of ~10 PCs generate every lesson's homework packet on its own — pulling work from **one shared database**, healing itself when a PC dies, and surfacing only finished packets and failures for review.
 
@@ -26,7 +27,7 @@ Adopt NETS's automation logic while exploiting the fact that our work is *easy* 
 | Cost ledger + budget cap + kill-switch *(money phase only)* | |
 | Credential pool for Gemini quota *(money phase only)* | |
 
-**Unit of distribution = the whole JOB (one lesson), not the phase.** A PC claims a job and runs `extract → classify → DAG phases → assembly` in-process exactly as today. If it dies, any other PC's existing sweep re-claims the whole job. Pure work-stealing, zero affinity.
+**Unit of distribution = the whole JOB (one lesson), not the phase.** A PC claims a job and runs the existing pipeline — **`extract → content phases (DAG-parallel)`** — in-process exactly as today (verified `pipeline.py:100,135,216`; the old `classify` and `assembly` stages were **removed** — `flows.py:1` "MVP — no classify"). If it dies, any other PC's existing sweep re-claims the whole job. Pure work-stealing, zero affinity.
 
 **What we already have (verified — do NOT rebuild):**
 - `claimed_by` + `claimed_at` on `homework_jobs` (`homework_job.py:50-51`); implicit lease via `reclaim_stale_seconds=120` (`config.py:60`); claim refresh via `touch_claim`.
@@ -79,7 +80,7 @@ So the automation core is mostly *wiring existing parts*. The genuinely-new surf
 ## 3. How a batch flows (end to end)
 
 1. Operator opens the **fleet dashboard** and pastes a **Notion subject URL**. ⚠ **Resolving that into a lesson list is a multi-step, fallible pipeline, not a lookup** (see §5): download the subject's textbook PDF → ingest → **TOC extraction** (the project's most fragile step — >20 MB cap, glyph-subset fonts, scanned books; worklogs 0034/0035/0036/0040/0043) → the resulting `toc_entries` **are** the lessons. The dashboard shows this step's progress and its failure modes.
-2. Operator ticks the lessons, picks **generation mode (CLI or Google API)** + an optional budget/guardrail, and hits Start. The head writes **one `batches` row** (carrying `generation_mode`) + **N `pending` `homework_jobs`** (one per `toc_entry`), each tagged `batch_id`, `owner_pc` NULL.
+2. Operator ticks the lessons, picks **generation mode (CLI or Google API)** + an optional budget/guardrail, and hits Start. The head writes **one `batches` row** (carrying `generation_mode`) + **N `pending` `homework_jobs`** (one per `toc_entry`), each tagged `batch_id`. No owner/host pinning — any PC may claim any job (work-stealing).
 3. Any worker PC claims a job (`FOR UPDATE SKIP LOCKED`), runs the full pipeline, writes `phase_outputs`, advances the job to `done`/`failed`, keeping the claim fresh via `touch_claim`.
 4. Job completion rolls into the **batch aggregate** (`done/failed/running`, spend, ETA), recomputed on read.
 5. A worker dies → its in-flight job goes stale → **an existing worker's sweep reclaims it** (`reclaim_stuck_jobs` → `pending`); the pipeline rebuilds phase rows via `create_or_reset` on the next run. (Already shipped.)
@@ -99,7 +100,7 @@ All additive; nothing existing is removed.
 **`batches`** (new) — the aggregate the operator supervises:
 - `id UUID PK`, `created_at`, `created_by`, `source` (Notion subject URL + resolved subject/grade/lang + originating `book_id`), `generation_mode` (`cli` | `api`), `status` (`active`/`paused`/`done`/`cancelled`).
 - Rollups **computed on read** (recompute, not trigger — locked, §1 scale makes this simpler and sufficient): `total/done/failed/running` counts, `spend_usd` *(Phase 4)*, `budget_cap_usd`.
-- Child jobs inherit `generation_mode` (drives CLI failover chain vs Gemini-API path; **judge is always Opus regardless**).
+- The launcher writes each child job's **`provider`** from the batch's `generation_mode` at insert (cli→`claude` + failover chain; api→the new Gemini-API provider); the pipeline keys off `job.provider`, not `generation_mode`. **Judge is always Opus regardless of mode.**
 
 **`workers`** (new) — fleet registry/liveness:
 - `pc_id TEXT PK`, `last_heartbeat`, `status` (`online`/`draining`/`offline`), `notes`. Online = `last_heartbeat >= NOW() - <threshold>`.
@@ -113,7 +114,7 @@ All additive; nothing existing is removed.
 ## 5. Components
 
 - **Notion → lessons resolver (⚠ first-class, fallible — NOT a cheap reuse).** Our existing `notion_fetch.py` only goes subject → **one textbook PDF** (`download_textbook`); endpoints are just `/grades` + `/grades/{id}/subjects`. **There is no lesson enumeration.** Lessons = a book's `toc_entries`, which exist only after `download → ingest_pdf → async TOC extraction → list toc_entries`. So the resolver is a pipeline: (1) resolve subject → download + ingest + **extract TOC** (may need the >20 MB / scanned-book / glyph fallbacks — the project's most fragile step), (2) surface `toc_entries` as the lesson list, (3) operator picks. **TOC-extraction failure is a first-class state** the launcher and dashboard handle, not an exception.
-- **Batch launcher** (port of NETS commit `205cf6f`): `POST /jobs/batch` inserts one `pending` job per picked `toc_entry` + a `batches` row, `owner_pc` NULL (work-stealing; no round-robin pinning needed — our simplification over NETS).
+- **Batch launcher** (port of NETS commit `205cf6f`): `POST /jobs/batch` inserts one `pending` job per picked `toc_entry` + a `batches` row. **No owner/host pinning at all** — pure work-stealing (our simplification over NETS, which round-robins `owner_pc`; host-affinity is cut, §8 — and no such column exists in our schema). The launcher **translates the batch's `generation_mode` into each job's `provider` at insert** (cli→`claude` + failover chain; api→the new Gemini-API provider) — the pipeline reads `job.provider`, **not** `generation_mode`.
 - **Worker** (existing pipeline, containerized): claim → run DAG → advance, `touch_claim` keeps the claim fresh. Standalone entrypoint already exists; **net-new = a Docker image + a `DB_URL`.** API runs with `worker_concurrency=0`.
 - **Self-healing:** already shipped (0031) — every worker sweeps + any worker reclaims all stale jobs. **Net-new = the `workers` registry table + a head-side liveness view only.**
 - **Fleet dashboard:** new panels — batch funnel + recompute rollups, fleet/PC cards (liveness, current job), controls (launch / pause / cancel / retry / drain), and the Notion→TOC resolver UI with its failure states. Auth gated like NETS (single admin token; reads public). Existing review console stays for content review.
@@ -132,7 +133,7 @@ Phases 0–3 are the simple automation core on our **current** generation path (
 - **Phase 3 — Fleet dashboard.** Launch/watch/control + fleet view, **with the CLI/API mode toggle in the launch UX**. Prove: operator runs a real CLI-mode batch end-to-end across PCs from one screen (claude-first + failover, Opus judge).
 - **Phase 4 — Real-money Gemini-API layer (isolated; plan as FOUR deliverables, not one).**
   - 4a. **Gemini SDK provider** behind the router flag (envelope-compatible). **Real seam (don't take "one place" literally):** the `Provider` base is subprocess-shaped (`build_argv → _spawn → create_subprocess_exec`, `agent.py:287/329`), so an in-process SDK call needs a **dispatch branch in `run_phase`/`_spawn` (`agent.py:561/287`)**, not merely a new `Provider` subclass. The invariant held is that everything **above** `run_phase` (pipeline, judge, failover) stays path-agnostic via the shared `(text, usage)` envelope.
-  - 4b. **Credential pool** (projects/keys/quota/caps/429 cooling).
+  - 4b. **Credential pool** (projects/keys/quota/caps/429 cooling). **Verify the table schema against the real NETS repo at port time — not this spec's recollection (see ⚠ at top).**
   - 4c. **Cost ledger + kill-switch** (real `cost_usd`, batch rollup, cap → `failed`).
   - 4d. **Never-pay-twice** idempotency (checkpoint-before-spend + idempotency key).
   - This is the only place that reverses CLAUDE.md's "no-SDK" invariant (fleet path only; interactive console keeps the CLI router). CLAUDE.md + `pyproject.toml` updated here.
@@ -178,4 +179,5 @@ Phases 0–3 are the simple automation core on our **current** generation path (
 ## 10. Acceptance
 
 - Phases 0–3: a real **CLI-mode** batch of ≥2 lessons (resolved via the fallible TOC pipeline) runs to completion across ≥2 worker containers pulling from one DB (claude-first + failover, **Opus judge**), survives a mid-job worker kill (existing sweep reclaim), and is launched + monitored + cancel/retried from the dashboard.
+- **Phase 3 also includes a real Claude cap-hit smoke**: an exhausted fleet account must emit a usage-limit message the classifier treats as a wall → fail over to the next provider. (The CLI-emits-a-classifiable-message link is unprovable on paper — verify it live, don't assume.)
 - Phase 4: a real Gemini-API smoke generates one packet, writes correct per-call `cost_usd`, and a deliberately low cap trips the kill-switch (job → `failed`, no further spend). Per CLAUDE.md, generation-affecting changes require a real API smoke as the proof.
