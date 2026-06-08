@@ -1,0 +1,17 @@
+# Worker-only stack for a REMOTE fleet PC. No local Postgres — points at the
+# central head. Bring up on each worker PC with:
+#   DATABASE_URL=postgresql+asyncpg://edu:edu@<HEAD_IP>:5432/edu_homework \
+#     docker compose -f docker-compose.worker.yml up -d
+services:
+  worker:
+    image: ${IMAGE:-ghcr.io/ganiyevuz/class-homework-builder:latest}
+    pull_policy: always
+    command: [ "python", "-m", "app.services.worker" ]
+    environment:
+      # REQUIRED: point at the head. No default — fail fast if unset.
+      DATABASE_URL: ${DATABASE_URL:?set to the head, e.g. postgresql+asyncpg://edu:edu@HEAD_IP:5432/edu_homework}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      RUN_MIGRATIONS: "0"   # head owns migrations; workers never migrate
+    restart: unless-stopped
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
