@@ -4,7 +4,7 @@
 
 **Goal:** Make every worker-timing comparison reason on the single head-DB clock (`func.now()`) instead of each worker host's `datetime.now()`, so a multi-PC fleet with clock skew claims, leases, retries, and reports liveness correctly.
 
-**Architecture:** The queue/lease/liveness code currently mixes a DB-set `scheduled_at` (`server_default NOW()`) with host-computed `datetime.now()` filters and cutoffs. On one box this is invisible; across ~10 PCs each host's clock drift skews claiming. The fix moves all timing comparisons server-side: filters use `scheduled_at <= func.now()`, stamps use `func.now()`, interval cutoffs use `func.now() - func.make_interval(secs=N)`, and worker liveness stamps with `func.now()` + evaluates against a DB-fetched `now`. Record-only `completed_at` writes (no comparison depends on them) are deliberately left as `datetime.now()` to keep the diff minimal. No schema change → no migration.
+**Architecture:** The queue/lease/liveness code currently mixes a DB-set `scheduled_at` (`server_default NOW()`) with host-computed `datetime.now()` filters and cutoffs. On one box this is invisible; across ~10 PCs each host's clock drift skews claiming. The fix moves all timing comparisons server-side: filters use `scheduled_at <= func.now()`, stamps use `func.now()`, interval cutoffs use `func.now() - func.make_interval(0, 0, 0, 0, 0, 0, N)`, and worker liveness stamps with `func.now()` + evaluates against a DB-fetched `now`. Record-only `completed_at` writes (no comparison depends on them) are deliberately left as `datetime.now()` to keep the diff minimal. No schema change → no migration.
 
 **Tech Stack:** Python 3.13, SQLAlchemy 2.x (async, asyncpg), Postgres 16, pytest / pytest-asyncio. Integration tests guarded by `RUN_DB_INTEGRATION=1` + a throwaway Postgres.
 
@@ -587,6 +587,6 @@ git commit -m "docs(memory): worklog 0049 — fleet Phase 0.5 (clock-skew harden
 
 **Placeholder scan:** No TBD/TODO. Every code step shows the exact replacement. The container smoke (Task 3 Step 5) references the existing Phase 0 acceptance pattern rather than repeating it — acceptable because it's an already-built, documented procedure (worklog 0047), not new code.
 
-**Type consistency:** `is_online` gains `now: datetime` (keyword-only) in Task 2 Step 3; every caller updated in the same task — unit tests (Step 1) and `list_with_liveness` (Step 4). `func.make_interval(secs=...)` used identically in all three interval spots. `func.now()` returns `timestamptz` → asyncpg tz-aware datetime, comparable with the tz-aware `last_heartbeat` and `scheduled_at` columns.
+**Type consistency:** `is_online` gains `now: datetime` (keyword-only) in Task 2 Step 3; every caller updated in the same task — unit tests (Step 1) and `list_with_liveness` (Step 4). `func.make_interval(0, 0, 0, 0, 0, 0, N)` (positional, N = seconds) used identically in all three interval spots. `func.now()` returns `timestamptz` → asyncpg tz-aware datetime, comparable with the tz-aware `last_heartbeat` and `scheduled_at` columns.
 
 **Caveat carried from spec §6:** after `.values(claimed_at=func.now())`, the returned ORM object's stamp is DB-computed; `claim_next_job` re-SELECTs via `session.get`, callers read `.id` — safe.
