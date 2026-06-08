@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import UUID
 
@@ -219,11 +219,10 @@ async def claim_next_job(
     Order: highest priority first, then oldest scheduled_at first (FIFO
     within a priority band).
     """
-    now = datetime.now(timezone.utc)
     pick_stmt = (
         select(HomeworkJob.id)
         .where(HomeworkJob.status == "pending")
-        .where(HomeworkJob.scheduled_at <= now)
+        .where(HomeworkJob.scheduled_at <= func.now())
         .where(HomeworkJob.attempts < max_attempts)
         .order_by(HomeworkJob.priority.desc(), HomeworkJob.scheduled_at.asc())
         .limit(1)
@@ -238,11 +237,11 @@ async def claim_next_job(
         .where(HomeworkJob.id == job_id)
         .values(
             status="running",
-            claimed_at=now,
+            claimed_at=func.now(),
             claimed_by=worker_id,
             attempts=HomeworkJob.attempts + 1,
-            last_attempt_at=now,
-            started_at=now,
+            last_attempt_at=func.now(),
+            started_at=func.now(),
             error_message=None,  # clear stale message from prior attempt
         )
     )
@@ -257,7 +256,7 @@ async def touch_claim(session: AsyncSession, job_id: UUID) -> None:
         update(HomeworkJob)
         .where(HomeworkJob.id == job_id)
         .where(HomeworkJob.status == "running")
-        .values(claimed_at=datetime.now(timezone.utc))
+        .values(claimed_at=func.now())
     )
 
 
@@ -274,12 +273,12 @@ async def reclaim_stuck_jobs(
     The `attempts` counter persists, so a poison-pill job runs at most
     `max_attempts` times before being marked failed terminally.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
     stmt = (
         update(HomeworkJob)
         .where(HomeworkJob.status == "running")
         .where(
-            (HomeworkJob.claimed_at.is_(None)) | (HomeworkJob.claimed_at < cutoff)
+            (HomeworkJob.claimed_at.is_(None))
+            | (HomeworkJob.claimed_at < func.now() - func.make_interval(0, 0, 0, 0, 0, 0, stale_after_seconds))
         )
         .values(
             status="pending",
@@ -333,7 +332,7 @@ async def mark_failed_with_retry(
         .where(HomeworkJob.id == job_id)
         .values(
             status="pending",
-            scheduled_at=datetime.now(timezone.utc) + timedelta(seconds=delay),
+            scheduled_at=func.now() + func.make_interval(0, 0, 0, 0, 0, 0, delay),
             last_error=error_message,
             current_phase=None,
             claimed_at=None,
@@ -350,7 +349,7 @@ async def queue_depth(session: AsyncSession) -> int:
         select(func.count())
         .select_from(HomeworkJob)
         .where(HomeworkJob.status == "pending")
-        .where(HomeworkJob.scheduled_at <= datetime.now(timezone.utc))
+        .where(HomeworkJob.scheduled_at <= func.now())
     )
     return int((await session.execute(stmt)).scalar_one())
 
@@ -419,11 +418,10 @@ async def reclaim_stale_cancelling(
     window — i.e. the owning worker crashed mid-cancel. They're excluded from
     both claim (pending) and reclaim (running) sweeps, so without this they'd
     hang forever. The intent was to cancel, so -> cancelled."""
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
     result = await session.execute(
         update(HomeworkJob)
         .where(HomeworkJob.status == "cancelling")
-        .where(HomeworkJob.claimed_at < cutoff)
+        .where(HomeworkJob.claimed_at < func.now() - func.make_interval(0, 0, 0, 0, 0, 0, stale_after_seconds))
         .values(status="cancelled", completed_at=datetime.now(timezone.utc))
     )
     return result.rowcount
