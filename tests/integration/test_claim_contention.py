@@ -15,7 +15,6 @@ Run:
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import delete
@@ -48,16 +47,12 @@ async def test_two_concurrent_claims_never_collide():
         toc = TOCEntry(book_id=book.id, section_title="L1", order_index=0)
         s.add(toc)
         await s.flush()
-        j1 = await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra")
-        j2 = await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra")
-        # Pin scheduled_at to the PAST so claimability can't depend on DB-vs-host
-        # clock skew: claim_next_job filters `scheduled_at <= host now()`, but the
-        # default server `NOW()` can land microseconds in the host's FUTURE under
-        # Docker-Desktop clock drift, making a just-seeded job briefly "not due"
-        # and flaking this test. (The production-side skew fix is Phase 0.5.)
-        past = datetime.now(timezone.utc) - timedelta(minutes=1)
-        j1.scheduled_at = past
-        j2.scheduled_at = past
+        # Both jobs keep their server-default scheduled_at = NOW(). No past-pinning
+        # crutch is needed: claim_next_job now filters `scheduled_at <= func.now()`
+        # (Phase 0.5), so claimability is wholly on the DB clock and host-vs-DB skew
+        # can't flake this test. This un-pinned form IS the skew regression guard.
+        await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra")
+        await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra")
         await s.commit()
         book_id = book.id
 
