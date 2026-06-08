@@ -17,7 +17,7 @@
 
 ### Fleet — autonomous generation fleet (deferred from Phase 3 brainstorm 2026-06-08)
 
-> Phases 0 / 1 / 0.5 / 2 SHIPPED (worklogs [0047]–[0050], `feat/autonomous-fleet-engine` worktree). **Phase 3 scope locked to BARE MINIMUM** — launch a batch + watch rollups + PC liveness, pure frontend, zero new backend (per-lesson Cancel/Retry stays on the existing job page). Everything below was surfaced in the brainstorm and deferred. Phase 4 = generation-accounts / cost (spec §6).
+> Phases 0 / 1 / 0.5 / 2 SHIPPED (worklogs [0047]–[0050], `feat/autonomous-fleet-engine` worktree). **Phase 3 scope** = launch a batch + watch rollups + PC liveness + **batch drill-in to a lesson list** (per-lesson status + Cancel/Retry via the existing per-job endpoints) — frontend + **one small new read endpoint** ("list a batch's jobs"). Everything below was surfaced in the brainstorm and deferred. Phase 4 = generation-accounts / cost (spec §6).
 
 **Batch / fleet controls (deferred from Phase 3):**
 - `fleet-ctrl-1`: Batch **Cancel-all** endpoint (`POST /jobs/batch/{id}/cancel`) — cancel every non-terminal lesson in one atomic call (Phase 3 = per-job cancel only).
@@ -25,8 +25,7 @@
 - `fleet-ctrl-3`: **Pause / Resume a batch** — stop the fleet claiming its pending lessons without cancelling (the budget-saver); teach `claim_next_job` to skip paused batches (a batch-status gate on the hot claim path). Highest-value deferred control.
 - `fleet-ctrl-4`: **PC-level drain** — gracefully stop one worker claiming new jobs + let its in-flight job finish, before taking it offline.
 
-**Dashboard UX (beyond the bare-minimum view):**
-- `fleet-ui-1`: **Batch lesson-list drill-in** — expand a batch to its individual lessons (per-lesson status + Cancel / Retry / link); needs a "list a batch's jobs" read endpoint (the rollup returns counts only today). *(The (b) option not taken in the Phase 3 MVP.)*
+**Dashboard UX (beyond the Phase 3 view):**
 - `fleet-ui-2`: **Live SSE dashboard** — push batch-funnel + PC-card updates instead of polling `GET /jobs/batches` + `/workers`.
 - `fleet-ui-3`: **Past / historical batches view** + filter / search (Phase 3 MVP focuses on active batches).
 - `fleet-ui-4`: Richer **PC cards** — current job, throughput, runtime, attempts (beyond online / idle / busy).
