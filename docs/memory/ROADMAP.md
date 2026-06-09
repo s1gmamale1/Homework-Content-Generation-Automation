@@ -95,6 +95,14 @@
 
 ---
 
+## R13 — Fleet workers read book PDFs from local disk → multi-PC needs shared/synced PDFs
+
+- **Issue:** a worker generates by reading the textbook PDF from **its own local disk**. On one box that's fine, but the fleet's whole premise is ~10 PCs sharing one head DB — a second PC that *claims* a lesson but doesn't have that book's PDF on disk fails the job at the `extract` phase with `Book PDF missing on disk`. **Observed live 2026-06-09:** the fleet worktree (a separate checkout) had no PDFs, so every History lesson failed instantly until I junctioned `var/books` to the main repo's copy; only then did generation run end-to-end. The DB tells a worker *which* lesson to make, but nothing delivers the PDF *bytes* to that worker.
+- **Root cause:** the path is a **hardcoded relative** `Path("var") / "books" / <book_id> / "source.pdf"` resolved against the worker's CWD — `app/services/pipeline.py:88` (extract path check at `:90`) and `app/api/v1/books.py:92`. The `settings.var_dir` config (`app/config.py:105`) is **ignored by the pipeline** (dead setting — overriding `VAR_DIR` did nothing in the live run). So PDF availability is implicit on each worker's filesystem, with no distribution mechanism.
+- **Deliverable:** make the same book PDFs reachable from every worker — (a) a **shared/network volume** mounted at `var/books` on every PC (simplest for the `docker-compose.worker.yml` model), OR (b) **pull-on-demand** — a worker fetches a missing `source.pdf` from the head / object store (keyed by `book_id`) before `extract`, OR (c) re-introduce **object storage** for source PDFs. Also make the pipeline **honor `settings.var_dir`** (or remove the dead setting). **Blocks the multi-PC test** (`fleet-test-1`) — i.e. the fleet's reason for existing.
+
+---
+
 ## Shipped / Closed
 
 - **R2–R8 — ALL SHIPPED 2026-06-02 (Nggaev-v2).** One ordered backend fix pass (brainstorm→spec→plan→subagent-driven, each commit controller-verified). Suite 227→240 green. R2 size-gate extract subset (`40dab51`); R3 reflection conform (`576a529`); R4 game phase→mode Literal subclasses (`aedea9d`); R5 fail-fast validators incl. new required `JigsawPayload.solution` (`3e5053e`); R6 TOC task-ref + >20MB guard hoist + stats-from-registry (`f40366b`); R7 timeout 600→1800 (`bebf730`); R8 trim `_SVG_PHASES` (`e3988a1`). See [[MASTER_MEMORY]] §0022. The per-item Issue/Root-cause/Deliverable detail above is retained for reference. **Open follow-up:** frontend adds optional `solution` to the jigsaw TS type (forward-only).

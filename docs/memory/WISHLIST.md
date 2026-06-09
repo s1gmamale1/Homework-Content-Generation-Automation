@@ -41,6 +41,15 @@
 - `fleet-infra-1`: **PgBouncer + hardened head** — the Phase-0 published-Postgres-on-LAN is dev-only; a production head needs connection pooling + lockdown.
 - `fleet-infra-2`: **Worker discovery file / movable head** (≤60s reconnect) — workers find the head via a discovery file, not just a static `DATABASE_URL`.
 
+**Validation gaps (untested as of the 2026-06-09 single-PC live run — engine proven end-to-end on ONE box: launch→queue→claim→9-phase pipeline→`done` with real content, live cancel/kill_tree reaped 0 orphans). These are what that run did NOT cover:**
+- `fleet-test-1`: **Multi-PC contention with REAL generation** — only ever smoke-tested in Phase 0 (2 containers, no generation). The fleet's whole premise. **Gated on [[ROADMAP]] R13** (PDFs must reach every worker first).
+- `fleet-test-2`: **Output quality + the LLM judge ([0037])** — the run proved phases *produce* content, not that it's *good* or that the judge ran / regen-on-MAJOR fired. Eyeball a real batch's deliverable + confirm judge verdicts.
+- `fleet-test-3`: **Live failure + failover in a batch** — nothing failed this run, so retry/backoff + provider-failover ([[R11]]/[0031]) never fired end-to-end inside a batch.
+- `fleet-test-4`: **Real Retry endpoint** (`POST /jobs/{id}/retry`) from the drill-in — this run reset failed jobs via DB, not the actual button.
+- `fleet-test-5`: **Notion Prepare end-to-end** (download→ingest→TOC) + **Notion archive** (write finished packet back) — grades loaded (200) but no new book was pulled, and archive was untouched.
+- `fleet-test-6`: **Big-PDF (>20 MB) extract** (e.g. math-algebra 27 MB) — would fail at extract; subset-TOC handling untested (ties to `fetch-1`).
+- `fleet-test-7`: **Multiple concurrent batches** — only one batch at a time was exercised.
+
 ### Effort B — faithful Infra-spec prompt rewrite — ✅ SHIPPED (worklog [0030], 2026-06-04)
 
 > Done: **Option A** `{{FAMILY_RULES}}` token (family-of-4, not subject-of-7); CBP + Flashcards rewritten family-aware (**humanities CBP authored** — no source spec); light/compact/polish passes on the other 9 phases; all folded-in fixes (memory-check **≥2-of-3**, flashcards **in-prompt enum** since `FlashcardType` is deleted, reflection **`#` title**). Live-verified on real gemini history output (validator-clean, 0 dead-vocab). Full detail in worklog [0030]; spec `0dbb34a`, plan `61dc6c6`.
