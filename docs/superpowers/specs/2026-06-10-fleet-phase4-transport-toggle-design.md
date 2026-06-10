@@ -77,7 +77,9 @@ evaporating the quality gate. Two defenses, both required:
 1. **Fail fast at job claim:** a worker only claims a `transport=api` job if
    every required key is present in its env (covers the extract failover path
    too — `_run_with_failover`, `pipeline.py:648`, can switch providers
-   mid-job).
+   mid-job). *Concrete mechanism (don't hand-wave in the plan):* the worker
+   computes `has_api_keys` (both keys present) once at startup and the claim
+   query gates on it — `WHERE transport = 'cli' OR :has_api_keys`.
 2. **Loud judge auth failures:** an auth/401 error inside the judge on an
    api-mode job is a job-level failure, not `judge-unavailable`.
 
