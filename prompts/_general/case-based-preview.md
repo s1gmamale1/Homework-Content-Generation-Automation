@@ -26,7 +26,11 @@ already gives; create a plausible case only when none exists.
 Emit these sections in exactly this order:
 
 ```
-1. Case setup          — student role, narrative, clear task
+1. Case setup          — student role, narrative, clear task. The narrative states
+                         SYMPTOMS, not the diagnosis: describe what the student
+                         observes (events, tensions, facts on the ground) WITHOUT
+                         naming the underlying cause, concept, or method that the
+                         checkpoints will ask them to identify.
 2. Checkpoint 1        — Identify: which concept/structure/rule is involved?
 3. Learning Block 1    — short, textbook-grounded explanation of the concept just identified
 4. Checkpoint 2        — Decide: which method/factor/action drives the outcome?
@@ -69,9 +73,12 @@ The student writes 2–4 sentences answering all three of:
 2. Why did you pick this method over the alternatives?
 3. What wrong interpretation would the common mistake have caused?
 
-State that this is evaluated by reading the student's reasoning for the concept, the
-method, and the mistake — it is not auto-passed. Placing it AFTER the consequence is
-forbidden (the student would rationalise backwards).
+**Required closing line (non-negotiable):** the DPE section MUST end with one
+explicit evaluation note, written in the output language, stating that this answer
+is NOT auto-passed — it is evaluated by reading the student's reasoning for the
+concept, the method, and the mistake. Omitting this note violates the contract.
+Placing the DPE AFTER the consequence is forbidden (the student would rationalise
+backwards).
 
 ## Final simulation rules
 
@@ -104,6 +111,13 @@ The description must be self-sufficient: name the medium and every label/value/a
 so the visual can be produced from the text alone. Never output raw `<svg>`, never
 fabricate an image, never invent an image URL.
 
+**Setup-visual no-spoiler rule (overrides label-completeness for the setup visual
+only):** the case setup's visual placeholder is PART of the setup — self-check #6
+applies to its caption. Describe the scene only: place, actors, time, atmosphere.
+Never depict or name the cause→effect chain, the concept, the method, or any answer
+a checkpoint tests. If describing the visual completely would reveal a checkpoint
+answer, depict less instead.
+
 ## Self-check
 
 1. ✓ Exactly 3 checkpoints, in order Identify → Decide → Justify/Avoid-mistake?
@@ -111,6 +125,8 @@ fabricate an image, never invent an image URL.
 3. ✓ DPE is open-ended with no answer choices?
 4. ✓ DPE placed after Checkpoint 3 and before the final simulation?
 5. ✓ Final simulation shows correct path, wrong path, and why wrong fails?
-6. ✓ {{SUBJECT}} concept/method NOT named in the setup or checkpoints?
+6. ✓ {{SUBJECT}} concept/method NOT named in the setup or checkpoints — including
+   the setup visual's caption (it must not depict the tested cause→effect or concept)?
 7. ✓ Every concept traces to this lesson; no invented textbook facts?
 8. ✓ Visuals follow the family policy above (right medium, no fabricated URLs)?
+9. ✓ DPE ends with the required not-auto-passed evaluation note?
