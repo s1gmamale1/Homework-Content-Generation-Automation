@@ -13,9 +13,8 @@ batch-discount transport is deferred.
 **Scope decisions (locked with user 2026-06-10):**
 - API mode supports **claude (Anthropic)** and **gemini (Google)** only.
 - **codex is explicitly deferred** (user: "defer codex for now, only Anthropic and
-  Gemini API must be supported"). Reviewer-claimed mechanism for later pickup:
-  `CODEX_API_KEY` (not `OPENAI_API_KEY`) — *unverified in this session; verify when
-  picked up.* Tracked as `fleet-api-5` in WISHLIST.
+  Gemini API must be supported"). Mechanism for later pickup tracked as
+  `fleet-api-5` (§8).
 - kimi / opencode: CLI-only, no API mode planned.
 
 ## 2. The toggle
@@ -24,7 +23,8 @@ batch-discount transport is deferred.
   behavior unchanged). Enum, not bool, so a future `batch` transport slots in
   without a migration.
 - Batch launch (`POST /jobs/batch`) accepts `transport` and applies it to every
-  job it creates.
+  job it creates. **Store `transport` on the `batches` row too** — the fleet
+  drill-in/badge shouldn't have to infer it from member jobs.
 - **Validation on `POST /generate` (and batch launch):**
   - `transport=api` rejected unless provider ∈ {claude, gemini}.
   - `transport=api` **requires an explicit manifest model** (no `model=None`).
@@ -49,8 +49,37 @@ batch-discount transport is deferred.
   per the verified 2026-06-09 cost basis); if it stayed on subscription, the
   property "API jobs don't drain the Max pool" would be false.
 
-**Outside scope:** book-level TOC extraction at upload/prepare time is not part
-of a generation job and stays CLI/subscription, unchanged.
+**The cli-mode env is the unconditional baseline for EVERY spawn — job or not.**
+Once `selectedType` is removed from `~/.gemini/settings.json` (the one-time
+setup in §4), headless gemini has **no configured auth** and errors out
+("Please set an Auth method…", bundle `:15422-15424`) unless an env var
+supplies one. So book-level TOC extraction at upload — and any other gemini
+spawn outside a job — would break outright if the cli env were only applied to
+jobs. Therefore: the adapter applies the cli-mode env (`GOOGLE_GENAI_USE_GCA=
+true` + key scrub) to **every** spawn by default; `transport=api` is the only
+deviation. TOC at upload thus stays on subscription auth, but *via the env
+var*, not via the (removed) persisted setting.
+
+**Deployment ordering:** ship the GCA-injecting code to a worker **before**
+removing `selectedType` on that PC — removal first instantly breaks all gemini
+calls there.
+
+### Required keys + fail-fast (don't let the judge eat a 401)
+
+An api-mode job touches up to three providers: the content provider + the
+gemini extract pin + the claude judge — so `transport=api` requires **both**
+`GEMINI_API_KEY` and `ANTHROPIC_API_KEY` on the worker, regardless of which
+provider the job names. The failure mode if one is missing is silent: the
+judge **never raises** (`phase_judge.py:111-113`; any error degrades to
+`judge-unavailable` with `passed=True`, `:134-139`) — a gemini api job on a
+worker without the Anthropic key would ship **unjudged content with no error**,
+evaporating the quality gate. Two defenses, both required:
+1. **Fail fast at job claim:** a worker only claims a `transport=api` job if
+   every required key is present in its env (covers the extract failover path
+   too — `_run_with_failover`, `pipeline.py:648`, can switch providers
+   mid-job).
+2. **Loud judge auth failures:** an auth/401 error inside the judge on an
+   api-mode job is a job-level failure, not `judge-unavailable`.
 
 ## 4. Per-provider auth adapters
 
@@ -120,10 +149,16 @@ rule. **Single key per provider**; rotation pool deferred (`fleet-api-2`).
    carries token stats in API mode, (c) for gemini, `selectedType` removed +
    key set actually selects API auth at runtime (source-verified; must be
    run-verified).
-2. **Mode-isolation test:** a `cli` job spawned while both keys are present in
+2. **Post-removal upload smoke:** after `selectedType` is removed (with the
+   GCA-injecting code live), a plain **book upload → TOC extraction** (no job
+   context) must still succeed — proves the unconditional cli baseline (§3).
+3. **Mode-isolation test:** a `cli` job spawned while both keys are present in
    `os.environ` must scrub them (assert child env); an `api` job must carry
    exactly its provider's key.
-3. **End-to-end:** one real lesson generated `transport=api` → every
+4. **Missing-key fail-fast:** an api job is not claimed by a worker missing
+   either key, and a forced judge auth failure on an api job fails the job
+   loudly (not `judge-unavailable`).
+5. **End-to-end:** one real lesson generated `transport=api` → every
    `agent_usages` row for the job (extract + content + judge) has
    `auth_mode=api`, and the $ readout shows a nonzero figure.
 
@@ -135,8 +170,9 @@ rule. **Single key per provider**; rotation pool deferred (`fleet-api-2`).
 - `fleet-api-2`: credential rotation pool.
 - `fleet-api-3`: cost ledger + kill-switch.
 - `fleet-api-4`: never-pay-twice idempotency.
-- `fleet-api-5` (new): **codex API mode** — reviewer-claimed `CODEX_API_KEY`
-  mechanism + observed default-model divergence between auth modes
-  (gpt-5.5 vs gpt-5.4); *both claims unverified in this session — re-verify
-  against the installed codex CLI when picked up.* The explicit-model rule
-  (§2) already protects against the divergence class.
+- `fleet-api-5` (new): **codex API mode** — `CODEX_API_KEY` env (not
+  `OPENAI_API_KEY`, which codex ignores) flips auth, and default models
+  diverge between auth modes (gpt-5.5 subscription vs gpt-5.4 API). *Verified
+  by the design reviewer via live 401 test on codex 0.137.0 (not re-run in
+  this session) — re-confirm against the installed codex version on pickup.*
+  The explicit-model rule (§2) already protects against the divergence class.
