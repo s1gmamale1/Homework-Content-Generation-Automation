@@ -1,0 +1,54 @@
+  The setup (think of a kitchen)
+
+  - There's one shared order ticket rail — a single list of work that needs doing. That's the database
+  (the "head").
+  - There are worker computers — these are the cooks. In your real setup, ~10 PCs. Each cook walks up
+  to the rail, grabs the next ticket, cooks it, comes back for another. They never collide because
+  each ticket can only be grabbed by one cook.
+
+  What "launching a subject" does
+
+  When you launch a subject (say History), the system reads that textbook's lessons and pins one
+  ticket per lesson onto the rail — "make the homework packet for Lesson 1," "...Lesson 2," and so on.
+  26 lessons → 26 tickets.
+
+  That's all launching does: it puts work on the rail. It does not create cooks. This is the part that
+  was confusing you — launching a subject fills the funnel (the colored bars, the lesson list), but
+  it has nothing to do with the worker cards.
+
+  What a worker (cook) actually does in the background
+
+  When a cook computer is turned on, three things happen automatically, forever, on their own:
+
+  1. It signs in. The moment it starts, it writes its name on a whiteboard: "DESKTOP-07 is here." →
+  That's what creates its card on your dashboard.
+  2. It raises its hand every 30 seconds. Like saying "still here, still here, still here." The
+  whiteboard keeps a timestamp of the last time it spoke.
+  3. It grabs tickets and cooks. It pulls a lesson off the rail, runs the AI to generate that
+  homework, marks the ticket done, grabs the next one.
+
+  How the dashboard decides green vs grey
+
+  Your dashboard just looks at the whiteboard and does simple math:
+  - "DESKTOP-07 spoke 12 seconds ago" → green dot, online.
+  - If a cook crashes or you turn it off, it stops raising its hand. After 90 seconds of silence, the
+  dashboard greys out its card automatically. Nobody has to clean up — silence = offline.
+
+  So why were your worker cards empty?
+
+  Because no cook was running. I started only the "front desk" (the website + the order rail), with
+  the cooks switched off, so nothing was signing in on the whiteboard. The funnel had data (I'd pinned
+  tickets on the rail), but the whiteboard was blank.
+
+  The one-sentence version
+
+  ▎ Launching a subject = putting tickets on the rail (fills the funnel). Worker cards = cooks signing
+  ▎ into the whiteboard, which only happens when a cook computer is actually running. They're two
+  ▎ separate things.
+
+  ---
+  So to make a worker card appear, you don't launch anything — you turn on a cook. On your real fleet,
+  that's a PC running the worker program; on this test box, it's one program I (or you) start.
+
+  Here's the choice that matters: when a real cook turns on, it will start cooking the tickets already
+  on the rail — i.e. it actually runs the AI and spends real quota.
