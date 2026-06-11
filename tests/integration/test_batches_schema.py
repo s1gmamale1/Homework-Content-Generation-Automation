@@ -1,4 +1,4 @@
-"""Real-DB: the batches table + homework_jobs.batch_id exist, UNIQUE(book_id)
+"""Real-DB: the batches table + homework_jobs.batch_id exist, UNIQUE(book_id, transport)
 holds, and a job can carry a batch_id. Skipped unless RUN_DB_INTEGRATION=1."""
 from __future__ import annotations
 
@@ -42,7 +42,8 @@ async def test_batch_unique_per_book_and_job_fk():
         book_id, batch_id = book.id, b1.id
 
     try:
-        # UNIQUE(book_id): a second batch for the same book must fail.
+        # The second batch omits transport, so it defaults to "cli" and
+        # collides on the (book_id, transport) unique key with b1 above.
         async with SessionLocal() as s:
             s.add(Batch(book_id=book_id, subject="math-algebra", provider="claude"))
             with pytest.raises(IntegrityError):

@@ -24,6 +24,8 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # Specific model id within the provider (e.g. "gemini-2.5-flash", "gpt-5-mini"). Optional
     # because some providers default at the SDK level.
     model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # Generation transport: "cli" (subprocess CLI, default) vs "api" (pay-per-token SDK).
+    transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="cli")
     batch_id: Mapped[Optional[UUID]] = mapped_column(
         ForeignKey("batches.id"), nullable=True
     )

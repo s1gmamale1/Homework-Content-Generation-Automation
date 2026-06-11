@@ -40,6 +40,8 @@ class AgentUsage(Base, UUIDPK, Timestamps):
     # What kind of call it was: 'files.upload' | 'toc.extract' | 'lesson.extract' | 'phase.run'
     operation: Mapped[str] = mapped_column(String(64), nullable=False)
     model_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # How the call was served: "cli" (subprocess CLI, default) vs "api" (pay-per-token SDK).
+    auth_mode: Mapped[str] = mapped_column(String(8), nullable=False, server_default="cli")
 
     # Provider-neutral token counts. Anything provider-specific (modality
     # breakdowns, reasoning/thoughts tokens, etc.) lives in `raw_envelope`.
