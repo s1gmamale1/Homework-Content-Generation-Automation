@@ -1,5 +1,5 @@
-"""Real-DB: get_or_create_for_book is idempotent per book (race-safe), and the
-rollup is per-lesson-latest (a retried lesson counts once). RUN_DB_INTEGRATION=1."""
+"""Real-DB: get_or_create_for_book is idempotent per (book, transport) (race-safe),
+and the rollup is per-lesson-latest (a retried lesson counts once). RUN_DB_INTEGRATION=1."""
 from __future__ import annotations
 
 import os
@@ -31,7 +31,7 @@ async def _seed_book_with_lessons(s, n=3):
 
 
 @pytest.mark.asyncio
-async def test_get_or_create_is_idempotent_per_book():
+async def test_get_or_create_is_idempotent_per_book_transport():
     from app.db import SessionLocal
     from app.models.batch import Batch
     from app.models.book import Book
@@ -43,19 +43,29 @@ async def test_get_or_create_is_idempotent_per_book():
         await s.commit()
         book_id = book.id
     try:
+        # Same transport ("cli") twice → SAME batch id.
         async with SessionLocal() as s:
             b1 = await batches_repo.get_or_create_for_book(
                 s, book_id=book_id, subject="math-algebra", grade=None,
-                provider="claude", model=None)
+                provider="claude", model=None, transport="cli")
             await s.commit()
             b1_id = b1.id
         async with SessionLocal() as s:
             b2 = await batches_repo.get_or_create_for_book(
                 s, book_id=book_id, subject="math-algebra", grade=None,
-                provider="gemini", model=None)
+                provider="gemini", model=None, transport="cli")
             await s.commit()
             b2_id = b2.id
-        assert b1_id == b2_id, "second call must return the SAME batch (one per book)"
+        assert b1_id == b2_id, "same (book, transport) must return the SAME batch"
+
+        # Different transport ("api") → a DISTINCT batch id (forks).
+        async with SessionLocal() as s:
+            b3 = await batches_repo.get_or_create_for_book(
+                s, book_id=book_id, subject="math-algebra", grade=None,
+                provider="claude", model="claude-opus-4-8", transport="api")
+            await s.commit()
+            b3_id = b3.id
+        assert b3_id != b1_id, "different transport must fork a new batch"
     finally:
         async with SessionLocal() as s:
             await s.execute(delete(Batch).where(Batch.book_id == book_id))
@@ -78,7 +88,7 @@ async def test_rollup_is_per_lesson_latest():
         book, tocs = await _seed_book_with_lessons(s, n=3)
         batch = await batches_repo.get_or_create_for_book(
             s, book_id=book.id, subject="math-algebra", grade=None,
-            provider="claude", model=None)
+            provider="claude", model=None, transport="cli")
         for t in tocs:
             await jobs_repo.create(s, book_id=book.id, toc_entry_id=t.id,
                                    subject="math-algebra", batch_id=batch.id)

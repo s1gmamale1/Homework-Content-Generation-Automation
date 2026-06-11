@@ -10,7 +10,7 @@ from app.repositories import batches as batches_repo
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
-from app.services.agent_models import is_valid
+from app.services.agent_models import is_valid, validate_transport
 
 router = APIRouter(tags=["batches"])
 
@@ -24,6 +24,7 @@ class BatchLaunchRequest(BaseModel):
     toc_entry_ids: Optional[list[UUID]] = None  # None = all lessons
     provider: Optional[str] = None
     model: Optional[str] = None
+    transport: str = "cli"
     force: bool = False
 
 
@@ -75,16 +76,30 @@ async def launch_batch(
     if not is_valid(provider, body.model):
         raise HTTPException(400, f"invalid provider/model: {provider}/{body.model}")
 
+    transport_err = validate_transport(provider, body.model, body.transport)
+    if transport_err is not None:
+        raise HTTPException(400, transport_err)
+
     batch = await batches_repo.get_or_create_for_book(
         session, book_id=body.book_id, subject=book.subject, grade=book.grade,
-        provider=provider, model=body.model)
+        provider=provider, model=body.model, transport=body.transport)
 
     created = adopted = skipped = 0
     for t in targets:
         await jobs_repo.lock_section_for_generate(session, body.book_id, t.id)
+        # Transport-scoped lookup (spec §9a): an api batch over a cli-generated
+        # book finds no same-transport job → falls through to create, leaving
+        # the cli jobs untouched.
         existing = None if body.force else await jobs_repo.find_active_for_section(
-            session, body.book_id, t.id)
+            session, body.book_id, t.id, transport=body.transport)
         if existing is not None:
+            # Lookup is transport-scoped, so a returned job always matches —
+            # guard it as belt-and-suspenders before adopting. A plain `assert`
+            # would be stripped under `python -O`, exactly where the guard matters.
+            if existing.transport != body.transport:
+                raise RuntimeError(
+                    f"find_active_for_section returned transport={existing.transport!r} "
+                    f"for a transport={body.transport!r} lookup")
             if existing.batch_id is None:
                 existing.batch_id = batch.id
                 adopted += 1
@@ -93,7 +108,8 @@ async def launch_batch(
             continue
         await jobs_repo.create(session, book_id=body.book_id, toc_entry_id=t.id,
                                subject=book.subject, provider=provider,
-                               model=body.model, batch_id=batch.id)
+                               model=body.model, batch_id=batch.id,
+                               transport=body.transport)
         created += 1
 
     await session.flush()

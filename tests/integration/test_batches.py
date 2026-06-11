@@ -258,6 +258,64 @@ async def test_batch_jobs_drilldown_is_per_lesson_latest():
 
 
 @pytest.mark.asyncio
+async def test_default_transport_persists_cli_on_batch_and_jobs():
+    """No transport field → batch and every job default to transport='cli'."""
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    from app.models.homework_job import HomeworkJob
+    book_id, _ = await _seed_book("y", n=3)
+    try:
+        async with _client() as c:
+            r = await c.post("/api/v1/jobs/batch", headers=_HDR, json={"book_id": str(book_id)})
+            assert r.status_code == 201, r.text
+        async with SessionLocal() as s:
+            batch = (await s.execute(
+                select(Batch).where(Batch.book_id == book_id))).scalar_one()
+            assert batch.transport == "cli"
+            jobs = (await s.execute(
+                select(HomeworkJob).where(HomeworkJob.book_id == book_id))).scalars().all()
+            assert len(jobs) == 3
+            assert all(j.transport == "cli" for j in jobs)
+    finally:
+        await _cleanup(book_id)
+
+
+@pytest.mark.asyncio
+async def test_api_batch_forks_distinct_batch_from_cli():
+    """A cli batch then an api batch over the same book → TWO distinct batches,
+    and the api batch creates fresh jobs rather than adopting the cli ones."""
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    from app.models.homework_job import HomeworkJob
+    book_id, _ = await _seed_book("w", n=3)
+    try:
+        async with _client() as c:
+            r1 = await c.post("/api/v1/jobs/batch", headers=_HDR,
+                              json={"book_id": str(book_id)})  # cli
+            assert r1.status_code == 201, r1.text
+            cli_bid = r1.json()["batch_id"]
+            r2 = await c.post("/api/v1/jobs/batch", headers=_HDR,
+                              json={"book_id": str(book_id), "transport": "api",
+                                    "provider": "claude", "model": "claude-opus-4-8"})
+            assert r2.status_code == 201, r2.text
+            api_bid = r2.json()["batch_id"]
+        assert api_bid != cli_bid, "api launch must fork a distinct batch"
+        assert r2.json()["jobs_created"] == 3, "api batch creates fresh jobs (no cli adoption)"
+        assert r2.json()["jobs_adopted"] == 0
+        async with SessionLocal() as s:
+            nbatch = (await s.execute(
+                select(safunc.count()).select_from(Batch).where(Batch.book_id == book_id)
+            )).scalar_one()
+            assert nbatch == 2, f"expected 2 batches (cli + api), got {nbatch}"
+            api_jobs = (await s.execute(
+                select(HomeworkJob).where(HomeworkJob.book_id == book_id,
+                                          HomeworkJob.transport == "api"))).scalars().all()
+            assert len(api_jobs) == 3
+    finally:
+        await _cleanup(book_id)
+
+
+@pytest.mark.asyncio
 async def test_batches_list_not_shadowed_by_job_route():
     """Regression: the static `/jobs/batches` list must win over jobs' dynamic
     `/jobs/{job_id}`. Before the router-include reorder it parsed "batches" as a

@@ -19,12 +19,14 @@ async def create(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     batch_id: Optional[UUID] = None,
+    transport: str = "cli",
 ) -> HomeworkJob:
     kwargs: dict[str, Any] = dict(
         book_id=book_id,
         toc_entry_id=toc_entry_id,
         subject=subject,
         status=status,
+        transport=transport,
     )
     if provider is not None:
         kwargs["provider"] = provider
@@ -52,21 +54,33 @@ async def get_with_phases(session: AsyncSession, job_id: UUID) -> Optional[Homew
 
 
 async def find_active_for_section(
-    session: AsyncSession, book_id: UUID, toc_entry_id: UUID
+    session: AsyncSession,
+    book_id: UUID,
+    toc_entry_id: UUID,
+    *,
+    transport: Optional[str] = None,
 ) -> Optional[HomeworkJob]:
     """Return the most recent pending/running/done job for the (book, section).
 
     `done` is included so idempotent regenerate returns the existing successful
     result. Callers that want to force a new run must pass `force=True` and skip
     this lookup entirely.
+
+    When `transport` is given, the lookup is scoped to jobs of that transport —
+    so an api batch over a cli-generated book doesn't find the cli jobs and skip
+    every lesson (spec §9a). Default `None` preserves the transport-blind
+    behavior for existing callers.
     """
+    conds = [
+        HomeworkJob.book_id == book_id,
+        HomeworkJob.toc_entry_id == toc_entry_id,
+        HomeworkJob.status.in_(["pending", "running", "done"]),
+    ]
+    if transport is not None:
+        conds.append(HomeworkJob.transport == transport)
     stmt = (
         select(HomeworkJob)
-        .where(
-            HomeworkJob.book_id == book_id,
-            HomeworkJob.toc_entry_id == toc_entry_id,
-            HomeworkJob.status.in_(["pending", "running", "done"]),
-        )
+        .where(*conds)
         .order_by(HomeworkJob.created_at.desc())
         .limit(1)
     )

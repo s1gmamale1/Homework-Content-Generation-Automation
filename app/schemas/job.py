@@ -33,6 +33,7 @@ class JobOut(BaseModel):
     error_message: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    transport: str = "cli"
     phases: list[PhaseOut] = []
     notion_skip_reason: Optional[str] = None
 
@@ -41,3 +42,4 @@ class GenerateRequest(BaseModel):
     force: bool = False
     provider: str = "gemini"     # default to gemini for backwards compat
     model: str | None = None     # None ⇒ provider's default model
+    transport: str = "cli"       # "cli" (subprocess) vs "api" (claude/gemini only)

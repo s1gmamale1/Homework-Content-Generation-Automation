@@ -17,12 +17,14 @@ async def get_or_create_for_book(
     grade: Optional[str],
     provider: str,
     model: Optional[str],
+    transport: str,
     notion_source: Optional[str] = None,
 ) -> Batch:
-    """Race-safe find-or-create THE batch for a book (UNIQUE(book_id) + ON
-    CONFLICT). Core insert bypasses the ORM Python defaults, so id/created_at/
-    updated_at are supplied explicitly. On conflict the existing row is kept
-    (only updated_at is touched) and its id is returned."""
+    """Race-safe find-or-create THE batch for a (book, transport) pair
+    (UNIQUE(book_id, transport) + ON CONFLICT). Core insert bypasses the ORM
+    Python defaults, so id/created_at/updated_at are supplied explicitly. On
+    conflict the existing row is kept (only updated_at is touched) and its id is
+    returned — a different-transport re-launch forks a new batch."""
     stmt = (
         pg_insert(Batch)
         .values(
@@ -32,12 +34,13 @@ async def get_or_create_for_book(
             grade=grade,
             provider=provider,
             model=model,
+            transport=transport,
             notion_source=notion_source,
             created_at=func.now(),
             updated_at=func.now(),
         )
         .on_conflict_do_update(
-            index_elements=["book_id"],
+            index_elements=["book_id", "transport"],
             set_={"updated_at": func.now()},
         )
         .returning(Batch.id)

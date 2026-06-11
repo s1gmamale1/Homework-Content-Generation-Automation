@@ -54,3 +54,28 @@ def default_model(provider: str) -> str | None:
     """First entry in the manifest for the provider (the recommended pick).
     Returns None for unknown providers."""
     return MODEL_MANIFEST.get(provider, [None])[0] if provider in MODEL_MANIFEST else None
+
+
+# ─── Transport (cli vs api) ──────────────────────────────────────────────────
+# Which providers support the API (pay-per-token SDK) transport. CLI is always
+# supported; api is gated to claude/gemini for now — codex is deferred (fleet-api-5).
+API_PROVIDERS: frozenset[str] = frozenset({"claude", "gemini"})  # spec §1
+
+
+def api_supported(provider: str) -> bool:
+    return provider in API_PROVIDERS
+
+
+def validate_transport(provider: str, model: str | None, transport: str) -> str | None:
+    """Return an error string if (provider, model, transport) is invalid, else None."""
+    if transport not in ("cli", "api"):
+        return f"unknown transport {transport!r} (expected 'cli' | 'api')"
+    if transport == "api":
+        if not api_supported(provider):
+            return f"transport=api unsupported for provider {provider!r} (only {sorted(API_PROVIDERS)})"
+        if model is None:
+            return (
+                "transport=api requires an explicit model (no provider-default) — "
+                "it would diverge between OAuth and API-key auth"
+            )
+    return None

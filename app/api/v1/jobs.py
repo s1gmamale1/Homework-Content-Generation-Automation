@@ -19,7 +19,12 @@ from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import GenerateRequest, JobOut, PhaseOut
 from app.services import events_bus
-from app.services.agent_models import MODEL_MANIFEST, is_valid
+from app.services.agent_models import (
+    MODEL_MANIFEST,
+    api_supported,
+    is_valid,
+    validate_transport,
+)
 from app.services.providers import PROVIDERS
 from app.services.worker import RUNNING_JOBS
 
@@ -125,6 +130,10 @@ async def generate(
             f"Allowed providers: {sorted(MODEL_MANIFEST)}.",
         )
 
+    transport_err = validate_transport(body.provider, body.model, body.transport)
+    if transport_err is not None:
+        raise HTTPException(400, transport_err)
+
     # Layer 3: serialize concurrent requests for the same (book, section).
     # Lock is held for the rest of this transaction and auto-released on
     # commit, so the second concurrent request waits and then sees the
@@ -133,7 +142,9 @@ async def generate(
 
     # Layer 2: natural-key idempotency.
     if not body.force:
-        existing = await jobs_repo.find_active_for_section(session, book_id, toc_entry_id)
+        existing = await jobs_repo.find_active_for_section(
+            session, book_id, toc_entry_id, transport=body.transport
+        )
         if existing is not None:
             await session.commit()  # release the advisory lock
             if idempotency_key:
@@ -164,6 +175,7 @@ async def generate(
         status="pending",
         provider=body.provider,
         model=body.model,
+        transport=body.transport,
     )
     await session.commit()  # commit + release advisory lock atomically
 
@@ -375,7 +387,10 @@ async def _job_out(session: AsyncSession, job_id: UUID) -> JobOut:
 
 @router.get("/agent/models")
 async def list_agent_models():
-    return {"providers": MODEL_MANIFEST}
+    return {
+        "providers": MODEL_MANIFEST,
+        "api_supported": {p: api_supported(p) for p in MODEL_MANIFEST},
+    }
 
 
 # ─── Usage dashboard ──────────────────────────────────────────────────────
