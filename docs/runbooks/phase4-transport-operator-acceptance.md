@@ -52,20 +52,28 @@ entirely on that env var. Therefore, **on each worker PC:**
 
 ## ⚠️ Worker env setup (the claim gate)
 
-Set **both** keys on every worker, via the worker's compose/env file (never
-committed):
+Credential BOTH provider sides on every worker, via the worker's compose/env file
+(never committed):
 
 ```
-ANTHROPIC_API_KEY=...
-GEMINI_API_KEY=...
+ANTHROPIC_API_KEY=...          # claude side (judge + claude content)
+GEMINI_API_KEY=...             # gemini side, AI Studio key…
+# …OR the Vertex service-account pair instead (see the fleet-api-6 section):
+# GOOGLE_APPLICATION_CREDENTIALS=/path/sa.json
+# GOOGLE_CLOUD_PROJECT=<project-id>
 ```
 
-**Both are required for any `transport=api` job**, regardless of which provider the
-job names — an api job touches the content provider + the gemini extract pin + the
-claude judge. The worker computes `has_api_keys = bool(both present)` once at
-startup; `claim_next_job` gates `WHERE transport='cli' OR :has_api_keys`, so a
-half-configured worker (exactly one key) **will not claim api jobs** and logs a
-warning. cli jobs are unaffected.
+**Both sides are required for any `transport=api` job**, regardless of which
+provider the job names — an api job touches the content provider + the gemini
+extract pin + the claude judge. The gemini side is satisfied by EITHER form (an
+explicit `GEMINI_API_KEY` wins when both are set). The worker computes
+`has_api_keys` once at startup (`_compute_has_api_keys`); `claim_next_job` gates
+`WHERE transport='cli' OR :has_api_keys`, so a half-configured worker **will not
+claim api jobs** and logs a warning. cli jobs are unaffected.
+
+⚠ These are read from the **process environment**: compose `env_file:`/
+`environment:` deliver them; on bare metal, `.env` does NOT reach `os.environ` —
+`export` them in the shell/service unit.
 
 ---
 

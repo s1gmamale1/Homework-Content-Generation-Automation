@@ -12,6 +12,19 @@ services:
       DATABASE_URL: ${DATABASE_URL:?set to the head, e.g. postgresql+asyncpg://edu:edu@HEAD_IP:5432/edu_homework}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
       RUN_MIGRATIONS: "0"   # head owns migrations; workers never migrate
+      # ── transport=api credentials (Phase 4) — uncomment to let this worker
+      # claim api jobs. BOTH sides required: ANTHROPIC_API_KEY plus a gemini
+      # credential (GEMINI_API_KEY, or the Vertex service-account pair below;
+      # an explicit GEMINI_API_KEY wins when both are set). Compose
+      # `environment:` IS the process env, so this is the right place.
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # GEMINI_API_KEY: ${GEMINI_API_KEY}
+      # GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcp-sa.json   # see volumes
+      # GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT}
+      # GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-global}
+    # ── Vertex service account: mount the json read-only into the container.
+    # volumes:
+    #   - /absolute/host/path/to/service-account.json:/secrets/gcp-sa.json:ro
     restart: unless-stopped
     deploy:
       replicas: ${WORKER_REPLICAS:-2}

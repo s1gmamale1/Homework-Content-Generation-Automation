@@ -18,6 +18,11 @@ services:
   api:
     image: ${IMAGE:-ghcr.io/ganiyevuz/class-homework-builder:latest}
     pull_policy: always
+    # env_file exports every .env entry into the container's PROCESS env — so
+    # the transport=api credentials (see .env.example "TRANSPORT=API") work
+    # from .env here. For the Vertex service account, also mount the json:
+    #   volumes: [ /host/path/sa.json:/secrets/gcp-sa.json:ro ]
+    # and set GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcp-sa.json in .env.
     env_file:
       - .env
     environment:

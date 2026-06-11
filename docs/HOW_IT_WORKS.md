@@ -37,8 +37,11 @@ reads the answer back from standard output, and parses it. Each of the five CLIs
 installed and logged-in on the machine's `PATH`.
 
 **Why do it this weird way?**
-- Each CLI handles its own login/billing. The app never holds an API key. (There's a
-  leftover `GEMINI_API_KEY` field in config — it's *vestigial*, nothing reads it.)
+- Each CLI handles its own login/billing — on the default `transport=cli` the app
+  holds no API key. (Since Phase 4, `transport=api` jobs are the exception: the
+  worker's process env carries `ANTHROPIC_API_KEY` + a gemini credential —
+  `GEMINI_API_KEY` or a Vertex service account — injected per-spawn by
+  `agent._auth_env`. The `gemini_api_key` *config field* is still vestigial.)
 - It's free-tier friendly: e.g. `gemini` is free with a Google login, no card.
 - One uniform interface ("run a program, pipe text") covers five very different vendors.
 
