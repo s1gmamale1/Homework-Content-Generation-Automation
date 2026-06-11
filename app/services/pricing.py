@@ -1,9 +1,9 @@
 """Static per-(provider, model) price map + ``cost_usd``.
 
-Rates are US dollars per 1,000,000 tokens. The cost logic here is the
-deliverable; the gemini numbers are operator-confirmable data (see the
-TODO in the gemini section). cli-served calls are "free" to us (no
-pay-per-token), so providers/models with no entry resolve to $0.
+Rates are US dollars per 1,000,000 tokens. All entries (claude + gemini)
+are VERIFIED against the providers' published pricing as of 2026-06-11.
+cli-served calls are "free" to us (no pay-per-token), so providers/models
+with no entry resolve to $0.
 
 Billing semantics (verified against the claude-api skill, 2026-06-11):
 ``agent_usages.prompt_tokens`` mirrors Anthropic's ``input_tokens`` — the
@@ -31,20 +31,20 @@ PRICE_MAP: dict[tuple[str, str], dict[str, float]] = {
     ("claude", "claude-sonnet-4-6"): {"input": 3.0, "output": 15.0, "cache_read": 0.30},
     ("claude", "claude-haiku-4-5-20251001"): {"input": 1.0, "output": 5.0, "cache_read": 0.10},
 
-    # ─── Gemini ───────────────────────────────────────────────────────────
-    # TODO(pricing): confirm before relying on the $ readout. The gemini-2.5
-    # family is anchored to published Google AI pricing; the gemini-3.x preview
-    # models are best-effort tier estimates (preview pricing is unstable) — all
-    # tagged VERIFY. cache_read estimated at ~0.25× input where unknown.
-    # as of 2026-06-11, source: ai.google.dev/gemini-api/docs/pricing — VERIFY
-    ("gemini", "gemini-2.5-pro"): {"input": 1.0, "output": 10.0, "cache_read": 0.25},  # VERIFY
-    ("gemini", "gemini-2.5-flash"): {"input": 0.30, "output": 2.50, "cache_read": 0.075},  # VERIFY
-    ("gemini", "gemini-2.5-flash-lite"): {"input": 0.10, "output": 0.40, "cache_read": 0.025},  # VERIFY
-    # gemini-3.x preview models — best-effort estimates, NOT confirmed pricing.
-    # as of 2026-06-11, source: ai.google.dev/gemini-api/docs/pricing — VERIFY
-    ("gemini", "gemini-3.1-pro-preview"): {"input": 1.25, "output": 10.0, "cache_read": 0.31},  # VERIFY
-    ("gemini", "gemini-3-flash-preview"): {"input": 0.30, "output": 2.50, "cache_read": 0.075},  # VERIFY
-    ("gemini", "gemini-3.1-flash-lite-preview"): {"input": 0.10, "output": 0.40, "cache_read": 0.025},  # VERIFY
+    # ─── Gemini (VERIFIED) ────────────────────────────────────────────────
+    # as of 2026-06-11, sources (both agree): ai.google.dev/gemini-api/docs/pricing
+    # + cloud.google.com/vertex-ai/generative-ai/pricing. Rates below are the
+    # ≤200k-token tier; pro models double input (and raise output/cache) above
+    # 200k input tokens — our per-phase prompts stay well under that, so the
+    # base tier is the correct rate. Thinking tokens bill as OUTPUT (the gemini
+    # CLI reports them under "thoughts"; ensure they're counted into
+    # output_tokens upstream or the $ readout under-counts).
+    ("gemini", "gemini-2.5-pro"): {"input": 1.25, "output": 10.0, "cache_read": 0.125},
+    ("gemini", "gemini-2.5-flash"): {"input": 0.30, "output": 2.50, "cache_read": 0.03},
+    ("gemini", "gemini-2.5-flash-lite"): {"input": 0.10, "output": 0.40, "cache_read": 0.01},
+    ("gemini", "gemini-3.1-pro-preview"): {"input": 2.0, "output": 12.0, "cache_read": 0.20},
+    ("gemini", "gemini-3-flash-preview"): {"input": 0.50, "output": 3.0, "cache_read": 0.05},
+    ("gemini", "gemini-3.1-flash-lite-preview"): {"input": 0.25, "output": 1.50, "cache_read": 0.025},
 }
 
 # Models we've already logged as missing, so the warning fires once per gap.

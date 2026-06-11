@@ -126,7 +126,16 @@ class Gemini(Provider):
                 tokens = t
 
         prompt_tokens = tokens.get("input") or tokens.get("prompt")
-        output_tokens = tokens.get("candidates") or tokens.get("output")
+        # Google bills thinking ("thoughts") tokens as OUTPUT; the CLI reports
+        # them separately from candidates. Fold them in, or the $ readout
+        # undercounts — on thinking-heavy runs thoughts dwarf candidates
+        # (verified against a real Vertex run 2026-06-11).
+        candidates = tokens.get("candidates") or tokens.get("output")
+        thoughts = tokens.get("thoughts")
+        if candidates is None and thoughts is None:
+            output_tokens = None
+        else:
+            output_tokens = (candidates or 0) + (thoughts or 0)
         cached_tokens = tokens.get("cached")
         total_tokens = tokens.get("total")
         if total_tokens is None:

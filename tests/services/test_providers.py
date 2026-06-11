@@ -530,5 +530,33 @@ def test_gemini_parse_envelope_skips_warning_preamble(tmp_path: Path) -> None:
     assert "models" in raw["stats"]
 
 
+def test_gemini_parse_envelope_counts_thoughts_as_output(tmp_path: Path) -> None:
+    """Google bills thinking tokens as OUTPUT; the gemini CLI reports them
+    separately under ``tokens.thoughts``. The parser must fold them into
+    ``output_tokens`` or the $ readout undercounts (verified against a real
+    Vertex run 2026-06-11 where thoughts dwarfed candidates)."""
+    stdout = json.dumps(
+        {
+            "response": "ok",
+            "stats": {
+                "models": {
+                    "gemini-3.1-pro-preview": {
+                        "tokens": {
+                            "input": 9308,
+                            "candidates": 60,
+                            "thoughts": 375,
+                            "cached": 0,
+                            "total": 9743,
+                        }
+                    }
+                }
+            },
+        }
+    )
+    _, usage = Gemini().parse_envelope(stdout, last_msg_path=_sentinel(tmp_path))
+    assert usage["output_tokens"] == 60 + 375  # candidates + thoughts
+    assert usage["prompt_tokens"] == 9308
+
+
 def test_gemini_prompt_suffix_empty() -> None:
     assert Gemini().prompt_suffix(None) == ""
