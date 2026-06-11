@@ -134,3 +134,8 @@ Generate **one real lesson `transport=api`** end to end, then inspect
 `fleet-api-3` cost ledger + budget kill-switch · `fleet-api-4` never-pay-twice
 idempotency · `fleet-api-5` codex API mode. None are required for this phase's
 real-time toggle.
+
+## Gemini via Vertex AI service account (fleet-api-6, shipped 2026-06-11)
+
+The gemini side of `transport=api` accepts EITHER `GEMINI_API_KEY` (AI Studio) OR a Vertex service account:
+`GOOGLE_APPLICATION_CREDENTIALS=/path/sa.json` + `GOOGLE_CLOUD_PROJECT=<project>` (+ optional `GOOGLE_CLOUD_LOCATION`, defaults to `global` — regional endpoints may 404). An explicit `GEMINI_API_KEY` wins when both are present. The worker claim gate accepts either form. Requirements: the persisted `security.auth.selectedType` must be removed from `~/.gemini/settings.json` (same §3 rule as everything else), and the SA's GCP project must have Vertex AI enabled with the SA holding Vertex AI User. Verified live 2026-06-11 (gemini-cli 0.46.0): in-process `run_phase(transport="api")` with only SA creds → Vertex-billed generation, `agent_usages.auth_mode=api`.

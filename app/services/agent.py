@@ -230,18 +230,50 @@ def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> d
     env.pop("GEMINI_API_KEY", None)
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("GOOGLE_GENAI_USE_GCA", None)
+    # Also scrub the Vertex selector: gemini-cli 0.46.0 getAuthTypeFromEnv
+    # checks GCA first, then GOOGLE_GENAI_USE_VERTEXAI, then GEMINI_API_KEY —
+    # GCA-first means a lingering selector is harmless for cli, but scrub-first
+    # keeps every mode's auth signal explicit. (SA cred vars like
+    # GOOGLE_APPLICATION_CREDENTIALS pass through untouched; they select
+    # nothing by themselves.)
+    env.pop("GOOGLE_GENAI_USE_VERTEXAI", None)
     if transport == "api":
-        # Missing key in api mode must be LOUD: an empty env var is falsy to
-        # both CLIs → claude would silently fall back to OAuth (billing the
-        # subscription while the row says auth_mode=api). The claim gate makes
-        # this near-unreachable, but defense-in-depth for this phase's exact
-        # failure class. Raise rather than inject "".
-        key_var = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}.get(provider_name)
-        key = base_env.get(key_var) if key_var else None
-        if not key:
-            raise RuntimeError(f"transport=api for {provider_name} but {key_var} is unset/empty")
-        env[key_var] = key
-        # kimi/codex/opencode never reach api (blocked at validation)
+        # Missing credentials in api mode must be LOUD: an empty env var is
+        # falsy to both CLIs → claude would silently fall back to OAuth
+        # (billing the subscription while the row says auth_mode=api). The
+        # claim gate makes this near-unreachable, but defense-in-depth for
+        # this phase's exact failure class. Raise rather than inject "".
+        if provider_name == "gemini":
+            key = base_env.get("GEMINI_API_KEY")
+            if key:
+                # AI-Studio key — the primary api path; wins over SA creds.
+                env["GEMINI_API_KEY"] = key
+            elif base_env.get("GOOGLE_APPLICATION_CREDENTIALS") and base_env.get(
+                "GOOGLE_CLOUD_PROJECT"
+            ):
+                # fleet-api-6: Vertex AI service-account fallback. Verified on
+                # gemini-cli 0.46.0 (2026-06-11): USE_VERTEXAI=true selects
+                # vertex-ai when no persisted selectedType overrides; location
+                # must default to "global" (regional endpoints 404 for this
+                # project class). SA creds + project are already in env.
+                env["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
+                env.setdefault("GOOGLE_CLOUD_LOCATION", "global")
+            else:
+                raise RuntimeError(
+                    "transport=api for gemini but GEMINI_API_KEY is unset/empty "
+                    "and no Vertex service account is configured "
+                    "(GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT)"
+                )
+        elif provider_name == "claude":
+            key = base_env.get("ANTHROPIC_API_KEY")
+            if not key:
+                raise RuntimeError(
+                    "transport=api for claude but ANTHROPIC_API_KEY is unset/empty"
+                )
+            env["ANTHROPIC_API_KEY"] = key
+        else:
+            # kimi/codex/opencode never reach api (blocked at validation)
+            raise RuntimeError(f"transport=api unsupported for {provider_name}")
     else:  # cli baseline
         if provider_name == "gemini":
             env["GOOGLE_GENAI_USE_GCA"] = "true"  # GCA OAuth, wins over any key

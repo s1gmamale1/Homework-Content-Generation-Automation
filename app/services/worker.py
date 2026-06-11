@@ -52,12 +52,22 @@ from app.services import pipeline
 RUNNING_JOBS: dict[UUID, asyncio.Task] = {}
 
 
-# Computed once at module load: a worker may only claim `transport='api'` jobs
-# if it has BOTH provider keys (an api job touches content + gemini extract +
-# claude judge). Half-configured (exactly one key) counts as NOT having keys.
-HAS_API_KEYS: bool = bool(
-    os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("GEMINI_API_KEY")
-)
+def _compute_has_api_keys(env) -> bool:
+    """A worker may only claim `transport='api'` jobs if BOTH provider sides are
+    credentialed (an api job touches content + gemini extract + claude judge).
+    The gemini side is satisfied by EITHER an AI-Studio key (GEMINI_API_KEY) OR
+    a Vertex service account (GOOGLE_APPLICATION_CREDENTIALS +
+    GOOGLE_CLOUD_PROJECT — fleet-api-6). Half-configured counts as NOT having
+    keys (mirrors `agent._auth_env`'s acceptance rules exactly)."""
+    gemini_ok = bool(
+        env.get("GEMINI_API_KEY")
+        or (env.get("GOOGLE_APPLICATION_CREDENTIALS") and env.get("GOOGLE_CLOUD_PROJECT"))
+    )
+    return bool(env.get("ANTHROPIC_API_KEY")) and gemini_ok
+
+
+# Computed once at module load (the locked fail-fast mechanism).
+HAS_API_KEYS: bool = _compute_has_api_keys(os.environ)
 
 
 def _worker_id() -> str:
@@ -127,8 +137,9 @@ class Worker:
         # half-configured case (exactly one key set).
         if not HAS_API_KEYS:
             logger.warning(
-                "worker cannot claim transport=api jobs — both ANTHROPIC_API_KEY "
-                "and GEMINI_API_KEY required"
+                "worker cannot claim transport=api jobs — ANTHROPIC_API_KEY plus "
+                "a gemini credential (GEMINI_API_KEY, or Vertex "
+                "GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT) required"
             )
         _warn_if_gemini_selected_type()
 
