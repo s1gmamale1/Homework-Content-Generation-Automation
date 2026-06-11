@@ -178,3 +178,49 @@ rule. **Single key per provider**; rotation pool deferred (`fleet-api-2`).
   by the design reviewer via live 401 test on codex 0.137.0 (not re-run in
   this session) — re-confirm against the installed codex version on pickup.*
   The explicit-model rule (§2) already protects against the divergence class.
+
+## 9. Amendment 2026-06-11 — batch key becomes `(book_id, transport)`
+
+**Supersedes §2's "store `transport` on the `batches` row" framing and the
+pre-Phase-4 `UNIQUE(book_id)` / one-batch-per-book invariant** (asserted in the
+`Batch` model docstring and the Phase-2 design). Locked with user 2026-06-11.
+
+**Why:** the primary use of this feature is benchmarking — launching the *same
+book* on `cli` and again on `api` to compare cost/quality. Under
+`UNIQUE(book_id)` both launches collapse into one batch row (the existing
+`get_or_create_for_book` ON CONFLICT reuses it), so that row's rollup and `$`
+total would *blend* the cli and api runs — destroying the comparison the whole
+phase exists to make. A per-row `transport` badge can't honestly describe a row
+holding two transports; refreshing-vs-keeping it (the discarded options) only
+relabels the conflation.
+
+**Change:** the batch unique key becomes `UNIQUE(book_id, transport)`
+(`uq_batches_book_id_transport`, replacing `uq_batches_book_id`), and
+`get_or_create_for_book` takes `transport` with conflict target
+`["book_id", "transport"]`.
+
+**Resulting semantics (the desired behavior, nothing more):**
+- Same book + **same** transport re-launch (retry / top-up) → conflict hit →
+  **reuses** the one batch row, preserving the DISTINCT-ON-per-section retry
+  behavior the rollup was built for.
+- Same book + **different** transport re-launch → **new** batch row. The fleet
+  screen shows the two side by side (e.g. "Biology G7 · cli · $0" next to
+  "Biology G7 · api · $4.20") — the benchmark, rendered for free. Each row has
+  exactly one transport, so the badge is never stale and never mixed.
+
+**Required follow-through (or the system goes out of sync):**
+1. Fix the now-false `Batch` model docstring ("UNIQUE(book_id) -> at most one
+   logical batch per book").
+2. The `test_batches_repo` idempotency test flips from per-book to
+   per-`(book, transport)` (same-transport still idempotent; different-transport
+   forks).
+3. **Frontend launcher gate (blocker):** `launcher.tsx` filters the "ready" tray
+   by `batchedBookIds = Set(batches.map(b => b.book_id))` — so once a cli batch
+   exists the book disappears from the tray and the api run can't be launched.
+   This must become transport-aware (a book stays launchable on a transport it
+   has no batch for yet).
+
+Blast radius is otherwise tiny: `get_or_create_for_book` has one production
+caller (`batch.py:78`); no other code keys `Batch` by `book_id`. Phase-2/3
+*shipped* design docs are left as historical record — this amendment is the
+superseding source of truth.
