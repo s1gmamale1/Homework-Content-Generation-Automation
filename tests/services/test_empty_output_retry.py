@@ -23,7 +23,7 @@ def _fake_spawn_sequence(*bodies):
     (each as a successful rc=0 response)."""
     calls = {"n": 0}
 
-    async def _spawn(*, provider, model, prompt, attachments):
+    async def _spawn(*, provider, model, prompt, attachments, transport="cli"):
         i = calls["n"]
         calls["n"] += 1
         body = bodies[i] if i < len(bodies) else bodies[-1]

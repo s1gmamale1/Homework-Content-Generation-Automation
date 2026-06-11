@@ -133,6 +133,7 @@ async def test_run_phase_schema_retry_succeeds_on_second_attempt(
         model: Any,
         prompt: str,
         attachments: list[Any],
+        transport: str = "cli",
     ) -> tuple[int, str, dict[str, Any], str]:
         spawn_prompts.append(prompt)
         return spawn_outputs.pop(0)
@@ -271,6 +272,7 @@ async def test_extract_toc_schema_retry_succeeds_on_second_attempt(
         model: Any,
         prompt: str,
         attachments: list[Any],
+        transport: str = "cli",
     ) -> tuple[int, str, dict[str, Any], str]:
         spawn_prompts.append(prompt)
         spawn_attachments.append(attachments)

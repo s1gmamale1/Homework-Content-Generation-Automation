@@ -221,12 +221,41 @@ def _resolve_binary(provider: Provider) -> str:
     )
 
 
+def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> dict[str, str]:
+    """Per-call auth shaping (spec §4). cli is the unconditional baseline for
+    EVERY spawn; api is the only deviation. Scrub both provider keys first, then
+    grant exactly what the (provider, transport) needs — so an api gemini spawn
+    never carries the Anthropic key, and a cli spawn never accidentally bills."""
+    env = dict(base_env)
+    env.pop("GEMINI_API_KEY", None)
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("GOOGLE_GENAI_USE_GCA", None)
+    if transport == "api":
+        # Missing key in api mode must be LOUD: an empty env var is falsy to
+        # both CLIs → claude would silently fall back to OAuth (billing the
+        # subscription while the row says auth_mode=api). The claim gate makes
+        # this near-unreachable, but defense-in-depth for this phase's exact
+        # failure class. Raise rather than inject "".
+        key_var = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}.get(provider_name)
+        key = base_env.get(key_var) if key_var else None
+        if not key:
+            raise RuntimeError(f"transport=api for {provider_name} but {key_var} is unset/empty")
+        env[key_var] = key
+        # kimi/codex/opencode never reach api (blocked at validation)
+    else:  # cli baseline
+        if provider_name == "gemini":
+            env["GOOGLE_GENAI_USE_GCA"] = "true"  # GCA OAuth, wins over any key
+        # claude/others: scrubbed keys above IS the whole cli adapter
+    return env
+
+
 async def _spawn(
     *,
     provider: Provider,
     model: Optional[str],
     prompt: str,
     attachments: list[Path],
+    transport: str = "cli",
 ) -> tuple[int, str, dict[str, Any], str]:
     """Run the provider's CLI once with ``prompt`` on stdin.
 
@@ -254,7 +283,7 @@ async def _spawn(
 
     # Force UTF-8 in the child process. Without this, Python-based CLIs (kimi)
     # default to cp1252 on Windows and crash on any non-ASCII output character.
-    child_env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    child_env = _auth_env(provider.name, transport, {**os.environ, "PYTHONIOENCODING": "utf-8"})
 
     logger.info(
         f"agent.spawn | provider={provider.name} model={model or '<default>'} "
@@ -511,6 +540,7 @@ async def run_phase(
     max_output_tokens: Optional[int] = None,  # noqa: ARG001 — providers ignore today
     source_map_digest: str = "",
     operation: str = "phase.run",
+    transport: str = "cli",
 ) -> PhaseResult:
     """Run one phase and return the result + usage envelope.
 
@@ -568,6 +598,7 @@ async def run_phase(
                 model=resolved_model,
                 prompt=attempt_prompt,
                 attachments=list(attachments),
+                transport=transport,
             )
         except Exception as exc:
             spawn_failed = exc
@@ -990,6 +1021,7 @@ async def extract_toc(
     pdf_path: Path,
     subject: str,
     book_id: UUID,
+    transport: str = "cli",
 ) -> ExtractedTOC:
     """Extract a table of contents from a textbook PDF.
 
@@ -1099,6 +1131,7 @@ async def extract_toc(
                 model=resolved_model,
                 prompt=attempt_prompt,
                 attachments=attachments,
+                transport=transport,
             )
         except Exception as exc:
             spawn_failed = exc
@@ -1276,6 +1309,7 @@ async def extract_lesson_context(
     page_end: int,
     homework_job_id: UUID,
     phase_output_id: UUID,
+    transport: str = "cli",
 ) -> tuple[str, int, int]:
     """Run the per-section extract phase. Returns ``(text, prompt_tokens, output_tokens)``.
 
@@ -1340,6 +1374,7 @@ async def extract_lesson_context(
             model=resolved_model,
             prompt=prompt,
             attachments=[attach_path],
+            transport=transport,
         )
     except Exception as exc:
         spawn_failed = exc
@@ -1450,6 +1485,7 @@ async def summarize_lesson(
     page_end: int,
     homework_job_id: UUID,
     phase_output_id: UUID,
+    transport: str = "cli",
 ) -> tuple[str, int, int]:
     """Single-provider extract: inject the whole-book TEXT (no PDF attached),
     model locates the lesson by title and summarizes. Returns (text, prompt_tokens,
@@ -1478,7 +1514,7 @@ async def summarize_lesson(
     started_at = datetime.now(timezone.utc)
     t0 = perf_counter()
     rc, text, usage, stderr = await _spawn(
-        provider=prov, model=resolved_model, prompt=prompt, attachments=[],
+        provider=prov, model=resolved_model, prompt=prompt, attachments=[], transport=transport,
     )
     duration_s = perf_counter() - t0
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
@@ -1519,6 +1555,7 @@ async def run_phase_prompt(
     phase_output_id: Optional[UUID] = None,
     attachments: list[Path] = (),
     source_map_digest: str = "",
+    transport: str = "cli",
 ) -> tuple[str, Optional[int], Optional[int]]:
     """Markdown-output phase. Wraps :func:`run_phase` and returns
     ``(text, prompt_tokens, output_tokens)`` to mirror gemini.run_phase_prompt's
@@ -1537,6 +1574,7 @@ async def run_phase_prompt(
         difficulty=difficulty,
         max_output_tokens=max_output_tokens,
         source_map_digest=source_map_digest,
+        transport=transport,
     )
     pt = int(result.usage.get("prompt_tokens") or 0)
     ot = int(result.usage.get("output_tokens") or 0)
