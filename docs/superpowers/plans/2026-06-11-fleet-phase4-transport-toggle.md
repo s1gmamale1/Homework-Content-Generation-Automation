@@ -99,6 +99,7 @@ The core. Pure, DB-free, CLI-free — fully unit-testable (satisfies spec §7.3 
   - `("gemini", "api", env)` → `GEMINI_API_KEY` present, `ANTHROPIC_API_KEY` absent, `GOOGLE_GENAI_USE_GCA` absent.
   - `("claude", "api", env)` → `ANTHROPIC_API_KEY` present, `GEMINI_API_KEY` absent.
   - `("kimi", "cli", env)` → both keys scrubbed (hygiene), unchanged otherwise; `PYTHONIOENCODING` preserved in all cases.
+  - **`("claude", "api", env_without_ANTHROPIC_API_KEY)` → raises `RuntimeError`** (loud missing-key, not silent `""` injection); same for `("gemini", "api", env_without_GEMINI_API_KEY)`.
 - [ ] **Step 2: Run it — expect failure** (no `_auth_env`).
 - [ ] **Step 3: Implement `_auth_env`** in `agent.py` (near `_spawn`):
   ```python
@@ -112,10 +113,16 @@ The core. Pure, DB-free, CLI-free — fully unit-testable (satisfies spec §7.3 
       env.pop("ANTHROPIC_API_KEY", None)
       env.pop("GOOGLE_GENAI_USE_GCA", None)
       if transport == "api":
-          if provider_name == "gemini":
-              env["GEMINI_API_KEY"] = base_env.get("GEMINI_API_KEY", "")
-          elif provider_name == "claude":
-              env["ANTHROPIC_API_KEY"] = base_env.get("ANTHROPIC_API_KEY", "")
+          # Missing key in api mode must be LOUD: an empty env var is falsy to
+          # both CLIs → claude would silently fall back to OAuth (billing the
+          # subscription while the row says auth_mode=api). The claim gate makes
+          # this near-unreachable, but defense-in-depth for this phase's exact
+          # failure class. Raise rather than inject "".
+          key_var = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}.get(provider_name)
+          key = base_env.get(key_var) if key_var else None
+          if not key:
+              raise RuntimeError(f"transport=api for {provider_name} but {key_var} is unset/empty")
+          env[key_var] = key
           # kimi/codex/opencode never reach api (blocked at validation)
       else:  # cli baseline
           if provider_name == "gemini":
@@ -166,6 +173,11 @@ The core. Pure, DB-free, CLI-free — fully unit-testable (satisfies spec §7.3 
   - `jobs_repo.create` accepts `transport: str = "cli"` and writes it. (Default keeps existing callers/tests valid.)
   - `batches_repo.get_or_create_for_book` (the fn is **`get_or_create_for_book`**, `batches.py:12` — there is NO `batches_repo.create`) gains a **required** `transport` param: add it to the `pg_insert(...).values(...)` and change the conflict target from `index_elements=["book_id"]` to **`index_elements=["book_id", "transport"]`** (matches the new `uq_batches_book_id_transport`). Pass `transport=body.transport` from its one caller (`batch.py:78`). Per spec §9 this means a same-book/different-transport re-launch forks a **new** batch row (clean per-transport rollup), while same-book/same-transport still reuses the row (retry/top-up unchanged).
   - **Update `tests/integration/test_batches_repo.py`**: its idempotency assertion flips from per-**book** to per-**`(book, transport)`** — `get_or_create_for_book(book, transport="cli")` twice → same id; `(book, "cli")` then `(book, "api")` → **two distinct ids**. Update the three call sites (`:47, :53, :79`) to pass `transport=`.
+- [ ] **Step 6b: Transport-scope the per-section job dedup (BLOCKER — spec §9a).** Without this the flagship flow no-ops: `find_active_for_section` (`jobs.py:54`) matches `(book_id, toc_entry_id, status IN pending/running/done)` **transport-blind**, so launching an api batch over a book already generated on cli skips every lesson → the api batch gets **zero jobs**.
+  - Add an optional param to `find_active_for_section(session, book_id, toc_entry_id, *, transport: str | None = None)`; when `transport is not None`, add `HomeworkJob.transport == transport` to the `.where(...)`. Default `None` = current behavior (no caller breaks).
+  - **Batch path** (`batch.py:85`): pass `transport=body.transport` to the lookup. Because the lookup is now transport-scoped, a non-matching-transport job (e.g. a cli orphan when launching api) simply isn't returned → control falls through to `jobs_repo.create`, so the cli orphan is left alone and a fresh api job is made. (The existing `existing.batch_id is None` adoption branch is now reached only for *same-transport* orphans — exactly right. Keep an explicit `existing.transport == body.transport` assert there as belt-and-suspenders.) This kills both the empty-batch skip AND the cli-orphan-into-api-batch blend.
+  - **`/generate` path** (`jobs.py:136`): pass `transport=body.transport` too (locked §9a — section idempotency becomes per-`(section, transport)`, so a single-lesson cli-then-api comparison runs both).
+  - **Test** (in `tests/api/test_transport_validation.py` or the batch integration file): seed a book with N `done` **cli** jobs → `POST /jobs/batch` with `transport="api"` → the api batch has **N created, 0 adopted, 0 skipped**, and each new job has `transport="api"`. Plus: an orphan cli job is NOT adopted into an api batch.
 - [ ] **Step 7: Run tests green** + full-suite baseline holds.
 - [ ] **Step 8: Commit** — staged files above → `feat(fleet): transport validation + persistence + api_supported manifest (Phase 4)`.
 
@@ -191,7 +203,7 @@ The core. Pure, DB-free, CLI-free — fully unit-testable (satisfies spec §7.3 
 
 ### Task 5: Worker fail-fast — `has_api_keys` claim gate
 
-**Files:** Modify `app/repositories/jobs.py`, `app/services/worker.py`; Test extend `tests/integration/test_queue.py` (or the file holding `claim_next_job` tests).
+**Files:** Modify `app/repositories/jobs.py`, `app/services/worker.py`; Test extend `tests/integration/test_claim_contention.py` (the file holding the `claim_next_job` tests — verified; there is no `test_queue.py`).
 
 - [ ] **Step 1: Failing real-DB test** — seed two pending jobs, one `transport="cli"`, one `transport="api"`. `claim_next_job(..., has_api_keys=False)` claims **only** the cli job (the api job is skipped even when it's higher priority/older); with `has_api_keys=True` both are claimable. (Order assertion: with `has_api_keys=False`, repeatedly claiming drains cli jobs and never returns the api one.)
 - [ ] **Step 2: Run — expect failure** (param missing).
@@ -206,7 +218,7 @@ The core. Pure, DB-free, CLI-free — fully unit-testable (satisfies spec §7.3 
   ```
   pass it into every `claim_next_job(...)` call. Add a startup warning if neither key is set ("worker cannot claim transport=api jobs — both ANTHROPIC_API_KEY and GEMINI_API_KEY required"). **Also** the gemini `selectedType` guard (spec §4): if `~/.gemini/settings.json` has `security.auth.selectedType`, log a loud warning at startup (an interactive `gemini` re-persists it and silently breaks the toggle). Best-effort file read, swallow errors.
 - [ ] **Step 5: Run tests green** + full-suite baseline holds.
-- [ ] **Step 6: Commit** — `git add app/repositories/jobs.py app/services/worker.py tests/integration/test_queue.py` → `feat(fleet): worker fail-fast — api jobs gated on has_api_keys at claim (Phase 4)`.
+- [ ] **Step 6: Commit** — `git add app/repositories/jobs.py app/services/worker.py tests/integration/test_claim_contention.py` → `feat(fleet): worker fail-fast — api jobs gated on has_api_keys at claim (Phase 4)`.
 
 ---
 
@@ -250,7 +262,7 @@ The core. Pure, DB-free, CLI-free — fully unit-testable (satisfies spec §7.3 
   - §7.1 live valid-key smoke (claude + gemini): one headless call each bills the right account (AI Studio / Anthropic console), envelope still carries token stats in api mode, gemini api auth actually selected at runtime.
   - **Deployment ordering (spec §3):** ship this GCA-injecting code to a worker **before** removing `security.auth.selectedType` on that PC — removal-first instantly breaks all gemini calls there.
   - §7.2 post-removal upload smoke: after `selectedType` removed (code live), a plain book upload → TOC extraction still succeeds (proves the unconditional cli baseline).
-  - §7.5 end-to-end: one real lesson `transport=api` → every `agent_usages` row (extract + content + judge) has `auth_mode=api` and the `$` readout is nonzero.
+  - §7.5 end-to-end (spec §9b wording): one real lesson `transport=api` → every **non-`<cache>`** `agent_usages` row (extract + content + judge) has `auth_mode=api` and the `$` readout is nonzero. **Cross-job extract-reuse `<cache>` rows correctly stay `cli`** (free $0 markers) — don't assert `api` on them. For a clean cost benchmark use a **fresh-extract book** (or `force`), else the api run's extract cost reads `$0`/unmeasured because it reused a prior cli extract.
   - Worker env setup: `ANTHROPIC_API_KEY` + `GEMINI_API_KEY` via the worker compose/env file (never committed); both required for any api job.
 - [ ] **Step 3: Backlog hygiene** — confirm `fleet-api-1..5` are in `WISHLIST.md` (add `fleet-api-5` codex API mode if missing, per spec §8); close Phase 4 in `ROADMAP.md`.
 - [ ] **Step 4: Worklog 0053** in `MASTER_MEMORY.md` + an `INDEX.md` row.
@@ -260,7 +272,7 @@ The core. Pure, DB-free, CLI-free — fully unit-testable (satisfies spec §7.3 
 
 ## Self-Review
 
-**Spec coverage:** §2 toggle/enum/default + validation → Tasks 1, 3. **§9 amendment (batch key → `(book_id, transport)`)** → Task 1 (constraint swap + migration + docstring), Task 3 Step 6 (`get_or_create_for_book` transport + conflict target + repo-test flip), Task 7 Step 3b (FE launcher gate). The original "what does the badge show on re-launch" question is **moot** — each batch row now holds exactly one transport. §3 transport-covers-every-spawn + cli-baseline-for-non-job spawns (TOC at upload) → Task 2 (default `"cli"` at every layer) + Task 4 (extract/content/judge threading). §3 required-keys fail-fast at claim + loud judge auth → Tasks 5, 4. §4 per-provider adapters (gemini GCA/key, claude key) → Task 2 `_auth_env`; `selectedType` startup guard → Task 5. §5 `auth_mode` + static price map + per-transport `$` → Task 6. §6 frontend toggle/badge/`$` → Task 7. §7 acceptance → Task 8 (in-band free + operator runbook for billed). §8 deferred items → Task 8 backlog hygiene.
+**Spec coverage:** §2 toggle/enum/default + validation → Tasks 1, 3. **§9 amendment (batch key → `(book_id, transport)`)** → Task 1 (constraint swap + migration + docstring), Task 3 Step 6 (`get_or_create_for_book` transport + conflict target + repo-test flip), Task 7 Step 3b (FE launcher gate). The original "what does the badge show on re-launch" question is **moot** — each batch row now holds exactly one transport. **§9a (job dedup transport-blind → silent empty-batch no-op)** → Task 3 Step 6b (`find_active_for_section(transport=)` + transport-matched adoption, both batch and `/generate`, with the N-cli→N-api test). **§9b (cache rows exempt from §7.5)** → Task 8 wording + Task 2 loud missing-key raise. §3 transport-covers-every-spawn + cli-baseline-for-non-job spawns (TOC at upload) → Task 2 (default `"cli"` at every layer) + Task 4 (extract/content/judge threading). §3 required-keys fail-fast at claim + loud judge auth → Tasks 5, 4. §4 per-provider adapters (gemini GCA/key, claude key) → Task 2 `_auth_env`; `selectedType` startup guard → Task 5. §5 `auth_mode` + static price map + per-transport `$` → Task 6. §6 frontend toggle/badge/`$` → Task 7. §7 acceptance → Task 8 (in-band free + operator runbook for billed). §8 deferred items → Task 8 backlog hygiene.
 
 **Why `_auth_env` lives in `_spawn` (not per-caller):** there are four `_spawn` call sites and several wrappers; centralizing the transform at the single `child_env` build means no spawn path can bypass the cli baseline — which is exactly the §3 invariant (book-upload TOC extract, with no job, must still get GCA). The `transport` param threads down; the *logic* lives in one tested pure function.
 

@@ -224,3 +224,39 @@ Blast radius is otherwise tiny: `get_or_create_for_book` has one production
 caller (`batch.py:78`); no other code keys `Batch` by `book_id`. Phase-2/3
 *shipped* design docs are left as historical record — this amendment is the
 superseding source of truth.
+
+### 9a. Job-level dedup + adoption must also be transport-scoped (second blocker)
+
+Fixing the batch row is not enough — the launch loop's **per-section job dedup
+is transport-blind**, so the flagship benchmark flow silently no-ops. Verified
+at `batch.py:85-93` + `find_active_for_section` (`jobs.py:54`): the lookup
+matches any `pending|running|done` job for `(book_id, toc_entry_id)`, transport
+ignored. Walk it: a book fully generated under a **cli** batch → operator
+launches the **api** benchmark run → every section already has a `done` cli job
+→ every lesson is `skipped` → **the api batch is created with zero jobs**. Empty
+rollup, no api generation, no benchmark. Same class, second instance: an orphan
+cli job (`batch_id IS NULL`) gets **adopted** into the api batch, dropping a `$0`
+cli job into the api rollup — blending exactly what §9 forbids. (`force=true`
+exists but the FE never sends it and it's too blunt — it also bypasses
+*same*-transport dedup.)
+
+**Change (mirrors the new key):** `find_active_for_section` takes an optional
+`transport` param; when set, the query adds `HomeworkJob.transport == transport`.
+The **batch** path passes the batch's transport, and adopts an orphan only when
+its transport matches. **`/generate` passes its own `body.transport` too**
+(locked: yes — section-level idempotency becomes per-`(section, transport)`, so a
+single-lesson cli-then-api comparison actually runs both). Default `None`
+preserves every existing caller. Net: same-book/different-transport fans out
+fresh jobs with no `force` needed.
+
+### 9b. §7.5 acceptance — exempt cross-job `<cache>` reuse rows
+
+§7.5 as written ("every `agent_usages` row for the api job has `auth_mode=api`")
+is **wrong against the intended cache behavior**: cross-job extract reuse rows
+(`record_cached_lesson_extract`) are a free `$0` marker and correctly stay
+`auth_mode=cli` (Task 6). The extract-reuse key is transport-agnostic, so an api
+job whose extract hits the cache gets one `cli` `<cache>` row — which would trip
+a literal "every row = api" check. **Reword:** *every non-`<cache>` row for the
+api job has `auth_mode=api`*. Runbook note: a clean cost benchmark wants a
+**fresh-extract book** (or `force`), else the api run's extract cost reads `$0`
+/ unmeasured.
