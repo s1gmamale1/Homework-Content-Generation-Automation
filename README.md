@@ -63,7 +63,7 @@ docker compose up --build
 
 Open `http://localhost:8000`. Compose runs Postgres + migrations + API + embedded worker.
 
-> **Provider CLIs:** generation drives the `claude` / `gemini` / `codex` / `kimi` / `opencode` CLIs. They must be installed on `PATH` and logged in (each manages its own auth — there is **no API key** in this app's config). `gemini` must be available for TOC/lesson extraction. See **[DEPLOY.md](./DEPLOY.md)** for getting the CLIs into the runtime.
+> **Provider CLIs:** generation drives the `claude` / `gemini` / `codex` / `kimi` / `opencode` CLIs. They must be installed on `PATH` and logged in (each manages its own auth — there is **no API key** in this app's config). `gemini` must be available for TOC/lesson extraction. See **[docs/DEPLOY.md](./docs/DEPLOY.md)** for getting the CLIs into the runtime.
 
 For development without Docker: `uv sync` → `uv run alembic upgrade head` → `uv run uvicorn main:app --reload`. Local dev uses Postgres on port **5433**.
 
@@ -104,7 +104,16 @@ Homework-Content-Generation-Automation/
 ├── web/                          React SPA (operator console)
 ├── Dockerfile                    multi-stage (node SPA → uv venv → runtime)
 ├── docker-compose.yml            postgres + migrate + api + (optional) workers
-├── DEPLOY.md                     deployment runbook
+├── docker-compose.worker.yml     worker-PC compose (fleet)
+├── docs/
+│   ├── HOW_IT_WORKS.md           plain-English tour of the whole system
+│   ├── CODE_MAP.md               file-by-file code map
+│   ├── DEPLOY.md                 deployment runbook
+│   ├── DATABASE.md               schema deep reference
+│   ├── fleet/                    fleet runbooks (worker-PC setup, explainers)
+│   ├── runbooks/                 operator acceptance runbooks
+│   ├── memory/                   worklog + backlog (MASTER_MEMORY, ROADMAP, WISHLIST)
+│   └── superpowers/              specs + implementation plans
 └── README.md                     you are here
 ```
 
@@ -133,7 +142,7 @@ Two topologies, same Docker image:
 - **Single pod**: API + embedded worker (`uvicorn main:app`).
 - **Horizontal**: API pods (`WORKER_CONCURRENCY=0`) + worker pods (`python -m app.services.worker`).
 
-Full guide (cloud recipes, provider-CLI setup, pre-launch checklist, operational gotchas): **[DEPLOY.md](./DEPLOY.md)**.
+Full guide (cloud recipes, provider-CLI setup, pre-launch checklist, operational gotchas): **[docs/DEPLOY.md](./docs/DEPLOY.md)**.
 
 ## Development workflow
 
