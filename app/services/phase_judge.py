@@ -86,6 +86,16 @@ def _serialize_failures(failures: list[Failure]) -> list[str]:
     return [f"[{f.severity}] {f.requirement} — {f.evidence}" for f in failures]
 
 
+# Substrings (case-insensitive) that mark an auth/401 failure. An api job that
+# hits one of these must fail loudly rather than ship unjudged.
+_AUTH_SIGNALS = ("401", "invalid api key", "unauthorized")
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(s in msg for s in _AUTH_SIGNALS)
+
+
 def _build_feedback(warnings: list[str]) -> str:
     bullets = "\n".join(f"- {w}" for w in warnings)
     return (
@@ -107,10 +117,13 @@ async def judge(
     gen_model: Optional[str],
     homework_job_id: Optional[UUID] = None,
     phase_output_id: Optional[UUID] = None,
+    transport: str = "cli",
 ) -> JudgeOutcome:
     """Grade `output_md` against its phase contract. Returns a JudgeOutcome;
-    NEVER raises — any error (bad subject/phase, CLI failure, unparseable
-    verdict) degrades to 'unavailable' so validation can't block generation."""
+    for cli transport NEVER raises — any error (bad subject/phase, CLI failure,
+    unparseable verdict) degrades to 'unavailable' so validation can't block
+    generation. For api transport an auth/401 error is RE-RAISED instead of
+    swallowed: an api job must fail loudly, not ship unjudged."""
     try:
         judge_provider, judge_model = model_tiers.judge_model_for(gen_provider, gen_model)
         contract = get_prompt(subject, phase_name)
@@ -127,11 +140,17 @@ async def judge(
             operation=f"judge:{phase_name}",
             homework_job_id=homework_job_id,
             phase_output_id=phase_output_id,
+            transport=transport,
         )
         verdict = result.parsed
         if not isinstance(verdict, Verdict):
             raise RuntimeError("judge produced no parsed Verdict")
     except Exception as exc:  # noqa: BLE001 — judge must NEVER block generation
+        # An api job that hit an auth/401 error must fail LOUDLY (job-level
+        # failure), not silently ship unjudged via the degrade path below.
+        if transport == "api" and _is_auth_error(exc):
+            logger.error(f"phase_judge api auth failure for {phase_name}: {exc!r}")
+            raise
         logger.warning(f"phase_judge unavailable for {phase_name}: {exc!r}")
         return JudgeOutcome(
             available=False, passed=True,

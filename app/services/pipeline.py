@@ -74,6 +74,10 @@ async def run(job_id: UUID) -> None:
             # own default in that case.
             provider = job.provider
             model = job.model
+            # Per-job auth transport: 'cli' (default) drives the CLI as today;
+            # 'api' threads provider API keys via _auth_env and restricts
+            # failover to the requested provider. Pinned at job creation.
+            transport = getattr(job, "transport", "cli") or "cli"
             section_data = {
                 "id": section.id,
                 "title": section.section_title,
@@ -157,6 +161,7 @@ async def run(job_id: UUID) -> None:
                     lesson_context=lesson_context,
                     prior_outputs=prior_outputs,
                     difficulty=difficulty,
+                    transport=transport,
                 )
             except Exception:
                 # _execute_one_phase already published the error event and
@@ -205,6 +210,7 @@ async def run(job_id: UUID) -> None:
                     difficulty=difficulty,
                     source_map_digest=source_map_digest,
                     source_map_ids=source_map_ids,
+                    transport=transport,
                 )
             except RuntimeError as exc:
                 if "content phase failed" in str(exc):
@@ -279,6 +285,7 @@ async def _execute_one_phase(
     prior_outputs: dict[str, str],
     difficulty: Optional[str],
     source_map_digest: str = "",
+    transport: str = "cli",
 ) -> tuple[str, Optional[int], Optional[int], Optional[Any]]:
     """Run a single phase end-to-end with status tracking, SSE emit, and
     error handling. Wraps `_execute_phase` so both the sequential head loop
@@ -312,6 +319,7 @@ async def _execute_one_phase(
             prior_outputs=phase_prior,
             difficulty=difficulty,
             source_map_digest=source_map_digest,
+            transport=transport,
         )
     except Exception as exc:
         phase_ms = (perf_counter() - t_phase) * 1000
@@ -368,6 +376,7 @@ async def _run_content_phases_parallel(
     difficulty: Optional[str],
     source_map_digest: str = "",
     source_map_ids: Optional[set[str]] = None,
+    transport: str = "cli",
 ) -> None:
     """Wave-based parallel scheduler for content phases.
 
@@ -418,6 +427,7 @@ async def _run_content_phases_parallel(
                             prior_outputs=prior_outputs,
                             difficulty=difficulty,
                             source_map_digest=source_map_digest,
+                            transport=transport,
                         ),
                         name=f"phase:{name}",
                     )
@@ -487,16 +497,27 @@ def _failover_chain(requested_provider: str) -> list[str]:
 _SAME_RETRY_BUDGET = {"transient": 2, "hard": 1, "wall": 0}
 
 
-async def _run_with_failover(*, requested_provider: str, model: Optional[str], run_fn):
+async def _run_with_failover(
+    *, requested_provider: str, model: Optional[str], run_fn, transport: str = "cli"
+):
     """Run a phase across the failover chain. `run_fn(provider, model)` returns
     (output_md, tokens_in, tokens_out). On failure, classify → retry same (per
     budget, exp backoff) or move to the next provider. Each attempt is bounded by
     settings.per_attempt_timeout_seconds (kills a hung CLI). Fallback providers
     get model=None (the job's model is provider-specific; None → provider default,
     preserving the _resolve_model no-leak invariant). Returns
-    (output_md, tin, tout, produced_by); raises the last error when all fail."""
+    (output_md, tin, tout, produced_by); raises the last error when all fail.
+
+    api transport does NOT cross-provider failover: the fallback providers
+    (codex/kimi/opencode) have no api support, and an api-claude→api-gemini
+    fall would run model=None (violating the explicit-model rule + mis-pricing).
+    The chain is pinned to the requested provider; same-provider retry budgets
+    still apply."""
+    chain = _failover_chain(requested_provider)
+    if transport == "api":
+        chain = [requested_provider]
     last_exc: Optional[Exception] = None
-    for prov in _failover_chain(requested_provider):
+    for prov in chain:
         attempt_model = model if prov == requested_provider else None
         same = 0
         while True:
@@ -539,6 +560,7 @@ async def _execute_phase(
     prior_outputs: dict[str, str],
     difficulty: Optional[str],
     source_map_digest: str = "",
+    transport: str = "cli",
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     if phase_name == "extract":
         prompt_hash = "builtin:extract:v2"
@@ -639,6 +661,7 @@ async def _execute_phase(
                     section_title=section["title"], section_number=section["number"],
                     page_start=section["page_start"], page_end=section["page_end"],
                     homework_job_id=job_id, phase_output_id=po_id,
+                    transport=transport,
                 )
                 reason = agent.validate_extract_summary(out)
                 if reason is not None:
@@ -649,6 +672,7 @@ async def _execute_phase(
                 requested_provider=settings.extract_provider,
                 model=settings.extract_model,
                 run_fn=_extract_run,
+                transport=transport,
             )
             parsed_struct = None
         else:
@@ -669,11 +693,13 @@ async def _execute_phase(
                         homework_job_id=job_id,
                         phase_output_id=po_id,
                         source_map_digest=source_map_digest,
+                        transport=transport,
                     )
                 return _run
 
             output_md, tin, tout, produced_by = await _run_with_failover(
-                requested_provider=provider, model=model, run_fn=_make_run(base_phase_prompt),
+                requested_provider=provider, model=model,
+                run_fn=_make_run(base_phase_prompt), transport=transport,
             )
             parsed_struct = None
     except Exception as exc:
@@ -703,6 +729,7 @@ async def _execute_phase(
             lesson_context=lesson_context, prior_outputs=prior_outputs,
             gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
             homework_job_id=job_id, phase_output_id=po_id,
+            transport=transport,
         )
         # Regenerate ONLY on a MAJOR issue; minor (stylistic/length) nits are
         # recorded as warnings but never trigger an expensive regen.
@@ -724,6 +751,7 @@ async def _execute_phase(
                     requested_provider=produced_by,
                     model=_gen_model_of(produced_by),
                     run_fn=_make_run(regen_prompt),
+                    transport=transport,
                 )
                 # Commit to the regenerated output only after it actually succeeded.
                 output_md, tin, tout, produced_by = r_md, r_tin, r_tout, r_prod
@@ -732,8 +760,17 @@ async def _execute_phase(
                     lesson_context=lesson_context, prior_outputs=prior_outputs,
                     gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
                     homework_job_id=job_id, phase_output_id=po_id,
+                    transport=transport,
                 )
-            except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job
+            except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job (except api auth, below)
+                if transport == "api" and phase_judge._is_auth_error(exc):
+                    # An api job whose regen GENERATION or post-regen JUDGE hit an
+                    # auth/401 must fail LOUDLY, consistent with the initial judge
+                    # (spec §3) — don't silently degrade to the pre-regen output.
+                    logger.error(
+                        f"[job {job_id}] {phase_name} api auth failure during regen/judge ({exc!r})"
+                    )
+                    raise
                 logger.warning(
                     f"[job {job_id}] {phase_name} regen failed ({exc!r}); "
                     f"keeping the judge-rejected original output + warnings"
