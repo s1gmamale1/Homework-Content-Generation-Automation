@@ -17,7 +17,7 @@
 
 ### Fleet — autonomous generation fleet (deferred from Phase 3 brainstorm 2026-06-08)
 
-> Phases 0 / 1 / 0.5 / 2 SHIPPED (worklogs [0047]–[0050], `feat/autonomous-fleet-engine` worktree). **Phase 3 scope** = launch a batch + watch rollups + PC liveness + **batch drill-in to a lesson list** (per-lesson status + Cancel/Retry via the existing per-job endpoints) — frontend + **one small new read endpoint** ("list a batch's jobs"). Everything below was surfaced in the brainstorm and deferred. Phase 4 = generation-accounts / cost (spec §6).
+> Phases 0 / 1 / 0.5 / 2 / 3 / 4 SHIPPED (worklogs [0047]–[0051] + [0053], `feat/autonomous-fleet-engine` worktree). **Phase 4** = the real-time **CLI | API transport toggle** (claude+gemini api, per-job/per-batch `transport`, `auth_mode` attribution + per-transport `$`) — see [0053]; billed live smokes are operator-run (`docs/runbooks/phase4-transport-operator-acceptance.md`). Everything below was surfaced in the brainstorm and deferred; the `fleet-api-*` items are the post-Phase-4 deferrals (spec §8).
 
 **Batch / fleet controls (deferred from Phase 3):**
 - `fleet-ctrl-1`: Batch **Cancel-all** endpoint (`POST /jobs/batch/{id}/cancel`) — cancel every non-terminal lesson in one atomic call (Phase 3 = per-job cancel only).
@@ -32,10 +32,14 @@
 - `fleet-ui-5`: **Split the batch funnel onto its own page** (e.g. `/batches`); `/fleet` keeps launch + PC cards. Monitoring shouldn't require scrolling past the controls every time, and it scales as batches accumulate.
 
 **Generation accounts / cost (spec Phase 4):**
-- `fleet-api-1`: **Gemini-API provider** inside the CLI router (SDK behind a flag, same `(text, usage)` envelope) + the **CLI / API mode toggle** in the launch UX.
-- `fleet-api-2`: **Credential pool** — rotate multiple Google API keys across the fleet.
-- `fleet-api-3`: **Cost ledger + kill-switch** — track $ per batch / provider, auto-halt on a cap.
+
+> The **real-time CLI | API transport toggle SHIPPED** (worklog [0053], 7 tasks) — per-job/per-batch `transport` enum (claude+gemini api), `_auth_env` adapter, `has_api_keys` claim gate, `auth_mode` attribution + per-transport `$` readout. The items below stay deferred (spec §8). The old `fleet-api-1` ("Gemini-API provider + toggle") is now MOOT (delivered by the toggle); `fleet-api-1` is reused for the deferred **batch-discount** transport.
+
+- `fleet-api-1`: **Batch transport** (Gemini/Anthropic Batch REST, ~50% off, async submit/poll, per-wave batching across lessons) — slots in as a third `transport` enum value.
+- `fleet-api-2`: **Credential rotation pool** — rotate multiple API keys per provider across the fleet (Phase 4 ships single key per provider).
+- `fleet-api-3`: **Cost ledger + kill-switch** — track $ per batch / provider, auto-halt on a cap (Phase 4 ships only the per-transport `$` readout).
 - `fleet-api-4`: **Never-pay-twice idempotency** for API-mode generation (don't re-bill a re-run lesson).
+- `fleet-api-5`: **codex API mode** — `CODEX_API_KEY` env (not `OPENAI_API_KEY`, which codex ignores) flips auth, and default models diverge between auth modes (gpt-5.5 subscription vs gpt-5.4 API). Deferred from Phase 4 (user: only Anthropic + Gemini api). The explicit-model rule already protects the divergence class; re-confirm the 401/key behavior against the installed codex version on pickup.
 
 **Infra / ops (spec §8 / §9.1):**
 - `fleet-infra-1`: **PgBouncer + hardened head** — the Phase-0 published-Postgres-on-LAN is dev-only; a production head needs connection pooling + lockdown.
