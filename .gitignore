@@ -33,3 +33,5 @@ Backend-terms.md
 .mcp.json
 .cursor
 .swarm
+# Local Google service-account credential — never commit
+phillhr57@gmail.com.json
