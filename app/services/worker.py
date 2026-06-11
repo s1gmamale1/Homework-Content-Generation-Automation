@@ -52,10 +52,43 @@ from app.services import pipeline
 RUNNING_JOBS: dict[UUID, asyncio.Task] = {}
 
 
+# Computed once at module load: a worker may only claim `transport='api'` jobs
+# if it has BOTH provider keys (an api job touches content + gemini extract +
+# claude judge). Half-configured (exactly one key) counts as NOT having keys.
+HAS_API_KEYS: bool = bool(
+    os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("GEMINI_API_KEY")
+)
+
+
 def _worker_id() -> str:
     """Stable identity for `claimed_by`. Hostname:pid is enough to attribute
     a stuck job to a specific process in logs / Kubernetes pod listings."""
     return f"{socket.gethostname()}:{os.getpid()}"
+
+
+def _warn_if_gemini_selected_type() -> None:
+    """Advisory startup guard (spec §4): if `~/.gemini/settings.json` carries
+    `security.auth.selectedType`, an interactive gemini run has re-persisted it.
+    That pins gemini's auth and silently breaks the api/cli transport toggle.
+    Best-effort: any error (missing file, bad JSON, odd shape) is swallowed —
+    this is purely advisory and must never block worker startup."""
+    try:
+        import json
+        from pathlib import Path
+
+        path = Path.home() / ".gemini" / "settings.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        selected = (
+            data.get("security", {}).get("auth", {}).get("selectedType")
+        )
+        if selected:
+            logger.warning(
+                "~/.gemini/settings.json has security.auth.selectedType="
+                f"{selected!r} — an interactive gemini run re-persisted it and "
+                "will silently break the api/cli transport toggle"
+            )
+    except Exception:
+        pass  # advisory only — never fatal
 
 
 class Worker:
@@ -89,6 +122,16 @@ class Worker:
             f"poll={self.poll_interval}s timeout={self.job_timeout}s "
             f"max_attempts={self.max_attempts}"
         )
+        # Fail-fast capability check: api jobs need BOTH provider keys. Warn
+        # whenever they're not both present — including the dangerous
+        # half-configured case (exactly one key set).
+        if not HAS_API_KEYS:
+            logger.warning(
+                "worker cannot claim transport=api jobs — both ANTHROPIC_API_KEY "
+                "and GEMINI_API_KEY required"
+            )
+        _warn_if_gemini_selected_type()
+
         # On startup, reclaim anything left in `running` from a prior crash
         # of this or any other worker. Cheap: usually 0 rows, occasionally a
         # handful.
@@ -173,6 +216,7 @@ class Worker:
                         session,
                         worker_id=self.id,
                         max_attempts=self.max_attempts,
+                        has_api_keys=HAS_API_KEYS,
                     )
                 if job is None:
                     return None

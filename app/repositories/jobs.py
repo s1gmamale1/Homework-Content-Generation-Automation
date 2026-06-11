@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, literal, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -219,7 +219,11 @@ async def latest_by_section(
 
 
 async def claim_next_job(
-    session: AsyncSession, *, worker_id: str, max_attempts: int
+    session: AsyncSession,
+    *,
+    worker_id: str,
+    max_attempts: int,
+    has_api_keys: bool = False,
 ) -> Optional[HomeworkJob]:
     """Atomically claim the next pending job for this worker.
 
@@ -232,6 +236,13 @@ async def claim_next_job(
       - status == 'pending'
       - scheduled_at <= NOW() (so delayed retries don't fire early)
       - attempts < max_attempts (don't reclaim poison-pill jobs forever)
+      - transport == 'cli' OR `has_api_keys` is True. An `api` job touches up
+        to three providers (content + gemini extract + claude judge), so the
+        worker must have BOTH ANTHROPIC_API_KEY and GEMINI_API_KEY before it can
+        claim one. This is the fail-fast gate: a key-less worker never claims an
+        api job (covers the extract-failover path too, since the gate is at
+        claim time, before any spawn). Default `has_api_keys=False` so callers
+        that don't declare keys stay cli-only.
 
     Order: highest priority first, then oldest scheduled_at first (FIFO
     within a priority band).
@@ -241,6 +252,7 @@ async def claim_next_job(
         .where(HomeworkJob.status == "pending")
         .where(HomeworkJob.scheduled_at <= func.now())
         .where(HomeworkJob.attempts < max_attempts)
+        .where(or_(HomeworkJob.transport == "cli", literal(has_api_keys)))
         .order_by(HomeworkJob.priority.desc(), HomeworkJob.scheduled_at.asc())
         .limit(1)
         .with_for_update(skip_locked=True)
