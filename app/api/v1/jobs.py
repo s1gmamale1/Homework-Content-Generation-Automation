@@ -18,7 +18,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import GenerateRequest, JobOut, PhaseOut
-from app.services import events_bus
+from app.services import events_bus, pricing
 from app.services.agent_models import (
     MODEL_MANIFEST,
     api_supported,
@@ -437,6 +437,29 @@ async def get_agent_stats(
         rows = await agent_usage_repo.stats_by_provider(session, since=since)
         by_provider = {row["provider"]: row for row in rows}
         model_rows = await agent_usage_repo.stats_by_provider_model(session, since=since)
+
+        # Per-(provider, transport) $ rollup. Each row is priced via the static
+        # map (cli rows resolve to $0 — no pay-per-token); we fold per-model
+        # rows into one entry per (provider, auth_mode).
+        transport_rows = await agent_usage_repo.stats_by_provider_transport(
+            session, since=since
+        )
+        transports_by_provider: dict[str, dict[str, dict]] = {}
+        for tr in transport_rows:
+            # cli is the local CLI subprocess — no pay-per-token, so it costs us
+            # $0. Only api (pay-per-token SDK) rows are priced.
+            cost = (
+                pricing.cost_usd(tr["provider"], tr["model_name"], tr)
+                if tr["auth_mode"] == "api"
+                else 0.0
+            )
+            slot = transports_by_provider.setdefault(tr["provider"], {})
+            entry = slot.setdefault(
+                tr["auth_mode"],
+                {"auth_mode": tr["auth_mode"], "calls": 0, "cost_usd": 0.0},
+            )
+            entry["calls"] += int(tr["calls"])
+            entry["cost_usd"] = round(entry["cost_usd"] + cost, 4)
         models_by_provider: dict[str, list[dict]] = {}
         for mr in model_rows:
             m_calls = int(mr["calls"])
@@ -483,6 +506,7 @@ async def get_agent_stats(
                 "limit_calls_per_window": limit_value,
                 "pct_of_limit": pct_of_limit,
                 "models": models_by_provider.get(provider, []),
+                "transports": list(transports_by_provider.get(provider, {}).values()),
             }
 
     return {

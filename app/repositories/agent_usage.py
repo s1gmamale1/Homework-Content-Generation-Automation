@@ -20,6 +20,7 @@ async def create(
     homework_job_id: Optional[UUID] = None,
     phase_output_id: Optional[UUID] = None,
     provider: str = "gemini",
+    auth_mode: str = "cli",
     # Provider-neutral token counts (preferred names).
     prompt_tokens: int = 0,
     output_tokens: int = 0,
@@ -76,6 +77,7 @@ async def create(
         operation=operation,
         model_name=model_name,
         provider=provider,
+        auth_mode=auth_mode,
         book_id=book_id,
         homework_job_id=homework_job_id,
         phase_output_id=phase_output_id,
@@ -227,6 +229,69 @@ async def stats_by_provider_model(
             "model_name": r.model_name,
             "calls": int(r.calls),
             "duration_secs": round(duration_by.get((r.provider, r.model_name), 0.0), 1),
+            "prompt_tokens": int(r.prompt_tokens),
+            "output_tokens": int(r.output_tokens),
+            "cached_tokens": int(r.cached_tokens),
+            "success_count": int(r.success_count),
+        }
+        for r in rows
+    ]
+
+
+async def stats_by_provider_transport(
+    session: AsyncSession,
+    *,
+    since: datetime,
+) -> list[dict]:
+    """Like ``stats_by_provider_model``, but also GROUP BY ``auth_mode`` so the
+    caller can split cli vs api consumption (and price the api rows).
+
+    Returns dicts with: provider, model_name, auth_mode, calls, duration_secs,
+    prompt_tokens, output_tokens, cached_tokens, success_count.
+    """
+    stmt = (
+        select(
+            AgentUsage.provider.label("provider"),
+            AgentUsage.model_name.label("model_name"),
+            AgentUsage.auth_mode.label("auth_mode"),
+            func.count().label("calls"),
+            func.coalesce(func.sum(AgentUsage.prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(AgentUsage.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(AgentUsage.cached_tokens), 0).label("cached_tokens"),
+            func.coalesce(
+                func.sum(case((AgentUsage.success.is_(True), 1), else_=0)), 0
+            ).label("success_count"),
+        )
+        .where(AgentUsage.started_at >= since)
+        .group_by(AgentUsage.provider, AgentUsage.model_name, AgentUsage.auth_mode)
+    )
+    rows = (await session.execute(stmt)).all()
+
+    dur_stmt = (
+        select(
+            AgentUsage.provider,
+            AgentUsage.model_name,
+            AgentUsage.auth_mode,
+            AgentUsage.duration,
+        )
+        .where(AgentUsage.started_at >= since)
+        .where(AgentUsage.duration.is_not(None))
+    )
+    dur_rows = (await session.execute(dur_stmt)).all()
+    duration_by: dict[tuple, float] = {}
+    for provider, model_name, auth_mode, duration in dur_rows:
+        key = (provider, model_name, auth_mode)
+        duration_by[key] = duration_by.get(key, 0.0) + _parse_duration_seconds(duration)
+
+    return [
+        {
+            "provider": r.provider,
+            "model_name": r.model_name,
+            "auth_mode": r.auth_mode,
+            "calls": int(r.calls),
+            "duration_secs": round(
+                duration_by.get((r.provider, r.model_name, r.auth_mode), 0.0), 1
+            ),
             "prompt_tokens": int(r.prompt_tokens),
             "output_tokens": int(r.output_tokens),
             "cached_tokens": int(r.cached_tokens),
