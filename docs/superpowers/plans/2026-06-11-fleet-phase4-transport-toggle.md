@@ -1,0 +1,266 @@
+# Fleet Phase 4 — CLI | API transport toggle (implementation plan)
+
+> **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (one fresh subagent per task, TDD → commit) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) tracking. The controller stress-tests every commit (read the diff **and** re-run the gate) before moving on.
+
+**Goal:** A per-job (and per-batch) `transport` toggle — `cli` (today's subscription auth, $0 marginal, default) or `api` (pay-per-token, claude + gemini only) — so the operator can empirically benchmark CLI-vs-API for mass generation. Ships the real-time toggle only; batch-discount transport stays deferred (`fleet-api-1`).
+
+**Spec:** `docs/superpowers/specs/2026-06-10-fleet-phase4-transport-toggle-design.md` (locked with user 2026-06-10; claim-gate mechanism pinned in `3df7529`).
+
+**Architecture (verified against source 2026-06-11):**
+- `transport` enum threads **job → pipeline → `_spawn`**. The auth transform lands in one pure helper `_auth_env(provider, transport, base_env)` consumed by `agent._spawn` (`agent.py:224`, builds `child_env` at `:257`). `transport` defaults to `"cli"` at every layer, so **every spawn — including book-upload TOC extraction, which has no job — gets the cli baseline** (spec §3 invariant).
+- Validation at the two creation entry points: `POST /generate` (`jobs.py:121`) and `POST /jobs/batch` (`batch.py:75`).
+- Worker fail-fast: `claim_next_job` (`jobs.py:207`) gates `api` jobs on a startup-computed `has_api_keys`.
+- Attribution: `agent_usages.auth_mode` recorded on every row; static price map drives a per-transport `$` rollup.
+
+**Tech stack:** Backend — FastAPI, SQLAlchemy async, Postgres, Alembic. Frontend — React 19, react-router, @tanstack/react-query, Tailwind, `lib/ui.ts`.
+
+**Environment-agnostic test invocation** (runs on this Mac now; Windows worker PCs later — **do not hardcode paths/ports**). Set once per shell before the DB tasks:
+```bash
+# repo root — the dir containing pyproject.toml
+export REPO=$(git rev-parse --show-toplevel)
+# a throwaway/migrated Postgres reachable from this box. Mac dev default is 5433
+# (CLAUDE.md); a Windows worker box may use its own. Override as needed.
+export DB_URL=${DATABASE_URL:-postgresql+asyncpg://edu:edu@localhost:5433/edu_homework}
+PYBIN="uv run python"   # or the venv python on a worker box
+```
+- **Backend real-DB tests:** `cd "$REPO" && RUN_DB_INTEGRATION=1 DATABASE_URL="$DB_URL" $PYBIN -m pytest <path> -q`
+- **DB-free unit tests:** `cd "$REPO" && $PYBIN -m pytest <path> -q`
+- **Full-suite baseline (record before Task 1):** `cd "$REPO" && $PYBIN -m pytest tests/ -q` → note the exact `N failed / M passed / K skipped` line; every task must hold it (the pre-existing Notion failures are the only allowed reds).
+- **Frontend gate** (no FE unit harness): `cd "$REPO/web" && npx tsc -p tsconfig.app.json --noEmit` clean **and** `npm run build` succeeds.
+
+**Pre-flight (before Task 1):**
+1. Confirm the alembic head: `cd "$REPO" && $PYBIN -m alembic heads` → expect the `0023_batches` revision. The new migration's `down_revision` is **that printed revision id** (read it from `alembic/versions/0023_batches.py`, do not assume the filename == revision id).
+2. Confirm a migrated Postgres is reachable at `$DB_URL` (`alembic upgrade head` against it).
+3. `cd "$REPO/web" && npm install` current before the FE task.
+
+**Standing rules:** stage ONLY the files each task lists (other sessions touch `web/`); commit per task; **the live billed API smokes (spec §7.1/§7.2/§7.5) are operator-run** — this plan implements + unit/mode-isolation/claim-gate tests in-band and the free invalid-key 401 proof, and documents the billed gates as a runbook (Task 8).
+
+---
+
+## File Structure
+
+**Backend:**
+- `app/models/homework_job.py`, `app/models/batch.py` — add `transport` column.
+- `app/models/agent_usage.py` — add `auth_mode` column.
+- `alembic/versions/0024_transport_auth_mode.py` — new migration (3 columns, server_default `'cli'`).
+- `app/services/agent.py` — `_auth_env` helper; thread `transport` through `_spawn` (+ its 4 call sites), `run_phase`, `run_phase_prompt`; thread `auth_mode` through `_record_usage`.
+- `app/services/agent_models.py` — `API_PROVIDERS` + `api_supported()`; manifest endpoint gains `api_supported`.
+- `app/api/v1/jobs.py` — `transport` on the generate request + validation + persist; manifest endpoint; claim-gate wiring.
+- `app/api/v1/batch.py` — `transport` on `BatchLaunchRequest` + validation + persist on batch & jobs.
+- `app/repositories/jobs.py` — `create(...transport=)`; `claim_next_job(..., has_api_keys)`.
+- `app/repositories/batches.py` — persist `transport` on the batch row.
+- `app/services/worker.py` — compute `has_api_keys` at startup; startup gemini `selectedType` warning; pass to claim.
+- `app/services/pipeline.py` — read `job.transport`, thread into `_execute_phase` → run fns + extract.
+- `app/services/phase_judge.py` — thread `transport`; loud auth-failure on api jobs.
+- `app/services/pricing.py` — **new** static price map + `cost_usd(provider, model, usage)`.
+- `app/repositories/agent_usage.py` — aggregation grouped by `auth_mode`.
+- Tests under `tests/` per task.
+
+**Frontend:**
+- `web/src/lib/types.ts` — `Transport`, `transport` on Job/Batch, `api_supported` on manifest.
+- `web/src/lib/api.ts` — `transport` in generate + launchBatch bodies.
+- Generate form + `web/src/components/fleet/launcher.tsx` — segmented `CLI | API` toggle.
+- Job/batch views — `api` badge; `web/src/routes/usage.tsx` — per-transport `$` rollup.
+
+---
+
+### Task 1: Schema — `transport` (jobs, batches) + `auth_mode` (agent_usages)
+
+**Files:** Modify `app/models/homework_job.py`, `app/models/batch.py`, `app/models/agent_usage.py`; Create `alembic/versions/0024_transport_auth_mode.py`; Test `tests/integration/test_transport_schema.py` (new).
+
+- [ ] **Step 1: Failing real-DB test** — `tests/integration/test_transport_schema.py`: after `alembic upgrade head`, a freshly inserted `HomeworkJob` / `Batch` defaults `transport == "cli"` and a freshly inserted `AgentUsage` defaults `auth_mode == "cli"`; an explicit `transport="api"` round-trips. (Seed a minimal book+toc like `tests/integration/test_batches.py` `_seed_book`.)
+- [ ] **Step 2: Run it — expect failure** (column missing).
+- [ ] **Step 3: Add columns to the models** (mirror existing `mapped_column` style):
+  - `homework_job.py` (after `model`, ~`:26`) and `batch.py` (after `model`, ~`:23`):
+    ```python
+    transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="cli")
+    ```
+  - `agent_usage.py` (after `model_name`, ~`:42`):
+    ```python
+    auth_mode: Mapped[str] = mapped_column(String(8), nullable=False, server_default="cli")
+    ```
+- [ ] **Step 4: Migration** `alembic/versions/0024_transport_auth_mode.py` — `down_revision = "<0023 revision id from pre-flight>"`. `upgrade()` adds the 3 columns with `server_default="cli"` (covers existing rows — no separate backfill needed) and `nullable=False`; `downgrade()` drops them. Use `op.add_column` with `sa.String` lengths matching the models.
+- [ ] **Step 5: Apply + run the test green** — `RUN_DB_INTEGRATION=1 DATABASE_URL="$DB_URL" $PYBIN -m alembic upgrade head` then the Step-1 test.
+- [ ] **Step 6: Full-suite baseline holds** (DB-free) — no new failures.
+- [ ] **Step 7: Commit** — `git add app/models/homework_job.py app/models/batch.py app/models/agent_usage.py alembic/versions/0024_transport_auth_mode.py tests/integration/test_transport_schema.py` → `feat(fleet): transport + auth_mode columns (Phase 4)`.
+
+---
+
+### Task 2: Auth-env adapter + `transport` threading through `_spawn`
+
+The core. Pure, DB-free, CLI-free — fully unit-testable (satisfies spec §7.3 mode-isolation).
+
+**Files:** Modify `app/services/agent.py`; Test `tests/services/test_auth_env.py` (new).
+
+- [ ] **Step 1: Failing unit test** `tests/services/test_auth_env.py` — call `agent._auth_env(provider, transport, base_env)` directly with a `base_env` that contains **both** keys + `PYTHONIOENCODING`:
+  - `("gemini", "cli", env)` → `GOOGLE_GENAI_USE_GCA == "true"`, `"GEMINI_API_KEY" not in result`, `"ANTHROPIC_API_KEY" not in result`.
+  - `("claude", "cli", env)` → both keys absent, no `GOOGLE_GENAI_USE_GCA`.
+  - `("gemini", "api", env)` → `GEMINI_API_KEY` present, `ANTHROPIC_API_KEY` absent, `GOOGLE_GENAI_USE_GCA` absent.
+  - `("claude", "api", env)` → `ANTHROPIC_API_KEY` present, `GEMINI_API_KEY` absent.
+  - `("kimi", "cli", env)` → both keys scrubbed (hygiene), unchanged otherwise; `PYTHONIOENCODING` preserved in all cases.
+- [ ] **Step 2: Run it — expect failure** (no `_auth_env`).
+- [ ] **Step 3: Implement `_auth_env`** in `agent.py` (near `_spawn`):
+  ```python
+  def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> dict[str, str]:
+      """Per-call auth shaping (spec §4). cli is the unconditional baseline for
+      EVERY spawn; api is the only deviation. Scrub both provider keys first, then
+      grant exactly what the (provider, transport) needs — so an api gemini spawn
+      never carries the Anthropic key, and a cli spawn never accidentally bills."""
+      env = dict(base_env)
+      env.pop("GEMINI_API_KEY", None)
+      env.pop("ANTHROPIC_API_KEY", None)
+      env.pop("GOOGLE_GENAI_USE_GCA", None)
+      if transport == "api":
+          if provider_name == "gemini":
+              env["GEMINI_API_KEY"] = base_env.get("GEMINI_API_KEY", "")
+          elif provider_name == "claude":
+              env["ANTHROPIC_API_KEY"] = base_env.get("ANTHROPIC_API_KEY", "")
+          # kimi/codex/opencode never reach api (blocked at validation)
+      else:  # cli baseline
+          if provider_name == "gemini":
+              env["GOOGLE_GENAI_USE_GCA"] = "true"  # GCA OAuth, wins over any key
+          # claude/others: scrubbed keys above IS the whole cli adapter
+      return env
+  ```
+- [ ] **Step 4: Thread `transport` into `_spawn`** — add `transport: str = "cli"` to the `_spawn` signature (`agent.py:224`) and apply the adapter at the `child_env` build (`:257`):
+  ```python
+  child_env = _auth_env(provider.name, transport, {**os.environ, "PYTHONIOENCODING": "utf-8"})
+  ```
+- [ ] **Step 5: Add `transport` to `run_phase` + `run_phase_prompt`** (`:498`, `:1508`), default `"cli"`, and pass it into every `_spawn(...)` call. There are **four** `_spawn` call sites — `:566` (run_phase), `:1097`, `:1338`, `:1480`. The latter three are reached via their own wrapper functions: add a `transport` param (default `"cli"`) to each wrapper and pass it through, so no caller silently loses the toggle. (Read each wrapper's signature; thread, don't guess.)
+- [ ] **Step 6: Run the unit test green** + a quick threading assertion: monkeypatch `_auth_env` to capture args, call `run_phase(..., transport="api", provider="claude")` with a stubbed subprocess (or assert via the existing `_spawn` seam) → `_auth_env` saw `("claude", "api", ...)`. Keep it DB-free (stub `_record_usage`).
+- [ ] **Step 7: Full-suite baseline holds.**
+- [ ] **Step 8: Commit** — `git add app/services/agent.py tests/services/test_auth_env.py` → `feat(fleet): per-call auth-env adapter + transport threading through _spawn (Phase 4)`.
+
+---
+
+### Task 3: Validation + persistence at creation (generate + batch) + manifest flag
+
+**Files:** Modify `app/services/agent_models.py`, `app/api/v1/jobs.py`, `app/api/v1/batch.py`, `app/repositories/jobs.py`, `app/repositories/batches.py`; Tests `tests/api/test_transport_validation.py` (new) + extend `tests/integration/test_batches.py`.
+
+- [ ] **Step 1: Failing tests** — (a) API-level (`httpx` against the app, no live CLI): `POST /generate` with `transport="api", provider="kimi"` → 400; `transport="api", provider="gemini", model=None` → 400; `transport="api", provider="claude", model="claude-opus-4-8"` → 201/200 and the created job has `transport="api"`; default (no `transport`) → job `transport="cli"`. (b) Same matrix for `POST /jobs/batch`, asserting the **batch row** and **every created job** carry the transport. (c) `GET /agent/models` payload exposes `api_supported` per provider (`true` for claude/gemini, `false` otherwise).
+- [ ] **Step 2: Run — expect failure.**
+- [ ] **Step 3: `agent_models.py`** — add:
+  ```python
+  API_PROVIDERS: frozenset[str] = frozenset({"claude", "gemini"})  # spec §1; codex deferred (fleet-api-5)
+
+  def api_supported(provider: str) -> bool:
+      return provider in API_PROVIDERS
+  ```
+  Add a shared validator both endpoints call:
+  ```python
+  def validate_transport(provider: str, model: str | None, transport: str) -> str | None:
+      """Return an error string if (provider, model, transport) is invalid, else None."""
+      if transport not in ("cli", "api"):
+          return f"unknown transport {transport!r} (expected 'cli' | 'api')"
+      if transport == "api":
+          if not api_supported(provider):
+              return f"transport=api unsupported for provider {provider!r} (only {sorted(API_PROVIDERS)})"
+          if model is None:
+              return "transport=api requires an explicit model (no provider-default) — it would diverge between OAuth and API-key auth"
+      return None
+  ```
+- [ ] **Step 4: `jobs.py`** — add `transport: str = "cli"` to the generate request model (the `body` validated at `:121`); after the `is_valid` check, call `validate_transport(...)` → `HTTPException(400, err)`; pass `transport=body.transport` into `jobs_repo.create` (`:165`). Update the `/agent/models` handler (`:376`) to return `{"providers": MODEL_MANIFEST, "api_supported": {p: api_supported(p) for p in MODEL_MANIFEST}}`.
+- [ ] **Step 5: `batch.py`** — add `transport: str = "cli"` to `BatchLaunchRequest` (`:22`); after `is_valid` (`:75`) call `validate_transport(provider, body.model, body.transport)`; pass `transport` into the batch create (`:80`) and every `jobs_repo.create` (`:95`).
+- [ ] **Step 6: Repos** — `jobs_repo.create` and `batches_repo.create` accept `transport: str = "cli"` and write it. (Defaults keep all existing callers/tests valid.)
+- [ ] **Step 7: Run tests green** + full-suite baseline holds.
+- [ ] **Step 8: Commit** — staged files above → `feat(fleet): transport validation + persistence + api_supported manifest (Phase 4)`.
+
+---
+
+### Task 4: Pipeline + judge threading; loud judge auth-failure
+
+**Files:** Modify `app/services/pipeline.py`, `app/services/phase_judge.py`; Test `tests/services/test_judge_auth.py` (new).
+
+- [ ] **Step 1: Failing tests** — (a) `phase_judge.judge_phase(...)` with `transport="api"` where the judge `run_phase` raises an auth/401 error → the judge **re-raises** (job-level failure), it does **not** return `JudgeOutcome(available=False, passed=True)`. (b) The same auth error under `transport="cli"` still degrades to `judge-unavailable, passed=True` (existing behavior preserved). Stub `agent.run_phase` to raise a sentinel auth error; classify on the message/`type`.
+- [ ] **Step 2: Run — expect failure.**
+- [ ] **Step 3: Pipeline threading** — `pipeline.py` reads `job.transport` next to `provider = job.provider` (`:75-76`); thread it through `_execute_phase` (add `transport` param) into:
+  - the content run fn (`run_phase_prompt(provider=prov, ..., transport=transport)`, `:659`),
+  - the extract run fn (`agent.run_phase_prompt(..., transport=transport)`, `:638` path — the extract provider/model pin stays; only auth follows the job, spec §3),
+  - the regen run fn (`:726`),
+  - the judge call (`:704`/`:733`, see below).
+  `_run_with_failover`'s `run_fn` closures already capture `transport` (it's in scope), so no signature change there — just include `transport=transport` inside each closure.
+- [ ] **Step 4: Judge** — `phase_judge.judge_phase` gains `transport: str = "cli"`, passes it into its `agent.run_phase` (`:115`). Wrap that call so an **auth error on an api job** escapes the broad `except` (`:134`): detect auth/401 (reuse `failure_classifier` if it has an auth class, else match `401`/`invalid api key`/`unauthorized` case-insensitively in `str(exc)`); when `transport == "api"` and the error is auth, re-raise instead of returning the unavailable outcome. Pipeline passes `transport=transport` at the judge call sites.
+- [ ] **Step 5: Run tests green** + full-suite baseline holds.
+- [ ] **Step 6: Commit** — `git add app/services/pipeline.py app/services/phase_judge.py tests/services/test_judge_auth.py` → `feat(fleet): thread transport through pipeline+judge; loud judge auth-fail on api (Phase 4)`.
+
+---
+
+### Task 5: Worker fail-fast — `has_api_keys` claim gate
+
+**Files:** Modify `app/repositories/jobs.py`, `app/services/worker.py`; Test extend `tests/integration/test_queue.py` (or the file holding `claim_next_job` tests).
+
+- [ ] **Step 1: Failing real-DB test** — seed two pending jobs, one `transport="cli"`, one `transport="api"`. `claim_next_job(..., has_api_keys=False)` claims **only** the cli job (the api job is skipped even when it's higher priority/older); with `has_api_keys=True` both are claimable. (Order assertion: with `has_api_keys=False`, repeatedly claiming drains cli jobs and never returns the api one.)
+- [ ] **Step 2: Run — expect failure** (param missing).
+- [ ] **Step 3: `claim_next_job`** — add `has_api_keys: bool` param; add a predicate to `pick_stmt` (`jobs.py:227`):
+  ```python
+  .where(or_(HomeworkJob.transport == "cli", literal(has_api_keys)))
+  ```
+  (import `or_`, `literal` from sqlalchemy if not already.) This covers the extract-failover path too — the gate is at claim time, before any provider switch.
+- [ ] **Step 4: `worker.py`** — compute once at startup:
+  ```python
+  has_api_keys = bool(os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("GEMINI_API_KEY"))
+  ```
+  pass it into every `claim_next_job(...)` call. Add a startup warning if neither key is set ("worker cannot claim transport=api jobs — both ANTHROPIC_API_KEY and GEMINI_API_KEY required"). **Also** the gemini `selectedType` guard (spec §4): if `~/.gemini/settings.json` has `security.auth.selectedType`, log a loud warning at startup (an interactive `gemini` re-persists it and silently breaks the toggle). Best-effort file read, swallow errors.
+- [ ] **Step 5: Run tests green** + full-suite baseline holds.
+- [ ] **Step 6: Commit** — `git add app/repositories/jobs.py app/services/worker.py tests/integration/test_queue.py` → `feat(fleet): worker fail-fast — api jobs gated on has_api_keys at claim (Phase 4)`.
+
+---
+
+### Task 6: `auth_mode` attribution + price map + per-transport `$` readout
+
+**Files:** Modify `app/services/agent.py` (record `auth_mode`), `app/repositories/agent_usage.py`; Create `app/services/pricing.py`; Modify `app/api/v1/jobs.py` (stats endpoint); Tests `tests/services/test_pricing.py` (new) + extend the usage/stats test.
+
+- [ ] **Step 1: Failing tests** — (a) `pricing.cost_usd("claude", "claude-opus-4-8", {"prompt_tokens": 1_000_000, "output_tokens": 1_000_000, "cached_tokens": 0})` returns the expected `$` from the dated map (assert the Opus rate is the **current** $5 in / $25 out, NOT the deprecated $15/$75 the project mis-priced once). (b) After a recorded usage row with `auth_mode="api"`, the stats aggregation returns a per-transport breakdown with a nonzero `$` for api and `$0` for cli rows.
+- [ ] **Step 2: Run — expect failure.**
+- [ ] **Step 3: `pricing.py`** — a static dict keyed `(provider, model)` → `{input, output, cache_read}` $/Mtok, each entry with a **`# as of 2026-06-11, source: <url>`** comment (spec §5; stale prices silently corrupt the readout this feature rides on). Cover the claude + gemini manifest models at minimum; `cost_usd(provider, model, usage)` returns `0.0` for unknown/cli-free pairs (and log-once on a missing price so gaps surface).
+- [ ] **Step 4: Record `auth_mode`** — thread `transport` into `_record_usage` (`agent.py:358`, add `auth_mode: str = "cli"`) → `usage_repo.create(..., auth_mode=auth_mode)`. Pass `transport` down to each `_record_usage` call from the spawn wrappers (it's already threaded in Task 2). `usage_repo.create` accepts/writes `auth_mode`.
+- [ ] **Step 5: Aggregation** — extend `agent_usage_repo.stats_by_provider` (or add `stats_by_provider_transport`) to group by `auth_mode`; the `/agent/stats` handler (`jobs.py:405`) joins token sums × `pricing.cost_usd` to emit `$ per provider per transport`.
+- [ ] **Step 6: Run tests green** + full-suite baseline holds.
+- [ ] **Step 7: Commit** — staged files → `feat(fleet): auth_mode attribution + static price map + per-transport $ stats (Phase 4)`.
+
+---
+
+### Task 7: Frontend — toggle, badge, `$` rollup
+
+**Files:** Modify `web/src/lib/types.ts`, `web/src/lib/api.ts`, the generate form, `web/src/components/fleet/launcher.tsx`, job/batch views, `web/src/routes/usage.tsx`.
+
+- [ ] **Step 1: Types** — `export type Transport = "cli" | "api";` add `transport: Transport` to Job + Batch types; add `api_supported: Record<string, boolean>` to the manifest type.
+- [ ] **Step 2: api.ts** — add `transport?: Transport` to the generate body and `launchBatch` body; consume `api_supported` from `getAgentModels`.
+- [ ] **Step 3: Generate form + `launcher.tsx`** — a `CLI | API` segmented toggle, **rendered only when the picked provider's `api_supported` is true** (claude/gemini); selecting `API` forces a concrete model selection (disable the provider-default option / require an explicit pick) and defaults back to `cli` when the provider changes to an unsupported one. Default `cli`.
+- [ ] **Step 4: Badges + `$`** — a small `api` chip on job rows / batch funnel cards where `transport === "api"` (visually distinct billed runs); `usage.tsx` gains the per-provider-per-transport `$` rollup from the extended stats payload.
+- [ ] **Step 5: FE gate** — `tsc --noEmit` clean + `npm run build` succeeds. Manually: toggle hidden for kimi, shown for claude, forces a model on API.
+- [ ] **Step 6: Commit** — stage ONLY the `web/` files touched → `feat(fleet): CLI|API transport toggle + api badge + per-transport $ (Phase 4)`.
+
+---
+
+### Task 8: Acceptance, operator runbook, worklog 0053
+
+**Files:** Create `docs/runbooks/phase4-transport-operator-acceptance.md`; Modify `docs/memory/MASTER_MEMORY.md`, `docs/memory/INDEX.md`, `docs/memory/ROADMAP.md`, `docs/memory/WISHLIST.md`.
+
+- [ ] **Step 1: In-band acceptance** (all free):
+  - Full suite green at baseline (no new reds).
+  - Mode-isolation (Task 2) + claim-gate (Task 5) + judge-auth (Task 4) + validation (Task 3) tests all pass.
+  - **Free invalid-key 401 proof** (spec §7.1 partial, zero cost): with a deliberately invalid `ANTHROPIC_API_KEY`, one in-process `agent.run_phase(provider="claude", transport="api", ...)` returns an immediate auth error (no subscription fallback, no spend). Record the observed error. (Skip if no network; note it.)
+- [ ] **Step 2: Operator runbook** `docs/runbooks/phase4-transport-operator-acceptance.md` — document the **billed, operator-run** gates the plan does NOT execute:
+  - §7.1 live valid-key smoke (claude + gemini): one headless call each bills the right account (AI Studio / Anthropic console), envelope still carries token stats in api mode, gemini api auth actually selected at runtime.
+  - **Deployment ordering (spec §3):** ship this GCA-injecting code to a worker **before** removing `security.auth.selectedType` on that PC — removal-first instantly breaks all gemini calls there.
+  - §7.2 post-removal upload smoke: after `selectedType` removed (code live), a plain book upload → TOC extraction still succeeds (proves the unconditional cli baseline).
+  - §7.5 end-to-end: one real lesson `transport=api` → every `agent_usages` row (extract + content + judge) has `auth_mode=api` and the `$` readout is nonzero.
+  - Worker env setup: `ANTHROPIC_API_KEY` + `GEMINI_API_KEY` via the worker compose/env file (never committed); both required for any api job.
+- [ ] **Step 3: Backlog hygiene** — confirm `fleet-api-1..5` are in `WISHLIST.md` (add `fleet-api-5` codex API mode if missing, per spec §8); close Phase 4 in `ROADMAP.md`.
+- [ ] **Step 4: Worklog 0053** in `MASTER_MEMORY.md` + an `INDEX.md` row.
+- [ ] **Step 5: Commit** — `git add docs/runbooks/phase4-transport-operator-acceptance.md docs/memory/MASTER_MEMORY.md docs/memory/INDEX.md docs/memory/ROADMAP.md docs/memory/WISHLIST.md` → `docs(memory): worklog 0053 — fleet Phase 4 (CLI|API transport toggle)`.
+
+---
+
+## Self-Review
+
+**Spec coverage:** §2 toggle/enum/default + validation → Tasks 1, 3. §3 transport-covers-every-spawn + cli-baseline-for-non-job spawns (TOC at upload) → Task 2 (default `"cli"` at every layer) + Task 4 (extract/content/judge threading). §3 required-keys fail-fast at claim + loud judge auth → Tasks 5, 4. §4 per-provider adapters (gemini GCA/key, claude key) → Task 2 `_auth_env`; `selectedType` startup guard → Task 5. §5 `auth_mode` + static price map + per-transport `$` → Task 6. §6 frontend toggle/badge/`$` → Task 7. §7 acceptance → Task 8 (in-band free + operator runbook for billed). §8 deferred items → Task 8 backlog hygiene.
+
+**Why `_auth_env` lives in `_spawn` (not per-caller):** there are four `_spawn` call sites and several wrappers; centralizing the transform at the single `child_env` build means no spawn path can bypass the cli baseline — which is exactly the §3 invariant (book-upload TOC extract, with no job, must still get GCA). The `transport` param threads down; the *logic* lives in one tested pure function.
+
+**Type/threading consistency:** `transport` default `"cli"` at every new param keeps all existing callers and ~330 existing tests valid without edits. `auth_mode` mirrors `transport` 1:1 and is recorded where provider/model already are. Validation lives in one `validate_transport` shared by both creation endpoints, so `/generate` and `/jobs/batch` can't diverge. The claim gate is a single `WHERE` predicate on the existing `pick_stmt` — no new query path.
+
+**Placeholder scan:** backend logic (migration, `_auth_env`, `validate_transport`, claim predicate, `cost_usd` shape) is given as real code; the FE task is structural (no unit harness — gate is `tsc` + build + manual). The only deliberately deferred-to-runtime values: the migration `down_revision` (read from the 0023 file in pre-flight) and the exact `$/Mtok` numbers (operator/reviewer fills from the dated source URLs — flagged, not hidden).
+
+**Pre-flight for the implementer:** alembic head == 0023 and `$DB_URL` migrated before Task 1; `npm install` current before Task 7; remember the billed gates (Task 8) are operator-run — do not attempt live valid-key calls in-band.
