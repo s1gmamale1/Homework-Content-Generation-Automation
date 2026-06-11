@@ -1,5 +1,17 @@
+from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Load .env into os.environ at import time (a real exported variable always
+# wins — override=False). pydantic-settings reads .env for the Settings fields
+# below, but the transport=api credentials (ANTHROPIC_API_KEY, GEMINI_API_KEY,
+# GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CLOUD_PROJECT, …) are consumed from
+# os.environ directly (worker claim gate + agent._auth_env child envs). Under
+# docker compose, `env_file:` already exports .env into the process env; this
+# line gives bare-metal (`uv run uvicorn …` / `python -m app.services.worker`)
+# the same behavior, so keys in .env work identically everywhere. config.py is
+# imported before worker.py computes HAS_API_KEYS, so the ordering is safe.
+load_dotenv(override=False)
 
 
 class Settings(BaseSettings):

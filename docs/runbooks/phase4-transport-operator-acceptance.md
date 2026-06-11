@@ -71,9 +71,9 @@ explicit `GEMINI_API_KEY` wins when both are set). The worker computes
 `WHERE transport='cli' OR :has_api_keys`, so a half-configured worker **will not
 claim api jobs** and logs a warning. cli jobs are unaffected.
 
-⚠ These are read from the **process environment**: compose `env_file:`/
-`environment:` deliver them; on bare metal, `.env` does NOT reach `os.environ` —
-`export` them in the shell/service unit.
+These are read from the **process environment** and `.env` works everywhere:
+compose `env_file:`/`environment:` export it, and on bare metal the app loads
+`.env` at startup (`config.py` `load_dotenv`; an exported variable always wins).
 
 ---
 

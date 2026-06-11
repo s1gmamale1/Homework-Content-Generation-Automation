@@ -132,7 +132,7 @@ All settings via env vars; defaults in [`app/config.py`](./app/config.py). Essen
 | `JOB_TIMEOUT_SECONDS` | Hard ceiling per pipeline run (default 1800) |
 | `QUEUE_BACKPRESSURE_LIMIT` | `503` when `pending` depth exceeds; `0` disables |
 | `NOTION_API_KEY` / `NOTION_*` | Optional: Notion archive + Fetch-From-Notion |
-| `ANTHROPIC_API_KEY` + (`GEMINI_API_KEY` **or** `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT`) | Only for `transport=api` jobs (Phase 4 toggle). **Process env, not `.env`** on bare metal — see `.env.example` "TRANSPORT=API" |
+| `ANTHROPIC_API_KEY` + (`GEMINI_API_KEY` **or** `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT`) | Only for `transport=api` jobs (Phase 4 toggle); works from `.env` (loaded at startup, exported env wins) — see `.env.example` "TRANSPORT=API" |
 
 > `GEMINI_MODEL` is **vestigial** (leftover from the removed SDK era) — nothing reads it. `GEMINI_API_KEY` is no longer vestigial: since Phase 4 it selects API-key auth for `transport=api` gemini jobs.
 
