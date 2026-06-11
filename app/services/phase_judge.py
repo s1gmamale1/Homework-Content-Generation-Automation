@@ -87,8 +87,22 @@ def _serialize_failures(failures: list[Failure]) -> list[str]:
 
 
 # Substrings (case-insensitive) that mark an auth/401 failure. An api job that
-# hits one of these must fail loudly rather than ship unjudged.
-_AUTH_SIGNALS = ("401", "invalid api key", "unauthorized")
+# hits one of these must fail loudly rather than ship unjudged. Covers the
+# claude shapes (401 / invalid api key) AND the gemini/Vertex shapes the
+# fleet-api-6 service-account path can produce (PERMISSION_DENIED 403, AIza
+# key rejection, SA token-mint failure, UNAUTHENTICATED). Deliberately NO bare
+# "403": exception strings can embed generated output, and a stray "403" there
+# would loudly fail an api job that should only soft-degrade.
+_AUTH_SIGNALS = (
+    "401",
+    "invalid api key",
+    "unauthorized",
+    "permission_denied",
+    "permission denied",
+    "api key not valid",
+    "invalid_grant",
+    "unauthenticated",
+)
 
 
 def _is_auth_error(exc: BaseException) -> bool:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.services import pricing
 
 
@@ -51,3 +53,21 @@ def test_model_none_resolves_to_provider_default_not_zero():
 
 def test_empty_usage_is_zero():
     assert pricing.cost_usd("claude", "claude-opus-4-8", {}) == 0.0
+
+
+def test_gemini_cached_is_subset_of_prompt_no_double_bill():
+    """Gemini's promptTokenCount INCLUDES cachedContentTokenCount (verified
+    against Google's usageMetadata billing semantics 2026-06-11) — billable
+    input = prompt - cached. Claude's prompt_tokens is DISJOINT from cached.
+    1M prompt incl. 400k cached on 3.1-pro: 600k×$2 + 400k×$0.20 = $1.28."""
+    usage = {"prompt_tokens": 1_000_000, "output_tokens": 0, "cached_tokens": 400_000}
+    cost = pricing.cost_usd("gemini", "gemini-3.1-pro-preview", usage)
+    assert abs(cost - (0.6 * 2.0 + 0.4 * 0.20)) < 1e-9
+
+
+def test_gemini_cached_never_negative_input():
+    # Defensive clamp: malformed rows where cached > prompt must not bill
+    # negative input.
+    usage = {"prompt_tokens": 100, "output_tokens": 0, "cached_tokens": 500}
+    cost = pricing.cost_usd("gemini", "gemini-2.5-flash", usage)
+    assert cost == pytest.approx(500 * 0.03 / 1_000_000)

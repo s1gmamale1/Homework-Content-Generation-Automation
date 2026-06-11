@@ -47,6 +47,15 @@ PRICE_MAP: dict[tuple[str, str], dict[str, float]] = {
     ("gemini", "gemini-3.1-flash-lite-preview"): {"input": 0.25, "output": 1.50, "cache_read": 0.025},
 }
 
+# Providers whose reported prompt count INCLUDES the cached span (see the
+# per-provider semantics comment in cost_usd).
+_PROMPT_INCLUDES_CACHED: frozenset[str] = frozenset({"gemini"})
+
+# KNOWN BIAS (under-report): Anthropic bills cache WRITES at 1.25× input
+# (cache_creation_input_tokens), but agent_usages has no column for them —
+# the claude provider parses the value into the raw envelope only. When
+# prompt caching fires on claude api rows, the $ readout under-reports by
+# the unbilled cache-write premium. Tracked in WISHLIST (pricing-1).
 # Models we've already logged as missing, so the warning fires once per gap.
 _LOGGED_MISSING: set[tuple[str, Optional[str]]] = set()
 
@@ -68,8 +77,19 @@ def cost_usd(provider: str, model: Optional[str], usage: dict[str, Any]) -> floa
         return 0.0
 
     cached = int(usage.get("cached_tokens") or 0)
-    uncached_input = int(usage.get("prompt_tokens") or 0)  # disjoint from cached
+    prompt = int(usage.get("prompt_tokens") or 0)
     output = int(usage.get("output_tokens") or 0)
+
+    # Cached-token semantics differ PER PROVIDER (both verified 2026-06-11):
+    #   claude: prompt_tokens mirrors Anthropic input_tokens — the UNCACHED
+    #           count, DISJOINT from cached_tokens. Bill prompt as-is.
+    #   gemini: promptTokenCount INCLUDES cachedContentTokenCount — billable
+    #           input is prompt - cached, else the cached span double-bills
+    #           (input rate + cache-read rate).
+    if provider in _PROMPT_INCLUDES_CACHED:
+        uncached_input = max(prompt - cached, 0)  # clamp malformed rows
+    else:
+        uncached_input = prompt
 
     input_cost = uncached_input * rates["input"] / 1_000_000
     output_cost = output * rates["output"] / 1_000_000

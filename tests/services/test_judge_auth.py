@@ -62,3 +62,21 @@ def test_judge_api_non_auth_error_still_degrades(monkeypatch):
 
     out = _call_judge("api")
     assert out.available is False and out.passed is True
+
+
+def test_is_auth_error_covers_vertex_and_gemini_shapes():
+    """fleet-api-6 introduced Vertex/gemini auth-failure shapes that the
+    original signals ('401' / 'invalid api key' / 'unauthorized') miss."""
+    from app.services.phase_judge import _is_auth_error
+
+    for msg in (
+        "Error: PERMISSION_DENIED: caller lacks permission",      # vertex 403
+        "status: 403, reason: permission denied on resource",
+        "API key not valid. Please pass a valid API key.",        # gemini AIza
+        "invalid_grant: account not found",                       # SA token mint
+        "UNAUTHENTICATED: request had invalid credentials",
+    ):
+        assert _is_auth_error(RuntimeError(msg)), msg
+    # benign errors must NOT match (a false positive fails an api job loudly)
+    assert not _is_auth_error(RuntimeError("CLI exploded: connection reset"))
+    assert not _is_auth_error(RuntimeError("model produced no parsed Verdict"))
