@@ -72,6 +72,16 @@ keys-equipped PC and a subscription-only PC and the queue routes correctly.
 (`_compute_has_api_keys` is replaced by this capability set; the startup warning
 enumerates which sides are missing.)
 
+**§4a — judge self-fallback (review-caught hole, required):** `judge_model_for`
+is NOT always `settings.judge_provider` — when the job's `(provider, model)`
+equals the worker's configured judge pair, the no-self rule swaps the judge to
+`_SELF_FALLBACK = ("gemini", "gemini-3.1-pro-preview")`. The gate's
+`judge_api_ok` must therefore use the FALLBACK provider's capability for exactly
+those jobs (an extra SQL branch with bound literals — the explicit-model rule
+guarantees `model` is non-null in api mode — or resolve-and-stamp at claim time;
+plan's choice). Without this, a claude-only-keyed worker claims an
+opus-content+api-judge job whose judge actually needs a gemini credential.
+
 ## 5. Pipeline + judge threading
 
 - `pipeline.run` resolves both role transports next to `transport = job.transport`.
@@ -81,6 +91,17 @@ enumerates which sides are missing.)
 - **Loud-judge rule keys off the JUDGE's resolved transport** (`judge auth error +
   resolved_judge==api` → job fails loudly; cli judge keeps the soft degrade). Same
   for the regen-guard carve-out.
+- **§5a — typed credential errors (review-caught, required):** `_auth_env`'s
+  raises ("…unset/empty…", "transport=api unsupported for …") match NO
+  `_AUTH_SIGNALS` substring — today they'd be SWALLOWED by the judge's broad
+  except and ship api content unjudged (the exact failure class loud-judge
+  exists for; currently masked only by the both-keys gate). Fix by typing, not
+  string-matching: `_auth_env` raises a dedicated `AuthEnvError(RuntimeError)`;
+  `_is_auth_error` returns True for `isinstance(exc, AuthEnvError)` in addition
+  to the signal strings. Every credential misprediction — self-fallback,
+  unsupported provider, missing key — becomes loud BY CONSTRUCTION, and a gate
+  miss degrades to "claimed → fails loudly → retried elsewhere" instead of
+  silent unjudged output.
 - The api failover restriction (requested-provider-only) applies **per spawn,
   based on that spawn's resolved transport** — an api extract doesn't cross
   providers; a cli extract failover behaves as today.
@@ -121,6 +142,12 @@ the batch; the JOBS carry the truth). No backfill needed beyond the server_defau
    Vertex SA) + `extract_transport=cli` + `judge_transport=cli` on a worker with NO
    Anthropic key → claimed, extract+judge rows `auth_mode=cli`, content rows
    `auth_mode=api`, `$` readout counts only the gemini side.
+4. **Self-fallback end-to-end** (the §4a/§5a case): content on the configured
+   judge pair (claude/claude-opus-4-7) + `judge_transport=api` — (a) a
+   claude-only-keyed worker must NOT claim it; (b) on a gemini-credentialed
+   worker the judge runs the fallback (gemini-3.1-pro) on api auth and records
+   `auth_mode=api`; (c) with the credential deliberately removed mid-test, the
+   job fails LOUDLY via `AuthEnvError` (never ships unjudged).
 
 ## 10. Out of scope
 
