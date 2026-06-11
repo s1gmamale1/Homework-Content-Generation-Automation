@@ -40,6 +40,29 @@ function accentOf(id: string): [string, string] {
   return ACCENTS[id] ?? ["#8aa0c6", "#5f6f93"];
 }
 
+/** Pay-per-token API spend for a provider/window. cli rows are always $0, so
+ *  this is the sum of `cost_usd` over the api transport entries. */
+function apiCostOf(stats: ProviderStatsWindow | undefined): number {
+  if (!stats?.transports) return 0;
+  return stats.transports
+    .filter((t) => t.auth_mode === "api")
+    .reduce((sum, t) => sum + t.cost_usd, 0);
+}
+
+/** API call count for a provider/window (the billed transport). */
+function apiCallsOf(stats: ProviderStatsWindow | undefined): number {
+  if (!stats?.transports) return 0;
+  return stats.transports
+    .filter((t) => t.auth_mode === "api")
+    .reduce((sum, t) => sum + t.calls, 0);
+}
+
+function formatUsd(n: number): string {
+  if (n === 0) return "$0";
+  if (n < 0.01) return "<$0.01";
+  return `$${n.toFixed(2)}`;
+}
+
 function orderedProviders(providers: Record<string, unknown>): string[] {
   const keys = Object.keys(providers);
   const known = PROVIDER_ORDER.filter((p) => keys.includes(p));
@@ -375,6 +398,8 @@ function ProviderCard({
     (stats?.output_tokens ?? 0) === 0 &&
     (stats?.cached_tokens ?? 0) === 0;
   const showRing = cap !== null && calls > 0;
+  const apiCost = apiCostOf(stats);
+  const apiCalls = apiCallsOf(stats);
 
   return (
     <button
@@ -430,7 +455,7 @@ function ProviderCard({
         </div>
       </div>
 
-      <div className="mt-3 border-t border-white/[0.07] pt-2.5 text-[0.72rem]">
+      <div className="mt-3 flex items-center justify-between gap-2 border-t border-white/[0.07] pt-2.5 text-[0.72rem]">
         {idle ? (
           <span className="text-white/40">No activity</span>
         ) : (
@@ -438,6 +463,14 @@ function ProviderCard({
             <span className="text-emerald-300">{stats!.success_pct}% success</span>
             <span className="px-1.5 text-white/25">·</span>
             {formatDuration(stats!.duration_secs)}
+          </span>
+        )}
+        {apiCalls > 0 && (
+          <span
+            className="shrink-0 rounded-md border border-amber-400/30 bg-amber-400/15 px-1.5 py-0.5 font-mono text-[0.66rem] font-semibold text-amber-300"
+            title={`${apiCalls} API call${apiCalls === 1 ? "" : "s"} (pay-per-token)`}
+          >
+            {formatUsd(apiCost)}
           </span>
         )}
       </div>
@@ -523,6 +556,12 @@ function DetailPanel({
               <DetailRow
                 term="Limit"
                 value={cap !== null ? `${cap} / ${windowKey}` : "unmetered"}
+              />
+              <DetailRow
+                term="API spend"
+                value={`${formatUsd(apiCostOf(stats))}${
+                  apiCallsOf(stats) > 0 ? ` · ${apiCallsOf(stats)} api calls` : ""
+                }`}
               />
             </dl>
           </div>

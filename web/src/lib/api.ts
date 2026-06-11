@@ -10,6 +10,7 @@ import type {
   ProviderModelManifest,
   Subject,
   TOCEntry,
+  Transport,
   Worker,
 } from "./types";
 
@@ -150,9 +151,16 @@ export const api = {
       idempotencyKey?: string;
       provider?: string;
       model?: string | null;
+      transport?: Transport;
     } = {},
   ): Promise<Job> {
-    const { force = false, idempotencyKey, provider = "claude", model = null } = opts;
+    const {
+      force = false,
+      idempotencyKey,
+      provider = "claude",
+      model = null,
+      transport = "cli",
+    } = opts;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
     const res = await authFetch(
@@ -160,7 +168,7 @@ export const api = {
       {
         method: "POST",
         headers,
-        body: JSON.stringify({ force, provider, model }),
+        body: JSON.stringify({ force, provider, model, transport }),
       },
     );
     return unwrap<Job>(res);
@@ -242,7 +250,7 @@ export const api = {
     return (await unwrap<{ jobs: BatchLessonRow[] }>(res)).jobs;
   },
   async launchBatch(body: {
-    book_id: string; toc_entry_ids?: string[]; provider?: string; model?: string | null;
+    book_id: string; toc_entry_ids?: string[]; provider?: string; model?: string | null; transport?: Transport;
   }): Promise<BatchSummary & { jobs_created: number; jobs_adopted: number; jobs_skipped: number }> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),

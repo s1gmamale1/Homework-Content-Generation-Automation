@@ -36,6 +36,7 @@ def _rollup_payload(batch, tally: dict[str, int]) -> dict:
         "grade": batch.grade,
         "provider": batch.provider,
         "model": batch.model,
+        "transport": batch.transport,
         "rollup": tally,
         "lessons_covered": sum(tally.values()),
         "complete": (tally.get("pending", 0) + tally.get("running", 0)

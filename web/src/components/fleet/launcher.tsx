@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ListChecks, Loader2, Rocket } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   Select,
@@ -11,11 +11,15 @@ import {
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
 import { subjectLabel } from "@/lib/subjects";
-import type { BatchSummary, Book } from "@/lib/types";
+import type { BatchSummary, Book, Transport } from "@/lib/types";
 import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
 const LBL = "text-xs font-medium uppercase tracking-[0.12em] text-white/45";
+
+/** All transports a book could be launched on. cli is always available; api
+ *  only for providers the backend `api_supported` map marks true. */
+const ALL_TRANSPORTS: Transport[] = ["cli", "api"];
 
 export function FleetLauncher({
   books,
@@ -54,14 +58,27 @@ export function FleetLauncher({
   });
 
   // ---- Tray (server-derived) ----
-  const batchedBookIds = new Set((batches ?? []).map((b) => b.book_id));
+  // The batch key is (book_id, transport): a book can carry a cli batch AND an
+  // api batch independently. Track which transports each book already has, so a
+  // cli-batched book is still launchable on api (and vice-versa). A book leaves
+  // the Ready tray only once it has a batch for EVERY transport.
+  const batchedTransports = new Map<string, Set<Transport>>();
+  for (const b of batches ?? []) {
+    const set = batchedTransports.get(b.book_id) ?? new Set<Transport>();
+    set.add(b.transport);
+    batchedTransports.set(b.book_id, set);
+  }
+  const fullyBatched = (bookId: string) => {
+    const set = batchedTransports.get(bookId);
+    return !!set && ALL_TRANSPORTS.every((t) => set.has(t));
+  };
   const all = books ?? [];
   const preparing = all.filter(
     (b) => b.status === "toc_extracting" || b.status === "uploading",
   );
   const failed = all.filter((b) => b.status === "failed");
   const ready = all.filter(
-    (b) => b.status === "toc_ready" && !batchedBookIds.has(b.id),
+    (b) => b.status === "toc_ready" && !fullyBatched(b.id),
   );
   const trayEmpty =
     preparing.length === 0 && ready.length === 0 && failed.length === 0;
@@ -194,7 +211,11 @@ export function FleetLauncher({
               <div className="space-y-2">
                 <span className={LBL}>Ready</span>
                 {ready.map((b) => (
-                  <ReadyRow key={b.id} book={b} />
+                  <ReadyRow
+                    key={b.id}
+                    book={b}
+                    batchedTransports={batchedTransports.get(b.id) ?? new Set()}
+                  />
                 ))}
               </div>
             )}
@@ -225,9 +246,17 @@ export function FleetLauncher({
   );
 }
 
-function ReadyRow({ book }: { book: Book }) {
+function ReadyRow({
+  book,
+  batchedTransports,
+}: {
+  book: Book;
+  batchedTransports: Set<Transport>;
+}) {
   const qc = useQueryClient();
   const [provider, setProvider] = useState("claude");
+  const [transport, setTransport] = useState<Transport>("cli");
+  const [model, setModel] = useState<string | null>(null);
   const [choosing, setChoosing] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -243,11 +272,45 @@ function ReadyRow({ book }: { book: Book }) {
   const lessons = detail.data?.toc?.length;
   const subset = choosing && selected.size > 0;
 
+  // Does the picked provider support the pay-per-token API transport? Only
+  // claude/gemini do; the toggle is hidden for the rest and transport pins cli.
+  const apiSupported = modelsQ.data?.api_supported?.[provider] ?? false;
+
+  // Reset transport to cli whenever the provider can't do api (keeps an
+  // unsupported provider from carrying a stale api selection). model=null means
+  // "provider default" — fine for cli, but api forces an explicit model below.
+  useEffect(() => {
+    if (!apiSupported && transport === "api") setTransport("cli");
+  }, [apiSupported, transport]);
+
+  // On api, force a concrete model: "provider default" isn't allowed (billing
+  // needs an explicit model). Seed/clear the model as transport/provider change.
+  const modelOptions = modelsQ.data?.providers?.[provider] ?? [];
+  useEffect(() => {
+    if (transport === "api") {
+      // Seed the first concrete model if none chosen / stale for this provider.
+      if (!model || !modelOptions.includes(model)) {
+        setModel(modelOptions[0] ?? null);
+      }
+    } else {
+      // cli uses provider default — don't pin a model.
+      setModel(null);
+    }
+    // modelOptions identity changes only when the manifest/provider changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transport, provider, modelsQ.data]);
+
+  const alreadyBatched = batchedTransports.has(transport);
+  // On api we must have an explicit model selected.
+  const missingApiModel = transport === "api" && !model;
+
   const launch = useMutation({
     mutationFn: () =>
       api.launchBatch({
         book_id: book.id,
         provider,
+        transport,
+        ...(transport === "api" ? { model } : {}),
         ...(subset ? { toc_entry_ids: [...selected] } : {}),
       }),
     onSuccess: (r) => {
@@ -295,10 +358,41 @@ function ReadyRow({ book }: { book: Book }) {
               ))}
             </SelectContent>
           </Select>
+          {/* CLI | API toggle — only for providers the backend bills via API. */}
+          {apiSupported && (
+            <TransportToggle value={transport} onChange={setTransport} />
+          )}
+          {/* API forces an explicit model (no "provider default"). */}
+          {transport === "api" && (
+            <Select value={model ?? ""} onValueChange={(v) => setModel(v)}>
+              <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[11rem]")}>
+                <SelectValue placeholder="Pick a model" />
+              </SelectTrigger>
+              <SelectContent>
+                {modelOptions.map((m) => (
+                  <SelectItem key={m} value={m}>
+                    {m}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <button
             type="button"
             className={PRIMARY_BTN}
-            disabled={launch.isPending || (choosing && selected.size === 0)}
+            disabled={
+              launch.isPending ||
+              (choosing && selected.size === 0) ||
+              alreadyBatched ||
+              missingApiModel
+            }
+            title={
+              alreadyBatched
+                ? `Already launched on ${transport.toUpperCase()}`
+                : missingApiModel
+                  ? "Pick a model to launch on API"
+                  : undefined
+            }
             onClick={() => launch.mutate()}
           >
             {launch.isPending ? (
@@ -306,7 +400,11 @@ function ReadyRow({ book }: { book: Book }) {
             ) : (
               <Rocket className="size-4" />
             )}
-            {subset ? `Launch ${selected.size}` : "Launch"}
+            {alreadyBatched
+              ? `${transport.toUpperCase()} launched`
+              : subset
+                ? `Launch ${selected.size}`
+                : "Launch"}
           </button>
         </div>
       </div>
@@ -347,5 +445,48 @@ function ReadyRow({ book }: { book: Book }) {
         </div>
       )}
     </div>
+  );
+}
+
+/** CLI | API segmented control. cli is local/free, api is pay-per-token. */
+function TransportToggle({
+  value,
+  onChange,
+}: {
+  value: Transport;
+  onChange: (next: Transport) => void;
+}) {
+  return (
+    <div className="inline-flex h-9 rounded-xl border border-white/[0.1] bg-white/[0.04] p-0.5">
+      {ALL_TRANSPORTS.map((t) => (
+        <button
+          key={t}
+          type="button"
+          onClick={() => onChange(t)}
+          className={cn(
+            "rounded-lg px-2.5 text-xs font-medium uppercase tracking-wide transition-all",
+            t === value
+              ? "bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] text-white shadow-[0_10px_26px_-12px_rgba(99,102,241,0.9)]"
+              : "text-white/55 hover:text-white",
+          )}
+        >
+          {t}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Small distinct chip flagging a billed (pay-per-token) API run. */
+export function ApiBadge({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-md border border-amber-400/30 bg-amber-400/15 px-1.5 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wide text-amber-300",
+        className,
+      )}
+    >
+      api $
+    </span>
   );
 }

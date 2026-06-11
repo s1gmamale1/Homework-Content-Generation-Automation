@@ -21,6 +21,9 @@ export const SUBJECTS: Subject[] = [
 
 export type BookStatus = "uploading" | "toc_extracting" | "toc_ready" | "failed";
 
+/** Generation transport: "cli" (local subprocess, default) vs "api" (pay-per-token SDK; claude/gemini only). */
+export type Transport = "cli" | "api";
+
 export interface TOCEntry {
   id: string;
   chapter_number: string | null;
@@ -92,11 +95,14 @@ export interface Job {
   phases: PhaseOut[];
   provider?: string;
   model?: string | null;
+  transport: Transport;
   notion_skip_reason?: string | null;
 }
 
 export interface ProviderModelManifest {
   providers: Record<string, string[]>;
+  /** Which providers can run on the pay-per-token API transport (claude/gemini). */
+  api_supported: Record<string, boolean>;
 }
 
 /* /api/v1/agent/stats — per-provider rolling consumption against caps */
@@ -109,6 +115,12 @@ export interface ProviderModelStat {
   cached_tokens: number;
   success_pct: number;
 }
+/* Per-(provider, transport) rollup. cli rows always cost $0 (no pay-per-token). */
+export interface ProviderTransportStat {
+  auth_mode: Transport;
+  calls: number;
+  cost_usd: number;
+}
 export interface ProviderStatsWindow {
   calls: number;
   duration_secs: number;
@@ -119,6 +131,7 @@ export interface ProviderStatsWindow {
   limit_calls_per_window: number | null;
   pct_of_limit: number | null;
   models: ProviderModelStat[];
+  transports: ProviderTransportStat[];
 }
 export interface UsageSeries {
   calls: number[];
@@ -279,6 +292,7 @@ export interface BatchSummary {
   grade: string | null;
   provider: string;
   model: string | null;
+  transport: Transport;
   rollup: BatchRollup;
   lessons_covered: number;
   complete: boolean;

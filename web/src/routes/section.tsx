@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
 import { subjectLabel } from "@/lib/subjects";
-import type { JobStatus } from "@/lib/types";
+import type { JobStatus, Transport } from "@/lib/types";
 import { CARD, GLASS_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn, formatPages } from "@/lib/utils";
 
@@ -34,6 +34,7 @@ export function SectionPage() {
   const [busy, setBusy] = useState<"new" | "regen" | null>(null);
   const [provider, setProvider] = useState<string>("claude");
   const [model, setModel] = useState<string | null>(null);
+  const [transport, setTransport] = useState<Transport>("cli");
 
   const { data: book, isLoading } = useQuery({
     queryKey: ["book", bookId],
@@ -57,6 +58,14 @@ export function SectionPage() {
     setModel(firstModel);
   }, [manifest, provider]);
 
+  // Only claude/gemini bill via the pay-per-token API transport; the toggle is
+  // hidden for everything else. If the provider switches to one that can't do
+  // api, drop back to cli so we never send an invalid transport.
+  const apiSupported = manifest?.api_supported?.[provider] ?? false;
+  useEffect(() => {
+    if (!apiSupported && transport === "api") setTransport("cli");
+  }, [apiSupported, transport]);
+
   const section = book?.toc?.find((e) => e.id === sectionId);
   const existingJobId = section?.latest_job_id ?? null;
   const existingStatus = (section?.latest_job_status ?? null) as JobStatus | null;
@@ -76,6 +85,7 @@ export function SectionPage() {
         idempotencyKey,
         provider,
         model,
+        transport,
       });
       navigate(`/job/${job.id}`);
     } catch (err) {
@@ -162,6 +172,9 @@ export function SectionPage() {
           onProviderChange={setProvider}
           model={model}
           onModelChange={setModel}
+          apiSupported={apiSupported}
+          transport={transport}
+          onTransportChange={setTransport}
         />
 
         {/* Existing-homework-aware action panel */}
@@ -170,6 +183,7 @@ export function SectionPage() {
           existingStatus={existingStatus}
           busy={busy}
           manifestLoading={manifestLoading}
+          blocked={transport === "api" && !model}
           onGenerate={() => handleGenerate(false)}
           onRegenerate={() => handleGenerate(true)}
         />
@@ -185,6 +199,9 @@ interface AgentPickerProps {
   onProviderChange: (next: string) => void;
   model: string | null;
   onModelChange: (next: string | null) => void;
+  apiSupported: boolean;
+  transport: Transport;
+  onTransportChange: (next: Transport) => void;
 }
 
 function AgentPicker({
@@ -194,6 +211,9 @@ function AgentPicker({
   onProviderChange,
   model,
   onModelChange,
+  apiSupported,
+  transport,
+  onTransportChange,
 }: AgentPickerProps) {
   const providerNames = manifest ? Object.keys(manifest.providers) : [];
   const modelOptions = manifest?.providers[provider] ?? [];
@@ -257,6 +277,40 @@ function AgentPicker({
           </Select>
         </label>
       </div>
+
+      {/* CLI | API transport toggle — only for providers the backend bills via
+          the pay-per-token API (claude/gemini). Hidden otherwise; transport
+          pins to cli. On API the Model select above is required (a concrete
+          model must be chosen — there is no "provider default" billing path). */}
+      {apiSupported && (
+        <div className="mt-4 flex flex-col gap-1.5">
+          <span className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/45">
+            Transport
+          </span>
+          <div className="inline-flex w-fit rounded-xl border border-white/[0.1] bg-white/[0.04] p-1">
+            {(["cli", "api"] as Transport[]).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => onTransportChange(t)}
+                className={cn(
+                  "rounded-lg px-4 py-2 text-sm font-medium uppercase tracking-wide transition-all",
+                  t === transport
+                    ? "bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] text-white shadow-[0_10px_26px_-12px_rgba(99,102,241,0.9)]"
+                    : "text-white/55 hover:bg-white/[0.06] hover:text-white",
+                )}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-xs text-white/45">
+            {transport === "api"
+              ? "Pay-per-token API — pick a concrete model above (billed)."
+              : "Local CLI subprocess — no per-token billing."}
+          </p>
+        </div>
+      )}
     </section>
   );
 }
@@ -266,6 +320,7 @@ interface ActionPanelProps {
   existingStatus: JobStatus | null;
   busy: "new" | "regen" | null;
   manifestLoading: boolean;
+  blocked?: boolean;
   onGenerate: () => void;
   onRegenerate: () => void;
 }
@@ -275,13 +330,15 @@ function ActionPanel({
   existingStatus,
   busy,
   manifestLoading,
+  blocked = false,
   onGenerate,
   onRegenerate,
 }: ActionPanelProps) {
   // Buttons are disabled while a generate is in flight OR while the agent
   // manifest is still loading — without the manifest we can't send a valid
-  // provider/model pair.
-  const disabled = busy !== null || manifestLoading;
+  // provider/model pair — OR while `blocked` (e.g. API transport with no
+  // concrete model picked yet).
+  const disabled = busy !== null || manifestLoading || blocked;
 
   // No existing job — fresh generate
   if (!existingJobId) {

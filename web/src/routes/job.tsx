@@ -21,7 +21,8 @@ import { SpaceBackdrop } from "@/components/space-backdrop";
 import { useEventSource } from "@/hooks/use-event-source";
 import { api } from "@/lib/api";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
-import type { Difficulty, JobStatus } from "@/lib/types";
+import { ApiBadge } from "@/components/fleet/launcher";
+import type { Difficulty, JobStatus, Transport } from "@/lib/types";
 import { BACK_PILL, GLASS_BTN, PRIMARY_BTN } from "@/lib/ui";
 import { cn, formatPhaseName, formatTokens } from "@/lib/utils";
 
@@ -52,7 +53,11 @@ export function JobPage() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [parents, setParents] = useState<{ bookId: string; sectionId: string } | null>(null);
-  const [agent, setAgent] = useState<{ provider: string; model: string | null } | null>(null);
+  const [agent, setAgent] = useState<{
+    provider: string;
+    model: string | null;
+    transport: Transport;
+  } | null>(null);
   const [status, setStatus] = useState<JobStatus | null>(null);
   const [notionSkip, setNotionSkip] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
@@ -132,7 +137,12 @@ export function JobPage() {
       .getJob(id)
       .then((j) => {
         setParents({ bookId: j.book_id, sectionId: j.toc_entry_id });
-        if (j.provider) setAgent({ provider: j.provider, model: j.model ?? null });
+        if (j.provider)
+          setAgent({
+            provider: j.provider,
+            model: j.model ?? null,
+            transport: j.transport,
+          });
         for (const p of j.phases) {
           upsert(p.phase_name, {
             order: p.phase_order,
@@ -280,6 +290,7 @@ export function JobPage() {
             <span className="font-mono text-[0.75rem] text-white/70">
               {agent.provider} · {agent.model ?? "default"}
             </span>
+            {agent.transport === "api" && <ApiBadge />}
           </p>
         )}
 

@@ -4,6 +4,7 @@ import type { BatchSummary } from "@/lib/types";
 import { subjectLabel } from "@/lib/subjects";
 import { CARD, GHOST_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
+import { ApiBadge } from "./launcher";
 import { BatchLessonList } from "./batch-lesson-list";
 import { RollupBar } from "./rollup-bar";
 
@@ -21,8 +22,9 @@ function BatchCard({ batch }: { batch: BatchSummary }) {
               <span className="font-normal text-white/45"> · grade {batch.grade}</span>
             ) : null}
           </div>
-          <div className="mt-0.5 font-mono text-[0.72rem] text-white/40">
-            {batch.provider}
+          <div className="mt-0.5 flex items-center gap-2 font-mono text-[0.72rem] text-white/40">
+            <span>{batch.provider}</span>
+            {batch.transport === "api" && <ApiBadge />}
           </div>
         </div>
         {batch.complete ? (
