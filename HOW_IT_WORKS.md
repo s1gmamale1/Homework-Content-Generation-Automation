@@ -112,15 +112,18 @@ The flow in words:
 ## 4. The data model (what's stored, and why)
 
 Everything lives in **Postgres** (locally on port **5433**, not the usual 5432, because
-Windows often already runs its own Postgres on 5432). Five tables matter:
+Windows often already runs its own Postgres on 5432). Seven tables matter
+(full column-level detail lives in `docs/DATABASE.md`):
 
 | Table | One row per… | Holds |
 |-------|--------------|-------|
 | `books` | uploaded PDF | subject, filename, file hash, status. The PDF itself lives on **disk** at `var/books/<book_id>/source.pdf`, not in the DB. |
 | `toc_entries` | chapter section | chapter/section number + title, page range. This is what the user picks to generate homework from. |
-| `homework_jobs` | generation request | the chosen `provider`/`model`, `status` (pending/running/done/failed/cancelling/cancelled), `current_phase`, the queue columns (`attempts`, `claimed_at`, …), and Notion-archive markers. The generated content lives on `phase_outputs`, **not** here — there are no structured-JSON columns. |
+| `homework_jobs` | generation request | the chosen `provider`/`model`, `status` (pending/running/done/failed/cancelling/cancelled), `current_phase`, the queue columns (`attempts`, `claimed_at`, …), an optional `batch_id` (fleet membership), and Notion-archive markers. The generated content lives on `phase_outputs`, **not** here — there are no structured-JSON columns. |
 | `phase_outputs` | one phase of one job | the phase name, order, status, its markdown output, token counts. A unique constraint (`uq_phase_output_job_order`) forbids two rows for the same (job, order). |
 | `agent_usages` | one CLI subprocess call | provider, model, normalized token counts, duration, success/failure, and the raw envelope. This is how the usage dashboard and the end-of-job cost table are built. |
+| `batches` | fleet batch (one per book) | the launch-time subject/grade/provider/model. **No stored counters** — progress is computed on read from member jobs (one vote per lesson, its newest job), so retries can't inflate the tally. |
+| `workers` | worker process (a fleet PC) | `pc_id` ("hostname:pid"), `last_heartbeat`, status label. Online/offline is **derived** from heartbeat freshness against the DB clock, never stored. |
 
 Two things people trip on:
 - **The PDF is on disk, not in the DB.** The path is deterministic. Every phase re-reads it
@@ -157,6 +160,36 @@ worker re-claims it. Nothing is silently lost.
 There's also retry-with-backoff (up to `queue_max_attempts`), a per-job timeout, and
 **backpressure**: if more than ~50 jobs are already waiting, `/generate` returns `503` instead
 of letting the queue grow forever.
+
+**One clock to rule them all:** every timestamp the queue *compares* (claim eligibility,
+lease staleness, backoff scheduling, worker liveness) is written **and** read with the
+database's clock (`func.now()`), never the host's. This matters because Docker/WSL2 clocks
+drift relative to the host — mixing clocks once made freshly-created jobs look "scheduled
+in the future" and flake the claim. Host-clock timestamps are only used for record-only
+stamps like `completed_at`. (Full detail: `docs/DATABASE.md` §2.)
+
+### The fleet layer — many PCs, one head
+
+The same queue scales to a **fleet**: N PCs each run a standalone worker
+(`python -m app.services.worker`) pointed at one shared Postgres "head." `FOR UPDATE SKIP
+LOCKED` already guarantees two workers can never claim the same job, so scaling out is just
+"start more workers." On top of that sit three small pieces:
+
+- **Workers registry** (`workers` table): each worker heartbeats its `pc_id` every 30s on a
+  dedicated task (deliberately *not* in the main loop — a busy worker whose slots are full
+  would otherwise stop beating and look dead). `GET /workers` derives online/offline from
+  heartbeat freshness (90s = 3 missed beats).
+- **Batches** (`batches` table + `POST /jobs/batch`): launch a whole book as one batch —
+  one job per lesson, fanned into the shared queue. Lessons that already have an active job
+  are skipped (or adopted, if they don't belong to a batch yet), so re-launching is a safe
+  "top-up." Progress rollups are computed on read, one vote per lesson.
+- **The `/fleet` dashboard**: launch a Notion subject end-to-end (fetch → TOC-extract →
+  launch), watch batch funnels fill, see PC liveness cards, and drill into a batch's
+  lessons to cancel/retry individual ones.
+
+One caveat worth knowing: the API's *startup* orphan sweep resets **all** `running` jobs to
+`pending` (it assumes a single host). In a multi-pod fleet that would steal live workers'
+jobs — fleet setups rely on the TTL-based sweep instead.
 
 ---
 
@@ -341,6 +374,16 @@ Key endpoints:
   (non-extract) phase. There's also `POST /jobs/{id}/cancel` to stop a running job.
 - `GET /agent/models` / `GET /agent/stats` — the model menu, and per-provider rolling usage
   stats for the `/usage` dashboard.
+- `POST /books/from-notion` — fetch a subject's textbook straight from Notion (by subject
+  page id + grade) and ingest it like an upload, TOC extraction included.
+- `POST /jobs/batch` — fleet launch: fan out one job per lesson of a `toc_ready` book
+  (skipping/adopting lessons that already have jobs). `GET /jobs/batches`,
+  `GET /jobs/batches/{id}`, and `GET /jobs/batches/{id}/jobs` serve the funnel rollups and
+  the per-lesson drill-in. *(Registration order matters: these static routes are registered
+  before the dynamic `/jobs/{job_id}`, or FastAPI would parse "batches" as a job id.)*
+- `GET /workers` — fleet liveness: every registered worker plus a derived online/offline flag.
+- `GET /notion/grades` / `GET /notion/grades/{id}/subjects` — the Notion pickers that feed
+  the from-notion flow and the fleet launcher.
 
 **Why SSE and not WebSockets?** Progress is one-directional (server → browser) and SSE is
 simpler. One quirk: the browser's `EventSource` can't send auth headers, so the stream/
@@ -370,6 +413,9 @@ The routes mirror the user journey:
   component) plus any validation warnings. (Older interactive renderers under `components/`
   predate the markdown-per-phase flip.)
 - `usage` → the per-provider consumption dashboard.
+- `fleet` → the fleet operations hub: prepare/launch a Notion subject as a batch, batch
+  funnel bars with per-lesson drill-in (cancel/retry/open), and worker PC liveness cards.
+  Polls its three endpoints every ~3.5s (components live in `components/fleet/`).
 
 `lib/api.ts` is the typed client, `lib/types.ts` mirrors the backend schemas.
 
@@ -477,5 +523,10 @@ You also need the CLIs you intend to use installed and logged-in on `PATH`
 | Edit what the AI is told to do per phase | `prompts/_general/<phase>.md` (all subjects) |
 | Change language behavior (Uzbek / English-target) | `app/services/prompts.py` (`LANGUAGE_RULES`, `get_prompt`) |
 | Tweak queue/worker/timeout behavior | `app/config.py` + `app/services/worker.py` |
+| Understand the DB schema / queue / clocks in depth | `docs/DATABASE.md` |
+| Touch batches / fleet launch / rollups | `app/repositories/batches.py` + `app/api/v1/batch.py` |
+| Touch worker liveness / the registry | `app/repositories/workers.py` + `app/api/v1/workers.py` |
+| Change the fleet dashboard | `web/src/routes/fleet.tsx` + `web/src/components/fleet/` |
+| Set up a new worker PC | `docs/fleet/worker-pc-setup.md` |
 | See the project's terse rules | `CLAUDE.md` |
 | Read the running worklog/history | `docs/memory/MASTER_MEMORY.md` |
