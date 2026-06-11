@@ -4,6 +4,18 @@
 > takes to make the content-generation pipeline production-ready and run autonomously
 > at maximum *sustainable* capability. Turn any pillar into a brainstorm → spec when
 > ready. Date: 2026-06-03.
+>
+> **STATUS 2026-06-11 (de-staled post fleet Phases 0–4, worklogs [0047]–[0053]):**
+> the operator-triggered **factory** now exists — head+workers on one shared DB,
+> worker registry/liveness, batch fan-out per subject, `/fleet` dashboard, and the
+> **CLI | API transport toggle** (per-job `transport`, claude+gemini api,
+> `auth_mode` $-attribution). What this doc calls the **autonomous driver (§1) is
+> still 0% built** — batches are human-launched; nothing enqueues work on its own.
+> **§4's central ceiling claim is now half-stale:** api-mode jobs are pay-per-token,
+> uncapped, and don't draw the Max pool — the strategic choice is no longer only
+> "pace the subscription" but **pace the cli pool vs. pay the api meter** (verified
+> ~$2.14/hw at the current mix). Inline `[2026-06-11]` notes below mark the other
+> overtaken findings; everything unmarked was re-verified still true.
 
 ## Verdict
 
@@ -12,6 +24,12 @@ restart-safe workers, orphan reclaim, Docker/Traefik/watchtower). The **autonomy
 0% there: today every job is human-triggered (upload PDF → pick a TOC entry →
 `POST /generate`). Nothing decides *what to generate next on its own*. That driver is
 the centerpiece to build; everything else is hardening.
+
+> **[2026-06-11]** The plumbing is now ~95% (fleet Phases 0–4: multi-PC workers,
+> registry, batch fan-out, dashboard, transport toggle). "Autonomy 0%" still holds
+> for the *driver* — but the trigger has moved up a level: one click now launches a
+> whole subject (batch fan-out) instead of one lesson, so the missing piece is
+> narrower: *what to enqueue next, unattended*.
 
 A second, equally important finding: the binding throughput constraint is **not**
 request-per-minute API throttling — the `claude` provider runs on a **Claude Max $200
@@ -24,9 +42,11 @@ subscription** (OAuth/CLI mode), whose limits are *allocation-based*. That resha
 
 A loop that keeps the queue full without a human:
 
-- **Enumerator** — walk every `book × toc_entry × difficulty` with no successful job
-  (a `LEFT JOIN` against `homework_jobs`) and enqueue the gaps through the same path the
-  API uses.
+- **Enumerator** — walk every `book × toc_entry` with no successful job (a `LEFT JOIN`
+  against `homework_jobs`) and enqueue the gaps through the same path the API uses.
+  *[2026-06-11: was "× difficulty" — difficulty is dead, single flow per subject. The
+  batch endpoint (`POST /jobs/batch`) is now the natural enqueue path; with the
+  transport toggle, "the gaps" are per `(book, toc_entry, transport)`.]*
 - **Backfill controller** — keep N jobs `pending` at all times; top up when the queue
   drains. This is what makes it "24/7".
 - **Ingestion feeder** — Notion **Phase 2 (pull)** is the upstream: auto-fetch new
@@ -60,7 +80,10 @@ This is the difference between "a tool" and "a content factory".
 
 - **Stuck `pending` jobs** with attempts exhausted are never failed (WISHLIST, e.g.
   `2848dbcb`). A 24/7 system *will* accumulate these → sweep to `failed` + dead-letter.
-- **Retry with exponential backoff** + a max, not just orphan reclaim.
+  *[2026-06-11: re-verified still open — claim query skips them (`jobs.py:229`), no sweep exists.]*
+- ~~**Retry with exponential backoff** + a max, not just orphan reclaim.~~ **DONE
+  (worklog 0031):** `mark_failed_with_retry` reschedules with exponential backoff up to
+  `max_attempts`; clock-skew-hardened in Phase 0.5 (server-side `make_interval`).
 - **Circuit breaker per provider** — when a CLI starts failing/throttling, stop feeding
   it instead of burning the queue.
 - **Notion silent per-subject skip** (Kimyo incident): an unmapped subject just logs
@@ -89,6 +112,15 @@ pay-per-token API. Therefore:
   specific to the **most-advanced model (Opus)**. `/status` shows remaining (interactive).
 
 **Implications for "24/7 at max capability":**
+
+> **[2026-06-11] This section now has an escape valve it couldn't see when written:
+> the Phase 4 `transport=api` toggle.** An api-mode job bills per-token (claude+gemini
+> keys), is uncapped, and never draws the Max pool — so "24/7 at max capability" is
+> *purchasable* (~$2.14/hw verified at the current mix) rather than only paceable.
+> Everything below remains the correct analysis **for cli-mode (subscription) jobs**,
+> which stay the $0-marginal default; the driver's governor now chooses between
+> pacing the cli pool and spending on the api meter, instead of pacing being the
+> only option.
 
 - **True flat-out 24/7 on one subscription is not achievable** — weekly caps are designed
   to stop sustained max-rate use. You generate hard for some hours, hit the weekly wall,
@@ -128,6 +160,11 @@ Can't run 24/7 blind. Need queue depth, throughput/hr, success rate, per-provide
 & error rate → metrics + **alerting** (page when success-rate drops or the queue stalls).
 The `/usage` page tracks *local* token consumption, not health.
 
+> **[2026-06-11] Partially shipped:** the Phase-3 `/fleet` dashboard gives live
+> visibility (worker liveness cards, batch funnel, per-lesson drill-in) and `/usage`
+> now adds a per-transport `$` readout (Phase 4). Still missing for unattended ops:
+> **metrics export + alerting** (nothing pages a human), and R11 (failover legibility).
+
 ---
 
 ## 6. Quality gates — mostly resolved; one safeguard remains
@@ -151,8 +188,13 @@ pool — compounds the provider-isolation concern in #2 of the controller-review
 - **CLI auth is the #1 production risk.** The five providers are interactive-auth CLI
   subprocesses. Running them in N pods, 24/7, re-authenticating on token expiry, is more
   operationally fragile than the queue. Solve this before scaling pods.
+  *[2026-06-11: partially mitigated — `transport=api` removes interactive auth entirely
+  for claude+gemini (env-var keys); cli-mode workers still carry the per-PC login burden
+  (`docs/fleet/worker-pc-setup.md`).]*
 - **Local-disk PDFs block multi-pod.** `var/books/<id>/source.pdf` is on local disk;
   horizontal workers need shared object storage (S3/GCS) first.
+  *[2026-06-11: still open — tracked as ROADMAP **R13** (hardcoded `Path("var")`,
+  `pipeline.py:88`; `var_dir` setting dead). Blocks `fleet-test-1`.]*
 - Secrets management, DB backups, migrations-on-deploy (entrypoint already runs
   `alembic upgrade head`), health checks, autoscaling.
 
@@ -190,12 +232,17 @@ refinements / corrections:
    their own Claude Code. "Pause at ~80% weekly" is insufficient. Design constraint: the
    factory runs **primarily on kimi/codex/gemini and treats `claude` as reserved-for-the-user**
    (or a separate account). Provider rotation is **budget isolation**, not just throughput.
+   *[2026-06-11: a third isolation lever now exists — `transport=api` claude jobs bill the
+   API key, not the shared Max pool. Mass-gen on api-claude doesn't compete with dev at all.]*
 
 3. **Local budget estimation is weaker than §4 implies.** `agent_usages` token counts can't
    denominate the real ceiling: **kimi reports 0 tokens** (stream-json gap) and the
    **claude-sub limit is plan-allocation, not token-denominated**. A token-estimator would be
    blind for kimi and meaningless for claude-sub. The governor must pace on **call-count +
    duration heuristics + reactive failover**, not true token math.
+   *[2026-06-11: weakened for api rows — `auth_mode` + the static price map
+   (`app/services/pricing.py`) give REAL dollar math for api-mode usage. Still true for
+   cli-claude (allocation-based) and kimi (0 tokens).]*
 
 4. **Empirical data (md-per-phase live smoke, Kimyo §1, claude/sonnet-4-6, 2026-06-03):**
    one section = **~17 min / 9 phases**; **boss-arena alone ~11 min**; one boss-arena attempt
