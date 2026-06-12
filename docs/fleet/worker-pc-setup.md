@@ -89,11 +89,52 @@ More PCs = more lessons generated at the same time = faster.
 
 ---
 
+## Choosing who pays (Phase 4/4.1 — the billing toggle)
+
+Every job has a **transport**: `CLI` (default — the logged-in CLI subscriptions,
+$0 marginal, rate-capped) or `API` (pay-per-token keys, uncapped). Since Phase
+4.1 you can also override the billing **per role** on each job: the **Extract**
+and **Judge** selects on the launch forms take `Auto (follow job) / CLI / API`.
+Example split (the one this fleet actually runs): gemini-API content billed to a
+Vertex credit + CLI extract on a Gemini subscription + CLI judge on the Claude
+subscription.
+
+**What a worker PC needs depends on what you want it to claim:**
+
+| Worker should claim… | Needs on that PC |
+|---|---|
+| CLI-only jobs | just the CLI logins (step 4 above) — no keys |
+| api-claude work | `ANTHROPIC_API_KEY` in the worker env/.env |
+| api-gemini work | `GEMINI_API_KEY` **or** a Vertex service account (`GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT`) — **the SA path must be THIS machine's path**, not copied from another OS |
+
+A worker missing a credential simply **never claims jobs that need it** (it
+logs which side is missing at startup) — cli jobs are unaffected.
+
+**Two required one-time settings in `~/.gemini/settings.json` on every worker:**
+
+```json
+{ "security": { "auth": {} }, "advanced": { "ignoreLocalEnv": true } }
+```
+
+- **No `selectedType`** — a persisted auth choice (re-created by any interactive
+  `gemini` run) overrides the per-job billing toggle. The worker warns at
+  startup if present.
+- **`ignoreLocalEnv: true`** — otherwise gemini-cli imports `GOOGLE_CLOUD_PROJECT`
+  / `GEMINI_API_KEY` from the repo's `.env` *inside every spawn*, bypassing the
+  app's auth shaping (this 403'd a real batch on 2026-06-12). Needs gemini-cli
+  ≥ 0.46 — **pin the same CLI versions on all PCs**.
+- Windows note: write the file WITHOUT a BOM (PowerShell 5.1's `Out-File
+  -Encoding utf8` adds one and gemini-cli rejects the file).
+
+Full billing/acceptance detail: `docs/runbooks/phase4-transport-operator-acceptance.md`.
+
+---
+
 ## Rough edges (still manual today — being honest)
 
 - **PDFs:** each worker needs the textbook files on its own disk. A shared folder
   works now; automatic delivery to each PC is planned (roadmap item **R13**).
-- **AI login:** each PC signs in to the CLIs once, per subscription account.
+- **AI login:** each PC signs in to the CLIs once, per subscription account. For API billing, keys/SA files are per-PC too (see "Choosing who pays").
 - **No "Start" button yet:** you bring a worker online by provisioning the PC
   (Part B). A dashboard Start/Pause/Off button is a future feature
   (`fleet-ctrl-3/4`). For now, the Docker "start on login" setting is your

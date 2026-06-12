@@ -63,7 +63,7 @@ docker compose up --build
 
 Open `http://localhost:8000`. Compose runs Postgres + migrations + API + embedded worker.
 
-> **Provider CLIs:** generation drives the `claude` / `gemini` / `codex` / `kimi` / `opencode` CLIs. They must be installed on `PATH` and logged in (each manages its own auth — there is **no API key** in this app's config). `gemini` must be available for TOC/lesson extraction. See **[docs/DEPLOY.md](./docs/DEPLOY.md)** for getting the CLIs into the runtime.
+> **Provider CLIs:** generation drives the `claude` / `gemini` / `codex` / `kimi` / `opencode` CLIs. They must be installed on `PATH` and logged in (each manages its own auth; the default `cli` transport needs **no API key**. The opt-in `api` transport (claude+gemini, per-job toggle) bills real keys supplied via worker env — see docs/runbooks/phase4-transport-operator-acceptance.md). `gemini` must be available for TOC/lesson extraction. See **[docs/DEPLOY.md](./docs/DEPLOY.md)** for getting the CLIs into the runtime.
 
 For development without Docker: `uv sync` → `uv run alembic upgrade head` → `uv run uvicorn main:app --reload`. Local dev uses Postgres on port **5433**.
 
@@ -100,7 +100,7 @@ Homework-Content-Generation-Automation/
 │       ├── worker.py             queue worker (embedded or standalone)
 │       └── notion_*/notion/      Notion archive + fetch
 ├── prompts/_general/             the live prompt set (one .md per phase)
-├── alembic/versions/             schema migrations (0001…0021)
+├── alembic/versions/             schema migrations (0001…0025)
 ├── web/                          React SPA (operator console)
 ├── Dockerfile                    multi-stage (node SPA → uv venv → runtime)
 ├── docker-compose.yml            postgres + migrate + api + (optional) workers

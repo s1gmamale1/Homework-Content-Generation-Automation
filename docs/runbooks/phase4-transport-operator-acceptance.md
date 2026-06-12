@@ -6,9 +6,9 @@ worklog 0053 / below). This runbook documents the **billed, operator-run** gates
 that the implementation deliberately did **not** execute — they require real API
 keys, real spend, and a real worker PC with `~/.gemini/settings.json` changes.
 
-> Spec: `docs/superpowers/specs/2026-06-10-fleet-phase4-transport-toggle-design.md`
+> Spec: `docs/superpowers/specs/shipped/2026-06-10-fleet-phase4-transport-toggle-design.md`
 > (§7 acceptance, §3 deployment ordering, §9b cache-row exemption).
-> Plan: `docs/superpowers/plans/2026-06-11-fleet-phase4-transport-toggle.md` (Task 8).
+> Plan: `docs/superpowers/plans/shipped/2026-06-11-fleet-phase4-transport-toggle.md` (Task 8).
 
 ---
 
@@ -125,16 +125,18 @@ Generate **one real lesson `transport=api`** end to end, then inspect
 
 ---
 
-## ⚠️ Gemini prices are UNVERIFIED — confirm before trusting the gemini `$`
+## Prices — VERIFIED 2026-06-11 (re-check on model changes)
 
-`app/services/pricing.py` carries a static `(provider, model) → $/Mtok` map.
-
-- **Claude prices are VERIFIED** (e.g. Opus $5 in / $25 out — the *current* rate,
-  not the deprecated $15/$75 the project mis-priced once).
-- **Gemini prices are best-effort and tagged `VERIFY`** in the source. Before
-  trusting the api `$` readout for gemini, **confirm each gemini entry against
-  current Google pricing** and drop the `VERIFY` tag once checked. A stale price
-  silently corrupts exactly the cost readout this feature exists to produce.
+`app/services/pricing.py` carries a static `(provider, model) → $/Mtok` map. Both
+provider families were **verified against published pricing 2026-06-11** (`71a6296`:
+claude per the Anthropic rate card; gemini against BOTH ai.google.dev and the
+Vertex pricing page, which agree — incl. gemini-3.1-pro at $2/$12 and the
+thoughts-bill-as-output rule, folded into the envelope parser). Cached-token
+semantics are per-provider (gemini's prompt count INCLUDES cached; claude's is
+disjoint — `8e929a2`). KNOWN BIAS: claude cache-WRITE premium (1.25×) is unbilled
+(no column; WISHLIST `pricing-1`). When models change in `MODEL_MANIFEST`,
+re-verify the corresponding price rows — a stale price silently corrupts exactly
+the cost readout this feature exists to produce.
 
 ---
 

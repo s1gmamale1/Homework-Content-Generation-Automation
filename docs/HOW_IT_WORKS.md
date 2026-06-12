@@ -41,7 +41,12 @@ installed and logged-in on the machine's `PATH`.
   holds no API key. (Since Phase 4, `transport=api` jobs are the exception: the
   worker's process env carries `ANTHROPIC_API_KEY` + a gemini credential —
   `GEMINI_API_KEY` or a Vertex service account — injected per-spawn by
-  `agent._auth_env`. The `gemini_api_key` *config field* is still vestigial.)
+  `agent._auth_env`. Since Phase 4.1 the billing choice is also **per role**:
+  `extract_transport`/`judge_transport` (`cli | api | inherit`) let one job bill
+  e.g. gemini-api content to a Vertex credit while extract+judge ride the
+  subscriptions; the claim gate routes each job only to workers credentialed
+  for its resolved combination. The `gemini_api_key` *config field* is still
+  vestigial.)
 - It's free-tier friendly: e.g. `gemini` is free with a Google login, no card.
 - One uniform interface ("run a program, pipe text") covers five very different vendors.
 
@@ -125,7 +130,7 @@ Windows often already runs its own Postgres on 5432). Seven tables matter
 | `homework_jobs` | generation request | the chosen `provider`/`model`, `status` (pending/running/done/failed/cancelling/cancelled), `current_phase`, the queue columns (`attempts`, `claimed_at`, …), an optional `batch_id` (fleet membership), and Notion-archive markers. The generated content lives on `phase_outputs`, **not** here — there are no structured-JSON columns. |
 | `phase_outputs` | one phase of one job | the phase name, order, status, its markdown output, token counts. A unique constraint (`uq_phase_output_job_order`) forbids two rows for the same (job, order). |
 | `agent_usages` | one CLI subprocess call | provider, model, normalized token counts, duration, success/failure, and the raw envelope. This is how the usage dashboard and the end-of-job cost table are built. |
-| `batches` | fleet batch (one per book) | the launch-time subject/grade/provider/model. **No stored counters** — progress is computed on read from member jobs (one vote per lesson, its newest job), so retries can't inflate the tally. |
+| `batches` | fleet batch (one per `(book, transport)` since Phase 4 — a cli and an api batch of the same book coexist for benchmarking) | the launch-time subject/grade/provider/model/transport (+ Phase-4.1 role-transport launch defaults; member jobs carry the truth). **No stored counters** — progress is computed on read from member jobs (one vote per lesson, its newest job), so retries can't inflate the tally. |
 | `workers` | worker process (a fleet PC) | `pc_id` ("hostname:pid"), `last_heartbeat`, status label. Online/offline is **derived** from heartbeat freshness against the DB clock, never stored. |
 
 Two things people trip on:

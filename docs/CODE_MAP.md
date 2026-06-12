@@ -58,7 +58,7 @@ What each source file does, grouped by layer. The runtime makes **no LLM SDK cal
 - **`books.py` · `toc_entries.py` · `jobs.py` · `phase_outputs.py`** (use `create_or_reset`, not `create`) **· `agent_usage.py` · `batches.py`** (race-safe find-or-create + `DISTINCT ON` rollups/drill-in) **· `workers.py`** (heartbeat upsert + derived liveness, DB-clock).
 
 ## `alembic/` — migrations
-- `env.py` + `versions/0001…0023` — schema history. `0018` dropped the old structured-output JSON columns (md-per-phase reshape); `0019` added `phase_outputs.provider`; `0020` backfills `book.grade`; `0021` adds `homework_jobs.notion_skip_reason`; `0022` adds the `workers` registry; `0023` adds `batches` + `homework_jobs.batch_id` (head `a1b2c3d4e5f6`). Full chain table in `docs/DATABASE.md`.
+- `env.py` + `versions/0001…0025` — schema history. `0018` dropped the old structured-output JSON columns (md-per-phase reshape); `0019` added `phase_outputs.provider`; `0020` backfills `book.grade`; `0021` adds `homework_jobs.notion_skip_reason`; `0022` adds the `workers` registry; `0023` adds `batches` + `homework_jobs.batch_id`; `0024` adds `transport` (jobs+batches) + `agent_usages.auth_mode` + the `(book_id, transport)` batch key; `0025` adds `extract_transport`/`judge_transport` (jobs+batches) (head `b9d8e7f6a5c4`). Full chain table in `docs/DATABASE.md`.
 
 ## `prompts/` — prompt templates (`.md`)
 - **[live]** `prompts/_general/*.md` — the single set serving every subject (case-based-preview, flashcards, memory-check, practice-rlc, practice-error-detection, the four `practice-*` games, boss-arena, reflection).

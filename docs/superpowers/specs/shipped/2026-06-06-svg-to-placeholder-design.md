@@ -1,7 +1,7 @@
 # SVG → described-placeholder — design spec
 
 **Date:** 2026-06-06
-**Status:** awaiting user review
+**Status:** SHIPPED (`3a79370` feat(gen): replace inline-SVG with described placeholders across the engine; policy live as `agent._PLACEHOLDER_RULES` + prompt rules — no dedicated worklog row, verified at the 2026-06-12 doc cleanup)
 **Branch:** Nggaev-v2
 
 ## Problem

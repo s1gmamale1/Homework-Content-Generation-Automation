@@ -108,6 +108,8 @@ Relationship: `toc_entries` (cascade delete-orphan, ordered by `order_index`).
 | `provider` | String(32) NOT NULL, server_default `'gemini'` | the user's pick; honored by every phase except the extract pin |
 | `model` | String(128) NULL | NULL = provider default (`_resolve_model`) |
 | `batch_id` | FK → batches NULL | fleet membership (migration 0023); `ix_homework_jobs_batch_id` |
+| `transport` | String(16) NOT NULL, server_default `'cli'` | Phase 4 (migration 0024): `cli` (subscription CLI auth, $0 marginal) vs `api` (pay-per-token keys); validation requires api ⇒ provider ∈ {claude, gemini} + explicit model |
+| `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 (migration 0025): per-role billing override, `cli \| api \| inherit`; `inherit` follows `transport` (`resolve_role_transport`) |
 | `current_phase` | String(64) NULL | live progress marker |
 | `error_message` | Text NULL | |
 | `started_at` / `completed_at` | NULL | `completed_at` is host-clock (record-only, see §2) |
@@ -155,6 +157,7 @@ rows `failed`, it doesn't delete them, so a retried job re-INSERTing would trip 
 | `id`, `created_at`, `updated_at` | mixins | `ix_agent_usages_created_at_desc` |
 | `book_id` / `homework_job_id` / `phase_output_id` | FKs, all **ondelete=SET NULL** | usage history survives cleanup; each indexed |
 | `provider` | String(32) NOT NULL, server_default `'gemini'` | indexed; cached-extract reuse rows use the sentinel `"<cache>"` |
+| `auth_mode` | String(8) NOT NULL, server_default `'cli'` | Phase 4 (migration 0024): the transport the spawn ACTUALLY used; prices the per-transport `$` rollup (`<cache>` rows stay `cli` — free markers) |
 | `operation` | String(64) NOT NULL | e.g. `lesson.extract`, `phase.boss-arena`, `judge.<phase>`; indexed |
 | `model_name` | String(128) NULL | |
 | `prompt_tokens` / `output_tokens` / `cached_tokens` / `total_tokens` | Integer NOT NULL default 0 | normalized across providers; **kimi reports 0s** (stream-json gap); `<cache>` rows are all-zero so $-math never double-counts |
@@ -172,7 +175,9 @@ consumption counts**, not provider quotas.
 | Column | Type | Notes |
 |---|---|---|
 | `id`, `created_at`, `updated_at` | mixins | |
-| `book_id` | FK → books NOT NULL, **UNIQUE (`uq_batches_book_id`)** | at most one batch per book |
+| `book_id` | FK → books NOT NULL, part of **UNIQUE (`uq_batches_book_id_transport`)** | one batch per `(book, transport)` since migration 0024 — a different-transport re-launch forks a new batch (the cli-vs-api benchmark, spec §9); same-transport reuses |
+| `transport` | String(16) NOT NULL, server_default `'cli'` | launch-time transport (also on every member job) |
+| `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 launch-default labels stamped onto created jobs — **jobs carry the truth**; on re-launch these labels can go stale |
 | `subject` / `grade` | NOT NULL / NULL | denormalized for display |
 | `provider` / `model` | NOT NULL / NULL | the launch-time pick |
 | `notion_source` | String(512) NULL | |
@@ -328,7 +333,9 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | 20 | 0020_backfill_book_grade | `b3f6a1c2d4e5` | |
 | 21 | 0021_notion_skip_reason | `c4a7b2d3e6f0` | |
 | 22 | 0022_workers_registry | `d5e9f1a2b3c4` | **workers** table (fleet Phase 1) |
-| 23 | 0023_batches | `a1b2c3d4e5f6` | **batches** table + homework_jobs.batch_id (fleet Phase 2) — **HEAD** |
+| 23 | 0023_batches | `a1b2c3d4e5f6` | **batches** table + homework_jobs.batch_id (fleet Phase 2) |
+| 24 | 0024_transport_auth_mode | `f7e6d5c4b3a2` | `transport` (jobs+batches) + `agent_usages.auth_mode` + batch key → `(book_id, transport)` (fleet Phase 4) |
+| 25 | 0025_role_transports | `b9d8e7f6a5c4` | `extract_transport`/`judge_transport` (jobs+batches) (fleet Phase 4.1) — **HEAD** |
 
 ---
 
