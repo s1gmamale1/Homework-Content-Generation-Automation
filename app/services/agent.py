@@ -221,6 +221,13 @@ def _resolve_binary(provider: Provider) -> str:
     )
 
 
+class AuthEnvError(RuntimeError):
+    """A spawn's credentials could not be assembled for the requested
+    transport (missing/empty key, no Vertex SA, api-unsupported provider).
+    Typed so auth classification is isinstance-based, never substring luck
+    (spec 4.1 §5a) — a judge hitting this on an api job must fail LOUDLY."""
+
+
 def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> dict[str, str]:
     """Per-call auth shaping (spec §4). cli is the unconditional baseline for
     EVERY spawn; api is the only deviation. Scrub both provider keys first, then
@@ -259,7 +266,7 @@ def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> d
                 env["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
                 env.setdefault("GOOGLE_CLOUD_LOCATION", "global")
             else:
-                raise RuntimeError(
+                raise AuthEnvError(
                     "transport=api for gemini but GEMINI_API_KEY is unset/empty "
                     "and no Vertex service account is configured "
                     "(GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT)"
@@ -267,13 +274,13 @@ def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> d
         elif provider_name == "claude":
             key = base_env.get("ANTHROPIC_API_KEY")
             if not key:
-                raise RuntimeError(
+                raise AuthEnvError(
                     "transport=api for claude but ANTHROPIC_API_KEY is unset/empty"
                 )
             env["ANTHROPIC_API_KEY"] = key
         else:
             # kimi/codex/opencode never reach api (blocked at validation)
-            raise RuntimeError(f"transport=api unsupported for {provider_name}")
+            raise AuthEnvError(f"transport=api unsupported for {provider_name}")
     else:  # cli baseline
         if provider_name == "gemini":
             env["GOOGLE_GENAI_USE_GCA"] = "true"  # GCA OAuth, wins over any key

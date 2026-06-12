@@ -64,6 +64,44 @@ def test_judge_api_non_auth_error_still_degrades(monkeypatch):
     assert out.available is False and out.passed is True
 
 
+# Raise message from agent._auth_env for the gemini credential misprediction —
+# deliberately contains NO _AUTH_SIGNALS substring; only the AuthEnvError TYPE
+# can classify it (Phase 4.1 §5a).
+_AUTH_ENV_ERR = (
+    "transport=api for gemini but GEMINI_API_KEY is unset/empty "
+    "and no Vertex service account is configured"
+)
+
+
+def test_judge_api_reraises_on_auth_env_error(monkeypatch):
+    """A typed AuthEnvError whose message matches no signal must still be
+    classified as an auth error (isinstance, not substring luck) and re-raise
+    under transport=api."""
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+
+    async def _boom(**kwargs):
+        raise agent.AuthEnvError(_AUTH_ENV_ERR)
+
+    monkeypatch.setattr(agent, "run_phase", _boom)
+
+    with pytest.raises(agent.AuthEnvError, match="GEMINI_API_KEY"):
+        _call_judge("api")
+
+
+def test_judge_cli_degrades_on_auth_env_error(monkeypatch):
+    """The SAME typed error under cli transport keeps the graceful degrade."""
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+
+    async def _boom(**kwargs):
+        raise agent.AuthEnvError(_AUTH_ENV_ERR)
+
+    monkeypatch.setattr(agent, "run_phase", _boom)
+
+    out = _call_judge("cli")
+    assert out.available is False and out.passed is True
+    assert out.warnings == ["judge-unavailable: AuthEnvError"]
+
+
 def test_is_auth_error_covers_vertex_and_gemini_shapes():
     """fleet-api-6 introduced Vertex/gemini auth-failure shapes that the
     original signals ('401' / 'invalid api key' / 'unauthorized') miss."""

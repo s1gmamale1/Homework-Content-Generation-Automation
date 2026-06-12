@@ -157,6 +157,27 @@ def test_worker_has_api_keys_accepts_vertex_for_gemini():
     assert worker._compute_has_api_keys(half) is False
 
 
+def test_claude_api_missing_key_raises_typed_auth_env_error():
+    """Phase 4.1 §5a: credential mispredictions must raise the TYPED
+    AuthEnvError so auth classification is isinstance-based, not substring."""
+    env = _base_env()
+    del env["ANTHROPIC_API_KEY"]
+    with pytest.raises(agent.AuthEnvError):
+        agent._auth_env("claude", "api", env)
+
+
+def test_gemini_api_neither_key_nor_vertex_raises_typed_auth_env_error():
+    env = _vertex_env()
+    del env["GOOGLE_APPLICATION_CREDENTIALS"]
+    with pytest.raises(agent.AuthEnvError):
+        agent._auth_env("gemini", "api", env)
+
+
+def test_api_unsupported_provider_raises_typed_auth_env_error():
+    with pytest.raises(agent.AuthEnvError):
+        agent._auth_env("kimi", "api", _base_env())
+
+
 def test_does_not_mutate_base_env():
     env = _base_env()
     snapshot = dict(env)

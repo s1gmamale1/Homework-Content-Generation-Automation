@@ -106,6 +106,11 @@ _AUTH_SIGNALS = (
 
 
 def _is_auth_error(exc: BaseException) -> bool:
+    # Typed first (Phase 4.1 §5a): agent._auth_env raises AuthEnvError for
+    # credential mispredictions whose messages match NO substring signal —
+    # isinstance classification, never substring luck.
+    if isinstance(exc, agent.AuthEnvError):
+        return True
     msg = str(exc).lower()
     return any(s in msg for s in _AUTH_SIGNALS)
 
