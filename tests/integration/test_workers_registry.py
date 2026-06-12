@@ -98,3 +98,64 @@ async def test_workers_endpoint_returns_liveness():
         async with SessionLocal() as s:
             await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc))
             await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_prune_stale_removes_only_rows_older_than_window():
+    """Chunk-1 fleet fix: dead hostname:pid rows must be prunable. Surgical
+    against a shared DB: the fake row's beat is ~9 years old and the window is
+    8 years, so no real row can match."""
+    from sqlalchemy import text
+
+    from app.db import SessionLocal
+    from app.models.worker import WorkerNode
+    from app.repositories import workers as workers_repo
+
+    ancient = "test-host:88888"
+    fresh = "test-host:88889"
+    eight_years = 8 * 365 * 24 * 3600
+    try:
+        async with SessionLocal() as s:
+            await workers_repo.upsert_heartbeat(s, ancient)
+            await workers_repo.upsert_heartbeat(s, fresh)
+            await s.execute(text(
+                "UPDATE workers SET last_heartbeat = now() - interval '9 years' "
+                "WHERE pc_id = :pc"), {"pc": ancient})
+            await s.commit()
+        async with SessionLocal() as s:
+            n = await workers_repo.prune_stale(s, older_than_seconds=eight_years)
+            await s.commit()
+        assert n == 1
+        async with SessionLocal() as s:
+            rows = await workers_repo.list_with_liveness(s, stale_after_seconds=90)
+        ids = {r["pc_id"] for r in rows}
+        assert ancient not in ids
+        assert fresh in ids
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(
+                delete(WorkerNode).where(WorkerNode.pc_id.in_([ancient, fresh])))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_deregister_removes_own_row():
+    from app.db import SessionLocal
+    from app.models.worker import WorkerNode
+    from app.repositories import workers as workers_repo
+
+    pc = "test-host:88890"
+    try:
+        async with SessionLocal() as s:
+            await workers_repo.upsert_heartbeat(s, pc)
+            await s.commit()
+        async with SessionLocal() as s:
+            await workers_repo.deregister(s, pc)
+            await s.commit()
+        async with SessionLocal() as s:
+            rows = await workers_repo.list_with_liveness(s, stale_after_seconds=90)
+        assert pc not in {r["pc_id"] for r in rows}
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc))
+            await s.commit()

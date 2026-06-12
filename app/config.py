@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     # `heartbeat_seconds` (30s); the head treats it offline if older than this.
     # 90s = 3 missed beats — tolerant of a slow loop without lying about death.
     worker_registry_stale_seconds: int = 90
+    # Registry retention: rows whose heartbeat is older than this are DELETED
+    # by the periodic worker sweep. pc_id is hostname:pid, so every process
+    # restart mints a new row — without pruning the fleet page grows a dead
+    # card per restart forever. 2h is >> the 90s stale window (no live worker
+    # can be pruned) yet keeps the dashboard to recently-live workers only.
+    worker_registry_prune_seconds: int = 7200
     # Hard timeout for ONE failover attempt (one provider try), so a hung CLI
     # (e.g. opencode stdin hang) cannot stall a phase until job_timeout. MUST be
     # well above the slowest real phase: CBP alone is ~274s (see job_timeout

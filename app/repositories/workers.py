@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,6 +39,29 @@ async def upsert_heartbeat(session: AsyncSession, pc_id: str, *, status: str = "
         set_={"last_heartbeat": func.now(), "status": status},
     )
     await session.execute(stmt)
+
+
+async def prune_stale(session: AsyncSession, *, older_than_seconds: int) -> int:
+    """Delete worker rows whose heartbeat is older than the retention window.
+    pc_id is hostname:pid — a dead process never beats again, so its row is
+    pure dashboard clutter (every restart minted a new permanent card). This
+    is the LOAD-BEARING cleanup: graceful-shutdown deregistration rarely fires
+    in practice (kills/crashes skip it). Safe to delete: job attribution lives
+    in homework_jobs.claimed_by, a plain string with no FK to this table.
+    Compares against the DB clock, same as the heartbeat stamps."""
+    result = await session.execute(
+        delete(WorkerNode).where(
+            WorkerNode.last_heartbeat
+            < func.now() - timedelta(seconds=older_than_seconds)
+        )
+    )
+    return result.rowcount or 0
+
+
+async def deregister(session: AsyncSession, pc_id: str) -> None:
+    """Remove this worker's own row on graceful shutdown. Best-effort bonus —
+    `prune_stale` is what actually guarantees cleanup."""
+    await session.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc_id))
 
 
 async def list_with_liveness(session: AsyncSession, *, stale_after_seconds: int) -> list[dict]:

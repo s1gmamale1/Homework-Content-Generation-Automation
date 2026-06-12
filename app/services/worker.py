@@ -251,6 +251,18 @@ class Worker:
             with contextlib.suppress(asyncio.CancelledError):
                 await registry_hb   # let the cancellation settle (matches _execute_job)
             await self._drain()
+            # Best-effort deregistration AFTER the heartbeat task is dead (a
+            # live beat would just re-insert the row). Kills/crashes skip this
+            # path entirely — prune_stale in the sweep is the real cleanup.
+            try:
+                async with SessionLocal() as session:
+                    await workers_repo.deregister(session, self.id)
+                    await session.commit()
+                logger.info(f"worker {self.id} deregistered from fleet registry")
+            except Exception:
+                logger.warning(
+                    f"worker {self.id} deregistration failed (prune will catch it)"
+                )
             logger.info(f"worker {self.id} stopped")
 
     def stop(self) -> None:
@@ -425,11 +437,20 @@ class Worker:
                         session,
                         stale_after_seconds=settings.reclaim_stale_seconds,
                     )
+                    n_pruned = await workers_repo.prune_stale(
+                        session,
+                        older_than_seconds=settings.worker_registry_prune_seconds,
+                    )
             if n > 0 or n_cancel > 0:
                 logger.warning(
                     f"worker {self.id} reclaimed {n} stuck job(s) "
                     f"and finalized {n_cancel} stale-cancelling job(s) "
                     f"(stale > {settings.reclaim_stale_seconds}s)"
+                )
+            if n_pruned > 0:
+                logger.info(
+                    f"worker {self.id} pruned {n_pruned} dead worker row(s) "
+                    f"(no heartbeat for > {settings.worker_registry_prune_seconds}s)"
                 )
         except Exception:
             logger.exception(f"worker {self.id} stuck-job sweep failed")
