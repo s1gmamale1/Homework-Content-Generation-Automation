@@ -29,7 +29,7 @@
 - `fleet-ui-2`: **Live SSE dashboard** — push batch-funnel + PC-card updates instead of polling `GET /jobs/batches` + `/workers`.
 - `fleet-ui-3`: **Past / historical batches view** + filter / search (Phase 3 MVP focuses on active batches).
 - `fleet-ui-4`: Richer **PC cards** — current job, throughput, runtime, attempts (beyond online / idle / busy).
-- `fleet-ui-5`: **Split the batch funnel onto its own page** (e.g. `/batches`); `/fleet` keeps launch + PC cards. Monitoring shouldn't require scrolling past the controls every time, and it scales as batches accumulate.
+- `fleet-ui-5`: **Split the batch funnel onto its own page** (e.g. `/batches`) — AMENDED 2026-06-12: workers move there too; `/fleet` keeps launch + a one-line "N machines online" strip (launching with zero liveness visibility is a footgun). Monitoring shouldn't require scrolling past the controls every time, and it scales as batches accumulate. Pair with the sigma-designs visual reshape (brainstorm first).
 
 **Generation accounts / cost (spec Phase 4):**
 
