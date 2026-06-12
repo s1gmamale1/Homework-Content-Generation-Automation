@@ -18,6 +18,8 @@ async def get_or_create_for_book(
     provider: str,
     model: Optional[str],
     transport: str,
+    extract_transport: str = "inherit",
+    judge_transport: str = "inherit",
     notion_source: Optional[str] = None,
 ) -> Batch:
     """Race-safe find-or-create THE batch for a (book, transport) pair
@@ -35,6 +37,8 @@ async def get_or_create_for_book(
             provider=provider,
             model=model,
             transport=transport,
+            extract_transport=extract_transport,
+            judge_transport=judge_transport,
             notion_source=notion_source,
             created_at=func.now(),
             updated_at=func.now(),

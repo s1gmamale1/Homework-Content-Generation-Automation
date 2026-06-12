@@ -79,3 +79,18 @@ def validate_transport(provider: str, model: str | None, transport: str) -> str 
                 "it would diverge between OAuth and API-key auth"
             )
     return None
+
+
+ROLE_TRANSPORTS = ("cli", "api", "inherit")
+
+
+def validate_role_transport(field: str, value: str) -> str | None:
+    """Return an error string if a per-role transport value is invalid, else None."""
+    if value not in ROLE_TRANSPORTS:
+        return f"unknown {field} {value!r} (expected 'cli' | 'api' | 'inherit')"
+    return None
+
+
+def resolve_role_transport(role_value: str, job_transport: str) -> str:
+    """'inherit' follows the job's transport; an explicit value wins (Phase 4.1 §2)."""
+    return job_transport if role_value == "inherit" else role_value

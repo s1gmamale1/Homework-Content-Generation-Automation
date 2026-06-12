@@ -23,6 +23,7 @@ from app.services.agent_models import (
     MODEL_MANIFEST,
     api_supported,
     is_valid,
+    validate_role_transport,
     validate_transport,
 )
 from app.services.providers import PROVIDERS
@@ -134,6 +135,14 @@ async def generate(
     if transport_err is not None:
         raise HTTPException(400, transport_err)
 
+    for field, value in (
+        ("extract_transport", body.extract_transport),
+        ("judge_transport", body.judge_transport),
+    ):
+        role_err = validate_role_transport(field, value)
+        if role_err is not None:
+            raise HTTPException(400, role_err)
+
     # Layer 3: serialize concurrent requests for the same (book, section).
     # Lock is held for the rest of this transaction and auto-released on
     # commit, so the second concurrent request waits and then sees the
@@ -176,6 +185,8 @@ async def generate(
         provider=body.provider,
         model=body.model,
         transport=body.transport,
+        extract_transport=body.extract_transport,
+        judge_transport=body.judge_transport,
     )
     await session.commit()  # commit + release advisory lock atomically
 

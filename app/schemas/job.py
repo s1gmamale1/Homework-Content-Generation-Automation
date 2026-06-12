@@ -34,6 +34,8 @@ class JobOut(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     transport: str = "cli"
+    extract_transport: str = "inherit"   # "cli" | "api" | "inherit" (follow `transport`)
+    judge_transport: str = "inherit"
     phases: list[PhaseOut] = []
     notion_skip_reason: Optional[str] = None
 
@@ -43,3 +45,5 @@ class GenerateRequest(BaseModel):
     provider: str = "gemini"     # default to gemini for backwards compat
     model: str | None = None     # None ⇒ provider's default model
     transport: str = "cli"       # "cli" (subprocess) vs "api" (claude/gemini only)
+    extract_transport: str = "inherit"   # per-role override; "inherit" follows `transport`
+    judge_transport: str = "inherit"

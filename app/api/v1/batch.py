@@ -10,7 +10,7 @@ from app.repositories import batches as batches_repo
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
-from app.services.agent_models import is_valid, validate_transport
+from app.services.agent_models import is_valid, validate_role_transport, validate_transport
 
 router = APIRouter(tags=["batches"])
 
@@ -25,6 +25,8 @@ class BatchLaunchRequest(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     transport: str = "cli"
+    extract_transport: str = "inherit"   # per-role override; "inherit" follows `transport`
+    judge_transport: str = "inherit"
     force: bool = False
 
 
@@ -37,6 +39,8 @@ def _rollup_payload(batch, tally: dict[str, int]) -> dict:
         "provider": batch.provider,
         "model": batch.model,
         "transport": batch.transport,
+        "extract_transport": batch.extract_transport,
+        "judge_transport": batch.judge_transport,
         "rollup": tally,
         "lessons_covered": sum(tally.values()),
         "complete": (tally.get("pending", 0) + tally.get("running", 0)
@@ -81,9 +85,19 @@ async def launch_batch(
     if transport_err is not None:
         raise HTTPException(400, transport_err)
 
+    for field, value in (
+        ("extract_transport", body.extract_transport),
+        ("judge_transport", body.judge_transport),
+    ):
+        role_err = validate_role_transport(field, value)
+        if role_err is not None:
+            raise HTTPException(400, role_err)
+
     batch = await batches_repo.get_or_create_for_book(
         session, book_id=body.book_id, subject=book.subject, grade=book.grade,
-        provider=provider, model=body.model, transport=body.transport)
+        provider=provider, model=body.model, transport=body.transport,
+        extract_transport=body.extract_transport,
+        judge_transport=body.judge_transport)
 
     created = adopted = skipped = 0
     for t in targets:
@@ -110,7 +124,9 @@ async def launch_batch(
         await jobs_repo.create(session, book_id=body.book_id, toc_entry_id=t.id,
                                subject=book.subject, provider=provider,
                                model=body.model, batch_id=batch.id,
-                               transport=body.transport)
+                               transport=body.transport,
+                               extract_transport=body.extract_transport,
+                               judge_transport=body.judge_transport)
         created += 1
 
     await session.flush()

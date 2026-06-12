@@ -107,6 +107,42 @@ async def test_generate_api_gemini_no_model_rejected(monkeypatch):
     assert "model" in r.json()["detail"].lower()
 
 
+@pytest.mark.asyncio
+async def test_generate_bogus_judge_transport_rejected(monkeypatch):
+    _ready_book_patch(monkeypatch)
+    async with _client() as c:
+        r = await c.post(
+            f"/api/v1/books/{_BOOK_ID[0]}/sections/{_SECTION_ID}/generate",
+            headers=_HDR,
+            json={"provider": "claude", "judge_transport": "bogus"},
+        )
+    assert r.status_code == 400, r.text
+    assert "judge_transport" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_generate_bogus_extract_transport_rejected(monkeypatch):
+    _ready_book_patch(monkeypatch)
+    async with _client() as c:
+        r = await c.post(
+            f"/api/v1/books/{_BOOK_ID[0]}/sections/{_SECTION_ID}/generate",
+            headers=_HDR,
+            json={"provider": "claude", "extract_transport": "nope"},
+        )
+    assert r.status_code == 400, r.text
+    assert "extract_transport" in r.json()["detail"]
+
+
+# ─── Pure resolution helper (no DB) ──────────────────────────────────────────
+
+def test_resolve_role_transport():
+    from app.services.agent_models import resolve_role_transport
+    assert resolve_role_transport("inherit", "api") == "api"
+    assert resolve_role_transport("inherit", "cli") == "cli"
+    assert resolve_role_transport("cli", "api") == "cli"
+    assert resolve_role_transport("api", "cli") == "api"
+
+
 # ─── /generate success / persistence (real DB) ───────────────────────────────
 
 async def _seed_book(sha: str, *, status: str = "toc_ready"):
@@ -193,6 +229,45 @@ async def test_generate_default_transport_is_cli():
         await _cleanup(book_id)
 
 
+@_DB
+@pytest.mark.asyncio
+async def test_generate_persists_role_transports():
+    book_id, sid = await _seed_book("W")
+    try:
+        async with _client() as c:
+            r = await c.post(
+                f"/api/v1/books/{book_id}/sections/{sid}/generate",
+                headers=_HDR,
+                json={"provider": "claude", "model": "claude-opus-4-8",
+                      "extract_transport": "api", "judge_transport": "cli"},
+            )
+        assert r.status_code in (200, 201), r.text
+        body = r.json()
+        assert body["extract_transport"] == "api"
+        assert body["judge_transport"] == "cli"
+    finally:
+        await _cleanup(book_id)
+
+
+@_DB
+@pytest.mark.asyncio
+async def test_generate_role_transports_default_inherit():
+    book_id, sid = await _seed_book("X")
+    try:
+        async with _client() as c:
+            r = await c.post(
+                f"/api/v1/books/{book_id}/sections/{sid}/generate",
+                headers=_HDR,
+                json={"provider": "claude"},  # role transports omitted
+            )
+        assert r.status_code in (200, 201), r.text
+        body = r.json()
+        assert body["extract_transport"] == "inherit"
+        assert body["judge_transport"] == "inherit"
+    finally:
+        await _cleanup(book_id)
+
+
 # ─── /jobs/batch validation rejections (no real DB needed) ───────────────────
 
 def _ready_batch_patch(monkeypatch):
@@ -232,6 +307,19 @@ async def test_batch_api_kimi_rejected(monkeypatch):
         )
     assert r.status_code == 400, r.text
     assert "api" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_batch_bogus_judge_transport_rejected(monkeypatch):
+    _ready_batch_patch(monkeypatch)
+    async with _client() as c:
+        r = await c.post(
+            "/api/v1/jobs/batch", headers=_HDR,
+            json={"book_id": "00000000-0000-0000-0000-000000000001",
+                  "judge_transport": "bogus"},
+        )
+    assert r.status_code == 400, r.text
+    assert "judge_transport" in r.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -294,6 +382,39 @@ async def test_batch_default_transport_is_cli():
             batch = (await s.execute(
                 select(Batch).where(Batch.book_id == book_id))).scalar_one()
             assert batch.transport == "cli"
+    finally:
+        await _cleanup(book_id)
+
+
+@_DB
+@pytest.mark.asyncio
+async def test_batch_persists_role_transports_on_batch_and_jobs():
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    from app.models.homework_job import HomeworkJob
+    from sqlalchemy import select
+    book_id, _ = await _seed_book_lessons("Y", n=3)
+    try:
+        async with _client() as c:
+            r = await c.post(
+                "/api/v1/jobs/batch", headers=_HDR,
+                json={"book_id": str(book_id), "judge_transport": "cli"},
+            )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["jobs_created"] == 3
+        assert body["extract_transport"] == "inherit"
+        assert body["judge_transport"] == "cli"
+        async with SessionLocal() as s:
+            batch = (await s.execute(
+                select(Batch).where(Batch.book_id == book_id))).scalar_one()
+            assert batch.judge_transport == "cli"
+            assert batch.extract_transport == "inherit"
+            jobs = (await s.execute(
+                select(HomeworkJob).where(HomeworkJob.book_id == book_id))).scalars().all()
+            assert len(jobs) == 3
+            assert all(j.judge_transport == "cli" for j in jobs)
+            assert all(j.extract_transport == "inherit" for j in jobs)
     finally:
         await _cleanup(book_id)
 

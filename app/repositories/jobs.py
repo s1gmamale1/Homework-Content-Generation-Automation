@@ -20,6 +20,8 @@ async def create(
     model: Optional[str] = None,
     batch_id: Optional[UUID] = None,
     transport: str = "cli",
+    extract_transport: str = "inherit",
+    judge_transport: str = "inherit",
 ) -> HomeworkJob:
     kwargs: dict[str, Any] = dict(
         book_id=book_id,
@@ -27,6 +29,8 @@ async def create(
         subject=subject,
         status=status,
         transport=transport,
+        extract_transport=extract_transport,
+        judge_transport=judge_transport,
     )
     if provider is not None:
         kwargs["provider"] = provider
