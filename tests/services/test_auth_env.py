@@ -266,3 +266,59 @@ def test_run_phase_threads_transport_to_spawn(monkeypatch):
 
     assert captured["provider_name"] == "claude"
     assert captured["transport"] == "api"
+
+
+# ─── GCP project/SA leak into cli spawns (the 2-PC-test 403, 2026-06-12) ────
+# GOOGLE_CLOUD_PROJECT does NOT select an auth type, but it RE-SCOPES the
+# OAuth/Code-Assist call to that GCP project — 403 ("Cloud Code Private API
+# has not been used in project …") when the project lacks the API. Proven
+# live: bare gemini OK; same call + GOOGLE_CLOUD_PROJECT=dummy → exit 403.
+# The cli baseline must scrub ALL Vertex/GCP vars; only the api Vertex
+# branch re-grants them.
+
+def _sa_env() -> dict[str, str]:
+    return {
+        "ANTHROPIC_API_KEY": "a",
+        "GOOGLE_APPLICATION_CREDENTIALS": "/sa.json",
+        "GOOGLE_CLOUD_PROJECT": "my-vertex-project",
+        "GOOGLE_CLOUD_LOCATION": "us-central1",
+        "PYTHONIOENCODING": "utf-8",
+    }
+
+
+def test_gemini_cli_scrubs_gcp_project_and_sa_vars():
+    result = agent._auth_env("gemini", "cli", _sa_env())
+    assert "GOOGLE_CLOUD_PROJECT" not in result
+    assert "GOOGLE_APPLICATION_CREDENTIALS" not in result
+    assert "GOOGLE_CLOUD_LOCATION" not in result
+    assert result["GOOGLE_GENAI_USE_GCA"] == "true"
+
+
+def test_nongemini_cli_scrubs_gcp_project_too():
+    result = agent._auth_env("kimi", "cli", _sa_env())
+    assert "GOOGLE_CLOUD_PROJECT" not in result
+    assert "GOOGLE_APPLICATION_CREDENTIALS" not in result
+
+
+def test_gemini_api_key_mode_scrubs_sa_vars():
+    env = {**_sa_env(), "GEMINI_API_KEY": "g"}
+    result = agent._auth_env("gemini", "api", env)
+    assert result["GEMINI_API_KEY"] == "g"
+    assert "GOOGLE_CLOUD_PROJECT" not in result
+    assert "GOOGLE_APPLICATION_CREDENTIALS" not in result
+
+
+def test_gemini_api_vertex_branch_regrants_sa_vars():
+    result = agent._auth_env("gemini", "api", _sa_env())
+    assert result["GOOGLE_GENAI_USE_VERTEXAI"] == "true"
+    assert result["GOOGLE_APPLICATION_CREDENTIALS"] == "/sa.json"
+    assert result["GOOGLE_CLOUD_PROJECT"] == "my-vertex-project"
+    # explicit location from the operator's env is preserved
+    assert result["GOOGLE_CLOUD_LOCATION"] == "us-central1"
+
+
+def test_gemini_api_vertex_branch_defaults_location_global():
+    env = _sa_env()
+    del env["GOOGLE_CLOUD_LOCATION"]
+    result = agent._auth_env("gemini", "api", env)
+    assert result["GOOGLE_CLOUD_LOCATION"] == "global"

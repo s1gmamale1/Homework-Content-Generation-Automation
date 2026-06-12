@@ -240,10 +240,19 @@ def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> d
     # Also scrub the Vertex selector: gemini-cli 0.46.0 getAuthTypeFromEnv
     # checks GCA first, then GOOGLE_GENAI_USE_VERTEXAI, then GEMINI_API_KEY —
     # GCA-first means a lingering selector is harmless for cli, but scrub-first
-    # keeps every mode's auth signal explicit. (SA cred vars like
-    # GOOGLE_APPLICATION_CREDENTIALS pass through untouched; they select
-    # nothing by themselves.)
+    # keeps every mode's auth signal explicit.
     env.pop("GOOGLE_GENAI_USE_VERTEXAI", None)
+    # Scrub the GCP project/SA vars too (2026-06-12, caught by the 2-PC live
+    # test): GOOGLE_CLOUD_PROJECT selects no auth type, but it RE-SCOPES the
+    # OAuth/Code-Assist call to that GCP project — a cli spawn inheriting it
+    # from a worker's .env (Vertex creds kept for api mode) 403s ("Cloud Code
+    # Private API has not been used in project …") when the project lacks that
+    # API. Proven live on the head PC: bare gemini OK; same call with
+    # GOOGLE_CLOUD_PROJECT=dummy → exit 403. The api Vertex branch re-grants
+    # all three explicitly below.
+    env.pop("GOOGLE_CLOUD_PROJECT", None)
+    env.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+    env.pop("GOOGLE_CLOUD_LOCATION", None)
     if transport == "api":
         # Missing credentials in api mode must be LOUD: an empty env var is
         # falsy to both CLIs → claude would silently fall back to OAuth
@@ -262,9 +271,12 @@ def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> d
                 # gemini-cli 0.46.0 (2026-06-11): USE_VERTEXAI=true selects
                 # vertex-ai when no persisted selectedType overrides; location
                 # must default to "global" (regional endpoints 404 for this
-                # project class). SA creds + project are already in env.
+                # project class). SA vars were scrubbed by the baseline above —
+                # re-grant all three explicitly for this branch only.
                 env["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
-                env.setdefault("GOOGLE_CLOUD_LOCATION", "global")
+                env["GOOGLE_APPLICATION_CREDENTIALS"] = base_env["GOOGLE_APPLICATION_CREDENTIALS"]
+                env["GOOGLE_CLOUD_PROJECT"] = base_env["GOOGLE_CLOUD_PROJECT"]
+                env["GOOGLE_CLOUD_LOCATION"] = base_env.get("GOOGLE_CLOUD_LOCATION") or "global"
             else:
                 raise AuthEnvError(
                     "transport=api for gemini but GEMINI_API_KEY is unset/empty "
