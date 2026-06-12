@@ -15,11 +15,12 @@ logic is exercised, not a copy of it.
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 from uuid import uuid4
 
 import pytest
 
-from app.services import pipeline
+from app.services import agent, pipeline
 from app.services import phase_judge
 from app.services.phase_judge import JudgeOutcome
 
@@ -71,10 +72,18 @@ def _install_harness(monkeypatch):
     monkeypatch.setattr(pipeline.asyncio, "sleep", _no_sleep)
 
 
-def _run_execute_phase(transport: str):
+def _run_execute_phase(
+    transport: str,
+    *,
+    phase_name: str = "case-based-preview",
+    extract_transport: Optional[str] = None,
+    judge_transport: Optional[str] = None,
+):
+    # None mirrors the production default ('inherit' → resolves to the job
+    # transport in run()); an explicit value simulates a resolved override.
     return asyncio.run(pipeline._execute_phase(
         job_id=uuid4(),
-        phase_name="case-based-preview",
+        phase_name=phase_name,
         phase_order=1,
         subject="biology",
         provider="claude",
@@ -87,6 +96,8 @@ def _run_execute_phase(transport: str):
         prior_outputs={},
         difficulty=None,
         transport=transport,
+        extract_transport=extract_transport if extract_transport is not None else transport,
+        judge_transport=judge_transport if judge_transport is not None else transport,
     ))
 
 
@@ -178,3 +189,94 @@ def test_api_non_auth_regen_failure_swallowed(monkeypatch):
     out_md, tin, tout, prompt_hash, parsed = _run_execute_phase("api")
     # Non-auth regen failure is swallowed → keep the pre-regen output.
     assert out_md == "PRE_REGEN"
+
+
+# --- Phase 4.1 §5: per-role transport routing --------------------------------
+
+_PASSED = JudgeOutcome(available=True, passed=True, warnings=[], feedback="")
+
+
+def test_content_uses_job_transport_judge_uses_judge_transport(monkeypatch):
+    """Mixed routing: api job + cli-resolved judge → the content generation
+    spawn sees transport='api' while the judge call sees transport='cli'."""
+    _install_harness(monkeypatch)
+
+    seen = {"gen": None, "judge": None}
+
+    async def _gen(**kwargs):
+        seen["gen"] = kwargs.get("transport")
+        return "GENERATED", 10, 20
+
+    async def _judge(**kwargs):
+        seen["judge"] = kwargs.get("transport")
+        return _PASSED
+
+    monkeypatch.setattr(pipeline.agent, "run_phase_prompt", _gen)
+    monkeypatch.setattr(pipeline.phase_judge, "judge", _judge)
+
+    out_md, *_ = _run_execute_phase(
+        "api", extract_transport="cli", judge_transport="cli"
+    )
+    assert out_md == "GENERATED"
+    assert seen["gen"] == "api"
+    assert seen["judge"] == "cli"
+
+
+def test_extract_uses_resolved_extract_transport(monkeypatch):
+    """Extract routing: api job + cli-resolved extract → summarize_lesson
+    is spawned with transport='cli'."""
+    _install_harness(monkeypatch)
+
+    seen = {"extract": None}
+
+    monkeypatch.setattr(pipeline.agent, "read_whole_book_text", lambda path: "BOOK TEXT")
+    monkeypatch.setattr(pipeline.agent, "extract_text_is_oversize", lambda text: False)
+    monkeypatch.setattr(pipeline.agent, "validate_extract_text", lambda text: None)
+    monkeypatch.setattr(pipeline.agent, "validate_extract_summary", lambda out: None)
+
+    async def _summarize(**kwargs):
+        seen["extract"] = kwargs.get("transport")
+        return "EXTRACTED", 5, 7
+
+    monkeypatch.setattr(pipeline.agent, "summarize_lesson", _summarize)
+
+    out_md, *_ = _run_execute_phase(
+        "api", phase_name="extract", extract_transport="cli", judge_transport="cli"
+    )
+    assert out_md == "EXTRACTED"
+    assert seen["extract"] == "cli"
+
+
+def _install_real_judge_with_auth_failure(monkeypatch):
+    """Drive the REAL phase_judge.judge so its own transport param governs the
+    re-raise: stub the judge's internal agent.run_phase to raise AuthEnvError."""
+    monkeypatch.setattr(phase_judge, "get_prompt", lambda subject, phase: "CONTRACT")
+
+    async def _judge_llm(**kwargs):
+        raise agent.AuthEnvError("ANTHROPIC_API_KEY missing for transport=api")
+
+    monkeypatch.setattr(phase_judge.agent, "run_phase", _judge_llm)
+
+
+def test_cli_job_api_judge_auth_error_is_loud(monkeypatch):
+    """job transport='cli' + resolved judge 'api': an auth error inside the
+    INITIAL judge re-raises out of _execute_phase — loud even though the job
+    generation itself is cli."""
+    _install_harness(monkeypatch)
+    monkeypatch.setattr(pipeline.agent, "run_phase_prompt", _gen_ok)
+    _install_real_judge_with_auth_failure(monkeypatch)
+
+    with pytest.raises(agent.AuthEnvError):
+        _run_execute_phase("cli", judge_transport="api")
+
+
+def test_api_job_cli_judge_auth_error_is_soft(monkeypatch):
+    """job transport='api' + resolved judge 'cli': the same auth error inside
+    the INITIAL judge degrades to 'judge-unavailable' — soft even though the
+    job generation is api."""
+    _install_harness(monkeypatch)
+    monkeypatch.setattr(pipeline.agent, "run_phase_prompt", _gen_ok)
+    _install_real_judge_with_auth_failure(monkeypatch)
+
+    out_md, *_ = _run_execute_phase("api", judge_transport="cli")
+    assert out_md == "GENERATED"

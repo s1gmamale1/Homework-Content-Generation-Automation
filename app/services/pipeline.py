@@ -16,6 +16,7 @@ from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
 from app.services import agent, events_bus, failure_classifier, notion_archive, phase_judge
+from app.services.agent_models import resolve_role_transport
 from app.services.flows import (
     flow_for,
     file_needed_phases,
@@ -78,6 +79,15 @@ async def run(job_id: UUID) -> None:
             # 'api' threads provider API keys via _auth_env and restricts
             # failover to the requested provider. Pinned at job creation.
             transport = getattr(job, "transport", "cli") or "cli"
+            # Phase 4.1 §5: per-role transports. 'inherit' follows the job's
+            # transport; an explicit 'cli'/'api' wins. Resolved ONCE here so
+            # every downstream spawn routes deterministically.
+            extract_transport = resolve_role_transport(
+                getattr(job, "extract_transport", "inherit") or "inherit", transport
+            )
+            judge_transport = resolve_role_transport(
+                getattr(job, "judge_transport", "inherit") or "inherit", transport
+            )
             section_data = {
                 "id": section.id,
                 "title": section.section_title,
@@ -162,6 +172,8 @@ async def run(job_id: UUID) -> None:
                     prior_outputs=prior_outputs,
                     difficulty=difficulty,
                     transport=transport,
+                    extract_transport=extract_transport,
+                    judge_transport=judge_transport,
                 )
             except Exception:
                 # _execute_one_phase already published the error event and
@@ -211,6 +223,8 @@ async def run(job_id: UUID) -> None:
                     source_map_digest=source_map_digest,
                     source_map_ids=source_map_ids,
                     transport=transport,
+                    extract_transport=extract_transport,
+                    judge_transport=judge_transport,
                 )
             except RuntimeError as exc:
                 if "content phase failed" in str(exc):
@@ -286,6 +300,8 @@ async def _execute_one_phase(
     difficulty: Optional[str],
     source_map_digest: str = "",
     transport: str = "cli",
+    extract_transport: str = "cli",
+    judge_transport: str = "cli",
 ) -> tuple[str, Optional[int], Optional[int], Optional[Any]]:
     """Run a single phase end-to-end with status tracking, SSE emit, and
     error handling. Wraps `_execute_phase` so both the sequential head loop
@@ -320,6 +336,8 @@ async def _execute_one_phase(
             difficulty=difficulty,
             source_map_digest=source_map_digest,
             transport=transport,
+            extract_transport=extract_transport,
+            judge_transport=judge_transport,
         )
     except Exception as exc:
         phase_ms = (perf_counter() - t_phase) * 1000
@@ -377,6 +395,8 @@ async def _run_content_phases_parallel(
     source_map_digest: str = "",
     source_map_ids: Optional[set[str]] = None,
     transport: str = "cli",
+    extract_transport: str = "cli",
+    judge_transport: str = "cli",
 ) -> None:
     """Wave-based parallel scheduler for content phases.
 
@@ -428,6 +448,8 @@ async def _run_content_phases_parallel(
                             difficulty=difficulty,
                             source_map_digest=source_map_digest,
                             transport=transport,
+                            extract_transport=extract_transport,
+                            judge_transport=judge_transport,
                         ),
                         name=f"phase:{name}",
                     )
@@ -561,6 +583,8 @@ async def _execute_phase(
     difficulty: Optional[str],
     source_map_digest: str = "",
     transport: str = "cli",
+    extract_transport: str = "cli",
+    judge_transport: str = "cli",
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     if phase_name == "extract":
         prompt_hash = "builtin:extract:v2"
@@ -661,7 +685,7 @@ async def _execute_phase(
                     section_title=section["title"], section_number=section["number"],
                     page_start=section["page_start"], page_end=section["page_end"],
                     homework_job_id=job_id, phase_output_id=po_id,
-                    transport=transport,
+                    transport=extract_transport,
                 )
                 reason = agent.validate_extract_summary(out)
                 if reason is not None:
@@ -672,7 +696,7 @@ async def _execute_phase(
                 requested_provider=settings.extract_provider,
                 model=settings.extract_model,
                 run_fn=_extract_run,
-                transport=transport,
+                transport=extract_transport,
             )
             parsed_struct = None
         else:
@@ -729,7 +753,7 @@ async def _execute_phase(
             lesson_context=lesson_context, prior_outputs=prior_outputs,
             gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
             homework_job_id=job_id, phase_output_id=po_id,
-            transport=transport,
+            transport=judge_transport,
         )
         # Regenerate ONLY on a MAJOR issue; minor (stylistic/length) nits are
         # recorded as warnings but never trigger an expensive regen.
@@ -760,13 +784,17 @@ async def _execute_phase(
                     lesson_context=lesson_context, prior_outputs=prior_outputs,
                     gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
                     homework_job_id=job_id, phase_output_id=po_id,
-                    transport=transport,
+                    transport=judge_transport,
                 )
             except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job (except api auth, below)
-                if transport == "api" and phase_judge._is_auth_error(exc):
-                    # An api job whose regen GENERATION or post-regen JUDGE hit an
-                    # auth/401 must fail LOUDLY, consistent with the initial judge
+                if (transport == "api" or judge_transport == "api") and phase_judge._is_auth_error(exc):
+                    # This try-block contains TWO spawns with potentially different
+                    # transports: the regen GENERATION (content → `transport`) and
+                    # the POST-REGEN JUDGE (→ `judge_transport`). An auth error here
+                    # belongs to one of those two; if EITHER ran under api, the
+                    # failure must be LOUD, consistent with the initial judge
                     # (spec §3) — don't silently degrade to the pre-regen output.
+                    # Only pure cli+cli keeps the soft degrade.
                     logger.error(
                         f"[job {job_id}] {phase_name} api auth failure during regen/judge ({exc!r})"
                     )
