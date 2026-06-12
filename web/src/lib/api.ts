@@ -8,6 +8,7 @@ import type {
   NotionGrade,
   NotionSubject,
   ProviderModelManifest,
+  RoleTransport,
   Subject,
   TOCEntry,
   Transport,
@@ -152,6 +153,8 @@ export const api = {
       provider?: string;
       model?: string | null;
       transport?: Transport;
+      extract_transport?: RoleTransport;
+      judge_transport?: RoleTransport;
     } = {},
   ): Promise<Job> {
     const {
@@ -160,6 +163,8 @@ export const api = {
       provider = "claude",
       model = null,
       transport = "cli",
+      extract_transport = "inherit",
+      judge_transport = "inherit",
     } = opts;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
@@ -168,7 +173,14 @@ export const api = {
       {
         method: "POST",
         headers,
-        body: JSON.stringify({ force, provider, model, transport }),
+        body: JSON.stringify({
+          force,
+          provider,
+          model,
+          transport,
+          extract_transport,
+          judge_transport,
+        }),
       },
     );
     return unwrap<Job>(res);
@@ -251,6 +263,7 @@ export const api = {
   },
   async launchBatch(body: {
     book_id: string; toc_entry_ids?: string[]; provider?: string; model?: string | null; transport?: Transport;
+    extract_transport?: RoleTransport; judge_transport?: RoleTransport;
   }): Promise<BatchSummary & { jobs_created: number; jobs_adopted: number; jobs_skipped: number }> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),

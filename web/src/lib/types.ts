@@ -24,6 +24,10 @@ export type BookStatus = "uploading" | "toc_extracting" | "toc_ready" | "failed"
 /** Generation transport: "cli" (local subprocess, default) vs "api" (pay-per-token SDK; claude/gemini only). */
 export type Transport = "cli" | "api";
 
+/** Per-role billing override for the extract/judge phases: "inherit" (default)
+ *  follows the job's `transport`; "cli"/"api" pin that role explicitly. */
+export type RoleTransport = "cli" | "api" | "inherit";
+
 export interface TOCEntry {
   id: string;
   chapter_number: string | null;
@@ -96,6 +100,8 @@ export interface Job {
   provider?: string;
   model?: string | null;
   transport: Transport;
+  extract_transport: RoleTransport;
+  judge_transport: RoleTransport;
   notion_skip_reason?: string | null;
 }
 
@@ -293,6 +299,8 @@ export interface BatchSummary {
   provider: string;
   model: string | null;
   transport: Transport;
+  extract_transport: RoleTransport;
+  judge_transport: RoleTransport;
   rollup: BatchRollup;
   lessons_covered: number;
   complete: boolean;

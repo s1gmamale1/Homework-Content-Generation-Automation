@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
 import { subjectLabel } from "@/lib/subjects";
-import type { BatchSummary, Book, Transport } from "@/lib/types";
+import type { BatchSummary, Book, RoleTransport, Transport } from "@/lib/types";
 import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +20,14 @@ const LBL = "text-xs font-medium uppercase tracking-[0.12em] text-white/45";
 /** All transports a book could be launched on. cli is always available; api
  *  only for providers the backend `api_supported` map marks true. */
 const ALL_TRANSPORTS: Transport[] = ["cli", "api"];
+
+/** Per-role billing options for the Extract/Judge selects. "Auto" (inherit)
+ *  follows the batch's transport. */
+const ROLE_TRANSPORT_OPTIONS: { value: RoleTransport; label: string }[] = [
+  { value: "inherit", label: "Auto" },
+  { value: "cli", label: "CLI" },
+  { value: "api", label: "API" },
+];
 
 export function FleetLauncher({
   books,
@@ -256,6 +264,8 @@ function ReadyRow({
   const qc = useQueryClient();
   const [provider, setProvider] = useState("claude");
   const [transport, setTransport] = useState<Transport>("cli");
+  const [extractTransport, setExtractTransport] = useState<RoleTransport>("inherit");
+  const [judgeTransport, setJudgeTransport] = useState<RoleTransport>("inherit");
   const [model, setModel] = useState<string | null>(null);
   const [choosing, setChoosing] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -310,6 +320,8 @@ function ReadyRow({
         book_id: book.id,
         provider,
         transport,
+        extract_transport: extractTransport,
+        judge_transport: judgeTransport,
         ...(transport === "api" ? { model } : {}),
         ...(subset ? { toc_entry_ids: [...selected] } : {}),
       }),
@@ -362,6 +374,18 @@ function ReadyRow({
           {apiSupported && (
             <TransportToggle value={transport} onChange={setTransport} />
           )}
+          {/* Per-role billing — always visible (a cli batch can still pin its
+              extract/judge calls to api, and vice versa). Auto = inherit. */}
+          <RoleTransportSelect
+            label="Extract"
+            value={extractTransport}
+            onChange={setExtractTransport}
+          />
+          <RoleTransportSelect
+            label="Judge"
+            value={judgeTransport}
+            onChange={setJudgeTransport}
+          />
           {/* API forces an explicit model (no "provider default"). */}
           {transport === "api" && (
             <Select value={model ?? ""} onValueChange={(v) => setModel(v)}>
@@ -445,6 +469,39 @@ function ReadyRow({
         </div>
       )}
     </div>
+  );
+}
+
+/** Compact per-role billing select (Extract / Judge). Auto follows the
+ *  batch's transport; CLI/API pin that role explicitly. */
+function RoleTransportSelect({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: RoleTransport;
+  onChange: (next: RoleTransport) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={(v) => onChange(v as RoleTransport)}>
+      <SelectTrigger
+        className={cn(SELECT_TRIGGER, "h-9 w-[8rem] gap-1.5")}
+        title={`${label} billing — Auto = follow job billing`}
+      >
+        <span className="shrink-0 text-[0.66rem] uppercase tracking-wide text-white/45">
+          {label}
+        </span>
+        <SelectValue placeholder="Auto" />
+      </SelectTrigger>
+      <SelectContent>
+        {ROLE_TRANSPORT_OPTIONS.map((o) => (
+          <SelectItem key={o.value} value={o.value}>
+            {o.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 

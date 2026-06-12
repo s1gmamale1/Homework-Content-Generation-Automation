@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
 import { subjectLabel } from "@/lib/subjects";
-import type { JobStatus, Transport } from "@/lib/types";
+import type { JobStatus, RoleTransport, Transport } from "@/lib/types";
 import { CARD, GLASS_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn, formatPages } from "@/lib/utils";
 
@@ -35,6 +35,8 @@ export function SectionPage() {
   const [provider, setProvider] = useState<string>("claude");
   const [model, setModel] = useState<string | null>(null);
   const [transport, setTransport] = useState<Transport>("cli");
+  const [extractTransport, setExtractTransport] = useState<RoleTransport>("inherit");
+  const [judgeTransport, setJudgeTransport] = useState<RoleTransport>("inherit");
 
   const { data: book, isLoading } = useQuery({
     queryKey: ["book", bookId],
@@ -86,6 +88,8 @@ export function SectionPage() {
         provider,
         model,
         transport,
+        extract_transport: extractTransport,
+        judge_transport: judgeTransport,
       });
       navigate(`/job/${job.id}`);
     } catch (err) {
@@ -175,6 +179,10 @@ export function SectionPage() {
           apiSupported={apiSupported}
           transport={transport}
           onTransportChange={setTransport}
+          extractTransport={extractTransport}
+          onExtractTransportChange={setExtractTransport}
+          judgeTransport={judgeTransport}
+          onJudgeTransportChange={setJudgeTransport}
         />
 
         {/* Existing-homework-aware action panel */}
@@ -202,7 +210,18 @@ interface AgentPickerProps {
   apiSupported: boolean;
   transport: Transport;
   onTransportChange: (next: Transport) => void;
+  extractTransport: RoleTransport;
+  onExtractTransportChange: (next: RoleTransport) => void;
+  judgeTransport: RoleTransport;
+  onJudgeTransportChange: (next: RoleTransport) => void;
 }
+
+/** Per-role billing options for the Extract/Judge selects. */
+const ROLE_TRANSPORT_OPTIONS: { value: RoleTransport; label: string }[] = [
+  { value: "inherit", label: "Auto" },
+  { value: "cli", label: "CLI" },
+  { value: "api", label: "API" },
+];
 
 function AgentPicker({
   manifest,
@@ -214,6 +233,10 @@ function AgentPicker({
   apiSupported,
   transport,
   onTransportChange,
+  extractTransport,
+  onExtractTransportChange,
+  judgeTransport,
+  onJudgeTransportChange,
 }: AgentPickerProps) {
   const providerNames = manifest ? Object.keys(manifest.providers) : [];
   const modelOptions = manifest?.providers[provider] ?? [];
@@ -311,6 +334,56 @@ function AgentPicker({
           </p>
         </div>
       )}
+
+      {/* Per-role billing overrides — always visible (even on a cli-only
+          provider a job can pin its extract/judge calls to api, and vice
+          versa). "Auto" (inherit) follows the job transport above. */}
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1.5" title="Auto = follow job billing">
+          <span className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/45">
+            Extract billing
+          </span>
+          <Select
+            value={extractTransport}
+            onValueChange={(value) => onExtractTransportChange(value as RoleTransport)}
+          >
+            <SelectTrigger className={SELECT_TRIGGER}>
+              <SelectValue placeholder="Auto" />
+            </SelectTrigger>
+            <SelectContent>
+              {ROLE_TRANSPORT_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+
+        <label className="flex flex-col gap-1.5" title="Auto = follow job billing">
+          <span className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/45">
+            Judge billing
+          </span>
+          <Select
+            value={judgeTransport}
+            onValueChange={(value) => onJudgeTransportChange(value as RoleTransport)}
+          >
+            <SelectTrigger className={SELECT_TRIGGER}>
+              <SelectValue placeholder="Auto" />
+            </SelectTrigger>
+            <SelectContent>
+              {ROLE_TRANSPORT_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+      </div>
+      <p className="mt-1.5 text-xs text-white/45">
+        Auto = follow job billing. Pin Extract or Judge to CLI/API independently of the run above.
+      </p>
     </section>
   );
 }
