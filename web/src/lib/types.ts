@@ -44,6 +44,7 @@ export interface TOCEntry {
 export interface Book {
   id: string;
   subject: Subject;
+  grade: string | null;
   original_filename: string;
   status: BookStatus;
   error_message: string | null;

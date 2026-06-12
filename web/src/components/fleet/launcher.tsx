@@ -280,6 +280,8 @@ function ReadyRow({
   });
   const toc = detail.data?.toc ?? [];
   const lessons = detail.data?.toc?.length;
+  const doneCount = toc.filter((t) => t.latest_job_status === "done").length;
+  const complete = lessons != null && lessons > 0 && doneCount === lessons;
   const subset = choosing && selected.size > 0;
 
   // Does the picked provider support the pay-per-token API transport? Only
@@ -341,10 +343,23 @@ function ReadyRow({
     <div className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2.5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-sm font-medium text-white">
+          <div className="flex items-center gap-1.5 text-sm font-medium text-white">
             {subjectLabel(book.subject)}
+            {book.grade && (
+              <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-normal text-white/55">
+                Grade {book.grade}
+              </span>
+            )}
           </div>
-          <div className="text-xs text-white/45">{lessons ?? "…"} lessons</div>
+          <div className="text-xs text-white/45">
+            {lessons ?? "…"} lessons
+            {doneCount > 0 && (
+              <span className={complete ? "text-emerald-400/80" : undefined}>
+                {" · "}
+                {complete ? "complete" : `${doneCount}/${lessons} done`}
+              </span>
+            )}
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button
@@ -462,6 +477,22 @@ function ReadyRow({
                     #{t.order_index}
                   </span>
                   <span className="min-w-0 truncate">{t.section_title}</span>
+                  {t.latest_job_status === "done" && (
+                    <span className="ml-auto shrink-0 text-[10px] text-emerald-400/80">
+                      done
+                    </span>
+                  )}
+                  {t.latest_job_status === "failed" && (
+                    <span className="ml-auto shrink-0 text-[10px] text-rose-400/80">
+                      failed
+                    </span>
+                  )}
+                  {(t.latest_job_status === "running" ||
+                    t.latest_job_status === "pending") && (
+                    <span className="ml-auto shrink-0 text-[10px] text-amber-300/80">
+                      {t.latest_job_status}
+                    </span>
+                  )}
                 </label>
               );
             })

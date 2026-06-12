@@ -46,3 +46,18 @@ def test_ingest_derives_grade_when_absent():
 def test_ingest_keeps_explicit_grade():
     captured = _run_ingest("9", "7-sinf_Algebra_2022.pdf")
     assert captured["grade"] == "9"   # explicit wins; filename ignored
+
+
+def test_book_out_exposes_grade():
+    """fleet-ui: the launcher's Ready list shows the book grade — BookOut must
+    carry it (the model has had `grade` since the Notion-archive work; the
+    schema silently dropped it)."""
+    from app.schemas.book import BookOut
+
+    b = SimpleNamespace(
+        id=uuid4(), subject="history", original_filename="7-sinf_x.pdf",
+        status="toc_ready", error_message=None, gemini_file_expires_at=None,
+        file_size_bytes=1, created_at=None, toc=None, grade="7",
+    )
+    out = BookOut.model_validate(b)
+    assert out.grade == "7"
