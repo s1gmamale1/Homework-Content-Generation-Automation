@@ -24,6 +24,9 @@ class Batch(Base, UUIDPK, Timestamps):
     model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     # Generation transport: "cli" (subprocess CLI, default) vs "api" (pay-per-token SDK).
     transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="cli")
+    # Per-role transport overrides: "cli" | "api" | "inherit" (follow the batch's transport).
+    extract_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
+    judge_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
     notion_source: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     __table_args__ = (

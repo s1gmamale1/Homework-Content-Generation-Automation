@@ -152,6 +152,63 @@ async def test_batch_unique_per_book_and_transport():
 
 
 @pytest.mark.asyncio
+async def test_homework_job_role_transports_default_to_inherit():
+    """Phase 4.1: per-role transports default to "inherit" (follow job transport)."""
+    from app.db import SessionLocal
+    from app.models.homework_job import HomeworkJob
+    book_id, toc_ids = await _seed_book("g")
+    try:
+        async with SessionLocal() as s:
+            job = HomeworkJob(book_id=book_id, toc_entry_id=toc_ids[0],
+                              subject="math-algebra", status="pending")
+            s.add(job)
+            await s.commit()
+            await s.refresh(job)
+            assert job.extract_transport == "inherit"
+            assert job.judge_transport == "inherit"
+    finally:
+        await _cleanup(book_id)
+
+
+@pytest.mark.asyncio
+async def test_homework_job_judge_transport_cli_roundtrips():
+    from app.db import SessionLocal
+    from app.models.homework_job import HomeworkJob
+    book_id, toc_ids = await _seed_book("h")
+    try:
+        async with SessionLocal() as s:
+            job = HomeworkJob(book_id=book_id, toc_entry_id=toc_ids[0],
+                              subject="math-algebra", status="pending",
+                              judge_transport="cli")
+            s.add(job)
+            await s.commit()
+            job_id = job.id
+        async with SessionLocal() as s:
+            fetched = await s.get(HomeworkJob, job_id)
+            assert fetched.judge_transport == "cli"
+            assert fetched.extract_transport == "inherit"
+    finally:
+        await _cleanup(book_id)
+
+
+@pytest.mark.asyncio
+async def test_batch_role_transports_default_to_inherit():
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    book_id, _ = await _seed_book("i")
+    try:
+        async with SessionLocal() as s:
+            batch = Batch(book_id=book_id, subject="math-algebra", provider="gemini")
+            s.add(batch)
+            await s.commit()
+            await s.refresh(batch)
+            assert batch.extract_transport == "inherit"
+            assert batch.judge_transport == "inherit"
+    finally:
+        await _cleanup(book_id)
+
+
+@pytest.mark.asyncio
 async def test_agent_usage_auth_mode_defaults_to_cli():
     from app.db import SessionLocal
     from app.models.agent_usage import AgentUsage
