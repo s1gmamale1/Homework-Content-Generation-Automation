@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # docker compose, `env_file:` already exports .env into the process env; this
 # line gives bare-metal (`uv run uvicorn …` / `python -m app.services.worker`)
 # the same behavior, so keys in .env work identically everywhere. config.py is
-# imported before worker.py computes HAS_API_KEYS, so the ordering is safe.
+# imported before worker.py computes CAPABILITIES, so the ordering is safe.
 load_dotenv(override=False)
 
 

@@ -63,13 +63,15 @@ GEMINI_API_KEY=...             # gemini side, AI Studio key…
 # GOOGLE_CLOUD_PROJECT=<project-id>
 ```
 
-**Both sides are required for any `transport=api` job**, regardless of which
-provider the job names — an api job touches the content provider + the gemini
-extract pin + the claude judge. The gemini side is satisfied by EITHER form (an
-explicit `GEMINI_API_KEY` wins when both are set). The worker computes
-`has_api_keys` once at startup (`_compute_has_api_keys`); `claim_next_job` gates
-`WHERE transport='cli' OR :has_api_keys`, so a half-configured worker **will not
-claim api jobs** and logs a warning. cli jobs are unaffected.
+**Since Phase 4.1, "both sides" is no longer a blanket rule** — the worker
+computes per-side capabilities at startup (`_compute_capabilities`) and
+`claim_next_job` routes per the job's *resolved role transports* (see the
+"Phase 4.1 — per-role transports" section below). Rule of thumb: credential
+every side whose role can resolve to `api` on jobs you want this worker to
+claim. The gemini side is satisfied by EITHER form (an explicit
+`GEMINI_API_KEY` wins when both are set); a worker missing a needed side
+simply **never claims those jobs** and logs which side is absent. cli jobs
+are unaffected.
 
 These are read from the **process environment** and `.env` works everywhere:
 compose `env_file:`/`environment:` export it, and on bare metal the app loads
@@ -147,3 +149,99 @@ real-time toggle.
 
 The gemini side of `transport=api` accepts EITHER `GEMINI_API_KEY` (AI Studio) OR a Vertex service account:
 `GOOGLE_APPLICATION_CREDENTIALS=/path/sa.json` + `GOOGLE_CLOUD_PROJECT=<project>` (+ optional `GOOGLE_CLOUD_LOCATION`, defaults to `global` — regional endpoints may 404). An explicit `GEMINI_API_KEY` wins when both are present. The worker claim gate accepts either form. Requirements: the persisted `security.auth.selectedType` must be removed from `~/.gemini/settings.json` (same §3 rule as everything else), and the SA's GCP project must have Vertex AI enabled with the SA holding Vertex AI User. Verified live 2026-06-11 (gemini-cli 0.46.0): in-process `run_phase(transport="api")` with only SA creds → Vertex-billed generation, `agent_usages.auth_mode=api`.
+
+---
+
+## Phase 4.1 — per-role transports (extract / judge), shipped 2026-06-11
+
+Phase 4's single `transport` switched the **whole job**. Phase 4.1 adds two
+per-role overrides on every job (and batch): `extract_transport` and
+`judge_transport`, each `inherit | cli | api` (default `inherit`). Resolution is
+`resolve_role_transport` (`app/services/agent_models.py`): **`inherit` follows
+the job's `transport`; an explicit value wins.** Content phases always follow
+the job-level `transport`. The FE exposes the two overrides as
+Extract/Judge "billing" selects (Auto / CLI / API) next to the existing
+transport toggle.
+
+The motivating split: run content on the gemini API (metered, parallel-safe)
+while keeping the expensive claude judge + extract on the subscription — or the
+inverse. Every `agent_usages` row carries the `auth_mode` the spawn actually
+used, so the `$` rollups stay per-role-accurate.
+
+### Capability routing (claim gate v2)
+
+The Phase-4 all-or-nothing `has_api_keys` gate is gone. At startup the worker
+computes per-side capabilities (`worker._compute_capabilities` →
+`worker.CAPABILITIES`): `can_claude_api` (`ANTHROPIC_API_KEY`),
+`can_gemini_api` (`GEMINI_API_KEY` OR the Vertex SA pair), plus role-level
+flags derived from the configured judge/extract providers (`judge_api_ok`,
+`judge_fallback_api_ok`, `extract_api_ok`). `claim_next_job` ANDs each job's
+**resolved** role transports against those flags, so:
+
+- a worker with **only gemini** creds can claim an api-content gemini job with
+  cli judge/extract — no Anthropic key needed;
+- a worker missing a needed side **never claims the job** (fail-fast at claim
+  time, before any spawn — this also covers extract failover);
+- a half-configured worker logs a startup warning naming the missing side
+  (`api capability: claude=… gemini=…`) instead of refusing all api jobs.
+
+Two subtleties baked into the gate (so operators don't rediscover them):
+the **§4a judge self-fallback** — jobs generating ON the configured judge pair
+are judged by `model_tiers._SELF_FALLBACK`, so the gate checks *that*
+provider's capability for exactly those jobs; and the **NULL-model coalesce** —
+`coalesce(model, '')` in the judge-pair comparison, because bare SQL
+`NULL = 'x'` is NULL and silently excluded model-NULL jobs whose provider
+matched the judge provider (empirically proven by
+`test_null_model_job_claims_via_not_pair_branch`). The worker also warns at
+startup if `JUDGE_MODEL == default_model(JUDGE_PROVIDER)`, which would open the
+NULL-model edge.
+
+Credential mispredictions downstream of the gate raise a **typed
+`AuthEnvError`** (loud, classified by `isinstance`, never a silent OAuth
+fallback). The pipeline's regen/judge guard fails the phase loudly when the
+resolved content **or** judge transport is api and the error classifies as
+auth (`pipeline.py` — `transport == "api" or judge_transport == "api"`).
+
+### ⚠️ Reviewer note — re-billing the same lesson needs `force=true`
+
+Role transports are **NOT part of the dedup natural key** (spec §8). Submitting
+the same section again with different Extract/Judge billing (e.g. flipping the
+judge from cli to api to benchmark cost) returns the **existing** job — your new
+billing choice is silently ignored. Pass `force=true` on `POST /generate` (or
+the batch endpoint) to actually re-run with the new role transports. Operators
+WILL hit this and wonder why the `$` didn't move.
+
+### ⚠️ Vertex + persisted gemini OAuth (live finding, 2026-06-11)
+
+On a host whose `~/.gemini/settings.json` carries
+`security.auth.selectedType: "oauth-personal"`, gemini-cli 0.46.0 lets the
+persisted selection **override** the `GOOGLE_GENAI_USE_VERTEXAI=true` env signal
+`_auth_env` injects — the api-transport spawn routes to Cloud Code OAuth and
+fails loudly (`Cloud Code Private API has not been used in project …`), recorded
+as `success=False` with `auth_mode=api` (it does NOT silently bill the wrong
+account). Same §3 rule as Phase 4: remove `selectedType` on worker hosts before
+running api jobs; the startup warning (`_warn_if_gemini_selected_type`) flags
+it.
+
+### In-band acceptance (run 2026-06-11, this Mac)
+
+- DB-free suite: `394 passed, 46 skipped`.
+- Real-DB (`edu_copy`): `test_transport_schema.py` + `test_claim_contention.py`
+  + `test_transport_validation.py` → `34 passed`.
+- **Live mixed-billing smoke (§9.3, the user's case — job api + roles cli):**
+  one real gemini `run_phase_prompt(transport="api")` (Vertex SA, no
+  ANTHROPIC_API_KEY in env) + one real claude judge-shaped
+  `run_phase(transport="cli")` (subscription) → `agent_usages`: gemini row
+  `auth_mode=api, success=True`, claude row `auth_mode=cli, success=True`.
+  Mixed per-row attribution proven end-to-end on real spawns.
+
+### Operator leg (§9.4) — BILLED, not yet run
+
+The remaining acceptance leg needs an `ANTHROPIC_API_KEY` and real spend:
+submit **one opus-content job with `judge_transport=api`** end-to-end on a
+worker credentialed for **both** sides (or gemini-only, to watch the gate
+refuse it first), and confirm: the content rows bill the chosen content
+transport, the judge rows show `auth_mode=api` with nonzero `$` in
+`/agent/stats`, and a gemini-only worker never claims it. Gate-refusal and
+loud-AuthEnvError behavior are already covered in-band (real-DB claim matrix +
+unit tests); this leg is the billed end-to-end confirmation.
