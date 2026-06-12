@@ -211,6 +211,33 @@ billing choice is silently ignored. Pass `force=true` on `POST /generate` (or
 the batch endpoint) to actually re-run with the new role transports. Operators
 WILL hit this and wonder why the `$` didn't move.
 
+### ⚠️ gemini-cli dotenv self-poisoning — REQUIRED worker setting (live incident, 2026-06-12)
+
+gemini-cli **dotenv-loads the nearest project `.env` inside every spawn**
+(walking up from the cwd), and `GOOGLE_CLOUD_PROJECT` + `GEMINI_API_KEY` are on
+its auth-var whitelist (imported even in untrusted folders). This happens
+*inside the child process*, AFTER `_auth_env` scrubbed the parent env — so a
+worker whose repo `.env` carries Vertex creds for api mode has every **cli**
+gemini spawn re-scoped to that GCP project → `403 Cloud Code Private API has
+not been used in project …` (the 2026-06-12 2-PC batch failure on the head PC;
+proven by: same call, `.env` renamed away → success). It is also a latent
+ambient-credential hole (a cli spawn could silently pick up `GEMINI_API_KEY`).
+
+**Required on every worker PC (gemini-cli ≥ 0.46 — pin versions, fleet-ops-1):**
+in `~/.gemini/settings.json` add:
+
+```json
+{ "advanced": { "ignoreLocalEnv": true } }
+```
+
+`_auth_env` injects everything a spawn needs explicitly, so the CLI has no
+business reading `.env`. Do NOT try `--ignore-env` as an argv flag — it appears
+in the CLI source (`loadEnvironment`) but is **not a registered option**; yargs
+hard-fails with "Unknown arguments". The worker logs a startup warning
+(`_warn_if_gemini_reads_local_env`) when the setting is absent. Also beware on
+Windows: PowerShell 5.1 `Out-File -Encoding utf8` writes a **BOM** and
+gemini-cli rejects BOM'd `settings.json` (exit 52) — write the file BOM-less.
+
 ### ⚠️ Vertex + persisted gemini OAuth (live finding, 2026-06-11)
 
 On a host whose `~/.gemini/settings.json` carries

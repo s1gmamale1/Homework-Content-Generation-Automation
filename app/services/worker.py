@@ -116,6 +116,37 @@ def _warn_if_gemini_selected_type() -> None:
         pass  # advisory only — never fatal
 
 
+def _warn_if_gemini_reads_local_env() -> None:
+    """Advisory startup guard (2026-06-12, the .env self-poisoning incident):
+    unless `~/.gemini/settings.json` sets `advanced.ignoreLocalEnv: true`,
+    gemini-cli dotenv-loads the nearest project `.env` INSIDE each spawn —
+    importing GOOGLE_CLOUD_PROJECT (and even GEMINI_API_KEY; both are on the
+    CLI's auth-var whitelist, applied even in untrusted folders) AFTER
+    `_auth_env` already scrubbed the parent env, defeating the scrub. On a
+    worker whose repo `.env` carries Vertex creds this 403s EVERY cli gemini
+    spawn ("Cloud Code Private API has not been used in project …" — proven
+    live on the head PC: same call with `.env` renamed away → success). The
+    setting needs gemini-cli >= 0.46; note `--ignore-env` is read by
+    loadEnvironment but NOT registered as a CLI option, so passing it as argv
+    hard-fails ("Unknown arguments"). Best-effort: any error is swallowed —
+    advisory only, never blocks startup."""
+    try:
+        import json
+        from pathlib import Path
+
+        path = Path.home() / ".gemini" / "settings.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not data.get("advanced", {}).get("ignoreLocalEnv"):
+            logger.warning(
+                "~/.gemini/settings.json lacks advanced.ignoreLocalEnv=true — "
+                "gemini-cli imports GOOGLE_CLOUD_PROJECT/GEMINI_API_KEY from the "
+                "repo's .env inside every spawn, bypassing _auth_env (cli spawns "
+                "can 403 or silently bill the wrong account)"
+            )
+    except Exception:
+        pass  # advisory only — never fatal
+
+
 class Worker:
     """Single-process queue worker. Holds N execution slots; loops forever
     claiming and running jobs until `stop()` is called."""
@@ -171,6 +202,7 @@ class Worker:
                 "bypass the SQL pair-equality in claim_next_job"
             )
         _warn_if_gemini_selected_type()
+        _warn_if_gemini_reads_local_env()
 
         # On startup, reclaim anything left in `running` from a prior crash
         # of this or any other worker. Cheap: usually 0 rows, occasionally a
