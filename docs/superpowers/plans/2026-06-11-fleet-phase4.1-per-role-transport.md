@@ -112,6 +112,7 @@ export DB_URL="postgresql+asyncpg://edu:edu@192.168.1.69:5436/edu_copy"   # shar
                  and_(not_(job_is_judge_pair), literal(caps["judge_api_ok"])))
   ```
   content: `transport=='cli' OR (provider=='claude' AND :can_claude_api) OR (provider=='gemini' AND :can_gemini_api)`; extract analogous to judge minus the pair-branch.
+  **Reviewer note (comment in code, one line):** a NULL-model job bypasses the SQL pair-equality but is safe today — `judge_model_for` resolves `None` via `default_model(provider)` (= sonnet) ≠ the judge pair (opus); the gap only opens if `JUDGE_MODEL` is ever set to `default_model(JUDGE_PROVIDER)`, and even then Task 2's `AuthEnvError` makes it loud. Optionally add a startup warning when `settings.judge_model == default_model(settings.judge_provider)` — the exact config that would open it.
 - [ ] **Step 4:** green (matrix + existing claim tests) + baseline. **Commit** — `feat(fleet): claim gate v2 — per-role capability routing incl. judge self-fallback (Phase 4.1)`.
 
 ---
@@ -147,7 +148,7 @@ export DB_URL="postgresql+asyncpg://edu:edu@192.168.1.69:5436/edu_copy"   # shar
 **Files:** Modify `docs/runbooks/phase4-transport-operator-acceptance.md`, `docs/memory/MASTER_MEMORY.md`, `docs/memory/INDEX.md`, `docs/memory/WISHLIST.md` (close `fleet-api-7`), `docs/memory/ROADMAP.md` if touched.
 
 - [ ] **Step 1: In-band acceptance:** full suite at/above baseline; the spec-§9 unit/matrix tests pass; **live smoke of the user's exact case** (free-ish, Vertex-billed content only): in-process job-shaped run with `transport=api` + both roles `cli` on this Mac (gemini via SA; claude via subscription) → content rows `auth_mode=api`, extract+judge rows `auth_mode=cli`. **§9.4 self-fallback legs**: gate-refusal covered in Task 4 (real-DB); loud-`AuthEnvError` covered in Tasks 2/5; the live fallback-judge leg runs only if cheap — else document as operator-run.
-- [ ] **Step 2:** runbook — add the per-role section (what `inherit/cli/api` mean per role; capability routing — a worker only claims what it can serve; §9.4 operator legs if deferred).
+- [ ] **Step 2:** runbook — add the per-role section (what `inherit/cli/api` mean per role; capability routing — a worker only claims what it can serve; §9.4 operator legs if deferred). **Reviewer note:** call out that re-running the same lessons with different role billing requires `force=true` — role transports are NOT part of dedup identity (correct per spec §8, but operators will hit this and wonder).
 - [ ] **Step 3:** WISHLIST: close `fleet-api-7` as SHIPPED; worklog **0054** + INDEX row. **Commit** — `docs(memory): worklog 0054 — Phase 4.1 per-role transport`.
 
 ---
