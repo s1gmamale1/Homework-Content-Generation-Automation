@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import func, literal, or_, select, text, update
+from sqlalchemy import and_, func, literal, not_, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -227,7 +227,7 @@ async def claim_next_job(
     *,
     worker_id: str,
     max_attempts: int,
-    has_api_keys: bool = False,
+    capabilities: Optional[dict] = None,
 ) -> Optional[HomeworkJob]:
     """Atomically claim the next pending job for this worker.
 
@@ -236,27 +236,73 @@ async def claim_next_job(
     Returns None if no claimable job is available (worker should sleep
     and retry).
 
-    Eligibility rules:
+    Eligibility rules (claim gate v2 — Phase 4.1 §4/§4a):
       - status == 'pending'
       - scheduled_at <= NOW() (so delayed retries don't fire early)
       - attempts < max_attempts (don't reclaim poison-pill jobs forever)
-      - transport == 'cli' OR `has_api_keys` is True. An `api` job touches up
-        to three providers (content + gemini extract + claude judge), so the
-        worker must have BOTH ANTHROPIC_API_KEY and GEMINI_API_KEY before it can
-        claim one. This is the fail-fast gate: a key-less worker never claims an
-        api job (covers the extract-failover path too, since the gate is at
-        claim time, before any spawn). Default `has_api_keys=False` so callers
-        that don't declare keys stay cli-only.
+      - per-role capability routing against `capabilities` (the dict
+        `worker._compute_capabilities` builds at startup):
+          * content: transport == 'cli', OR the worker has the api capability
+            for the job's content provider (`can_claude_api`/`can_gemini_api`).
+          * judge: if the job's resolved judge transport is api
+            (judge_transport == 'api', or 'inherit' under an api job), the
+            worker needs `judge_api_ok` — EXCEPT when the job generates ON the
+            configured judge pair, in which case `judge_model_for` self-falls
+            back to `model_tiers._SELF_FALLBACK` and the worker needs
+            `judge_fallback_api_ok` instead.
+          * extract: if the job's resolved extract transport is api, the
+            worker needs `extract_api_ok`.
+        This is the fail-fast gate: a worker missing a needed side never
+        claims the job (covers the extract-failover path too, since the gate
+        is at claim time, before any spawn). Default `capabilities=None` is
+        the most-restrictive all-False set, i.e. cli-only.
 
     Order: highest priority first, then oldest scheduled_at first (FIFO
     within a priority band).
     """
+    caps = capabilities or {}
+    judge_pair = caps.get("judge_pair") or (None, None)
+    content_ok = or_(
+        HomeworkJob.transport == "cli",
+        and_(HomeworkJob.provider == "claude", literal(bool(caps.get("can_claude_api")))),
+        and_(HomeworkJob.provider == "gemini", literal(bool(caps.get("can_gemini_api")))),
+    )
+    judge_needs_api = or_(
+        HomeworkJob.judge_transport == "api",
+        and_(HomeworkJob.judge_transport == "inherit", HomeworkJob.transport == "api"),
+    )
+    # §4a: jobs generating ON the configured judge pair are judged by the
+    # self-fallback provider — gate on ITS capability for exactly those jobs.
+    # NULL-model note: a model=NULL job bypasses this SQL equality; safe today
+    # because judge_model_for resolves None via default_model(provider) (sonnet)
+    # != the judge pair (opus). AuthEnvError keeps any future drift loud.
+    # `coalesce(model, '')` keeps the NOT-pair branch usable for NULL-model
+    # jobs: bare `NULL == 'x'` is SQL NULL, and not_(NULL AND ...) stays NULL,
+    # which silently excluded NULL-model jobs whose provider == the judge
+    # provider (proven by test_null_model_job_claims_via_not_pair_branch).
+    job_is_judge_pair = and_(
+        HomeworkJob.provider == (judge_pair[0] or ""),
+        func.coalesce(HomeworkJob.model, "") == (judge_pair[1] or ""),
+    )
+    judge_ok = or_(
+        not_(judge_needs_api),
+        and_(job_is_judge_pair, literal(bool(caps.get("judge_fallback_api_ok")))),
+        and_(not_(job_is_judge_pair), literal(bool(caps.get("judge_api_ok")))),
+    )
+    extract_needs_api = or_(
+        HomeworkJob.extract_transport == "api",
+        and_(HomeworkJob.extract_transport == "inherit", HomeworkJob.transport == "api"),
+    )
+    extract_ok = or_(not_(extract_needs_api), literal(bool(caps.get("extract_api_ok"))))
+
     pick_stmt = (
         select(HomeworkJob.id)
         .where(HomeworkJob.status == "pending")
         .where(HomeworkJob.scheduled_at <= func.now())
         .where(HomeworkJob.attempts < max_attempts)
-        .where(or_(HomeworkJob.transport == "cli", literal(has_api_keys)))
+        .where(content_ok)
+        .where(judge_ok)
+        .where(extract_ok)
         .order_by(HomeworkJob.priority.desc(), HomeworkJob.scheduled_at.asc())
         .limit(1)
         .with_for_update(skip_locked=True)

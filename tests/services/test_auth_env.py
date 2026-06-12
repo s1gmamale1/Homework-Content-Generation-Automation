@@ -139,22 +139,63 @@ def test_claude_api_vertex_creds_do_not_satisfy_anthropic():
         agent._auth_env("claude", "api", env)
 
 
-def test_worker_has_api_keys_accepts_vertex_for_gemini():
+def test_compute_capabilities_anthropic_only_env():
+    """Phase 4.1 §4: per-side capability set, not a single both-keys bool.
+    anthropic-only worker: claude side up, gemini side down; the judge
+    (claude/opus) is reachable but its self-fallback (gemini) is NOT."""
     from app.services import worker
 
-    key = {"ANTHROPIC_API_KEY": "a", "GEMINI_API_KEY": "g"}
-    vertex = {
-        "ANTHROPIC_API_KEY": "a",
-        "GOOGLE_APPLICATION_CREDENTIALS": "/sa.json",
-        "GOOGLE_CLOUD_PROJECT": "p",
-    }
-    assert worker._compute_has_api_keys(key) is True
-    assert worker._compute_has_api_keys(vertex) is True
-    assert worker._compute_has_api_keys({"ANTHROPIC_API_KEY": "a"}) is False
-    assert worker._compute_has_api_keys({"GEMINI_API_KEY": "g"}) is False
-    # half-configured vertex (creds without project) does NOT count
-    half = {"ANTHROPIC_API_KEY": "a", "GOOGLE_APPLICATION_CREDENTIALS": "/sa.json"}
-    assert worker._compute_has_api_keys(half) is False
+    caps = worker._compute_capabilities(
+        {"ANTHROPIC_API_KEY": "a"}, "claude", "claude-opus-4-7", "claude"
+    )
+    assert caps["can_claude_api"] is True
+    assert caps["can_gemini_api"] is False
+    assert caps["judge_api_ok"] is True
+    assert caps["judge_fallback_api_ok"] is False
+    assert caps["extract_api_ok"] is True  # extract_provider=claude here
+
+
+def test_compute_capabilities_gemini_vertex_only_env():
+    """gemini-only via Vertex SA pair (fleet-api-6): judge (claude) unreachable,
+    but the §4a self-fallback judge (gemini) IS, and gemini extract is."""
+    from app.services import worker
+
+    caps = worker._compute_capabilities(
+        {"GOOGLE_APPLICATION_CREDENTIALS": "/sa.json", "GOOGLE_CLOUD_PROJECT": "p"},
+        "claude",
+        "claude-opus-4-7",
+        "gemini",
+    )
+    assert caps["can_claude_api"] is False
+    assert caps["can_gemini_api"] is True
+    assert caps["judge_api_ok"] is False
+    assert caps["judge_fallback_api_ok"] is True
+    assert caps["extract_api_ok"] is True
+
+
+def test_compute_capabilities_half_vertex_does_not_count():
+    """Half-configured Vertex (creds without project) is NOT a gemini capability
+    (mirrors `agent._auth_env`'s acceptance rules)."""
+    from app.services import worker
+
+    caps = worker._compute_capabilities(
+        {"GOOGLE_APPLICATION_CREDENTIALS": "/sa.json"},
+        "claude",
+        "claude-opus-4-7",
+        "gemini",
+    )
+    assert caps["can_gemini_api"] is False
+    assert caps["judge_fallback_api_ok"] is False
+    assert caps["extract_api_ok"] is False
+
+
+def test_compute_capabilities_echoes_judge_pair():
+    from app.services import worker
+
+    caps = worker._compute_capabilities(
+        {"GEMINI_API_KEY": "g"}, "claude", "claude-opus-4-7", "gemini"
+    )
+    assert caps["judge_pair"] == ("claude", "claude-opus-4-7")
 
 
 def test_claude_api_missing_key_raises_typed_auth_env_error():

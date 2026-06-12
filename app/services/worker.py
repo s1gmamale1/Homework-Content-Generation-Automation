@@ -42,7 +42,8 @@ from app.config import settings
 from app.db import SessionLocal
 from app.repositories import jobs as jobs_repo
 from app.repositories import workers as workers_repo
-from app.services import pipeline
+from app.services import model_tiers, pipeline
+from app.services.agent_models import default_model
 
 
 # Maps job_id -> the in-flight _execute_job task, so a same-process cancel
@@ -52,22 +53,36 @@ from app.services import pipeline
 RUNNING_JOBS: dict[UUID, asyncio.Task] = {}
 
 
-def _compute_has_api_keys(env) -> bool:
-    """A worker may only claim `transport='api'` jobs if BOTH provider sides are
-    credentialed (an api job touches content + gemini extract + claude judge).
-    The gemini side is satisfied by EITHER an AI-Studio key (GEMINI_API_KEY) OR
-    a Vertex service account (GOOGLE_APPLICATION_CREDENTIALS +
-    GOOGLE_CLOUD_PROJECT — fleet-api-6). Half-configured counts as NOT having
-    keys (mirrors `agent._auth_env`'s acceptance rules exactly)."""
-    gemini_ok = bool(
+def _compute_capabilities(env, judge_provider: str, judge_model: str, extract_provider: str) -> dict:
+    """Per-side api capability + role-level readiness (Phase 4.1 §4/§4a).
+    The gemini side is satisfied by an AI-Studio key OR a Vertex SA pair
+    (GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT — fleet-api-6).
+    Half-configured counts as NOT capable (mirrors `agent._auth_env`'s
+    acceptance rules exactly). `claim_next_job` ANDs these per-role flags
+    against each job's resolved transports, so e.g. an api-content gemini job
+    with cli judge/extract needs NO anthropic key."""
+    can_claude = bool(env.get("ANTHROPIC_API_KEY"))
+    can_gemini = bool(
         env.get("GEMINI_API_KEY")
         or (env.get("GOOGLE_APPLICATION_CREDENTIALS") and env.get("GOOGLE_CLOUD_PROJECT"))
     )
-    return bool(env.get("ANTHROPIC_API_KEY")) and gemini_ok
+    cap = {"claude": can_claude, "gemini": can_gemini}
+    fb_provider, _ = model_tiers._SELF_FALLBACK
+    return {
+        "can_claude_api": can_claude,
+        "can_gemini_api": can_gemini,
+        "judge_api_ok": cap.get(judge_provider, False),
+        # §4a: jobs generating ON the judge pair get judged by _SELF_FALLBACK
+        "judge_fallback_api_ok": cap.get(fb_provider, False),
+        "extract_api_ok": cap.get(extract_provider, False),
+        "judge_pair": (judge_provider, judge_model),
+    }
 
 
 # Computed once at module load (the locked fail-fast mechanism).
-HAS_API_KEYS: bool = _compute_has_api_keys(os.environ)
+CAPABILITIES: dict = _compute_capabilities(
+    os.environ, settings.judge_provider, settings.judge_model, settings.extract_provider
+)
 
 
 def _worker_id() -> str:
@@ -132,14 +147,28 @@ class Worker:
             f"poll={self.poll_interval}s timeout={self.job_timeout}s "
             f"max_attempts={self.max_attempts}"
         )
-        # Fail-fast capability check: api jobs need BOTH provider keys. Warn
-        # whenever they're not both present — including the dangerous
-        # half-configured case (exactly one key set).
-        if not HAS_API_KEYS:
+        # Fail-fast capability check (Phase 4.1 §4): enumerate the per-side api
+        # capabilities. A missing side doesn't block all api jobs anymore —
+        # only the jobs whose resolved role transports need that side.
+        if not (CAPABILITIES["can_claude_api"] and CAPABILITIES["can_gemini_api"]):
             logger.warning(
-                "worker cannot claim transport=api jobs — ANTHROPIC_API_KEY plus "
-                "a gemini credential (GEMINI_API_KEY, or Vertex "
-                "GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT) required"
+                f"api capability: claude={CAPABILITIES['can_claude_api']} "
+                f"gemini={CAPABILITIES['can_gemini_api']} — api jobs needing "
+                "the missing side won't be claimed (claude side: "
+                "ANTHROPIC_API_KEY; gemini side: GEMINI_API_KEY or Vertex "
+                "GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT)"
+            )
+        # NULL-model gate edge (claim gate v2 §4a): a model=NULL job bypasses
+        # the SQL judge-pair equality. Safe while JUDGE_MODEL differs from the
+        # judge provider's default model (judge_model_for resolves None via
+        # default_model). If an operator pins them equal, the edge opens —
+        # warn loudly (Task 2's AuthEnvError still keeps the failure typed).
+        if settings.judge_model == default_model(settings.judge_provider):
+            logger.warning(
+                "JUDGE_MODEL equals default_model(JUDGE_PROVIDER) — the "
+                "NULL-model claim-gate edge is open: model=NULL jobs on the "
+                "judge provider resolve to the judge pair at judge time but "
+                "bypass the SQL pair-equality in claim_next_job"
             )
         _warn_if_gemini_selected_type()
 
@@ -227,7 +256,7 @@ class Worker:
                         session,
                         worker_id=self.id,
                         max_attempts=self.max_attempts,
-                        has_api_keys=HAS_API_KEYS,
+                        capabilities=CAPABILITIES,
                     )
                 if job is None:
                     return None
