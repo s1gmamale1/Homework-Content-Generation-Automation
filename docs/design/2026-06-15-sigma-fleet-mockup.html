@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sigma — Fleet + Monitor (glow-as-accent)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  @property --ang { syntax:'<angle>'; inherits:false; initial-value:0deg; }
+  :root{ --g:"Geist",-apple-system,system-ui,sans-serif; --gm:"Geist Mono",ui-monospace,monospace;
+         --ink:#f5f4fc; --mut:#b6b5cf; --line:rgba(255,255,255,.08);
+         --v:#7c5cff; --b:#4d8dff; --c:#36d1dc; --p:#b16cff; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#070708;color:var(--ink);font-family:var(--g);-webkit-font-smoothing:antialiased;padding:30px 20px 80px}
+  .note{max-width:1120px;margin:0 auto 22px;text-align:center}
+  .note h1{font-size:19px;font-weight:600;letter-spacing:-.01em}
+  .note p{font-size:13px;color:var(--mut);margin-top:6px;line-height:1.55}
+  .note .key{font-family:var(--gm);font-size:11px;color:#a9b8ff}
+
+  /* page frame with shared aurora bloom (the evolved SpaceBackdrop) */
+  .screen{position:relative;max-width:1120px;margin:0 auto 30px;border-radius:22px;overflow:hidden;
+          background:rgba(255,255,255,.025);border:1px solid var(--line);isolation:isolate;
+          box-shadow:0 30px 90px -50px #000}
+  .screen::before{content:"";position:absolute;inset:-45%;z-index:-1;
+    background:
+      radial-gradient(36% 36% at 18% 10%,rgba(124,92,255,.34),transparent 60%),
+      radial-gradient(32% 32% at 88% 16%,rgba(77,141,255,.30),transparent 60%),
+      radial-gradient(40% 40% at 72% 92%,rgba(54,209,220,.24),transparent 60%),
+      radial-gradient(34% 34% at 10% 88%,rgba(177,108,255,.26),transparent 60%);
+    filter:blur(40px);animation:drift 20s ease-in-out infinite alternate}
+  @keyframes drift{to{transform:translate(2%,-2%) scale(1.06)}}
+  @media (prefers-reduced-motion:reduce){.screen::before,.rim::before,.nowdot,.pulse::after,.seglet.now{animation:none!important}}
+
+  .nav{display:flex;align-items:center;gap:14px;height:56px;padding:0 20px;border-bottom:1px solid var(--line);backdrop-filter:blur(20px);background:rgba(10,10,14,.5)}
+  .mk{width:24px;height:24px;border-radius:7px;background:linear-gradient(135deg,#9a7cff,#4d8dff);box-shadow:0 0 14px rgba(124,92,255,.6);display:grid;place-items:center;font-weight:700;font-size:12px;color:#fff}
+  .nm{font-weight:600;font-size:14px}
+  .navlinks{display:flex;gap:2px;margin-left:8px}
+  .navlinks a{font-size:14px;color:var(--mut);padding:6px 11px;border-radius:8px;text-decoration:none}
+  .navlinks a.on{color:#fff;background:rgba(255,255,255,.09)}
+  .navright{margin-left:auto;font-family:var(--gm);font-size:12.5px;color:var(--mut)}
+
+  .wrap{padding:24px 22px 30px}
+  .h1{font-size:24px;font-weight:600;letter-spacing:-.01em}
+  .sub{font-size:14px;color:var(--mut);margin-top:4px}
+
+  /* glass surfaces (calm — the shared CARD evolved) */
+  .glass{background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:16px}
+  /* GLOW_RIM — the "moment" treatment (rotating rim-light). Used sparingly. */
+  .rim{position:relative}
+  .rim::before{content:"";position:absolute;inset:-1px;border-radius:inherit;z-index:-1;
+    background:conic-gradient(from var(--ang),var(--v),var(--b),var(--c),var(--p),var(--v));
+    filter:blur(7px);opacity:.28;animation:spin 9s linear infinite}
+  @keyframes spin{to{--ang:360deg}}
+
+  /* online strip — a status "moment" → subtle glow */
+  .strip{display:inline-flex;align-items:center;gap:9px;margin:16px 0 18px;padding:8px 13px;border-radius:11px;
+         background:rgba(54,209,220,.07);border:1px solid rgba(54,209,220,.22);font-size:13.5px;color:#8eebf2}
+  .nowdot{width:8px;height:8px;border-radius:50%;background:var(--c);box-shadow:0 0 10px var(--c);position:relative}
+  .pulse::after{content:"";position:absolute;inset:-5px;border-radius:50%;background:var(--c);animation:pl 1.9s ease-out infinite;opacity:.5}
+  @keyframes pl{0%{transform:scale(.5);opacity:.6}100%{transform:scale(1.9);opacity:0}}
+
+  .lbl{font-family:var(--gm);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--mut)}
+  .field{display:flex;flex-direction:column;gap:6px;margin-bottom:13px}
+  .inp{height:38px;border-radius:10px;background:rgba(255,255,255,.05);border:1px solid var(--line);display:flex;align-items:center;padding:0 13px;font-size:14.5px;color:#d3d2e2}
+  .cta{height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:600;font-size:13.5px;color:#fff;background:linear-gradient(135deg,var(--v),var(--b));box-shadow:0 8px 22px -8px rgba(124,92,255,.7);cursor:default}
+  .ghost{height:36px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.05);color:#c7c6d8;font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;gap:6px;padding:0 13px}
+  .toggle{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;font-size:13px;font-weight:600}
+  .toggle span{padding:7px 12px;color:var(--mut)}
+  .toggle span.on{background:rgba(124,92,255,.18);color:#c3b6ff}
+
+  .row{display:flex;align-items:center;gap:13px;padding:13px;border-radius:13px}
+  .ico{width:36px;height:36px;border-radius:10px;flex:none;display:grid;place-items:center;font-weight:600;background:rgba(124,92,255,.15);color:#b6a6ff;border:1px solid rgba(124,92,255,.22)}
+  .gname{font-size:15.5px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .gmeta{font-family:var(--gm);font-size:12.5px;color:var(--mut);margin-top:3px}
+  .chip{font-family:var(--gm);font-size:11px;letter-spacing:.04em;padding:3px 8px;border-radius:6px;background:rgba(255,255,255,.06);color:var(--mut);font-weight:500}
+  .chip.ok{background:rgba(54,209,220,.13);color:#6fe3ec}
+  .chip.run{background:rgba(124,92,255,.16);color:#b6a6ff}
+  .chip.warn{background:rgba(240,180,90,.14);color:#f0c07a}
+  .chip.fail{background:rgba(255,120,140,.14);color:#ff97a6}
+
+  .sechd{font-size:14px;font-weight:600;color:#d8d7e6;margin:0 0 12px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}
+  @media(max-width:760px){.grid3{grid-template-columns:1fr 1fr}}
+  .wk{padding:13px;border-radius:13px}
+  .wk .top{display:flex;align-items:center;justify-content:space-between}
+  .wk .pcid{font-family:var(--gm);font-size:13px;color:#e2e1ee}
+  .wk .hb{font-family:var(--gm);font-size:12px;color:var(--mut);margin-top:8px}
+
+  .pipeline{display:flex;gap:4px;margin-top:11px}
+  .seglet{flex:1;height:5px;border-radius:3px;background:rgba(255,255,255,.1)}
+  .seglet.done{background:linear-gradient(90deg,var(--v),var(--b))}
+  .seglet.now{background:var(--c);box-shadow:0 0 8px var(--c);animation:gl 1.6s ease-in-out infinite}
+  @keyframes gl{0%,100%{opacity:.55}50%{opacity:1}}
+  .pmeta{display:flex;justify-content:space-between;margin-top:9px;font-family:var(--gm);font-size:12px;color:var(--mut)}
+  .pmeta b{color:#a9b8ff}
+  .funbar{height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;margin-top:9px;display:flex}
+  .funbar i{height:100%;display:block}
+  .funbar .d{background:linear-gradient(90deg,var(--v),var(--b))}
+  .funbar .r{background:var(--c)}
+  .funbar .f{background:#ff7a8c}
+</style>
+</head>
+<body>
+  <div class="note">
+    <h1>Sigma · glow-as-accent — the real Fleet + Monitor screens</h1>
+    <p><span class="key">glow = "moments"</span> (online strip · primary CTA · the running batch + live pipeline) &nbsp;·&nbsp; <span class="key">calm glass = data</span> (tray rows · worker cards · finished batches). Aurora drifts behind both; reduced-motion freezes it.</p>
+  </div>
+
+  <!-- ===================== /fleet ===================== -->
+  <div class="screen">
+    <div class="nav">
+      <span class="mk">H</span><span class="nm">Homework&nbsp;Builder</span>
+      <span class="navlinks"><a>Upload</a><a>Library</a><a>Usage</a><a class="on">Fleet</a><a>Monitor</a></span>
+      <span class="navright">claude · 38%</span>
+    </div>
+    <div class="wrap">
+      <div class="h1">Fleet</div>
+      <div class="sub">Launch a whole subject. Watch progress in Monitor.</div>
+
+      <!-- online strip = status moment → subtle glow -->
+      <div class="strip"><span class="nowdot pulse"></span>1 machine online</div>
+
+      <!-- launcher (calm glass) with the primary CTA as the glowing moment -->
+      <div class="glass" style="padding:18px 18px 20px">
+        <div class="sechd">Prepare a subject</div>
+        <div class="field"><span class="lbl">Grade</span><div class="inp">9-sinf</div></div>
+        <div class="field"><span class="lbl">Subject</span><div class="inp">Fizika · darslik</div></div>
+        <div class="cta rim" style="border-radius:11px">✦ Prepare</div>
+
+        <div style="height:1px;background:var(--line);margin:20px 0 16px"></div>
+        <div class="sechd">Tray — ready to launch</div>
+
+        <div class="row glass" style="margin-bottom:9px">
+          <span class="ico">K</span>
+          <div style="flex:1;min-width:0">
+            <div class="gname">Kimyo <span class="chip">Grade 9</span> <span class="chip ok">complete</span></div>
+            <div class="gmeta">14 lessons · 14/14 done</div>
+          </div>
+          <span class="toggle"><span class="on">CLI</span><span>API</span></span>
+          <span class="ghost">Launch</span>
+        </div>
+
+        <div class="row glass">
+          <span class="ico">B</span>
+          <div style="flex:1;min-width:0">
+            <div class="gname">Biologiya <span class="chip">Grade 8</span></div>
+            <div class="gmeta">11 lessons · 3/11 done</div>
+          </div>
+          <span class="toggle"><span>CLI</span><span class="on">API</span></span>
+          <span class="cta" style="height:36px;padding:0 16px">Launch</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== /monitor ===================== -->
+  <div class="screen">
+    <div class="nav">
+      <span class="mk">H</span><span class="nm">Homework&nbsp;Builder</span>
+      <span class="navlinks"><a>Upload</a><a>Library</a><a>Usage</a><a>Fleet</a><a class="on">Monitor</a></span>
+      <span class="navright">claude · 38%</span>
+    </div>
+    <div class="wrap">
+      <div class="h1">Monitor</div>
+      <div class="sub">Workers and live batch progress.</div>
+
+      <!-- worker cards = data → calm glass, no per-card glow -->
+      <div class="sechd" style="margin-top:18px">Workers · 2 online</div>
+      <div class="grid3" style="margin-bottom:22px">
+        <div class="wk glass"><div class="top"><span class="pcid">Macs-Mac-mini</span><span class="chip ok">online</span></div><div class="hb">pid 12161 · beat 4s ago</div></div>
+        <div class="wk glass"><div class="top"><span class="pcid">DESKTOP-5E4MM7A</span><span class="chip ok">online</span></div><div class="hb">pid 31860 · beat 11s ago</div></div>
+        <div class="wk glass" style="opacity:.6"><div class="top"><span class="pcid">DESKTOP-5E4MM7A</span><span class="chip">offline</span></div><div class="hb">pid 25440 · beat 14m ago</div></div>
+      </div>
+
+      <!-- batch funnel: finished batches calm; the RUNNING one gets the glow moment -->
+      <div class="sechd">Batches</div>
+
+      <!-- running batch = the moment -->
+      <div class="glass rim" style="padding:15px 16px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div class="gname">Fizika <span class="chip">Grade 9</span> <span class="chip run">running</span></div>
+          <span class="gmeta">gemini · API · 7/26 lessons</span>
+        </div>
+        <div class="funbar"><i class="d" style="width:27%"></i><i class="r" style="width:8%"></i></div>
+        <div class="pipeline"><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet now"></span><span class="seglet"></span><span class="seglet"></span><span class="seglet"></span></div>
+        <div class="pmeta"><span>§3.2 — Jismlarning o‘zaro ta’siri · <b>boss-arena</b></span><span><b>6</b>/9 phases · 1m48s</span></div>
+      </div>
+
+      <!-- finished batches = calm -->
+      <div class="row glass" style="margin-bottom:9px">
+        <span class="ico">A</span>
+        <div style="flex:1"><div class="gname">Algebra <span class="chip">Grade 9</span> <span class="chip ok">complete</span></div><div class="gmeta">18/18 lessons · cli</div></div>
+        <div class="funbar" style="width:120px;margin-top:0"><i class="d" style="width:100%"></i></div>
+      </div>
+      <div class="row glass">
+        <span class="ico">H</span>
+        <div style="flex:1"><div class="gname">Jahon tarixi <span class="chip">Grade 7</span> <span class="chip warn">2 failed</span></div><div class="gmeta">24/26 done · 2 failed · api</div></div>
+        <div class="funbar" style="width:120px;margin-top:0"><i class="d" style="width:84%"></i><i class="f" style="width:8%"></i></div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

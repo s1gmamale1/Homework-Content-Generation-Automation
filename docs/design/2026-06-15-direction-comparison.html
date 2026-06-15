@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Console visual direction — Sigma vs Quiet Precision</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Hanken+Grotesk:wght@400;450;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  @property --ang { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+  :root{
+    --geist:"Geist",-apple-system,system-ui,sans-serif;
+    --geist-mono:"Geist Mono",ui-monospace,monospace;
+    --f-ui:"Hanken Grotesk",-apple-system,system-ui,sans-serif;
+    --f-display:"Newsreader",Georgia,serif;
+    --f-mono:"JetBrains Mono",ui-monospace,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#070708;color:#e7e7ea;font-family:var(--geist);-webkit-font-smoothing:antialiased;padding:34px 22px 80px}
+  .pagehd{max-width:1180px;margin:0 auto 26px;text-align:center}
+  .pagehd h1{font-size:20px;font-weight:600;letter-spacing:-.01em}
+  .pagehd p{font-size:13.5px;color:#8a8a93;margin-top:7px;line-height:1.55}
+  .cols{max-width:1180px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:26px}
+  @media (max-width:920px){.cols{grid-template-columns:1fr}}
+  .col h2.lbl{font-size:13px;font-weight:600;letter-spacing:.02em;margin-bottom:4px}
+  .col p.sub{font-size:12px;color:#85858f;margin-bottom:14px;line-height:1.5;min-height:34px}
+  .app{border-radius:20px;overflow:hidden;font-size:15px;line-height:1.5;position:relative}
+
+  /* shared structural bits (re-skinned per direction) */
+  .top{display:flex;align-items:center;justify-content:space-between;height:58px;padding:0 20px;backdrop-filter:blur(20px)}
+  .brand{display:flex;align-items:center;gap:10px}
+  .mark{width:25px;height:25px;border-radius:8px;display:grid;place-items:center;font-weight:600;font-size:13px}
+  .brandname{font-weight:600;font-size:14.5px;letter-spacing:-.015em}
+  .nav{display:flex;gap:2px;margin-left:14px}
+  .nav a{font-size:13px;font-weight:500;padding:6px 11px;border-radius:8px;text-decoration:none}
+  .topright{display:flex;align-items:center;gap:14px}
+  .meter{display:flex;align-items:center;gap:8px;font-size:11px}
+  .meter .bar{width:50px;height:5px;border-radius:3px;overflow:hidden}
+  .meter .fill{height:100%;border-radius:3px}
+  .newbtn{font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:9px;cursor:default}
+  .body{padding:26px 22px 32px}
+  .pghd{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:20px}
+  .pghd .t{display:flex;align-items:baseline;gap:12px}
+  .pghd h3{font-size:30px;letter-spacing:-.01em}
+  .pghd .count{font-size:11px;letter-spacing:.05em}
+  .seg{display:flex;gap:3px;padding:3px;border-radius:11px}
+  .seg button{font-size:12px;font-weight:600;padding:6px 12px;border-radius:8px;border:0;background:transparent;cursor:default}
+  .hero{border-radius:16px;padding:17px 19px;margin-bottom:14px;position:relative;overflow:hidden}
+  .live{display:flex;align-items:center;gap:8px;font-size:10.5px;letter-spacing:.13em;text-transform:uppercase}
+  .blip{width:7px;height:7px;border-radius:50%;position:relative}
+  .blip::after{content:"";position:absolute;inset:-4px;border-radius:50%;animation:pulse 1.9s ease-out infinite}
+  @keyframes pulse{0%{transform:scale(.6);opacity:.7}100%{transform:scale(1.8);opacity:0}}
+  .hero h4{font-size:17px;font-weight:600;letter-spacing:-.01em;margin:9px 0 3px}
+  .hsub{font-size:12.5px}
+  .pipeline{display:flex;gap:5px;margin-top:14px}
+  .seglet{flex:1;height:5px;border-radius:3px}
+  .pipemeta{display:flex;justify-content:space-between;margin-top:9px;font-size:11px}
+  .list{display:flex;flex-direction:column}
+  .item{display:flex;align-items:center;gap:14px;padding:14px 4px}
+  .ico{width:37px;height:37px;border-radius:11px;flex:none;display:grid;place-items:center;font-size:16px;font-weight:600}
+  .info{flex:1;min-width:0}
+  .name{font-size:14.5px;font-weight:600;letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
+  .meta{font-size:11.5px;margin-top:2px}
+  .stat{font-size:10px;letter-spacing:.07em;text-transform:uppercase;padding:3px 8px;border-radius:6px;font-weight:600}
+  .act{font-size:12.5px;font-weight:600;padding:7px 15px;border-radius:9px;cursor:default}
+
+  /* =================================================================== */
+  /* SIGMA DESIGNS — Apple-Intelligence living glass + rim glow           */
+  /* =================================================================== */
+  .sigma{font-family:var(--geist)}
+  .sigma .app{
+    background:rgba(255,255,255,.035);
+    border:1px solid rgba(255,255,255,.08);
+    box-shadow:0 30px 80px -40px rgba(0,0,0,.9);
+    isolation:isolate;
+  }
+  /* aurora bloom behind the whole frame */
+  .sigma .app::before{
+    content:"";position:absolute;inset:-40%;z-index:-1;
+    background:
+      radial-gradient(38% 38% at 20% 12%,rgba(124,92,255,.40),transparent 60%),
+      radial-gradient(34% 34% at 85% 18%,rgba(77,141,255,.34),transparent 60%),
+      radial-gradient(40% 40% at 70% 90%,rgba(54,209,220,.28),transparent 60%),
+      radial-gradient(34% 34% at 12% 85%,rgba(177,108,255,.30),transparent 60%);
+    filter:blur(36px);
+    animation:drift 18s ease-in-out infinite alternate;
+  }
+  @keyframes drift{0%{transform:translate(0,0) scale(1)}100%{transform:translate(2%,-2%) scale(1.06)}}
+  .sigma .top{background:rgba(10,10,14,.5);border-bottom:1px solid rgba(255,255,255,.07)}
+  .sigma .mark{background:linear-gradient(135deg,#9a7cff,#4d8dff);color:#fff;box-shadow:0 0 16px rgba(124,92,255,.6)}
+  .sigma .brandname{color:#f3f1fb}
+  .sigma .nav a{color:#9b9aae}
+  .sigma .nav a.on{color:#fff;background:rgba(255,255,255,.09)}
+  .sigma .meter{color:#8786a0;font-family:var(--geist-mono)}
+  .sigma .meter .bar{background:rgba(255,255,255,.09)}
+  .sigma .meter .fill{background:linear-gradient(90deg,#7c5cff,#4d8dff)}
+  .sigma .newbtn{background:linear-gradient(135deg,#7c5cff,#4d8dff);color:#fff;box-shadow:0 6px 20px -6px rgba(124,92,255,.7)}
+  .sigma .pghd h3{color:#f3f1fb;font-weight:600}
+  .sigma .pghd .count{color:#8786a0;font-family:var(--geist-mono)}
+  .sigma .seg{background:rgba(255,255,255,.05)}
+  .sigma .seg button{color:#9b9aae}
+  .sigma .seg button.on{background:rgba(255,255,255,.1);color:#fff}
+  /* the living-glass hero with rotating rim-light glow */
+  .sigma .hero{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09)}
+  .sigma .hero::before{
+    content:"";position:absolute;inset:-2px;border-radius:18px;z-index:-1;
+    background:conic-gradient(from var(--ang),#7c5cff,#4d8dff,#36d1dc,#b16cff,#7c5cff);
+    filter:blur(13px);opacity:.6;
+    animation:rim 9s linear infinite;
+  }
+  @keyframes rim{to{--ang:360deg}}
+  .sigma .live{color:#a9b8ff}
+  .sigma .blip{background:#7c5cff;box-shadow:0 0 10px #7c5cff}.sigma .blip::after{background:#7c5cff}
+  .sigma .hero h4{color:#f3f1fb}.sigma .hsub{color:#9b9aae}
+  .sigma .seglet{background:rgba(255,255,255,.1)}
+  .sigma .seglet.done{background:linear-gradient(90deg,#7c5cff,#4d8dff)}
+  .sigma .seglet.now{background:#36d1dc;box-shadow:0 0 8px #36d1dc;animation:glow 1.6s ease-in-out infinite}
+  @keyframes glow{0%,100%{opacity:.6}50%{opacity:1}}
+  .sigma .pipemeta{color:#8786a0;font-family:var(--geist-mono)}.sigma .pipemeta b{color:#a9b8ff}
+  .sigma .item{border-bottom:1px solid rgba(255,255,255,.05)}
+  .sigma .ico{background:rgba(124,92,255,.16);color:#b6a6ff;border:1px solid rgba(124,92,255,.25)}
+  .sigma .name{color:#f3f1fb}.sigma .meta{color:#8786a0;font-family:var(--geist-mono)}
+  .sigma .stat.ready{background:rgba(54,209,220,.14);color:#6fe3ec}
+  .sigma .stat.work{background:rgba(124,92,255,.16);color:#b6a6ff}
+  .sigma .act{background:rgba(255,255,255,.08);color:#f3f1fb;border:1px solid rgba(255,255,255,.12)}
+  .sigma .act.ghost{background:transparent;color:#8786a0;border:0}
+
+  /* =================================================================== */
+  /* QUIET PRECISION — editorial serif + bronze (dark variant)            */
+  /* =================================================================== */
+  .qp{font-family:var(--f-ui)}
+  .qp .app{background:#161310;color:#f1ece3;box-shadow:0 0 0 1px rgba(255,255,255,.04) inset,0 30px 70px -30px rgba(0,0,0,.8)}
+  .qp .top{background:rgba(22,19,16,.7);border-bottom:1px solid rgba(255,255,255,.06)}
+  .qp .mark{background:linear-gradient(135deg,#eaa758,#c47e34);color:#231a0e}
+  .qp .brandname{color:#f1ece3}
+  .qp .nav a{color:#938b7e}
+  .qp .nav a.on{color:#f1ece3;background:rgba(255,255,255,.06)}
+  .qp .meter{color:#7c746a;font-family:var(--f-mono)}.qp .meter .bar{background:rgba(255,255,255,.08)}.qp .meter .fill{background:#e0a155}
+  .qp .newbtn{background:#f1ece3;color:#161310}
+  .qp .pghd h3{color:#f6f1e9;font-family:var(--f-display);font-weight:500}
+  .qp .pghd .count{color:#7c746a;font-family:var(--f-mono)}
+  .qp .seg{background:rgba(255,255,255,.05)}.qp .seg button.on{background:rgba(255,255,255,.1);color:#f1ece3}.qp .seg button{color:#938b7e}
+  .qp .hero{background:radial-gradient(120% 140% at 0% 0%,rgba(224,161,85,.12),transparent 55%),#1d1915;border:1px solid rgba(255,255,255,.07)}
+  .qp .live{color:#e0a155;font-family:var(--f-mono)}.qp .blip{background:#e0a155}.qp .blip::after{background:#e0a155}
+  .qp .hero h4{color:#f6f1e9}.qp .hsub{color:#9a9183}
+  .qp .seglet{background:rgba(255,255,255,.08)}.qp .seglet.done{background:#e0a155}.qp .seglet.now{background:#f3bd78}
+  .qp .pipemeta{color:#7c746a;font-family:var(--f-mono)}.qp .pipemeta b{color:#e0a155}
+  .qp .item{border-bottom:1px solid rgba(255,255,255,.05)}
+  .qp .ico{background:rgba(224,161,85,.12);color:#e0a155;font-family:var(--f-display)}
+  .qp .name{color:#f1ece3}.qp .meta{color:#857d70;font-family:var(--f-mono)}
+  .qp .stat.ready{background:rgba(120,180,120,.14);color:#86c08e}.qp .stat.work{background:rgba(224,161,85,.14);color:#e9b572}
+  .qp .act{background:#f1ece3;color:#161310}
+  .qp .act.ghost{background:transparent;color:#857d70}
+</style>
+</head>
+<body>
+  <div class="pagehd">
+    <h1>Console visual direction — same Library screen, two languages</h1>
+    <p>Sub-project 2 picks ONE. They don't blend. Left = Sigma-Designs (Apple-Intelligence living glass + glow). Right = Quiet Precision (editorial serif + bronze). Identical content so only the look differs.</p>
+  </div>
+
+  <div class="cols">
+
+    <!-- ===================== SIGMA ===================== -->
+    <div class="col">
+      <h2 class="lbl" style="color:#b6a6ff">◆ Sigma-Designs — living glass + AI glow</h2>
+      <p class="sub">Glassy translucent panels, an aurora bloom behind the frame, a breathing multi-colour rim-light on the live card. Geist sans. Cinematic; color = light on darkness.</p>
+      <div class="sigma">
+        <div class="app">
+          <div class="top">
+            <div class="brand"><span class="mark">H</span><span class="brandname">Homework&nbsp;Builder</span>
+              <nav class="nav"><a>Upload</a><a class="on">Library</a><a>Usage</a><a>Fleet</a><a>Monitor</a></nav>
+            </div>
+            <div class="topright">
+              <div class="meter"><span>claude</span><span class="bar"><span class="fill" style="width:38%"></span></span><span>38%</span></div>
+              <span class="newbtn">+ New session</span>
+            </div>
+          </div>
+          <div class="body">
+            <div class="pghd">
+              <div class="t"><h3>Library</h3><span class="count">12 BOOKS · 1 RUNNING</span></div>
+              <div class="seg"><button class="on">Books</button><button>Jobs</button></div>
+            </div>
+            <div class="hero">
+              <div class="live"><span class="blip"></span>Generating</div>
+              <h4>Fizika · §3.2 — Jismlarning o‘zaro ta’siri</h4>
+              <div class="hsub">9-sinf · hard · gemini-2.5-flash · 1m 48s elapsed</div>
+              <div class="pipeline"><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet now"></span><span class="seglet"></span><span class="seglet"></span><span class="seglet"></span></div>
+              <div class="pipemeta"><span>extract · preview · flashcards · memory · <b>boss-arena</b></span><span><b>6</b> / 9 phases</span></div>
+            </div>
+            <div class="list">
+              <div class="item"><span class="ico">K</span><div class="info"><div class="name">Kimyo <span class="stat ready">TOC ready</span></div><div class="meta">9-sinf · 14 sections · uploaded 2d ago</div></div><span class="act">Generate</span></div>
+              <div class="item"><span class="ico">B</span><div class="info"><div class="name">Biologiya <span class="stat ready">TOC ready</span></div><div class="meta">8-sinf · 11 sections · uploaded 2d ago</div></div><span class="act">Generate</span></div>
+              <div class="item"><span class="ico">J</span><div class="info"><div class="name">Jahon tarixi <span class="stat work">Extracting</span></div><div class="meta">7-sinf · fetched from Notion · 41s</div></div><span class="act ghost">···</span></div>
+              <div class="item"><span class="ico">A</span><div class="info"><div class="name">Algebra <span class="stat ready">TOC ready</span></div><div class="meta">9-sinf · 18 sections · uploaded 5d ago</div></div><span class="act">Generate</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== QUIET PRECISION ===================== -->
+    <div class="col">
+      <h2 class="lbl" style="color:#e0a155">◆ Quiet Precision — editorial serif + bronze</h2>
+      <p class="sub">Calm, content-first, material depth. Newsreader serif headings, restrained bronze accent, flat warm surfaces. No glow — typography and spacing carry it.</p>
+      <div class="qp">
+        <div class="app">
+          <div class="top">
+            <div class="brand"><span class="mark">H</span><span class="brandname">Homework&nbsp;Builder</span>
+              <nav class="nav"><a>Upload</a><a class="on">Library</a><a>Usage</a><a>Fleet</a><a>Monitor</a></nav>
+            </div>
+            <div class="topright">
+              <div class="meter"><span>claude</span><span class="bar"><span class="fill" style="width:38%"></span></span><span>38%</span></div>
+              <span class="newbtn">+ New session</span>
+            </div>
+          </div>
+          <div class="body">
+            <div class="pghd">
+              <div class="t"><h3>Library</h3><span class="count">12 BOOKS · 1 RUNNING</span></div>
+              <div class="seg"><button class="on">Books</button><button>Jobs</button></div>
+            </div>
+            <div class="hero">
+              <div class="live"><span class="blip"></span>Generating</div>
+              <h4>Fizika · §3.2 — Jismlarning o‘zaro ta’siri</h4>
+              <div class="hsub">9-sinf · hard · gemini-2.5-flash · 1m 48s elapsed</div>
+              <div class="pipeline"><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet done"></span><span class="seglet now"></span><span class="seglet"></span><span class="seglet"></span><span class="seglet"></span></div>
+              <div class="pipemeta"><span>extract · preview · flashcards · memory · <b>boss-arena</b></span><span><b>6</b> / 9 phases</span></div>
+            </div>
+            <div class="list">
+              <div class="item"><span class="ico">K</span><div class="info"><div class="name">Kimyo <span class="stat ready">TOC ready</span></div><div class="meta">9-sinf · 14 sections · uploaded 2d ago</div></div><span class="act">Generate</span></div>
+              <div class="item"><span class="ico">B</span><div class="info"><div class="name">Biologiya <span class="stat ready">TOC ready</span></div><div class="meta">8-sinf · 11 sections · uploaded 2d ago</div></div><span class="act">Generate</span></div>
+              <div class="item"><span class="ico">J</span><div class="info"><div class="name">Jahon tarixi <span class="stat work">Extracting</span></div><div class="meta">7-sinf · fetched from Notion · 41s</div></div><span class="act ghost">···</span></div>
+              <div class="item"><span class="ico">A</span><div class="info"><div class="name">Algebra <span class="stat ready">TOC ready</span></div><div class="meta">9-sinf · 18 sections · uploaded 5d ago</div></div><span class="act">Generate</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>
