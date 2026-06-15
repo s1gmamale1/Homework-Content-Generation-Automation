@@ -179,9 +179,14 @@ export function JobPage() {
       difficulty_classified: (data: any) => {
         setDifficulty(data?.difficulty ?? null);
       },
-      job_completed: (data: any) => {
+      job_completed: (_data: any) => {
         setStatus("done");
-        setDownloadUrl(data?.download_url ?? (id ? api.jobDownloadUrl(id) : null));
+        // Always build the download URL client-side so it carries the auth
+        // token (?token=). The server's job_completed payload includes a
+        // token-LESS download_url; trusting it yields a 401 on click (browser
+        // saves the error as "download.json"). The other two setDownloadUrl
+        // sites already use the token-aware api.jobDownloadUrl(id).
+        setDownloadUrl(id ? api.jobDownloadUrl(id) : null);
       },
       error: (data: any) => {
         if (data?.phase_name) {
