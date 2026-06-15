@@ -466,7 +466,7 @@ function ReadyRow({
               launch.isPending ||
               (choosing && selected.size === 0) ||
               missingApiModel ||
-              (!choosing && remaining === 0)
+              (!choosing && lessons != null && remaining === 0)
             }
             title={
               missingApiModel
@@ -486,13 +486,15 @@ function ReadyRow({
             )}
             {choosing
               ? `Launch ${selected.size}`
-              : complete
-                ? "Complete"
-                : remaining === 0
-                  ? "In progress"
-                  : doneCount > 0 || activeCount > 0
-                    ? `Launch remaining ${remaining}`
-                    : "Launch"}
+              : lessons == null
+                ? "Launch"
+                : complete
+                  ? "Complete"
+                  : remaining === 0
+                    ? "In progress"
+                    : doneCount > 0 || activeCount > 0
+                      ? `Launch remaining ${remaining}`
+                      : "Launch"}
           </button>
         </div>
       </div>
