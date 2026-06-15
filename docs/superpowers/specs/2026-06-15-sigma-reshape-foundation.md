@@ -72,17 +72,23 @@ glow only on "moments," calm glass on data.
 - **Type scale:** page title 24px · section head 14px · item name 15.5px ·
   body/nav 14px · input 14.5px · metadata (mono) 12–12.5px · chips 11px ·
   labels 11.5px.
-- **Status colors — single source, kept SEMANTIC.** Do NOT introduce a Sigma
-  status palette. The existing `components/fleet/status.ts` `STATUS_COLOR`
-  (done=green, running=blue `#4d8dff`, cancelling=amber, pending/cancelled
-  faint/muted, failed=red) stays the one source of truth — it's consumed by
-  `rollup-bar`, `batch-lesson-list`, AND `book.tsx`. Status must read by
-  traffic-light convention for scannability (this IS glow-as-accent: data stays
-  semantic, glow is brand-only). May gently tune `STATUS_COLOR` *values* to sit
-  well on Sigma glass, but keep the hues. **Supersedes the mockup's chip hues**
-  (it showed cyan "complete"/violet "running" — those were inconsistent with
-  `STATUS_COLOR` and are dropped; the mockup's glow/glass/layout still stand).
-  The Sigma violet→blue→cyan palette is for GLOW / accent / CTA only.
+- **Status colors — stay SEMANTIC; do NOT add a Sigma status palette.** Status
+  must read by traffic-light convention for scannability (this IS glow-as-
+  accent: data stays semantic, glow is brand-only). There are **TWO existing
+  semantic implementations — both stay as-is, neither gets rewired:**
+  - `components/fleet/status.ts` (`STATUS_COLOR` + `colorFor`/`STATUS_ORDER`):
+    done=green, running=blue `#4d8dff`, cancelling=amber, pending/cancelled
+    faint/muted, failed=red — used by the `/monitor` surfaces (`rollup-bar`,
+    `batch-lesson-list`).
+  - `book.tsx`'s local `SectionStatusBadge` (`book.tsx:442`): already semantic
+    AND already the glass-tint treatment we want (done `emerald-400/10`,
+    running `#5b8dff`, failed `rose-500/10`). It does NOT consume `STATUS_COLOR`
+    — leave it; do not "unify" it into `STATUS_COLOR` (nobody asked).
+  Either may have hues *gently tuned* to sit on Sigma glass, keeping the hue.
+  **No new chip palette in `ui.ts`.** This **supersedes the mockup's chip hues**
+  (it showed cyan "complete"/violet "running" — dropped as inconsistent; the
+  mockup's glow/glass/layout still stand). The Sigma violet→blue→cyan palette
+  is for GLOW / accent / CTA only.
 
 ## Glow-as-accent placement (the rule)
 
