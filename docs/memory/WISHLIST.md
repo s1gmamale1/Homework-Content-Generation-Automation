@@ -69,7 +69,7 @@
 
 **API / events / dead code**
 - `api-3`: the classify-era cluster is **dead but still present** — `difficulty_classified` event (emitted `jobs.py:293`), `DifficultyClassifiedEvent` (`events.py:33`), `set_difficulty` (`jobs.py:147`), `JobOut.difficulty` (`job.py:30`) + `homework_jobs.difficulty` column (`homework_job.py:17`), all pinned dead by `difficulty=None` at `pipeline.py:108`. _(Line refs re-verified 2026-06-11.)_ Remove the lot (or keep the column nullable if cheaper than a migration).
-- `flow-1`: `pipeline.py:428` "Phase scheduler stuck" diagnostic embeds the dep dict as a literal double-brace f-string (`{{p: ...}}`) → renders as static text, never evaluated. Cosmetic, unreachable path.
+- `flow-1`: `pipeline.py:461` "Phase scheduler stuck" diagnostic embeds the dep dict as a literal double-brace f-string (`{{p: ...}}`) → renders as static text, never evaluated. Cosmetic, unreachable path.
 - `deadcode-1`: **`source_map_*` plumbing is dead but still threaded everywhere** (Effort-A leftover). The old structured "source map" (authoritative concept list injected into every content phase for source fidelity) was dropped in worklog [0028] — `pipeline.py:177` hardcodes `source_map_digest = ""` and `source_map_ids = set()`, and the injection in `_build_master_prompt` (`agent.py:512` `if source_map_digest:`) is always false. Yet `source_map_digest` is still a param on ~10 functions across `agent.py` (`:483/575/1584`) and `pipeline.py` (`:281/369/541/...`), and `source_map_ids` rides along too. Grounding moved into each phase's own `## Source Extraction` block (saved in `phase_outputs.output_md`). Rip out the dead params/threading. Same bucket as `api-3`.
 
 **Robustness / data / features**
@@ -86,7 +86,7 @@
 
 ### Frontend
 
-- _(2026-06-02)_ Upload-form intro copy (`web/src/routes/upload.tsx:66`) still says "classifies the lesson you choose" — classify was removed; reword.
+- _(2026-06-02)_ Upload-form intro copy (`web/src/routes/upload.tsx:182`) still says "classifies the lesson you choose" — classify was removed; reword.
 
 ### Database / Persistence
 
