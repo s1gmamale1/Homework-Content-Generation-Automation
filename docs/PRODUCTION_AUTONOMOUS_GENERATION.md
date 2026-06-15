@@ -193,8 +193,11 @@ pool — compounds the provider-isolation concern in #2 of the controller-review
   (`docs/fleet/worker-pc-setup.md`).]*
 - **Local-disk PDFs block multi-pod.** `var/books/<id>/source.pdf` is on local disk;
   horizontal workers need shared object storage (S3/GCS) first.
-  *[2026-06-11: still open — tracked as ROADMAP **R13** (hardcoded `Path("var")`,
-  `pipeline.py:88`; `var_dir` setting dead). Blocks `fleet-test-1`.]*
+  *[2026-06-11: still open — tracked as ROADMAP **R13**. Blocks `fleet-test-1`.
+  2026-06-12 (`c24f873`): the `var_dir`-dead-setting half is FIXED — storage now
+  honors `VAR_DIR` via `app.services.storage.book_pdf_path()`, so a shared volume
+  mounted at `<VAR_DIR>/books` on every worker is now a one-env-var option. The
+  bytes-distribution half (shared volume / pull-on-demand / object store) is still open.]*
 - Secrets management, DB backups, migrations-on-deploy (entrypoint already runs
   `alembic upgrade head`), health checks, autoscaling.
 
