@@ -15,7 +15,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
-from app.services import agent, events_bus, failure_classifier, notion_archive, phase_judge
+from app.services import agent, events_bus, failure_classifier, notion_archive, phase_judge, storage
 from app.services.agent_models import resolve_role_transport
 from app.services.flows import (
     flow_for,
@@ -98,8 +98,9 @@ async def run(job_id: UUID) -> None:
             }
 
         # Local on-disk PDF — written by app.api.v1.books.upload_book and kept
-        # for the lifetime of the book (no Files-API URI anymore).
-        pdf_path = Path("var") / "books" / str(book_id) / "source.pdf"
+        # for the lifetime of the book (no Files-API URI anymore). Same
+        # settings.var_dir base as the writer (storage.book_pdf_path).
+        pdf_path = storage.book_pdf_path(book_id)
         if not pdf_path.exists():
             raise RuntimeError(f"Book PDF missing on disk: {pdf_path}")
 

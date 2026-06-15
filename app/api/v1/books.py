@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import json
-from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
@@ -17,7 +16,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import BookOut, TOCEntryOut
-from app.services import events_bus, notion_fetch, toc_extractor
+from app.services import events_bus, notion_fetch, storage, toc_extractor
 from app.services.flows import SUPPORTED_SUBJECTS
 from app.services.grade import derive_grade_from_filename
 from app.services.notion.client import NotionClientWrapper
@@ -87,9 +86,9 @@ async def ingest_pdf(
 
     # Persist the PDF to a deterministic on-disk location so every downstream
     # phase (TOC extract, lesson extract, content phases) can re-attach it via
-    # the agent CLI subprocess driver. Wave 3E may move this under a settings
-    # value; for now the path is hardcoded relative to the project root.
-    pdf_path = Path("var") / "books" / str(book.id) / "source.pdf"
+    # the agent CLI subprocess driver. Base dir is settings.var_dir (VAR_DIR) —
+    # point it at a shared volume for multi-PC fleets (ROADMAP R13).
+    pdf_path = storage.book_pdf_path(book.id)
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_path.write_bytes(body)
 

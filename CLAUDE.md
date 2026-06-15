@@ -130,7 +130,7 @@ Every CLI call writes one row to `agent_usages` with `provider`, `model_name`, *
 
 ## PDF handling caveats
 
-- Stored on disk, not in Gemini Files API (the SDK is gone). Path is deterministic: `Path(settings.var_dir) / "books" / str(book_id) / "source.pdf"`.
+- Stored on disk, not in Gemini Files API (the SDK is gone). Path is deterministic and honors `settings.var_dir` (`VAR_DIR`): use the single helper `app.services.storage.book_pdf_path(book_id)` → `<var_dir>/books/<book_id>/source.pdf` (both the writer `books.upload_book` and the pipeline reader call it; point `VAR_DIR` at a shared volume for multi-PC fleets — ROADMAP R13).
 - **Gemini CLI rejects files > 20 MB**. TOC extraction is pinned to `settings.extract_provider` (default gemini — NOT hardcoded; `toc_extractor.py` reads the same setting as the lesson extract) and will fail for larger PDFs with a sandbox error. Pre-shrink, or change `settings.extract_provider` (claude consumes the PDF natively via positional `@path` argv).
 - **Kimi has no native PDF support**. The kimi prompt preamble instructs the model to shell out to Python (`pdfplumber` preferred, `pypdf`/`PyPDF2` fallback). If those aren't installed on the host, kimi will report extraction failure rather than fabricate content.
 

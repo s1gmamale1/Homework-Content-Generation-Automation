@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
@@ -395,7 +395,7 @@ async def mark_failed_with_retry(
             .where(HomeworkJob.id == job_id)
             .values(
                 status="failed",
-                completed_at=datetime.now(timezone.utc),
+                completed_at=func.now(),
                 error_message=error_message,
                 last_error=error_message,
                 claimed_at=None,
@@ -446,7 +446,7 @@ async def cancel_if_pending(session: AsyncSession, job_id: UUID) -> bool:
         update(HomeworkJob)
         .where(HomeworkJob.id == job_id)
         .where(HomeworkJob.status == "pending")
-        .values(status="cancelled", completed_at=datetime.now(timezone.utc))
+        .values(status="cancelled", completed_at=func.now())
     )
     return result.rowcount > 0
 
@@ -480,7 +480,7 @@ async def mark_cancelled(session: AsyncSession, job_id: UUID) -> None:
     await session.execute(
         update(HomeworkJob)
         .where(HomeworkJob.id == job_id)
-        .values(status="cancelled", completed_at=datetime.now(timezone.utc))
+        .values(status="cancelled", completed_at=func.now())
     )
     await session.execute(
         update(PhaseOutput)
@@ -501,6 +501,6 @@ async def reclaim_stale_cancelling(
         update(HomeworkJob)
         .where(HomeworkJob.status == "cancelling")
         .where(HomeworkJob.claimed_at < func.now() - func.make_interval(0, 0, 0, 0, 0, 0, stale_after_seconds))
-        .values(status="cancelled", completed_at=datetime.now(timezone.utc))
+        .values(status="cancelled", completed_at=func.now())
     )
-    return result.rowcount
+    return result.rowcount or 0
