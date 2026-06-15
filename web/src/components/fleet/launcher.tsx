@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ListChecks, Loader2, Rocket } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { useNavigate } from "react-router-dom";
 import {
   Select,
   SelectContent,
@@ -262,6 +263,7 @@ function ReadyRow({
   batchedTransports: Set<Transport>;
 }) {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [provider, setProvider] = useState("claude");
   const [transport, setTransport] = useState<Transport>("cli");
   const [extractTransport, setExtractTransport] = useState<RoleTransport>("inherit");
@@ -328,7 +330,9 @@ function ReadyRow({
         ...(subset ? { toc_entry_ids: [...selected] } : {}),
       }),
     onSuccess: (r) => {
-      toast.success(`Launched ${r.jobs_created} lessons`);
+      toast.success(`Launched ${r.jobs_created} lessons`, {
+        action: { label: "View in Monitor", onClick: () => navigate("/monitor") },
+      });
       setChoosing(false);
       setSelected(new Set());
       qc.invalidateQueries({ queryKey: ["batches"] });
