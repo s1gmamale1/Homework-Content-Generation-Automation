@@ -1,4 +1,5 @@
 import type { BatchRollup } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { colorFor, STATUS_ORDER } from "./status";
 
 export function RollupBar({
@@ -24,7 +25,12 @@ export function RollupBar({
           segments.map((status) => (
             <div
               key={status}
-              style={{ flex: rollup[status] ?? 0, background: colorFor(status) }}
+              className={cn(status === "running" && "seg-now")}
+              style={{
+                flex: rollup[status] ?? 0,
+                background: colorFor(status),
+                color: colorFor(status),
+              }}
             />
           ))
         )}
