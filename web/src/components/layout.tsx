@@ -1,8 +1,7 @@
-import { Activity, Gauge, Library, Moon, Plus, Rocket } from "lucide-react";
+import { Activity, Gauge, Library, Plus, Rocket } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { NavLink, useLocation, useOutlet } from "react-router-dom";
 import { Nameplate } from "./nameplate";
-import { tapScale } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 
 export function Layout() {
@@ -61,15 +60,6 @@ export function Layout() {
             <span className="hidden font-mono text-[0.66rem] font-medium uppercase tracking-[0.14em] text-(--color-ink-muted) sm:inline">
               v0
             </span>
-            <motion.button
-              type="button"
-              aria-label="Dark theme"
-              title="Dark theme"
-              whileTap={tapScale}
-              className="grid size-9 place-items-center rounded-full border border-white/[0.12] bg-white/[0.06] text-white/70 transition-colors hover:bg-white/[0.1] hover:text-white"
-            >
-              <Moon className="size-4" />
-            </motion.button>
           </div>
         </div>
       </header>
