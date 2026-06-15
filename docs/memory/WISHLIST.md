@@ -29,7 +29,7 @@
 - `fleet-ui-2`: **Live SSE dashboard** — push batch-funnel + PC-card updates instead of polling `GET /jobs/batches` + `/workers`.
 - `fleet-ui-3`: **Past / historical batches view** + filter / search (Phase 3 MVP focuses on active batches).
 - `fleet-ui-4`: Richer **PC cards** — current job, throughput, runtime, attempts (beyond online / idle / busy).
-- `fleet-ui-5`: **Split the batch funnel onto its own page** (e.g. `/batches`) — AMENDED 2026-06-12: workers move there too; `/fleet` keeps launch + a one-line "N machines online" strip (launching with zero liveness visibility is a footgun). Monitoring shouldn't require scrolling past the controls every time, and it scales as batches accumulate. Pair with the sigma-designs visual reshape (brainstorm first).
+- ~~`fleet-ui-5` (restructure half)~~: **SHIPPED 2026-06-12** (worklog [0057], PR #4) — batches + workers moved to a new `/monitor` page; `/fleet` keeps launch + an `OnlineStrip` liveness line (amber when 0 workers). Built as chunk-3 sub-project 1. **Sub-project 2 — the sigma-designs visual reshape — is still OPEN** (own brainstorm→spec→plan→implement cycle; skill installed at `~/.claude/skills/sigma-designs`; the existing space-theme kit in `lib/ui.ts` + `SpaceBackdrop` must be composed-with or superseded — see [[fe-design-system-pointers]]).
 
 **Generation accounts / cost (spec Phase 4):**
 
