@@ -66,10 +66,10 @@ What each source file does, grouped by layer. The runtime makes **no LLM SDK cal
 
 ## `web/src/` — React SPA (operator console)
 - **`main.tsx` / `App.tsx`** — bootstrap + routing.
-- **`routes/`** — `login`, `library`, `upload`, `book`, `section`, `job`, `preview`, `usage`, `fleet` (one screen each). `job`/`preview` render each phase's markdown via `RichText`; `fleet` is the batch launcher + funnel + worker-liveness hub.
+- **`routes/`** — `login`, `library`, `upload`, `book`, `section`, `job`, `preview`, `usage`, `fleet`, `monitor` (one screen each). `job`/`preview` render each phase's markdown via `RichText`; `fleet` is the batch launcher + an `OnlineStrip` worker-liveness line; `monitor` is the batch funnel + worker-liveness cards (moved off `/fleet` in the chunk-3 restructure).
 - **`lib/`** — `api.ts` (fetch client), `auth.ts` (token), `types.ts` (DTOs), `utils.ts`, plus UI helpers (`motion`, `subjects`, `ui`).
 - **`hooks/use-event-source.ts`** — SSE subscription for live job progress.
-- **`components/`** — `layout`, `protected-route`, `rich-text` (markdown + placeholder-card renderer), `space-backdrop`, `ui/*`, **`fleet/`** (`launcher`, `worker-cards`, `batch-funnel`, `rollup-bar`, `batch-lesson-list` — poll `/jobs/batches*` + `/workers` every ~3.5s), plus interactive renderers (`flashcards/`, `boss-fight/`, `games/`, `memory-sprint/`, `reading/`) — some predate the markdown-per-phase flip and are not all on the live render path.
+- **`components/`** — `layout`, `protected-route`, `rich-text` (markdown + placeholder-card renderer), `space-backdrop`, `ui/*`, **`fleet/`** (`launcher` + `online-strip` render on `/fleet`; `worker-cards`, `batch-funnel`, `rollup-bar`, `batch-lesson-list` render on `/monitor` — poll `/jobs/batches*` + `/workers` every ~3.5s), plus interactive renderers (`flashcards/`, `boss-fight/`, `games/`, `memory-sprint/`, `reading/`) — some predate the markdown-per-phase flip and are not all on the live render path.
 
 ## `tests/`
 - Mirrors `app/` — `tests/schemas/`, `tests/services/` (flows, prompts, pipeline, agent router, judge, failover), etc. Run `uv run python -m pytest tests/ -q` (~330 tests).

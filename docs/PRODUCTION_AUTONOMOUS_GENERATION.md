@@ -160,9 +160,11 @@ Can't run 24/7 blind. Need queue depth, throughput/hr, success rate, per-provide
 & error rate → metrics + **alerting** (page when success-rate drops or the queue stalls).
 The `/usage` page tracks *local* token consumption, not health.
 
-> **[2026-06-11] Partially shipped:** the Phase-3 `/fleet` dashboard gives live
-> visibility (worker liveness cards, batch funnel, per-lesson drill-in) and `/usage`
-> now adds a per-transport `$` readout (Phase 4). Still missing for unattended ops:
+> **[2026-06-11] Partially shipped:** the Phase-3 fleet UI gives live visibility — the
+> `/monitor` page (worker liveness cards, batch funnel, per-lesson drill-in; split off
+> `/fleet` in the chunk-3 restructure, which left `/fleet` as launch + an `OnlineStrip`
+> liveness line) and `/usage` now adds a per-transport `$` readout (Phase 4). Still
+> missing for unattended ops:
 > **metrics export + alerting** (nothing pages a human), and R11 (failover legibility).
 
 ---

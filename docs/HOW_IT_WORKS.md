@@ -191,9 +191,10 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
   one job per lesson, fanned into the shared queue. Lessons that already have an active job
   are skipped (or adopted, if they don't belong to a batch yet), so re-launching is a safe
   "top-up." Progress rollups are computed on read, one vote per lesson.
-- **The `/fleet` dashboard**: launch a Notion subject end-to-end (fetch → TOC-extract →
-  launch), watch batch funnels fill, see PC liveness cards, and drill into a batch's
-  lessons to cancel/retry individual ones.
+- **The `/fleet` page**: launch a Notion subject end-to-end (fetch → TOC-extract →
+  launch), with a one-line worker-liveness strip (`OnlineStrip`).
+- **The `/monitor` page**: watch batch funnels fill, see PC liveness cards, and drill
+  into a batch's lessons to cancel/retry individual ones.
 
 One caveat worth knowing: the API's *startup* orphan sweep resets **all** `running` jobs to
 `pending` (it assumes a single host). In a multi-pod fleet that would steal live workers'
@@ -421,9 +422,11 @@ The routes mirror the user journey:
   component) plus any validation warnings. (Older interactive renderers under `components/`
   predate the markdown-per-phase flip.)
 - `usage` → the per-provider consumption dashboard.
-- `fleet` → the fleet operations hub: prepare/launch a Notion subject as a batch, batch
-  funnel bars with per-lesson drill-in (cancel/retry/open), and worker PC liveness cards.
-  Polls its three endpoints every ~3.5s (components live in `components/fleet/`).
+- `fleet` → the launch page: prepare/launch a Notion subject as a batch, plus an
+  `OnlineStrip` worker-liveness line.
+- `monitor` → the monitoring page: batch funnel bars with per-lesson drill-in
+  (cancel/retry/open) and worker PC liveness cards. Polls `/jobs/batches*` + `/workers`
+  every ~3.5s (components live in `components/fleet/`; moved off `/fleet` in chunk-3).
 
 `lib/api.ts` is the typed client, `lib/types.ts` mirrors the backend schemas.
 
