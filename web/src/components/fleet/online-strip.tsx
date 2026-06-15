@@ -36,7 +36,7 @@ export function OnlineStrip() {
       to="/monitor"
       className="inline-flex items-center gap-1.5 text-xs text-emerald-400/90 transition-colors hover:text-emerald-300"
     >
-      <span className="size-1.5 rounded-full bg-emerald-400" />
+      <span className="size-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_2px_rgba(52,211,153,0.7)]" />
       {data.online} {data.online === 1 ? "machine" : "machines"} online
     </Link>
   );
