@@ -19,12 +19,10 @@ export function Layout() {
   return (
     <div className="flex min-h-screen flex-col bg-(--color-canvas)">
       <header className="sticky top-3 z-20 px-3 sm:px-5">
-        <div
-          className={cn(
-            "mx-auto flex h-14 w-full items-center justify-between gap-6 rounded-2xl border border-white/[0.09] bg-white/[0.065] px-4 shadow-[0_18px_50px_-32px_rgba(0,0,0,0.75)] backdrop-blur-xl sm:px-5",
-            wide ? "max-w-[1200px]" : "max-w-[960px]",
-          )}
-        >
+        {/* Navbar width is CONSTANT (max-w-[1200px]) on every route so the
+            centered bar never shifts when content width changes. The `wide`
+            toggle below applies only to <main> content, not this chrome. */}
+        <div className="mx-auto flex h-14 w-full max-w-[1200px] items-center justify-between gap-6 rounded-2xl border border-white/[0.09] bg-white/[0.065] px-4 shadow-[0_18px_50px_-32px_rgba(0,0,0,0.75)] backdrop-blur-xl sm:px-5">
           <div className="flex min-w-0 items-center gap-5">
             <Nameplate />
             <span
