@@ -41,6 +41,16 @@
   /* Easing */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-soft: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Sigma brand — glow / CTA / aurora ONLY. NOT the global --color-accent
+     (which stays amber; see plan principle 2). The AI rim-light sequence. */
+  --color-sigma-violet: #7c5cff;
+  --color-sigma-blue: #4d8dff;
+  --color-sigma-cyan: #36d1dc;
+  --color-sigma-plum: #b16cff;
+  /* Sigma ink (brighter secondary than --color-ink-muted; used by ui.ts) */
+  --color-sigma-ink: #f5f4fc;
+  --color-sigma-mut: #b6b5cf;
 }
 
 @layer base {
@@ -131,8 +141,91 @@
 .animate-tile-rise {
   animation: tile-rise 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
+/* --- Sigma custom CSS (the rim halo + aurora can't be Tailwind classes) --- */
+
+@property --ang {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes rim-spin {
+  to {
+    --ang: 360deg;
+  }
+}
+
+@keyframes aurora-drift {
+  to {
+    transform: translate(2%, -2%) scale(1.06);
+  }
+}
+
+@keyframes seg-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* GLOW_RIM — the "moment" treatment: a rotating conic halo behind a card.
+   Apply to a glass card; the ::before blooms a blurred rim just outside the
+   edge and softly tints the glass (z-index:-1 keeps it under the content, so
+   text stays legible). Matches the mockup's .rim (blur 7px, opacity .28). */
+.glow-rim {
+  position: relative;
+}
+.glow-rim::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--ang),
+    var(--color-sigma-violet),
+    var(--color-sigma-blue),
+    var(--color-sigma-cyan),
+    var(--color-sigma-plum),
+    var(--color-sigma-violet)
+  );
+  filter: blur(7px);
+  opacity: 0.28;
+  animation: rim-spin 9s linear infinite;
+  pointer-events: none;
+}
+
+/* Aurora bloom — the evolved SpaceBackdrop's drifting layer. Fixed,
+   full-viewport, four soft radial blobs that slowly drift. */
+.aurora-bloom {
+  position: fixed;
+  inset: -15%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(36% 36% at 18% 10%, rgba(124, 92, 255, 0.34), transparent 60%),
+    radial-gradient(32% 32% at 88% 16%, rgba(77, 141, 255, 0.3), transparent 60%),
+    radial-gradient(40% 40% at 72% 92%, rgba(54, 209, 220, 0.24), transparent 60%),
+    radial-gradient(34% 34% at 10% 88%, rgba(177, 108, 255, 0.26), transparent 60%);
+  filter: blur(40px);
+  animation: aurora-drift 20s ease-in-out infinite alternate;
+}
+
+/* Live-pipeline "now" segment — semantic color stays (set inline by the
+   caller); this only adds the brand glow + pulse. */
+.seg-now {
+  box-shadow: 0 0 8px currentColor;
+  animation: seg-pulse 1.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .animate-tile-rise {
-    animation: none;
+  .animate-tile-rise,
+  .glow-rim::before,
+  .aurora-bloom,
+  .seg-now {
+    animation: none !important;
   }
 }
