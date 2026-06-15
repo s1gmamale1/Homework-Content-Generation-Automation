@@ -38,15 +38,21 @@ glow only on "moments," calm glass on data.
   comment; hoisting it there creates a containing block that breaks the fixed
   backdrop — known-broken). Evolve the component in place; do NOT hoist. Fix
   its stale docstring (it claims "Library, Usage, Section" — all 10 use it).
-- **Reduced-motion is NEW wiring, not inherited.** `space-backdrop.tsx` is
+- **Reduced-motion is NEW wiring, via ONE mechanism.** `space-backdrop.tsx` is
   currently 100% static (zero animation, no `useReducedMotion`). The aurora
-  drift and the `GLOW_RIM` rotation are new motion → each must respect
-  `prefers-reduced-motion` (freeze, no strobe — Sigma's own rule). Named tasks,
-  not assumed.
+  drift and the `GLOW_RIM` rotation are both new, both **pure CSS keyframes in
+  `globals.css`** (GLOW_RIM needs `@property --ang`, so it's CSS regardless;
+  the aurora joins it as CSS for consistency). Gate BOTH behind a single
+  `@media (prefers-reduced-motion: reduce){ animation:none }` block. Do NOT
+  also wire `useReducedMotion` into the backdrop — that would be dead/redundant
+  code. (The hook stays where it already is, in `layout.tsx` for the route
+  cross-fade.)
 - **The shared-constant restyle is global.** "Other routes out of scope" means
   no bespoke Sigma *layout* for them — but their *appearance* shifts via the
-  shared tokens. (library/usage/monitor self-style and do NOT consume the
-  shared constants, so they don't shift from the restyle.)
+  shared tokens. (library/usage self-style and do NOT consume the shared
+  constants, so they don't shift from the restyle. `/monitor` DOES shift — it
+  doesn't import `@/lib/ui` itself, but it renders `WorkerCards` + `BatchFunnel`
+  which do; it's in scope and restyled anyway.)
 
 ## Design tokens (final, from the approved mockup)
 
@@ -66,9 +72,17 @@ glow only on "moments," calm glass on data.
 - **Type scale:** page title 24px · section head 14px · item name 15.5px ·
   body/nav 14px · input 14.5px · metadata (mono) 12–12.5px · chips 11px ·
   labels 11.5px.
-- **Status chips:** ready/complete cyan `#6fe3ec` on `rgba(54,209,220,.13)`;
-  running violet `#b6a6ff` on `rgba(124,92,255,.16)`; warn `#f0c07a`; fail
-  `#ff97a6`.
+- **Status colors — single source, kept SEMANTIC.** Do NOT introduce a Sigma
+  status palette. The existing `components/fleet/status.ts` `STATUS_COLOR`
+  (done=green, running=blue `#4d8dff`, cancelling=amber, pending/cancelled
+  faint/muted, failed=red) stays the one source of truth — it's consumed by
+  `rollup-bar`, `batch-lesson-list`, AND `book.tsx`. Status must read by
+  traffic-light convention for scannability (this IS glow-as-accent: data stays
+  semantic, glow is brand-only). May gently tune `STATUS_COLOR` *values* to sit
+  well on Sigma glass, but keep the hues. **Supersedes the mockup's chip hues**
+  (it showed cyan "complete"/violet "running" — those were inconsistent with
+  `STATUS_COLOR` and are dropped; the mockup's glow/glass/layout still stand).
+  The Sigma violet→blue→cyan palette is for GLOW / accent / CTA only.
 
 ## Glow-as-accent placement (the rule)
 
@@ -80,13 +94,21 @@ glow only on "moments," calm glass on data.
 ## Components / files
 
 ### Foundation (shared)
-- **`web/src/lib/ui.ts`** — restyle the 7 existing constants (`CARD`,
+- **`web/src/lib/ui.ts`** — tune the 7 existing constants (`CARD`,
   `PRIMARY_BTN`, `GLASS_BTN`, `GHOST_BTN`, `INPUT_GLASS`, `SELECT_TRIGGER`,
-  `BACK_PILL`) to Sigma values (glass, gradient CTA, new ink/accent). Add
-  calm-glass + status-chip helpers as needed. (Names unchanged → no structural
-  breakage.)
+  `BACK_PILL`) to Sigma values; names unchanged → no structural breakage.
+  **Delta is smaller than "restyle" implies** — `PRIMARY_BTN` is ALREADY
+  `from-[#7c5cff] to-[#4d8dff]` and `CARD` already `bg-white/[0.04]` border
+  `white/[0.09]`. Real changes: `INPUT_GLASS`/`SELECT_TRIGGER` (`bg-black/25`
+  → glass), `GHOST_BTN` ink (`white/55` → the brighter `--mut`), small ink/
+  border nudges. Add a calm-glass helper if useful. **Status chips reuse
+  `STATUS_COLOR` — do NOT add a chip palette here.** Also fix `ui.ts`'s stale
+  docstring (it lists Library/Usage, which don't even consume it).
 - **`web/src/components/space-backdrop.tsx`** — static gradients → drifting
-  aurora; wire `useReducedMotion`; fix docstring; keep per-route mounting.
+  aurora, where the drift is a CSS keyframe (the `aurora-drift` class from
+  `globals.css`), NOT a `useReducedMotion`/motion-react animation (see truth
+  #2 — one mechanism). Fix the stale docstring; keep per-route mounting (do NOT
+  hoist to layout).
 - **`web/src/styles/globals.css`** (the global stylesheet, imported by
   `main.tsx`; Tailwind v4 `@theme`/`@layer`/`@keyframes`) — add `@property
   --ang`, the rim-spin + aurora-drift keyframes, and the `GLOW_RIM` class;
@@ -114,6 +136,20 @@ glow only on "moments," calm glass on data.
 - **Reduced-motion check** — with `prefers-reduced-motion: reduce`, aurora
   drift + rim-glow freeze (no strobe).
 - Reference: the approved mockup file.
+
+## Known not-fully-aligned this sub-project (acknowledged, not regressions)
+
+- **The navbar glass is hardcoded** (`layout.tsx:25` `bg-white/[0.065]`, not a
+  token), so it won't move with the token restyle. It's close to the glass
+  values; if the palette lands as `@theme` tokens, tokenizing the navbar glass
+  is a small optional add here, else a one-line follow-up.
+- **library/usage carry inline accents** (a third blue `#4d9bff`, `tint=`),
+  untouched by the token restyle — they re-align in their own later sub-project.
+- So **app-wide visual consistency is NOT fully reached here** — foundation +
+  fleet are; the rest trends consistent but isn't pixel-aligned yet. Expected.
+- **`@property --ang` support:** Safari ≥16.4, Firefox ≥128, all Chromium.
+  Fine for an internal console; the glow simply doesn't rotate on older
+  browsers (degrades to a static gradient, no breakage).
 
 ## Out of scope (later sub-projects)
 
