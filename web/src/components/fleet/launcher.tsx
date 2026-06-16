@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ListChecks, Loader2, Rocket } from "lucide-react";
+import { Check, ListChecks, Loader2, Rocket, RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
@@ -283,7 +283,16 @@ function ReadyRow({
   const toc = detail.data?.toc ?? [];
   const lessons = detail.data?.toc?.length;
   const doneCount = toc.filter((t) => t.latest_job_status === "done").length;
+  const activeCount = toc.filter(
+    (t) =>
+      t.latest_job_status === "running" ||
+      t.latest_job_status === "pending" ||
+      t.latest_job_status === "cancelling",
+  ).length;
   const complete = lessons != null && lessons > 0 && doneCount === lessons;
+  // A plain re-launch skips done + in-flight sections and creates jobs only for
+  // the rest (failed / never-run / cancelled) — that's the "remaining" count.
+  const remaining = Math.max(0, (lessons ?? 0) - doneCount - activeCount);
   const subset = choosing && selected.size > 0;
 
   // Does the picked provider support the pay-per-token API transport? Only
@@ -319,7 +328,7 @@ function ReadyRow({
   const missingApiModel = transport === "api" && !model;
 
   const launch = useMutation({
-    mutationFn: () =>
+    mutationFn: (opts: { force?: boolean; tocIds?: string[] } = {}) =>
       api.launchBatch({
         book_id: book.id,
         provider,
@@ -327,7 +336,12 @@ function ReadyRow({
         extract_transport: extractTransport,
         judge_transport: judgeTransport,
         ...(transport === "api" ? { model } : {}),
-        ...(subset ? { toc_entry_ids: [...selected] } : {}),
+        ...(opts.tocIds
+          ? { toc_entry_ids: opts.tocIds }
+          : subset
+            ? { toc_entry_ids: [...selected] }
+            : {}),
+        ...(opts.force ? { force: true } : {}),
       }),
     onSuccess: (r) => {
       toast.success(`Launched ${r.jobs_created} lessons`, {
@@ -420,34 +434,67 @@ function ReadyRow({
               </SelectContent>
             </Select>
           )}
+          {/* Re-run the whole batch (force) — regenerates done lessons too.
+              Only when this transport already has a batch and not mid-select. */}
+          {alreadyBatched && !choosing && (
+            <button
+              type="button"
+              className={cn(GHOST_BTN, "h-9 px-2.5 text-xs")}
+              disabled={launch.isPending || missingApiModel}
+              title={
+                missingApiModel
+                  ? "Pick a model to launch on API"
+                  : "Re-generate every lesson in this batch (discards completed outputs)"
+              }
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Re-generate ALL ${lessons ?? ""} lessons in this batch? This regenerates completed lessons too${transport === "api" ? " and bills API calls" : ""}.`,
+                  )
+                )
+                  launch.mutate({ force: true });
+              }}
+            >
+              <RotateCcw className="size-3.5" />
+              Re-run all
+            </button>
+          )}
           <button
             type="button"
             className={PRIMARY_BTN}
             disabled={
               launch.isPending ||
               (choosing && selected.size === 0) ||
-              alreadyBatched ||
-              missingApiModel
+              missingApiModel ||
+              (!choosing && lessons != null && remaining === 0)
             }
             title={
-              alreadyBatched
-                ? `Already launched on ${transport.toUpperCase()}`
-                : missingApiModel
-                  ? "Pick a model to launch on API"
-                  : undefined
+              missingApiModel
+                ? "Pick a model to launch on API"
+                : complete
+                  ? "All lessons done — use Re-run all to regenerate"
+                  : !choosing && remaining === 0
+                    ? "All remaining lessons are in progress"
+                    : undefined
             }
-            onClick={() => launch.mutate()}
+            onClick={() => launch.mutate({})}
           >
             {launch.isPending ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
               <Rocket className="size-4" />
             )}
-            {alreadyBatched
-              ? `${transport.toUpperCase()} launched`
-              : subset
-                ? `Launch ${selected.size}`
-                : "Launch"}
+            {choosing
+              ? `Launch ${selected.size}`
+              : lessons == null
+                ? "Launch"
+                : complete
+                  ? "Complete"
+                  : remaining === 0
+                    ? "In progress"
+                    : doneCount > 0 || activeCount > 0
+                      ? `Launch remaining ${remaining}`
+                      : "Launch"}
           </button>
         </div>
       </div>
@@ -458,6 +505,48 @@ function ReadyRow({
             <div className="px-1 py-1 text-xs text-white/45">No lessons found.</div>
           ) : (
             toc.map((t) => {
+              // Done lessons are NOT selectable for a normal launch — they're
+              // already generated. Re-running one is an explicit Retry (force).
+              if (t.latest_job_status === "done") {
+                return (
+                  <div
+                    key={t.id}
+                    className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-xs text-white/45"
+                  >
+                    <span className="grid size-3.5 shrink-0 place-items-center text-emerald-400/80">
+                      <Check className="size-3" />
+                    </span>
+                    <span className="shrink-0 font-mono text-white/25">
+                      #{t.order_index}
+                    </span>
+                    <span className="min-w-0 truncate">{t.section_title}</span>
+                    <span className="ml-auto shrink-0 text-[10px] text-emerald-400/80">
+                      done
+                    </span>
+                    <button
+                      type="button"
+                      className="inline-flex shrink-0 items-center gap-1 rounded-md border border-white/[0.1] px-1.5 py-0.5 text-[10px] text-white/60 transition-colors hover:bg-white/[0.06] hover:text-white disabled:opacity-40"
+                      disabled={launch.isPending || missingApiModel}
+                      title={
+                        missingApiModel
+                          ? "Pick a model to launch on API"
+                          : "Re-generate just this lesson (discards its current output)"
+                      }
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Re-generate "${t.section_title}"? This discards its current output and runs it again${transport === "api" ? " (billed API call)" : ""}.`,
+                          )
+                        )
+                          launch.mutate({ force: true, tocIds: [t.id] });
+                      }}
+                    >
+                      <RotateCcw className="size-3" />
+                      Retry
+                    </button>
+                  </div>
+                );
+              }
               const on = selected.has(t.id);
               return (
                 <label
@@ -481,18 +570,14 @@ function ReadyRow({
                     #{t.order_index}
                   </span>
                   <span className="min-w-0 truncate">{t.section_title}</span>
-                  {t.latest_job_status === "done" && (
-                    <span className="ml-auto shrink-0 text-[10px] text-emerald-400/80">
-                      done
-                    </span>
-                  )}
                   {t.latest_job_status === "failed" && (
                     <span className="ml-auto shrink-0 text-[10px] text-rose-400/80">
                       failed
                     </span>
                   )}
                   {(t.latest_job_status === "running" ||
-                    t.latest_job_status === "pending") && (
+                    t.latest_job_status === "pending" ||
+                    t.latest_job_status === "cancelling") && (
                     <span className="ml-auto shrink-0 text-[10px] text-amber-300/80">
                       {t.latest_job_status}
                     </span>

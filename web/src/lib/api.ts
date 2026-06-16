@@ -263,7 +263,7 @@ export const api = {
   },
   async launchBatch(body: {
     book_id: string; toc_entry_ids?: string[]; provider?: string; model?: string | null; transport?: Transport;
-    extract_transport?: RoleTransport; judge_transport?: RoleTransport;
+    extract_transport?: RoleTransport; judge_transport?: RoleTransport; force?: boolean;
   }): Promise<BatchSummary & { jobs_created: number; jobs_adopted: number; jobs_skipped: number }> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
