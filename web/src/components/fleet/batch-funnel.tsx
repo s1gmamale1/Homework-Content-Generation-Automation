@@ -13,7 +13,7 @@ function BatchCard({ batch }: { batch: BatchSummary }) {
   const Chevron = expanded ? ChevronDown : ChevronRight;
 
   return (
-    <div className={cn(CARD, "space-y-3")}>
+    <div className={cn(CARD, "space-y-3", !batch.complete && "glow-rim")}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold text-white">

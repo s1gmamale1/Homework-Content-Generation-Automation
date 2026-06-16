@@ -1,9 +1,11 @@
 /**
- * Shared deep-space backdrop used by the dark "space dashboard" pages
- * (Library, Usage, Section). Renders two fixed, non-interactive layers:
- * a navy base with purple/blue aurora, and a faint starfield. Drop it as
- * the first child of a `relative` page wrapper and put page content in a
- * sibling with `relative z-10`.
+ * Sigma living-glass backdrop, mounted per-route as the first child of a
+ * `relative` page wrapper (content sits in a sibling with `relative z-10`).
+ * Used by all 10 routes. Renders three fixed, non-interactive layers: a deep
+ * navy base, a slowly drifting aurora bloom (the `.aurora-bloom` CSS class —
+ * its drift is frozen under prefers-reduced-motion via globals.css), and a
+ * faint starfield. NOTE: keep this mounted per-route — hoisting it into
+ * layout.tsx creates a containing block that breaks the fixed positioning.
  */
 export function SpaceBackdrop() {
   return (
@@ -13,9 +15,10 @@ export function SpaceBackdrop() {
         className="pointer-events-none fixed inset-0 z-0"
         style={{
           background:
-            "radial-gradient(55% 45% at 0% 0%, oklch(0.50 0.20 290 / 0.35), transparent 60%), radial-gradient(45% 40% at 100% 14%, oklch(0.55 0.17 250 / 0.28), transparent 60%), radial-gradient(60% 50% at 50% 112%, oklch(0.46 0.16 285 / 0.24), transparent 66%), linear-gradient(160deg, oklch(0.165 0.022 275), oklch(0.12 0.016 268) 55%, oklch(0.15 0.02 250))",
+            "linear-gradient(160deg, oklch(0.165 0.022 275), oklch(0.12 0.016 268) 55%, oklch(0.15 0.02 250))",
         }}
       />
+      <div aria-hidden className="aurora-bloom" />
       <div
         aria-hidden
         className="pointer-events-none fixed inset-0 z-0 opacity-70"
