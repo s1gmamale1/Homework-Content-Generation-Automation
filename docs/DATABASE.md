@@ -2,8 +2,8 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Every claim here was checked against the code on branch `feat/autonomous-fleet-engine`
-> (2026-06-11). When this doc and the code disagree, the code wins — fix the doc.
+> Every claim here was re-verified against branch `Nggaev-v2`, head `a8c7e6d5f4b3`
+> (0026), 2026-06-16. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
 
@@ -28,7 +28,7 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`a1b2c3d4e5f6`** (`0023_batches`). Full chain in §7.
+also runs it on deploy). Current head: **`a8c7e6d5f4b3`** (`0026_drop_difficulty`). Full chain in §7.
 
 ---
 
@@ -334,7 +334,8 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | 22 | 0022_workers_registry | `d5e9f1a2b3c4` | **workers** table (fleet Phase 1) |
 | 23 | 0023_batches | `a1b2c3d4e5f6` | **batches** table + homework_jobs.batch_id (fleet Phase 2) |
 | 24 | 0024_transport_auth_mode | `f7e6d5c4b3a2` | `transport` (jobs+batches) + `agent_usages.auth_mode` + batch key → `(book_id, transport)` (fleet Phase 4) |
-| 25 | 0025_role_transports | `b9d8e7f6a5c4` | `extract_transport`/`judge_transport` (jobs+batches) (fleet Phase 4.1) — **HEAD** |
+| 25 | 0025_role_transports | `b9d8e7f6a5c4` | `extract_transport`/`judge_transport` (jobs+batches) (fleet Phase 4.1) |
+| 26 | 0026_drop_difficulty | `a8c7e6d5f4b3` | drops the dead `homework_jobs.difficulty` column — **HEAD** |
 
 ---
 

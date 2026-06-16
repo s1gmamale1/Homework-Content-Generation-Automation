@@ -15,11 +15,19 @@ Same image serves both. Pick a topology by setting environment variables.
 
 ```bash
 cp .env.example .env
-# edit .env: set GEMINI_API_KEY=...
-docker compose up --build
+# edit .env: set AUTH_TOKEN=... (and the transport=api keys only if you use api jobs)
+docker compose up
 ```
 
-`http://localhost:8000` runs API + SPA + embedded worker. Postgres is in-compose with a persistent volume. Migrations run automatically before the API starts.
+The shipped `docker-compose.yml` **pulls a prebuilt GHCR image**
+(`ghcr.io/ganiyevuz/class-homework-builder:latest`, `pull_policy: always`) — no local
+build. It loads `.env` via `env_file`, constructs `DATABASE_URL` pointing at the in-compose
+`postgres` (`@postgres:5432/${POSTGRES_DB:-edu_homework}`), and runs API + SPA + embedded
+worker. Migrations run automatically on container start via `docker-entrypoint.sh` (see
+Migrations below). The api container is fronted by **Traefik** (TLS via the `le` resolver,
+host `${APP_HOST}`, loadbalancer port **8000**) and auto-redeployed by **Watchtower** when a
+new image tag is pushed — so in a Traefik deployment you reach it at `https://${APP_HOST}`,
+not `localhost:8000`. (For a bare local run without Traefik, publish port 8000 yourself.)
 
 ---
 
@@ -29,10 +37,10 @@ docker compose up --build
 |---|---|---|---|
 | `DATABASE_URL` | yes | — | `postgresql+asyncpg://...` (asyncpg driver, not psycopg) |
 | `GEMINI_API_KEY` | yes | — | https://aistudio.google.com/apikey |
-| `GEMINI_MODEL` | no | `gemini-2.5-flash` | Pin to a stable release; avoid `*-preview` / `*-exp` in prod |
+| `GEMINI_MODEL` | no | `gemini-2.0-flash-exp` | Vestigial (unread by the runtime). The *extract pin* `EXTRACT_MODEL` is separately `gemini-2.5-flash`. |
 | `AUTH_TOKEN` | **strongly recommended** | empty | Empty disables auth (every request `user="anonymous"`). Set this. |
 | `WORKER_CONCURRENCY` | no | `4` | Embedded worker job concurrency. Set `0` in API-only pods. |
-| `JOB_TIMEOUT_SECONDS` | no | `600` | Hard ceiling per job. |
+| `JOB_TIMEOUT_SECONDS` | no | `1800` | Hard ceiling per job. (`.env.example` overrides it to `600`.) |
 | `QUEUE_MAX_ATTEMPTS` | no | `3` | Retries before terminal failure. |
 | `QUEUE_BACKPRESSURE_LIMIT` | no | `50` | Queue depth → 503. `0` disables. |
 | `GEMINI_MAX_CONCURRENCY` | no | `8` | Process-wide cap on Gemini calls. Tune to your RPM tier. |
@@ -50,8 +58,8 @@ docker compose up --build
 # All-in-one
 services:
   api:
-    image: class-homework-builder:latest
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    image: ghcr.io/ganiyevuz/class-homework-builder:latest
+    pull_policy: always
     environment:
       WORKER_CONCURRENCY: "4"   # embedded worker, 4 concurrent jobs
       # ... other env vars
@@ -63,27 +71,31 @@ This is what `docker compose up` runs by default.
 
 **Best for:** higher throughput, independent scaling, resilient deploys (rolling-restart API without dropping jobs).
 
+The shipped `docker-compose.yml` already wires this as the **`scaled` profile** — an
+optional standalone `worker` service (`python -m app.services.worker`, `RUN_MIGRATIONS=0`,
+`deploy.replicas: 2`) gated behind `profiles: [ "scaled" ]`:
 ```yaml
 services:
-  api:                     # N replicas
-    image: class-homework-builder:latest
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-    environment:
-      WORKER_CONCURRENCY: "0"   # disable embedded worker
-      # ... other env vars
+  api:                     # set WORKER_CONCURRENCY=0 in .env to disable embedded worker
+    image: ghcr.io/ganiyevuz/class-homework-builder:latest
+    pull_policy: always
+    # RUN_MIGRATIONS defaults to 1 → this container runs the migrations
 
-  worker:                  # M replicas (scale independently of API)
-    image: class-homework-builder:latest
+  worker:                  # only starts under `--profile scaled`
+    image: ghcr.io/ganiyevuz/class-homework-builder:latest
+    pull_policy: always
     command: ["python", "-m", "app.services.worker"]
+    profiles: [ "scaled" ]
     environment:
-      WORKER_CONCURRENCY: "4"
-      # ... other env vars (no AUTH_TOKEN needed; worker doesn't serve HTTP)
+      RUN_MIGRATIONS: "0"   # api migrates; worker doesn't
+    deploy:
+      replicas: 2           # or `--scale worker=N` on the CLI
 ```
 
 To exercise this locally:
 ```bash
 docker compose --profile scaled up
-# add `WORKER_CONCURRENCY=0` to .env to disable the embedded worker
+# set WORKER_CONCURRENCY=0 in .env to disable the api's embedded worker
 ```
 
 ---
@@ -92,17 +104,22 @@ docker compose --profile scaled up
 
 Every deploy must run `alembic upgrade head` before the API starts. Three options, in order of preference:
 
-**Option A — `migrate` service in compose (already wired):**
+**Option A — `docker-entrypoint.sh` on container start (already wired):**
+There is **no** separate `migrate` service. The image's `docker-entrypoint.sh` runs
+`alembic upgrade head` on every container start/restart, gated by **`RUN_MIGRATIONS`**
+(default `1`). Alembic is idempotent at head, but to avoid concurrent migrators the
+scaled topology sets `RUN_MIGRATIONS: "0"` on the standalone `worker` service so only
+one container migrates. (In the shipped `docker-compose.yml` the `postgres` healthcheck
+gates the api, so the entrypoint's migration runs against a ready DB.)
 ```yaml
 services:
-  migrate:
-    image: class-homework-builder:latest
-    command: ["alembic", "upgrade", "head"]
-    restart: "no"
   api:
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
+    image: ghcr.io/ganiyevuz/class-homework-builder:latest
+    # RUN_MIGRATIONS defaults to 1 → entrypoint runs `alembic upgrade head`
+  worker:
+    image: ghcr.io/ganiyevuz/class-homework-builder:latest
+    environment:
+      RUN_MIGRATIONS: "0"   # only the api container migrates
 ```
 
 **Option B — init container (Kubernetes):**
@@ -207,7 +224,7 @@ fly deploy
   release_command = "alembic upgrade head"
 
 [processes]
-  app = "uvicorn main:app --host 0.0.0.0 --port 8080"
+  app = "uvicorn main:app --host 0.0.0.0 --port 8000"
   worker = "python -m app.services.worker"
 ```
 
@@ -267,8 +284,8 @@ The codebase emits structured loguru logs to stdout. In production, route them t
 For Prometheus-style metrics, the natural shape is:
 - `queue_depth_gauge` from `jobs_repo.queue_depth()`
 - `job_duration_histogram` from `pipeline.run` total_s
-- `gemini_calls_total` from `gemini_usages` table
-- `gemini_fresh_tokens_total` (sum of `prompt_token_count - cached_content_token_count`)
+- `agent_calls_total` from the `agent_usages` table
+- `agent_fresh_tokens_total` (sum of `prompt_tokens - cached_tokens`)
 
 These aren't wired yet but the data is in the DB / logs — easy to add a `/metrics` endpoint when needed.
 
@@ -278,10 +295,10 @@ These aren't wired yet but the data is in the DB / logs — easy to add a `/metr
 
 **Connection pool sizing.** Each worker holds 2-4 DB connections during a job. With `WORKER_CONCURRENCY=4` and 2 worker pods, peak is ~32 connections. Default pool is 20+30=50 connections per process. If you scale workers to >5 pods on shared Postgres (Neon free tier = 100 connections), you'll exhaust. Either: bump `pool_size` in `app/db.py`, or scale Postgres.
 
-**Worker-claimed-but-died jobs stay `running` until reclaim sweep.** Default sweep interval is 60s with a stale-after threshold of 2× the job timeout (i.e., 1200s by default). A job can sit stuck for up to ~20 min before being reclaimed. Tune `JOB_TIMEOUT_SECONDS` to make this faster if needed.
+**Worker-claimed-but-died jobs stay `running` until reclaim sweep.** The sweep keys on `RECLAIM_STALE_SECONDS` (default **120s**, `config.py`): a dead worker's `running` job is reclaimed to `pending` within ~2 minutes. Heartbeats keep live jobs' claims fresh, so a long-running job is never falsely reclaimed. There is no "2× job timeout" threshold.
 
 **SPA + auth.** If `AUTH_TOKEN` is set but the SPA's sessionStorage has no token, every page load redirects to `/login`. The login form takes a token; paste-and-submit. In production, the upstream service either (a) injects the bearer token via reverse proxy, or (b) hands the token to the SPA via postMessage / URL fragment / iframe init.
 
-**Cache TTLs vs pod lifetime.** The per-book Gemini cache (`books.gemini_cache_name`) has a 6h server-side TTL but is referenced by name. If a pod dies, a new pod with the same DB row reuses the cache fine — no data loss.
+**Gemini cache columns are dead/legacy (no-op).** The `books.gemini_cache_*` columns are leftovers from the removed Gemini SDK era — nothing reads or writes them, there is no server-side cache anymore. They're kept nullable only for backwards-compat. No pod-lifetime concern.
 
 **Idempotency-Key in-memory cache** is per-process. With multi-pod API, the same Idempotency-Key sent to two pods will create two jobs (the natural-key + advisory lock still prevent same-section duplicates). For strict cross-pod idempotency, move `_IDEMPOTENCY_CACHE` from `app/api/v1/jobs.py` to a Redis or DB table. For most deployments, the natural-key idempotency is sufficient.

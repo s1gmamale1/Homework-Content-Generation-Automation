@@ -70,7 +70,7 @@ Local dev uses port **5433** for Postgres, not 5432, because the Windows host ty
 
 `agent.py` exposes:
 - `run_phase_prompt` (content phases → markdown), `extract_toc`, and `summarize_lesson` + `read_whole_book_text` (the extract path since the worklog-0035 local-text rewrite) — the primary call surface used by the pipeline. `run_phase` is the lower-level CLI wrapper underneath `run_phase_prompt`; `extract_lesson_context` is legacy and no longer called by the pipeline (dead since 0035).
-- `_resolve_model(provider, model)` — provider→default-model lookup. **Critical invariant**: `_resolve_model("gemini", None) is None` (and same for kimi/codex). Only `claude` has a default. This guards a real regression where a single shared default once leaked across providers; there is a unit test for it.
+- `_resolve_model(provider, model)` — provider→default-model lookup. **Critical invariant**: `_resolve_model("gemini", None) is None` (and same for kimi/codex). Only `claude` and `opencode` have defaults; kimi/codex/gemini stay `None` (opencode carries `opencode/deepseek-v4-flash-free`). This guards a real regression where a single shared default once leaked across providers; there is a unit test for it.
 - `_PROVIDER_DEFAULT_MODEL` — the table the resolver reads.
 - `_auth_env(provider_name, transport, base_env)` — pure per-spawn env shaping at the single `child_env` build inside `_spawn`, so no spawn path can bypass it. **cli is the unconditional baseline for EVERY spawn** (scrubs `GEMINI_API_KEY`/`ANTHROPIC_API_KEY`/vertex selectors; gemini gets `GOOGLE_GENAI_USE_GCA=true`) — including book-upload TOC extraction, which has no job. `transport=api` injects exactly the active provider's credential: claude → `ANTHROPIC_API_KEY`; gemini → `GEMINI_API_KEY`, or the Vertex service-account pair (`GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT`, location defaults `global`) when no key — missing credentials **raise loudly** (never inject `""`: an empty key silently falls back to OAuth and mis-bills).
 - **Content phases are markdown-only.** The md-per-phase flip removed the old `STRUCTURED_PHASE_SCHEMAS` (phase→Pydantic) JSON-mode table; each phase's markdown output is graded by the LLM judge (`phase_judge.py`, worklog 0037), which regenerates once on a MAJOR verdict. `run_phase` still has a `schema=` JSON-validation mode (`model_validate_json` + one retry) used by structured callers like the judge — content phases no longer use it.
@@ -93,9 +93,9 @@ The single source of truth for which `(provider, model)` pairs the API and front
 
 Per-job state machine:
 
-1. **Head (sequential)**: `extract` only (`pipeline.py:135`). `classify` / easy-hard was **removed** — there is a single flow per subject (`flows.flow_for`); `difficulty` is pinned `None` (`pipeline.py:107`).
+1. **Head (sequential)**: `extract` only (`pipeline.py:150`). `classify` / easy-hard was **removed** — there is a single flow per subject (`flows.flow_for`); `difficulty` is pinned `None` (`pipeline.py:123`).
 2. **Tail (DAG-parallel)**: every phase declares its deps in `flows.PHASE_DEPS`; a wave-based scheduler launches phases concurrently when their deps are met. Typical 2× speedup over sequential.
-3. **No assembly**: per-phase markdown in `phase_outputs` **is** the deliverable (`pipeline.py:216`), graded by the LLM judge. (The old assembly + structured-JSON-columns step was removed with the md-per-phase flip.)
+3. **No assembly**: per-phase markdown in `phase_outputs` **is** the deliverable, graded by the LLM judge. (The old assembly + structured-JSON-columns step was removed with the md-per-phase flip.)
 
 Three things this pipeline does that aren't obvious from a single file:
 - **`extract` phase is pinned** to `settings.extract_provider` / `settings.extract_model` (default `gemini` / `gemini-2.5-flash`) regardless of which provider the user picked for the job. Extract is high-input/low-value (whole-PDF read → flat factual summary), so paying smart-tier rates buys nothing. All other phases honor `job.provider` / `job.model`. The **provider/model** pin is what's fixed — the **auth mode** follows `job.transport`.
@@ -107,6 +107,8 @@ Three things this pipeline does that aren't obvious from a single file:
 Each supported subject (biology, english, geometriya-g7-11, history, kimyo-g7-11, math-algebra, physics — `flows.SUBJECTS`) has:
 - A single phase sequence from `flows.flow_for(subject)` (`flows.py:39`): `_BASE_PHASES` + one subject-matched game (`flows.SUBJECT_GAME`) + `boss-arena` + `reflection`. **No `SUBJECT_FLOWS`, no easy/hard, no `classify`** — MVP single flow (`flows.py:1`).
 - A directory `prompts/<subject>/` with one `.md` per phase plus `flow.md` (documentation only).
+
+The **live runtime prompt set is `prompts/_general/`** (served via `get_prompt` with `{{SUBJECT}}` substitution, `USE_SUBJECT_PROMPTS=False`); the per-subject dirs above are a dormant override layer, not used at generation time.
 
 `flows.PHASE_DEPS` declares which prior phase outputs each phase consumes; the parallel scheduler reads it. SVG blocks in prior outputs are stripped with `_strip_svgs` before injection (they cost ~800 input tokens each and downstream phases need the concept, not the picture).
 
