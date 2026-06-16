@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     # fan out at once.
     agent_max_concurrency: int = 8  # process-wide cap on concurrent CLI subprocesses
     gemini_max_concurrency: int = 8  # DEPRECATED — kept for backwards-compat with agent.py
+    # transport=api: claude's Messages API REQUIRES max_tokens (gemini does not,
+    # and stays uncapped). 16384 gives headroom over the longest uncapped content
+    # phases (reading/preview-hard); hitting it fails LOUD, never silent-truncates.
+    api_max_output_tokens: int = 16384  # env API_MAX_OUTPUT_TOKENS
 
     # ─── Resilience: job resume + provider failover ───────────────────────
     # Worker refreshes claimed_at every heartbeat_seconds while a job runs, so a
