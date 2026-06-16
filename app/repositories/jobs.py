@@ -162,13 +162,6 @@ async def set_notion_skip_reason(
     job.notion_skip_reason = reason
 
 
-async def set_difficulty(session: AsyncSession, job_id: UUID, difficulty: str) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.difficulty = difficulty
-
-
 async def reset_for_retry(
     session: AsyncSession, job_id: UUID
 ) -> Optional[HomeworkJob]:

@@ -27,7 +27,6 @@ class JobOut(BaseModel):
     book_id: UUID
     toc_entry_id: UUID
     subject: str
-    difficulty: Optional[str] = None
     status: str
     current_phase: Optional[str] = None
     error_message: Optional[str] = None

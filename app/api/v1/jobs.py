@@ -311,11 +311,6 @@ async def stream_job(job_id: UUID, request: Request):
                                 "phase_order": p.phase_order,
                             }),
                         })
-                if job.difficulty is not None:
-                    initial.append({
-                        "event": "difficulty_classified",
-                        "data": json.dumps({"difficulty": job.difficulty}),
-                    })
                 if job.status == "done":
                     terminal = {
                         "event": "job_completed",

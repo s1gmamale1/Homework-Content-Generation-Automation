@@ -22,7 +22,7 @@ import { useEventSource } from "@/hooks/use-event-source";
 import { api } from "@/lib/api";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
 import { ApiBadge } from "@/components/fleet/launcher";
-import type { Difficulty, JobStatus, Transport } from "@/lib/types";
+import type { JobStatus, Transport } from "@/lib/types";
 import { BACK_PILL, GLASS_BTN, PRIMARY_BTN } from "@/lib/ui";
 import { cn, formatPhaseName, formatTokens } from "@/lib/utils";
 
@@ -49,7 +49,6 @@ export function JobPage() {
   const { id } = useParams<{ id: string }>();
   const [phases, setPhases] = useState<Record<string, PhaseUi>>({});
   const [order, setOrder] = useState<string[]>([]);
-  const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [parents, setParents] = useState<{ bookId: string; sectionId: string } | null>(null);
@@ -82,7 +81,6 @@ export function JobPage() {
       setError(null);
       setPhases({});
       setOrder([]);
-      setDifficulty(null);
       setStatus(updated.status);
       toast.success("Retry queued — pipeline restarting");
     } catch (err) {
@@ -152,7 +150,6 @@ export function JobPage() {
             tokens_output: p.tokens_output,
           });
         }
-        if (j.difficulty) setDifficulty(j.difficulty);
         setStatus(j.status);
         setNotionSkip(j.notion_skip_reason ?? null);
         if (j.status === "done") setDownloadUrl(api.jobDownloadUrl(id));
@@ -175,9 +172,6 @@ export function JobPage() {
           tokens_input: data?.tokens_input,
           tokens_output: data?.tokens_output,
         });
-      },
-      difficulty_classified: (data: any) => {
-        setDifficulty(data?.difficulty ?? null);
       },
       job_completed: (_data: any) => {
         setStatus("done");
@@ -257,7 +251,6 @@ export function JobPage() {
             Composing
           </span>
           <div className="flex items-center gap-2">
-            {difficulty && <Chip>difficulty · {difficulty}</Chip>}
             {totalCount > 0 && (
               <Chip>
                 {doneCount}/{totalCount}
@@ -420,7 +413,7 @@ function PipelineWarmup() {
         Warming up the pipeline
       </div>
       <p className="mt-2 max-w-[55ch] text-sm leading-relaxed text-white/55">
-        Queueing the section, classifying difficulty, and reserving a worker. The first phase
+        Queueing the section and reserving a worker. The first phase
         usually starts within a few seconds.
       </p>
       <ol className="mt-5 flex flex-col gap-2" aria-hidden>

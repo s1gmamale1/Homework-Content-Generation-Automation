@@ -338,8 +338,6 @@ export function PreviewPage() {
           <span>{subjectLabel(job.subject)}</span>
           {job.provider && <span className="text-white/25">·</span>}
           {job.provider && <span>{job.provider}</span>}
-          {job.difficulty && <span className="text-white/25">·</span>}
-          {job.difficulty && <span>{job.difficulty}</span>}
         </p>
 
         <PhasesPreview job={job} />

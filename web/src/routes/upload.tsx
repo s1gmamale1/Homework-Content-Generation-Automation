@@ -179,8 +179,8 @@ export function UploadPage() {
               Upload a curriculum book
             </h1>
             <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-white/55">
-              The system extracts the table of contents, classifies the lesson you choose, and
-              assembles a homework packet aligned to the source material.
+              The system extracts the table of contents and assembles a homework packet
+              aligned to the source material.
             </p>
 
             <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-5">
