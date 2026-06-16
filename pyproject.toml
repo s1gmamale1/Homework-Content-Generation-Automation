@@ -17,6 +17,8 @@ dependencies = [
     "loguru>=0.7.2",
     "pypdf>=6.10.2",
     "psutil>=5.9",
+    "google-genai>=2.8.0",
+    "anthropic>=0.109.2",
 ]
 
 [project.optional-dependencies]
