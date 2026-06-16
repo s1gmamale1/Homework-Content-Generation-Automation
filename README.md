@@ -83,13 +83,13 @@ For development without Docker: `uv sync` → `uv run alembic upgrade head` → 
 Homework-Content-Generation-Automation/
 ├── main.py                       FastAPI entry, lifespan, embedded worker
 ├── app/
-│   ├── api/v1/                   REST endpoints (books, jobs, notion, health)
+│   ├── api/v1/                   REST endpoints (books, jobs, batch, workers, notion, health)
 │   ├── auth.py                   token-based auth dependency
 │   ├── config.py                 Settings (BaseSettings)
 │   ├── db.py                     async engine + pool
 │   ├── models/                   SQLAlchemy mappings
 │   ├── repositories/             query-layer (no business logic)
-│   ├── schemas/                  Pydantic schemas (book, toc, job, classify, events)
+│   ├── schemas/                  Pydantic schemas (book, toc, job, events)
 │   └── services/
 │       ├── agent.py              CLI router — the only LLM surface
 │       ├── providers/            one adapter per CLI (claude/gemini/codex/kimi/opencode)
@@ -100,10 +100,10 @@ Homework-Content-Generation-Automation/
 │       ├── worker.py             queue worker (embedded or standalone)
 │       └── notion_*/notion/      Notion archive + fetch
 ├── prompts/_general/             the live prompt set (one .md per phase)
-├── alembic/versions/             schema migrations (0001…0025)
+├── alembic/versions/             schema migrations (0001…0026)
 ├── web/                          React SPA (operator console)
 ├── Dockerfile                    multi-stage (node SPA → uv venv → runtime)
-├── docker-compose.yml            postgres + migrate + api + (optional) workers
+├── docker-compose.yml            postgres + api (GHCR image, Traefik) + optional scaled worker
 ├── docker-compose.worker.yml     worker-PC compose (fleet)
 ├── docs/
 │   ├── HOW_IT_WORKS.md           plain-English tour of the whole system

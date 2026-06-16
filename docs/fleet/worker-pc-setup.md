@@ -28,7 +28,7 @@ This PC is already your head. To let the other PCs reach it:
 
 1. **Find this PC's network address.** Open a terminal, run `ipconfig`, and note
    the **IPv4 address** (looks like `192.168.x.x`).
-2. **Open the firewall** for the database port (**5436**): allow inbound TCP 5436
+2. **Open the firewall** for the database port (**5432**): allow inbound TCP 5432
    in Windows Defender Firewall.
 
 That's it — the head is ready. It just needs to stay on.
@@ -56,7 +56,7 @@ Do this once per PC. After that, the PC generates on its own forever.
 5. **Start the worker** — one command:
 
    ```
-   set DATABASE_URL=postgresql+asyncpg://edu:edu@<HEAD_IP>:5436/edu_copy
+   set DATABASE_URL=postgresql+asyncpg://edu:edu@<HEAD_IP>:5432/edu_copy
    docker compose -f docker-compose.worker.yml up -d
    ```
 
