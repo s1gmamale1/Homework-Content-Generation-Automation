@@ -378,3 +378,56 @@ def test_should_subset_for_extract_only_when_over_limit(tmp_path, monkeypatch):
     assert agent._should_subset_for_extract(tmp_path / "nope.pdf") is False
 
 
+@pytest.mark.asyncio
+async def test_spawn_api_gemini_delegates_to_sdk_inside_semaphore(monkeypatch):
+    """transport=api + gemini routes to api_transport.generate, never spawns a
+    subprocess, and holds the concurrency semaphore while doing so."""
+    import asyncio as _asyncio
+    from app.services import agent, api_transport
+
+    held = {"sem": False}
+    seen = {}
+
+    # Pin a 1-slot semaphore: .locked() is True only when fully exhausted, so the
+    # default Semaphore(8) would read False after acquiring 1 slot. With Semaphore(1)
+    # the single in-use slot makes .locked() True while the SDK call is in flight.
+    monkeypatch.setattr(agent, "_agent_semaphore", _asyncio.Semaphore(1))
+
+    async def fake_generate(**kw):
+        seen.update(kw)
+        held["sem"] = agent._semaphore().locked()   # True iff the slot is held
+        return (0, "SDK_SENTINEL", {"raw": {}}, "")
+
+    monkeypatch.setattr(api_transport, "generate", fake_generate)
+
+    def boom(*a, **k):
+        raise AssertionError("api path must not spawn a subprocess")
+    monkeypatch.setattr(_asyncio, "create_subprocess_exec", boom)
+
+    rc, text, usage, err = await agent._spawn(
+        provider=agent.get_provider("gemini"), model="gemini-2.5-flash",
+        prompt="p", attachments=[], transport="api")
+
+    assert text == "SDK_SENTINEL"
+    assert seen["provider"] == "gemini" and seen["model"] == "gemini-2.5-flash"
+    assert held["sem"] is True
+
+
+@pytest.mark.asyncio
+async def test_spawn_api_cli_only_provider_still_uses_cli(monkeypatch):
+    """transport=api with a non-(gemini|claude) provider does NOT take the SDK
+    branch — it falls through to the CLI path."""
+    from app.services import agent, api_transport
+
+    async def boom(**kw):
+        raise AssertionError("kimi must not use the SDK path")
+    monkeypatch.setattr(api_transport, "generate", boom)
+
+    # Reaching _resolve_binary proves we left the SDK branch; stop there cheaply.
+    monkeypatch.setattr(agent, "_resolve_binary",
+                        lambda prov: (_ for _ in ()).throw(RuntimeError("reached-cli")))
+    with pytest.raises(RuntimeError, match="reached-cli"):
+        await agent._spawn(provider=agent.get_provider("kimi"), model=None,
+                           prompt="p", attachments=[], transport="api")
+
+

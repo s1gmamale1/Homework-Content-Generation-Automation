@@ -317,6 +317,17 @@ async def _spawn(
     failure cause (``ModelNotFoundError``, auth errors, etc.) instead of a
     parsed-stdout decoy.
     """
+    # transport=api for gemini/claude -> direct SDK call, not the CLI. Kept BEFORE
+    # _resolve_binary so a pure-API worker needs no CLI on PATH; kept INSIDE
+    # _semaphore() so direct-API fan-out is bounded exactly like CLI subprocesses.
+    if transport == "api" and provider.name in ("gemini", "claude"):
+        from app.services import api_transport
+        async with _semaphore():
+            return await api_transport.generate(
+                provider=provider.name, model=model, prompt=prompt,
+                attachments=attachments,
+            )
+
     binary = _resolve_binary(provider)
 
     # Unique per-call sentinel for the codex last-msg path. Using the system
