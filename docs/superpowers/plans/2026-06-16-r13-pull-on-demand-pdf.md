@@ -88,6 +88,7 @@ def _client():
 @pytest.mark.asyncio
 async def test_serves_pdf_when_present(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "auth_token", "123")  # hermetic: don't lean on .env
     bid = uuid4()
     p = storage.book_pdf_path(bid)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -102,6 +103,7 @@ async def test_serves_pdf_when_present(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_404_when_absent(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "auth_token", "123")  # hermetic: don't lean on .env
     async with _client() as c:
         r = await c.get(f"/api/v1/books/{uuid4()}/source.pdf", headers=_HDR)
     assert r.status_code == 404
@@ -110,6 +112,7 @@ async def test_404_when_absent(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_401_without_token(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "auth_token", "123")  # auth ENABLED → missing header is 401
     async with _client() as c:
         r = await c.get(f"/api/v1/books/{uuid4()}/source.pdf")
     assert r.status_code == 401
@@ -413,7 +416,7 @@ Expected: `ensure_book_pdf_sync` appears in `pipeline.py`; the old `raise ... Bo
 - [ ] **Step 5: Run the full suite (no regressions)**
 
 Run: `uv run python -m pytest tests/ -q`
-Expected: green except the pre-existing Notion-network failures noted in prior worklogs (`5 failed (Notion)` is the known baseline; nothing new should fail). If anything in `tests/services/` or `tests/api/` newly fails, stop and investigate.
+Expected: **0 failed.** Verified baseline on this branch (2026-06-16) is **408 passed / 48 skipped / 0 failed** — DB/Notion integration tests *skip* (behind `RUN_DB_INTEGRATION`), they do NOT fail. After Task 4 the count is still 408 (no new tests here); Tasks 2–3 added 8 tests, so by this point expect **416 passed / 48 skipped / 0 failed**. Treat ANY failure as new — do not wave through "expected" failures.
 
 - [ ] **Step 6: Commit**
 
@@ -433,7 +436,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - [ ] **Step 1: Full suite green**
 
 Run: `uv run python -m pytest tests/ -q`
-Expected: only the known pre-existing Notion failures; all R13 tests (8 new) pass.
+Expected: **416 passed / 48 skipped / 0 failed** (baseline 408 + 8 new R13 tests; integration tests skip, never fail). Any failure is new — investigate, don't wave through.
 
 - [ ] **Step 2: Localhost two-process acceptance smoke**
 
@@ -461,11 +464,11 @@ Record the observed byte count in the worklog. (The real cross-machine 2-PC run 
 
 - [ ] **Step 3: Worklog + INDEX**
 
-Add a `## [0061]` entry to `docs/memory/MASTER_MEMORY.md` and a matching row to `docs/memory/INDEX.md` summarizing: R13 bytes-distribution half shipped via pull-on-demand; the endpoint + helper + pipeline swap; the four Windows/robustness gaps handled; suite + smoke results. Then update `docs/memory/ROADMAP.md` R13 — mark the bytes-distribution half done (R13 fully closed), noting `fleet-test-1` real 2-PC run is the remaining operator proof.
+Add a `## [0062]` entry to `docs/memory/MASTER_MEMORY.md` and a matching row to `docs/memory/INDEX.md` (NOTE: `0061` is already taken by api-3 — use **0062**) summarizing: R13 bytes-distribution half shipped via pull-on-demand; the endpoint + helper + pipeline swap; the four Windows/robustness gaps handled; suite + smoke results. Then update `docs/memory/ROADMAP.md` R13 — mark the bytes-distribution half done (R13 fully closed), noting `fleet-test-1` real 2-PC run is the remaining operator proof.
 
 ```bash
 git add docs/memory/MASTER_MEMORY.md docs/memory/INDEX.md docs/memory/ROADMAP.md
-git commit -m "docs(memory): worklog 0061 — R13 pull-on-demand PDF shipped
+git commit -m "docs(memory): worklog 0062 — R13 pull-on-demand PDF shipped
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
