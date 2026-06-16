@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FastAPI + React app that turns a textbook PDF into a multi-phase homework packet (preview, flashcards, memory sprint, mini-games, boss-fight quiz, reading, reflection). Background workers run a DAG-parallel pipeline that drives **CLI subprocesses** of one of five LLM providers — `claude`, `kimi`, `codex`, `gemini`, `opencode` — chosen per job by the user.
 
-Everything LLM-facing goes through `app/services/agent.py` (the CLI router); there is no Gemini SDK, OpenAI SDK, or Anthropic SDK in the runtime path. The five CLIs must be installed on `PATH`. Each job (and batch) carries a **`transport`** enum — `cli` (default: each CLI's own subscription/OAuth login, $0 marginal) or `api` (pay-per-token, claude+gemini only) — see "Transport toggle" below.
+Everything LLM-facing goes through `app/services/agent.py`. For `transport=cli` it drives the provider **CLIs** (the CLI router — the five CLIs must be installed on `PATH`); for `transport=api` it calls the provider **SDKs** directly via `app/services/api_transport.py` (gemini `google-genai`, claude `anthropic`). Each job (and batch) carries a **`transport`** enum — `cli` (default: each CLI's own subscription/OAuth login, $0 marginal) or `api` (pay-per-token, claude+gemini only) — see "Transport toggle" below.
 
 ## Implementation workflow
 
@@ -140,7 +140,7 @@ Token-based via `Authorization: Bearer <token>` (REST) or `?token=<>` query para
 
 ## Things not to do
 
-- Don't reintroduce a Gemini / Anthropic / OpenAI SDK call. Everything goes through the CLI router. `google-genai` was deliberately removed from `pyproject.toml`.
+- Don't use a provider SDK on the `transport=cli` path — cli goes through the CLI router only. SDK calls are confined to `transport=api` (`app/services/api_transport.py`: gemini `google-genai`, claude `anthropic`). Don't add a third provider's SDK without extending that module **and** `agent_models.API_PROVIDERS`/`api_supported`.
 - Don't hardcode model names in `pipeline.py` — they belong in `agent_models.MODEL_MANIFEST` (frontend manifest) or `_PROVIDER_DEFAULT_MODEL` (server-side fallback).
 - Don't bypass `phase_repo.create_or_reset` with raw `phase_repo.create` for retried jobs — you'll trip `uq_phase_output_job_order`.
 - Don't add per-call provider/model overrides anywhere except where they already exist (extract pin via `settings.extract_*`); keeping job-level provider stable across the rest of the pipeline is what makes `agent_usages` and the UI badge mean something.
