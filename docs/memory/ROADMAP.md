@@ -43,12 +43,13 @@
 
 ---
 
-## R13 — Fleet workers read book PDFs from local disk → multi-PC needs shared/synced PDFs
+## R13 — ✅ CLOSED 2026-06-16 — Fleet workers read book PDFs from local disk → multi-PC needs shared/synced PDFs
 
 - **Issue:** a worker generates by reading the textbook PDF from **its own local disk**. On one box that's fine, but the fleet's whole premise is ~10 PCs sharing one head DB — a second PC that *claims* a lesson but doesn't have that book's PDF on disk fails the job at the `extract` phase with `Book PDF missing on disk`. **Observed live 2026-06-09:** the fleet worktree (a separate checkout) had no PDFs, so every History lesson failed instantly until I junctioned `var/books` to the main repo's copy; only then did generation run end-to-end. The DB tells a worker *which* lesson to make, but nothing delivers the PDF *bytes* to that worker.
 - **Root cause:** PDF availability is implicit on each worker's filesystem, with no distribution mechanism. (Was also a hardcoded relative `Path("var")` ignoring `settings.var_dir` — **fixed 2026-06-12**, see below.)
 - **Deliverable:** make the same book PDFs reachable from every worker — (a) a **shared/network volume** mounted at `<var_dir>/books` on every PC (simplest for the `docker-compose.worker.yml` model), OR (b) **pull-on-demand** — a worker fetches a missing `source.pdf` from the head / object store (keyed by `book_id`) before `extract`, OR (c) re-introduce **object storage** for source PDFs. **Blocks the multi-PC test** (`fleet-test-1`) — i.e. the fleet's reason for existing.
-- **✅ Partial (2026-06-12):** the dead-setting half is done — `settings.var_dir` is now honored via the single helper `app.services.storage.book_pdf_path()` (both writer `books.py` + reader `pipeline.py` call it; 3 unit tests). So option (a) is now a one-env-var change: set `VAR_DIR` to a shared mount on every worker. The **bytes-distribution** half (shared volume / pull-on-demand / object store) is still open.
+- **✅ Partial (2026-06-12):** the dead-setting half is done — `settings.var_dir` is now honored via the single helper `app.services.storage.book_pdf_path()` (both writer `books.py` + reader `pipeline.py` call it; 3 unit tests). So option (a) is now a one-env-var change: set `VAR_DIR` to a shared mount on every worker.
+- **✅ CLOSED (2026-06-16, worklog [0062], PR → Nggaev-v2):** the **bytes-distribution** half shipped via **option (b) pull-on-demand** — `fleet_head_url` config + `GET /books/{id}/source.pdf` endpoint + sync `book_fetch.ensure_book_pdf_sync` (fetch-when-missing, atomic write, Windows-safe temp cleanup) wired into the pipeline read-site via `asyncio.to_thread`. Empty `fleet_head_url` = unchanged single-box behavior. Suite 416/48/0; localhost two-process HTTP smoke passed. **Remaining = the real cross-machine 2-PC run (`fleet-test-1`), operator-run** — the code path is proven, only field verification on actual separate PCs is left.
 
 ---
 
