@@ -421,8 +421,8 @@ function ActionPanel({
           Generate homework
         </h2>
         <p className="mt-1.5 text-sm leading-relaxed text-white/55">
-          Run the curriculum pipeline against this section. It will read the lesson, classify
-          difficulty, and produce the assembled study packet.
+          Run the curriculum pipeline against this section. It will read the lesson
+          and produce the assembled study packet.
         </p>
         <motion.button
           type="button"

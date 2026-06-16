@@ -30,10 +30,6 @@ class PhaseCompletedEvent(BaseModel):
     tokens_output: Optional[int] = None
 
 
-class DifficultyClassifiedEvent(BaseModel):
-    difficulty: Literal["easy", "hard"]
-
-
 class JobCompletedEvent(BaseModel):
     job_id: str
     download_url: str

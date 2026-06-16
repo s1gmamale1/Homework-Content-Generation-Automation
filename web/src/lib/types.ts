@@ -73,7 +73,6 @@ export type JobStatus =
   | "failed"
   | "cancelling"
   | "cancelled";
-export type Difficulty = "easy" | "hard";
 
 export interface PhaseOut {
   phase_name: string;
@@ -93,7 +92,6 @@ export interface Job {
   book_id: string;
   toc_entry_id: string;
   subject: Subject;
-  difficulty: Difficulty | null;
   status: JobStatus;
   current_phase: string | null;
   error_message: string | null;
@@ -278,7 +276,6 @@ export type JobStreamEvent =
         tokens_output: number | null;
       };
     }
-  | { event: "difficulty_classified"; data: { difficulty: Difficulty } }
   | { event: "job_completed"; data: { job_id: string; download_url: string } }
   | { event: "error"; data: { phase_name?: string; message: string } };
 

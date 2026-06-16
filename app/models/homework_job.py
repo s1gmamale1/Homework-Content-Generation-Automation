@@ -14,7 +14,6 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     book_id: Mapped[UUID] = mapped_column(ForeignKey("books.id"), nullable=False)
     toc_entry_id: Mapped[UUID] = mapped_column(ForeignKey("toc_entries.id"), nullable=False)
     subject: Mapped[str] = mapped_column(String(64), nullable=False)
-    difficulty: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     # LLM provider used for this job (e.g. "gemini", "openai", "anthropic"). Set when the
     # job is created and never changes — pinned so retries hit the same backend.
