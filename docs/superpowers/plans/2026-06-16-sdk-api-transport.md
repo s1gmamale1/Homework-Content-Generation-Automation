@@ -420,7 +420,7 @@ async def _claude(model: str, prompt: str) -> tuple[int, str, dict, str]:
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `uv run python -m pytest tests/services/test_api_transport.py -q`
-Expected: all pass (12 tests).
+Expected: all pass (11 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -454,9 +454,14 @@ async def test_spawn_api_gemini_delegates_to_sdk_inside_semaphore(monkeypatch):
     held = {"sem": False}
     seen = {}
 
+    # Pin a 1-slot semaphore: .locked() is True only when fully exhausted, so the
+    # default Semaphore(8) would read False after acquiring 1 slot. With Semaphore(1)
+    # the single in-use slot makes .locked() True while the SDK call is in flight.
+    monkeypatch.setattr(agent, "_agent_semaphore", _asyncio.Semaphore(1))
+
     async def fake_generate(**kw):
         seen.update(kw)
-        held["sem"] = agent._semaphore().locked()   # acquired during the call
+        held["sem"] = agent._semaphore().locked()   # True iff the slot is held
         return (0, "SDK_SENTINEL", {"raw": {}}, "")
 
     monkeypatch.setattr(api_transport, "generate", fake_generate)
