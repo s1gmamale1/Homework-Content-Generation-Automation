@@ -126,3 +126,19 @@ def test_judge_degrades_when_get_prompt_raises(monkeypatch):
     # run_phase should never be reached; if it is, this would error loudly
     out = _call_judge()
     assert out.available is False   # the Critical fix: get_prompt raise must degrade
+
+
+def test_sdk_auth_error_strings_trip_auth_signals():
+    """Representative google-genai / anthropic / AI-Studio auth-error strings must
+    be recognized as auth errors, so an api job fails loud instead of degrading."""
+    from app.services import phase_judge
+
+    samples = [
+        "google.api_core.exceptions.PermissionDenied: 403 permission_denied: ...",
+        "PERMISSION_DENIED: Vertex AI API has not been used in project ...",
+        "anthropic.AuthenticationError: Error code: 401 - invalid x-api-key",
+        "google.genai.errors.ClientError: 400 API key not valid. Please pass a valid API key.",
+        "RefreshError: invalid_grant: Invalid JWT Signature.",
+    ]
+    for s in samples:
+        assert phase_judge._is_auth_error(RuntimeError(s)), s
