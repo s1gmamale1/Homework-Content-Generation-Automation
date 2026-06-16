@@ -42,8 +42,17 @@ async def test_404_when_absent(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_401_without_token(monkeypatch, tmp_path):
+    from main import app
+    from app.auth import get_current_user
+
     monkeypatch.setattr(settings, "var_dir", str(tmp_path))
     monkeypatch.setattr(settings, "auth_token", "123")  # auth ENABLED -> missing header is 401
+    # Several other api test modules install a module-level
+    # `app.dependency_overrides[get_current_user]` at import time and never
+    # remove it, which bypasses auth for the rest of the suite. Drop it here so
+    # we exercise REAL auth enforcement regardless of collection order;
+    # monkeypatch restores the override afterward (we don't re-leak it).
+    monkeypatch.delitem(app.dependency_overrides, get_current_user, raising=False)
     async with _client() as c:
         r = await c.get(f"/api/v1/books/{uuid4()}/source.pdf")
     assert r.status_code == 401
