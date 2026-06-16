@@ -49,7 +49,7 @@ What each source file does, grouped by layer. The runtime makes **no LLM SDK cal
 - **`client.py`** (read/write), **`blocks.py`** (markdown→Notion blocks + file-upload blocks), **`page_creator.py`** (find-or-create pages), **`lesson_match.py`** (match a job to its lesson page under "Generated Lessons").
 
 ## `app/schemas/` — Pydantic contracts
-- `book.py`, `toc.py` (`ExtractedTOC`), `job.py` (`GenerateRequest`, `JobOut`, `PhaseOut`), `classify.py` (`Difficulty`, `ClassifyDecision`), `events.py` (SSE event models). *(Content phases are markdown, not structured — the old per-phase JSON schemas were removed in the md-per-phase reshape.)*
+- `book.py`, `toc.py` (`ExtractedTOC`), `job.py` (`GenerateRequest`, `JobOut`, `PhaseOut`), `events.py` (SSE event models). *(Content phases are markdown, not structured — the old per-phase JSON schemas were removed in the md-per-phase reshape; the dead `classify.py` difficulty cluster was removed in worklog 0061/api-3.)*
 
 ## `app/models/` — SQLAlchemy ORM (tables)
 - **`book.py`** (PDF on disk + legacy gemini columns + `grade`), **`toc_entry.py`**, **`homework_job.py`** (one per request: `status`, `provider`/`model`, `current_phase`, queue columns `priority`/`scheduled_at`/`claimed_at`/`claimed_by`/`attempts`, `batch_id`, `notion_archived_at`/`notion_skip_reason` — **no structured-output JSON columns**), **`phase_output.py`** (one row/phase: `output_md` + `provider`, `uq_phase_output_job_order`), **`agent_usage.py`** (one row/CLI call), **`batch.py`** (one per book, `uq_batches_book_id`, no counters), **`worker.py`** (`WorkerNode`: `pc_id` PK + `last_heartbeat`), `base.py` (UUIDPK/Timestamps mixins — Python-side defaults; Core inserts must supply them explicitly).

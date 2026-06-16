@@ -68,9 +68,8 @@
 ### Backend
 
 **API / events / dead code**
-- `api-3`: the classify-era cluster is **dead but still present** — `difficulty_classified` event (emitted `jobs.py:293`), `DifficultyClassifiedEvent` (`events.py:33`), `set_difficulty` (`jobs.py:147`), `JobOut.difficulty` (`job.py:30`) + `homework_jobs.difficulty` column (`homework_job.py:17`), all pinned dead by `difficulty=None` at `pipeline.py:108`. _(Line refs re-verified 2026-06-11.)_ Remove the lot (or keep the column nullable if cheaper than a migration).
 - `flow-1`: `pipeline.py:461` "Phase scheduler stuck" diagnostic embeds the dep dict as a literal double-brace f-string (`{{p: ...}}`) → renders as static text, never evaluated. Cosmetic, unreachable path.
-- `deadcode-1`: **`source_map_*` plumbing is dead but still threaded everywhere** (Effort-A leftover). The old structured "source map" (authoritative concept list injected into every content phase for source fidelity) was dropped in worklog [0028] — `pipeline.py:177` hardcodes `source_map_digest = ""` and `source_map_ids = set()`, and the injection in `_build_master_prompt` (`agent.py:512` `if source_map_digest:`) is always false. Yet `source_map_digest` is still a param on ~10 functions across `agent.py` (`:483/575/1584`) and `pipeline.py` (`:281/369/541/...`), and `source_map_ids` rides along too. Grounding moved into each phase's own `## Source Extraction` block (saved in `phase_outputs.output_md`). Rip out the dead params/threading. Same bucket as `api-3`.
+- `deadcode-1`: **`source_map_*` plumbing is dead but still threaded everywhere** (Effort-A leftover). The old structured "source map" (authoritative concept list injected into every content phase for source fidelity) was dropped in worklog [0028] — `pipeline.py:177` hardcodes `source_map_digest = ""` and `source_map_ids = set()`, and the injection in `_build_master_prompt` (`agent.py:512` `if source_map_digest:`) is always false. Yet `source_map_digest` is still a param on ~10 functions across `agent.py` (`:483/575/1584`) and `pipeline.py` (`:281/369/541/...`), and `source_map_ids` rides along too. Grounding moved into each phase's own `## Source Extraction` block (saved in `phase_outputs.output_md`). Rip out the dead params/threading. **Same bucket as the api-3 Group-2 residual:** api-3 (worklog [0061]) removed the classify/difficulty *cluster* (event/schema/column) but deliberately LEFT the `difficulty=None` parameter threaded through ~20 `agent.py`/`pipeline.py` sites — it overlaps R13's `pipeline.py`, so it was deferred to this same deadcode pass. Do both (`source_map_*` + `difficulty=None` threading) together once R13 has landed.
 
 **Robustness / data / features**
 - Scanned / image-only PDFs: TOC extraction unsupported (only text PDFs decode; image pages rely on gemini native read). Sibling of R10. (`toc_extractor.py` unchanged.)
@@ -86,8 +85,6 @@
 
 ### Frontend
 
-- _(2026-06-02)_ Upload-form intro copy (`web/src/routes/upload.tsx:182`) still says "classifies the lesson you choose" — classify was removed; reword.
-
 ### Database / Persistence
 
 > Catalogue of data-model / persistence / job-lifecycle issues. Scope = schema shape,
@@ -99,6 +96,7 @@
 
 ## Done / promoted
 
+- **`api-3` (classify/difficulty cluster) — ✅ SHIPPED 2026-06-16 (PR #8, worklog [0061]).** Removed the dead `difficulty_classified` event, `DifficultyClassifiedEvent`, `set_difficulty`, `JobOut.difficulty`, `schemas/classify.py`, and the `homework_jobs.difficulty` column (migration `0026_drop_difficulty`, applied to the head DB). FE consumers removed + the "classifies the lesson" upload/section/job copy reworded (closed the separate 2026-06-02 copy item). **Group-2 residual** (the `difficulty=None` param threaded through ~20 `agent.py`/`pipeline.py` sites) deliberately deferred to the `deadcode-1` pass — it overlaps R13's `pipeline.py`.
 - **Staleness audit 2026-06-11 (two adversarial sub-agent sweeps + controller re-verification, post-Phase-4):** removed **SSE teardown noise** as FIXED (`/toc/stream` now has proper `is_disconnected()` disconnect handling, `books.py:215` — the 0039 SSE-leak fix era); rewrote `fetch-1` (the 20MB fetch reject is gone — fetch now accepts 50MB like uploads); refreshed `api-3` line refs. ROADMAP same pass: **R12 CLOSED** (extract failover + local pypdf read live; residual → `extract-2` above), **R9 NARROWED** to tables+code-fences (SVG half moot — placeholder architecture). R10/R11/R13 re-verified still open.
 
 - **Phase-level resume + faster orphan-reclaim — ✅ SHIPPED (worklog [0031], 2026-06-04).** Both former Open items closed by the job-resilience effort: (1) "No phase-level resume on job retry" — the pipeline now reads prior `done` rows and skips them (`pipeline.py` `_done_phase_md`/`_pending_phases`, always-on; `force`=new job, `/retry`=resume). (2) "Orphan-reclaim window hardcoded `job_timeout × 2`" — replaced by `reclaim_stale_seconds` lease-TTL (heartbeat-gated) + startup orphan-reset of `running` jobs. Also delivered: per-phase provider failover (`_run_with_failover`, classifier, claude reserved-for-user) + `phase_outputs.provider` attribution. Live-verified (job `6a760767`). Follow-on observability gap tracked as **R11** in ROADMAP.

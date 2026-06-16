@@ -103,7 +103,6 @@ Relationship: `toc_entries` (cascade delete-orphan, ordered by `order_index`).
 | `id`, `created_at`, `updated_at` | mixins | |
 | `book_id` / `toc_entry_id` | FKs NOT NULL | `ix_homework_jobs_book_toc (book_id, toc_entry_id)` |
 | `subject` | String(64) NOT NULL | denormalized from book |
-| `difficulty` | String(16) NULL | pinned `None` since the single-flow MVP |
 | `status` | String(32) NOT NULL | `pending → running → done \| failed \| cancelling → cancelled`; `ix_homework_jobs_status` |
 | `provider` | String(32) NOT NULL, server_default `'gemini'` | the user's pick; honored by every phase except the extract pin |
 | `model` | String(128) NULL | NULL = provider default (`_resolve_model`) |
