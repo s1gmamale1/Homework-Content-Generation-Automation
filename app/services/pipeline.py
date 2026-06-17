@@ -731,10 +731,23 @@ async def _execute_phase(
             # + the >20MB ceiling). The model locates the lesson by title (R2-immune).
             book_text = await asyncio.to_thread(agent.read_whole_book_text, pdf_path)
             if agent.extract_text_is_oversize(book_text):
-                raise RuntimeError(
-                    "lesson.extract: book too large for whole-text extract — "
-                    "needs subset-TOC/shrink"
+                # Whole-book text exceeds the budget — scope to the lesson's pages as
+                # TEXT (cheap, keeps transport=api). The Gate-A dispatch below then runs
+                # on the subset: text layer present → normal path; absent → vision.
+                ps, pe = section["page_start"], section["page_end"]
+                if not ps or not pe:
+                    raise RuntimeError(
+                        "lesson.extract: book too large for whole-text extract and no "
+                        "page range to scope a subset"
+                    )
+                book_text = await asyncio.to_thread(
+                    agent.read_page_range_text, pdf_path, ps, pe,
+                    margin=settings.extract_window_pages,
                 )
+                if agent.extract_text_is_oversize(book_text):
+                    raise RuntimeError(
+                        "lesson.extract: lesson page-subset still too large"
+                    )
             gate_a = agent.validate_extract_text(book_text)
             if gate_a is not None:
                 # Scanned / no-text-layer PDF: the whole-book text is unreadable, so

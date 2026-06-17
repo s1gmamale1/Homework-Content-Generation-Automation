@@ -100,11 +100,22 @@ def _run_extract_phase(
     ))
 
 
-def _install_agent_spies(monkeypatch, *, book_text: str):
-    """Wire the agent boundary; return a dict of call counters."""
-    calls = {"vision": 0, "normal": 0, "vision_kwargs": None}
+def _install_agent_spies(monkeypatch, *, book_text: str, page_range_text: Optional[str] = None):
+    """Wire the agent boundary; return a dict of call counters.
+
+    ``page_range_text`` (if given) is what ``read_page_range_text`` returns when
+    the whole-book text is oversize and the extract scopes down to the lesson.
+    """
+    calls = {"vision": 0, "normal": 0, "page_range": 0,
+             "vision_kwargs": None, "normal_kwargs": None}
 
     monkeypatch.setattr(pipeline.agent, "read_whole_book_text", lambda path: book_text)
+
+    def _page_range(path, ps, pe, *, margin=0):
+        calls["page_range"] += 1
+        return page_range_text if page_range_text is not None else book_text
+
+    monkeypatch.setattr(pipeline.agent, "read_page_range_text", _page_range)
 
     async def _vision(**kwargs):
         calls["vision"] += 1
@@ -113,6 +124,7 @@ def _install_agent_spies(monkeypatch, *, book_text: str):
 
     async def _normal(**kwargs):
         calls["normal"] += 1
+        calls["normal_kwargs"] = kwargs
         return ("A normal whole-text lesson summary passing Gate B validation.", 5, 7)
 
     monkeypatch.setattr(pipeline.agent, "summarize_lesson_vision", _vision)
@@ -161,3 +173,50 @@ def test_normal_book_unchanged(monkeypatch):
     assert calls["normal"] == 1
     assert calls["vision"] == 0
     assert parsed is None
+
+
+# --- Task 5: oversize whole-book → scope to lesson page-range TEXT -----------
+
+def test_oversize_book_subsets_text(monkeypatch):
+    """Whole-book text is oversize but the lesson page-range text is clean and
+    in-budget → read_page_range_text is called, the NORMAL whole-text path runs
+    on the subset, vision is NOT called."""
+    _install_harness(monkeypatch)
+    calls = _install_agent_spies(
+        monkeypatch, book_text="a" * 700_000, page_range_text=_CLEAN_TEXT
+    )
+
+    out_md, tin, tout, prompt_hash, parsed = _run_extract_phase(monkeypatch)
+
+    assert calls["page_range"] == 1
+    assert calls["normal"] == 1
+    assert calls["vision"] == 0
+    assert parsed is None
+    # The subset text (not the oversize whole book) is what got summarized.
+    assert calls["normal_kwargs"]["book_text"] == _CLEAN_TEXT
+
+
+def test_oversize_no_pages_fails_loud(monkeypatch):
+    """Whole-book text oversize AND no page range to scope a subset →
+    RuntimeError; read_page_range_text NOT called."""
+    _install_harness(monkeypatch)
+    calls = _install_agent_spies(
+        monkeypatch, book_text="a" * 700_000, page_range_text=_CLEAN_TEXT
+    )
+
+    with pytest.raises(RuntimeError):
+        _run_extract_phase(monkeypatch, page_start=None, page_end=None)
+
+    assert calls["page_range"] == 0
+
+
+def test_oversize_subset_still_oversize_fails(monkeypatch):
+    """Whole-book oversize and the scoped page-range text is STILL oversize →
+    RuntimeError mentioning 'still too large'."""
+    _install_harness(monkeypatch)
+    _install_agent_spies(
+        monkeypatch, book_text="a" * 700_000, page_range_text="a" * 700_000
+    )
+
+    with pytest.raises(RuntimeError, match="still too large"):
+        _run_extract_phase(monkeypatch)
