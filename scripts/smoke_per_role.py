@@ -12,7 +12,7 @@ exercising the actual resolution + threading. (A real claude call isn't possible
 here — no ANTHROPIC_API_KEY — and a full-homework API run is barred by the
 no-spam money rule; routing, not model behavior, is what this feature changes.)
 
-Run:  uv run python scripts/smoke_per_role.py
+Run:  uv run python -m scripts.smoke_per_role   (from the repo root)
 Exit 0 + "SMOKE PASS" on success; raises AssertionError otherwise.
 """
 import asyncio
@@ -75,11 +75,17 @@ async def main() -> None:
     assert any(c["provider"] == "claude" and c["model"] == "claude-opus-4-7"
                for c in _CAPTURED), _CAPTURED
 
-    # 4) JUDGE self-grade is HARD-guarded: an explicit judge == generator is
-    #    swapped to the non-self peer, never allowed to grade itself.
+    # 4) JUDGE self-grade is HARD-guarded: an explicit judge that resolves to the
+    #    generator's model is swapped to a guaranteed-non-self judge (the auto-tier
+    #    judge — NOT _SELF_FALLBACK, which would self-match a gemini-3.1-pro gen).
+    #    Includes the model=None bypass case (judge provider=gemini, model=Auto).
     self_jp, self_jm = model_tiers.resolve_judge(
         "gemini", "gemini-3.1-pro-preview", "gemini", "gemini-3.1-pro-preview")
-    assert (self_jp, self_jm) == model_tiers._SELF_FALLBACK, (self_jp, self_jm)
+    assert (self_jp, self_jm) != ("gemini", "gemini-3.1-pro-preview"), (self_jp, self_jm)
+    null_jp, null_jm = model_tiers.resolve_judge(
+        "gemini", "gemini-3.1-pro-preview", "gemini", None)  # Auto model bypass
+    assert (null_jp, null_jm) != ("gemini", "gemini-3.1-pro-preview"), (null_jp, null_jm)
+    assert (null_jp, null_jm) != ("gemini", None), (null_jp, null_jm)
 
     # 5) JUDGE Auto (NULL override) uses the auto-tier judge.
     auto_jp, auto_jm = model_tiers.resolve_judge("gemini", "gemini-2.5-flash", None, None)
@@ -89,7 +95,8 @@ async def main() -> None:
     print(f"  extract override -> claude/claude-opus-4-7")
     print(f"  extract auto     -> {ep2}/{em2}")
     print(f"  judge override   -> {jp}/{jm}")
-    print(f"  judge self-grade -> {model_tiers._SELF_FALLBACK} (hard-swapped)")
+    print(f"  judge self-grade -> {self_jp}/{self_jm} (non-self swap)")
+    print(f"  judge gemini+Auto self -> {null_jp}/{null_jm} (None bypass closed)")
     print(f"  judge auto       -> {auto_jp}/{auto_jm}")
 
 

@@ -82,27 +82,22 @@ def resolve_judge(
     judge_provider: Optional[str],
     judge_model: Optional[str],
 ) -> tuple[str, str]:
-    """Effective judge (provider, model). Explicit override wins, EXCEPT an exact
-    self-grade (judge == generator) which is hard-swapped to a non-self peer. A
-    NULL override falls back to the auto-tier judge."""
+    """Effective judge (provider, model). Explicit override wins, EXCEPT a
+    self-grade (judge resolves to the same model as the generator) which is
+    hard-swapped to the safe auto-tier judge. A NULL override falls back to the
+    auto-tier judge.
+
+    Both sides' models are resolved (an Auto/None model -> the provider's
+    default) BEFORE comparison: a raw `judge_model` comparison let a same-provider
+    judge with model=None (the FE's default for a cli judge) slip past the check
+    and silently self-grade. The self-grade fallback is `judge_model_for`, not the
+    `_SELF_FALLBACK` constant — `_SELF_FALLBACK` is itself a fixed gemini model and
+    would self-match a `gemini-3.1-pro` generator; `judge_model_for` is guaranteed
+    non-self for any generator."""
     if judge_provider is None:
         return judge_model_for(gen_provider, gen_model)
     resolved_gen = (gen_provider, gen_model or default_model(gen_provider))
-    if (judge_provider, judge_model) == resolved_gen:
-        return _SELF_FALLBACK
+    resolved_judge = (judge_provider, judge_model or default_model(judge_provider))
+    if resolved_judge == resolved_gen:
+        return judge_model_for(gen_provider, gen_model)
     return (judge_provider, judge_model)
-
-
-def judge_advisory(
-    gen_provider: str,
-    gen_model: Optional[str],
-    judge_provider: Optional[str],
-    judge_model: Optional[str],
-) -> Optional[str]:
-    """Non-blocking advisory: warn when the RESOLVED judge is weaker (higher tier
-    number) than the generator. None when judge >= generator."""
-    j_prov, j_model = resolve_judge(gen_provider, gen_model, judge_provider, judge_model)
-    if tier_of(j_prov, j_model) > tier_of(gen_provider, gen_model):
-        return (f"judge ({j_prov}/{j_model}) is weaker than the generator "
-                f"({gen_provider}/{gen_model}); grading may be unreliable")
-    return None
