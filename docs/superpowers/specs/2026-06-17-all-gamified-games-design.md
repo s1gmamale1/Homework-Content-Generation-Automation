@@ -26,7 +26,7 @@ boss-arena → reflection
 
 Content phases per job: **8 → 11** (excluding the pinned head `extract`; full sequence 9 → 12). All 7 Gamified Practices (`rlc`, `error-detection`, 4 mini-games, `boss-arena`) are now present.
 
-**`SUBJECT_GAME` is kept** (derived from `subjects.REGISTRY[*].game`) but **no longer gates the flow** — it becomes the per-subject *recommended-game* hint for the downstream "which game fits" curation. (Rejected removing it: it ripples into the registry `game` field + would lose the recommendation signal the user wants; keeping is zero-risk.)
+**`SUBJECT_GAME` is kept** (derived from `subjects.REGISTRY[*].game`) but **no longer gates the flow** — it becomes the per-subject *recommended-game* hint for the downstream "which game fits" curation. (Rejected removing it: it ripples into the registry `game` field + would lose the recommendation signal the user wants; keeping is zero-risk.) After this change `flow_for` no longer reads it, so it is **runtime-dead** (referenced only by the test + downstream curation) — the reworded code comment **must say "recommendation hint, not consumed by the flow"** so a future reader doesn't "clean up" a seemingly-unused map.
 
 ## Scope — backend only
 
@@ -42,7 +42,7 @@ Verified against the live code (`origin/Nggaev-v2`), nothing else needs to chang
 
 ## Implications (accepted)
 
-- **Cost/time:** +3 content phases ≈ **+37%** generation per job. For `transport=api` this is real $ per phase — relevant to the Oct/Mar campaign cost model. Wall-clock impact is smaller than 37% because the four mini-games run **in parallel** (shared deps, no inter-game deps).
+- **Cost/time: ≈+37% phase count, but noticeably *less* in $.** Phrase it that way in the campaign cost model — **not** "+37% dollars" (over-budgets). Why: `extract` (the expensive pinned whole-PDF gemini-flash read) is unchanged, and the 3 added phases are CBP-style games with **small structured outputs** — and output tokens bill ~5× input, so small outputs keep their $ down. Wall-clock impact is smaller still because the four mini-games run **in parallel** (shared deps, no inter-game deps).
 - **Odd-fit combos** (e.g. `practice-sentence` for physics) will now be generated. Accepted per "skip none"; the family-aware prompt still produces a best-effort version, and curation drops poor fits downstream.
 
 ## Verification plan
