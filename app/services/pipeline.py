@@ -542,6 +542,13 @@ async def _run_with_failover(
         chain = [requested_provider]
     last_exc: Optional[Exception] = None
     for prov in chain:
+        # Skip a FALLBACK provider whose CLI isn't installed on this worker —
+        # trying it only raises a confusing "<prov> CLI not found" and burns the
+        # attempt (the R13 single-CLI-worker failure). The REQUESTED provider is
+        # never skipped: a missing requested CLI is a real error worth surfacing.
+        # (fleet-failover-1)
+        if prov != requested_provider and not agent.provider_cli_installed(prov):
+            continue
         attempt_model = model if prov == requested_provider else None
         same = 0
         while True:
