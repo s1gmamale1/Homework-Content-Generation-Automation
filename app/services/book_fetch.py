@@ -41,15 +41,30 @@ def _fetch_to_temp(url: str, headers: dict, tmp: Path) -> None:
         raise RuntimeError("head returned an empty body")
 
 
-def ensure_book_pdf_sync(book_id: UUID | str) -> Path:
+def ensure_book_pdf_sync(book_id: UUID | str, expected_size: int | None = None) -> Path:
     """Return the local path to the book's source PDF, fetching it from the head
     if it's missing and `fleet_head_url` is configured. Raises RuntimeError if
-    the PDF cannot be produced."""
-    path = storage.book_pdf_path(book_id)
-    if path.exists():
-        return path  # fast path: head + already-cached remote — no HTTP
+    the PDF cannot be produced.
 
+    `expected_size` (the book's `file_size_bytes`) enables an integrity guard
+    (`r13-integrity-1`): a truncated/corrupt cached copy — e.g. an interrupted
+    earlier fetch — has the WRONG size and would otherwise be reused on every
+    claim, failing each job at extract (`pypdf: Cannot find Root object`). When
+    it's known, a wrong-size cache is dropped and re-fetched, and a short
+    download is rejected before it's promoted. None ⇒ legacy behaviour. (A
+    sha256 check vs `content_sha256` would be stricter but heavier; size catches
+    the observed truncation mode cheaply.)"""
+    path = storage.book_pdf_path(book_id)
     head = settings.fleet_head_url.strip()
+    if path.exists():
+        # Drop a wrong-size cache ONLY when we can re-fetch (head configured).
+        # On the head itself (no fleet_head_url) the on-disk file is canonical
+        # and there's nowhere to re-pull from, so never delete it.
+        if expected_size and head and path.stat().st_size != expected_size:
+            path.unlink(missing_ok=True)  # corrupt/partial → fall through to re-fetch
+        else:
+            return path  # fast path: head + already-cached remote — no HTTP
+
     if not head:
         raise RuntimeError(f"Book PDF missing on disk: {path}")
 
@@ -67,6 +82,12 @@ def ensure_book_pdf_sync(book_id: UUID | str) -> Path:
 
     try:
         _fetch_to_temp(url, headers, tmp)
+        # Reject a short/corrupt download BEFORE promoting it — otherwise we'd
+        # just re-cache the same corruption that poisons every job (r13-integrity-1).
+        if expected_size and tmp.stat().st_size != expected_size:
+            raise RuntimeError(
+                f"size {tmp.stat().st_size} != expected {expected_size} (truncated?)"
+            )
     except Exception as e:
         tmp.unlink(missing_ok=True)  # handle already closed by _fetch_to_temp
         raise RuntimeError(f"fetch from head failed: {e}") from e

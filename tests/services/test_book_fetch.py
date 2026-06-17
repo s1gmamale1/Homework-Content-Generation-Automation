@@ -113,3 +113,75 @@ def test_concurrent_same_book_fetches_use_distinct_temps(monkeypatch, tmp_path):
     assert len(temps) == 2
     assert temps[0] != temps[1], "concurrent same-book fetches collided on one temp file"
     assert storage.book_pdf_path(bid).exists()  # one of them won the atomic replace
+
+
+# ── R13 integrity (`r13-integrity-1`): a corrupt/truncated cached PDF (wrong
+# size) must NOT be trusted — re-fetch it; and a truncated download must be
+# rejected before it's promoted, so corruption can't poison every job. ───────
+
+def test_corrupt_cache_refetched_when_size_mismatch(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "fleet_head_url", "http://head:8000")
+    monkeypatch.setattr(settings, "auth_token", "")
+    bid = uuid4()
+    p = storage.book_pdf_path(bid)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"TRUNC")  # 5 bytes — corrupt/partial cache
+
+    def _write_full(url, headers, tmp):
+        tmp.write_bytes(b"%PDF the full correct body")  # 26 bytes == expected
+
+    monkeypatch.setattr(book_fetch, "_fetch_to_temp", _write_full)
+    got = book_fetch.ensure_book_pdf_sync(bid, expected_size=26)
+    assert got == p
+    assert got.read_bytes() == b"%PDF the full correct body"  # re-fetched, not the stub
+
+
+def test_truncated_download_rejected_not_promoted(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "fleet_head_url", "http://head:8000")
+    monkeypatch.setattr(settings, "auth_token", "")
+    bid = uuid4()
+
+    def _write_short(url, headers, tmp):
+        tmp.write_bytes(b"%PDF short")  # 10 bytes, but expected 9999
+
+    monkeypatch.setattr(book_fetch, "_fetch_to_temp", _write_short)
+    with pytest.raises(RuntimeError, match="fetch from head failed"):
+        book_fetch.ensure_book_pdf_sync(bid, expected_size=9999)
+    p = storage.book_pdf_path(bid)
+    assert not p.exists()                              # bad bytes never promoted
+    assert list(p.parent.glob("*.tmp")) == []          # temp cleaned up
+
+
+def test_size_mismatch_without_head_trusts_existing(monkeypatch, tmp_path):
+    """On the head (no fleet_head_url) the on-disk file is canonical — a size
+    mismatch must NOT delete it (there's nowhere to re-fetch from)."""
+    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "fleet_head_url", "")
+    bid = uuid4()
+    p = storage.book_pdf_path(bid)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"%PDF whatever size")
+
+    def _boom(*a, **k):
+        raise AssertionError("must not fetch on the head")
+
+    monkeypatch.setattr(book_fetch, "_fetch_to_temp", _boom)
+    assert book_fetch.ensure_book_pdf_sync(bid, expected_size=99999) == p
+    assert p.exists()
+
+
+def test_correct_size_uses_fast_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "fleet_head_url", "http://head:8000")
+    bid = uuid4()
+    p = storage.book_pdf_path(bid)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"%PDF correct")  # 12 bytes
+
+    def _boom(*a, **k):
+        raise AssertionError("must not re-fetch when size matches")
+
+    monkeypatch.setattr(book_fetch, "_fetch_to_temp", _boom)
+    assert book_fetch.ensure_book_pdf_sync(bid, expected_size=12) == p

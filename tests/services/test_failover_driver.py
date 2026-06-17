@@ -3,7 +3,17 @@ import asyncio
 
 import pytest
 
+from app.services import agent
 from app.services.pipeline import _failover_chain, _run_with_failover
+
+
+@pytest.fixture(autouse=True)
+def _all_clis_installed(monkeypatch):
+    """These tests exercise failover LOGIC assuming every provider CLI is present,
+    so pin provider_cli_installed=True — otherwise the chain would depend on which
+    CLIs happen to be on the test box. The install-SKIP behaviour has its own
+    dedicated test (which overrides this). (fleet-failover-1)"""
+    monkeypatch.setattr(agent, "provider_cli_installed", lambda name: True)
 
 
 def test_chain_requested_first_then_order_no_claude():
@@ -88,3 +98,41 @@ def test_all_providers_exhausted_raises():
 
     with pytest.raises(RuntimeError):
         asyncio.run(_run_with_failover(requested_provider="claude", model="m", run_fn=run_fn))
+
+
+def test_failover_skips_uninstalled_fallback_clis(monkeypatch):
+    """A FALLBACK provider whose CLI isn't on this worker is skipped, not tried
+    (no confusing 'CLI not found' burning an attempt). Requested still runs.
+    (fleet-failover-1)"""
+    installed = {"gemini", "opencode"}  # codex + kimi NOT installed on this worker
+    monkeypatch.setattr(agent, "provider_cli_installed", lambda name: name in installed)
+    calls = []
+
+    async def run_fn(provider, model):
+        calls.append(provider)
+        if provider == "gemini":  # requested fails hard
+            raise RuntimeError("gemini CLI exited rc=1 :: malformed response envelope")
+        return f"# ok from {provider}", 1, 2
+
+    out, tin, tout, produced = asyncio.run(
+        _run_with_failover(requested_provider="gemini", model="gemini-2.5-pro", run_fn=run_fn)
+    )
+    # chain gemini->codex->kimi->opencode; codex+kimi skipped (not installed)
+    assert "codex" not in calls and "kimi" not in calls
+    assert produced == "opencode" and calls[-1] == "opencode"
+
+
+def test_requested_cli_never_skipped_even_if_uninstalled(monkeypatch):
+    """A missing REQUESTED CLI is a real error to surface, not a silent skip —
+    the requested provider is always attempted. (fleet-failover-1)"""
+    monkeypatch.setattr(agent, "provider_cli_installed", lambda name: False)  # nothing installed
+    calls = []
+
+    async def run_fn(provider, model):
+        calls.append(provider)
+        return f"# ok from {provider}", 1, 2
+
+    out, _, _, produced = asyncio.run(
+        _run_with_failover(requested_provider="claude", model="claude-sonnet-4-6", run_fn=run_fn)
+    )
+    assert calls == ["claude"] and produced == "claude"  # requested ran despite "not installed"

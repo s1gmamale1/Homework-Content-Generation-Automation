@@ -221,6 +221,18 @@ def _resolve_binary(provider: Provider) -> str:
     )
 
 
+def provider_cli_installed(provider_name: str) -> bool:
+    """True if at least one of the provider's CLI binaries is on PATH. Lets the
+    failover chain skip a FALLBACK provider that isn't installed on this worker,
+    instead of trying it and dying with a confusing ``<prov> CLI not found`` that
+    burns an attempt (the R13 field-test failure mode). (WISHLIST `fleet-failover-1`.)"""
+    try:
+        provider = get_provider(provider_name)
+    except Exception:  # unknown provider name → treat as not installed
+        return False
+    return any(shutil.which(n) for n in provider.binary_names)
+
+
 class AuthEnvError(RuntimeError):
     """A spawn's credentials could not be assembled for the requested
     transport (missing/empty key, no Vertex SA, api-unsupported provider).

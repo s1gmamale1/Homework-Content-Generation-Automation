@@ -62,6 +62,17 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
             f"duration_ms={(perf_counter() - t_extract) * 1000:.0f}"
         )
 
+        # 0 entries = no usable lessons (scanned/image-only PDF with no text
+        # layer, or an unparseable contents page). Marking the book `toc_ready`
+        # with an empty lesson list silently shows an empty book and lets
+        # /generate produce nothing. Fail loudly via the except path below so the
+        # operator sees the reason. (WISHLIST `toc-empty-ready`.)
+        if not extracted.entries:
+            raise RuntimeError(
+                "TOC extraction found 0 lessons — the PDF likely has no text "
+                "layer (scanned/image-only) or an unparseable table of contents"
+            )
+
         # Persist entries + flip status to toc_ready
         async with SessionLocal() as session:
             rows = await toc_repo.bulk_create(session, book_id, extracted.entries)
