@@ -623,6 +623,7 @@ function ReadyCard({
       {/* Collapsed summary — the whole header toggles the control panel. */}
       <button
         type="button"
+        aria-expanded={expanded}
         onClick={() => setExpanded((e) => !e)}
         className="flex w-full items-start gap-3 p-4 text-left"
       >
