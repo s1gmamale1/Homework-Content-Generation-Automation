@@ -42,6 +42,15 @@ def _done_phase_md(rows) -> dict[str, str]:
     }
 
 
+def _resolve_extract(job_extract_provider, job_extract_model):
+    """Extract role provider/model: explicit job override, else global settings.
+    The settings default is the cheap pinned extractor (gemini-flash)."""
+    return (
+        job_extract_provider or settings.extract_provider,
+        job_extract_model or settings.extract_model,
+    )
+
+
 def _pending_phases(content_phases: list[str], prior_outputs: dict[str, str]) -> set[str]:
     """Content phases still to run: everything not already in prior_outputs
     (done phases get pre-injected, so they're excluded and serve as deps)."""
@@ -88,6 +97,13 @@ async def run(job_id: UUID) -> None:
             )
             judge_transport = resolve_role_transport(
                 getattr(job, "judge_transport", "inherit") or "inherit", transport
+            )
+            # Per-job extract provider/model override (Task 4): explicit columns
+            # win, else the cheap pinned extractor from settings. Content phases
+            # are UNAFFECTED — they keep using job.provider / job.model.
+            extract_provider, extract_model = _resolve_extract(
+                getattr(job, "extract_provider", None),
+                getattr(job, "extract_model", None),
             )
             section_data = {
                 "id": section.id,
@@ -176,6 +192,8 @@ async def run(job_id: UUID) -> None:
                     transport=transport,
                     extract_transport=extract_transport,
                     judge_transport=judge_transport,
+                    extract_provider=extract_provider,
+                    extract_model=extract_model,
                 )
             except Exception:
                 # _execute_one_phase already published the error event and
@@ -227,6 +245,8 @@ async def run(job_id: UUID) -> None:
                     transport=transport,
                     extract_transport=extract_transport,
                     judge_transport=judge_transport,
+                    extract_provider=extract_provider,
+                    extract_model=extract_model,
                 )
             except RuntimeError as exc:
                 if "content phase failed" in str(exc):
@@ -399,6 +419,8 @@ async def _run_content_phases_parallel(
     transport: str = "cli",
     extract_transport: str = "cli",
     judge_transport: str = "cli",
+    extract_provider: Optional[str] = None,
+    extract_model: Optional[str] = None,
 ) -> None:
     """Wave-based parallel scheduler for content phases.
 
@@ -452,6 +474,8 @@ async def _run_content_phases_parallel(
                             transport=transport,
                             extract_transport=extract_transport,
                             judge_transport=judge_transport,
+                            extract_provider=extract_provider,
+                            extract_model=extract_model,
                         ),
                         name=f"phase:{name}",
                     )
@@ -594,6 +618,8 @@ async def _execute_phase(
     transport: str = "cli",
     extract_transport: str = "cli",
     judge_transport: str = "cli",
+    extract_provider: Optional[str] = None,
+    extract_model: Optional[str] = None,
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     if phase_name == "extract":
         prompt_hash = "builtin:extract:v2"
@@ -605,7 +631,7 @@ async def _execute_phase(
     # regardless of the job-level provider/model; every other phase honors
     # the user's pick.
     if phase_name == "extract":
-        phase_model_label = settings.extract_model
+        phase_model_label = extract_model
     else:
         phase_model_label = model or "<provider-default>"
 
@@ -702,8 +728,8 @@ async def _execute_phase(
                 return out, tin_, tout_
 
             output_md, tin, tout, produced_by = await _run_with_failover(
-                requested_provider=settings.extract_provider,
-                model=settings.extract_model,
+                requested_provider=extract_provider,
+                model=extract_model,
                 run_fn=_extract_run,
                 transport=extract_transport,
             )
