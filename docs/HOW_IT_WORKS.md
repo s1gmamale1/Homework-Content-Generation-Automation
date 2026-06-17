@@ -19,13 +19,10 @@ That's the whole thing. Everything below is *how* that happens.
 
 ---
 
-## 2. The single most important idea: we shell out to CLIs, not SDKs
+## 2. The two generation paths: CLI subprocess vs. provider SDK
 
-Most AI apps import a library (`openai`, `anthropic`, `google-genai`) and call an API over
-HTTPS with an API key. **This app does not.** There is no LLM SDK anywhere in the runtime.
-
-Instead, when the app needs the AI to do something, it literally runs a command like you
-would type in a terminal:
+**`transport=cli` (default):** when the app needs the AI to do something, it literally runs
+a command like you would type in a terminal:
 
 ```
 gemini -m gemini-2.5-flash      # (prompt piped into the program's stdin)
@@ -36,17 +33,23 @@ It spawns that program as a **child process**, pipes the prompt into its standar
 reads the answer back from standard output, and parses it. Each of the five CLIs must be
 installed and logged-in on the machine's `PATH`.
 
-**Why do it this weird way?**
-- Each CLI handles its own login/billing — on the default `transport=cli` the app
-  holds no API key. (Since Phase 4, `transport=api` jobs are the exception: the
-  worker's process env carries `ANTHROPIC_API_KEY` + a gemini credential —
-  `GEMINI_API_KEY` or a Vertex service account — injected per-spawn by
-  `agent._auth_env`. Since Phase 4.1 the billing choice is also **per role**:
-  `extract_transport`/`judge_transport` (`cli | api | inherit`) let one job bill
-  e.g. gemini-api content to a Vertex credit while extract+judge ride the
-  subscriptions; the claim gate routes each job only to workers credentialed
-  for its resolved combination. The `gemini_api_key` *config field* is still
-  vestigial.)
+**`transport=api` (claude+gemini only):** instead of shelling out to the CLI, the app calls
+the provider SDKs directly — `google-genai` for gemini, `anthropic` for claude — via a
+single new module `app/services/api_transport.py`. This path returns the same
+`(rc, text, usage, stderr)` 4-tuple as the CLI path and is dispatched from `agent._spawn`
+(early, before the binary-lookup, but still inside the concurrency semaphore). Credentials
+(`GEMINI_API_KEY` / Vertex SA for gemini; `ANTHROPIC_API_KEY` for claude) come from the
+worker's process env. `transport=api` was added because the CLI-with-key path bills
+~2.6–10× the tokens and is ~1.5–3× slower for equal-quality output (the gemini CLI prepends
+a ~9.2k-token agent system prompt on every call). Text-only v1: attachments raise a loud
+`NotImplementedError`; TOC extraction stays CLI-pinned.
+
+**Why do it the CLI way for `transport=cli`?**
+- Each CLI handles its own login/billing — no API key needed. (Phase 4.1 also added
+  per-role billing: `extract_transport`/`judge_transport` (`cli | api | inherit`) let one
+  job bill e.g. gemini-api content to a Vertex credit while extract+judge ride the
+  subscriptions; the claim gate routes each job only to workers credentialed for its
+  resolved combination.)
 - It's free-tier friendly: e.g. `gemini` is free with a Google login, no card.
 - One uniform interface ("run a program, pipe text") covers five very different vendors.
 
@@ -54,8 +57,9 @@ installed and logged-in on the machine's `PATH`.
 > (the app's own web API that the browser talks to) is a totally different thing from an
 > **LLM API**. We run an HTTP server; we do **not** call any LLM API. Don't confuse the two.
 
-**The golden rule:** never reintroduce an LLM SDK. Everything AI-facing goes through the
-CLI router (`app/services/agent.py`). This is settled infrastructure — don't rebuild it.
+**The golden rule on the `cli` path:** never add SDK calls to the CLI router or anywhere
+outside `app/services/api_transport.py`. `app/services/agent.py` is the CLI router for
+`transport=cli`; `api_transport.py` is the SDK layer for `transport=api`. Don't mix them.
 
 ---
 
@@ -502,8 +506,10 @@ You also need the CLIs you intend to use installed and logged-in on `PATH`
 
 ## 14. The short list of "don'ts" (these will bite you)
 
-1. **Don't add an LLM SDK.** Everything goes through the CLI router. `google-genai` was
-   deliberately removed.
+1. **Don't add LLM SDK calls outside `app/services/api_transport.py`.** The CLI router
+   (`agent.py`) is for `transport=cli` — no SDK calls there. The `google-genai` and
+   `anthropic` SDKs now live in `api_transport.py` for `transport=api` only; don't
+   introduce SDK usage anywhere else.
 2. **Don't hardcode model names in the pipeline.** They belong in `MODEL_MANIFEST`
    (frontend menu) or `_PROVIDER_DEFAULT_MODEL` (server fallback).
 3. **Don't give gemini/kimi/codex a default model** in `_PROVIDER_DEFAULT_MODEL` — the

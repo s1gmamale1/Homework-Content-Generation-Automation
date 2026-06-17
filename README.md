@@ -18,7 +18,7 @@ The flow is a single fixed sequence of **8 phases** per subject (no easy/hard br
 
 ## Why it's interesting
 
-- **CLI-router generation, no SDK.** Every model call shells out to one of five provider CLIs — `claude`, `gemini`, `codex`, `kimi`, `opencode` — through a single router (`app/services/agent.py`). There is no Anthropic/OpenAI/Gemini SDK in the runtime path; each CLI uses its own login. The provider is chosen per job.
+- **Two-path generation.** `transport=cli` (default): every model call shells out to one of five provider CLIs — `claude`, `gemini`, `codex`, `kimi`, `opencode` — through a single router (`app/services/agent.py`); each CLI uses its own login, no API key required. `transport=api` (claude+gemini only): model calls go directly to the provider SDKs (`google-genai` / `anthropic`) via `app/services/api_transport.py`, using worker-env credentials. The provider is chosen per job.
 - **Per-phase failover + LLM judge.** If a phase fails on its provider, it fails over down a configured provider order. Every produced phase is then graded by an LLM judge (default `claude-opus-4-7`) that cites violations of the prompt contract and severity-gates regeneration.
 - **DAG-parallel pipeline.** Phases run concurrently once their declared dependencies (`flows.PHASE_DEPS`) are satisfied — roughly a 2× wall-clock win over sequential.
 - **Postgres-backed job queue** using `SELECT … FOR UPDATE SKIP LOCKED`. Workers run embedded in the API process or standalone via `python -m app.services.worker`. Restart-safe via a heartbeat + lease-reclaim (orphaned `running` jobs return to `pending`); jobs are cancellable (the provider CLI's whole process tree is reaped).
@@ -72,7 +72,7 @@ For development without Docker: `uv sync` → `uv run alembic upgrade head` → 
 | Layer | Stack |
 |---|---|
 | **Backend** | FastAPI · async SQLAlchemy 2.0 · asyncpg · Pydantic v2 · loguru · alembic |
-| **LLM** | Provider **CLIs** driven as subprocesses — `claude` · `gemini` · `codex` · `kimi` · `opencode` (no SDK) |
+| **LLM** | `transport=cli` (default): provider **CLIs** as subprocesses — `claude` · `gemini` · `codex` · `kimi` · `opencode`; `transport=api` (claude+gemini): `google-genai` / `anthropic` SDKs via `app/services/api_transport.py` |
 | **Frontend** | React 19 · Vite · TypeScript · Tailwind v4 · TanStack Query · `react-markdown + rehype-raw` |
 | **DB** | Postgres 16 (job queue, advisory locks) |
 | **Build & ship** | uv · Docker (multi-stage, multi-arch) · GitHub Actions |
@@ -91,7 +91,8 @@ Homework-Content-Generation-Automation/
 │   ├── repositories/             query-layer (no business logic)
 │   ├── schemas/                  Pydantic schemas (book, toc, job, events)
 │   └── services/
-│       ├── agent.py              CLI router — the only LLM surface
+│       ├── agent.py              LLM surface: cli→CLI router, api→SDK (api_transport.py)
+│       ├── api_transport.py      direct SDK generation for transport=api (google-genai/anthropic)
 │       ├── providers/            one adapter per CLI (claude/gemini/codex/kimi/opencode)
 │       ├── pipeline.py           DAG-parallel scheduler + phase execution
 │       ├── phase_judge.py        LLM judge (grades each phase vs its prompt)
