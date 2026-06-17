@@ -22,6 +22,10 @@ async def create(
     transport: str = "cli",
     extract_transport: str = "inherit",
     judge_transport: str = "inherit",
+    extract_provider: Optional[str] = None,
+    extract_model: Optional[str] = None,
+    judge_provider: Optional[str] = None,
+    judge_model: Optional[str] = None,
 ) -> HomeworkJob:
     kwargs: dict[str, Any] = dict(
         book_id=book_id,
@@ -38,6 +42,14 @@ async def create(
         kwargs["model"] = model
     if batch_id is not None:
         kwargs["batch_id"] = batch_id
+    for _k, _v in (
+        ("extract_provider", extract_provider),
+        ("extract_model", extract_model),
+        ("judge_provider", judge_provider),
+        ("judge_model", judge_model),
+    ):
+        if _v is not None:
+            kwargs[_k] = _v
     job = HomeworkJob(**kwargs)
     session.add(job)
     await session.flush()
