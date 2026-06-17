@@ -27,16 +27,7 @@ export const SUBJECT_LABELS: Record<Subject, string> = {
   "atrof-muhit": "Environmental studies",
   huquq: "Law",
   iqtisodiyot: "Economics",
-  manaviyat: "Spirituality",
-  odobnoma: "Ethics",
-  tarbiya: "Upbringing",
-  "kelajak-soati": "Future hour",
-  chqbt: "Pre-conscription training",
-  "tasviriy-sanat": "Fine arts",
-  musiqa: "Music",
-  texnologiya: "Technology",
   chizmachilik: "Technical drawing",
-  "jismoniy-tarbiya": "Physical education",
 };
 
 export function subjectLabel(subject: string): string {

@@ -52,12 +52,20 @@ def test_registry_entries_well_formed():
 
 
 def test_all_curriculum_subjects_present():
-    # Sanity: the new subjects beyond the legacy 7 are registered.
+    # Sanity: the new academic subjects beyond the legacy 7 are registered.
     for code in ("matematika", "ona-tili", "adabiyot", "russian", "geografiya",
                  "informatika", "huquq", "iqtisodiyot", "astronomiya",
-                 "tabiiy-fanlar", "chizmachilik", "musiqa", "tasviriy-sanat"):
+                 "tabiiy-fanlar", "chizmachilik", "oqish-savodxonligi",
+                 "alifbe", "atrof-muhit"):
         assert code in subjects.REGISTRY, code
-    assert len(subjects.REGISTRY) >= 30
+    assert len(subjects.REGISTRY) == 21
+
+
+def test_non_academic_subjects_excluded():
+    # Values/activity/creative subjects are intentionally NOT registered.
+    for code in ("jismoniy-tarbiya", "musiqa", "tasviriy-sanat", "texnologiya",
+                 "tarbiya", "odobnoma", "manaviyat", "kelajak-soati", "chqbt"):
+        assert code not in subjects.REGISTRY, code
 
 
 def test_notion_keyword_pairs_longest_first():
@@ -67,13 +75,6 @@ def test_notion_keyword_pairs_longest_first():
     # every code contributes at least one pair
     codes_with_pairs = {code for _, code in pairs}
     assert set(subjects.REGISTRY) <= codes_with_pairs
-
-
-def test_keyword_shadowing_order():
-    # Compound "...tarbiya" must be matched before bare "tarbiya".
-    order = [kw for kw, _ in subjects.notion_keyword_pairs()]
-    assert order.index("jismoniy tarbiya") < order.index("tarbiya")
-    assert order.index("axloqiy tarbiya") < order.index("tarbiya")
 
 
 @pytest.mark.parametrize("title,expected", [
@@ -93,14 +94,16 @@ def test_keyword_shadowing_order():
     ("O‘zbekiston tarixi", "history"),
     ("Geografiya", "geografiya"),
     ("Informatika / Dasturlash", "informatika"),
-    ("Tasviriy san'at", "tasviriy-sanat"),
-    ("Axloqiy tarbiya", "odobnoma"),
-    ("Jismoniy tarbiya", "jismoniy-tarbiya"),
-    ("Tarbiya", "tarbiya"),
     ("Astronomiya", "astronomiya"),
     ("Huquq", "huquq"),
     ("Rules", None),
-    ("Kelajak soati", "kelajak-soati"),
+    # Non-academic subjects are intentionally unmapped now.
+    ("Tasviriy san'at", None),
+    ("Jismoniy tarbiya", None),
+    ("Tarbiya", None),
+    ("Axloqiy tarbiya", None),
+    ("Kelajak soati", None),
+    ("Musiqa", None),
 ])
 def test_notion_title_maps_to_code(title, expected):
     from app.services import notion_fetch

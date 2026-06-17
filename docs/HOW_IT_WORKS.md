@@ -248,8 +248,9 @@ the markdown-per-phase reshape.)*
 
 ## 7. Subjects, flows, and phases
 
-Supported subjects: **the full Uzbek national curriculum, grades 1–11** (30 subjects —
-sciences, math, languages, humanities, plus arts/PE/ICT). The single source of truth is
+Supported subjects: **the academically-testable subjects of the Uzbek curriculum, grades 1–11**
+(21 subjects — sciences, math, languages, humanities; non-academic entries like PE, music, art,
+ethics, and pre-conscription training are intentionally excluded). The single source of truth is
 the registry in **`app/services/subjects.py`**; `flows`, `prompts`, `notion_fetch`, and the
 frontend all derive their subject tables from it. Each subject declares a family
 (picks the prompt's family block), a language rule (Uzbek default; English/Russian L2),

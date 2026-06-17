@@ -75,21 +75,13 @@ _DEFS: list[SubjectDef] = [
     _d("huquq", "Law (Huquq)", "humanities", _MEMORY, "uz", "huquq"),
     _d("iqtisodiyot", "Economics (Iqtisodiyot)", "humanities", _MEMORY, "uz",
        "iqtisodiy bilim", "iqtisodiyot", "tadbirkorlik"),
-    _d("manaviyat", "Foundations of spirituality (Ma'naviyat asoslari)", "humanities",
-       _MEMORY, "uz", "manaviyat"),
-    _d("odobnoma", "Ethics (Odobnoma)", "humanities", _MEMORY, "uz",
-       "odobnoma", "axloqiy tarbiya"),
-    _d("tarbiya", "Upbringing (Tarbiya)", "humanities", _MEMORY, "uz", "tarbiya"),
-    _d("kelajak-soati", "Future hour (Kelajak soati)", "humanities", _MEMORY, "uz",
-       "kelajak soati", "kelajak"),
-    _d("chqbt", "Pre-conscription training (CHQBT)", "humanities", _MEMORY, "uz", "chqbt"),
-    _d("tasviriy-sanat", "Fine arts (Tasviriy san'at)", "default", _MEMORY, "uz", "tasviriy"),
-    _d("musiqa", "Music (Musiqa)", "default", _MEMORY, "uz", "musiqa"),
-    _d("texnologiya", "Technology (Texnologiya)", "default", _MEMORY, "uz", "texnologiya"),
     _d("chizmachilik", "Technical drawing (Chizmachilik)", "math", _JIGSAW, "uz", "chizmachilik"),
-    _d("jismoniy-tarbiya", "Physical education (Jismoniy tarbiya)", "default", _MEMORY,
-       "uz", "jismoniy tarbiya", "jismoniy"),
 ]
+# NOTE: registry intentionally lists only academically-testable subjects. The
+# non-academic curriculum entries (jismoniy tarbiya/PE, musiqa, tasviriy san'at,
+# texnologiya, tarbiya, odobnoma, ma'naviyat, kelajak soati, CHQBT) are excluded
+# on purpose — they have no examinable subject-matter the homework pipeline can
+# assess. Add one back as a `_d(...)` line here (+ FE mirror) if that changes.
 
 REGISTRY: dict[str, SubjectDef] = {d.code: d for d in _DEFS}
 SUBJECT_CODES: list[str] = [d.code for d in _DEFS]
