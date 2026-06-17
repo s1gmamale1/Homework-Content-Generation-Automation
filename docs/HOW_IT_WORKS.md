@@ -273,13 +273,13 @@ The packet is organized into four "divisions":
   makes decisions, with two interleaved "learning blocks"), `flashcards`, `memory-check`.
 - **Practice Arc** — all six practice games: `practice-rlc` (**Real-Life Challenge**),
   `practice-error-detection` (**Error Detection**), and **all four interaction mini-games**
-  (`memory-match`, `tictactoe`, `jigsaw`, `sentence`) — every job, every subject. The four
-  share one **compact `CbpModeGame`** schema — a game board (typed payload) + a single open
-  "explain your reasoning" prompt (`why_prompt`). The `SUBJECT_GAME` map
-  (`app/services/flows.py`) is now metadata only — the per-subject *recommended* game
-  (`memory-match` for biology & history, `tictactoe` for physics/kimyo/math-algebra, `jigsaw`
-  for geometriya, `sentence` for english) — a hint for downstream curation; it no longer gates
-  generation.
+  (`memory-match`, `tictactoe`, `jigsaw`, `sentence`) — every job, every subject. The
+  `SUBJECT_GAME` map (`app/services/flows.py`) is now metadata only — the per-subject
+  *recommended* game (`memory-match` for biology & history, `tictactoe` for
+  physics/kimyo/math-algebra, `jigsaw` for geometriya, `sentence` for english) — a hint for
+  downstream curation; it no longer gates generation. Like every content phase, each game emits
+  **markdown** — a game board plus an "explain your reasoning" prompt described in
+  `prompts/_general/practice-<game>.md` — graded by the LLM judge (no Pydantic game schema).
 - **Boss Arena** — `boss-arena`, a Why→How→What reasoning "boss fight" quiz.
 - **Reflection** — a short `reflection` debrief.
 

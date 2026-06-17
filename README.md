@@ -8,7 +8,7 @@
 
 ## What it does
 
-1. Upload a curriculum textbook PDF (biology, English, history, math-algebra, geometry, chemistry, physics) — or pull one from a connected Notion lessons tree.
+1. Upload a curriculum textbook PDF (**26 supported subjects** across sciences, math, languages, and humanities — biology, math/algebra, Uzbek, Russian, English, history, chemistry, physics, geography, law, and more; full registry in `app/services/subjects.py`) — or pull one from a connected Notion lessons tree.
 2. The table of contents is extracted (pinned to a cheap Gemini model); pick any section.
 3. The pipeline distills that lesson, then runs the content phases **DAG-parallel** (each launches as soon as its dependencies finish). Every phase is graded by an LLM judge against its own prompt contract.
 4. Each phase produces **markdown** (the deliverable). The operator console streams progress over SSE and renders each phase's markdown for review.
@@ -19,7 +19,7 @@ The flow is a single fixed sequence of **11 phases** per subject (no easy/hard b
 ## Why it's interesting
 
 - **Two-path generation.** `transport=cli` (default): every model call shells out to one of five provider CLIs — `claude`, `gemini`, `codex`, `kimi`, `opencode` — through a single router (`app/services/agent.py`); each CLI uses its own login, no API key required. `transport=api` (claude+gemini only): model calls go directly to the provider SDKs (`google-genai` / `anthropic`) via `app/services/api_transport.py`, using worker-env credentials. The provider is chosen per job.
-- **Per-phase failover + LLM judge.** If a phase fails on its provider, it fails over down a configured provider order. Every produced phase is then graded by an LLM judge (default `claude-opus-4-7`) that cites violations of the prompt contract and severity-gates regeneration.
+- **Per-phase failover + LLM judge.** If a phase fails on its provider, it fails over down a configured provider order (`failover_provider_order`, default `codex → gemini → kimi → opencode`; claude is reserved out for the user's Claude Max allocation). `transport=api` jobs retry on the requested provider only (no cross-provider legs). Every produced phase is then graded by an LLM judge (default `claude-opus-4-7`) that cites violations of the prompt contract and severity-gates regeneration.
 - **DAG-parallel pipeline.** Phases run concurrently once their declared dependencies (`flows.PHASE_DEPS`) are satisfied — roughly a 2× wall-clock win over sequential.
 - **Postgres-backed job queue** using `SELECT … FOR UPDATE SKIP LOCKED`. Workers run embedded in the API process or standalone via `python -m app.services.worker`. Restart-safe via a heartbeat + lease-reclaim (orphaned `running` jobs return to `pending`); jobs are cancellable (the provider CLI's whole process tree is reaped).
 - **Cross-job extract reuse.** A per-section lesson extract already produced by another job (same `toc_entry_id` + prompt hash) is reused for free instead of re-reading the PDF.

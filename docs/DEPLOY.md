@@ -36,7 +36,8 @@ not `localhost:8000`. (For a bare local run without Traefik, publish port 8000 y
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `DATABASE_URL` | yes | — | `postgresql+asyncpg://...` (asyncpg driver, not psycopg) |
-| `GEMINI_API_KEY` | yes | — | https://aistudio.google.com/apikey |
+| `GEMINI_API_KEY` | no | — | Only for `transport=api` gemini jobs (or use the Vertex SA pair `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT`). Default `cli` jobs need no key. Read from `os.environ` by the api transport — the same-named config field is vestigial. |
+| `ANTHROPIC_API_KEY` | no | — | For `transport=api` claude jobs. A worker only claims **any** api job when it has the needed api creds (`worker._compute_has_api_keys`). |
 | `GEMINI_MODEL` | no | `gemini-2.0-flash-exp` | Vestigial (unread by the runtime). The *extract pin* `EXTRACT_MODEL` is separately `gemini-2.5-flash`. |
 | `AUTH_TOKEN` | **strongly recommended** | empty | Empty disables auth (every request `user="anonymous"`). Set this. |
 | `WORKER_CONCURRENCY` | no | `4` | Embedded worker job concurrency. Set `0` in API-only pods. |
@@ -141,52 +142,43 @@ Set the platform's "release command" or "deploy command" to `alembic upgrade hea
 
 ---
 
-## CI: build + push to Docker Hub
+## CI: build + push to GHCR
 
 Workflow at `.github/workflows/docker-publish.yml`. Builds the image on every
-push to `main`, on every `v*.*.*` tag, and on PRs (build-only — no push).
-Multi-arch (amd64 + arm64), caches via GitHub Actions cache, attaches SBOM
-and provenance.
+push to `master`, on every `v*.*.*` tag, and on PRs against `master` (build-only —
+no push). Multi-arch (amd64 + arm64), caches via GitHub Actions cache, attaches
+SBOM and provenance. The image is published to the **GitHub Container Registry**
+(`ghcr.io/<owner>/<repo>`, from `IMAGE_NAME = ${{ github.repository }}`).
 
-### One-time setup
+### Setup
 
-Two secrets + one optional variable on the repo:
+No manual secrets. The workflow logs in to GHCR with the built-in
+`GITHUB_TOKEN` (`username: github.actor`) and already grants `packages: write`.
+The only one-time step is making the published package visible/linked to the
+repo if you want it public (GitHub → repo → Packages).
 
-1. **`DOCKERHUB_USERNAME`** (secret): your Docker Hub username
-2. **`DOCKERHUB_TOKEN`** (secret): an access token from
-   https://hub.docker.com/settings/security — use a **read+write+delete**
-   token scoped to a single repo, not your account password.
-3. **`IMAGE_NAME`** (variable, optional): full image path, e.g. `myorg/class-homework-builder`.
-   If unset, defaults to `<DOCKERHUB_USERNAME>/<repo-name>`.
-
-To add them: GitHub repo → Settings → Secrets and variables → Actions:
-- "New repository secret" → DOCKERHUB_USERNAME
-- "New repository secret" → DOCKERHUB_TOKEN
-- "Variables" tab → IMAGE_NAME (optional)
-
-### Tag scheme
+### Tag scheme (`docker/metadata-action`)
 
 | Trigger | Tags pushed |
 |---|---|
-| `push` to `main` | `latest`, `main`, `main-<short-sha>` |
-| `push` tag `v1.2.3` | `1.2.3`, `1.2`, `1`, `v1.2.3`, `latest` |
-| `workflow_dispatch` (manual) | `manual-<sha>` |
-| `pull_request` | (build only — verifies Dockerfile, no push) |
+| `push` to `master` (default branch) | `<branch>` (`master`), `sha-<short-sha>`, `latest` |
+| `push` tag `v1.2.3` | `1.2.3`, `1.2` |
+| `pull_request` → `master` | (build only — verifies Dockerfile, no push) |
 
 ### Releasing a versioned build
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
-# CI builds, pushes 1, 1.0, 1.0.0, v0.1.0, latest
+# CI builds + pushes 0.1.0 and 0.1
 ```
 
 ### Pulling the image into a deploy
 
 ```bash
-docker pull docker.io/myorg/class-homework-builder:latest
+docker pull ghcr.io/ganiyevuz/class-homework-builder:latest   # the image docker-compose.yml pulls
 # or pin a digest for production:
-docker pull docker.io/myorg/class-homework-builder@sha256:...
+docker pull ghcr.io/ganiyevuz/class-homework-builder@sha256:...
 ```
 
 The pinned-digest form is the safer pattern in production deploys — it
@@ -256,7 +248,7 @@ Behind an ALB, point the target group at the `api` task. Use RDS Postgres. Run `
 
 - [ ] `AUTH_TOKEN` set to a strong random value (or comma-separated list for multiple services)
 - [ ] `ENABLE_DOCS=false`
-- [ ] `GEMINI_MODEL` pinned to a stable release (no `-preview` / `-exp`)
+- [ ] `EXTRACT_MODEL` / `EXTRACT_PROVIDER` left at defaults (`gemini-2.5-flash` / `gemini`) or pinned to a stable model; `JUDGE_MODEL` likewise (`GEMINI_MODEL` is vestigial — nothing reads it)
 - [ ] `ALLOW_ORIGINS` set to actual frontend origin (not `*`) if API and SPA are on different domains
 - [ ] Postgres has automated backups enabled (managed services usually do this; self-hosted needs `pg_dump` cron)
 - [ ] Healthcheck endpoint `/health` reachable from your platform's liveness probe

@@ -184,8 +184,8 @@ consumption counts**, not provider quotas.
 Design: **no stored counters**. Progress is computed on read (`rollup_for_batch`):
 `DISTINCT ON (toc_entry_id) … ORDER BY toc_entry_id, created_at DESC` scoped to the batch,
 then `GROUP BY status` — one vote per lesson (its newest job), so retries/top-ups can never
-inflate the tally, and the denominator is `sum(tally.values())`. `UNIQUE(book_id)` makes
-find-or-create race-safe via `ON CONFLICT DO UPDATE … RETURNING` (Core insert — see the
+inflate the tally, and the denominator is `sum(tally.values())`. `UNIQUE(book_id, transport)` makes
+find-or-create race-safe via `ON CONFLICT DO UPDATE … RETURNING` (conflict target `["book_id", "transport"]`; Core insert — see the
 mixin gotcha in §3). Launch semantics: fan-out one job per lesson; an existing *active*
 job (pending/running/done) is skipped, and an orphan (`batch_id IS NULL`) is **adopted**.
 

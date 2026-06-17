@@ -65,7 +65,7 @@ This is the difference between "a tool" and "a content factory".
   4) **and** `GEMINI_MAX_CONCURRENCY` (process-wide concurrent CLI subprocesses, default
   8). Raising jobs alone just makes more jobs contend for the same subprocess pool.
 - **Gotcha:** `config.py` defines `agent_max_concurrency` and labels
-  `gemini_max_concurrency` "DEPRECATED", but the live semaphore at `agent.py:266` still
+  `gemini_max_concurrency` "DEPRECATED", but the live semaphore at `agent.py:203` still
   reads `gemini_max_concurrency`. So `AGENT_MAX_CONCURRENCY` is currently a **dead
   setting** — set `GEMINI_MAX_CONCURRENCY`. (Both default 8, so behaviour is fine today;
   the trap is tuning the wrong one.)
@@ -254,7 +254,7 @@ refinements / corrections:
    **failed mid-run with "socket connection closed unexpectedly" then auto-recovered on
    retry** — a live instance of the **transient-throttle class** (§4 table) and a concrete
    argument for the per-provider circuit breaker + distinguishing the two throttle classes.
-   At ~17 min/section, a full curriculum (7 subjects × ~20 sections × difficulties) is a very
+   At ~17 min/section, a full curriculum (**26 subjects** × ~20 sections; difficulties removed) is a very
    large, multi-day queue even before weekly caps — reinforces marathon-pacing over
    concurrency.
 

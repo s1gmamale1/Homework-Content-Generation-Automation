@@ -28,6 +28,7 @@ What each source file does, grouped by layer. `transport=cli` (default): every m
 - **`agent.py`** — **LLM surface & primary orchestrator.** `run_phase` / `run_phase_prompt` (markdown phases, with the per-phase JSON-`schema` mode + one retry), `extract_toc`, `summarize_lesson` + `read_whole_book_text` (whole-book-text extract), `extract_lesson_context` (legacy PDF-attach path, not called by the pipeline), `record_cached_lesson_extract`; `_resolve_model` / `_PROVIDER_DEFAULT_MODEL` (only `claude` + `opencode` carry a default); `_PLACEHOLDER_RULES` + `_VISUAL_PHASES` (visuals are described placeholders, never `<svg>`); concurrency semaphore + usage recording. `_spawn` dispatches `transport=api` gemini/claude calls to `api_transport.generate` (early, before the binary lookup, still inside the semaphore); all other providers go through the CLI subprocess path.
 - **`api_transport.py`** — **direct provider-SDK generation for `transport=api`** (gemini `google-genai`, claude `anthropic`); returns the same `(rc, text, usage, stderr)` 4-tuple as `_spawn`; dispatched from `_spawn`. Mirrors `_auth_env` credential logic; loud truncation (claude `stop_reason==max_tokens` / gemini `MAX_TOKENS`); per-provider cached-token semantics. Text-only v1 (attachments → `NotImplementedError`).
 - **`agent_models.py`** — `MODEL_MANIFEST`: the single source of truth for valid `(provider, model)` pairs; enforced on generate, served to the frontend.
+- **`pricing.py`** — verified per-token `PRICE_MAP` + `cost_usd(provider, model, usage)`; feeds the per-transport `$` rollup on `/agent/stats`. Per-provider cached-token semantics (gemini prompt-inclusive vs claude disjoint).
 - **`pipeline.py`** — **per-job state machine.** Head: per-section `extract` (pinned cheap model, with Gate-A/Gate-B + failover). Tail: DAG-parallel content phases (wave scheduler off `flows.PHASE_DEPS`). Each phase runs `_run_with_failover` and the `phase_judge` LLM judge, then stores `output_md` on its `phase_outputs` row. No assembly stage.
 - **`subjects.py`** — **single source of truth for supported subjects** (full Uzbek curriculum, grades 1–11). `SubjectDef`(code, label, family, game, language, Notion keywords) + `REGISTRY`/`SUBJECT_CODES` + `notion_keyword_pairs()` (longest-first). `flows`, `prompts`, `notion_fetch`, and the FE all derive from this. Add a subject here (+ mirror in `web/src/lib/types.ts`/`subjects.ts`).
 - **`flows.py`** — `SUBJECTS` + `SUBJECT_GAME` (derived from `subjects.REGISTRY`; `SUBJECT_GAME` is now a recommendation-only hint, not consumed by the flow), `flow_for(subject)` (the **11-phase** sequence — generates all four interaction mini-games every job, the full Gamified Practices set), `PHASE_DEPS` (DAG deps) + `filter_prior_outputs`/`resolve_phase_deps`, per-phase output caps, SVG-stripping of prior outputs.
@@ -40,11 +41,13 @@ What each source file does, grouped by layer. `transport=cli` (default): every m
 - **`grade.py`** — `derive_grade_from_filename` (sinf/klass/класс → 1–11) for Notion archive keying.
 - **`notion_archive.py`** — push a finished job's markdown into the Notion "Homework" tree (`_HOMEWORK_LAYOUT`, `PHASE_TITLES`, subject-page resolution, skip-reason stamping).
 - **`notion_fetch.py`** — download a textbook PDF from a Notion page (size-capped to `max_file_mb`).
+- **`storage.py`** — `book_pdf_path(book_id)`: the single deterministic on-disk PDF path helper (`<var_dir>/books/<id>/source.pdf`), used by both the writer and the pipeline reader.
+- **`book_fetch.py`** — R13 fleet pull-on-demand: `ensure_book_pdf_sync(book_id)` returns the local PDF, or fetches it once from the head (`FLEET_HEAD_URL` → `GET /books/{id}/source.pdf`) and caches it when missing.
 - **`events_bus.py`** — in-process pub/sub backing the job SSE streams.
 - **`proc_tree.py`** — `kill_tree` (psutil) to reap a provider CLI's whole process tree on cancel/timeout.
 
 ### `app/services/providers/` — one adapter per CLI
-- **`base.py`** — `Provider` ABC: `build_argv`, `parse_envelope`, `format_attachments`, `prompt_suffix`; `get_provider()` registry.
+- **`base.py`** — `Provider` ABC: `build_argv`, `parse_envelope`, `format_attachments`, `prompt_suffix`. (The `get_provider()` registry lives in the package `__init__.py`.)
 - **`claude.py` · `gemini.py` · `codex.py` · `kimi.py` · `opencode.py`** — the five providers. gemini = pinned extractor; kimi = no token counts / shells out for PDF; opencode **requires** an explicit `provider/model` (can't run bare).
 
 ### `app/services/notion/` — Notion REST client
