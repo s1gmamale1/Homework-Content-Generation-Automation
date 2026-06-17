@@ -45,6 +45,7 @@ export function UploadPage() {
   const [nGrade, setNGrade] = useState("");
   const [grades, setGrades] = useState<NotionGrade[] | null>(null);
   const [subjects, setSubjects] = useState<NotionSubject[] | null>(null);
+  const [pendingSubjectId, setPendingSubjectId] = useState<string | null>(null);
   const [nErr, setNErr] = useState<string | null>(null);
 
   const onDrop = useCallback((accepted: File[]) => {
@@ -91,6 +92,7 @@ export function UploadPage() {
   async function pickGrade(gradePageId: string, gradeTitle: string) {
     setNGrade(gradeTitle.replace(/\D/g, ""));
     setSubjects(null);
+    setPendingSubjectId(null);
     setNErr(null);
     try {
       setSubjects(await api.listNotionSubjects(gradePageId));
@@ -101,6 +103,8 @@ export function UploadPage() {
 
   async function pickSubject(s: NotionSubject) {
     if (!s.app_subject || !s.has_textbook) return;
+    if (busy) return; // guard against a second fetch while one is in flight
+    setPendingSubjectId(s.page_id);
     setBusy(true);
     try {
       const book = await api.fetchBookFromNotion(s.page_id, nGrade);
@@ -109,6 +113,7 @@ export function UploadPage() {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Fetch failed");
       setBusy(false);
+      setPendingSubjectId(null);
     }
   }
 
@@ -381,7 +386,7 @@ export function UploadPage() {
                                   <span className="font-mono text-[0.66rem] text-white/45">
                                     {reason}
                                   </span>
-                                ) : busy ? (
+                                ) : s.page_id === pendingSubjectId ? (
                                   <Loader2 className="size-4 animate-spin text-white/45" />
                                 ) : (
                                   <ArrowRight className="size-4 text-white/45" />

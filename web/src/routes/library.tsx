@@ -14,27 +14,21 @@ import {
 import { motion } from "motion/react";
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import {
+  CategoryBrowser,
+  compareGradeGroups,
+  gradeAccent,
+  gradeBadge,
+  gradeKey,
+  gradeLabel,
+} from "@/components/category-browser";
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
-import { subjectLabel } from "@/lib/subjects";
+import { accentOf, subjectLabel } from "@/lib/subjects";
 import type { Book, BookStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
-
-// Per-subject signature gradient [from, to] — mirrors Usage's provider accents.
-const SUBJECT_ACCENTS: Record<string, [string, string]> = {
-  biology: ["#57e4a5", "#34d399"],
-  english: ["#64a8ff", "#4d8dff"],
-  "geometriya-g7-11": ["#c18cff", "#8268ff"],
-  history: ["#f6d365", "#fda085"],
-  "kimyo-g7-11": ["#4ee8d5", "#43c6ac"],
-  "math-algebra": ["#ff9466", "#ff5f7f"],
-  physics: ["#7c8cff", "#5fb0ff"],
-};
-function accentOf(subject: string): [string, string] {
-  return SUBJECT_ACCENTS[subject] ?? ["#8aa0c6", "#5f6f93"];
-}
 
 export function LibraryPage() {
   const {
@@ -155,18 +149,46 @@ export function LibraryPage() {
         )}
 
         {books && books.length > 0 && (
-          <motion.div
-            className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
-            variants={staggerContainer}
-            initial="hidden"
-            animate="show"
-          >
-            {books.map((book) => (
-              <motion.div key={book.id} variants={fadeUpItem} className="h-full">
-                <BookCard book={book} />
-              </motion.div>
-            ))}
-          </motion.div>
+          <CategoryBrowser
+            items={books}
+            getGroupKey={(b) => gradeKey(b.grade)}
+            groupLabel={gradeLabel}
+            groupAccent={gradeAccent}
+            groupBadge={gradeBadge}
+            sortGroups={compareGradeGroups}
+            backLabel="All grades"
+            countLabel={(items) => {
+              const n = new Set(items.map((b) => b.subject)).size;
+              return `${n} subject${n === 1 ? "" : "s"}`;
+            }}
+            renderItems={(gradeBooks) => (
+              // Within a grade, drill down once more by subject.
+              <CategoryBrowser
+                items={gradeBooks}
+                getGroupKey={(b) => b.subject}
+                groupLabel={subjectLabel}
+                groupAccent={accentOf}
+                backLabel="All subjects"
+                countLabel={(items) =>
+                  `${items.length} book${items.length === 1 ? "" : "s"}`
+                }
+                renderItems={(group) => (
+                  <motion.div
+                    className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+                    variants={staggerContainer}
+                    initial="hidden"
+                    animate="show"
+                  >
+                    {group.map((book) => (
+                      <motion.div key={book.id} variants={fadeUpItem} className="h-full">
+                        <BookCard book={book} />
+                      </motion.div>
+                    ))}
+                  </motion.div>
+                )}
+              />
+            )}
+          />
         )}
       </div>
     </div>
