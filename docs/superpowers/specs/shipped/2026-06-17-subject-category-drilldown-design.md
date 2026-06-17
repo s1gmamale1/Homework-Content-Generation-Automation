@@ -1,7 +1,10 @@
 # Subject-category drill-down for Library and Fleet
 
 **Date:** 2026-06-17
-**Status:** Approved (design) — pending spec review
+**Status:** Shipped (Habibullo redesign, rebased onto Nggaev-v2 @ `4d9ffc9`). This
+doc was reconciled post-implementation to match what actually shipped — the
+component generalised from "subject-only" to an arbitrary **group key**, and the
+drill-down became **two levels (grade → subject)** via nested browsers.
 **Scope:** Frontend only (`web/`). No backend, API, or DB changes.
 
 ## Problem
@@ -16,8 +19,11 @@ History, …), then see only that subject's cards.
 1. **Interaction model — drill-down.** Top level shows a grid of category
    tiles. Clicking a tile reveals that subject's cards with a "back to
    categories" control. (Not filter-pills, not inline accordion.)
-2. **Category = each subject.** One category per subject slug
-   (`subjectLabel`), e.g. Uzbek / Algebra / History — not broader families.
+2. **Two-level drill-down: grade → subject.** As shipped, the top level groups
+   by **grade** (`gradeKey`/`gradeLabel`), and clicking a grade reveals a second
+   `CategoryBrowser` grouping that grade's cards by **subject** (`b.subject` /
+   `subjectLabel`). The component itself is generic over an arbitrary group key
+   (not subject-specific), which is what makes the nesting possible.
 3. **Fleet applies to the Tray only.** The Prepare (+) form keeps its
    grade→subject flow untouched. Only the Preparing/Ready/Failed card area is
    wrapped.
@@ -30,31 +36,36 @@ History, …), then see only that subject's cards.
 
 ### New shared component — `web/src/components/category-browser.tsx`
 
-One generic, presentational drill-down used by both pages. It owns the
-selection state, the grouping, the tile grid, and the enter/exit animation;
-each consumer supplies how to read a subject off an item and how to render that
-subject's cards.
+One generic, presentational drill-down used by both pages and **nestable** (the
+grade→subject UX is just one `CategoryBrowser` whose `renderItems` returns
+another). It owns the selection state, the grouping, the tile grid, and the
+enter/exit animation; each consumer supplies how to read a **group key** off an
+item, how to label it, and how to render that group's cards. As shipped:
 
 ```ts
 interface CategoryBrowserProps<T> {
   items: T[];
-  getSubject: (item: T) => string;
-  renderItems: (items: T[], subject: string) => React.ReactNode;
-  /** Optional override for the per-tile count caption (default: "N items"). */
-  countLabel?: (items: T[], subject: string) => string;
+  getGroupKey: (item: T) => string;          // grouping key (e.g. grade, or subject)
+  groupLabel: (key: string) => string;       // human label for a key
+  renderItems: (items: T[], key: string) => React.ReactNode;
+  groupAccent?: (key: string) => [string, string];  // avatar gradient; default slate
+  groupBadge?: (key: string) => string;             // avatar text; default label[0]
+  countLabel?: (items: T[], key: string) => string; // tile/header caption; default "N item(s)"
+  sortGroups?: (a: [string, T[]], b: [string, T[]]) => number;  // default: count desc
+  backLabel?: string;                                // detail-view back button; default "Back"
 }
 ```
 
 Behaviour:
-- `groupBySubject(items, getSubject)` → ordered `[subject, T[]][]`. Order:
-  by descending count, then alphabetical by label, for a stable, sensible grid.
+- Group `items` by `getGroupKey` → ordered `[key, T[]][]`, sorted by `sortGroups`
+  (default descending count) for a stable, sensible grid.
 - `selected: string | null` local state.
-  - `null` → render the **tile grid**.
-  - set → render the **detail view**: back control + subject header +
+  - `null` → render the **tile grid** (`groupLabel`/`groupAccent`/`groupBadge` per tile).
+  - set → render the **detail view**: `← {backLabel}` control + group header +
     `renderItems(group, selected)`.
 - **Auto-fallback:** if `selected` is non-null but no longer present in the
   freshly grouped data (e.g. its last card was removed), reset to `null`. Done
-  in a `useEffect` keyed on the grouped subjects.
+  in a `useEffect` keyed on the grouped keys.
 - Transition between grid and detail via `AnimatePresence` (`mode="wait"`),
   a short fade + small vertical slide. Reuse existing motion easing
   (`[0.22, 1, 0.36, 1]`).
@@ -85,41 +96,62 @@ Reuses the existing design language so it feels native:
 
 - Keep hero, summary strip, Upload button, loading skeleton, and the
   `books.length === 0` empty state exactly as they are.
-- Replace **only** the flat `books.map(...)` grid (current lines ~143–156)
-  with:
+- Replace the flat `books.map(...)` grid with **two nested `CategoryBrowser`s** —
+  outer by grade, inner by subject (as shipped):
   ```tsx
   <CategoryBrowser
     items={books}
-    getSubject={(b) => b.subject}
-    countLabel={(items) => `${items.length} book${items.length === 1 ? "" : "s"}`}
-    renderItems={(group) => (
-      <motion.div className={GRID} variants={staggerContainer} initial="hidden" animate="show">
-        {group.map((book) => (
-          <motion.div key={book.id} variants={fadeUpItem} className="h-full">
-            <BookCard book={book} />
+    getGroupKey={(b) => gradeKey(b.grade)}
+    groupLabel={gradeLabel}
+    groupAccent={gradeAccent}
+    groupBadge={gradeBadge}
+    sortGroups={compareGradeGroups}
+    backLabel="All grades"
+    countLabel={(items) => {
+      const n = new Set(items.map((b) => b.subject)).size;
+      return `${n} subject${n === 1 ? "" : "s"}`;
+    }}
+    renderItems={(gradeBooks) => (
+      // Within a grade, drill down once more by subject.
+      <CategoryBrowser
+        items={gradeBooks}
+        getGroupKey={(b) => b.subject}
+        groupLabel={subjectLabel}
+        groupAccent={accentOf}
+        backLabel="All subjects"
+        countLabel={(items) => `${items.length} book${items.length === 1 ? "" : "s"}`}
+        renderItems={(group) => (
+          <motion.div className={GRID} variants={staggerContainer} initial="hidden" animate="show">
+            {group.map((book) => (
+              <motion.div key={book.id} variants={fadeUpItem} className="h-full">
+                <BookCard book={book} />
+              </motion.div>
+            ))}
           </motion.div>
-        ))}
-      </motion.div>
+        )}
+      />
     )}
   />
   ```
-- `BookCard`, `StatusBadge`, helpers: unchanged.
+- `BookCard`, `StatusBadge`, helpers: unchanged. Grade helpers (`gradeKey`,
+  `gradeLabel`, `gradeAccent`, `gradeBadge`, `compareGradeGroups`) live in
+  `@/lib/subjects` alongside `subjectLabel`/`accentOf`.
 
 ### Fleet Tray — `web/src/components/fleet/launcher.tsx`
 
 - Prepare (Part A) card + the `+` form: **untouched**.
-- Tray (Part B): keep the heading and the `trayEmpty` early-out. When not
-  empty, wrap the body in `CategoryBrowser` over the union of tray-relevant
-  books (`preparing ∪ ready ∪ failed`).
-  - `getSubject={(b) => b.subject}`.
-  - `countLabel` summarises status, e.g. `2 ready · 1 preparing` (fallback to
-    `N items` if only one bucket).
-  - `renderItems(group)` renders that subject's **Preparing / Ready / Failed**
-    sub-sections exactly as today (the existing `LBL` headers + `CardGrid` +
-    `PreparingCard`/`ReadyCard`/`FailedCard`), filtered to `group`.
-- `ReadyCard` and all launch logic: unchanged. Its per-book react-query and
-  expand state keep working since it's rendered the same way, just nested under
-  a subject.
+- Tray (Part B): keep the heading and the `trayEmpty` early-out. When not empty,
+  wrap the body in the **same nested `CategoryBrowser` pair** as Library — outer
+  `getGroupKey={(b) => gradeKey(b.grade)}` (`backLabel="All grades"`), inner
+  `getGroupKey={(b) => b.subject}` (`backLabel="All subjects"`), over the union
+  of tray-relevant books.
+  - inner `renderItems(group)` renders that subject's **Preparing / Ready /
+    Failed** sub-sections exactly as today (the existing `LBL` headers +
+    `CardGrid` + `PreparingCard`/`ReadyCard`/`FailedCard`), filtered to `group`.
+- `ReadyCard` and all launch logic (incl. the per-role provider/model controls
+  added later on `Nggaev-v2`): unchanged. Its per-book react-query and expand
+  state keep working since it's rendered the same way, just nested under
+  grade → subject.
 
 ## Edge cases
 
