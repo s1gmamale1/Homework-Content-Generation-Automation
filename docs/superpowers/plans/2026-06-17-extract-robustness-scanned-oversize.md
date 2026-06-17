@@ -108,7 +108,10 @@ Behavior:
   find it by its TITLE). Summarize only that lesson … {rules}*".
 - `prompt = _build_master_prompt(..., attachment_preamble=prov.format_attachments([window_pdf]))`.
 - **`transport="cli"` hardcoded** at the `_spawn` call (never `api` — attachments). `auth_mode="cli"`
-  in `_record_usage`.
+  in `_record_usage`. **Observability (🟢 gatekeeper):** the caller (Task 3) passes the job's
+  requested `extract_transport`; when it was `api`, log one line at dispatch
+  (`logger.info("lesson.extract: scanned PDF → forcing transport=cli for vision; requested=api")`)
+  so an operator benchmarking api doesn't see a silent cli row and wonder why.
 - `finally:` unlink the temp window PDF (never `pdf_path`).
 - Record usage (operation `"lesson.extract"`), raise on `rc != 0`, return `(text, pt, ot)`.
   Model itself stays `_resolve_model(provider, model)` (extract pin).
@@ -143,6 +146,8 @@ elif agent.validate_extract_text(book_text) is not None:      # scanned / no tex
     if not ps or not pe:
         raise RuntimeError(f"lesson.extract: {agent.validate_extract_text(book_text)} "
                            f"and no page range to scope a vision extract")
+    if extract_transport == "api":   # 🟢 observability — vision can't use api
+        logger.info("lesson.extract: scanned PDF → forcing transport=cli for vision; requested=api")
     out, tin, tout = await agent.summarize_lesson_vision(
         provider=extract_provider, model=extract_model, pdf_path=pdf_path,
         section_title=section["title"], section_number=section["number"],
@@ -246,8 +251,11 @@ Prove: scanned → a real lesson summary via a **cli** `agent_usages` row (visio
 summary from a subset. Capture the summaries + token rows. **Fact over theory — actually run gemini.**
 
 **Finish (same commit set, do not defer):**
+- **Rebase first:** branch is off `4d9ffc9`; current `Nggaev-v2` tip is **`2391578`** (PR #22).
+  `git rebase origin/Nggaev-v2` before opening the finish PR (parallel-branch drift).
 - Full suite: `uv run python -m pytest tests/ -q` (green; note pre-existing RUN_DB_INTEGRATION skips).
-- `docs/memory/MASTER_MEMORY.md` worklog **0069** + `docs/memory/INDEX.md` row.
+- `docs/memory/MASTER_MEMORY.md` worklog **0070** (NOT 0069 — #22 already took 0069; #20=0068,
+  #21=0067) + `docs/memory/INDEX.md` row.
 - Close the two WISHLIST items (`fetch-1(b)` oversize-subset + the scanned/image-only item) — move to
   worklog; update `docs/memory/ROADMAP.md` if tracked there.
 - `git mv docs/superpowers/plans/2026-06-17-extract-robustness-scanned-oversize.md
@@ -256,7 +264,7 @@ summary from a subset. Capture the summaries + token rows. **Fact over theory �
   `docs/CODE_MAP.md` (per the update-live-system-reference-docs rule).
 - `finishing-a-development-branch` → open PR to `Nggaev-v2` (user decides merge).
 
-**Commit:** `docs(memory): worklog 0069 — scanned-vision + oversize-subset extract; ship plan`
+**Commit:** `docs(memory): worklog 0070 — scanned-vision + oversize-subset extract; ship plan`
 
 ---
 
