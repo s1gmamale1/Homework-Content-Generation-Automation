@@ -1,21 +1,16 @@
 import hashlib
 from pathlib import Path
 
+from app.services import subjects
+
 PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
 GENERAL_DIR = "_general"
 # MVP: general prompts serve every subject. Set True later to prefer a
 # subject-specific prompt when prompts/<subject>/<phase>.md exists.
 USE_SUBJECT_PROMPTS = False
 
-SUBJECT_LABELS = {
-    "biology": "Biology (Biologiya)",
-    "english": "English",
-    "geometriya-g7-11": "Geometry (Geometriya)",
-    "history": "History (Tarix)",
-    "kimyo-g7-11": "Chemistry (Kimyo)",
-    "math-algebra": "Mathematics / Algebra (Matematika / Algebra)",
-    "physics": "Physics (Fizika)",
-}
+# Derived from the single source of truth (app/services/subjects.py).
+SUBJECT_LABELS = {c: d.label for c, d in subjects.REGISTRY.items()}
 
 _LANG_UZBEK = (
     "All student-facing text in natural, formal Uzbek (\"Siz\", never \"sen\"). "
@@ -39,17 +34,29 @@ _LANG_ENGLISH = (
     "never exceed the level (no B1 vocabulary in an A1/G5 lesson)."
 )
 
-LANGUAGE_RULES = {"english": _LANG_ENGLISH, "_default": _LANG_UZBEK}
+_LANG_RUSSIAN = (
+    "This is a Russian (L2) lesson for native-Uzbek learners.\n"
+    "Governing principle: the thing being LEARNED is in Russian; everything that "
+    "HELPS them learn it is in formal Uzbek (\"Siz\").\n"
+    "- In Russian: the target vocabulary, example sentences, passages/texts, "
+    "collocations, grammar items, and anything the learner must read or produce.\n"
+    "- In formal Uzbek (\"Siz\"): all scaffolding — task instructions, framing, "
+    "hints, explanations, feedback, and the DPE/reasoning prompts (the UZ bridge).\n"
+    "- Level the Russian to the lesson's own complexity and the source's grade; "
+    "never exceed what the source uses (no advanced constructions in an early "
+    "lesson). Preserve every term, example, and form exactly as in the source; "
+    "translate idiomatically into Uzbek, never word-for-word."
+)
 
-_SUBJECT_FAMILY = {
-    "biology": "sciences",
-    "kimyo-g7-11": "sciences",
-    "physics": "sciences",
-    "math-algebra": "math",
-    "geometriya-g7-11": "math",
-    "english": "languages",
-    "history": "humanities",
+LANGUAGE_RULES = {
+    "english": _LANG_ENGLISH,
+    "russian": _LANG_RUSSIAN,
+    "_default": _LANG_UZBEK,
 }
+
+# Derived from the single source of truth (app/services/subjects.py). A family of
+# "default" has no FAMILY_RULES block and falls through to "_default".
+_SUBJECT_FAMILY = {c: d.family for c, d in subjects.REGISTRY.items()}
 
 # --- Case-Based Preview family blocks (injected at {{FAMILY_RULES}}) ---------
 # Each ~12-25 lines: visual policy + case framing + family forbids. Ported from
@@ -358,9 +365,11 @@ def get_prompt(subject: str, phase_name: str, provider_suffix: str = "") -> str:
     dirname = _resolve_dir(subject, phase_name)
     body, _h = _raw(dirname, phase_name)
     body = body.replace("{{SUBJECT}}", SUBJECT_LABELS.get(subject, subject))
+    sd = subjects.REGISTRY.get(subject)
+    lang_key = sd.language if sd else None
     body = body.replace(
         "{{LANGUAGE_RULES}}",
-        LANGUAGE_RULES.get(subject, LANGUAGE_RULES["_default"]),
+        LANGUAGE_RULES.get(lang_key, LANGUAGE_RULES["_default"]),
     )
     phase_blocks = FAMILY_RULES.get(phase_name, {})
     family = _SUBJECT_FAMILY.get(subject)
