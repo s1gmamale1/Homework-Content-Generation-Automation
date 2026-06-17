@@ -69,6 +69,7 @@ async def run(job_id: UUID) -> None:
                 raise RuntimeError("Job is missing book or section context")
             subject = book.subject
             book_id = book.id
+            expected_pdf_size = book.file_size_bytes  # R13 integrity guard
             # Per-job provider/model. Pinned at job-creation time so retries
             # hit the same backend; ``model`` may be None — agent._resolve_model
             # falls back to either a hardcoded provider default or the CLI's
@@ -100,7 +101,9 @@ async def run(job_id: UUID) -> None:
         # Local on-disk PDF; on a multi-PC fleet a worker may be missing it, so
         # fetch-on-demand from the head (R13). Sync helper off the event loop —
         # same idiom as read_whole_book_text below. Raises if it can't produce it.
-        pdf_path = await asyncio.to_thread(book_fetch.ensure_book_pdf_sync, book_id)
+        pdf_path = await asyncio.to_thread(
+            book_fetch.ensure_book_pdf_sync, book_id, expected_pdf_size
+        )
 
         log.info(
             f"[job {job_id}] context loaded | subject={subject} "
