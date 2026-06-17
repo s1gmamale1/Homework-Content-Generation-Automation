@@ -522,9 +522,14 @@ async def run_standalone() -> None:
     worker = build_worker_from_settings()
 
     # Graceful shutdown on SIGTERM / SIGINT (Ctrl+C, container stop).
+    # loop.add_signal_handler is Unix-only; on Windows it raises
+    # NotImplementedError, so fall back to signal.signal (handles Ctrl+C).
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, worker.stop)
+        try:
+            loop.add_signal_handler(sig, worker.stop)
+        except NotImplementedError:
+            signal.signal(sig, lambda *_: worker.stop())
 
     await worker.run()
 
