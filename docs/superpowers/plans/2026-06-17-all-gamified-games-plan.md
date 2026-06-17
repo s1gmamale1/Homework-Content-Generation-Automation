@@ -92,8 +92,9 @@ git commit -m "feat(flows): generate all 7 gamified games every job (8->11 phase
 
 ### Task 3: Finish
 
-- [ ] De-stale live docs that state the phase count: grep `docs/HOW_IT_WORKS.md` / `docs/CODE_MAP.md` / `README.md` for "8-phase" / "8 phases" / the flow list and update to 11 (full Gamified set). 
-- [ ] Worklog entry in `docs/memory/MASTER_MEMORY.md` (next free ID) + row in `docs/memory/INDEX.md`.
+- [ ] De-stale live docs that state the phase count: grep `docs/HOW_IT_WORKS.md` / `docs/CODE_MAP.md` / `README.md` for "8-phase" / "8 phases" / the flow list and update to 11 (full Gamified set).
+- [ ] **(reviewer-required) Update the Oct/Mar campaign cost model** in `docs/memory/ROADMAP.md` — the C4/C5 $/coverage estimate must reflect 8→11 content phases, phrased "**≈+37% phases, less in $**" (extract unchanged; added phases are small-output games), NOT "+37% dollars".
+- [ ] Worklog entry in `docs/memory/MASTER_MEMORY.md` (next free ID) + row in `docs/memory/INDEX.md`. **Include the fleet watch-item note:** per-job peak wave width rises (up to 4 mini-games + boss-arena launch in one wave) → more concurrent spawns per job, which at fleet scale pushes harder on the Vertex flash quota ceiling (see [[api-job-claim-gate-and-concurrency]]). No code change — a scheduling watch-item.
 - [ ] `git mv` spec + plan into `docs/superpowers/specs/shipped/` and `plans/shipped/`.
 - [ ] Push `feat/all-games`; open PR to `Nggaev-v2`.
 
