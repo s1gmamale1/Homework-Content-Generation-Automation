@@ -1328,11 +1328,23 @@ async def extract_toc(
 
 
 def _subset_pdf(
-    pdf_path: Path, page_start: Optional[int], page_end: Optional[int]
+    pdf_path: Path,
+    page_start: Optional[int],
+    page_end: Optional[int],
+    *,
+    margin: int = 0,
+    max_pages: Optional[int] = None,
 ) -> Optional[Path]:
     """Write pages ``[page_start..page_end]`` (1-based, inclusive) of ``pdf_path``
     into a small temp PDF and return its path; ``None`` on any problem so the
     caller falls back to attaching the full PDF.
+
+    ``margin`` widens the requested range to ``[page_start - margin ..
+    page_end + margin]`` (then clamped to the PDF's real ``[1..n]`` bounds) so a
+    front-matter offset doesn't slice off the section's real pages. ``max_pages``
+    then caps the widened window to at most that many pages, centered on the
+    original ``[page_start..page_end]`` midpoint. With ``margin=0,
+    max_pages=None`` the output is byte-for-byte the legacy range.
 
     Why: the extractor CLI (gemini) rejects PDFs > 20 MB, and its refusal
     message then poisons every downstream phase. Attaching only the section's
@@ -1352,10 +1364,22 @@ def _subset_pdf(
 
         reader = PdfReader(str(pdf_path))
         n = len(reader.pages)
-        start_idx = max(0, page_start - 1)
-        end_idx = min(n - 1, page_end - 1)
+        start_idx = max(0, (page_start - margin) - 1)
+        end_idx = min(n - 1, (page_end + margin) - 1)
         if start_idx > end_idx:
             return None
+        if max_pages is not None and (end_idx - start_idx + 1) > max_pages:
+            # Trim to exactly max_pages, centered on the original range midpoint.
+            mid = ((page_start - 1) + (page_end - 1)) // 2
+            start_idx = mid - max_pages // 2
+            end_idx = start_idx + max_pages - 1
+            # Clamp back into bounds, preserving the window width.
+            if start_idx < 0:
+                start_idx = 0
+                end_idx = max_pages - 1
+            if end_idx > n - 1:
+                end_idx = n - 1
+                start_idx = max(0, end_idx - max_pages + 1)
         writer = PdfWriter()
         for i in range(start_idx, end_idx + 1):
             writer.add_page(reader.pages[i])
