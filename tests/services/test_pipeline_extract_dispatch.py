@@ -100,16 +100,22 @@ def _run_extract_phase(
     ))
 
 
-def _install_agent_spies(monkeypatch, *, book_text: str, page_range_text: Optional[str] = None):
+def _install_agent_spies(
+    monkeypatch, *, book_text: str, page_range_text: Optional[str] = None, n_pages: int = 2
+):
     """Wire the agent boundary; return a dict of call counters.
 
     ``page_range_text`` (if given) is what ``read_page_range_text`` returns when
     the whole-book text is oversize and the extract scopes down to the lesson.
+    ``n_pages`` is the physical page count the dispatch sees (default 2, dense
+    enough that the density gate doesn't fire for the realistic clean texts).
+    ``extract_text_is_too_sparse`` is left REAL — it's the pure fn under test.
     """
     calls = {"vision": 0, "normal": 0, "page_range": 0,
              "vision_kwargs": None, "normal_kwargs": None}
 
     monkeypatch.setattr(pipeline.agent, "read_whole_book_text", lambda path: book_text)
+    monkeypatch.setattr(pipeline.agent, "pdf_page_count", lambda path: n_pages)
 
     def _page_range(path, ps, pe, *, margin=0):
         calls["page_range"] += 1
@@ -172,6 +178,21 @@ def test_normal_book_unchanged(monkeypatch):
 
     assert calls["normal"] == 1
     assert calls["vision"] == 0
+    assert parsed is None
+
+
+def test_sparse_scanned_routes_to_vision(monkeypatch):
+    """Gate A PASSES (17000 chars of letters > 500-char floor, printable) but the
+    per-page density is ≈71 chars/page (240 pages) → the density gate flags it as
+    scanned and routes to vision; the normal whole-text path is NOT called."""
+    _install_harness(monkeypatch)
+    calls = _install_agent_spies(monkeypatch, book_text="h" * 17000, n_pages=240)
+
+    out_md, tin, tout, prompt_hash, parsed = _run_extract_phase(monkeypatch)
+
+    assert calls["vision"] == 1
+    assert calls["normal"] == 0
+    assert out_md == _VISION_SUMMARY
     assert parsed is None
 
 

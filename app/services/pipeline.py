@@ -730,10 +730,11 @@ async def _execute_phase(
             # Local whole-book text — no CLI file-read (dodges the gitignore block
             # + the >20MB ceiling). The model locates the lesson by title (R2-immune).
             book_text = await asyncio.to_thread(agent.read_whole_book_text, pdf_path)
-            if agent.extract_text_is_oversize(book_text):
+            n_pages = await asyncio.to_thread(agent.pdf_page_count, pdf_path)
+            was_oversize = agent.extract_text_is_oversize(book_text)
+            if was_oversize:
                 # Whole-book text exceeds the budget — scope to the lesson's pages as
-                # TEXT (cheap, keeps transport=api). The Gate-A dispatch below then runs
-                # on the subset: text layer present → normal path; absent → vision.
+                # TEXT (cheap, keeps transport=api), then run the normal path on the subset.
                 ps, pe = section["page_start"], section["page_end"]
                 if not ps or not pe:
                     raise RuntimeError(
@@ -748,15 +749,25 @@ async def _execute_phase(
                     raise RuntimeError(
                         "lesson.extract: lesson page-subset still too large"
                     )
+            # Scanned detection runs on the WHOLE-book text only (an oversize book is
+            # dense by definition, so its subset is never 'scanned'): Gate A catches a
+            # missing text layer; the density check catches a sparse header-only scan
+            # that Gate A's absolute floor misses.
             gate_a = agent.validate_extract_text(book_text)
-            if gate_a is not None:
+            scanned_reason = gate_a
+            if scanned_reason is None and not was_oversize and agent.extract_text_is_too_sparse(book_text, n_pages):
+                scanned_reason = (
+                    f"sparse text layer ({len(book_text.strip()) // max(1, n_pages)} "
+                    f"chars/page) — likely scanned"
+                )
+            if scanned_reason is not None:
                 # Scanned / no-text-layer PDF: the whole-book text is unreadable, so
                 # vision-attach a page-window of the lesson and let the model read it.
                 # Vision requires attachments → forced transport=cli (api is text-only).
                 ps, pe = section["page_start"], section["page_end"]
                 if not ps or not pe:
                     raise RuntimeError(
-                        f"lesson.extract: {gate_a} and no page range to scope a vision extract"
+                        f"lesson.extract: {scanned_reason} and no page range to scope a vision extract"
                     )
                 if extract_transport == "api":
                     logger.info(
