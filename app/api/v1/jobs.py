@@ -22,7 +22,6 @@ from app.services import events_bus, pricing
 from app.services.agent_models import (
     MODEL_MANIFEST,
     api_supported,
-    effective_extract_transport,
     is_valid,
     validate_role_transport,
     validate_transport,
@@ -186,9 +185,7 @@ async def generate(
         provider=body.provider,
         model=body.model,
         transport=body.transport,
-        # Extract reads the PDF; api is text-only → pin extract to cli so the job
-        # is claimable and doesn't fail at extract. (effective_extract_transport)
-        extract_transport=effective_extract_transport(body.extract_transport, body.transport),
+        extract_transport=body.extract_transport,
         judge_transport=body.judge_transport,
     )
     await session.commit()  # commit + release advisory lock atomically

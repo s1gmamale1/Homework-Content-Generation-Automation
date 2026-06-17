@@ -94,16 +94,3 @@ def validate_role_transport(field: str, value: str) -> str | None:
 def resolve_role_transport(role_value: str, job_transport: str) -> str:
     """'inherit' follows the job's transport; an explicit value wins (Phase 4.1 §2)."""
     return job_transport if role_value == "inherit" else role_value
-
-
-def effective_extract_transport(extract_transport: str, transport: str) -> str:
-    """Extract always reads the source PDF (an attachment); the api/SDK transport
-    is text-only (no attachments), so extract can NEVER run via api. Pin it to
-    `cli` whenever it would otherwise resolve to api — explicit `api`, or
-    `inherit` under a `transport=api` job. This stops the silent footgun where a
-    user picks api for extraction (or launches a pure-api job) and the job goes
-    unclaimable / fails at extract. Everything else passes through unchanged
-    (an `inherit`-under-cli stays `inherit`)."""
-    if resolve_role_transport(extract_transport, transport) == "api":
-        return "cli"
-    return extract_transport

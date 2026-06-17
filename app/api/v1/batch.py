@@ -10,12 +10,7 @@ from app.repositories import batches as batches_repo
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
-from app.services.agent_models import (
-    effective_extract_transport,
-    is_valid,
-    validate_role_transport,
-    validate_transport,
-)
+from app.services.agent_models import is_valid, validate_role_transport, validate_transport
 
 router = APIRouter(tags=["batches"])
 
@@ -98,15 +93,10 @@ async def launch_batch(
         if role_err is not None:
             raise HTTPException(400, role_err)
 
-    # Extract reads the PDF; api is text-only → pin extract to cli (else the jobs
-    # go unclaimable / fail at extract). Applied to BOTH the batch row and its
-    # jobs so the rollup matches. (effective_extract_transport)
-    extract_transport = effective_extract_transport(body.extract_transport, body.transport)
-
     batch = await batches_repo.get_or_create_for_book(
         session, book_id=body.book_id, subject=book.subject, grade=book.grade,
         provider=provider, model=body.model, transport=body.transport,
-        extract_transport=extract_transport,
+        extract_transport=body.extract_transport,
         judge_transport=body.judge_transport)
 
     created = adopted = skipped = 0
@@ -135,7 +125,7 @@ async def launch_batch(
                                subject=book.subject, provider=provider,
                                model=body.model, batch_id=batch.id,
                                transport=body.transport,
-                               extract_transport=extract_transport,
+                               extract_transport=body.extract_transport,
                                judge_transport=body.judge_transport)
         created += 1
 
