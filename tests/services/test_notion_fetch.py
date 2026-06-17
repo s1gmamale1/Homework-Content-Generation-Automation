@@ -16,10 +16,13 @@ def test_map_subject_the_seven():
 
 def test_map_subject_messy_and_unsupported():
     assert _map_subject("Ingliz tili  1-st version missing") == "english"
-    assert _map_subject("Matematika\n") is None          # NOT math-algebra
-    assert _map_subject("Geografiya") is None
-    assert _map_subject("Adabiyot") is None
-    assert _map_subject("Tasviriy san’at") is None
+    # All-subjects registry: these are now first-class (was None pre-registry).
+    assert _map_subject("Matematika\n") == "matematika"   # its own code, NOT algebra
+    assert _map_subject("Geografiya") == "geografiya"
+    assert _map_subject("Adabiyot") == "adabiyot"
+    assert _map_subject("Tasviriy san’at") == "tasviriy-sanat"
+    # A genuinely non-curriculum title still maps to None.
+    assert _map_subject("Sinf rahbari soati") is None
 
 
 def test_first_pdf_block_picks_first_pdf_in_order():
@@ -92,7 +95,7 @@ def test_list_subjects_sinf_only_with_flags():
     by_title = {s["notion_title"]: s for s in subs}
     assert by_title["Algebra"]["app_subject"] == "math-algebra"
     assert by_title["Algebra"]["has_textbook"] is True
-    assert by_title["Geografiya"]["app_subject"] is None
+    assert by_title["Geografiya"]["app_subject"] == "geografiya"
     assert by_title["Geografiya"]["has_textbook"] is True
     assert by_title["Jismoniy tarbiya"]["has_textbook"] is False
 

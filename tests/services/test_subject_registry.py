@@ -74,3 +74,34 @@ def test_keyword_shadowing_order():
     order = [kw for kw, _ in subjects.notion_keyword_pairs()]
     assert order.index("jismoniy tarbiya") < order.index("tarbiya")
     assert order.index("axloqiy tarbiya") < order.index("tarbiya")
+
+
+@pytest.mark.parametrize("title,expected", [
+    ("Fizika", "physics"),
+    ("Biologiya", "biology"),
+    ("Kimyo", "kimyo-g7-11"),
+    ("Geometriya", "geometriya-g7-11"),
+    ("Algebra", "math-algebra"),
+    ("Algebra va analiz asoslari", "math-algebra"),
+    ("Matematika", "matematika"),
+    ("Ona tili", "ona-tili"),
+    ("Adabiyot", "adabiyot"),
+    ("Rus tili", "russian"),
+    ("Rus tili / Ikkinchi til", "russian"),
+    ("Ingliz tili", "english"),
+    ("Jahon tarixi", "history"),
+    ("O‘zbekiston tarixi", "history"),
+    ("Geografiya", "geografiya"),
+    ("Informatika / Dasturlash", "informatika"),
+    ("Tasviriy san'at", "tasviriy-sanat"),
+    ("Axloqiy tarbiya", "odobnoma"),
+    ("Jismoniy tarbiya", "jismoniy-tarbiya"),
+    ("Tarbiya", "tarbiya"),
+    ("Astronomiya", "astronomiya"),
+    ("Huquq", "huquq"),
+    ("Rules", None),
+    ("Kelajak soati", "kelajak-soati"),
+])
+def test_notion_title_maps_to_code(title, expected):
+    from app.services import notion_fetch
+    assert notion_fetch._map_subject(title) == expected
