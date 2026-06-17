@@ -413,9 +413,16 @@ async def _job_out(session: AsyncSession, job_id: UUID) -> JobOut:
 
 @router.get("/agent/models")
 async def list_agent_models():
+    from app.services.model_tiers import tier_of
+
+    tiers = {
+        prov: {m: tier_of(prov, m) for m in models}
+        for prov, models in MODEL_MANIFEST.items()
+    }
     return {
         "providers": MODEL_MANIFEST,
         "api_supported": {p: api_supported(p) for p in MODEL_MANIFEST},
+        "tiers": tiers,
     }
 
 
