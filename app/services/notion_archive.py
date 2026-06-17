@@ -90,7 +90,8 @@ PHASE_TITLES: dict[str, str] = {
 #    .md attached at the very top, then the rendered content sections.
 #  - "container": a parent page holding one child leaf page per present phase
 #    (child title via PHASE_TITLES). The container itself carries no body.
-# A job only ever has one of the practice games present; absent phases are skipped.
+# After all-games (worklog 0067), all four practice games are present every job;
+# any absent phase is simply skipped.
 _LEAF, _CONTAINER = "leaf", "container"
 _HOMEWORK_LAYOUT: list[dict] = [
     {"kind": _LEAF, "title": "Case-Based Preview", "phases": ["case-based-preview"]},
