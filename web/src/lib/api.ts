@@ -155,6 +155,10 @@ export const api = {
       transport?: Transport;
       extract_transport?: RoleTransport;
       judge_transport?: RoleTransport;
+      extract_provider?: string | null;
+      extract_model?: string | null;
+      judge_provider?: string | null;
+      judge_model?: string | null;
     } = {},
   ): Promise<Job> {
     const {
@@ -165,6 +169,10 @@ export const api = {
       transport = "cli",
       extract_transport = "inherit",
       judge_transport = "inherit",
+      extract_provider = null,
+      extract_model = null,
+      judge_provider = null,
+      judge_model = null,
     } = opts;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
@@ -180,6 +188,10 @@ export const api = {
           transport,
           extract_transport,
           judge_transport,
+          extract_provider,
+          extract_model,
+          judge_provider,
+          judge_model,
         }),
       },
     );
@@ -264,6 +276,8 @@ export const api = {
   async launchBatch(body: {
     book_id: string; toc_entry_ids?: string[]; provider?: string; model?: string | null; transport?: Transport;
     extract_transport?: RoleTransport; judge_transport?: RoleTransport; force?: boolean;
+    extract_provider?: string | null; extract_model?: string | null;
+    judge_provider?: string | null; judge_model?: string | null;
   }): Promise<BatchSummary & { jobs_created: number; jobs_adopted: number; jobs_skipped: number }> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),

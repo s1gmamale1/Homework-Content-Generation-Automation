@@ -150,6 +150,8 @@ export interface ProviderModelManifest {
   providers: Record<string, string[]>;
   /** Which providers can run on the pay-per-token API transport (claude/gemini). */
   api_supported: Record<string, boolean>;
+  /** provider -> model -> tier int. */
+  tiers?: Record<string, Record<string, number>>;
 }
 
 /* /api/v1/agent/stats — per-provider rolling consumption against caps */
