@@ -258,32 +258,40 @@ frontend all derive their subject tables from it. Each subject declares a family
 and a practice game.
 
 **One flow for every subject (Flow v2 MVP).** There's no easy/hard split and no `classify`
-step. `flows.flow_for(subject)` returns the same **8-phase** sequence for everyone, differing
-only in *which single practice game* it includes:
+step. `flows.flow_for(subject)` returns the same **11-phase** sequence for every subject —
+the full Gamified Practices set is generated, none skipped:
 
 ```
 case-based-preview → flashcards → memory-check → practice-rlc →
-practice-error-detection → <one subject-matched game> → boss-arena → reflection
+practice-error-detection → practice-memory-match → practice-tictactoe →
+practice-jigsaw → practice-sentence → boss-arena → reflection
 ```
 
 The packet is organized into four "divisions":
 
 - **Learning Sections** — `case-based-preview` (a scenario where the student plays a role and
   makes decisions, with two interleaved "learning blocks"), `flashcards`, `memory-check`.
-- **Practice Arc** — three games: `practice-rlc` (**Real-Life Challenge**),
-  `practice-error-detection` (**Error Detection**), plus **one subject-matched game** chosen
-  by the `SUBJECT_GAME` map (`app/services/flows.py`): `memory-match` for biology & history,
-  `tictactoe` for physics, kimyo & math-algebra, `jigsaw` for geometriya, `sentence` for
-  english. Those four interaction games share one **compact `CbpModeGame`** schema —
-  a game board (typed payload) + a single open "explain your reasoning" prompt (`why_prompt`).
+- **Practice Arc** — all six practice games: `practice-rlc` (**Real-Life Challenge**),
+  `practice-error-detection` (**Error Detection**), and **all four interaction mini-games**
+  (`memory-match`, `tictactoe`, `jigsaw`, `sentence`) — every job, every subject. The four
+  share one **compact `CbpModeGame`** schema — a game board (typed payload) + a single open
+  "explain your reasoning" prompt (`why_prompt`). The `SUBJECT_GAME` map
+  (`app/services/flows.py`) is now metadata only — the per-subject *recommended* game
+  (`memory-match` for biology & history, `tictactoe` for physics/kimyo/math-algebra, `jigsaw`
+  for geometriya, `sentence` for english) — a hint for downstream curation; it no longer gates
+  generation.
 - **Boss Arena** — `boss-arena`, a Why→How→What reasoning "boss fight" quiz.
 - **Reflection** — a short `reflection` debrief.
 
-Why only one interaction game per subject (not all four): the spec forbids "random
-disconnected games," *and* those four games used to inherit the **full** Case-Based-Preview
-shell — so heavy that one game could take 20+ minutes to generate. They were lightened to a
-board + one reasoning prompt (real-CLI generation dropped to ~70 seconds), and each subject
-runs only the single game that fits it.
+Why all four interaction games now (previously one per subject): we generate the full set so
+every game type has content, and *which* game to use is curated downstream rather than fixed by
+the generator. This is affordable because the four games were lightened from the **full**
+Case-Based-Preview shell (one game once took 20+ minutes) to a board + one reasoning prompt
+(~tens of seconds each), and they run **in parallel** in one scheduler wave (shared deps, no
+inter-game deps), so the extra games add ~+37% phase count but much less wall-clock and only a
+small $ increase (the costly whole-PDF `extract` is unchanged; game outputs are small). The
+spec's "no random disconnected games" rule is satisfied by curation, not by skipping
+generation.
 
 ### Prompts: one general set, parameterized by subject
 All phases now read from **`prompts/_general/<phase>.md`** — a single set serving every
