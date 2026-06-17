@@ -193,13 +193,13 @@ pool — compounds the provider-isolation concern in #2 of the controller-review
   *[2026-06-11: partially mitigated — `transport=api` removes interactive auth entirely
   for claude+gemini (env-var keys); cli-mode workers still carry the per-PC login burden
   (`docs/fleet/worker-pc-setup.md`).]*
-- **Local-disk PDFs block multi-pod.** `var/books/<id>/source.pdf` is on local disk;
-  horizontal workers need shared object storage (S3/GCS) first.
-  *[2026-06-11: still open — tracked as ROADMAP **R13**. Blocks `fleet-test-1`.
-  2026-06-12 (`c24f873`): the `var_dir`-dead-setting half is FIXED — storage now
-  honors `VAR_DIR` via `app.services.storage.book_pdf_path()`, so a shared volume
-  mounted at `<VAR_DIR>/books` on every worker is now a one-env-var option. The
-  bytes-distribution half (shared volume / pull-on-demand / object store) is still open.]*
+- **Local-disk PDFs across multiple PCs.** `var/books/<id>/source.pdf` is on local disk.
+  *[✅ RESOLVED — ROADMAP **R13** shipped (PR #9, worklog 0062). Both halves done:
+  storage honors `VAR_DIR` (`app.services.storage.book_pdf_path()`), and a worker
+  missing a PDF now **pulls it on demand from the head** over HTTP
+  (`app.services.book_fetch.ensure_book_pdf_sync`, gated by `FLEET_HEAD_URL` +
+  `AUTH_TOKEN`) and caches it. A shared `<VAR_DIR>/books` volume remains a valid
+  alternative. Remaining: the real cross-machine 2-PC run (`fleet-test-1`), operator-run.]*
 - Secrets management, DB backups, migrations-on-deploy (entrypoint already runs
   `alembic upgrade head`), health checks, autoscaling.
 

@@ -45,10 +45,12 @@ Do this once per PC. After that, the PC generates on its own forever.
 
 2. **Copy one file** onto the PC: `docker-compose.worker.yml`.
 
-3. **Make the textbooks reachable.** The worker reads each book's PDF from a
-   local folder. Easiest for now: put the `var/books` folder on the PC (a shared
-   network drive mapped to that path, or a straight copy). *(Auto-syncing this is
-   planned — see "Rough edges" below.)*
+3. **Point the worker at the head for textbooks.** Set `FLEET_HEAD_URL` to the
+   head's API (e.g. `http://<HEAD_IP>:8000`) plus a matching `AUTH_TOKEN` — a
+   worker that's missing a book's PDF now **fetches it from the head on demand**
+   and caches it locally (ROADMAP R13, shipped). No manual copying needed.
+   *(Alternative: mount a shared `var/books` folder on the PC and skip
+   `FLEET_HEAD_URL` — the worker reads the PDF straight off disk.)*
 
 4. **Log in to the AI tools once.** In a terminal, run `claude` and `gemini` and
    complete the sign-in. (This uses your subscription accounts.)
@@ -132,8 +134,9 @@ Full billing/acceptance detail: `docs/runbooks/phase4-transport-operator-accepta
 
 ## Rough edges (still manual today — being honest)
 
-- **PDFs:** each worker needs the textbook files on its own disk. A shared folder
-  works now; automatic delivery to each PC is planned (roadmap item **R13**).
+- **PDFs:** ✅ solved (ROADMAP **R13**, shipped). A worker missing a book's PDF
+  fetches it from the head on demand (`FLEET_HEAD_URL` + matching `AUTH_TOKEN`)
+  and caches it locally; a shared `var/books` folder still works as an alternative.
 - **AI login:** each PC signs in to the CLIs once, per subscription account. For API billing, keys/SA files are per-PC too (see "Choosing who pays").
 - **No "Start" button yet:** you bring a worker online by provisioning the PC
   (Part B). A dashboard Start/Pause/Off button is a future feature
