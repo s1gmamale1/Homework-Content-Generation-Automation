@@ -9,20 +9,12 @@ import re
 import httpx
 
 from app.config import settings
+from app.services import subjects
 
-# Folded-substring map, LONGEST keyword first so a double-hit is deterministic.
-# "matematika" is intentionally absent (lower-grade math != the app's algebra).
-_SUBJECT_KEYWORDS: list[tuple[str, str]] = [
-    ("ozbekiston tarixi", "history"),
-    ("jahon tarixi", "history"),
-    ("geometriya", "geometriya-g7-11"),
-    ("biolog", "biology"),
-    ("algebra", "math-algebra"),
-    ("ingliz", "english"),
-    ("fizika", "physics"),
-    ("kimyo", "kimyo-g7-11"),
-    ("tarix", "history"),
-]
+# Folded-substring map (folded-keyword, app-subject), LONGEST keyword first so a
+# double-hit (e.g. "jismoniy tarbiya" vs "tarbiya") resolves deterministically.
+# Derived from the single source of truth (app/services/subjects.py).
+_SUBJECT_KEYWORDS: list[tuple[str, str]] = subjects.notion_keyword_pairs()
 
 _APOSTROPHES = "'\u2018\u2019\u02bb`"
 
@@ -31,8 +23,15 @@ def _fold(s: str) -> str:
 
 
 def _map_subject(title: str) -> str | None:
-    """Notion subject-page title -> app subject key, or None if unsupported."""
+    """Notion subject-page title -> app subject key, or None if unsupported.
+
+    Excluded titles (e.g. "Jismoniy tarbiya"/PE, "Axloqiy tarbiya"/Ethics) are
+    rejected BEFORE keyword matching — they contain the bare "tarbiya" keyword
+    (Upbringing) as a substring and would otherwise mis-map to it."""
     folded = _fold(title)
+    for excluded in subjects.EXCLUDED_KEYWORDS:
+        if excluded in folded:
+            return None
     for keyword, app_subject in _SUBJECT_KEYWORDS:
         if keyword in folded:
             return app_subject

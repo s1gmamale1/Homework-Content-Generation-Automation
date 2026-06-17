@@ -4,6 +4,8 @@ New_Flow.md (docs/Infra_prompts/Flow) is the source of truth, NOT flow.md."""
 
 import re
 
+from app.services import subjects
+
 _SVG_BLOCK_RE = re.compile(r"<svg\b[^>]*>.*?</svg>", re.DOTALL | re.IGNORECASE)
 
 
@@ -11,24 +13,15 @@ def _strip_svgs(text: str) -> str:
     return _SVG_BLOCK_RE.sub("[diagram omitted]", text)
 
 
-SUBJECTS: list[str] = [
-    "biology", "english", "geometriya-g7-11", "history",
-    "kimyo-g7-11", "math-algebra", "physics",
-]
+# Derived from the single source of truth (app/services/subjects.py). Add a
+# subject there, not here.
+SUBJECTS: list[str] = subjects.SUBJECT_CODES
 
 # Subject-matched CBP-mode game inserted at position 5. Each subject gets one
 # game that fits its content type: memory-match for factual recall, tictactoe
 # for concept application, jigsaw for spatial/structural reasoning, sentence
 # for language practice.
-SUBJECT_GAME: dict[str, str] = {
-    "biology": "practice-memory-match",
-    "history": "practice-memory-match",
-    "physics": "practice-tictactoe",
-    "kimyo-g7-11": "practice-tictactoe",
-    "math-algebra": "practice-tictactoe",
-    "geometriya-g7-11": "practice-jigsaw",
-    "english": "practice-sentence",
-}
+SUBJECT_GAME: dict[str, str] = {c: d.game for c, d in subjects.REGISTRY.items()}
 
 _BASE_PHASES: list[str] = [
     "case-based-preview", "flashcards", "memory-check",

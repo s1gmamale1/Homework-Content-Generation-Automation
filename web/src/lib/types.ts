@@ -1,5 +1,9 @@
 /* Mirrors the Pydantic schemas in app/schemas/. Keep in sync if the API changes. */
 
+/**
+ * All curriculum subjects. SOURCE OF TRUTH: app/services/subjects.py
+ * (keep this list in sync with that registry). The first 7 are legacy codes.
+ */
 export type Subject =
   | "biology"
   | "english"
@@ -7,7 +11,26 @@ export type Subject =
   | "history"
   | "kimyo-g7-11"
   | "math-algebra"
-  | "physics";
+  | "physics"
+  | "matematika"
+  | "ona-tili"
+  | "adabiyot"
+  | "russian"
+  | "oqish-savodxonligi"
+  | "alifbe"
+  | "tabiiy-fanlar"
+  | "astronomiya"
+  | "geografiya"
+  | "informatika"
+  | "atrof-muhit"
+  | "huquq"
+  | "iqtisodiyot"
+  | "chizmachilik"
+  | "musiqa"
+  | "tasviriy-sanat"
+  | "texnologiya"
+  | "tarbiya"
+  | "chqbt";
 
 export const SUBJECTS: Subject[] = [
   "biology",
@@ -17,6 +40,25 @@ export const SUBJECTS: Subject[] = [
   "kimyo-g7-11",
   "math-algebra",
   "physics",
+  "matematika",
+  "ona-tili",
+  "adabiyot",
+  "russian",
+  "oqish-savodxonligi",
+  "alifbe",
+  "tabiiy-fanlar",
+  "astronomiya",
+  "geografiya",
+  "informatika",
+  "atrof-muhit",
+  "huquq",
+  "iqtisodiyot",
+  "chizmachilik",
+  "musiqa",
+  "tasviriy-sanat",
+  "texnologiya",
+  "tarbiya",
+  "chqbt",
 ];
 
 export type BookStatus = "uploading" | "toc_extracting" | "toc_ready" | "failed";
