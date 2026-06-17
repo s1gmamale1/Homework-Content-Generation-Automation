@@ -28,6 +28,12 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # Per-role transport overrides: "cli" | "api" | "inherit" (follow the job's transport).
     extract_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
     judge_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
+    # Per-role provider/model overrides. NULL = fall back to the role default
+    # (extract -> settings.extract_provider/model; judge -> model_tiers auto).
+    extract_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    extract_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    judge_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    judge_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     batch_id: Mapped[Optional[UUID]] = mapped_column(
         ForeignKey("batches.id"), nullable=True
     )
