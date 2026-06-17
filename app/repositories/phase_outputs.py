@@ -141,12 +141,20 @@ async def find_latest_extract(
     *,
     toc_entry_id: UUID,
     prompt_hash: str,
+    provider: str,
+    model: str,
 ) -> Optional[PhaseOutput]:
-    """Most-recent successful `extract` phase for this (section, prompt-hash).
+    """Most-recent successful `extract` phase for this section.
 
     Used as a cross-job cache: if we've already extracted the lesson context
-    for this section under the same builtin extract prompt, reuse the output
-    instead of re-running Gemini.
+    for this section under the same builtin extract prompt AND the same
+    producing ``(provider, model)``, reuse the output instead of re-running
+    the agent. Reuse now requires same ``(toc_entry_id, prompt_hash, provider,
+    model)`` because the extract role is per-job — a gemini-produced extract
+    must not be served to a job requesting a claude extract. A legacy row with
+    ``provider IS NULL`` never matches (safe miss → forces a fresh extract).
+    Transport is deliberately NOT part of the key: the auth mode does not
+    change the extract output.
     """
     from app.models import HomeworkJob
 
@@ -157,6 +165,8 @@ async def find_latest_extract(
             PhaseOutput.phase_name == "extract",
             PhaseOutput.status == "done",
             PhaseOutput.prompt_hash == prompt_hash,
+            PhaseOutput.provider == provider,
+            PhaseOutput.model_name == model,
             PhaseOutput.output_md.is_not(None),
             HomeworkJob.toc_entry_id == toc_entry_id,
         )

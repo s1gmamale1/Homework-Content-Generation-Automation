@@ -673,6 +673,8 @@ async def _execute_phase(
                         session,
                         toc_entry_id=section_id,
                         prompt_hash=prompt_hash,
+                        provider=extract_provider,
+                        model=extract_model,
                     )
 
             if cached_extract is not None and cached_extract.output_md:
