@@ -23,6 +23,7 @@ from app.services.agent_models import (
     MODEL_MANIFEST,
     api_supported,
     is_valid,
+    resolve_role_transport,
     validate_role_transport,
     validate_transport,
 )
@@ -143,6 +144,21 @@ async def generate(
         if role_err is not None:
             raise HTTPException(400, role_err)
 
+    # Per-role provider/model: validate only explicit picks. The role's effective
+    # transport decides whether an explicit model is mandatory.
+    for role, prov, mdl, role_tx in (
+        ("extract", body.extract_provider, body.extract_model, body.extract_transport),
+        ("judge", body.judge_provider, body.judge_model, body.judge_transport),
+    ):
+        if prov is None:
+            continue
+        if not is_valid(prov, mdl):
+            raise HTTPException(400, f"{role}: unknown (provider, model) ({prov!r}, {mdl!r})")
+        eff_tx = resolve_role_transport(role_tx, body.transport)
+        err = validate_transport(prov, mdl, eff_tx)
+        if err is not None:
+            raise HTTPException(400, f"{role}: {err}")
+
     # Layer 3: serialize concurrent requests for the same (book, section).
     # Lock is held for the rest of this transaction and auto-released on
     # commit, so the second concurrent request waits and then sees the
@@ -187,6 +203,10 @@ async def generate(
         transport=body.transport,
         extract_transport=body.extract_transport,
         judge_transport=body.judge_transport,
+        extract_provider=body.extract_provider,
+        extract_model=body.extract_model,
+        judge_provider=body.judge_provider,
+        judge_model=body.judge_model,
     )
     await session.commit()  # commit + release advisory lock atomically
 

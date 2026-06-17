@@ -10,7 +10,12 @@ from app.repositories import batches as batches_repo
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
-from app.services.agent_models import is_valid, validate_role_transport, validate_transport
+from app.services.agent_models import (
+    is_valid,
+    resolve_role_transport,
+    validate_role_transport,
+    validate_transport,
+)
 
 router = APIRouter(tags=["batches"])
 
@@ -27,6 +32,10 @@ class BatchLaunchRequest(BaseModel):
     transport: str = "cli"
     extract_transport: str = "inherit"   # per-role override; "inherit" follows `transport`
     judge_transport: str = "inherit"
+    extract_provider: Optional[str] = None
+    extract_model: Optional[str] = None
+    judge_provider: Optional[str] = None
+    judge_model: Optional[str] = None
     force: bool = False
 
 
@@ -41,6 +50,10 @@ def _rollup_payload(batch, tally: dict[str, int]) -> dict:
         "transport": batch.transport,
         "extract_transport": batch.extract_transport,
         "judge_transport": batch.judge_transport,
+        "extract_provider": batch.extract_provider,
+        "extract_model": batch.extract_model,
+        "judge_provider": batch.judge_provider,
+        "judge_model": batch.judge_model,
         "rollup": tally,
         "lessons_covered": sum(tally.values()),
         "complete": (tally.get("pending", 0) + tally.get("running", 0)
@@ -93,11 +106,30 @@ async def launch_batch(
         if role_err is not None:
             raise HTTPException(400, role_err)
 
+    # Per-role provider/model: validate only explicit picks. The role's effective
+    # transport decides whether an explicit model is mandatory.
+    for role, prov, mdl, role_tx in (
+        ("extract", body.extract_provider, body.extract_model, body.extract_transport),
+        ("judge", body.judge_provider, body.judge_model, body.judge_transport),
+    ):
+        if prov is None:
+            continue
+        if not is_valid(prov, mdl):
+            raise HTTPException(400, f"{role}: unknown (provider, model) ({prov!r}, {mdl!r})")
+        eff_tx = resolve_role_transport(role_tx, body.transport)
+        err = validate_transport(prov, mdl, eff_tx)
+        if err is not None:
+            raise HTTPException(400, f"{role}: {err}")
+
     batch = await batches_repo.get_or_create_for_book(
         session, book_id=body.book_id, subject=book.subject, grade=book.grade,
         provider=provider, model=body.model, transport=body.transport,
         extract_transport=body.extract_transport,
-        judge_transport=body.judge_transport)
+        judge_transport=body.judge_transport,
+        extract_provider=body.extract_provider,
+        extract_model=body.extract_model,
+        judge_provider=body.judge_provider,
+        judge_model=body.judge_model)
 
     created = adopted = skipped = 0
     for t in targets:
@@ -126,7 +158,11 @@ async def launch_batch(
                                model=body.model, batch_id=batch.id,
                                transport=body.transport,
                                extract_transport=body.extract_transport,
-                               judge_transport=body.judge_transport)
+                               judge_transport=body.judge_transport,
+                               extract_provider=body.extract_provider,
+                               extract_model=body.extract_model,
+                               judge_provider=body.judge_provider,
+                               judge_model=body.judge_model)
         created += 1
 
     await session.flush()
