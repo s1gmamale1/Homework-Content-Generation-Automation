@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from app.services.agent import _subset_pdf
+import app.services.agent as agent
+from app.services.agent import _subset_pdf, read_page_range_text
 
 
 def _make_pdf(tmp_path: Path, n_pages: int) -> Path:
@@ -70,3 +71,64 @@ def test_subset_legacy_callsite_unchanged(tmp_path):
         assert _page_count(out) == 3
     finally:
         Path(out).unlink()
+
+
+# --- read_page_range_text (windowed text slice) ---------------------------
+#
+# No reportlab in this env and pypdf blank pages carry no extractable text, so
+# text-bearing PDFs are produced the way the repo's other agent tests do it:
+# monkeypatch the ``PdfReader`` the function uses with a fake reader whose pages
+# return distinct text via ``extract_text()`` (cf. tests/services/
+# test_toc_source_text.py). The image-only case uses a real pypdf blank PDF,
+# which genuinely yields no text.
+
+class _FakePage:
+    def __init__(self, text: str) -> None:
+        self._t = text
+
+    def extract_text(self) -> str:
+        return self._t
+
+
+def _fake_text_reader(n_pages: int):
+    """Factory for a PdfReader stand-in: each page stamps a unique marker."""
+
+    class _FakeReader:
+        def __init__(self, _path: str) -> None:
+            self.pages = [_FakePage(f"PAGE {i} BODY") for i in range(1, n_pages + 1)]
+
+    return _FakeReader
+
+
+def test_page_range_text_reads_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "PdfReader", _fake_text_reader(14))
+    p = tmp_path / "book.pdf"
+    p.write_bytes(b"%PDF-1.4 dummy")  # path only; reader is faked
+    text = read_page_range_text(p, 10, 12, margin=1)
+    # window widened to [9..13]
+    for i in (9, 10, 11, 12, 13):
+        assert f"PAGE {i} BODY" in text
+    # just outside the window must NOT appear
+    assert "PAGE 8 BODY" not in text
+    assert "PAGE 14 BODY" not in text
+
+
+def test_page_range_text_clamps(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "PdfReader", _fake_text_reader(14))
+    p = tmp_path / "book.pdf"
+    p.write_bytes(b"%PDF-1.4 dummy")
+    # start = max(1, 1 - 5) = 1 ; no negative index, no exception
+    text = read_page_range_text(p, 1, 2, margin=5)
+    assert "PAGE 1 BODY" in text
+
+
+def test_page_range_text_empty_on_imageonly(tmp_path):
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.add_blank_page(width=200, height=200)
+    p = tmp_path / "blank.pdf"
+    with open(p, "wb") as f:
+        writer.write(f)
+    assert read_page_range_text(p, 1, 2, margin=1) == ""

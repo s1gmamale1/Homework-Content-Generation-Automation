@@ -1021,6 +1021,26 @@ def read_whole_book_text(pdf_path: Path) -> str:
     return "".join(chunks).strip()
 
 
+def read_page_range_text(pdf_path: Path, page_start: int, page_end: int, *, margin: int = 0) -> str:
+    """Glyph-decoded text for printed pages [page_start-margin .. page_end+margin],
+    clamped to the PDF's real [1..n] page range, budgeted to extract_max_text_chars.
+    Returns '' if the range yields no text. Built on _read_pdf_pages."""
+    reader = PdfReader(str(pdf_path))
+    n = len(reader.pages)
+    start = max(1, page_start - margin)
+    end = min(n, page_end + margin)
+    if start > end:
+        return ""
+    chunks, _pages = _read_pdf_pages(
+        reader,
+        range(start, end + 1),
+        budget=settings.extract_max_text_chars,
+        already=set(),
+        pdf_name=pdf_path.name,
+    )
+    return "".join(chunks).strip()
+
+
 def extract_text_is_oversize(text: str) -> bool:
     """True if the local text exceeds the whole-text budget → terminal 'too
     large, needs subset'. Pure (unit-testable); read_whole_book_text reads a
