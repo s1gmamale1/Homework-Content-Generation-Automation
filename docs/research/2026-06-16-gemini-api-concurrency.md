@@ -42,15 +42,32 @@ Method: ramp concurrent minimal-token `gemini-2.5-flash-lite` SDK calls, N=1..64
   per-model quota** is (soft ceiling ~50–64 concurrent flash-tier calls).
 - **Per-homework peak fan-out = 3** concurrent SDK calls (DAG wave). 4 concurrent homeworks peaked at 7.
 
-**Model:** `max_concurrent_homeworks ≈ ceiling / fanout ≈ (50…64)/3 ≈ 16–21` flash-tier homeworks,
-**API-bound**. Lower for pro tier (smaller quota). The app's `worker_concurrency` (default 4) is the
-practical cap until raised; one Vertex project = one shared quota pool.
+**First-pass model:** `max_concurrent_homeworks ≈ ceiling / fanout ≈ (50…64)/3 ≈ 16–21` flash-tier
+homeworks, API-bound. **Refined below — this clean number does NOT generalize.**
 
-Stress test total cost: **$0.0009** (796 calls). Hard rule honored: never mass-generate homeworks to probe limits.
+### Multi-model refinement (all 4 production models, 2 runs each)
+`scripts/stress_multimodel.py` ramped `2.5-flash`, `2.5-pro`, `3.1-pro-preview`, `3.1-flash-lite-preview`
+(thinking off + output capped → 1–12 tok/probe). The "clean ceiling" picture broke:
+
+- **The limit is a per-model *rolling RPM quota*, bursty and partly shared — not a fixed concurrency
+  wall.** `3.1-flash-lite` ran clean to N=64 in run 1, then 429'd at **N=2** in run 2 (preceding ramps
+  drained the minute's budget). Same model, 10× different cutoff minutes apart.
+- **Robust cross-run ranking (derived safe concurrent *jobs*, ÷3 fan-out):** `2.5-flash` **~2–3**
+  (tightest, 429s from N≈6–8); `2.5-pro` **~16–20** (0 errors to N=64 both runs); `3.1-pro-preview`
+  **~10–16** (high tolerance but slow, p95 up to 20–160 s); `3.1-flash-lite` **~2–15** (unstable).
+- **The PC is never the bottleneck; the per-model Vertex quota is, and it fluctuates.** No single
+  stable "max jobs" holds across models or minute-to-minute. The authoritative number is the Vertex
+  console quota (`aiplatform.googleapis.com`, per-model RPM + concurrent, per region).
+- **Practical:** `~4` concurrent jobs is safe for any model (the `worker_concurrency` default); pin to
+  `2.5-pro` for `~16–20`; request a quota increase to go higher. Raw: `multimodel_run{1,2}.json`.
+
+Stress test total cost: **<$0.02** (flash-lite ramp 796 calls = $0.0009; multi-model ramps ~2.6–3k tok
+each run). Hard rule honored: never mass-generate homeworks to probe limits.
 
 ## Harness (in `scripts/`)
 - `smoke_4models.py` — reachability/auth smoke for the 4 models via the SDK.
 - `save_homeworks.py` — export a job's phase_outputs + priced usage to `~/Documents`.
-- `stress_concurrency.py` — concurrency ramp (writes `stress_results/{levels.csv,raw.json}`).
+- `stress_concurrency.py` — single-model concurrency ramp (writes `stress_results/{levels.csv,raw.json}`).
+- `stress_multimodel.py` — per-model ramp across all 4 models (thinking off; writes `multimodel.json`).
 - `fanout_analysis.py` — per-homework + N-job concurrent SDK-call fan-out from `agent_usages`.
 - `diag_claim.py` — print runtime worker `CAPABILITIES` + dry-run the claim gate per pending job.
