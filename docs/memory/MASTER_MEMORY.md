@@ -856,3 +856,17 @@ Picked up `api-3` from WISHLIST in parallel with R13 (PDF bytes-distribution) be
 **Verified:** branch updated from `Nggaev-v2` (folds in #18/0066 + all-games/0067) — merge clean; **full suite 719 passed / 51 skipped** on the merged result (controller re-ran, not the pre-merge 638); FE `tsc` clean (per reviewer); in-process per-role routing smoke passes (`42d3604`). Gated pipeline: spec→plan→subagent exec; reviewer verify caught the NULL-model blocker → fixed + re-verified. Spec/plan in `docs/superpowers/{specs,plans}/shipped/2026-06-17-per-role-provider-model*`.
 
 **Notes:** worklog + git-mv-to-shipped folded into the PR before merge (the all-games discipline — never land merged code without its record). The orphan docs-only `feat/per-role-provider-model` branch (early spec/plan, superseded by the shipped copies here) is retired.
+
+## [0069] UI/UX redesign + subject-category drill-down — 2026-06-17 (Habibullo → Nggaev-v2)
+
+**What:** A frontend redesign of the **Library** and **Fleet** pages, plus a new generic, nestable drill-down component (`web/src/components/category-browser.tsx`). Both pages now front their card grids with a **two-level grade → subject drill-down** (instead of one flat wall of cards), and the Fleet per-book launcher became a **collapsible card**. Upload page tweaks included.
+
+**Why:** as the book count grew, the flat Library/Fleet grids became an undifferentiated wall; the user wanted a category layer (pick grade → subject → cards). FE-only — no backend/API/DB change.
+
+**The rebase (the real work):** the redesign was authored on an **old base** (forked at `3c8026e`/PR #17) as a single commit `cbdb601`, then sat 30 commits behind. Rebased onto the current `Nggaev-v2` tip (`4d9ffc9`). **One conflict — `launcher.tsx`** (the only file changed on both sides): the redesign moved the launcher controls into a new collapsible panel but still called `RoleTransportSelect`, which PR #20 had deleted. Reconciled to keep **both** — the redesign's collapsible layout **and** PR #20's per-role `RoleAgentControls` (Extract/Judge provider+model+transport) + API-default generator + weak-judge warning. The other 5 files replayed clean. Force-pushed the rebased result to `Habibullo` (lease-checked).
+
+**Touch-ups (this follow-up):** `aria-expanded` on the per-book card-header toggle (matching the Prepare panel); the drill-down spec doc reconciled to the shipped reality (prop is `getGroupKey`+`groupLabel`, not `getSubject`; behaviour is two nested `CategoryBrowser`s grade→subject) before `git mv` into `docs/superpowers/specs/shipped/`.
+
+**Files:** `web/src/components/category-browser.tsx` (new); `web/src/components/fleet/launcher.tsx` (collapsible + reconciled per-role controls); `web/src/routes/{library,upload}.tsx`; `web/src/lib/subjects.ts` (grade helpers + accents). Spec in `docs/superpowers/specs/shipped/2026-06-17-subject-category-drilldown-design.md`.
+
+**Verified:** `tsc -p tsconfig.app.json --noEmit` clean; `vite build` OK; structural scan of the merged `launcher.tsx` (no duplicated/orphaned blocks; dead `RoleTransportSelect` fully removed); **Playwright** review of the live build — upload/library/fleet + drilled launcher all render with **zero console/runtime errors**, and the reconciled per-role controls render correctly. Confirmed still rebased on the current `Nggaev-v2` tip (`merge-base`). FE-only, no automated route tests exist — proof is typecheck + build + Playwright (repo's UI acceptance bar).

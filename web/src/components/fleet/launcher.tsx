@@ -1,8 +1,26 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ListChecks, Loader2, Rocket, RotateCcw } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ListChecks,
+  Loader2,
+  Plus,
+  Rocket,
+  RotateCcw,
+  Sparkles,
+} from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
+import {
+  CategoryBrowser,
+  compareGradeGroups,
+  gradeAccent,
+  gradeBadge,
+  gradeKey,
+  gradeLabel,
+} from "@/components/category-browser";
 import {
   Select,
   SelectContent,
@@ -11,8 +29,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
-import { subjectLabel } from "@/lib/subjects";
-import type { BatchSummary, Book, RoleTransport, Transport } from "@/lib/types";
+import { fadeUpItem, staggerContainer } from "@/lib/motion";
+import { accentOf, subjectLabel } from "@/lib/subjects";
+import type {
+  BatchSummary,
+  Book,
+  NotionSubject,
+  RoleTransport,
+  Transport,
+} from "@/lib/types";
 import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { RoleAgentControls } from "@/components/fleet/RoleAgentControls";
@@ -32,6 +57,7 @@ export function FleetLauncher({
 }) {
   const qc = useQueryClient();
 
+  const [open, setOpen] = useState(false);
   const [gradePageId, setGradePageId] = useState("");
   const [gradeDigits, setGradeDigits] = useState("");
   const [subjectPageId, setSubjectPageId] = useState("");
@@ -55,6 +81,11 @@ export function FleetLauncher({
     onSuccess: () => {
       toast.success("Preparing — extracting lessons…");
       qc.invalidateQueries({ queryKey: ["books"] });
+      // Collapse + reset the form — progress now shows in the Tray below.
+      setOpen(false);
+      setGradePageId("");
+      setGradeDigits("");
+      setSubjectPageId("");
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Prepare failed"),
   });
@@ -82,56 +113,109 @@ export function FleetLauncher({
   const ready = all.filter(
     (b) => b.status === "toc_ready" && !fullyBatched(b.id),
   );
-  const trayEmpty =
-    preparing.length === 0 && ready.length === 0 && failed.length === 0;
+  // Union of every tray-relevant book, fed to the category drill-down. Each
+  // subject group is re-split back into Preparing/Ready/Failed on render.
+  const trayBooks = [...preparing, ...ready, ...failed];
+  const trayEmpty = trayBooks.length === 0;
 
   return (
-    <div className={cn(CARD, "space-y-6")}>
-      {/* Part A — Prepare */}
-      <div className="space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold tracking-tight text-white">Prepare a subject</h2>
-          <p className="mt-1 text-xs text-white/45">
-            Pull a textbook from Notion, then launch it across the fleet.
-          </p>
-        </div>
-
-        <div className="flex flex-col gap-1.5">
-          <span className={LBL}>Grade</span>
-          <Select
-            value={gradePageId}
-            onValueChange={(pageId) => {
-              const g = gradesQ.data?.find((x) => x.page_id === pageId);
-              setGradePageId(pageId);
-              setGradeDigits(g ? g.title.replace(/\D/g, "") : "");
-              setSubjectPageId("");
-            }}
-            disabled={gradesQ.isLoading}
+    <>
+      {/* Part A — Prepare (its own card, guided steps) */}
+      <div className={cn(CARD, "relative overflow-hidden")}>
+        {/* Soft accent glow — gives the card some life instead of a flat slab. */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -right-16 -top-24 size-52 rounded-full bg-[#7c5cff]/20 blur-3xl"
+        />
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          className="relative flex w-full items-center gap-3.5 text-left"
+        >
+          <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-white/[0.12] bg-gradient-to-br from-[#7c5cff]/40 to-[#4d9bff]/30 shadow-[0_14px_30px_-14px_rgba(124,92,255,0.8)]">
+            <Sparkles className="size-5 text-white" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-semibold tracking-tight text-white">
+              Prepare a subject
+            </h2>
+            <p className="mt-1 text-xs leading-5 text-white/50">
+              {open
+                ? "Pick a grade and a subject, then start the extraction."
+                : "Pull a textbook from Notion, extract its lessons, then launch it across the fleet."}
+            </p>
+          </div>
+          <span
+            className={cn(
+              "grid size-10 shrink-0 place-items-center rounded-full border border-white/[0.14] bg-gradient-to-br from-[#7c5cff] to-[#4d8dff] text-white shadow-[0_12px_30px_-12px_rgba(124,92,255,0.9)] transition-transform duration-300 active:scale-95",
+              open && "rotate-[135deg]",
+            )}
           >
-            <SelectTrigger className={SELECT_TRIGGER}>
-              <SelectValue placeholder={gradesQ.isLoading ? "Loading grades…" : "Choose a grade"} />
-            </SelectTrigger>
-            <SelectContent>
-              {(gradesQ.data ?? []).map((g) => (
-                <SelectItem key={g.page_id} value={g.page_id}>
-                  {g.title}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+            <Plus className="size-5" />
+          </span>
+        </button>
 
-        {gradePageId && (
+        <AnimatePresence initial={false}>
+          {open && (
+            <motion.div
+              key="prepare-form"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+              className="overflow-hidden"
+            >
+              <div className="space-y-5 pt-5">
+        <div className="relative grid gap-4 rounded-2xl border border-white/[0.07] bg-white/[0.02] p-4 sm:grid-cols-2">
+          {/* Step ① Grade */}
           <div className="flex flex-col gap-1.5">
-            <span className={LBL}>Subject</span>
+            <StepLabel n={1}>Grade</StepLabel>
+            <Select
+              value={gradePageId}
+              onValueChange={(pageId) => {
+                const g = gradesQ.data?.find((x) => x.page_id === pageId);
+                setGradePageId(pageId);
+                setGradeDigits(g ? g.title.replace(/\D/g, "") : "");
+                setSubjectPageId("");
+              }}
+              disabled={gradesQ.isLoading}
+            >
+              <SelectTrigger className={SELECT_TRIGGER}>
+                <SelectValue placeholder={gradesQ.isLoading ? "Loading grades…" : "Choose a grade"} />
+              </SelectTrigger>
+              <SelectContent>
+                {(gradesQ.data ?? []).map((g) => (
+                  <SelectItem key={g.page_id} value={g.page_id}>
+                    {g.title}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Step ② Subject — dimmed/disabled until a grade is chosen */}
+          <div
+            className={cn(
+              "flex flex-col gap-1.5 transition-opacity",
+              !gradePageId && "pointer-events-none opacity-40",
+            )}
+          >
+            <StepLabel n={2}>Subject</StepLabel>
             <Select
               value={subjectPageId}
               onValueChange={setSubjectPageId}
-              disabled={subjectsQ.isLoading}
+              disabled={!gradePageId || subjectsQ.isLoading}
             >
               <SelectTrigger className={SELECT_TRIGGER}>
                 <SelectValue
-                  placeholder={subjectsQ.isLoading ? "Loading subjects…" : "Choose a subject"}
+                  placeholder={
+                    !gradePageId
+                      ? "Choose a grade first"
+                      : subjectsQ.isLoading
+                        ? "Loading subjects…"
+                        : "Choose a subject"
+                  }
                 />
               </SelectTrigger>
               <SelectContent>
@@ -141,114 +225,270 @@ export function FleetLauncher({
                     value={s.page_id}
                     disabled={!s.has_textbook || !s.app_subject}
                   >
-                    {s.notion_title}
-                    {!s.has_textbook
-                      ? " · no textbook"
-                      : !s.app_subject
-                        ? " · unsupported"
-                        : ""}
+                    <span className="flex items-center gap-2">
+                      <span>{s.notion_title}</span>
+                      <SubjectBadge subject={s} />
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
-        )}
+        </div>
 
-        <button
-          type="button"
-          className={PRIMARY_BTN}
-          disabled={!subjectUsable || prepare.isPending}
-          onClick={() =>
-            prepare.mutate({ subjectPageId, grade: gradeDigits })
-          }
-        >
-          {prepare.isPending ? (
-            <>
-              <Loader2 className="size-4 animate-spin" />
-              Preparing…
-            </>
-          ) : (
-            <>
-              <Rocket className="size-4" />
-              Prepare
-            </>
+        {/* Step ③ Confirmation line + Prepare */}
+        <div className="relative flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-white/55">
+            {subjectUsable && pickedSubject ? (
+              <>
+                Preparing{" "}
+                <span className="font-medium text-white">
+                  {subjectLabel(pickedSubject.app_subject ?? "")}
+                  {gradeDigits && ` · Grade ${gradeDigits}`}
+                </span>{" "}
+                — extracts the table of contents (~1–3 min).
+              </>
+            ) : (
+              <span className="text-white/35">
+                Pick a grade and a subject with a textbook to continue.
+              </span>
+            )}
+          </p>
+          <button
+            type="button"
+            className={cn(PRIMARY_BTN, "shrink-0")}
+            disabled={!subjectUsable || prepare.isPending}
+            onClick={() => prepare.mutate({ subjectPageId, grade: gradeDigits })}
+          >
+            {prepare.isPending ? (
+              <>
+                <Loader2 className="size-4 animate-spin" />
+                Preparing…
+              </>
+            ) : (
+              <>
+                <Rocket className="size-4" />
+                Prepare
+              </>
+            )}
+          </button>
+        </div>
+              </div>
+            </motion.div>
           )}
-        </button>
+        </AnimatePresence>
       </div>
 
-      {/* Part B — Tray */}
-      <div className="space-y-3 border-t border-white/[0.08] pt-5">
+      {/* Part B — Tray (separate card) */}
+      <div className={cn(CARD, "space-y-4")}>
         <h3 className="text-sm font-semibold tracking-tight text-white">Tray</h3>
 
         {trayEmpty ? (
           <p className="text-sm text-white/45">Prepare a subject above to get started.</p>
         ) : (
-          <div className="space-y-4">
-            {preparing.length > 0 && (
-              <div className="space-y-2">
-                <span className={LBL}>Preparing</span>
-                {preparing.map((b) => (
-                  <div
-                    key={b.id}
-                    className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2.5"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-white">
-                        {subjectLabel(b.subject)}
-                      </div>
-                      <div className="truncate text-xs text-white/45">
-                        {b.original_filename}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2 text-xs text-white/45">
-                      <Loader2 className="size-4 animate-spin" />
-                      <span>extracting lessons… ~1–3 min</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+          <CategoryBrowser
+            items={trayBooks}
+            getGroupKey={(b) => gradeKey(b.grade)}
+            groupLabel={gradeLabel}
+            groupAccent={gradeAccent}
+            groupBadge={gradeBadge}
+            sortGroups={compareGradeGroups}
+            backLabel="All grades"
+            countLabel={(items) => trayCountLabel(items)}
+            renderItems={(gradeBooks) => (
+              // Within a grade, drill down once more by subject.
+              <CategoryBrowser
+                items={gradeBooks}
+                getGroupKey={(b) => b.subject}
+                groupLabel={subjectLabel}
+                groupAccent={accentOf}
+                backLabel="All subjects"
+                countLabel={(items) => trayCountLabel(items)}
+                renderItems={(group) => {
+                  const gPreparing = group.filter(
+                    (b) =>
+                      b.status === "toc_extracting" || b.status === "uploading",
+                  );
+                  const gReady = group.filter((b) => b.status === "toc_ready");
+                  const gFailed = group.filter((b) => b.status === "failed");
+                  return (
+                    <div className="space-y-5">
+                      {gPreparing.length > 0 && (
+                        <div className="space-y-2">
+                          <span className={LBL}>Preparing</span>
+                          <CardGrid>
+                            {gPreparing.map((b) => (
+                              <PreparingCard key={b.id} book={b} />
+                            ))}
+                          </CardGrid>
+                        </div>
+                      )}
 
-            {ready.length > 0 && (
-              <div className="space-y-2">
-                <span className={LBL}>Ready</span>
-                {ready.map((b) => (
-                  <ReadyRow
-                    key={b.id}
-                    book={b}
-                    batchedTransports={batchedTransports.get(b.id) ?? new Set()}
-                  />
-                ))}
-              </div>
-            )}
+                      {gReady.length > 0 && (
+                        <div className="space-y-2">
+                          <span className={LBL}>Ready</span>
+                          <CardGrid>
+                            {gReady.map((b) => (
+                              <ReadyCard
+                                key={b.id}
+                                book={b}
+                                batchedTransports={
+                                  batchedTransports.get(b.id) ?? new Set()
+                                }
+                              />
+                            ))}
+                          </CardGrid>
+                        </div>
+                      )}
 
-            {failed.length > 0 && (
-              <div className="space-y-2">
-                <span className={LBL}>Failed</span>
-                {failed.map((b) => (
-                  <div
-                    key={b.id}
-                    className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2.5"
-                  >
-                    <div className="text-sm font-medium text-white">
-                      {subjectLabel(b.subject)}
+                      {gFailed.length > 0 && (
+                        <div className="space-y-2">
+                          <span className={LBL}>Failed</span>
+                          <CardGrid>
+                            {gFailed.map((b) => (
+                              <FailedCard key={b.id} book={b} />
+                            ))}
+                          </CardGrid>
+                        </div>
+                      )}
                     </div>
-                    <div className="mt-0.5 text-xs text-red-300/80">
-                      {b.error_message ?? "Extraction failed."}
-                    </div>
-                    {/* retry handled via re-prepare in Task 5 */}
-                  </div>
-                ))}
-              </div>
+                  );
+                }}
+              />
             )}
-          </div>
+          />
         )}
       </div>
-    </div>
+    </>
   );
 }
 
-function ReadyRow({
+/* ── Tray scaffolding ───────────────────────────────────────────────── */
+
+/** Staggered responsive grid — mirrors the Library card grid breakpoints.
+ *  `items-start` keeps an expanded Ready card from stretching its row-mates. */
+function CardGrid({ children }: { children: React.ReactNode }) {
+  return (
+    <motion.div
+      className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3"
+      variants={staggerContainer}
+      initial="hidden"
+      animate="show"
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+/** Subject-accent gradient avatar (first letter) — same treatment as Library. */
+function SubjectAvatar({ subject }: { subject: string }) {
+  const [from, to] = accentOf(subject);
+  return (
+    <span
+      className="grid size-10 shrink-0 place-items-center rounded-xl text-sm font-bold text-[#16131f]"
+      style={{ background: `linear-gradient(135deg, ${from}, ${to})` }}
+    >
+      {subjectLabel(subject).charAt(0)}
+    </span>
+  );
+}
+
+/** Status-aware caption for a subject's tray group, e.g. "2 ready · 1 failed".
+ *  Falls back to a plain book count if only one bucket is present. */
+function trayCountLabel(items: Book[]): string {
+  const preparing = items.filter(
+    (b) => b.status === "toc_extracting" || b.status === "uploading",
+  ).length;
+  const ready = items.filter((b) => b.status === "toc_ready").length;
+  const failed = items.filter((b) => b.status === "failed").length;
+  const parts: string[] = [];
+  if (ready) parts.push(`${ready} ready`);
+  if (preparing) parts.push(`${preparing} preparing`);
+  if (failed) parts.push(`${failed} failed`);
+  return parts.join(" · ") || `${items.length} book${items.length === 1 ? "" : "s"}`;
+}
+
+function GradeChip({ grade }: { grade: string }) {
+  return (
+    <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-normal text-white/55">
+      Grade {grade}
+    </span>
+  );
+}
+
+/* ── Preparing / Failed cards ───────────────────────────────────────── */
+
+function PreparingCard({ book }: { book: Book }) {
+  return (
+    <motion.div
+      variants={fadeUpItem}
+      className="flex items-start gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4"
+    >
+      <SubjectAvatar subject={book.subject} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 text-sm font-medium text-white">
+          {subjectLabel(book.subject)}
+          {book.grade && <GradeChip grade={book.grade} />}
+        </div>
+        <div className="mt-1 flex items-center gap-1.5 text-xs text-white/45">
+          <Loader2 className="size-3.5 animate-spin text-[#5b8dff]" />
+          extracting lessons… ~1–3 min
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+function FailedCard({ book }: { book: Book }) {
+  return (
+    <motion.div
+      variants={fadeUpItem}
+      className="flex items-start gap-3 rounded-2xl border border-rose-500/25 bg-rose-500/[0.06] p-4"
+    >
+      <SubjectAvatar subject={book.subject} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 text-sm font-medium text-white">
+          {subjectLabel(book.subject)}
+          {book.grade && <GradeChip grade={book.grade} />}
+        </div>
+        <div className="mt-1 text-xs text-rose-300/80">
+          {book.error_message ?? "Extraction failed."}
+        </div>
+        <div className="mt-1 text-[0.7rem] text-white/35">
+          Re-prepare the subject above to try again.
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+/* ── Subject availability badge (Prepare step ②) ────────────────────── */
+
+function SubjectBadge({ subject }: { subject: NotionSubject }) {
+  if (!subject.has_textbook) {
+    return (
+      <span className="rounded-md bg-amber-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-amber-200">
+        no textbook
+      </span>
+    );
+  }
+  if (!subject.app_subject) {
+    return (
+      <span className="rounded-md bg-white/[0.08] px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-white/45">
+        unsupported
+      </span>
+    );
+  }
+  return (
+    <span className="rounded-md bg-emerald-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-300">
+      textbook ready
+    </span>
+  );
+}
+
+/* ── Ready card — collapsed summary, click to reveal launch controls ──── */
+
+function ReadyCard({
   book,
   batchedTransports,
 }: {
@@ -257,6 +497,7 @@ function ReadyRow({
 }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const [expanded, setExpanded] = useState(false);
   const [provider, setProvider] = useState("claude");
   const [transport, setTransport] = useState<Transport>("api");
   const [extractTransport, setExtractTransport] = useState<RoleTransport>("cli");
@@ -291,6 +532,8 @@ function ReadyRow({
   // the rest (failed / never-run / cancelled) — that's the "remaining" count.
   const remaining = Math.max(0, (lessons ?? 0) - doneCount - activeCount);
   const subset = choosing && selected.size > 0;
+  const pct = lessons && lessons > 0 ? Math.round((doneCount / lessons) * 100) : 0;
+  const [from, to] = accentOf(book.subject);
 
   // Does the picked provider support the pay-per-token API transport? Only
   // claude/gemini do; the toggle is hidden for the rest and transport pins cli.
@@ -370,18 +613,27 @@ function ReadyRow({
   const providers = Object.keys(modelsQ.data?.providers ?? {});
 
   return (
-    <div className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2.5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
+    <motion.div
+      variants={fadeUpItem}
+      className={cn(
+        "overflow-hidden rounded-2xl border bg-white/[0.04] shadow-[0_18px_50px_-36px_rgba(0,0,0,0.95)] backdrop-blur-xl transition-colors",
+        expanded ? "border-white/[0.16]" : "border-white/[0.08] hover:border-white/[0.12]",
+      )}
+    >
+      {/* Collapsed summary — the whole header toggles the control panel. */}
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((e) => !e)}
+        className="flex w-full items-start gap-3 p-4 text-left"
+      >
+        <SubjectAvatar subject={book.subject} />
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 text-sm font-medium text-white">
             {subjectLabel(book.subject)}
-            {book.grade && (
-              <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-normal text-white/55">
-                Grade {book.grade}
-              </span>
-            )}
+            {book.grade && <GradeChip grade={book.grade} />}
           </div>
-          <div className="text-xs text-white/45">
+          <div className="mt-0.5 text-xs text-white/45">
             {lessons ?? "…"} lessons
             {doneCount > 0 && (
               <span className={complete ? "text-emerald-400/80" : undefined}>
@@ -390,229 +642,278 @@ function ReadyRow({
               </span>
             )}
           </div>
+          {/* Progress bar — only once some lessons have run. */}
+          {doneCount > 0 && (
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/[0.07]">
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: `${pct}%`,
+                  background: `linear-gradient(90deg, ${from}, ${to})`,
+                }}
+              />
+            </div>
+          )}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            className={cn(GHOST_BTN, "h-9 px-2.5 text-xs")}
-            onClick={() => {
-              setChoosing((c) => !c);
-              setSelected(new Set());
-            }}
-          >
-            <ListChecks className="size-3.5" />
-            {choosing ? `Choosing (${selected.size})` : "Choose lessons"}
-          </button>
-          <Select value={provider} onValueChange={setProvider}>
-            <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[8.5rem]")}>
-              <SelectValue placeholder="claude" />
-            </SelectTrigger>
-            <SelectContent>
-              {(providers.length > 0 ? providers : ["claude"]).map((p) => (
-                <SelectItem key={p} value={p}>
-                  {p}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {/* CLI | API toggle — only for providers the backend bills via API. */}
-          {apiSupported && (
-            <TransportToggle value={transport} onChange={setTransport} />
+        <ChevronDown
+          className={cn(
+            "mt-1 size-4 shrink-0 text-white/40 transition-transform",
+            expanded && "rotate-180",
           )}
-          {/* Per-role provider/model/billing — always visible (a cli batch can
-              still pin its extract/judge calls to api, and vice versa). Auto =
-              backend default (provider/model) or inherit (transport). */}
-          <RoleAgentControls
-            label="Extract"
-            manifest={modelsQ.data}
-            provider={extractProvider}
-            model={extractModel}
-            transport={extractTransport}
-            onProvider={setExtractProvider}
-            onModel={setExtractModel}
-            onTransport={setExtractTransport}
-          />
-          <RoleAgentControls
-            label="Judge"
-            manifest={modelsQ.data}
-            provider={judgeProvider}
-            model={judgeModel}
-            transport={judgeTransport}
-            onProvider={setJudgeProvider}
-            onModel={setJudgeModel}
-            onTransport={setJudgeTransport}
-            warning={judgeWarning}
-          />
-          {/* API forces an explicit model (no "provider default"). */}
-          {transport === "api" && (
-            <Select value={model ?? ""} onValueChange={(v) => setModel(v)}>
-              <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[11rem]")}>
-                <SelectValue placeholder="Pick a model" />
-              </SelectTrigger>
-              <SelectContent>
-                {modelOptions.map((m) => (
-                  <SelectItem key={m} value={m}>
-                    {m}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-          {/* Re-run the whole batch (force) — regenerates done lessons too.
-              Only when this transport already has a batch and not mid-select. */}
-          {alreadyBatched && !choosing && (
-            <button
-              type="button"
-              className={cn(GHOST_BTN, "h-9 px-2.5 text-xs")}
-              disabled={launch.isPending || missingApiModel}
-              title={
-                missingApiModel
-                  ? "Pick a model to launch on API"
-                  : "Re-generate every lesson in this batch (discards completed outputs)"
-              }
-              onClick={() => {
-                if (
-                  window.confirm(
-                    `Re-generate ALL ${lessons ?? ""} lessons in this batch? This regenerates completed lessons too${transport === "api" ? " and bills API calls" : ""}.`,
-                  )
-                )
-                  launch.mutate({ force: true });
-              }}
-            >
-              <RotateCcw className="size-3.5" />
-              Re-run all
-            </button>
-          )}
-          <button
-            type="button"
-            className={PRIMARY_BTN}
-            disabled={
-              launch.isPending ||
-              (choosing && selected.size === 0) ||
-              missingApiModel ||
-              (!choosing && lessons != null && remaining === 0)
-            }
-            title={
-              missingApiModel
-                ? "Pick a model to launch on API"
-                : complete
-                  ? "All lessons done — use Re-run all to regenerate"
-                  : !choosing && remaining === 0
-                    ? "All remaining lessons are in progress"
-                    : undefined
-            }
-            onClick={() => launch.mutate({})}
-          >
-            {launch.isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Rocket className="size-4" />
-            )}
-            {choosing
-              ? `Launch ${selected.size}`
-              : lessons == null
-                ? "Launch"
-                : complete
-                  ? "Complete"
-                  : remaining === 0
-                    ? "In progress"
-                    : doneCount > 0 || activeCount > 0
-                      ? `Launch remaining ${remaining}`
-                      : "Launch"}
-          </button>
-        </div>
-      </div>
+        />
+      </button>
 
-      {choosing && (
-        <div className="mt-2 w-full space-y-1 rounded-xl border border-white/[0.08] bg-black/20 p-2">
-          {toc.length === 0 ? (
-            <div className="px-1 py-1 text-xs text-white/45">No lessons found.</div>
-          ) : (
-            toc.map((t) => {
-              // Done lessons are NOT selectable for a normal launch — they're
-              // already generated. Re-running one is an explicit Retry (force).
-              if (t.latest_job_status === "done") {
-                return (
-                  <div
-                    key={t.id}
-                    className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-xs text-white/45"
-                  >
-                    <span className="grid size-3.5 shrink-0 place-items-center text-emerald-400/80">
-                      <Check className="size-3" />
-                    </span>
-                    <span className="shrink-0 font-mono text-white/25">
-                      #{t.order_index}
-                    </span>
-                    <span className="min-w-0 truncate">{t.section_title}</span>
-                    <span className="ml-auto shrink-0 text-[10px] text-emerald-400/80">
-                      done
-                    </span>
-                    <button
-                      type="button"
-                      className="inline-flex shrink-0 items-center gap-1 rounded-md border border-white/[0.1] px-1.5 py-0.5 text-[10px] text-white/60 transition-colors hover:bg-white/[0.06] hover:text-white disabled:opacity-40"
-                      disabled={launch.isPending || missingApiModel}
-                      title={
-                        missingApiModel
-                          ? "Pick a model to launch on API"
-                          : "Re-generate just this lesson (discards its current output)"
-                      }
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            `Re-generate "${t.section_title}"? This discards its current output and runs it again${transport === "api" ? " (billed API call)" : ""}.`,
-                          )
-                        )
-                          launch.mutate({ force: true, tocIds: [t.id] });
-                      }}
-                    >
-                      <RotateCcw className="size-3" />
-                      Retry
-                    </button>
-                  </div>
-                );
-              }
-              const on = selected.has(t.id);
-              return (
-                <label
-                  key={t.id}
-                  className="flex cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1 text-xs text-white/80 hover:bg-white/[0.04]"
+      {/* Expanded controls — provider/transport/extract/judge/model + launch. */}
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="space-y-3 border-t border-white/[0.07] px-4 pb-4 pt-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Select value={provider} onValueChange={setProvider}>
+                  <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[8.5rem]")}>
+                    <SelectValue placeholder="claude" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(providers.length > 0 ? providers : ["claude"]).map((p) => (
+                      <SelectItem key={p} value={p}>
+                        {p}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {/* CLI | API toggle — only for providers the backend bills via API. */}
+                {apiSupported && (
+                  <TransportToggle value={transport} onChange={setTransport} />
+                )}
+                {/* Per-role provider/model/billing — a cli batch can still pin its
+                    extract/judge calls to api (and vice versa). Auto = backend
+                    default (provider/model) or inherit (transport). */}
+                <RoleAgentControls
+                  label="Extract"
+                  manifest={modelsQ.data}
+                  provider={extractProvider}
+                  model={extractModel}
+                  transport={extractTransport}
+                  onProvider={setExtractProvider}
+                  onModel={setExtractModel}
+                  onTransport={setExtractTransport}
+                />
+                <RoleAgentControls
+                  label="Judge"
+                  manifest={modelsQ.data}
+                  provider={judgeProvider}
+                  model={judgeModel}
+                  transport={judgeTransport}
+                  onProvider={setJudgeProvider}
+                  onModel={setJudgeModel}
+                  onTransport={setJudgeTransport}
+                  warning={judgeWarning}
+                />
+                {/* API forces an explicit model (no "provider default"). */}
+                {transport === "api" && (
+                  <Select value={model ?? ""} onValueChange={(v) => setModel(v)}>
+                    <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[11rem]")}>
+                      <SelectValue placeholder="Pick a model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {modelOptions.map((m) => (
+                        <SelectItem key={m} value={m}>
+                          {m}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className={cn(GHOST_BTN, "h-9 px-2.5 text-xs")}
+                  onClick={() => {
+                    setChoosing((c) => !c);
+                    setSelected(new Set());
+                  }}
                 >
-                  <input
-                    type="checkbox"
-                    checked={on}
-                    onChange={() =>
-                      setSelected((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(t.id)) next.delete(t.id);
-                        else next.add(t.id);
-                        return next;
-                      })
+                  <ListChecks className="size-3.5" />
+                  {choosing ? `Choosing (${selected.size})` : "Choose lessons"}
+                </button>
+                {/* Re-run the whole batch (force) — regenerates done lessons too.
+                    Only when this transport already has a batch and not mid-select. */}
+                {alreadyBatched && !choosing && (
+                  <button
+                    type="button"
+                    className={cn(GHOST_BTN, "h-9 px-2.5 text-xs")}
+                    disabled={launch.isPending || missingApiModel}
+                    title={
+                      missingApiModel
+                        ? "Pick a model to launch on API"
+                        : "Re-generate every lesson in this batch (discards completed outputs)"
                     }
-                    className="size-3.5 shrink-0 accent-[#7c5cff]"
-                  />
-                  <span className="shrink-0 font-mono text-white/35">
-                    #{t.order_index}
-                  </span>
-                  <span className="min-w-0 truncate">{t.section_title}</span>
-                  {t.latest_job_status === "failed" && (
-                    <span className="ml-auto shrink-0 text-[10px] text-rose-400/80">
-                      failed
-                    </span>
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Re-generate ALL ${lessons ?? ""} lessons in this batch? This regenerates completed lessons too${transport === "api" ? " and bills API calls" : ""}.`,
+                        )
+                      )
+                        launch.mutate({ force: true });
+                    }}
+                  >
+                    <RotateCcw className="size-3.5" />
+                    Re-run all
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={cn(PRIMARY_BTN, "ml-auto")}
+                  disabled={
+                    launch.isPending ||
+                    (choosing && selected.size === 0) ||
+                    missingApiModel ||
+                    (!choosing && lessons != null && remaining === 0)
+                  }
+                  title={
+                    missingApiModel
+                      ? "Pick a model to launch on API"
+                      : complete
+                        ? "All lessons done — use Re-run all to regenerate"
+                        : !choosing && remaining === 0
+                          ? "All remaining lessons are in progress"
+                          : undefined
+                  }
+                  onClick={() => launch.mutate({})}
+                >
+                  {launch.isPending ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Rocket className="size-4" />
                   )}
-                  {(t.latest_job_status === "running" ||
-                    t.latest_job_status === "pending" ||
-                    t.latest_job_status === "cancelling") && (
-                    <span className="ml-auto shrink-0 text-[10px] text-amber-300/80">
-                      {t.latest_job_status}
-                    </span>
+                  {choosing
+                    ? `Launch ${selected.size}`
+                    : lessons == null
+                      ? "Launch"
+                      : complete
+                        ? "Complete"
+                        : remaining === 0
+                          ? "In progress"
+                          : doneCount > 0 || activeCount > 0
+                            ? `Launch remaining ${remaining}`
+                            : "Launch"}
+                </button>
+              </div>
+
+              {choosing && (
+                <div className="w-full space-y-1 rounded-xl border border-white/[0.08] bg-black/20 p-2">
+                  {toc.length === 0 ? (
+                    <div className="px-1 py-1 text-xs text-white/45">No lessons found.</div>
+                  ) : (
+                    toc.map((t) => {
+                      // Done lessons are NOT selectable for a normal launch — they're
+                      // already generated. Re-running one is an explicit Retry (force).
+                      if (t.latest_job_status === "done") {
+                        return (
+                          <div
+                            key={t.id}
+                            className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-xs text-white/45"
+                          >
+                            <span className="grid size-3.5 shrink-0 place-items-center text-emerald-400/80">
+                              <Check className="size-3" />
+                            </span>
+                            <span className="shrink-0 font-mono text-white/25">
+                              #{t.order_index}
+                            </span>
+                            <span className="min-w-0 truncate">{t.section_title}</span>
+                            <span className="ml-auto shrink-0 text-[10px] text-emerald-400/80">
+                              done
+                            </span>
+                            <button
+                              type="button"
+                              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-white/[0.1] px-1.5 py-0.5 text-[10px] text-white/60 transition-colors hover:bg-white/[0.06] hover:text-white disabled:opacity-40"
+                              disabled={launch.isPending || missingApiModel}
+                              title={
+                                missingApiModel
+                                  ? "Pick a model to launch on API"
+                                  : "Re-generate just this lesson (discards its current output)"
+                              }
+                              onClick={() => {
+                                if (
+                                  window.confirm(
+                                    `Re-generate "${t.section_title}"? This discards its current output and runs it again${transport === "api" ? " (billed API call)" : ""}.`,
+                                  )
+                                )
+                                  launch.mutate({ force: true, tocIds: [t.id] });
+                              }}
+                            >
+                              <RotateCcw className="size-3" />
+                              Retry
+                            </button>
+                          </div>
+                        );
+                      }
+                      const on = selected.has(t.id);
+                      return (
+                        <label
+                          key={t.id}
+                          className="flex cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1 text-xs text-white/80 hover:bg-white/[0.04]"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={() =>
+                              setSelected((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(t.id)) next.delete(t.id);
+                                else next.add(t.id);
+                                return next;
+                              })
+                            }
+                            className="size-3.5 shrink-0 accent-[#7c5cff]"
+                          />
+                          <span className="shrink-0 font-mono text-white/35">
+                            #{t.order_index}
+                          </span>
+                          <span className="min-w-0 truncate">{t.section_title}</span>
+                          {t.latest_job_status === "failed" && (
+                            <span className="ml-auto shrink-0 text-[10px] text-rose-400/80">
+                              failed
+                            </span>
+                          )}
+                          {(t.latest_job_status === "running" ||
+                            t.latest_job_status === "pending" ||
+                            t.latest_job_status === "cancelling") && (
+                            <span className="ml-auto shrink-0 text-[10px] text-amber-300/80">
+                              {t.latest_job_status}
+                            </span>
+                          )}
+                        </label>
+                      );
+                    })
                   )}
-                </label>
-              );
-            })
-          )}
-        </div>
-      )}
-    </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
+/** Compact step label with a numbered marker for the Prepare flow. */
+function StepLabel({ n, children }: { n: number; children: React.ReactNode }) {
+  return (
+    <span className={cn(LBL, "flex items-center gap-1.5")}>
+      <span className="grid size-4 place-items-center rounded-full bg-white/[0.08] text-[0.6rem] font-bold text-white/70">
+        {n}
+      </span>
+      {children}
+    </span>
   );
 }
 
