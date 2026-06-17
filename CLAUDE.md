@@ -104,7 +104,7 @@ Three things this pipeline does that aren't obvious from a single file:
 
 ### Subject flows (`app/services/flows.py` + `prompts/<subject>/`)
 
-Each supported subject (biology, english, geometriya-g7-11, history, kimyo-g7-11, math-algebra, physics — `flows.SUBJECTS`) has:
+Supported subjects = the full Uzbek curriculum (grades 1–11, 30 subjects). The **single source of truth is the registry `app/services/subjects.py`** (`SubjectDef`: code, label, family, game, language, Notion keywords); `flows.SUBJECTS`/`SUBJECT_GAME`, `prompts.SUBJECT_LABELS`/`_SUBJECT_FAMILY`, and `notion_fetch._SUBJECT_KEYWORDS` all **derive** from it, as does the FE `web/src/lib/types.ts`/`subjects.ts` (mirrored manually). Add a subject = one registry entry (+ the FE mirror). Each subject:
 - A single phase sequence from `flows.flow_for(subject)` (`flows.py:39`): `_BASE_PHASES` + one subject-matched game (`flows.SUBJECT_GAME`) + `boss-arena` + `reflection`. **No `SUBJECT_FLOWS`, no easy/hard, no `classify`** — MVP single flow (`flows.py:1`).
 - A directory `prompts/<subject>/` with one `.md` per phase plus `flow.md` (documentation only).
 

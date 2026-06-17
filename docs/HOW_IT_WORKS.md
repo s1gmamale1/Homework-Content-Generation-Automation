@@ -248,8 +248,12 @@ the markdown-per-phase reshape.)*
 
 ## 7. Subjects, flows, and phases
 
-Supported subjects: **biology, english, geometriya-g7-11, history, kimyo-g7-11,
-math-algebra, physics**.
+Supported subjects: **the full Uzbek national curriculum, grades 1–11** (30 subjects —
+sciences, math, languages, humanities, plus arts/PE/ICT). The single source of truth is
+the registry in **`app/services/subjects.py`**; `flows`, `prompts`, `notion_fetch`, and the
+frontend all derive their subject tables from it. Each subject declares a family
+(picks the prompt's family block), a language rule (Uzbek default; English/Russian L2),
+and a practice game.
 
 **One flow for every subject (Flow v2 MVP).** There's no easy/hard split and no `classify`
 step. `flows.flow_for(subject)` returns the same **8-phase** sequence for everyone, differing
