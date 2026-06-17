@@ -17,10 +17,11 @@ def _strip_svgs(text: str) -> str:
 # subject there, not here.
 SUBJECTS: list[str] = subjects.SUBJECT_CODES
 
-# Subject-matched CBP-mode game inserted at position 5. Each subject gets one
-# game that fits its content type: memory-match for factual recall, tictactoe
-# for concept application, jigsaw for spatial/structural reasoning, sentence
-# for language practice.
+# Per-subject RECOMMENDED game (metadata only) — the one mini-game that best
+# fits the subject's content type. **Not consumed by the flow:** since every job
+# now generates ALL four mini-games (see _GAMES / flow_for), SUBJECT_GAME no
+# longer gates generation; it survives only as the "which game fits" hint for
+# downstream curation (and one test). Do NOT delete it as "unused".
 SUBJECT_GAME: dict[str, str] = {c: d.game for c, d in subjects.REGISTRY.items()}
 
 _BASE_PHASES: list[str] = [
@@ -28,11 +29,21 @@ _BASE_PHASES: list[str] = [
     "practice-rlc", "practice-error-detection",
 ]
 
+# All four interactive mini-games run on EVERY job — the full Gamified Practices
+# set (rlc + error-detection + these four + boss-arena = all 7) is generated,
+# never skipped. Order is fixed here so phase_order / display order is
+# deterministic. All four have PHASE_DEPS entries, so the wave scheduler runs
+# them concurrently once their shared deps are met (minimal extra wall-clock).
+_GAMES: list[str] = [
+    "practice-memory-match", "practice-tictactoe",
+    "practice-jigsaw", "practice-sentence",
+]
+
 
 def flow_for(subject: str) -> list[str]:
     if subject not in SUBJECTS:
         raise KeyError(f"Unsupported subject: {subject}")
-    return [*_BASE_PHASES, SUBJECT_GAME[subject], "boss-arena", "reflection"]
+    return [*_BASE_PHASES, *_GAMES, "boss-arena", "reflection"]
 
 
 SUPPORTED_SUBJECTS: list[str] = sorted(SUBJECTS)
