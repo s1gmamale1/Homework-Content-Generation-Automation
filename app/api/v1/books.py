@@ -5,6 +5,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -169,6 +170,18 @@ async def get_book(
     session: AsyncSession = Depends(get_session),
 ) -> BookOut:
     return await _book_out_with_toc(session, book_id)
+
+
+@router.get("/{book_id}/source.pdf")
+async def get_book_source_pdf(book_id: UUID):
+    """Serve a book's raw source PDF so a remote fleet worker that's missing the
+    bytes can fetch it on demand (ROADMAP R13). Auth is applied at the
+    router-include level. File-presence only (no DB lookup) — a worker only
+    asks for books in the shared DB it is already working from."""
+    path = storage.book_pdf_path(book_id)
+    if not path.exists():
+        raise HTTPException(404, "source PDF not found")
+    return FileResponse(path, media_type="application/pdf", filename="source.pdf")
 
 
 @router.get("/{book_id}/toc/stream")

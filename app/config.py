@@ -126,6 +126,12 @@ class Settings(BaseSettings):
     # Where PDFs are persisted on disk.
     var_dir: str = "var"  # relative to project root; PDFs persist at <var_dir>/books/<book_id>/source.pdf
 
+    # Fleet R13 — base URL of the head's API (e.g. "http://192.168.1.69:8000").
+    # When a worker is missing a book's source.pdf, it fetches it from here.
+    # EMPTY (default) = no fetch: a missing PDF raises as before, so single-box
+    # and the head's own embedded worker are unchanged. Set on remote workers.
+    fleet_head_url: str = ""
+
     # ─── Cheap-extractor pin ──────────────────────────────────────────────
     # Both PDF-reading paths (TOC extraction at upload time + per-section
     # lesson.extract during a job) are pinned to a cheap model regardless of

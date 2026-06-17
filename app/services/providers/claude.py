@@ -1,8 +1,9 @@
 """Anthropic Claude CLI provider.
 
 Wraps the ``claude`` binary (a.k.a. ``claude.cmd`` on Windows). Argv pattern
-emits a JSON envelope on stdout via ``--output-format json``; attachments are
-passed as positional ``@<path>`` tokens after the prompt.
+runs headless print mode (``-p``) and emits a JSON envelope on stdout via
+``--output-format json``; attachments are passed as positional ``@<path>``
+tokens after the prompt.
 
 Source: ``Homework-Automation/autopilot/agent_runner.py`` lines 637-674.
 """
@@ -29,6 +30,13 @@ class Claude(Provider):
     ) -> list[str]:
         argv: list[str] = [
             binary,
+            # ``-p`` (print mode) is REQUIRED for headless one-shot runs. The
+            # prompt is piped on stdin; without ``-p`` the CLI takes a slow
+            # interactive-vs-print detour reading piped stdin on Windows
+            # (~30s/call vs ~1-2s with ``-p``), which stacks up until heavy
+            # phases blow per_attempt_timeout. Verified identical JSON envelope
+            # with/without ``-p`` on macOS, so parse_envelope is unaffected.
+            "-p",
             "--output-format", "json",
             "--dangerously-skip-permissions",
         ]

@@ -160,6 +160,9 @@ def test_claude_build_argv_no_model(tmp_path: Path) -> None:
     )
     assert argv[0] == "/usr/bin/claude"
     assert "--model" not in argv
+    # ``-p`` (print mode) is required for fast headless one-shot runs; without
+    # it the CLI takes a ~30s/call interactive-detection detour on Windows.
+    assert "-p" in argv
 
 
 def test_claude_build_argv_with_model(tmp_path: Path) -> None:

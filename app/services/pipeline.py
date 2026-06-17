@@ -15,7 +15,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
-from app.services import agent, events_bus, failure_classifier, notion_archive, phase_judge, storage
+from app.services import agent, book_fetch, events_bus, failure_classifier, notion_archive, phase_judge, storage
 from app.services.agent_models import resolve_role_transport
 from app.services.flows import (
     flow_for,
@@ -97,12 +97,10 @@ async def run(job_id: UUID) -> None:
                 "chapter": section.chapter_title or "",
             }
 
-        # Local on-disk PDF — written by app.api.v1.books.upload_book and kept
-        # for the lifetime of the book (no Files-API URI anymore). Same
-        # settings.var_dir base as the writer (storage.book_pdf_path).
-        pdf_path = storage.book_pdf_path(book_id)
-        if not pdf_path.exists():
-            raise RuntimeError(f"Book PDF missing on disk: {pdf_path}")
+        # Local on-disk PDF; on a multi-PC fleet a worker may be missing it, so
+        # fetch-on-demand from the head (R13). Sync helper off the event loop —
+        # same idiom as read_whole_book_text below. Raises if it can't produce it.
+        pdf_path = await asyncio.to_thread(book_fetch.ensure_book_pdf_sync, book_id)
 
         log.info(
             f"[job {job_id}] context loaded | subject={subject} "
