@@ -2,15 +2,26 @@ import pytest
 from app.services import flows
 
 
-def test_flow_is_8_phases_with_subject_game():
+def test_flow_generates_all_seven_gamified_games():
+    # Every job generates the FULL Gamified Practices set (7), skipping none:
+    # rlc + error-detection + all four interactive mini-games + boss-arena.
+    # Which game "fits" a subject is curated downstream, not by skipping.
     base = ["case-based-preview", "flashcards", "memory-check",
             "practice-rlc", "practice-error-detection"]
+    games = ["practice-memory-match", "practice-tictactoe",
+             "practice-jigsaw", "practice-sentence"]
     tail = ["boss-arena", "reflection"]
+    all_gamified = {"practice-rlc", "practice-error-detection",
+                    "practice-memory-match", "practice-tictactoe",
+                    "practice-jigsaw", "practice-sentence", "boss-arena"}
     for subject in flows.SUPPORTED_SUBJECTS:
         seq = flows.flow_for(subject)
-        assert len(seq) == 8
-        assert seq[:5] == base and seq[6:] == tail
-        assert seq[5] == flows.SUBJECT_GAME[subject]   # subject-matched game at position 5
+        assert len(seq) == 11
+        assert seq[:5] == base
+        assert seq[5:9] == games        # all four mini-games, deterministic order
+        assert seq[9:] == tail
+        assert all_gamified <= set(seq)  # all 7 gamified present, none skipped
+        assert len(seq) == len(set(seq)) # no duplicate phases
 
 
 def test_every_subject_game_is_registered_and_has_prompt():

@@ -14,7 +14,7 @@
 4. Each phase produces **markdown** (the deliverable). The operator console streams progress over SSE and renders each phase's markdown for review.
 5. The packet downloads as a **ZIP of one markdown file per phase**.
 
-The flow is a single fixed sequence of **8 phases** per subject (no easy/hard branching): `case-based-preview → flashcards → memory-check → practice-rlc → practice-error-detection → {subject game} → boss-arena → reflection`. The subject game is chosen per subject (memory-match / tic-tac-toe / jigsaw / sentence). Student-facing text is Uzbek (formal "Siz"), with English-as-target handling for the English subject.
+The flow is a single fixed sequence of **11 phases** per subject (no easy/hard branching): `case-based-preview → flashcards → memory-check → practice-rlc → practice-error-detection → practice-memory-match → practice-tictactoe → practice-jigsaw → practice-sentence → boss-arena → reflection`. **All four interaction mini-games are generated every job** (the full Gamified Practices set, skipping none); which game best fits a subject is curated downstream (`SUBJECT_GAME` is now a recommendation hint, not a flow gate). Student-facing text is Uzbek (formal "Siz"), with English-as-target handling for the English subject.
 
 ## Why it's interesting
 
@@ -96,7 +96,7 @@ Homework-Content-Generation-Automation/
 │       ├── providers/            one adapter per CLI (claude/gemini/codex/kimi/opencode)
 │       ├── pipeline.py           DAG-parallel scheduler + phase execution
 │       ├── phase_judge.py        LLM judge (grades each phase vs its prompt)
-│       ├── flows.py              8-phase sequence + DAG deps
+│       ├── flows.py              11-phase sequence + DAG deps
 │       ├── prompts.py            prompt loader (_general/*.md)
 │       ├── worker.py             queue worker (embedded or standalone)
 │       └── notion_*/notion/      Notion archive + fetch
