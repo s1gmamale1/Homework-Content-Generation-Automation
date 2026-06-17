@@ -39,7 +39,9 @@ def test_build_feedback_lists_failures():
 
 def test_judge_uses_run_phase_with_judge_operation_and_neutral_phase():
     src = inspect.getsource(pj.judge)
-    assert "judge_model_for" in src
+    # Judge selection now arrives as params (resolved by the caller via
+    # model_tiers.resolve_judge); judge() consumes them, no longer self-selects.
+    assert "judge_provider" in src and "judge_model" in src
     assert "schema=Verdict" in src
     assert 'operation=f"judge:' in src or "operation=f'judge:" in src
     assert '"__judge__"' in src or "'__judge__'" in src
@@ -56,6 +58,7 @@ import asyncio
 from types import SimpleNamespace
 
 from app.services import agent
+from app.services import model_tiers as mt
 
 
 def _fake_run_phase(verdict):
@@ -65,10 +68,12 @@ def _fake_run_phase(verdict):
 
 
 def _call_judge():
+    jp, jm = mt.judge_model_for("claude", "claude-sonnet-4-6")
     return asyncio.run(pj.judge(
         subject="biology", phase_name="case-based-preview", output_md="x",
         lesson_context=None, prior_outputs={},
         gen_provider="claude", gen_model="claude-sonnet-4-6",
+        judge_provider=jp, judge_model=jm,
     ))
 
 

@@ -27,6 +27,11 @@ class Batch(Base, UUIDPK, Timestamps):
     # Per-role transport overrides: "cli" | "api" | "inherit" (follow the batch's transport).
     extract_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
     judge_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
+    # Per-role provider/model launch-default labels (mirror homework_jobs).
+    extract_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    extract_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    judge_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    judge_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     notion_source: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     __table_args__ = (

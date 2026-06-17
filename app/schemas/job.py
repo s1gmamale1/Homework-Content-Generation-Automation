@@ -35,6 +35,10 @@ class JobOut(BaseModel):
     transport: str = "cli"
     extract_transport: str = "inherit"   # "cli" | "api" | "inherit" (follow `transport`)
     judge_transport: str = "inherit"
+    extract_provider: Optional[str] = None
+    extract_model: Optional[str] = None
+    judge_provider: Optional[str] = None
+    judge_model: Optional[str] = None
     phases: list[PhaseOut] = []
     notion_skip_reason: Optional[str] = None
 
@@ -46,3 +50,7 @@ class GenerateRequest(BaseModel):
     transport: str = "cli"       # "cli" (subprocess) vs "api" (claude/gemini only)
     extract_transport: str = "inherit"   # per-role override; "inherit" follows `transport`
     judge_transport: str = "inherit"
+    extract_provider: str | None = None   # None ⇒ settings.extract_provider
+    extract_model: str | None = None
+    judge_provider: str | None = None      # None ⇒ model_tiers auto-tier
+    judge_model: str | None = None

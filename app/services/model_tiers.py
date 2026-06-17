@@ -74,3 +74,30 @@ def judge_model_for(gen_provider: str, gen_model: Optional[str]) -> tuple[str, s
     judge = (settings.judge_provider, settings.judge_model)
     resolved_gen = (gen_provider, gen_model or default_model(gen_provider))
     return _SELF_FALLBACK if judge == resolved_gen else judge
+
+
+def resolve_judge(
+    gen_provider: str,
+    gen_model: Optional[str],
+    judge_provider: Optional[str],
+    judge_model: Optional[str],
+) -> tuple[str, str]:
+    """Effective judge (provider, model). Explicit override wins, EXCEPT a
+    self-grade (judge resolves to the same model as the generator) which is
+    hard-swapped to the safe auto-tier judge. A NULL override falls back to the
+    auto-tier judge.
+
+    Both sides' models are resolved (an Auto/None model -> the provider's
+    default) BEFORE comparison: a raw `judge_model` comparison let a same-provider
+    judge with model=None (the FE's default for a cli judge) slip past the check
+    and silently self-grade. The self-grade fallback is `judge_model_for`, not the
+    `_SELF_FALLBACK` constant — `_SELF_FALLBACK` is itself a fixed gemini model and
+    would self-match a `gemini-3.1-pro` generator; `judge_model_for` is guaranteed
+    non-self for any generator."""
+    if judge_provider is None:
+        return judge_model_for(gen_provider, gen_model)
+    resolved_gen = (gen_provider, gen_model or default_model(gen_provider))
+    resolved_judge = (judge_provider, judge_model or default_model(judge_provider))
+    if resolved_judge == resolved_gen:
+        return judge_model_for(gen_provider, gen_model)
+    return (judge_provider, judge_model)
