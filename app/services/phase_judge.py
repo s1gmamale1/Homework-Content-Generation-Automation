@@ -19,7 +19,7 @@ from uuid import UUID
 from loguru import logger
 from pydantic import BaseModel
 
-from app.services import agent, model_tiers
+from app.services import agent
 from app.services.prompts import get_prompt
 
 
@@ -134,6 +134,8 @@ async def judge(
     prior_outputs: dict[str, str],
     gen_provider: str,
     gen_model: Optional[str],
+    judge_provider: str,
+    judge_model: Optional[str],
     homework_job_id: Optional[UUID] = None,
     phase_output_id: Optional[UUID] = None,
     transport: str = "cli",
@@ -144,7 +146,6 @@ async def judge(
     generation. For api transport an auth/401 error is RE-RAISED instead of
     swallowed: an api job must fail loudly, not ship unjudged."""
     try:
-        judge_provider, judge_model = model_tiers.judge_model_for(gen_provider, gen_model)
         contract = get_prompt(subject, phase_name)
         judge_prompt = _build_judge_prompt(contract=contract, output_md=output_md)
         result = await agent.run_phase(

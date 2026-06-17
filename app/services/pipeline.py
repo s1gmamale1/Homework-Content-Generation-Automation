@@ -15,7 +15,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
-from app.services import agent, book_fetch, events_bus, failure_classifier, notion_archive, phase_judge, storage
+from app.services import agent, book_fetch, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, storage
 from app.services.agent_models import resolve_role_transport
 from app.services.flows import (
     flow_for,
@@ -98,6 +98,11 @@ async def run(job_id: UUID) -> None:
             judge_transport = resolve_role_transport(
                 getattr(job, "judge_transport", "inherit") or "inherit", transport
             )
+            # Per-job judge provider/model override (Task 6): explicit columns
+            # let the user steer who grades; NULL falls back to the auto-tier
+            # judge. Self-grade is still hard-swapped server-side downstream.
+            judge_provider_ov = getattr(job, "judge_provider", None)
+            judge_model_ov = getattr(job, "judge_model", None)
             # Per-job extract provider/model override (Task 4): explicit columns
             # win, else the cheap pinned extractor from settings. Content phases
             # are UNAFFECTED — they keep using job.provider / job.model.
@@ -192,6 +197,8 @@ async def run(job_id: UUID) -> None:
                     transport=transport,
                     extract_transport=extract_transport,
                     judge_transport=judge_transport,
+                    judge_provider_ov=judge_provider_ov,
+                    judge_model_ov=judge_model_ov,
                     extract_provider=extract_provider,
                     extract_model=extract_model,
                 )
@@ -245,6 +252,8 @@ async def run(job_id: UUID) -> None:
                     transport=transport,
                     extract_transport=extract_transport,
                     judge_transport=judge_transport,
+                    judge_provider_ov=judge_provider_ov,
+                    judge_model_ov=judge_model_ov,
                     extract_provider=extract_provider,
                     extract_model=extract_model,
                 )
@@ -324,6 +333,8 @@ async def _execute_one_phase(
     transport: str = "cli",
     extract_transport: str = "cli",
     judge_transport: str = "cli",
+    judge_provider_ov: Optional[str] = None,
+    judge_model_ov: Optional[str] = None,
 ) -> tuple[str, Optional[int], Optional[int], Optional[Any]]:
     """Run a single phase end-to-end with status tracking, SSE emit, and
     error handling. Wraps `_execute_phase` so both the sequential head loop
@@ -360,6 +371,8 @@ async def _execute_one_phase(
             transport=transport,
             extract_transport=extract_transport,
             judge_transport=judge_transport,
+            judge_provider_ov=judge_provider_ov,
+            judge_model_ov=judge_model_ov,
         )
     except Exception as exc:
         phase_ms = (perf_counter() - t_phase) * 1000
@@ -419,6 +432,8 @@ async def _run_content_phases_parallel(
     transport: str = "cli",
     extract_transport: str = "cli",
     judge_transport: str = "cli",
+    judge_provider_ov: Optional[str] = None,
+    judge_model_ov: Optional[str] = None,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
 ) -> None:
@@ -474,6 +489,8 @@ async def _run_content_phases_parallel(
                             transport=transport,
                             extract_transport=extract_transport,
                             judge_transport=judge_transport,
+                            judge_provider_ov=judge_provider_ov,
+                            judge_model_ov=judge_model_ov,
                             extract_provider=extract_provider,
                             extract_model=extract_model,
                         ),
@@ -618,6 +635,8 @@ async def _execute_phase(
     transport: str = "cli",
     extract_transport: str = "cli",
     judge_transport: str = "cli",
+    judge_provider_ov: Optional[str] = None,
+    judge_model_ov: Optional[str] = None,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
@@ -785,10 +804,14 @@ async def _execute_phase(
             # default. Approximate-but-safe; do not mistake it for exact.
             return model if prod == provider else None
 
+        _jp, _jm = model_tiers.resolve_judge(
+            produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
+        )
         outcome = await phase_judge.judge(
             subject=subject, phase_name=phase_name, output_md=output_md,
             lesson_context=lesson_context, prior_outputs=prior_outputs,
             gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+            judge_provider=_jp, judge_model=_jm,
             homework_job_id=job_id, phase_output_id=po_id,
             transport=judge_transport,
         )
@@ -816,10 +839,14 @@ async def _execute_phase(
                 )
                 # Commit to the regenerated output only after it actually succeeded.
                 output_md, tin, tout, produced_by = r_md, r_tin, r_tout, r_prod
+                _jp2, _jm2 = model_tiers.resolve_judge(
+                    produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
+                )
                 outcome = await phase_judge.judge(
                     subject=subject, phase_name=phase_name, output_md=output_md,
                     lesson_context=lesson_context, prior_outputs=prior_outputs,
                     gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+                    judge_provider=_jp2, judge_model=_jm2,
                     homework_job_id=job_id, phase_output_id=po_id,
                     transport=judge_transport,
                 )

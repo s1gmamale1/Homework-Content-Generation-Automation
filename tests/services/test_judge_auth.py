@@ -10,16 +10,19 @@ import asyncio
 import pytest
 
 from app.services import agent
+from app.services import model_tiers as mt
 from app.services import phase_judge as pj
 
 _AUTH_ERR = "api_error_status: 401 Invalid API key"
 
 
 def _call_judge(transport: str):
+    jp, jm = mt.judge_model_for("claude", "claude-sonnet-4-6")
     return asyncio.run(pj.judge(
         subject="biology", phase_name="case-based-preview", output_md="x",
         lesson_context=None, prior_outputs={},
         gen_provider="claude", gen_model="claude-sonnet-4-6",
+        judge_provider=jp, judge_model=jm,
         transport=transport,
     ))
 
