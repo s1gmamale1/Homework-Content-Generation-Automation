@@ -23,8 +23,15 @@ def _fold(s: str) -> str:
 
 
 def _map_subject(title: str) -> str | None:
-    """Notion subject-page title -> app subject key, or None if unsupported."""
+    """Notion subject-page title -> app subject key, or None if unsupported.
+
+    Excluded titles (e.g. "Jismoniy tarbiya"/PE, "Axloqiy tarbiya"/Ethics) are
+    rejected BEFORE keyword matching — they contain the bare "tarbiya" keyword
+    (Upbringing) as a substring and would otherwise mis-map to it."""
     folded = _fold(title)
+    for excluded in subjects.EXCLUDED_KEYWORDS:
+        if excluded in folded:
+            return None
     for keyword, app_subject in _SUBJECT_KEYWORDS:
         if keyword in folded:
             return app_subject

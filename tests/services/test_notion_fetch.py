@@ -20,8 +20,9 @@ def test_map_subject_messy_and_unsupported():
     assert _map_subject("Matematika\n") == "matematika"   # its own code, NOT algebra
     assert _map_subject("Geografiya") == "geografiya"
     assert _map_subject("Adabiyot") == "adabiyot"
-    # Non-academic subjects are intentionally excluded from the registry.
-    assert _map_subject("Tasviriy san’at") is None
+    # Textbook-bearing non-exam subject — kept.
+    assert _map_subject("Tasviriy san’at") == "tasviriy-sanat"
+    # PE is excluded by decision (must NOT mis-map to Upbringing via "tarbiya").
     assert _map_subject("Jismoniy tarbiya") is None
     # A genuinely non-curriculum title still maps to None.
     assert _map_subject("Sinf rahbari soati") is None

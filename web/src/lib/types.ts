@@ -25,7 +25,12 @@ export type Subject =
   | "atrof-muhit"
   | "huquq"
   | "iqtisodiyot"
-  | "chizmachilik";
+  | "chizmachilik"
+  | "musiqa"
+  | "tasviriy-sanat"
+  | "texnologiya"
+  | "tarbiya"
+  | "chqbt";
 
 export const SUBJECTS: Subject[] = [
   "biology",
@@ -49,6 +54,11 @@ export const SUBJECTS: Subject[] = [
   "huquq",
   "iqtisodiyot",
   "chizmachilik",
+  "musiqa",
+  "tasviriy-sanat",
+  "texnologiya",
+  "tarbiya",
+  "chqbt",
 ];
 
 export type BookStatus = "uploading" | "toc_extracting" | "toc_ready" | "failed";

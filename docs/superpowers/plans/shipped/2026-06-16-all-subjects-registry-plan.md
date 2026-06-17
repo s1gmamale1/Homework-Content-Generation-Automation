@@ -2,7 +2,7 @@
 
 > **For agentic workers:** TDD per task, commit per task. Controller re-runs tests after every commit.
 
-**Goal:** One subject registry (`app/services/subjects.py`) that makes the academically-testable curriculum subjects first-class, with flows/prompts/notion_fetch/FE deriving from it. No regression for the 7 existing subjects. (Surveyed 30 curriculum codes; shipped the 21 academically-testable — 9 non-academic subjects excluded by user request.)
+**Goal:** One subject registry (`app/services/subjects.py`) that makes the supported curriculum subjects first-class, with flows/prompts/notion_fetch/FE deriving from it. No regression for the 7 existing subjects. (Surveyed 30 curriculum codes; shipped **26** — academic subjects + textbook-bearing non-exam ones; excluded PE + 3 textbook-less soft subjects after a Notion textbook audit.)
 
 **Spec:** `docs/superpowers/specs/2026-06-16-all-subjects-registry-design.md`
 
@@ -28,7 +28,7 @@
 **Files:** Modify `app/services/flows.py:14-45`.
 
 - [ ] Replace literal `SUBJECTS` / `SUBJECT_GAME` with `from app.services import subjects` then `SUBJECTS = subjects.SUBJECT_CODES`, `SUBJECT_GAME = {c: d.game for c,d in subjects.REGISTRY.items()}`. Keep `_BASE_PHASES`, `flow_for`, `SUPPORTED_SUBJECTS`, `PHASE_DEPS`, helpers unchanged.
-- [ ] Run: `uv run python -m pytest tests/services/test_general_flow.py tests/services/test_learning_flow.py -q` → PASS (now iterate all 21).
+- [ ] Run: `uv run python -m pytest tests/services/test_general_flow.py tests/services/test_learning_flow.py -q` → PASS (now iterate all 26).
 - [ ] Commit: `refactor(flows): derive SUBJECTS/SUBJECT_GAME from registry`.
 
 ### Task 3: Derive `prompts.py` from the registry + Russian L2 rule
@@ -54,8 +54,8 @@
 
 **Files:** Modify `web/src/lib/types.ts:3-20`; `web/src/lib/subjects.ts:9-17`.
 
-- [ ] `Subject` union + `SUBJECTS` array = all 21 codes (existing 7 first, then new), with a comment: source of truth is `app/services/subjects.py`.
-- [ ] `SUBJECT_LABELS: Record<Subject,string>` short English labels for all 21 (e.g. matematika:"Mathematics", ona-tili:"Uzbek", adabiyot:"Literature", russian:"Russian", geografiya:"Geography", informatika:"Informatics", huquq:"Law", iqtisodiyot:"Economics", astronomiya:"Astronomy", `chizmachilik`:"Technical drawing", etc.).
+- [ ] `Subject` union + `SUBJECTS` array = all 26 codes (existing 7 first, then new), with a comment: source of truth is `app/services/subjects.py`.
+- [ ] `SUBJECT_LABELS: Record<Subject,string>` short English labels for all 26 (e.g. matematika:"Mathematics", ona-tili:"Uzbek", adabiyot:"Literature", russian:"Russian", geografiya:"Geography", informatika:"Informatics", huquq:"Law", iqtisodiyot:"Economics", astronomiya:"Astronomy", `chizmachilik`:"Technical drawing", etc.).
 - [ ] Run: `cd web && npx tsc -p tsconfig.app.json --noEmit` → clean.
 - [ ] Commit: `feat(web): list all curriculum subjects in the subject registry`.
 

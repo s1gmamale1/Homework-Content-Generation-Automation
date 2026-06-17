@@ -76,12 +76,20 @@ _DEFS: list[SubjectDef] = [
     _d("iqtisodiyot", "Economics (Iqtisodiyot)", "humanities", _MEMORY, "uz",
        "iqtisodiy bilim", "iqtisodiyot", "tadbirkorlik"),
     _d("chizmachilik", "Technical drawing (Chizmachilik)", "math", _JIGSAW, "uz", "chizmachilik"),
+    # Non-exam subjects that nonetheless ship real textbooks in Notion (so they
+    # are launchable) — kept by user decision. PE is deliberately NOT here.
+    _d("musiqa", "Music (Musiqa)", "default", _MEMORY, "uz", "musiqa"),
+    _d("tasviriy-sanat", "Fine arts (Tasviriy san'at)", "default", _MEMORY, "uz", "tasviriy"),
+    _d("texnologiya", "Technology (Texnologiya)", "default", _MEMORY, "uz", "texnologiya"),
+    _d("tarbiya", "Upbringing (Tarbiya)", "humanities", _MEMORY, "uz", "tarbiya"),
+    _d("chqbt", "Pre-conscription training (CHQBT)", "humanities", _MEMORY, "uz", "chqbt"),
 ]
-# NOTE: registry intentionally lists only academically-testable subjects. The
-# non-academic curriculum entries (jismoniy tarbiya/PE, musiqa, tasviriy san'at,
-# texnologiya, tarbiya, odobnoma, ma'naviyat, kelajak soati, CHQBT) are excluded
-# on purpose — they have no examinable subject-matter the homework pipeline can
-# assess. Add one back as a `_d(...)` line here (+ FE mirror) if that changes.
+# Excluded subjects (NOT registered): PE (jismoniy tarbiya — has textbooks but
+# excluded by decision), and odobnoma/axloqiy-tarbiya, ma'naviyat, kelajak soati
+# (no textbook in Notion). The first two below also SHADOW the bare "tarbiya"
+# keyword above (substring match), so `_map_subject` must reject them FIRST or a
+# PE/Ethics page would mis-map to Upbringing. Folded (lowercase, no apostrophes).
+EXCLUDED_KEYWORDS: tuple[str, ...] = ("jismoniy tarbiya", "axloqiy tarbiya")
 
 REGISTRY: dict[str, SubjectDef] = {d.code: d for d in _DEFS}
 SUBJECT_CODES: list[str] = [d.code for d in _DEFS]

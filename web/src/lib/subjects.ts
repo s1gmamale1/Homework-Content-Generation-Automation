@@ -28,6 +28,11 @@ export const SUBJECT_LABELS: Record<Subject, string> = {
   huquq: "Law",
   iqtisodiyot: "Economics",
   chizmachilik: "Technical drawing",
+  musiqa: "Music",
+  "tasviriy-sanat": "Fine arts",
+  texnologiya: "Technology",
+  tarbiya: "Upbringing",
+  chqbt: "Pre-conscription training",
 };
 
 export function subjectLabel(subject: string): string {

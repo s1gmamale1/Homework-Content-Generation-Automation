@@ -248,9 +248,10 @@ the markdown-per-phase reshape.)*
 
 ## 7. Subjects, flows, and phases
 
-Supported subjects: **the academically-testable subjects of the Uzbek curriculum, grades 1–11**
-(21 subjects — sciences, math, languages, humanities; non-academic entries like PE, music, art,
-ethics, and pre-conscription training are intentionally excluded). The single source of truth is
+Supported subjects: **26 subjects of the Uzbek curriculum, grades 1–11** — the academic ones plus
+the non-academic ones that ship a real textbook in Notion (music, fine arts, technology, upbringing,
+pre-conscription training). Excluded: PE (by decision) and the three textbook-less soft subjects
+(ethics, spirituality, future-hour). The single source of truth is
 the registry in **`app/services/subjects.py`**; `flows`, `prompts`, `notion_fetch`, and the
 frontend all derive their subject tables from it. Each subject declares a family
 (picks the prompt's family block), a language rule (Uzbek default; English/Russian L2),

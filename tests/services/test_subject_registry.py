@@ -58,14 +58,25 @@ def test_all_curriculum_subjects_present():
                  "tabiiy-fanlar", "chizmachilik", "oqish-savodxonligi",
                  "alifbe", "atrof-muhit"):
         assert code in subjects.REGISTRY, code
-    assert len(subjects.REGISTRY) == 21
+    assert len(subjects.REGISTRY) == 26
 
 
-def test_non_academic_subjects_excluded():
-    # Values/activity/creative subjects are intentionally NOT registered.
-    for code in ("jismoniy-tarbiya", "musiqa", "tasviriy-sanat", "texnologiya",
-                 "tarbiya", "odobnoma", "manaviyat", "kelajak-soati", "chqbt"):
+def test_excluded_subjects_not_registered():
+    # PE (excluded by decision) + the three textbook-less subjects are NOT registered.
+    for code in ("jismoniy-tarbiya", "odobnoma", "manaviyat", "kelajak-soati"):
         assert code not in subjects.REGISTRY, code
+    # ...but these textbook-bearing ones WERE kept.
+    for code in ("musiqa", "tasviriy-sanat", "texnologiya", "tarbiya", "chqbt"):
+        assert code in subjects.REGISTRY, code
+
+
+def test_excluded_keywords_shadow_bare_tarbiya():
+    # "tarbiya" (Upbringing) is a bare keyword; PE/Ethics titles contain it but
+    # must NOT map to Upbringing — they are rejected via EXCLUDED_KEYWORDS.
+    from app.services import notion_fetch
+    assert notion_fetch._map_subject("Jismoniy tarbiya") is None
+    assert notion_fetch._map_subject("Axloqiy tarbiya") is None
+    assert notion_fetch._map_subject("Tarbiya") == "tarbiya"
 
 
 def test_notion_keyword_pairs_longest_first():
@@ -97,13 +108,17 @@ def test_notion_keyword_pairs_longest_first():
     ("Astronomiya", "astronomiya"),
     ("Huquq", "huquq"),
     ("Rules", None),
-    # Non-academic subjects are intentionally unmapped now.
-    ("Tasviriy san'at", None),
+    # Textbook-bearing non-exam subjects that were kept.
+    ("Tasviriy san'at", "tasviriy-sanat"),
+    ("Musiqa", "musiqa"),
+    ("Musiqa madaniyati", "musiqa"),
+    ("Texnologiya", "texnologiya"),
+    ("Tarbiya", "tarbiya"),
+    ("CHQBT", "chqbt"),
+    # Excluded subjects stay unmapped (PE by decision; the rest have no textbook).
     ("Jismoniy tarbiya", None),
-    ("Tarbiya", None),
     ("Axloqiy tarbiya", None),
     ("Kelajak soati", None),
-    ("Musiqa", None),
 ])
 def test_notion_title_maps_to_code(title, expected):
     from app.services import notion_fetch

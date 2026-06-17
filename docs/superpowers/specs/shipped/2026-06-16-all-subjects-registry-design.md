@@ -22,7 +22,7 @@ Non-goals (YAGNI / "don't overdo"): no per-subject prompt files; no new family p
 
 ## Subject set (from Notion, grades 1–11)
 
-30 canonical codes in the table below. **Scope trim (applied before merge, by user request): the registry ships only the 21 academically-testable subjects** — the 9 non-academic curriculum entries (jismoniy-tarbiya/PE, musiqa, tasviriy-sanat, texnologiya, tarbiya, odobnoma, manaviyat, kelajak-soati, chqbt) are excluded (no examinable subject-matter for the homework pipeline). The table documents the full survey; the shipped registry omits those 9 rows.
+30 canonical codes in the table below. **Final scope (applied before merge, by user decision): the registry ships 26 subjects.** First trimmed to 21 "academically-testable"; then a Notion textbook audit found that 6 of the 9 dropped subjects actually ship textbook PDFs, so the 5 textbook-bearing non-exam subjects (musiqa, tasviriy-sanat, texnologiya, tarbiya, chqbt) were kept. **Excluded (4):** jismoniy-tarbiya/PE (by decision) + the 3 textbook-less soft subjects (odobnoma, manaviyat, kelajak-soati). The table documents the full survey; the shipped registry omits those 4 rows. `subjects.EXCLUDED_KEYWORDS` rejects "Jismoniy tarbiya"/"Axloqiy tarbiya" so they don't mis-map to Upbringing via the bare "tarbiya" keyword.
 
 Two history subjects (O'zbekiston tarixi + Jahon tarixi) intentionally **merge** into the existing `history` code (same humanities prompts; grade + book title carry the distinction; preserves existing books). Natural-science variants (Tabiiy fanlar / Tabiatshunoslik / Science) merge into `tabiiy-fanlar`. Economics variants merge into `iqtisodiyot`.
 
@@ -99,7 +99,7 @@ New language rule `_LANG_RUSSIAN`: Russian-as-L2 for native-Uzbek learners — t
 
 ## Verification
 
-- Existing suite stays green: `test_prompt_coverage` / `test_general_flow` / `test_learning_flow` iterate `SUPPORTED_SUBJECTS` and now auto-cover all 21; design guarantees every subject resolves family+language+label with no leftover `{{...}}` and a game whose prompt exists.
+- Existing suite stays green: `test_prompt_coverage` / `test_general_flow` / `test_learning_flow` iterate `SUPPORTED_SUBJECTS` and now auto-cover all 26; design guarantees every subject resolves family+language+label with no leftover `{{...}}` and a game whose prompt exists.
 - New `tests/services/test_subject_registry.py`:
   - Regression: the 7 legacy codes keep their exact family/game/label.
   - Every registry subject: family resolvable, game prompt-file exists, language key valid, `get_prompt` renders no `{{`.
