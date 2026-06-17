@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 
@@ -55,7 +55,11 @@ def ensure_book_pdf_sync(book_id: UUID | str) -> Path:
 
     book_dir = storage.book_dir(book_id)
     book_dir.mkdir(parents=True, exist_ok=True)  # first-time remote: no dir yet
-    tmp = book_dir / f"source.pdf.{os.getpid()}.tmp"  # same fs -> atomic replace
+    # Unique per call: the PID alone collides when one worker process runs
+    # several lessons of the SAME book concurrently (asyncio tasks share the
+    # PID) — they'd race on one temp file (a sharing violation on Windows).
+    # uuid4 makes each fetch's temp distinct; os.replace stays atomic.
+    tmp = book_dir / f"source.pdf.{os.getpid()}.{uuid4().hex}.tmp"  # same fs -> atomic replace
 
     url = f"{head.rstrip('/')}/api/v1/books/{book_id}/source.pdf"
     token = settings.auth_token.split(",")[0].strip()

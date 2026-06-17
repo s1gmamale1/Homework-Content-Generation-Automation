@@ -80,3 +80,36 @@ def test_outbound_auth_header_from_first_token(monkeypatch, tmp_path):
     book_fetch.ensure_book_pdf_sync(bid)
     assert seen["url"] == f"http://head:8000/api/v1/books/{bid}/source.pdf"
     assert seen["headers"] == {"Authorization": "Bearer tokA"}
+
+
+def test_concurrent_same_book_fetches_use_distinct_temps(monkeypatch, tmp_path):
+    """Two lessons of the SAME book in one worker process (asyncio tasks share
+    the PID) fetch concurrently. Each must write to its OWN temp file — a shared
+    name races and raises a sharing violation on Windows (the R13 field-test bug)."""
+    import threading
+
+    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "fleet_head_url", "http://head")
+    monkeypatch.setattr(settings, "auth_token", "t")
+    bid = uuid4()
+    temps: list = []
+    both_in_flight = threading.Barrier(2)
+
+    def _slow(url, headers, tmp):
+        temps.append(tmp)
+        both_in_flight.wait(timeout=5)  # hold both calls mid-fetch simultaneously
+        tmp.write_bytes(b"%PDF concurrent")
+
+    monkeypatch.setattr(book_fetch, "_fetch_to_temp", _slow)
+    threads = [
+        threading.Thread(target=book_fetch.ensure_book_pdf_sync, args=(bid,))
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(temps) == 2
+    assert temps[0] != temps[1], "concurrent same-book fetches collided on one temp file"
+    assert storage.book_pdf_path(bid).exists()  # one of them won the atomic replace
