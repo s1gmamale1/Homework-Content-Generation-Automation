@@ -737,28 +737,51 @@ async def _execute_phase(
                 )
             gate_a = agent.validate_extract_text(book_text)
             if gate_a is not None:
-                raise RuntimeError(f"lesson.extract: {gate_a}")
-
-            async def _extract_run(prov: str, mdl: Optional[str]):
-                out, tin_, tout_ = await agent.summarize_lesson(
-                    provider=prov, model=mdl, book_text=book_text,
+                # Scanned / no-text-layer PDF: the whole-book text is unreadable, so
+                # vision-attach a page-window of the lesson and let the model read it.
+                # Vision requires attachments → forced transport=cli (api is text-only).
+                ps, pe = section["page_start"], section["page_end"]
+                if not ps or not pe:
+                    raise RuntimeError(
+                        f"lesson.extract: {gate_a} and no page range to scope a vision extract"
+                    )
+                if extract_transport == "api":
+                    logger.info(
+                        "lesson.extract: scanned PDF → forcing transport=cli for vision; requested=api"
+                    )
+                out_md, tin, tout = await agent.summarize_lesson_vision(
+                    provider=extract_provider, model=extract_model, pdf_path=pdf_path,
                     section_title=section["title"], section_number=section["number"],
-                    page_start=section["page_start"], page_end=section["page_end"],
-                    homework_job_id=job_id, phase_output_id=po_id,
+                    page_start=ps, page_end=pe, homework_job_id=job_id, phase_output_id=po_id,
+                )
+                reason = agent.validate_extract_summary(out_md)
+                if reason is not None:
+                    raise failure_classifier.ExtractRefusal(
+                        f"lesson.extract Gate B (vision): {reason}"
+                    )
+                output_md, produced_by = out_md, extract_provider
+                parsed_struct = None
+            else:
+                async def _extract_run(prov: str, mdl: Optional[str]):
+                    out, tin_, tout_ = await agent.summarize_lesson(
+                        provider=prov, model=mdl, book_text=book_text,
+                        section_title=section["title"], section_number=section["number"],
+                        page_start=section["page_start"], page_end=section["page_end"],
+                        homework_job_id=job_id, phase_output_id=po_id,
+                        transport=extract_transport,
+                    )
+                    reason = agent.validate_extract_summary(out)
+                    if reason is not None:
+                        raise failure_classifier.ExtractRefusal(f"lesson.extract Gate B: {reason}")
+                    return out, tin_, tout_
+
+                output_md, tin, tout, produced_by = await _run_with_failover(
+                    requested_provider=extract_provider,
+                    model=extract_model,
+                    run_fn=_extract_run,
                     transport=extract_transport,
                 )
-                reason = agent.validate_extract_summary(out)
-                if reason is not None:
-                    raise failure_classifier.ExtractRefusal(f"lesson.extract Gate B: {reason}")
-                return out, tin_, tout_
-
-            output_md, tin, tout, produced_by = await _run_with_failover(
-                requested_provider=extract_provider,
-                model=extract_model,
-                run_fn=_extract_run,
-                transport=extract_transport,
-            )
-            parsed_struct = None
+                parsed_struct = None
         else:
             base_phase_prompt = get_prompt(subject, phase_name)
 
