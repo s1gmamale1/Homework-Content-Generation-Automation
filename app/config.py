@@ -114,6 +114,8 @@ class Settings(BaseSettings):
     # is the separate subset-TOC/shrink effort). ~600K chars ≈ ~150K tokens —
     # fits a normal <20MB textbook comfortably inside gemini-flash's context.
     extract_max_text_chars: int = 600_000
+    extract_window_pages: int = 5        # ± margin around printed page range for scoped extract
+    extract_window_max_pages: int = 25   # hard cap on a scoped window (size/cost guard)
     # Gate A (raw local text): below this many chars, or below this printable-
     # letter ratio, the PDF is treated as unreadable (scanned / broken font).
     extract_min_text_chars: int = 500

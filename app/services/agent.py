@@ -1587,6 +1587,13 @@ generation. Summarize only that lesson. {rules}
 ===== END TEXTBOOK TEXT ====="""
 
 
+_SUMMARIZE_VISION_PROMPT = """The attached PDF pages contain a textbook lesson. \
+Locate the lesson titled "{title}" (section {number}; it is printed around pages \
+{ps}-{pe} — treat the page numbers only as a hint, find it by its TITLE) and write \
+a concise, factual summary of THAT lesson's content for downstream homework \
+generation. Summarize only that lesson. {rules}"""
+
+
 async def summarize_lesson(
     *,
     provider: str,
@@ -1646,6 +1653,119 @@ async def summarize_lesson(
     logger.success(
         f"agent.lesson.extract done | provider={provider} section={section_number} "
         f"chars={len(text)} input={prompt_tokens:,} output={output_tokens:,} duration_ms={duration_s * 1000:.0f}"
+    )
+    return text, prompt_tokens, output_tokens
+
+
+# ─────────────────────────────────────────────────────────────────────
+# summarize_lesson_vision — forced-cli, section page-window PDF attached
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def summarize_lesson_vision(
+    *,
+    provider: str,
+    model: Optional[str],
+    pdf_path: Path,
+    section_title: str,
+    section_number: str,
+    page_start: int,
+    page_end: int,
+    homework_job_id: UUID,
+    phase_output_id: UUID,
+) -> tuple[str, int, int]:
+    """VISION fallback extract (scanned / unreadable-text PDFs): attach the
+    section's page window as a small PDF and have the model read it visually.
+
+    Vision is ALWAYS cli — there is no api PDF-attach path — so this function
+    takes no ``transport`` param and hardcodes ``transport="cli"`` for both the
+    spawn and the usage row. Returns ``(text, prompt_tokens, output_tokens)``.
+    Raises ``RuntimeError`` (fail loud) when the page range can't be scoped or
+    the CLI exits non-zero. Records a usage row even on failure."""
+    prov = get_provider(provider)
+    resolved_model = _resolve_model(provider, model)
+
+    # Scope the window BEFORE any spawn — fail loud if we can't carve it.
+    window_pdf = _subset_pdf(
+        pdf_path,
+        page_start,
+        page_end,
+        margin=settings.extract_window_pages,
+        max_pages=settings.extract_window_max_pages,
+    )
+    if window_pdf is None:
+        raise RuntimeError(
+            f"lesson.extract (vision): cannot scope page range "
+            f"{page_start}-{page_end} of {pdf_path.name}"
+        )
+
+    instruction = _SUMMARIZE_VISION_PROMPT.format(
+        title=section_title,
+        number=section_number,
+        ps=page_start if page_start is not None else "?",
+        pe=page_end if page_end is not None else "?",
+        rules=_NO_PREAMBLE,
+    )
+    prompt = _build_master_prompt(
+        phase_prompt=instruction,
+        phase_name="lesson.extract",
+        lesson_context=None,
+        prior_outputs=None,
+        difficulty=None,
+        schema=None,
+        provider_suffix=prov.prompt_suffix(None),
+        attachment_preamble=prov.format_attachments([window_pdf]),
+    )
+
+    started_at = datetime.now(timezone.utc)
+    t0 = perf_counter()
+    try:
+        rc, text, usage, stderr = await _spawn(
+            provider=prov,
+            model=resolved_model,
+            prompt=prompt,
+            attachments=[window_pdf],
+            transport="cli",
+        )
+    finally:
+        # Remove the temp window PDF (never the book's source.pdf).
+        try:
+            window_pdf.unlink()
+        except OSError:
+            pass
+
+    duration_s = perf_counter() - t0
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    ok = rc == 0
+    await _record_usage(
+        operation="lesson.extract",
+        provider=provider,
+        model_name=resolved_model,
+        usage=usage,
+        duration_s=duration_s,
+        started_at=started_at,
+        success=ok,
+        auth_mode="cli",
+        homework_job_id=homework_job_id,
+        phase_output_id=phase_output_id,
+        error_message=None if ok else f"{provider} CLI exited rc={rc}",
+        extra_envelope={
+            "section_number": section_number,
+            "section_title": section_title,
+            "vision": True,
+        },
+    )
+    if not ok:
+        raise RuntimeError(
+            f"lesson.extract (vision): {provider} CLI exited rc={rc} "
+            f":: {_failure_preview(stderr, text)}"
+        )
+    logger.success(
+        f"agent.lesson.extract done (vision) | provider={provider} "
+        f"section={section_number} chars={len(text)} "
+        f"input={prompt_tokens:,} output={output_tokens:,} "
+        f"duration_ms={duration_s * 1000:.0f}"
     )
     return text, prompt_tokens, output_tokens
 
