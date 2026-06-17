@@ -22,9 +22,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { RoleAgentControls } from "@/components/fleet/RoleAgentControls";
 import { api } from "@/lib/api";
 import { subjectLabel } from "@/lib/subjects";
-import type { JobStatus, RoleTransport, Transport } from "@/lib/types";
+import type {
+  JobStatus,
+  ProviderModelManifest,
+  RoleTransport,
+  Transport,
+} from "@/lib/types";
 import { CARD, GLASS_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn, formatPages } from "@/lib/utils";
 
@@ -34,9 +40,13 @@ export function SectionPage() {
   const [busy, setBusy] = useState<"new" | "regen" | null>(null);
   const [provider, setProvider] = useState<string>("claude");
   const [model, setModel] = useState<string | null>(null);
-  const [transport, setTransport] = useState<Transport>("cli");
-  const [extractTransport, setExtractTransport] = useState<RoleTransport>("inherit");
-  const [judgeTransport, setJudgeTransport] = useState<RoleTransport>("inherit");
+  const [transport, setTransport] = useState<Transport>("api");
+  const [extractTransport, setExtractTransport] = useState<RoleTransport>("cli");
+  const [judgeTransport, setJudgeTransport] = useState<RoleTransport>("cli");
+  const [extractProvider, setExtractProvider] = useState<string | null>(null);
+  const [extractModel, setExtractModel] = useState<string | null>(null);
+  const [judgeProvider, setJudgeProvider] = useState<string | null>(null);
+  const [judgeModel, setJudgeModel] = useState<string | null>(null);
 
   const { data: book, isLoading } = useQuery({
     queryKey: ["book", bookId],
@@ -68,6 +78,17 @@ export function SectionPage() {
     if (!apiSupported && transport === "api") setTransport("cli");
   }, [apiSupported, transport]);
 
+  // Advisory (non-blocking) note when the judge model is weaker (higher tier
+  // number) than the generator. Lower tier int = stronger.
+  const tiers = manifest?.tiers;
+  const genTier = tiers?.[provider]?.[model ?? ""];
+  const judgeTier =
+    judgeProvider && judgeModel ? tiers?.[judgeProvider]?.[judgeModel] : undefined;
+  const judgeWarning =
+    genTier != null && judgeTier != null && judgeTier > genTier
+      ? "Judge is weaker than the generator — grading may be unreliable."
+      : null;
+
   const section = book?.toc?.find((e) => e.id === sectionId);
   const existingJobId = section?.latest_job_id ?? null;
   const existingStatus = (section?.latest_job_status ?? null) as JobStatus | null;
@@ -90,6 +111,10 @@ export function SectionPage() {
         transport,
         extract_transport: extractTransport,
         judge_transport: judgeTransport,
+        extract_provider: extractProvider,
+        extract_model: extractModel,
+        judge_provider: judgeProvider,
+        judge_model: judgeModel,
       });
       navigate(`/job/${job.id}`);
     } catch (err) {
@@ -179,10 +204,19 @@ export function SectionPage() {
           apiSupported={apiSupported}
           transport={transport}
           onTransportChange={setTransport}
+          extractProvider={extractProvider}
+          onExtractProviderChange={setExtractProvider}
+          extractModel={extractModel}
+          onExtractModelChange={setExtractModel}
           extractTransport={extractTransport}
           onExtractTransportChange={setExtractTransport}
+          judgeProvider={judgeProvider}
+          onJudgeProviderChange={setJudgeProvider}
+          judgeModel={judgeModel}
+          onJudgeModelChange={setJudgeModel}
           judgeTransport={judgeTransport}
           onJudgeTransportChange={setJudgeTransport}
+          judgeWarning={judgeWarning}
         />
 
         {/* Existing-homework-aware action panel */}
@@ -201,7 +235,7 @@ export function SectionPage() {
 }
 
 interface AgentPickerProps {
-  manifest: { providers: Record<string, string[]> } | undefined;
+  manifest: ProviderModelManifest | undefined;
   manifestLoading: boolean;
   provider: string;
   onProviderChange: (next: string) => void;
@@ -210,18 +244,20 @@ interface AgentPickerProps {
   apiSupported: boolean;
   transport: Transport;
   onTransportChange: (next: Transport) => void;
+  extractProvider: string | null;
+  onExtractProviderChange: (next: string | null) => void;
+  extractModel: string | null;
+  onExtractModelChange: (next: string | null) => void;
   extractTransport: RoleTransport;
   onExtractTransportChange: (next: RoleTransport) => void;
+  judgeProvider: string | null;
+  onJudgeProviderChange: (next: string | null) => void;
+  judgeModel: string | null;
+  onJudgeModelChange: (next: string | null) => void;
   judgeTransport: RoleTransport;
   onJudgeTransportChange: (next: RoleTransport) => void;
+  judgeWarning: string | null;
 }
-
-/** Per-role billing options for the Extract/Judge selects. */
-const ROLE_TRANSPORT_OPTIONS: { value: RoleTransport; label: string }[] = [
-  { value: "inherit", label: "Auto" },
-  { value: "cli", label: "CLI" },
-  { value: "api", label: "API" },
-];
 
 function AgentPicker({
   manifest,
@@ -233,10 +269,19 @@ function AgentPicker({
   apiSupported,
   transport,
   onTransportChange,
+  extractProvider,
+  onExtractProviderChange,
+  extractModel,
+  onExtractModelChange,
   extractTransport,
   onExtractTransportChange,
+  judgeProvider,
+  onJudgeProviderChange,
+  judgeModel,
+  onJudgeModelChange,
   judgeTransport,
   onJudgeTransportChange,
+  judgeWarning,
 }: AgentPickerProps) {
   const providerNames = manifest ? Object.keys(manifest.providers) : [];
   const modelOptions = manifest?.providers[provider] ?? [];
@@ -311,7 +356,7 @@ function AgentPicker({
             Transport
           </span>
           <div className="inline-flex w-fit rounded-xl border border-white/[0.1] bg-white/[0.04] p-1">
-            {(["cli", "api"] as Transport[]).map((t) => (
+            {(["api", "cli"] as Transport[]).map((t) => (
               <button
                 key={t}
                 type="button"
@@ -335,54 +380,36 @@ function AgentPicker({
         </div>
       )}
 
-      {/* Per-role billing overrides — always visible (even on a cli-only
-          provider a job can pin its extract/judge calls to api, and vice
-          versa). "Auto" (inherit) follows the job transport above. */}
-      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <label className="flex flex-col gap-1.5" title="Auto = follow job billing">
-          <span className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/45">
-            Extract billing
-          </span>
-          <Select
-            value={extractTransport}
-            onValueChange={(value) => onExtractTransportChange(value as RoleTransport)}
-          >
-            <SelectTrigger className={SELECT_TRIGGER}>
-              <SelectValue placeholder="Auto" />
-            </SelectTrigger>
-            <SelectContent>
-              {ROLE_TRANSPORT_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
-
-        <label className="flex flex-col gap-1.5" title="Auto = follow job billing">
-          <span className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/45">
-            Judge billing
-          </span>
-          <Select
-            value={judgeTransport}
-            onValueChange={(value) => onJudgeTransportChange(value as RoleTransport)}
-          >
-            <SelectTrigger className={SELECT_TRIGGER}>
-              <SelectValue placeholder="Auto" />
-            </SelectTrigger>
-            <SelectContent>
-              {ROLE_TRANSPORT_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
+      {/* Per-role provider/model/billing overrides — always visible (even on a
+          cli-only generator a job can pin its extract/judge calls to api, and
+          vice versa). "Auto" = backend default (provider/model) or inherit
+          (transport) of the run above. */}
+      <div className="mt-4 flex flex-col gap-3">
+        <RoleAgentControls
+          label="Extract"
+          manifest={manifest}
+          provider={extractProvider}
+          model={extractModel}
+          transport={extractTransport}
+          onProvider={onExtractProviderChange}
+          onModel={onExtractModelChange}
+          onTransport={onExtractTransportChange}
+        />
+        <RoleAgentControls
+          label="Judge"
+          manifest={manifest}
+          provider={judgeProvider}
+          model={judgeModel}
+          transport={judgeTransport}
+          onProvider={onJudgeProviderChange}
+          onModel={onJudgeModelChange}
+          onTransport={onJudgeTransportChange}
+          warning={judgeWarning}
+        />
       </div>
       <p className="mt-1.5 text-xs text-white/45">
-        Auto = follow job billing. Pin Extract or Judge to CLI/API independently of the run above.
+        Auto = backend default / follow job billing. Pin Extract or Judge to a provider, model, or
+        CLI/API independently of the run above.
       </p>
     </section>
   );
