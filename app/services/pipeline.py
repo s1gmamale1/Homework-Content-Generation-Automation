@@ -335,6 +335,8 @@ async def _execute_one_phase(
     judge_transport: str = "cli",
     judge_provider_ov: Optional[str] = None,
     judge_model_ov: Optional[str] = None,
+    extract_provider: Optional[str] = None,
+    extract_model: Optional[str] = None,
 ) -> tuple[str, Optional[int], Optional[int], Optional[Any]]:
     """Run a single phase end-to-end with status tracking, SSE emit, and
     error handling. Wraps `_execute_phase` so both the sequential head loop
@@ -373,6 +375,8 @@ async def _execute_one_phase(
             judge_transport=judge_transport,
             judge_provider_ov=judge_provider_ov,
             judge_model_ov=judge_model_ov,
+            extract_provider=extract_provider,
+            extract_model=extract_model,
         )
     except Exception as exc:
         phase_ms = (perf_counter() - t_phase) * 1000
