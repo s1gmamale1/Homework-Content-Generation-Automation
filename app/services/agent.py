@@ -1041,6 +1041,24 @@ def read_page_range_text(pdf_path: Path, page_start: int, page_end: int, *, marg
     return "".join(chunks).strip()
 
 
+def pdf_page_count(pdf_path: Path) -> int:
+    """Physical page count of the PDF; 0 on any read error."""
+    try:
+        return len(PdfReader(str(pdf_path)).pages)
+    except Exception:
+        return 0
+
+
+def extract_text_is_too_sparse(text: str, n_pages: int) -> bool:
+    """True if the local text averages fewer than settings.extract_min_chars_per_page
+    chars per page — a 'has some header/watermark text but the lesson bodies are
+    image-only' scan that Gate A's absolute floor misses. False when n_pages<=0
+    (can't judge) so it never fires spuriously."""
+    if n_pages <= 0:
+        return False
+    return len((text or "").strip()) / n_pages < settings.extract_min_chars_per_page
+
+
 def extract_text_is_oversize(text: str) -> bool:
     """True if the local text exceeds the whole-text budget → terminal 'too
     large, needs subset'. Pure (unit-testable); read_whole_book_text reads a

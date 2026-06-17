@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 import app.services.agent as agent
-from app.services.agent import _subset_pdf, read_page_range_text
+from app.services.agent import (
+    _subset_pdf,
+    extract_text_is_too_sparse,
+    pdf_page_count,
+    read_page_range_text,
+)
 
 
 def _make_pdf(tmp_path: Path, n_pages: int) -> Path:
@@ -132,3 +137,27 @@ def test_page_range_text_empty_on_imageonly(tmp_path):
     with open(p, "wb") as f:
         writer.write(f)
     assert read_page_range_text(p, 1, 2, margin=1) == ""
+
+
+# --- per-page density detector + page count -------------------------------
+
+
+def test_too_sparse_flags_scanned():
+    # 17000 chars / 240 pages ≈ 71 chars/page → below the 300 floor
+    assert extract_text_is_too_sparse("a" * 17000, 240) is True
+
+
+def test_too_sparse_passes_normal():
+    # 353000 chars / 192 pages ≈ 1838 chars/page → well above the floor
+    assert extract_text_is_too_sparse("a" * 353000, 192) is False
+
+
+def test_too_sparse_zero_pages():
+    # Can't judge density with no page count → never fires
+    assert extract_text_is_too_sparse("anything", 0) is False
+
+
+def test_pdf_page_count(tmp_path):
+    p = _make_pdf(tmp_path, 7)
+    assert pdf_page_count(p) == 7
+    assert pdf_page_count(Path("/nope.pdf")) == 0
