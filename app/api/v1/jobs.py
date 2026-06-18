@@ -26,6 +26,7 @@ from app.services.agent_models import (
     validate_role_transport,
     validate_transport,
 )
+from app.services.flows import expand_phase_selection, flow_for
 from app.services.providers import PROVIDERS
 from app.services.worker import RUNNING_JOBS
 
@@ -143,6 +144,28 @@ async def generate(
         if role_err is not None:
             raise HTTPException(400, role_err)
 
+    # ── custom prompts + phase subset validation (Gate 2/3, fail before DB) ──
+    custom_prompts = body.custom_prompts or None
+    if custom_prompts:
+        valid_phases = set(flow_for(book.subject))
+        for phase, md in custom_prompts.items():
+            if phase == "extract" or phase not in valid_phases:
+                raise HTTPException(400, f"custom_prompts: unknown phase {phase!r}")
+            if len(md) > 20_000:
+                raise HTTPException(
+                    400, f"custom_prompts[{phase}] too long ({len(md)} chars; max 20000).")
+
+    selected_closure: Optional[list[str]] = None
+    added_phases: list[str] = []
+    if body.selected_phases is not None:
+        try:
+            selected_closure, added_phases = expand_phase_selection(book.subject, body.selected_phases)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    # Gate 1: a custom/subset launch must never reuse a plain job.
+    force_fresh = body.force or bool(custom_prompts) or selected_closure is not None
+
     # Layer 3: serialize concurrent requests for the same (book, section).
     # Lock is held for the rest of this transaction and auto-released on
     # commit, so the second concurrent request waits and then sees the
@@ -150,7 +173,7 @@ async def generate(
     await jobs_repo.lock_section_for_generate(session, book_id, toc_entry_id)
 
     # Layer 2: natural-key idempotency.
-    if not body.force:
+    if not force_fresh:
         existing = await jobs_repo.find_active_for_section(
             session, book_id, toc_entry_id, transport=body.transport
         )
@@ -187,6 +210,8 @@ async def generate(
         transport=body.transport,
         extract_transport=body.extract_transport,
         judge_transport=body.judge_transport,
+        custom_prompts=custom_prompts,
+        selected_phases=selected_closure,
     )
     await session.commit()  # commit + release advisory lock atomically
 
@@ -196,7 +221,10 @@ async def generate(
     # Note: no `asyncio.create_task(pipeline.run(...))` here. The worker
     # process polls `homework_jobs.status='pending'` and claims this row.
     # See `app/services/worker.py`.
-    return await _job_out(session, job.id)
+    out = await _job_out(session, job.id)
+    out.added_phases = added_phases
+    response.status_code = 201
+    return out
 
 
 @router.get("/jobs/{job_id}")
