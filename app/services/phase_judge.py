@@ -71,15 +71,38 @@ _INSTRUCTIONS = (
     "image or an invented http(s) image URL IS a violation — the contract forbids it."
 )
 
+_FIDELITY_RULE = (
+    "\n\nSource-fidelity (CRITICAL): a LESSON CONTEXT section is provided below — the lesson the "
+    "output was authored from. Treat it as ground truth. Raise a `major` failure for any factual "
+    "claim ABOUT THE WORLD in the OUTPUT that is contradicted by, or absent from, the LESSON "
+    "CONTEXT (e.g. an invented date, statistic, name, or definition). DO NOT flag numbers the "
+    "OUTPUT generates for teaching — practice-problem values, worked-example arithmetic, invented "
+    "student names, hypothetical scenarios — these are expected and are NOT fidelity violations. "
+    "A hint list of candidate issues may appear below; verify each against the LESSON CONTEXT "
+    "before trusting it, and drop any you cannot substantiate."
+)
 
-def _build_judge_prompt(*, contract: str, output_md: str) -> str:
-    return (
-        f"{_INSTRUCTIONS}\n\n"
-        "## CONTRACT (the authoring instructions the output must satisfy)\n"
-        f"{contract.strip()}\n\n"
-        "## OUTPUT UNDER REVIEW\n"
-        f"{output_md.strip()}\n"
-    )
+
+def _fidelity_flags(output_md: str, lesson_context: Optional[str]) -> list[str]:
+    """Stub — Task A2 replaces the body with real detection logic."""
+    return []
+
+
+def _build_judge_prompt(
+    *, contract: str, output_md: str, fidelity_flags: Optional[list[str]] = None,
+) -> str:
+    parts = [
+        _INSTRUCTIONS + _FIDELITY_RULE,
+        "\n\n## CONTRACT (the authoring instructions the output must satisfy)",
+        contract.strip(),
+    ]
+    if fidelity_flags:
+        parts += [
+            "\n## POSSIBLE SOURCE ISSUES (hints — verify against LESSON CONTEXT before trusting)",
+            "\n".join(f"- {f}" for f in fidelity_flags),
+        ]
+    parts += ["\n## OUTPUT UNDER REVIEW", output_md.strip(), ""]
+    return "\n".join(parts)
 
 
 def _serialize_failures(failures: list[Failure]) -> list[str]:
@@ -147,7 +170,10 @@ async def judge(
     swallowed: an api job must fail loudly, not ship unjudged."""
     try:
         contract = get_prompt(subject, phase_name)
-        judge_prompt = _build_judge_prompt(contract=contract, output_md=output_md)
+        flags = _fidelity_flags(output_md, lesson_context)   # Task A2; stub returns [] until A2 lands
+        judge_prompt = _build_judge_prompt(
+            contract=contract, output_md=output_md, fidelity_flags=flags,
+        )
         result = await agent.run_phase(
             provider=judge_provider,
             model=judge_model,

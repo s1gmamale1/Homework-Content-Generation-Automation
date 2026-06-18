@@ -32,6 +32,23 @@ def test_build_judge_prompt_contains_contract_output_and_protocol():
     assert "VISUAL / SVG RULES" not in p
 
 
+def test_build_judge_prompt_has_fidelity_rule_and_flags():
+    p = pj._build_judge_prompt(
+        contract="CONTRACT-TEXT", output_md="OUTPUT-TEXT",
+        fidelity_flags=["output states year 1991 as fact; not found in source"],
+    )
+    assert "CONTRACT-TEXT" in p and "OUTPUT-TEXT" in p
+    # instruction points the judge at the (separately-injected) LESSON CONTEXT block as truth
+    assert "lesson context" in p.lower() and ("ground truth" in p.lower() or "faithful" in p.lower())
+    assert "1991" in p                      # deterministic hint surfaced
+    assert "POSSIBLE SOURCE ISSUES" in p
+
+
+def test_build_judge_prompt_omits_flags_section_when_empty():
+    p = pj._build_judge_prompt(contract="C", output_md="O", fidelity_flags=[])
+    assert "POSSIBLE SOURCE ISSUES" not in p
+
+
 def test_build_feedback_lists_failures():
     fb = pj._build_feedback(["A — x", "B — y"])
     assert "A — x" in fb and "B — y" in fb
