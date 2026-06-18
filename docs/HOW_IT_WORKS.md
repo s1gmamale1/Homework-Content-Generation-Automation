@@ -244,7 +244,14 @@ sequential. If any phase fails, in-flight peers are cancelled and the job is mar
 Each phase's result is saved as markdown (`output_md` on its `phase_outputs` row), tagged
 with the provider that produced it. There is no per-phase JSON column — the markdown is the
 deliverable. Each produced phase is also graded by the LLM judge (see `phase_judge.py`)
-before the job moves on.
+before the job moves on. The judge receives the full lesson source (via `_build_master_prompt`'s
+`--- LESSON CONTEXT ---` block) and is instructed to treat it as the authoritative ground truth
+for fact-checking (`_FIDELITY_RULE`). A conservative warning-only deterministic year-signal
+(`_fidelity_flags`) cross-checks 4-digit years in the output against the source (skips
+math/exercise lines; never gates a regen). The regen cap is configurable via
+`settings.max_judge_regens` (default 1). The judge outcome is recorded as
+`phase_outputs.judge_status` (`ok` / `major_shipped` / `major_regen_failed` / `unavailable`),
+making grading results queryable downstream.
 
 ### (No assembly stage)
 There is **no** assembly step that stitches phases into one document. Each phase's markdown

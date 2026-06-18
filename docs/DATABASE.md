@@ -144,6 +144,7 @@ UUIDPK only — **no** `created_at`/`updated_at`; it has `started_at`/`completed
 | `status` | String(32) NOT NULL | pending/running/done/failed |
 | `error_message` | Text NULL | |
 | `validation_warnings` | JSONB NULL | LLM-judge warnings (migration 0017) |
+| `judge_status` | String NULL | judge outcome (migration 0029): `ok` / `major_shipped` / `major_regen_failed` / `unavailable` / NULL (pre-0029 rows or extract phase) |
 | `started_at` / `completed_at` | NULL | |
 
 **`uq_phase_output_job_order (job_id, phase_order)`** — and the reason the pipeline must use
@@ -296,8 +297,10 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
   deliberately absent to protect the Max pool), and cross-job cache reuse keyed on
   `(toc_entry_id, prompt_hash)` (a free `"<cache>"` usage row records the hit). Tail:
   wave scheduler over `flows.PHASE_DEPS`, `create_or_reset` per phase row, LLM judge
-  (`judge_provider/judge_model` = claude/claude-opus-4-7) grading every content phase —
-  one regeneration on a MAJOR verdict. Job `done` → fire-and-forget Notion archive.
+  (resolved per-job: `COALESCE(job.judge_provider, settings.judge_provider)` / model;
+  default claude/claude-opus-4-7) grading every content phase — regen on MAJOR verdict
+  (cap = `settings.max_judge_regens`, default 1); outcome recorded as
+  `phase_outputs.judge_status`. Job `done` → fire-and-forget Notion archive.
 - **Provider router** (`app/services/agent.py` + `providers/`) — argv build, spawn,
   envelope parse, one `agent_usages` row per call. See `HOW_IT_WORKS.md` §8.
 - **API surface** — `/api/v1`: books (incl. `POST /books/from-notion`), jobs
@@ -338,7 +341,9 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | 24 | 0024_transport_auth_mode | `f7e6d5c4b3a2` | `transport` (jobs+batches) + `agent_usages.auth_mode` + batch key → `(book_id, transport)` (fleet Phase 4) |
 | 25 | 0025_role_transports | `b9d8e7f6a5c4` | `extract_transport`/`judge_transport` (jobs+batches) (fleet Phase 4.1) |
 | 26 | 0026_drop_difficulty | `a8c7e6d5f4b3` | drops the dead `homework_jobs.difficulty` column |
-| 27 | 0027_per_role_provider_model | `0027_per_role_provider_model` | adds nullable `extract_provider`/`extract_model`/`judge_provider`/`judge_model` to `homework_jobs` + `batches` (NULL = role default) — **HEAD** |
+| 27 | 0027_per_role_provider_model | `0027_per_role_provider_model` | adds nullable `extract_provider`/`extract_model`/`judge_provider`/`judge_model` to `homework_jobs` + `batches` (NULL = role default) |
+| 28 | 0028_enum_check_constraints | `0028_enum_check_constraints` | CHECK constraints on `status` and `transport` enum columns (cluster-1 hardening) |
+| 29 | 0029_judge_status | `0029_judge_status` | adds `phase_outputs.judge_status` (nullable String, no CHECK) — **HEAD** |
 
 ---
 
