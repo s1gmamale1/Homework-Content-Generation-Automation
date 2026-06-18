@@ -56,11 +56,14 @@ class Settings(BaseSettings):
     # When `pending` queue depth exceeds this, /generate returns 503. Set
     # to 0 to disable backpressure and accept-all.
     queue_backpressure_limit: int = 50
-    # Process-wide cap on simultaneous Gemini calls. Protects against
+    # Process-wide cap on simultaneous CLI subprocesses. Protects against
     # rate-limit cascades when multiple workers + parallel scheduler all
-    # fan out at once.
-    agent_max_concurrency: int = 8  # process-wide cap on concurrent CLI subprocesses
-    gemini_max_concurrency: int = 8  # DEPRECATED — kept for backwards-compat with agent.py
+    # fan out at once. agent_max_concurrency is the live knob read by
+    # agent._effective_concurrency(); gemini_max_concurrency is a DEPRECATED
+    # fallback used only when agent_max_concurrency is left at its default (8),
+    # so existing .env files that set GEMINI_MAX_CONCURRENCY still work.
+    agent_max_concurrency: int = 8  # LIVE knob — set AGENT_MAX_CONCURRENCY to tune
+    gemini_max_concurrency: int = 8  # DEPRECATED fallback — honoured only when agent_max_concurrency==8
     # transport=api: claude's Messages API REQUIRES max_tokens (gemini does not,
     # and stays uncapped). 16384 gives headroom over the longest uncapped content
     # phases (reading/preview-hard); hitting it fails LOUD, never silent-truncates.

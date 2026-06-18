@@ -11,8 +11,9 @@ provider-neutral subprocess driver. Each call:
 
 All calls are gated by a process-wide ``asyncio.Semaphore`` so the worker pool
 × per-pipeline parallel scheduler can't fan out past whatever the local CLI
-quota allows. The semaphore size reuses the existing ``settings.gemini_max_concurrency``
-setting (renamed in Wave 3E).
+quota allows. The semaphore size is controlled by ``settings.agent_max_concurrency``
+(the live knob); ``settings.gemini_max_concurrency`` is a deprecated fallback used
+only when ``agent_max_concurrency`` is left at its default of 8.
 
 Public functions deliberately mirror the surface of :mod:`app.services.gemini`
 so callers (``pipeline.py``) can be migrated incrementally; the gemini module
@@ -190,17 +191,34 @@ def _strip_svgs(text: str) -> str:
 # Concurrency gate
 # ─────────────────────────────────────────────────────────────────────
 
+# Default concurrency — must match config.py field defaults for both
+# agent_max_concurrency and gemini_max_concurrency.
+_DEFAULT_CONCURRENCY = 8
+
 # Lazy-init module-level semaphore. First access creates an
-# ``asyncio.Semaphore(settings.gemini_max_concurrency)``; Wave 3E renames
-# the setting to ``agent_max_concurrency``. Bound to the running loop on
-# first await — works regardless of when callers import this module.
+# ``asyncio.Semaphore(_effective_concurrency())``. Bound to the running
+# loop on first await — works regardless of when callers import this module.
 _agent_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _effective_concurrency() -> int:
+    """Return the process-wide CLI-concurrency cap.
+
+    ``settings.agent_max_concurrency`` is the live knob.  When it has been
+    left at its default (``8``), we fall back to
+    ``settings.gemini_max_concurrency`` so that existing ``.env`` files that
+    set only ``GEMINI_MAX_CONCURRENCY`` continue to work as before.  An
+    operator who sets ``AGENT_MAX_CONCURRENCY`` explicitly always wins.
+    """
+    if settings.agent_max_concurrency != _DEFAULT_CONCURRENCY:
+        return settings.agent_max_concurrency
+    return settings.gemini_max_concurrency
 
 
 def _semaphore() -> asyncio.Semaphore:
     global _agent_semaphore
     if _agent_semaphore is None:
-        _agent_semaphore = asyncio.Semaphore(settings.gemini_max_concurrency)
+        _agent_semaphore = asyncio.Semaphore(_effective_concurrency())
     return _agent_semaphore
 
 
