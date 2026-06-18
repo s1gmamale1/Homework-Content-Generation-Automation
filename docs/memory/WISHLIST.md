@@ -31,6 +31,7 @@
 **Batch / fleet controls (deferred from Phase 3):**
 - `fleet-ctrl-3`: **Pause / Resume a batch** — stop the fleet claiming its pending lessons without cancelling (the budget-saver); teach `claim_next_job` to skip paused batches (a batch-status gate on the hot claim path). Highest-value deferred control.
 - `fleet-ctrl-4`: **PC-level drain** — gracefully stop one worker claiming new jobs + let its in-flight job finish, before taking it offline.
+- `fleet-cancelresume-ux-1`: **Cancel/Resume actions don't narrate their numbers → correct behavior reads as random/buggy.** The cluster-2 cancel/resume logic ([0078]) is correct, but the FE shows no counts: Resume sets ALL resumable lessons to `pending` yet only `WORKER_CONCURRENCY` (e.g. 4) run at once, so it *looks* like it "resumed 4 random jobs"; "Cancel all" silently cancels queued jobs too (pending + running = halt the batch), so it *looks* like it did more than asked. Pure display/copy, no behavior/DB change. **Fix shape:** (a) Resume toast → "Resumed N lessons — running X, queued N−X"; (b) "Cancel all" confirm/toast → "Cancel all N (X running + Y queued)?"; (c) show **queue depth** on the batch card ("X running · Y queued") so the N-lane queue is self-evident. Surfaced live 2026-06-18 (user confused why Resume started 4 + Cancel-all stopped the whole batch).
 
 **Dashboard UX (beyond the Phase 3 view):**
 - `fleet-ui-2`: **Live SSE dashboard** — push batch-funnel + PC-card updates instead of polling `GET /jobs/batches` + `/workers`.
