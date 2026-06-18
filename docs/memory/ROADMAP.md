@@ -97,6 +97,14 @@
 
 ---
 
+## R20 — Golden-set eval / quality-regression harness (campaign quality gate)
+
+- **Issue:** nothing automatically scores generated output. The LLM judge grades each phase against its prompt **contract** (format/structure), but never against the **source lesson text** (see WISHLIST `judge-fidelity-1`, `phase_judge.py:75`) — so every prompt or model change is an **unmeasured quality risk**, and a hallucinated-but-formatted fact ships clean. For a mass-generation campaign this is the single biggest correctness gap: thousands of lessons would be produced with no regression signal and no fidelity check.
+- **Root cause / context:** the md-per-phase flip removed the old structured-output schemas and with them the only machine-checkable quality surface; grading is now a single free-text judge verdict that soft-fails open (`judge-softfail-1`). There is no frozen reference set, no scoring rubric, no baseline to diff against.
+- **Deliverable:** a golden-set harness — (1) a frozen `(subject, lesson)` sample set with known source text; (2) generate → judge/rubric-score (incl. a **source-fidelity** key-fact/number cross-check, the deliverable of `judge-fidelity-1`); (3) diff scores against committed baselines; (4) gate prompt/model-change PRs on no-regression. Pairs with a queryable `judge_status` (`judge-softfail-1`) so production grading is observable too. **Campaign-critical** alongside the cost/kill-switch work (`fleet-api-3/4`). Filed from the 2026-06-18 deep system review.
+
+---
+
 ## Shipped / Closed
 
 > One line per shipped/closed item — full detail in the cited worklog + git. Nothing here is open.

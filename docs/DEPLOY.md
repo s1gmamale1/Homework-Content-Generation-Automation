@@ -44,8 +44,8 @@ not `localhost:8000`. (For a bare local run without Traefik, publish port 8000 y
 | `JOB_TIMEOUT_SECONDS` | no | `1800` | Hard ceiling per job. (`.env.example` overrides it to `600`.) |
 | `QUEUE_MAX_ATTEMPTS` | no | `3` | Retries before terminal failure. |
 | `QUEUE_BACKPRESSURE_LIMIT` | no | `50` | Queue depth → 503. `0` disables. |
-| `AGENT_MAX_CONCURRENCY` | no | `8` | **Live** process-wide cap on *all* CLI subprocesses (every provider). Tune to your RPM tier (`AGENT_MAX_CONCURRENCY ≤ your_RPM_tier / 4`). |
-| `GEMINI_MAX_CONCURRENCY` | no | `8` | **DEPRECATED** — kept for backwards-compat; superseded by `AGENT_MAX_CONCURRENCY`. |
+| `GEMINI_MAX_CONCURRENCY` | no | `8` | ⚠️ **The actually-live** process-wide cap on *all* CLI subprocesses — `agent.py:203` reads this. Tune to your RPM tier (`GEMINI_MAX_CONCURRENCY ≤ your_RPM_tier / 4`). **Per-process** (module global), so the real fleet cap is `N_processes × this`, not deployment-wide. |
+| `AGENT_MAX_CONCURRENCY` | no | `8` | ⚠️ **Currently DEAD** — the intended replacement name, but nothing reads it (Wave 3E renamed the *setting* but never switched the semaphore off `gemini_max_concurrency`). Setting this has **no effect** until WISHLIST `concurrency-knob-1` lands. |
 | `MAX_FILE_MB` | no | `50` | Upload size limit. |
 | `ENABLE_DOCS` | no | `false` | Swagger UI at `/docs`. Disable in prod. |
 | `ALLOW_ORIGINS` | no | `*` | Comma-separated CORS allow-list. |
@@ -255,7 +255,7 @@ Behind an ALB, point the target group at the `api` task. Use RDS Postgres. Run `
 - [ ] Healthcheck endpoint `/health` reachable from your platform's liveness probe
 - [ ] Migrations applied: `alembic upgrade head`
 - [ ] Worker concurrency tuned to your tier:
-      `AGENT_MAX_CONCURRENCY ≤ your_RPM_tier / 4` (each job makes ~3-4 phase calls in parallel)
+      `GEMINI_MAX_CONCURRENCY ≤ your_RPM_tier / 4` (the live knob — `agent.py:203`; each job makes ~3-4 phase calls in parallel)
 - [ ] If horizontally scaling: `WORKER_CONCURRENCY=0` on API pods so they don't double-claim jobs alongside dedicated worker pods
 
 ---
