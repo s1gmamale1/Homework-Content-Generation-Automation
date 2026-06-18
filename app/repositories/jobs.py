@@ -8,6 +8,20 @@ from sqlalchemy.orm import selectinload
 
 from app.models import HomeworkJob, PhaseOutput
 
+_TERMINAL_STATUSES = ("done", "failed", "cancelled")
+
+
+def status_write_allowed(current: str, target: str) -> bool:
+    """Guard for job status writes (cancel-race-1). A terminal status is frozen;
+    a `cancelling` job may only advance to `cancelled` (never resurrected to
+    running/pending, nor flipped to done/failed). Every other transition is
+    allowed. Mirror this rule in the set_status guarded UPDATE WHERE clause."""
+    if current in _TERMINAL_STATUSES:
+        return False
+    if current == "cancelling" and target != "cancelled":
+        return False
+    return True
+
 
 async def create(
     session: AsyncSession,
@@ -140,19 +154,30 @@ async def set_status(
     completed_at: Optional[datetime] = None,
     error_message: Optional[str] = None,
     current_phase: Optional[str] = None,
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.status = status
+    guard: bool = True,
+) -> bool:
+    """Set a job's status. With ``guard`` (default), a guarded UPDATE refuses to
+    overwrite a terminal status or resurrect a `cancelling` job (cancel-race-1):
+    terminal {done,failed,cancelled} is frozen; from `cancelling` only
+    `cancelled` is allowed. Mirrors ``status_write_allowed``. Returns True iff a
+    row was updated. claim (pending->running) and reset_for_retry
+    (cancelled->pending) use their OWN updates and are unaffected."""
+    values: dict = {"status": status}
     if started_at is not None:
-        job.started_at = started_at
+        values["started_at"] = started_at
     if completed_at is not None:
-        job.completed_at = completed_at
+        values["completed_at"] = completed_at
     if error_message is not None:
-        job.error_message = error_message
+        values["error_message"] = error_message
     if current_phase is not None:
-        job.current_phase = current_phase
+        values["current_phase"] = current_phase
+    stmt = update(HomeworkJob).where(HomeworkJob.id == job_id)
+    if guard:
+        stmt = stmt.where(HomeworkJob.status.not_in(_TERMINAL_STATUSES))
+        if status != "cancelled":
+            stmt = stmt.where(HomeworkJob.status != "cancelling")
+    result = await session.execute(stmt.values(**values))
+    return result.rowcount > 0
 
 
 async def set_notion_archived(
@@ -518,6 +543,73 @@ async def mark_cancelled(session: AsyncSession, job_id: UUID) -> None:
         .where(PhaseOutput.status != "done")
         .values(status="failed")
     )
+
+
+async def cancel_all_in_batch(session: AsyncSession, batch_id: UUID) -> dict[str, int]:
+    """Cancel every non-terminal job in a batch in one transaction: pending ->
+    cancelled (never claimed), running -> cancelling (the worker/heartbeat then
+    kills the task). done/failed/cancelled/cancelling are left untouched.
+    Returns {"cancelled": n_pending, "cancelling": n_running}."""
+    pend = await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.batch_id == batch_id, HomeworkJob.status == "pending")
+        .values(status="cancelled", completed_at=func.now()))
+    run = await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.batch_id == batch_id, HomeworkJob.status == "running")
+        .values(status="cancelling"))
+    return {"cancelled": pend.rowcount, "cancelling": run.rowcount}
+
+
+async def running_job_ids_in_batch(session: AsyncSession, batch_id: UUID) -> list[UUID]:
+    """Job ids that were `cancelling` after cancel_all — so the API can cancel any
+    locally-running tasks instantly (rather than waiting for the heartbeat)."""
+    rows = await session.execute(
+        select(HomeworkJob.id).where(
+            HomeworkJob.batch_id == batch_id,
+            HomeworkJob.status == "cancelling"))
+    return list(rows.scalars().all())
+
+
+async def resume_failed_in_batch(session: AsyncSession, batch_id: UUID) -> int:
+    """Re-enqueue every failed/cancelled job in a batch via reset_for_retry
+    (status->pending, attempts->0). reset_for_retry keeps phase rows, so the
+    pipeline RESUMES — done phases are reused, only unfinished ones re-run.
+    Returns the count re-enqueued."""
+    rows = await session.execute(
+        select(HomeworkJob.id).where(
+            HomeworkJob.batch_id == batch_id,
+            HomeworkJob.status.in_(["failed", "cancelled"])))
+    ids = list(rows.scalars().all())
+    for jid in ids:
+        await reset_for_retry(session, jid)
+    return len(ids)
+
+
+async def latest_for_section(
+    session: AsyncSession, book_id: UUID, toc_entry_id: UUID, *,
+    transport: Optional[str] = None,
+) -> Optional[HomeworkJob]:
+    """The most recent job for a (book, section) regardless of status — used by
+    relaunch to find a failed/cancelled job to RESUME rather than recreate."""
+    conds = [HomeworkJob.book_id == book_id,
+             HomeworkJob.toc_entry_id == toc_entry_id]
+    if transport is not None:
+        conds.append(HomeworkJob.transport == transport)
+    stmt = (select(HomeworkJob).where(*conds)
+            .order_by(HomeworkJob.created_at.desc()).limit(1))
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def done_phase_count_for_job(session: AsyncSession, job_id: UUID) -> int:
+    """How many `done` phase rows with non-empty output a job has — the 'saved
+    work' a relaunch would discard if it recreated the job."""
+    from app.models.phase_output import PhaseOutput
+    stmt = select(func.count()).select_from(PhaseOutput).where(
+        PhaseOutput.job_id == job_id,
+        PhaseOutput.status == "done",
+        func.coalesce(PhaseOutput.output_md, "") != "")
+    return int((await session.execute(stmt)).scalar_one())
 
 
 async def reclaim_stale_cancelling(
