@@ -36,6 +36,7 @@ class JobOut(BaseModel):
     extract_transport: str = "inherit"   # "cli" | "api" | "inherit" (follow `transport`)
     judge_transport: str = "inherit"
     phases: list[PhaseOut] = []
+    added_phases: list[str] = []   # deps the closure auto-added beyond the user's selection (response only)
     notion_skip_reason: Optional[str] = None
 
 
@@ -46,3 +47,5 @@ class GenerateRequest(BaseModel):
     transport: str = "cli"       # "cli" (subprocess) vs "api" (claude/gemini only)
     extract_transport: str = "inherit"   # per-role override; "inherit" follows `transport`
     judge_transport: str = "inherit"
+    custom_prompts: dict[str, str] | None = None   # {phase: markdown}; replaces built-in. Not persisted to prompts/.
+    selected_phases: list[str] | None = None        # subset to run; None = full flow. Dependency-closure-expanded server-side.

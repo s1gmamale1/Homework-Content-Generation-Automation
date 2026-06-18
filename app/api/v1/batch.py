@@ -28,6 +28,8 @@ class BatchLaunchRequest(BaseModel):
     extract_transport: str = "inherit"   # per-role override; "inherit" follows `transport`
     judge_transport: str = "inherit"
     force: bool = False
+    custom_prompts: dict[str, str] | None = None
+    selected_phases: list[str] | None = None
 
 
 def _rollup_payload(batch, tally: dict[str, int]) -> dict:
