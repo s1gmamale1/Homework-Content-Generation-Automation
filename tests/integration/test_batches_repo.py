@@ -121,3 +121,54 @@ async def test_rollup_is_per_lesson_latest():
             await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
             await s.execute(delete(Book).where(Book.id == book_id))
             await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_includes_unlaunched_lessons():
+    """list_jobs returns one row per book lesson (full TOC), launched lessons
+    carry status, un-launched lessons come back with job_id/status None — while
+    rollup_for_batch stays launched-only (denominator unchanged)."""
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    from app.models.book import Book
+    from app.models.toc_entry import TOCEntry
+    from app.models.homework_job import HomeworkJob
+    from app.repositories import batches as batches_repo
+    from app.repositories import jobs as jobs_repo
+
+    async with SessionLocal() as s:
+        book, tocs = await _seed_book_with_lessons(s, n=3)
+        batch = await batches_repo.get_or_create_for_book(
+            s, book_id=book.id, subject="math-algebra", grade=None,
+            provider="claude", model=None, transport="cli")
+        # Launch ONLY lessons 0 and 1; lesson 2 stays un-launched.
+        await jobs_repo.create(s, book_id=book.id, toc_entry_id=tocs[0].id,
+                               subject="math-algebra", batch_id=batch.id)
+        await jobs_repo.create(s, book_id=book.id, toc_entry_id=tocs[1].id,
+                               subject="math-algebra", batch_id=batch.id)
+        await s.commit()
+        book_id, batch_id, third_toc = book.id, batch.id, tocs[2].id
+    try:
+        async with SessionLocal() as s:
+            rows = await batches_repo.list_jobs(s, batch_id)
+            tally = await batches_repo.rollup_for_batch(s, batch_id)
+
+        # All three lessons present, ordered by order_index.
+        assert [r["order_index"] for r in rows] == [0, 1, 2]
+        # Launched lessons carry a job + status.
+        assert rows[0]["job_id"] is not None and rows[0]["status"] == "pending"
+        assert rows[1]["job_id"] is not None and rows[1]["status"] == "pending"
+        # Un-launched lesson: present, but no job/status.
+        third = next(r for r in rows if r["toc_entry_id"] == str(third_toc))
+        assert third["job_id"] is None
+        assert third["status"] is None
+        assert third["section_title"] == "L2"
+        # Rollup stays launched-only: 2 lessons, NOT 3.
+        assert sum(tally.values()) == 2, f"rollup must stay launched-only, got {tally}"
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(HomeworkJob).where(HomeworkJob.book_id == book_id))
+            await s.execute(delete(Batch).where(Batch.book_id == book_id))
+            await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
+            await s.execute(delete(Book).where(Book.id == book_id))
+            await s.commit()

@@ -84,10 +84,19 @@ async def list_with_rollups(session: AsyncSession) -> list[dict]:
 
 
 async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
-    """Per-lesson-latest rows for a batch: one row per toc_entry (its newest job),
-    joined to the lesson title, ordered by order_index. Mirrors rollup_for_batch's
-    DISTINCT ON but returns rows; row count == the rollup denominator."""
+    """One row per lesson in the batch's BOOK (full TOC), LEFT-joined to the
+    latest job per toc_entry within this batch. Launched lessons carry their
+    job's status/fields; un-launched lessons come back with job_id/status None.
+    Ordered by order_index. The launched-only rollup (rollup_for_batch) is a
+    separate query and is unaffected by the un-launched rows added here."""
     from app.models.toc_entry import TOCEntry
+
+    book_id = (
+        await session.execute(select(Batch.book_id).where(Batch.id == batch_id))
+    ).scalar_one_or_none()
+    if book_id is None:
+        return []
+
     latest = (
         select(
             HomeworkJob.id.label("job_id"),
@@ -104,17 +113,20 @@ async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
     )
     stmt = (
         select(
-            latest.c.job_id, latest.c.toc_entry_id, latest.c.status,
-            latest.c.attempts, latest.c.current_phase, latest.c.error_message,
+            latest.c.job_id, latest.c.status, latest.c.attempts,
+            latest.c.current_phase, latest.c.error_message,
+            TOCEntry.id.label("toc_entry_id"),
             TOCEntry.section_title, TOCEntry.order_index,
         )
-        .join(TOCEntry, TOCEntry.id == latest.c.toc_entry_id)
+        .select_from(TOCEntry)
+        .outerjoin(latest, latest.c.toc_entry_id == TOCEntry.id)
+        .where(TOCEntry.book_id == book_id)
         .order_by(TOCEntry.order_index)
     )
     rows = await session.execute(stmt)
     return [
         {
-            "job_id": str(r.job_id),
+            "job_id": str(r.job_id) if r.job_id is not None else None,
             "toc_entry_id": str(r.toc_entry_id),
             "section_title": r.section_title,
             "order_index": r.order_index,
