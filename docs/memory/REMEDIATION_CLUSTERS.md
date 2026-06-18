@@ -26,6 +26,36 @@ File-collision map (why ordering matters): `pipeline.py` is touched by clusters 
 
 ---
 
+## Parallel-run conventions (so the 6 clusters never get confused)
+
+**All 6 are being run at once in isolated git worktrees.** Use these fixed labels everywhere (branch, worktree dir, worklog, commits, PR title) so each cluster is unambiguous end-to-end. Do NOT improvise names or grab "next free" worklog IDs — that is the #1 thing that causes confusion and collisions.
+
+| Cluster | Branch name | Worktree dir | **Pre-assigned worklog ID** | Commit prefix |
+|---|---|---|---|---|
+| 1 — Quick-win hardening | `cluster-1-hardening` | `../HCGA-c1-hardening` | **0077** | `c1:` |
+| 2 — Cancel/resume correctness | `cluster-2-cancel-resume` | `../HCGA-c2-cancel-resume` | **0078** | `c2:` |
+| 3 — Judge quality | `cluster-3-judge-quality` | `../HCGA-c3-judge-quality` | **0079** | `c3:` |
+| 4 — Cost safety | `cluster-4-cost-safety` | `../HCGA-c4-cost-safety` | **0080** | `c4:` |
+| 5 — Fleet scale | `cluster-5-fleet-scale` | `../HCGA-c5-fleet-scale` | **0081** | `c5:` |
+| 6 — Notion + FE | `cluster-6-notion-fe` | `../HCGA-c6-notion-fe` | **0082** | `c6:` |
+
+**Rules for parallel work:**
+- **Worklog ID is reserved, not first-come.** Each cluster writes ONLY its pre-assigned `## [00NN]` block in `MASTER_MEMORY.md` + its INDEX row. Because all 6 touch those two shared files, **expect a merge conflict in `MASTER_MEMORY.md`/`INDEX.md` on every PR after the first** — it's trivial (append-only, keep both blocks), but rebase + re-add before each merge. Same for `WISHLIST.md`/`ROADMAP.md` close-out edits.
+- **Cut each branch off the CURRENT `origin/Nggaev-v2` tip** (`git worktree add -b cluster-N-... ../HCGA-cN-... origin/Nggaev-v2`), not off another cluster's branch.
+- **Plan file naming:** `docs/superpowers/plans/2026-06-18-cluster-N-<slug>.md` — cluster number in the filename so the 6 plans are distinguishable in one dir.
+- **Stage only your cluster's lane files** (CLAUDE.md rule) — never `git add -A`; the worktrees are isolated but the shared backlog/worklog files are the trap.
+- **PR title prefix:** `[cluster-N]` so the gate queue is self-labelling.
+
+**Merge-ORDER the gatekeeper will enforce (dependencies, not just per-PR gating):**
+1. **Cluster 2 before Cluster 4** — c4's kill-switch halt rests on c2's `cancel-race-1` `set_status` guard; merging 4 first builds on the unguarded version.
+2. **Cluster 1's dead-knob fix before Cluster 5's token-bucket** — c5 layers fleet-wide concurrency on top of c1's "read the right knob"; merging 5 first re-tangles the knob.
+3. **Cluster 3's judge work before Cluster 3's R20** if R20 is split into its own branch (R20 consumes the fidelity check).
+Everything else can merge in any order (rebase-on-tip each time). If a dependency PR isn't ready, hold the dependent one at the gate rather than merge out of order.
+
+**Decision-blocked clusters (will stall mid-plan until you answer — see each cluster's "Open decision to lock first"):** Cluster 4 (cost-cap granularity + halt behavior), Cluster 5 (Redis-vs-Postgres for bucket+bus), Cluster 6 (resume the fe-redesign brainstorm; its FE half can't be planned yet — do the Notion half R15/R16 only until then).
+
+---
+
 ## Cluster 1 — Quick-win hardening (START HERE; low-risk, mostly mechanical)
 
 **Why:** small, high-value, mostly independent fixes; clears noise so the bigger clusters stand alone. Can be one plan with ~8 tasks. No generation impact except where noted → unit tests suffice (no CLI smoke).
