@@ -52,6 +52,13 @@ async def lifespan(app: FastAPI):
         n = await jobs_repo.reclaim_stuck_jobs(session, stale_after_seconds=0)
         if n:
             log.info(f"Startup: reclaimed {n} orphaned running job(s) -> pending")
+        n_exhausted = await jobs_repo.fail_exhausted_pending_jobs(
+            session, max_attempts=settings.queue_max_attempts
+        )
+        if n_exhausted:
+            log.info(
+                f"Startup: failed {n_exhausted} attempts-exhausted pending job(s)"
+            )
         await session.commit()
     log.info("Orphan sweep complete (books + phase_outputs)")
 
