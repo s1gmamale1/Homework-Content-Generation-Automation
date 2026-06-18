@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/select";
 import { RoleAgentControls } from "@/components/fleet/RoleAgentControls";
 import { api } from "@/lib/api";
+import { safeUUID } from "@/lib/uuid";
 import { subjectLabel } from "@/lib/subjects";
 import type {
   JobStatus,
@@ -98,10 +99,11 @@ export function SectionPage() {
     setBusy(force ? "regen" : "new");
     // Stable per-click idempotency key. If the user double-clicks Generate
     // (or the network blips and we retry), the server returns the same job
-    // both times instead of creating duplicates. crypto.randomUUID is
-    // available in all modern browsers; the server treats unknown keys as
-    // "first time, create new" anyway, so absence is not a failure mode.
-    const idempotencyKey = crypto.randomUUID();
+    // both times instead of creating duplicates. Use safeUUID (not
+    // crypto.randomUUID directly): the latter is undefined in a non-secure
+    // context — plain HTTP on a LAN IP — which silently broke this flow on the
+    // fleet head. The server treats unknown keys as "first time" anyway.
+    const idempotencyKey = safeUUID();
     try {
       const job = await api.generate(bookId, sectionId, {
         force,
