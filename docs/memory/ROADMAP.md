@@ -77,6 +77,14 @@
 
 ---
 
+## R18 — Fleet tray grows monotonically; needs a "Complete" split (blocked on a books-list progress rollup)
+
+- **Issue:** since PR #24 / worklog [[MASTER_MEMORY]] §0071 removed the `!fullyBatched` exclusion (which was wrongly making launched books vanish), the Fleet "to launch" tray now keeps **every** prepared book forever — launched and fully-complete books never leave it. Fine for a handful of books; for the Oct/Mar all-subject campaign ([[oct-mar-content-campaign]], potentially hundreds of books) the tray becomes an unwieldy wall.
+- **Root cause / why deferred:** an honest "Complete" section (or collapse-done) can't be built at the **group/tray** level today — `GET /api/v1/books` returns `toc: null`, so the tray only knows a book's *batches*, not its per-lesson done counts. Per-lesson truth currently lives only inside each card's lazy `getBook` fetch (`launcher.tsx` `ReadyCard`). A batch-level "complete" split would re-introduce the over-claim bug 0071 just killed (batch-complete ≠ all lessons done — a partial launch reads as complete).
+- **Deliverable:** add a **books-list per-lesson progress rollup** (backend: include `lessons_total` + `lessons_done` per book on `GET /books`, or a dedicated `/books/progress` endpoint), then split/collapse the Fleet tray so completed books move to a "Complete" section (or fold away), keeping "to launch" scoped to ready + in-progress. A client-side per-book `getBook` fan-out is a possible FE-only stopgap but is N-queries; the backend rollup is the clean shape. Pre-campaign nice-to-have, not blocking current scale.
+
+---
+
 ## Shipped / Closed
 
 > One line per shipped/closed item — full detail in the cited worklog + git. Nothing here is open.
