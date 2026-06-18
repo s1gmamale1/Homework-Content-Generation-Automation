@@ -150,3 +150,37 @@ def resolve_phase_deps(phase_name: str, content_phases: list[str]) -> set[str]:
                 resolved.add(a)
                 break
     return resolved
+
+
+def expand_phase_selection(
+    subject: str, selected: list[str]
+) -> tuple[list[str], list[str]]:
+    """Expand a user's phase selection to its full dependency closure.
+
+    Returns (ordered_closure, added_phases): the closure ordered by the
+    subject's canonical flow, plus the phases that were auto-added (deps the
+    user did not select). Raises ValueError on an empty selection or any phase
+    not in the subject's flow. `extract` is never selectable (it is the head).
+    """
+    if not selected:
+        raise ValueError("phase selection is empty — pick at least one phase")
+    flow = flow_for(subject)
+    flow_set = set(flow)
+    unknown = [p for p in selected if p not in flow_set]
+    if unknown:
+        raise ValueError(f"phases not in {subject} flow: {unknown}")
+
+    chosen = set(selected)
+    changed = True
+    while changed:                       # fixpoint: deps-of-deps included
+        changed = False
+        for p in list(chosen):
+            for dep in resolve_phase_deps(p, flow):
+                if dep not in chosen:
+                    chosen.add(dep)
+                    changed = True
+
+    ordered = [p for p in flow if p in chosen]
+    selected_set = set(selected)
+    added = [p for p in ordered if p not in selected_set]
+    return ordered, added
