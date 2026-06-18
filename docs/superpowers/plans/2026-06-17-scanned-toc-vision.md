@@ -147,13 +147,13 @@ Replace the message so it names the cause **and** the remedy:
 **Finish (same commit set, do not defer):**
 - **Rebase** onto the current `origin/Nggaev-v2` tip first (it moved past `7b6ec26` during dev).
 - Full suite: `uv run python -m pytest tests/ -q` (green; the 5 notion-router tests need `NOTION_API_KEY` in a bare worktree — env artifact, not a regression).
-- Worklog **0071** (verify it's the next free number at finish — base has moved; #23 took 0070, later PRs took more) in `docs/memory/MASTER_MEMORY.md` + `docs/memory/INDEX.md` row.
+- Worklog **0072** (0071 is taken by #24; #23 took 0070 — re-verify it is still next-free after the rebase) in `docs/memory/MASTER_MEMORY.md` + `docs/memory/INDEX.md` row.
 - **Close WISHLIST line 79** (the scanned-TOC half) — move to the worklog; it's the last open piece of the scanned-book story.
 - `git mv docs/superpowers/plans/2026-06-17-scanned-toc-vision.md docs/superpowers/plans/shipped/`.
 - De-stale `docs/HOW_IT_WORKS.md` (the "fully scanned book whose TOC itself is an image can still come back empty" line — now handled) + `docs/CODE_MAP.md` (`extract_toc` note).
 - `finishing-a-development-branch` → open PR to `Nggaev-v2`.
 
-**Commit:** `docs(memory): worklog 0071 — scanned-TOC vision fallback; ship plan`
+**Commit:** `docs(memory): worklog 0072 — scanned-TOC vision fallback; ship plan`
 
 ---
 
