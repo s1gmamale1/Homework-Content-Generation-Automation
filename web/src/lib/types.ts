@@ -348,12 +348,12 @@ export interface BatchSummary {
 }
 
 export interface BatchLessonRow {
-  job_id: string;
+  job_id: string | null;
   toc_entry_id: string;
   section_title: string;
   order_index: number;
-  status: JobStatus;
-  attempts: number;
+  status: JobStatus | null;
+  attempts: number | null;
   current_phase: string | null;
   error_message: string | null;
 }

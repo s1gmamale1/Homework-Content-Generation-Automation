@@ -72,6 +72,7 @@ export function BatchLessonList({
   return (
     <ul className="divide-y divide-white/[0.06]">
       {rows.map((row) => {
+        const launched = row.job_id !== null && row.status !== null;
         const canCancel =
           row.status === "pending" || row.status === "running";
         const canRetry = row.status === "failed";
@@ -79,8 +80,11 @@ export function BatchLessonList({
 
         return (
           <li
-            key={row.job_id}
-            className="flex items-center gap-3 py-2 text-sm"
+            key={row.toc_entry_id}
+            className={cn(
+              "flex items-center gap-3 py-2 text-sm",
+              !launched && "opacity-45",
+            )}
           >
             {selectable && (
               <input
@@ -98,22 +102,28 @@ export function BatchLessonList({
               {row.section_title}
             </span>
 
-            <span
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.7rem] text-white/85"
-              style={{ background: `${colorFor(row.status)}` }}
-            >
-              <span className="font-medium">{row.status}</span>
-              {row.attempts > 1 && (
-                <span className="text-white/60">· try {row.attempts}</span>
-              )}
-            </span>
+            {launched ? (
+              <span
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.7rem] text-white/85"
+                style={{ background: `${colorFor(row.status!)}` }}
+              >
+                <span className="font-medium">{row.status}</span>
+                {(row.attempts ?? 0) > 1 && (
+                  <span className="text-white/60">· try {row.attempts}</span>
+                )}
+              </span>
+            ) : (
+              <span className="shrink-0 rounded-full bg-white/[0.06] px-2 py-0.5 text-[0.7rem] text-white/50">
+                not started
+              </span>
+            )}
 
-            {!selectable && (
+            {!selectable && launched && (
               <div className="flex shrink-0 items-center gap-1">
                 {canCancel && (
                   <button
                     type="button"
-                    onClick={() => cancel.mutate(row.job_id)}
+                    onClick={() => cancel.mutate(row.job_id!)}
                     disabled={cancel.isPending}
                     className={cn(GHOST_BTN, "px-2 py-1 text-xs")}
                   >
@@ -123,7 +133,7 @@ export function BatchLessonList({
                 {canRetry && (
                   <button
                     type="button"
-                    onClick={() => retry.mutate(row.job_id)}
+                    onClick={() => retry.mutate(row.job_id!)}
                     disabled={retry.isPending}
                     className={cn(GHOST_BTN, "px-2 py-1 text-xs")}
                   >
