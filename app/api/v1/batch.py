@@ -11,6 +11,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.services.agent_models import is_valid, validate_role_transport, validate_transport
+from app.services.flows import expand_phase_selection, flow_for
 
 router = APIRouter(tags=["batches"])
 
@@ -99,11 +100,31 @@ async def launch_batch(
         if role_err is not None:
             raise HTTPException(400, role_err)
 
+    custom_prompts = body.custom_prompts or None
+    if custom_prompts:
+        valid_phases = set(flow_for(book.subject))
+        for phase, md in custom_prompts.items():
+            if phase == "extract" or phase not in valid_phases:
+                raise HTTPException(400, f"custom_prompts: unknown phase {phase!r}")
+            if len(md) > 20_000:
+                raise HTTPException(
+                    400, f"custom_prompts[{phase}] too long ({len(md)} chars; max 20000).")
+
+    selected_closure = None
+    if body.selected_phases is not None:
+        try:
+            selected_closure, _added = expand_phase_selection(book.subject, body.selected_phases)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    batch_force = body.force or bool(custom_prompts) or selected_closure is not None
+
     batch = await batches_repo.get_or_create_for_book(
         session, book_id=body.book_id, subject=book.subject, grade=book.grade,
         provider=provider, model=body.model, transport=body.transport,
         extract_transport=body.extract_transport,
-        judge_transport=body.judge_transport)
+        judge_transport=body.judge_transport,
+        custom_prompts=custom_prompts, selected_phases=selected_closure,)
 
     created = adopted = skipped = 0
     for t in targets:
@@ -111,7 +132,7 @@ async def launch_batch(
         # Transport-scoped lookup (spec §9a): an api batch over a cli-generated
         # book finds no same-transport job → falls through to create, leaving
         # the cli jobs untouched.
-        existing = None if body.force else await jobs_repo.find_active_for_section(
+        existing = None if batch_force else await jobs_repo.find_active_for_section(
             session, body.book_id, t.id, transport=body.transport)
         if existing is not None:
             # Lookup is transport-scoped, so a returned job always matches —
@@ -132,7 +153,8 @@ async def launch_batch(
                                model=body.model, batch_id=batch.id,
                                transport=body.transport,
                                extract_transport=body.extract_transport,
-                               judge_transport=body.judge_transport)
+                               judge_transport=body.judge_transport,
+                               custom_prompts=custom_prompts, selected_phases=selected_closure,)
         created += 1
 
     await session.flush()
