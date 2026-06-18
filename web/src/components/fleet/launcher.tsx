@@ -564,15 +564,16 @@ function ReadyCard({
       t.latest_job_status === "cancelling",
   ).length;
   const complete = lessons != null && lessons > 0 && doneCount === lessons;
-  // Accurate per-book status from the book's own TOC: "ready to launch" until any
-  // lesson has a job, "generating" while jobs run, "complete" only when EVERY
-  // lesson is done (so a partial launch never falsely reads as complete).
-  const launched = toc.some((t) => t.latest_job_status);
-  const cardStatus: CardStatus = !launched
-    ? "ready"
-    : complete
-      ? "complete"
-      : "generating";
+  // Accurate per-book status from the book's own TOC. "generating" requires a
+  // lesson actually in flight (activeCount) — NOT merely "has a job", since
+  // failed/cancelled lessons are terminal and must not pulse "generating".
+  // "complete" needs EVERY lesson done; otherwise the book is launchable
+  // (nothing-yet, or partial/failed → re-launch the remaining).
+  const cardStatus: CardStatus = complete
+    ? "complete"
+    : activeCount > 0
+      ? "generating"
+      : "ready";
   // A plain re-launch skips done + in-flight sections and creates jobs only for
   // the rest (failed / never-run / cancelled) — that's the "remaining" count.
   const remaining = Math.max(0, (lessons ?? 0) - doneCount - activeCount);
