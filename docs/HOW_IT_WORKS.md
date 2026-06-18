@@ -386,6 +386,10 @@ Key endpoints:
   background. De-dupes by file hash so re-uploading the same book is free.
 - `GET /books/{id}` / `GET /books/{id}/toc/stream` — fetch the book + its TOC, or stream TOC
   progress live.
+- `POST /books/{id}/toc/retry` — re-run TOC extraction for a book stuck in `failed` or
+  `toc_extracting` (e.g. a transient provider/rate-limit failure). Mirrors `POST /jobs/{id}/retry`;
+  there's a **Retry** button on failed/stuck books in the UI. Re-extraction is idempotent
+  (clears prior entries first).
 - `PATCH/DELETE .../toc/{entry}` — edit/fix a section's title or page range by hand (useful
   when auto-extraction is imperfect).
 - `POST /books/{book}/sections/{section}/generate` — enqueue a homework job. Has **three
