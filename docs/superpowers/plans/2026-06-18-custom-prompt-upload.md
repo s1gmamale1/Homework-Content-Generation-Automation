@@ -4,18 +4,20 @@
 
 **Goal:** On the section (and batch) launch page, let a user (a) upload a `.md` per phase that **replaces** that phase's built-in prompt and (b) generate only a chosen subset of phases — handling the four gate conditions: dedup force-fresh, judge contract override, dependency-closure expansion, and real-text provenance hash.
 
-**Architecture:** Two nullable JSONB columns (`custom_prompts` = `{phase: md}`, `phases` = ordered closure) on `homework_jobs` and `batches` carry intent from request → worker. The browser reads each `.md` inline. The endpoint validates, expands the dependency closure (returning what it auto-added), and force-creates a fresh job whenever custom/subset is present. The pipeline runs only the closure phases, swaps each phase's prompt for its custom override (and stamps a `sha256` provenance hash), and feeds the same override to the judge so it grades against the right contract.
+**Architecture:** Two nullable JSONB columns (`custom_prompts` = `{phase: md}`, `selected_phases` = ordered closure) on `homework_jobs` and `batches` carry intent from request → worker. The browser reads each `.md` inline. The endpoint validates, expands the dependency closure (returning what it auto-added), and force-creates a fresh job whenever custom/subset is present. The pipeline runs only the closure phases, swaps each phase's prompt for its custom override (and stamps a `sha256` provenance hash), and feeds the same override to the judge so it grades against the right contract.
 
 **Tech Stack:** FastAPI, SQLAlchemy 2.0 async + Alembic, Pydantic v2, pytest/pytest-asyncio; React + TypeScript + Vite (web/).
+
+> **Naming note (pre-flight correction):** the phase-subset concept is named **`selected_phases`** everywhere (DB column, request schema, repo param, pipeline, FE body) — NOT `phases`. `JobOut` already has a `phases: list[PhaseOut]` field and `_job_out` calls `JobOut.model_validate(job)`; an ORM column literally named `phases` (list of strings) would break that validation for every job response. The closure the endpoint computes is returned to the FE as **`added_phases`** (a separate response field added to `JobOut`).
 
 ## Global Constraints
 
 - **Replace, not append** — a custom phase prompt fully replaces `get_prompt(subject, phase)` for both generation and judging.
 - **Never written to `prompts/`** — custom text lives only on the job/batch row and in-memory during the run.
-- **`extract` is off-limits** — never a `custom_prompts` key, never in `phases`; it is the always-on head every content phase depends on.
+- **`extract` is off-limits** — never a `custom_prompts` key, never in `selected_phases`; it is the always-on head every content phase depends on.
 - **Per-prompt length cap: 20 000 characters** — 400 if any phase's custom md exceeds it.
-- **`phases` semantics:** `null` = run all (default flow); `[]` = 400 (must pick ≥1); a non-empty list is dependency-closure-expanded server-side.
-- **Force-fresh:** any launch carrying `custom_prompts` (non-empty) OR `phases` (non-null) skips the natural-key reuse check (Gate 1). Advisory lock + header idempotency still apply.
+- **`selected_phases` semantics:** `null` = run all (default flow); `[]` = 400 (must pick ≥1); a non-empty list is dependency-closure-expanded server-side and stored as the ordered closure.
+- **Force-fresh:** any launch carrying `custom_prompts` (non-empty) OR `selected_phases` (non-null) skips the natural-key reuse check (Gate 1). Advisory lock + header idempotency still apply.
 - **Backwards compatible** — both fields optional everywhere; absent ⇒ today's behavior exactly (NULL columns, full flow, built-in prompts).
 - **Stage only the files each task lists** — never `git add -A`.
 - Commit footer (every commit):
@@ -36,31 +38,31 @@
 ### Task 1: DB columns + models (job + batch)
 
 **Files:**
-- Create: `alembic/versions/0027_add_custom_prompts_phases.py`
+- Create: `alembic/versions/0027_add_custom_prompts_selected_phases.py`
 - Modify: `app/models/homework_job.py` (after `judge_transport`, ~line 30), `app/models/batch.py` (after `judge_transport`, ~line 29)
 - Test: `tests/repositories/test_custom_prompt_columns.py`
 
 **Interfaces:**
-- Produces: `HomeworkJob.custom_prompts: Optional[dict]`, `HomeworkJob.phases: Optional[list]`, `Batch.custom_prompts`, `Batch.phases` — all nullable JSONB.
+- Produces: `HomeworkJob.custom_prompts: Optional[dict]`, `HomeworkJob.selected_phases: Optional[list]`, `Batch.custom_prompts`, `Batch.selected_phases` — all nullable JSONB.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/repositories/test_custom_prompt_columns.py
-"""custom_prompts + phases JSONB columns exist and are nullable (no DB)."""
+"""custom_prompts + selected_phases JSONB columns exist and are nullable (no DB)."""
 from app.models.batch import Batch
 from app.models.homework_job import HomeworkJob
 
 
 def test_homework_job_has_custom_columns():
-    for name in ("custom_prompts", "phases"):
+    for name in ("custom_prompts", "selected_phases"):
         col = HomeworkJob.__table__.columns[name]
         assert col.nullable is True
         assert col.server_default is None
 
 
 def test_batch_has_custom_columns():
-    for name in ("custom_prompts", "phases"):
+    for name in ("custom_prompts", "selected_phases"):
         col = Batch.__table__.columns[name]
         assert col.nullable is True
 ```
@@ -72,23 +74,24 @@ Expected: FAIL — `KeyError: 'custom_prompts'`
 
 - [ ] **Step 3: Add the model columns**
 
-In `app/models/homework_job.py`, add the JSONB import and columns. At the top imports, ensure `from sqlalchemy.dialects.postgresql import JSONB` is present (add if missing). After the `judge_transport` line (~30):
+In `app/models/homework_job.py`, ensure `from sqlalchemy.dialects.postgresql import JSONB` is imported (add if missing). After the `judge_transport` line (~30):
 
 ```python
     # Per-phase custom prompt overrides {phase_name: markdown} for this job.
     # NULL/{} = all built-in. Never written to prompts/.
     custom_prompts: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     # Ordered content-phase subset to run (dependency-closure-expanded at launch).
-    # NULL = run the full subject flow.
-    phases: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    # NULL = run the full subject flow. Named selected_phases (not `phases`) to
+    # avoid colliding with JobOut.phases (the phase-outputs list).
+    selected_phases: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 ```
 
-In `app/models/batch.py`, add the same JSONB import and, after `judge_transport` (~line 29):
+In `app/models/batch.py`, ensure the JSONB import is present and, after `judge_transport` (~line 29):
 
 ```python
     # Mirror of the launch's per-phase overrides + phase subset (provenance label).
     custom_prompts: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    phases: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    selected_phases: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 ```
 
 (Both files already import `Optional` and `Mapped`/`mapped_column`.)
@@ -96,8 +99,8 @@ In `app/models/batch.py`, add the same JSONB import and, after `judge_transport`
 - [ ] **Step 4: Write the migration**
 
 ```python
-# alembic/versions/0027_add_custom_prompts_phases.py
-"""Add nullable custom_prompts + phases JSONB to homework_jobs and batches.
+# alembic/versions/0027_add_custom_prompts_selected_phases.py
+"""Add nullable custom_prompts + selected_phases JSONB to homework_jobs and batches.
 
 Carry per-phase custom prompt overrides and the phase subset (closure) from the
 launch request to the worker. Nullable, no server default. Backwards compatible."""
@@ -116,12 +119,12 @@ depends_on = None
 def upgrade() -> None:
     for table in ("homework_jobs", "batches"):
         op.add_column(table, sa.Column("custom_prompts", JSONB(), nullable=True))
-        op.add_column(table, sa.Column("phases", JSONB(), nullable=True))
+        op.add_column(table, sa.Column("selected_phases", JSONB(), nullable=True))
 
 
 def downgrade() -> None:
     for table in ("homework_jobs", "batches"):
-        op.drop_column(table, "phases")
+        op.drop_column(table, "selected_phases")
         op.drop_column(table, "custom_prompts")
 ```
 
@@ -135,8 +138,8 @@ Expected: single head `c1d2e3f4a5b6 (head)`
 - [ ] **Step 6: Commit**
 
 ```bash
-git add alembic/versions/0027_add_custom_prompts_phases.py app/models/homework_job.py app/models/batch.py tests/repositories/test_custom_prompt_columns.py
-git commit -m "feat(db): add custom_prompts + phases JSONB to jobs and batches"
+git add alembic/versions/0027_add_custom_prompts_selected_phases.py app/models/homework_job.py app/models/batch.py tests/repositories/test_custom_prompt_columns.py
+git commit -m "feat(db): add custom_prompts + selected_phases JSONB to jobs and batches"
 ```
 
 ---
@@ -250,49 +253,69 @@ git commit -m "feat(flows): expand_phase_selection computes dependency closure"
 
 ---
 
-### Task 3: Request schemas (generate + batch)
+### Task 3: Request schemas (generate + batch) + JobOut.added_phases
 
 **Files:**
-- Modify: `app/schemas/job.py` (`GenerateRequest`, ~line 42-48)
+- Modify: `app/schemas/job.py` (`GenerateRequest` ~line 42-48; `JobOut` ~line 23-39)
 - Modify: `app/api/v1/batch.py` (`BatchLaunchRequest`, ~line 22-30)
 - Test: `tests/services/test_custom_prompt_schema.py`
 
 **Interfaces:**
-- Produces: `GenerateRequest.custom_prompts: dict[str,str] | None = None`, `GenerateRequest.phases: list[str] | None = None`; same two on `BatchLaunchRequest`.
+- Produces: `GenerateRequest.custom_prompts: dict[str,str] | None = None`, `GenerateRequest.selected_phases: list[str] | None = None`; same two on `BatchLaunchRequest`; `JobOut.added_phases: list[str] = []`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/services/test_custom_prompt_schema.py
 from app.api.v1.batch import BatchLaunchRequest
-from app.schemas.job import GenerateRequest
+from app.schemas.job import GenerateRequest, JobOut
 
 
 def test_generate_defaults_none():
     req = GenerateRequest()
     assert req.custom_prompts is None
-    assert req.phases is None
+    assert req.selected_phases is None
 
 
 def test_generate_round_trips():
-    req = GenerateRequest(custom_prompts={"flashcards": "RULES"}, phases=["flashcards"])
+    req = GenerateRequest(custom_prompts={"flashcards": "RULES"}, selected_phases=["flashcards"])
     assert req.custom_prompts == {"flashcards": "RULES"}
-    assert req.phases == ["flashcards"]
+    assert req.selected_phases == ["flashcards"]
 
 
 def test_batch_round_trips():
     req = BatchLaunchRequest(
         book_id="00000000-0000-0000-0000-000000000001",
-        custom_prompts={"reflection": "X"}, phases=["reflection"],
+        custom_prompts={"reflection": "X"}, selected_phases=["reflection"],
     )
     assert req.custom_prompts == {"reflection": "X"}
-    assert req.phases == ["reflection"]
+    assert req.selected_phases == ["reflection"]
+
+
+def test_jobout_added_phases_defaults_empty():
+    # from_attributes build from a stub that lacks added_phases → default []
+    class _J:
+        id = "00000000-0000-0000-0000-000000000001"
+        book_id = "00000000-0000-0000-0000-000000000002"
+        toc_entry_id = "00000000-0000-0000-0000-000000000003"
+        subject = "math-algebra"
+        status = "pending"
+        current_phase = None
+        error_message = None
+        provider = "claude"
+        model = None
+        transport = "cli"
+        extract_transport = "inherit"
+        judge_transport = "inherit"
+        notion_skip_reason = None
+    out = JobOut.model_validate(_J())
+    assert out.added_phases == []
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run python -m pytest tests/services/test_custom_prompt_schema.py -q`
-Expected: FAIL — `AttributeError: ... has no attribute 'custom_prompts'`
+Expected: FAIL — `AttributeError`/`ValidationError` for the missing fields.
 
 - [ ] **Step 3: Add fields**
 
@@ -300,14 +323,20 @@ In `app/schemas/job.py`, inside `GenerateRequest`, after `judge_transport` (~lin
 
 ```python
     custom_prompts: dict[str, str] | None = None   # {phase: markdown}; replaces built-in. Not persisted to prompts/.
-    phases: list[str] | None = None                # subset to run; None = full flow. Dependency-closure-expanded server-side.
+    selected_phases: list[str] | None = None        # subset to run; None = full flow. Dependency-closure-expanded server-side.
+```
+
+In `app/schemas/job.py`, inside `JobOut`, after `phases: list[PhaseOut] = []` (~line 38):
+
+```python
+    added_phases: list[str] = []   # deps the closure auto-added beyond the user's selection (response only)
 ```
 
 In `app/api/v1/batch.py`, inside `BatchLaunchRequest`, after `force: bool = False` (~line 30):
 
 ```python
     custom_prompts: dict[str, str] | None = None
-    phases: list[str] | None = None
+    selected_phases: list[str] | None = None
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -319,7 +348,7 @@ Expected: PASS
 
 ```bash
 git add app/schemas/job.py app/api/v1/batch.py tests/services/test_custom_prompt_schema.py
-git commit -m "feat(schema): add custom_prompts + phases to generate/batch requests"
+git commit -m "feat(schema): add custom_prompts + selected_phases requests, JobOut.added_phases"
 ```
 
 ---
@@ -333,7 +362,7 @@ git commit -m "feat(schema): add custom_prompts + phases to generate/batch reque
 
 **Interfaces:**
 - Consumes: the JSONB columns (Task 1).
-- Produces: `jobs_repo.create(..., custom_prompts=None, phases=None)`; `batches_repo.get_or_create_for_book(..., custom_prompts=None, phases=None)`.
+- Produces: `jobs_repo.create(..., custom_prompts=None, selected_phases=None)`; `batches_repo.get_or_create_for_book(..., custom_prompts=None, selected_phases=None)`.
 
 - [ ] **Step 1: Write the failing test** (real-DB, standard marker)
 
@@ -388,11 +417,11 @@ async def test_create_persists_custom_fields():
         async with SessionLocal() as s:
             job = await jobs_repo.create(
                 s, book_id=book_id, toc_entry_id=sid, subject="math-algebra",
-                custom_prompts={"flashcards": "RULES"}, phases=["flashcards"],
+                custom_prompts={"flashcards": "RULES"}, selected_phases=["flashcards"],
             )
             await s.commit()
             assert job.custom_prompts == {"flashcards": "RULES"}
-            assert job.phases == ["flashcards"]
+            assert job.selected_phases == ["flashcards"]
     finally:
         await _cleanup(book_id)
 
@@ -409,7 +438,7 @@ async def test_create_without_custom_is_null():
                                          subject="math-algebra")
             await s.commit()
             assert job.custom_prompts is None
-            assert job.phases is None
+            assert job.selected_phases is None
     finally:
         await _cleanup(book_id)
 ```
@@ -425,7 +454,7 @@ In `app/repositories/jobs.py`, add to the signature after `judge_transport` (~li
 
 ```python
     custom_prompts: Optional[dict] = None,
-    phases: Optional[list] = None,
+    selected_phases: Optional[list] = None,
 ```
 
 After the `if batch_id is not None:` block (~line 40):
@@ -433,8 +462,8 @@ After the `if batch_id is not None:` block (~line 40):
 ```python
     if custom_prompts is not None:
         kwargs["custom_prompts"] = custom_prompts
-    if phases is not None:
-        kwargs["phases"] = phases
+    if selected_phases is not None:
+        kwargs["selected_phases"] = selected_phases
 ```
 
 - [ ] **Step 4: Extend `batches_repo.get_or_create_for_book`**
@@ -443,21 +472,21 @@ In `app/repositories/batches.py`, add to the signature after `notion_source` (~l
 
 ```python
     custom_prompts: Optional[dict] = None,
-    phases: Optional[list] = None,
+    selected_phases: Optional[list] = None,
 ```
 
 Add to the `pg_insert(Batch).values(...)` block (after `notion_source=notion_source,`, ~line 42):
 
 ```python
             custom_prompts=custom_prompts,
-            phases=phases,
+            selected_phases=selected_phases,
 ```
 
 And to the conflict `set_` (so a re-launch records the latest intent; ~line 48):
 
 ```python
             set_={"updated_at": func.now(),
-                  "custom_prompts": custom_prompts, "phases": phases},
+                  "custom_prompts": custom_prompts, "selected_phases": selected_phases},
 ```
 
 - [ ] **Step 5: Run test to verify it passes**
@@ -469,22 +498,22 @@ Expected: PASS (or SKIP without DB)
 
 ```bash
 git add app/repositories/jobs.py app/repositories/batches.py tests/repositories/test_custom_prompt_persist.py
-git commit -m "feat(repo): persist custom_prompts + phases on jobs and batches"
+git commit -m "feat(repo): persist custom_prompts + selected_phases on jobs and batches"
 ```
 
 ---
 
-### Task 5: Generate endpoint — validate, expand, force-fresh, return added
+### Task 5: Generate endpoint — validate, expand, force-fresh, return added_phases
 
 **Files:**
-- Modify: `app/api/v1/jobs.py` (`generate`, validation after ~line 144; reuse check ~line 153; create ~line 179; response)
+- Modify: `app/api/v1/jobs.py` (`generate`, validation after ~line 144; reuse check ~line 153; create ~line 179; fresh-job return)
 - Test: `tests/api/test_custom_prompt_endpoint.py`
 
 **Interfaces:**
-- Consumes: `expand_phase_selection` (Task 2), schema fields (Task 3), `jobs_repo.create(custom_prompts=, phases=)` (Task 4).
-- Produces: 400 on unknown phase / oversize prompt / empty `phases`; force-fresh when custom/subset; `JobOut`-ish response with an extra `added_phases` list.
+- Consumes: `expand_phase_selection` (Task 2), schema fields + `JobOut.added_phases` (Task 3), `jobs_repo.create(custom_prompts=, selected_phases=)` (Task 4).
+- Produces: 400 on unknown phase / oversize prompt / empty `selected_phases`; force-fresh when custom/subset; the freshly-created job's `JobOut` carries `added_phases`.
 
-- [ ] **Step 1: Write the failing tests** (no-DB rejections + force-fresh; mirrors `test_transport_validation`)
+- [ ] **Step 1: Write the failing tests** (no-DB rejections; mirrors `test_transport_validation`)
 
 ```python
 # tests/api/test_custom_prompt_endpoint.py
@@ -537,7 +566,7 @@ def _post(c, body):
 async def test_unknown_phase_rejected(monkeypatch):
     _ready_book_patch(monkeypatch)
     async with _client() as c:
-        r = await _post(c, {"phases": ["not-a-phase"]})
+        r = await _post(c, {"selected_phases": ["not-a-phase"]})
     assert r.status_code == 400, r.text
     assert "phase" in r.json()["detail"].lower()
 
@@ -546,7 +575,7 @@ async def test_unknown_phase_rejected(monkeypatch):
 async def test_empty_phases_rejected(monkeypatch):
     _ready_book_patch(monkeypatch)
     async with _client() as c:
-        r = await _post(c, {"phases": []})
+        r = await _post(c, {"selected_phases": []})
     assert r.status_code == 400, r.text
 
 
@@ -574,7 +603,7 @@ Expected: FAIL — requests currently pass validation (no 400).
 
 - [ ] **Step 3: Add validation + closure expansion**
 
-In `app/api/v1/jobs.py`, add the import near the top (with the other `app.services` imports):
+In `app/api/v1/jobs.py`, add the import near the other `app.services` imports:
 
 ```python
 from app.services.flows import expand_phase_selection, flow_for
@@ -592,19 +621,18 @@ After the role-transport validation loop (after ~line 144, before the advisory-l
                 raise HTTPException(400, f"custom_prompts: unknown phase {phase!r}")
             if len(md) > 20_000:
                 raise HTTPException(
-                    400, f"custom_prompts[{phase}] too long ({len(md)} chars; max 20000)."
-                )
+                    400, f"custom_prompts[{phase}] too long ({len(md)} chars; max 20000).")
 
-    phases_closure: Optional[list[str]] = None
+    selected_closure: Optional[list[str]] = None
     added_phases: list[str] = []
-    if body.phases is not None:
+    if body.selected_phases is not None:
         try:
-            phases_closure, added_phases = expand_phase_selection(book.subject, body.phases)
+            selected_closure, added_phases = expand_phase_selection(book.subject, body.selected_phases)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
 
     # Gate 1: a custom/subset launch must never reuse a plain job.
-    force_fresh = body.force or bool(custom_prompts) or phases_closure is not None
+    force_fresh = body.force or bool(custom_prompts) or selected_closure is not None
 ```
 
 - [ ] **Step 4: Use force_fresh in the reuse check**
@@ -621,22 +649,21 @@ In the `jobs_repo.create(...)` call (lines 179-190), add after `judge_transport=
 
 ```python
         custom_prompts=custom_prompts,
-        phases=phases_closure,
+        selected_phases=selected_closure,
 ```
 
-- [ ] **Step 6: Return `added_phases`**
+- [ ] **Step 6: Return `added_phases` on the fresh job**
 
-The handler returns `await _job_out(session, job.id)` (a `JobOut`). To add `added_phases` without reshaping `JobOut`, build the response dict. Locate the final success return (after the job is created/committed) and replace the `return await _job_out(...)` for the freshly-created job with:
+The fresh-create path ends with `return await _job_out(...)` for the new job (the early idempotent-return paths above are unchanged — they carry the default `added_phases=[]`). Replace that fresh-job return with:
 
 ```python
     out = await _job_out(session, job.id)
-    payload = out.model_dump(mode="json")
-    payload["added_phases"] = added_phases
+    out.added_phases = added_phases
     response.status_code = 201
-    return payload
+    return out
 ```
 
-(The `_job_out` helper returns a `JobOut`; `.model_dump(mode="json")` serializes UUIDs/enums. The early idempotent-return paths above are unchanged — they carry no `added_phases`, which the FE treats as "none added".)
+(`JobOut.added_phases` exists from Task 3; the handler keeps its `-> JobOut` annotation so FastAPI serializes the field. No dict / `response_model` change.)
 
 - [ ] **Step 7: Run tests to verify they pass**
 
@@ -661,7 +688,7 @@ git commit -m "feat(api): validate/expand custom prompts + subset, force-fresh o
 - Test: `tests/api/test_custom_prompt_batch.py`
 
 **Interfaces:**
-- Consumes: same helpers as Task 5; `batches_repo.get_or_create_for_book(custom_prompts=, phases=)` and `jobs_repo.create(custom_prompts=, phases=)` (Task 4).
+- Consumes: same helpers as Task 5; `batches_repo.get_or_create_for_book(custom_prompts=, selected_phases=)` and `jobs_repo.create(custom_prompts=, selected_phases=)` (Task 4).
 - Produces: 400 on the same invalid inputs; per-target force-fresh; batch + jobs carry the fields.
 
 - [ ] **Step 1: Write the failing tests** (no-DB, mirrors `_ready_batch_patch`)
@@ -710,7 +737,7 @@ async def test_batch_unknown_phase_rejected(monkeypatch):
     _ready_batch_patch(monkeypatch)
     async with _client() as c:
         r = await c.post("/api/v1/jobs/batch", headers=_HDR,
-                         json={"book_id": _BOOK_ID, "phases": ["not-a-phase"]})
+                         json={"book_id": _BOOK_ID, "selected_phases": ["not-a-phase"]})
     assert r.status_code == 400, r.text
 
 
@@ -751,14 +778,14 @@ After the role-transport validation loop (after ~line 94), add:
                 raise HTTPException(
                     400, f"custom_prompts[{phase}] too long ({len(md)} chars; max 20000).")
 
-    phases_closure = None
-    if body.phases is not None:
+    selected_closure = None
+    if body.selected_phases is not None:
         try:
-            phases_closure, _added = expand_phase_selection(book.subject, body.phases)
+            selected_closure, _added = expand_phase_selection(book.subject, body.selected_phases)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
 
-    batch_force = body.force or bool(custom_prompts) or phases_closure is not None
+    batch_force = body.force or bool(custom_prompts) or selected_closure is not None
 ```
 
 - [ ] **Step 4: Store on the batch + use force per target + thread into job create**
@@ -766,7 +793,7 @@ After the role-transport validation loop (after ~line 94), add:
 In the `batches_repo.get_or_create_for_book(...)` call (~line 96), add:
 
 ```python
-        custom_prompts=custom_prompts, phases=phases_closure,
+        custom_prompts=custom_prompts, selected_phases=selected_closure,
 ```
 
 In the per-target loop, change the reuse guard (line 108) from `None if body.force else ...` to:
@@ -779,7 +806,7 @@ In the per-target loop, change the reuse guard (line 108) from `None if body.for
 In the `jobs_repo.create(...)` call inside the loop (~line 124), add after `judge_transport=body.judge_transport`:
 
 ```python
-                               custom_prompts=custom_prompts, phases=phases_closure,
+                               custom_prompts=custom_prompts, selected_phases=selected_closure,
 ```
 
 - [ ] **Step 5: Run tests to verify they pass**
@@ -882,7 +909,7 @@ git commit -m "feat(judge): accept contract_override so judge grades custom prom
 - Test: `tests/services/test_pipeline_custom_prompt.py`
 
 **Interfaces:**
-- Consumes: `HomeworkJob.custom_prompts`/`.phases` (Task 1), `judge(contract_override=)` (Task 7).
+- Consumes: `HomeworkJob.custom_prompts`/`.selected_phases` (Task 1), `judge(contract_override=)` (Task 7).
 - Produces: module helper `_custom_for(phase_name: str, custom_prompts: Optional[dict]) -> Optional[str]` (stripped custom text or None).
 
 - [ ] **Step 1: Write the failing test** (pure helper + source-inspection guards)
@@ -916,10 +943,10 @@ def test_execute_phase_uses_custom_prompt_and_hash():
     assert src.count("contract_override=") == 2
 
 
-def test_run_builds_sequence_from_phases():
+def test_run_builds_sequence_from_selected_phases():
     src = inspect.getsource(pipeline.run)
     assert "custom_prompts" in src
-    assert "job.phases" in src or 'getattr(job, "phases"' in src
+    assert "selected_phases" in src
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1026,7 +1053,7 @@ In `run()`, after the `judge_transport = resolve_role_transport(...)` block (~li
 
 ```python
             custom_prompts = getattr(job, "custom_prompts", None)
-            selected_phases = getattr(job, "phases", None)
+            selected_phases = getattr(job, "selected_phases", None)
 ```
 
 Replace the sequence build (line 113):
@@ -1038,7 +1065,7 @@ Replace the sequence build (line 113):
 with:
 
 ```python
-        # Subset: job.phases is the dependency-closure the endpoint stored.
+        # Subset: job.selected_phases is the dependency-closure the endpoint stored.
         # Defensive re-order/filter against the live flow; None ⇒ full flow.
         full_flow = flow_for(subject)
         if selected_phases:
@@ -1083,23 +1110,23 @@ git commit -m "feat(pipeline): per-phase custom prompts, subset sequence, proven
 ### Task 9: Frontend — phase picker + per-phase upload + added-deps notice
 
 **Files:**
-- Modify: `web/src/lib/api.ts` (`generate` opts/body + response, lines 147-187)
+- Modify: `web/src/lib/api.ts` (`generate` opts/body + return, lines 147-187)
 - Modify: `web/src/lib/subjects.ts` (export the user-facing content-phase list + labels)
 - Modify: `web/src/routes/section.tsx` (phase picker card + per-phase uploaders; surface `added_phases`)
 - Test: `cd web && npx tsc -p tsconfig.app.json --noEmit` + `npm run build`
 
 **Interfaces:**
-- Consumes: the generate endpoint's `custom_prompts` + `phases` body and `added_phases` response (Task 5).
-- Produces: a "Phases & custom prompts" card; `api.generate(..., { custom_prompts, phases })`.
+- Consumes: the generate endpoint's `custom_prompts` + `selected_phases` body and `added_phases` response (Task 5).
+- Produces: a "Phases & custom prompts" card; `api.generate(..., { custom_prompts, selected_phases })`.
 
 - [ ] **Step 1: Add the phase list to subjects.ts**
 
-In `web/src/lib/subjects.ts`, add (the 11 user-selectable content phases — `extract` excluded; labels are display-only):
+In `web/src/lib/subjects.ts`, add (the user-selectable content phases — `extract` excluded; labels display-only; order matches the backend flow):
 
 ```typescript
 /** User-selectable content phases (extract is the always-on head, not listed).
- *  Order matches the backend canonical flow. The subject game varies, so a
- *  generic "game" entry covers whichever game the subject uses. */
+ *  The subject-specific game phase is intentionally omitted from the picker for
+ *  MVP — selecting other phases still runs the full server-side closure. */
 export const CONTENT_PHASES: { key: string; label: string }[] = [
   { key: "case-based-preview", label: "Preview" },
   { key: "flashcards", label: "Flashcards" },
@@ -1111,38 +1138,34 @@ export const CONTENT_PHASES: { key: string; label: string }[] = [
 ];
 ```
 
-(The subject-specific game phase — `practice-memory-match`/`-sentence`/etc. — is intentionally omitted from the picker for MVP; selecting other phases still runs the full closure server-side. Document this in the card copy.)
-
 - [ ] **Step 2: Extend the api client**
 
 In `web/src/lib/api.ts`, in the `generate` opts type (after `judge_transport?`, line 157):
 
 ```typescript
       custom_prompts?: Record<string, string> | null;
-      phases?: string[] | null;
+      selected_phases?: string[] | null;
 ```
 
 In the destructure defaults (after `judge_transport = "inherit",`, line 167):
 
 ```typescript
       custom_prompts = null,
-      phases = null,
+      selected_phases = null,
 ```
 
 In the JSON body (after `judge_transport,`, line 182):
 
 ```typescript
           custom_prompts,
-          phases,
+          selected_phases,
 ```
 
-The endpoint now returns an extra `added_phases`. The current `generate` returns `unwrap<Job>(res)`; widen its return so callers can read it:
+Widen the return type so callers can read the added deps (the field is optional, existing call sites unaffected):
 
 ```typescript
   ): Promise<Job & { added_phases?: string[] }> {
 ```
-
-(`Job & { added_phases?: string[] }` — the field is optional, so existing call sites are unaffected.)
 
 - [ ] **Step 3: Add picker + upload state to the section page**
 
@@ -1188,10 +1211,10 @@ After the existing `useState` hooks (~line 39), add:
 
 - [ ] **Step 4: Send the fields + surface added_phases in `handleGenerate`**
 
-In `handleGenerate`, build the payload and read the response. Replace the `api.generate(...)` block (lines 85-94) with:
+In `handleGenerate`, replace the `api.generate(...)` block (lines 85-94) with:
 
 ```tsx
-      const phases = selectedPhases.size > 0 ? [...selectedPhases] : null;
+      const selected_phases = selectedPhases.size > 0 ? [...selectedPhases] : null;
       const custom_prompts = Object.keys(customPrompts).length > 0 ? customPrompts : null;
       const job = await api.generate(bookId, sectionId, {
         force,
@@ -1202,7 +1225,7 @@ In `handleGenerate`, build the payload and read the response. Replace the `api.g
         extract_transport: extractTransport,
         judge_transport: judgeTransport,
         custom_prompts,
-        phases,
+        selected_phases,
       });
       if (job.added_phases && job.added_phases.length > 0) {
         toast.info(`Also generating dependencies: ${job.added_phases.join(", ")}`);
@@ -1307,7 +1330,7 @@ Per CLAUDE.md §4 — generation-affecting work needs a real CLI smoke. After th
 
 - [ ] Full backend suite: `uv run python -m pytest tests/ -q` (DB tests need `RUN_DB_INTEGRATION=1` + `DATABASE_URL`).
 - [ ] **Real generate smoke #1 (custom prompt changes output + judge grades against it):** launch a section with `custom_prompts = {"flashcards": "<built-in flashcards prompt> ... and append the literal token CUSTOMMARKER as the last line of the deck."}` via a real `gemini`/`claude` run. Confirm: the flashcards output contains `CUSTOMMARKER`; the job reaches `done`; the flashcards judge did NOT spuriously regen (check logs — it saw the custom contract). Confirm `extract` output is a plain factual summary (untouched).
-- [ ] **Real generate smoke #2 (subset + dependency closure):** launch with `phases = ["boss-arena"]`. Confirm the response `added_phases` lists `case-based-preview`, `flashcards`, `memory-check`; those phases plus `boss-arena` (and `extract`) ran; `reflection`/practice phases did not.
+- [ ] **Real generate smoke #2 (subset + dependency closure):** launch with `selected_phases = ["boss-arena"]`. Confirm the response `added_phases` lists `case-based-preview`, `flashcards`, `memory-check`; those phases plus `boss-arena` (and `extract`) ran; `reflection`/practice phases did not.
 - [ ] **Gate 1 manual check:** re-launch the same section (done) with a custom prompt → a NEW job is created (not the old one returned).
 - [ ] Browser spot-check: the picker renders, checking phases + uploading a `.md` works, `added_phases` toast appears, and nothing is written under `prompts/`.
 
@@ -1315,5 +1338,6 @@ Per CLAUDE.md §4 — generation-affecting work needs a real CLI smoke. After th
 
 - **Spec coverage:** Gate 1 → Task 5/6 (`force_fresh`); Gate 2 → Task 7 + Task 8 (`contract_override` in both judge calls); Gate 3 → Task 2 (`expand_phase_selection`) + Task 5 (`added_phases`) + Task 9 (toast); Gate 4 → Task 8 (`sha256` on `phase_outputs.prompt_hash`, joinable from `agent_usages.phase_output_id` — no `agent.py` change needed); storage (JSONB job+batch) → Task 1/4; batch mirror → Task 6; per-phase replace → Task 8; subset sequence → Task 8; FE → Task 9; batch-rollup subset-safety → verified in spec, no task. All spec sections map to a task or a verified no-op.
 - **Placeholder scan:** none — every code step shows real code and exact commands.
-- **Type consistency:** `_custom_for(phase_name: str, custom_prompts: Optional[dict]) -> Optional[str]` defined in Task 8 Step 3, called identically in Step 4 and the tests; `custom_prompts`/`phases` names are consistent across model, schema, repo, endpoint, pipeline, and FE (`custom_prompts`/`phases` in the request body; FE state `customPrompts`/`selectedPhases` map to them in `handleGenerate`); `expand_phase_selection(subject, selected) -> (ordered, added)` defined in Task 2 and consumed identically in Tasks 5 and 6; `judge(contract_override=)` defined in Task 7 and called in Task 8.
-- **Note on Gate 4 simplification vs. spec:** the spec mentioned tagging `agent_usages` via `extra_envelope`; the plan instead relies on the existing `agent_usages.phase_output_id` → `phase_outputs.prompt_hash` FK join, which already distinguishes custom runs without threading a hash through `run_phase`'s recording paths. Lower-risk, same outcome.
+- **Type consistency:** `_custom_for(phase_name: str, custom_prompts: Optional[dict]) -> Optional[str]` defined in Task 8 Step 3, called identically in Step 4 and the tests; the subset concept is `selected_phases` consistently across model, migration, schema, repo, endpoint, pipeline, and FE body — distinct from `JobOut.phases` (phase outputs) and the `added_phases` response field; `expand_phase_selection(subject, selected) -> (ordered, added)` defined in Task 2 and consumed identically in Tasks 5/6; `judge(contract_override=)` defined in Task 7 and called in Task 8.
+- **Pre-flight corrections baked in:** (1) renamed the subset column/field to `selected_phases` to avoid colliding with `JobOut.phases` under `JobOut.model_validate(job)`; (2) `added_phases` returned via a real `JobOut` field (not a dict that the `-> JobOut` response model would strip).
+- **Note on Gate 4 vs. spec:** the spec mentioned tagging `agent_usages` via `extra_envelope`; the plan instead relies on the existing `agent_usages.phase_output_id` → `phase_outputs.prompt_hash` FK join, which already distinguishes custom runs without threading a hash through `run_phase`'s recording paths. Lower-risk, same outcome.
