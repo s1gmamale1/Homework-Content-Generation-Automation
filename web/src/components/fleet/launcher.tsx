@@ -983,17 +983,24 @@ function ReadyCard({
                       const p = await api.previewBatch(launchBody());
                       if (p.resumable > 0) {
                         // Some remaining lessons have saved phases.
-                        // Offer: Resume (primary) vs Discard+regenerate (secondary).
+                        // Three-way: Resume (OK) → Discard (second confirm OK) → bail.
                         const resume = window.confirm(
                           `${p.resumable} of these lessons have saved work.\n\n` +
-                          `OK = Resume saved + launch new (reuses saved phases, only unfinished re-run).\n\n` +
-                          `Cancel = stop here (use "Discard & re-run all" in ⋯ to regenerate instead).`,
+                          `OK = Resume them (reuse saved phases, only unfinished re-run).\n` +
+                          `Cancel = choose Discard instead.`,
                         );
                         if (resume) {
-                          // Primary: resume saved + launch fresh
+                          // Primary: resume saved work
                           launch.mutate({ relaunch_mode: "resume" });
+                        } else {
+                          // Secondary escape hatch: offer discard & regenerate
+                          const discard = window.confirm(
+                            `Discard saved work on ${p.resumable} lesson(s) and regenerate from scratch? ` +
+                            `This re-bills ${p.resumable}.`,
+                          );
+                          if (discard) launch.mutate({ relaunch_mode: "discard" });
+                          // else: do nothing
                         }
-                        // Cancel: user bailed — do nothing (they can use kebab)
                       } else {
                         // Nothing saved at stake → straight launch
                         launch.mutate({});
