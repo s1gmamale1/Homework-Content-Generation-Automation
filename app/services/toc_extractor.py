@@ -69,8 +69,10 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
         # operator sees the reason. (WISHLIST `toc-empty-ready`.)
         if not extracted.entries:
             raise RuntimeError(
-                "TOC extraction found 0 lessons — the PDF likely has no text "
-                "layer (scanned/image-only) or an unparseable table of contents"
+                "TOC extraction found 0 lessons. Likely a scanned/image-only PDF "
+                "whose contents page falls outside the scanned vision window, or an "
+                "unparseable table of contents. If the book is scanned, widen "
+                "extract_toc_front_pages / extract_toc_back_pages and re-extract."
             )
 
         # Persist entries + flip status to toc_ready
