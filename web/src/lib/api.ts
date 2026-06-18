@@ -1,7 +1,11 @@
 import { clearToken, getToken } from "./auth";
 import type {
   AgentStats,
+  BatchCancelResponse,
+  BatchLaunchResponse,
   BatchLessonRow,
+  BatchPreviewResponse,
+  BatchResumeResponse,
   BatchSummary,
   Book,
   Job,
@@ -291,11 +295,55 @@ export const api = {
     extract_transport?: RoleTransport; judge_transport?: RoleTransport; force?: boolean;
     extract_provider?: string | null; extract_model?: string | null;
     judge_provider?: string | null; judge_model?: string | null;
-  }): Promise<BatchSummary & { jobs_created: number; jobs_adopted: number; jobs_skipped: number }> {
+    relaunch_mode?: "resume" | "discard";
+  }): Promise<BatchLaunchResponse> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     return unwrap(res);
+  },
+
+  /**
+   * Preview a batch launch without mutating state. Returns counts of new,
+   * resumable (failed/cancelled with saved phases), and empty sections.
+   * Equivalent to `launchBatch({ ...body, preview: true })` but narrowly typed.
+   */
+  async previewBatch(body: {
+    book_id: string; toc_entry_ids?: string[]; provider?: string; model?: string | null; transport?: Transport;
+    extract_transport?: RoleTransport; judge_transport?: RoleTransport;
+    extract_provider?: string | null; extract_model?: string | null;
+    judge_provider?: string | null; judge_model?: string | null;
+  }): Promise<BatchPreviewResponse> {
+    const res = await authFetch("/api/v1/jobs/batch", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, preview: true }),
+    });
+    return unwrap<BatchPreviewResponse>(res);
+  },
+
+  /**
+   * Cancel all pending/running jobs in a batch. Pending jobs move immediately
+   * to `cancelled`; running ones move to `cancelling` (the worker tears them
+   * down within heartbeat_seconds, then settles to `cancelled`).
+   */
+  async cancelBatch(batchId: string): Promise<BatchCancelResponse> {
+    const res = await authFetch(
+      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/cancel`,
+      { method: "POST" },
+    );
+    return unwrap<BatchCancelResponse>(res);
+  },
+
+  /**
+   * Resume all failed/cancelled jobs in a batch — reuses saved `done` phase
+   * outputs so only unfinished phases re-run. Mirrors `retryJob` at batch scope.
+   */
+  async resumeBatch(batchId: string): Promise<BatchResumeResponse> {
+    const res = await authFetch(
+      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/resume`,
+      { method: "POST" },
+    );
+    return unwrap<BatchResumeResponse>(res);
   },
   async listWorkers(): Promise<{ workers: Worker[]; total: number; online: number; stale_after_seconds: number }> {
     const res = await authFetch("/api/v1/workers");

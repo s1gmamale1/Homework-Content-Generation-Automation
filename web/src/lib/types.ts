@@ -361,3 +361,33 @@ export interface BatchLessonRow {
   current_phase: string | null;
   error_message: string | null;
 }
+
+/** Response from POST /jobs/batch/{id}/cancel */
+export interface BatchCancelResponse {
+  batch_id: string;
+  cancelled: number;
+  cancelling: number;
+}
+
+/** Response from POST /jobs/batch/{id}/resume */
+export interface BatchResumeResponse {
+  batch_id: string;
+  jobs_resumed: number;
+}
+
+/** Response from POST /jobs/batch when preview=true */
+export interface BatchPreviewResponse {
+  book_id: string;
+  preview: true;
+  new: number;
+  resumable: number;
+  empty: number;
+}
+
+/** Normal (mutating) launch response — extends BatchSummary with per-launch tallies. */
+export type BatchLaunchResponse = BatchSummary & {
+  jobs_created: number;
+  jobs_adopted: number;
+  jobs_skipped: number;
+  jobs_resumed: number;
+};
