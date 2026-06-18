@@ -86,6 +86,17 @@
 
 ---
 
+## R19 — Notion textbooks are stale / missing for several grade×subjects (campaign C3 blocker)
+
+- **Issue:** a 2026-06-17 currency audit (6 grade-band sub-agent sweeps + controller verification) found several Notion textbook PDFs are **old editions or absent**, so homework generated from them would teach outdated content.
+  - **Confirmed stale:** G8 Adabiyot (2019 → 2025 exists), G8 Ona tili (2019 → 2025), G5 Biologiya (2020 → 2024), G8 Informatika (2022 → 2023; the stored file may also be a mis-uploaded Russian-language edition).
+  - **Likely stale** (year-less filename, but a newer edition is known to exist): G9 Adabiyot + Ona tili (2025), G5 Tarix (2025), G11 O'zbekiston tarixi / Jahon tarixi / Huquq (2025 reform).
+  - **Missing in Notion entirely:** G6 Adabiyot, G10 Iqtisodiyot asoslari, G3 Jismoniy tarbiya.
+- **Root cause / context:** the new-generation ("yangi avlod") reform re-authored **humanities/languages** (2022–2025) but **not** the math/science core (Algebra/Geometriya/Fizika/Kimyo/Biologiya/Geografiya are still 2019 = current, not stale). Audit-method caveats worth re-using: Notion textbook PDFs are **private attachment URLs** → can't be WebFetched to auto-date a year-less filename (needs the authenticated Notion client / a cover read); grades 5–9 filenames usually carry a year, grades 1–4 and 10–11 usually don't. Authoritative latest-edition sources: `uzbmb.uz/info/textbooks` (Ministry list, published as **images** — not scrapeable; also cert-blocks WebFetch), `qogozcha.uz/darsliklar` (Ministry-approved, but per-book **years are JS-rendered**); usable fallbacks: `idum.uz` (edition history), `ziyouz.com`, `googol.uz`, `infoedu.uz`, plus the PF-134 (2022) curriculum-reform decree.
+- **Deliverable:** for each confirmed/likely-stale entry, replace the Notion textbook with its **current edition**, and add the missing ones — an **operator task** (source the new-edition PDF → re-upload or re-fetch from Notion → re-extract TOC); for the "likely stale" set, first re-verify the year against an authoritative source above. This gates the Oct/Mar campaign's **C3 textbook-readiness sweep** ([[oct-mar-content-campaign]]) — a stale source PDF means stale content for **every** lesson generated from that book.
+
+---
+
 ## Shipped / Closed
 
 > One line per shipped/closed item — full detail in the cited worklog + git. Nothing here is open.
