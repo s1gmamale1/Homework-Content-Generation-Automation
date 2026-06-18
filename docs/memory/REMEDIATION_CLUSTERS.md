@@ -46,6 +46,14 @@ File-collision map (why ordering matters): `pipeline.py` is touched by clusters 
 - **Stage only your cluster's lane files** (CLAUDE.md rule) — never `git add -A`; the worktrees are isolated but the shared backlog/worklog files are the trap.
 - **PR title prefix:** `[cluster-N]` so the gate queue is self-labelling.
 
+**⚠️ Migration coordination (prevents alembic multi-head — the #1 merge-back breakage).** Clusters 1, 3, 4 EACH add a migration off the same head `0027`; if they all use `0028`/`down_revision="0027"` you get multiple heads and `alembic upgrade head` fails. Rules:
+- **Number + `down_revision` are finalized at rebase-before-merge time = (current alembic head + 1), NOT at branch time.** Pre-assignment is a hint; the live head is the truth. Whoever merges second/third rebases their migration onto the new head and renumbers.
+- **Descriptive filenames so files never clash even if numbers shift:** C1 `*_check_constraints.py`, C3 `*_judge_status.py`, C4 `*_cache_creation_tokens.py`. Suggested order C1=0028 → C3=0029 → C4=0030.
+- C2 has no migration; C5/C6 (when run) add their own — same rule applies.
+- The gatekeeper verifies `alembic heads` shows a SINGLE head after each migration-bearing merge.
+
+**Claim-gate composition:** C3 (`judge-claimgate-1`) and C4 (cost kill-switch) BOTH modify `jobs.claim_next_job` — the second to merge must COMPOSE its WHERE clause with the first's, not replace it. Gatekeeper checks both gates are present post-merge.
+
 **Merge-ORDER the gatekeeper will enforce (dependencies, not just per-PR gating):**
 1. **Cluster 2 before Cluster 4** — c4's kill-switch halt rests on c2's `cancel-race-1` `set_status` guard; merging 4 first builds on the unguarded version.
 2. **Cluster 1's dead-knob fix before Cluster 5's token-bucket** — c5 layers fleet-wide concurrency on top of c1's "read the right knob"; merging 5 first re-tangles the knob.
