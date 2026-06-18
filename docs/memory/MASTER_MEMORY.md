@@ -879,7 +879,25 @@ Picked up `api-3` from WISHLIST in parallel with R13 (PDF bytes-distribution) be
 - **Oversize text books** (`extract_text_is_oversize`, whole text > `extract_max_text_chars=600_000`, e.g. adabiyot-g9 `e585a5f3`, 665K chars): scope to the lesson's pages as **text inline** via new `agent.read_page_range_text` (built on `_read_pdf_pages`), then run the existing `summarize_lesson` on the subset. Cheap, **keeps `transport=api`**.
 - **Scanned / sparse-text books** (no/low text layer): **vision-attach** a page-window PDF and let the model read the images. New `agent.summarize_lesson_vision` — builds a windowed subset via the (extended) `_subset_pdf(…, margin, max_pages)`, attaches it, and **forces `transport=cli`** (api transport raises `NotImplementedError` on attachments). A real vision provider reads the pages.
 
-**The detector — caught by the acceptance smoke (the real win):** the plan first assumed Gate A (`validate_extract_text`) detects scanned PDFs. The smoke disproved it: the scanned algebra-g9 book `a0173601` is 240 pages × **~71 chars/page** of running-header text = 17K chars total, which **clears Gate A's absolute 500-char floor**. So I restored the originally-designed **per-page density gate**: new `agent.extract_text_is_too_sparse(text, n_pages)` + `agent.pdf_page_count`, config `extract_min_chars_per_page=300`. Validated against the whole 16-book corpus: 1 scanned (71/pg), 1 oversize, 14 normal (838–2450/pg) — **clean separation, zero false positives** at 300. Dispatch routes to vision when `gate_a is not None OR (not was_oversize AND too_sparse)`; the `not was_oversize` guard prevents an oversize book's small subset from being mis-read as "sparse".
+**The detector — caught by the acceptance smoke (the real win):** the plan first assumed Gate A (`validate_extract_text`) detects scanned PDFs. The smoke disproved it: the scanned algebra-g9 book `a0173601` is 240 pages × **~71 chars/page** of running-header text = 17K chars total, which **clears Gate A's absolute 500-char floor**. So I restored the originally-designed **per-page density gate**: new `agent.extract_text_is_too_sparse(text, n_pages)` + `agent.pdf_page_count`, config `extract_min_chars_per_page=300`. Validated against the whole 16-book corpus (measured `chars/page` = `read_whole_book_text` ÷ `pdf_page_count`, sorted) — **clean separation, zero false positives** at 300:
+
+| book | pages | chars/pg | class |
+|------|------:|---------:|-------|
+| `a0173601` math-algebra g9 | 240 | **71.5** | SCANNED → vision |
+| `56d020a2` / `9e7833bc` (1-pg cover-only) | 1 | 838.0 | normal |
+| `50b71915` math-algebra g8 | 240 | 1420.9 | normal |
+| `41aec815` history g7 | 152 | 1495.0 | normal |
+| `d87e4f5c` kimyo g8 | 208 | 1514.0 | normal |
+| `54cd9ff3` kimyo g9 | 208 | 1627.8 | normal |
+| `62865c70` math-algebra g7 | 192 | 1788.8 | normal |
+| `e585a5f3` adabiyot g9 | 368 | 1808.5 | OVERSIZE (caught before the sparse check) |
+| `9c0e5362` biology g9 | 192 | 1838.6 | normal |
+| `42f44dce`/`a4fa550f`/`d408fc65` | 161 | 1952.7 | normal |
+| `5e295cbc` history g8 | 160 | 2008.1 | normal |
+| `d463c690` english g8 | 104 | 2088.7 | normal |
+| `120888c6` english g9 | 156 | 2450.8 | normal |
+
+The threshold **300** sits in the wide empty gap between the lone scan (71.5) and the lowest real book (838) — ≈4× above the scan, ≈2.8× below the nearest normal. **Re-tune `extract_min_chars_per_page`** if a figure-heavy real book ever measures < 300/pg; the failure is **graceful** (it routes to vision, which still reads it correctly — cli cost + extract-only, never wrong content). Dispatch routes to vision when `gate_a is not None OR (not was_oversize AND too_sparse)`; the `not was_oversize` guard prevents an oversize book's small subset from being mis-read as "sparse".
 
 **Page-offset robustness:** printed TOC page numbers can be off-by-N from physical PDF order (front-matter). For the vision window we attach `[ps-W .. pe+W]` (`extract_window_pages=5`, capped `extract_window_max_pages=25`) and tell the model to find the lesson **by TITLE** within the window — the same title-first trick the whole-text path uses, so a small offset is absorbed. Missing `page_start`/`page_end` (nullable) → **fail loud** (no worse than today). Observability: when a job requested `extract_transport=api` but the book is scanned, one log line notes the forced cli (vision can't use api).
 

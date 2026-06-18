@@ -36,7 +36,7 @@ from uuid import UUID
 
 from loguru import logger
 from pydantic import BaseModel, ValidationError
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 
 from app.config import settings
 from app.db import SessionLocal
@@ -1398,8 +1398,6 @@ def _subset_pdf(
     if not page_start or not page_end or page_start <= 0 or page_end < page_start:
         return None
     try:
-        from pypdf import PdfReader, PdfWriter
-
         reader = PdfReader(str(pdf_path))
         n = len(reader.pages)
         start_idx = max(0, (page_start - margin) - 1)
@@ -1408,6 +1406,9 @@ def _subset_pdf(
             return None
         if max_pages is not None and (end_idx - start_idx + 1) > max_pages:
             # Trim to exactly max_pages, centered on the original range midpoint.
+            # NOTE: a single lesson spanning > max_pages pages is clipped to this
+            # window (centered on its midpoint) — acceptable for an extract summary,
+            # but raise extract_window_max_pages if very long lessons get truncated.
             mid = ((page_start - 1) + (page_end - 1)) // 2
             start_idx = mid - max_pages // 2
             end_idx = start_idx + max_pages - 1
