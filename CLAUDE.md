@@ -15,9 +15,9 @@ Everything LLM-facing goes through `app/services/agent.py`. For `transport=cli` 
 **Exception — small, clear fixes:** when the root cause is already **verified and clear** and the change is low-risk, make it controller-direct: read the real code → fix → prove it (tests / `tsc --noEmit` / build), skipping the plan. The standing rules below still apply, and still log a worklog entry. If a "small" fix turns out to be ambiguous or risky once you're in it, stop and fall back to the full pipeline.
 
 1. **Plan** *(hard gate)* — first explore the real code and lock any genuinely open approach decisions with the user (2–3 options + a recommendation where it matters). Then write the plan to `docs/superpowers/plans/YYYY-MM-DD-*.md`: it **opens with a short `## Approach & key decisions` section** (~10 lines — the design: chosen approach, rejected alternatives, the load-bearing facts verified against code), followed by an ordered, **TDD-per-task** task list (exact file paths, real code, real tests, exact commands, **commit per task**, no placeholders). Self-review (coverage + type consistency), commit, **user approves once** before any code.
-2. **Subagent-driven execution** — one **fresh subagent per task** (give it full text + scene-setting; it does TDD → commits). **The controller personally stress-tests every commit** before moving on: read the diff AND re-run the tests — never just trust the subagent's report. Track tasks with TaskCreate/TaskUpdate.
+2. **Subagent-driven execution** — invoke the **`superpowers:subagent-driven-development`** skill and follow it (not an ad-hoc subagent approach): one **fresh subagent per task** (give it full text + scene-setting; it does TDD → commits). **The controller personally stress-tests every commit** before moving on: read the diff AND re-run the tests — never just trust the subagent's report. Track tasks with TaskCreate/TaskUpdate.
 3. **Acceptance gate for anything that affects generation** — a **real CLI smoke** (actual `claude`/`gemini` call, in-process, no server needed) is the proof. Fact over theory: if a claim is about model behavior, run it; don't assert from prompt structure.
-4. **Finish** — full suite green (`uv run python -m pytest tests/ -q`), then `finishing-a-development-branch` (push/merge/keep/discard — user decides; usually push to the working branch). Then, **as part of the same finish (do not defer):** (a) write a **worklog** entry to `docs/memory/MASTER_MEMORY.md` + a row in `docs/memory/INDEX.md`; (b) close shipped items in `docs/memory/ROADMAP.md`; (c) **`git mv` the feature's plan into `docs/superpowers/plans/shipped/`** (history-preserving rename — keeps the live dir showing only un-built work). A feature isn't "done" until (a)–(c) are committed.
+4. **Finish** — full suite green (`uv run python -m pytest tests/ -q`), then `finishing-a-development-branch` (push/merge/keep/discard — user decides; usually push to the working branch). Then, **as part of the same finish (do not defer):** (a) write a **worklog** entry to `docs/memory/MASTER_MEMORY.md` + a row in `docs/memory/INDEX.md`; (b) close shipped items in `docs/memory/ROADMAP.md`; (c) **`git mv` the feature's plan into `docs/superpowers/plans/shipped/`** (history-preserving rename — keeps the live dir showing only un-built work); (d) **de-stale the live-system reference docs** the change touched — `README.md`, `docs/HOW_IT_WORKS.md`, `docs/CODE_MAP.md` (and `docs/DATABASE.md`/`DEPLOY.md` when schema or deploy changed) — so they reflect the new behavior, not just the worklog. A feature isn't "done" until (a)–(d) are committed.
 
 **Standing rules underneath all of it:**
 - **90% bar** — push back when the user, a spec, or a plan is wrong, and explain why. Don't follow instructions blindly.
@@ -36,9 +36,9 @@ uv run alembic revision -m "describe"   # new migration
 uv run uvicorn main:app --host 0.0.0.0 --port 8000   # API + SPA + embedded worker
 
 # Tests
-uv run python -m pytest tests/ -q                    # all (~380 tests; real-DB ones need RUN_DB_INTEGRATION=1 + DATABASE_URL)
+uv run python -m pytest tests/ -q                    # all (~480 tests; real-DB ones need RUN_DB_INTEGRATION=1 + DATABASE_URL)
 uv run python -m pytest tests/services/test_agent.py -q     # single file
-uv run python -m pytest tests/services/test_agent.py::test_resolve_model_no_default_leak -v   # one test
+uv run python -m pytest tests/services/test_agent.py::test_resolve_model_gemini_default_is_none -v   # one test
 
 # Frontend (web/)
 cd web && npm install
@@ -80,8 +80,8 @@ The single source of truth for which `(provider, model)` pairs the API and front
 
 ### Transport toggle (`transport`: `cli` | `api` — Phase 4, worklog 0053)
 
-- **Scope:** the job's transport applies to **every spawn belonging to the job** — extract (provider/model stay pinned; only auth follows), content phases, and the judge. Enum (not bool) so a future `batch` transport slots in.
-- **Worker fail-fast:** `claim_next_job(..., has_api_keys)` — a worker only claims `transport=api` jobs when `worker._compute_has_api_keys` is true at startup: `ANTHROPIC_API_KEY` AND (gemini key OR the Vertex SA pair). Half-configured workers warn and stay cli-only.
+- **Scope:** by default the job's transport applies to **every spawn belonging to the job** — extract (provider/model stay pinned; only auth follows), content phases, and the judge. But **extract and judge each carry an independent per-role override** — `extract_transport` / `judge_transport` (`cli`|`api`|`inherit`, default `inherit` = follow the job/batch transport) on both `homework_jobs` and `batches`, resolved per-job by `agent_models.resolve_role_transport` (`pipeline.py:95`). Content phases always follow the job transport. Enum (not bool) so a future `batch` transport slots in.
+- **Worker fail-fast:** `claim_next_job(..., capabilities)` — `worker._compute_capabilities` computes **per-role** api-readiness flags at startup (`can_claude_api`, `can_gemini_api`, `judge_api_ok`, `judge_fallback_api_ok`, `extract_api_ok`); the claim gate ANDs each job's *resolved* per-role transports against them, so e.g. an api-content gemini job with cli judge+extract needs no `ANTHROPIC_API_KEY`. A worker skips only the api jobs it can't serve.
 - **Failover:** `transport=api` restricts `_run_with_failover` to the requested provider only (no cross-provider legs — a fallback would run `model=None`, violating the explicit-model rule and mispricing). Same-provider retry budgets still apply.
 - **Judge:** auth/401-class errors on an api job **re-raise** (job-level failure) instead of degrading to `judge-unavailable` — both the initial and post-regen judge calls. `phase_judge._AUTH_SIGNALS` covers claude AND gemini/Vertex shapes; deliberately no bare `"403"` (exception strings can embed generated output).
 - **Batch key:** `batches` is `UNIQUE(book_id, transport)` (spec §9) — same-book re-launch on a *different* transport forks a new batch (clean per-transport rollup for benchmarking); same transport reuses. Per-section dedup/adoption is also transport-scoped (`find_active_for_section(transport=)`), else an api launch over a cli-generated book would no-op (§9a).
@@ -92,7 +92,7 @@ The single source of truth for which `(provider, model)` pairs the API and front
 
 Per-job state machine:
 
-1. **Head (sequential)**: `extract` only (`pipeline.py:150`). `classify` / easy-hard was **removed** — there is a single flow per subject (`flows.flow_for`); `difficulty` is pinned `None` (`pipeline.py:123`).
+1. **Head (sequential)**: `extract` only (`pipeline.py:169`). `classify` / easy-hard was **removed** — there is a single flow per subject (`flows.flow_for`); `difficulty` is pinned `None` (`pipeline.py:145`).
 2. **Tail (DAG-parallel)**: every phase declares its deps in `flows.PHASE_DEPS`; a wave-based scheduler launches phases concurrently when their deps are met. Typical 2× speedup over sequential.
 3. **No assembly**: per-phase markdown in `phase_outputs` **is** the deliverable, graded by the LLM judge. (The old assembly + structured-JSON-columns step was removed with the md-per-phase flip.)
 
@@ -104,7 +104,7 @@ Three things this pipeline does that aren't obvious from a single file:
 ### Subject flows (`app/services/flows.py` + `prompts/<subject>/`)
 
 Supported subjects = the Uzbek curriculum subjects that are academic OR ship a real textbook in Notion (grades 1–11, **26 subjects**). Excluded: PE/jismoniy-tarbiya (by decision) and the three textbook-less soft subjects — odobnoma/ethics, ma'naviyat/spirituality, kelajak-soati/future-hour. The **single source of truth is the registry `app/services/subjects.py`** (`EXCLUDED_KEYWORDS` there also blocks PE/Ethics titles from mis-mapping to Upbringing via the bare "tarbiya" keyword) (`SubjectDef`: code, label, family, game, language, Notion keywords); `flows.SUBJECTS`/`SUBJECT_GAME`, `prompts.SUBJECT_LABELS`/`_SUBJECT_FAMILY`, and `notion_fetch._SUBJECT_KEYWORDS` all **derive** from it, as does the FE `web/src/lib/types.ts`/`subjects.ts` (mirrored manually). Add a subject = one registry entry (+ the FE mirror). Each subject:
-- A single phase sequence from `flows.flow_for(subject)` (`flows.py:39`): `_BASE_PHASES` + **all four interactive mini-games** (`_GAMES`) + `boss-arena` + `reflection` — **11 content phases**, the full Gamified Practices set generated every job, none skipped (worklog 0067). `SUBJECT_GAME` is now **metadata only** — the per-subject recommended-game hint, no longer gating the flow. **No `SUBJECT_FLOWS`, no easy/hard, no `classify`** — MVP single flow (`flows.py:1`).
+- A single phase sequence from `flows.flow_for(subject)` (`flows.py:43`): `_BASE_PHASES` + **all four interactive mini-games** (`_GAMES`) + `boss-arena` + `reflection` — **11 content phases**, the full Gamified Practices set generated every job, none skipped (worklog 0067). `SUBJECT_GAME` is now **metadata only** — the per-subject recommended-game hint, no longer gating the flow. **No `SUBJECT_FLOWS`, no easy/hard, no `classify`** — MVP single flow (`flows.py:1`).
 - A directory `prompts/<subject>/` with one `.md` per phase plus `flow.md` (documentation only).
 
 The **live runtime prompt set is `prompts/_general/`** (served via `get_prompt` with `{{SUBJECT}}` substitution, `USE_SUBJECT_PROMPTS=False`); the per-subject dirs above are a dormant override layer, not used at generation time.
@@ -123,7 +123,7 @@ Every CLI call writes one row to `agent_usages` with `provider`, `model_name`, *
 
 ## Database (key tables)
 
-- `homework_jobs` — one row per generation request. Has `provider`, `model`, **`transport`** (`cli`|`api`, default `cli`), `attempts`, `current_phase`, `status` (`pending`/`running`/`done`/`failed`/`cancelling`/`cancelled`), structured-output JSON columns.
+- `homework_jobs` — one row per generation request. Has `provider`, `model`, **`transport`** (`cli`|`api`, default `cli`), the per-role overrides `extract_transport`/`judge_transport` (`cli`|`api`|`inherit`) + `extract_provider`/`extract_model`/`judge_provider`/`judge_model`, `attempts`, `current_phase`, `status` (`pending`/`running`/`done`/`failed`/`cancelling`/`cancelled`). **No structured-output JSON columns** (removed with the md-per-phase flip).
 - `batches` — one row per (book, transport) launch: **`UNIQUE(book_id, transport)`** (`uq_batches_book_id_transport`) — a different-transport re-launch forks a new batch; same-transport reuses (`batches_repo.get_or_create_for_book`, conflict target `["book_id","transport"]`). Rollups computed on read (DISTINCT ON over member jobs).
 - `phase_outputs` — one row per phase per job (`uq_phase_output_job_order` enforces no duplicates). Use `phase_repo.create_or_reset`, not `create`.
 - `agent_usages` — one row per CLI subprocess call, incl. **`auth_mode`**. The token-summary log at end-of-job and the per-transport `$` stats read these.
