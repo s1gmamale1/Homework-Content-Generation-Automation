@@ -93,26 +93,25 @@ export function FleetLauncher({
   // ---- Tray (server-derived) ----
   // The batch key is (book_id, transport): a book can carry a cli batch AND an
   // api batch independently. Track which transports each book already has, so a
-  // cli-batched book is still launchable on api (and vice-versa). A book leaves
-  // the Ready tray only once it has a batch for EVERY transport.
+  // cli-batched book is still launchable on api (and vice-versa).
   const batchedTransports = new Map<string, Set<Transport>>();
   for (const b of batches ?? []) {
     const set = batchedTransports.get(b.book_id) ?? new Set<Transport>();
     set.add(b.transport);
     batchedTransports.set(b.book_id, set);
   }
-  const fullyBatched = (bookId: string) => {
-    const set = batchedTransports.get(bookId);
-    return !!set && ALL_TRANSPORTS.every((t) => set.has(t));
-  };
+  // Per-book Fleet lifecycle status, derived from the book's batches. A launched
+  // book STAYS in the tray (it does NOT vanish once batched) — it moves from
+  // "ready to launch" → "generating" → "complete" (all its homeworks done).
+  const statusOf = (b: Book) => bookFleetStatus(b, batches ?? []);
   const all = books ?? [];
   const preparing = all.filter(
     (b) => b.status === "toc_extracting" || b.status === "uploading",
   );
   const failed = all.filter((b) => b.status === "failed");
-  const ready = all.filter(
-    (b) => b.status === "toc_ready" && !fullyBatched(b.id),
-  );
+  // Every prepared book stays in the tray regardless of batch state; its card
+  // reflects ready/generating/complete via statusOf.
+  const ready = all.filter((b) => b.status === "toc_ready");
   // Union of every tray-relevant book, fed to the category drill-down. Each
   // subject group is re-split back into Preparing/Ready/Failed on render.
   const trayBooks = [...preparing, ...ready, ...failed];
@@ -294,7 +293,7 @@ export function FleetLauncher({
             groupBadge={gradeBadge}
             sortGroups={compareGradeGroups}
             backLabel="All grades"
-            countLabel={(items) => trayCountLabel(items)}
+            countLabel={(items) => trayCountLabel(items, statusOf)}
             renderItems={(gradeBooks) => (
               // Within a grade, drill down once more by subject.
               <CategoryBrowser
@@ -303,14 +302,33 @@ export function FleetLauncher({
                 groupLabel={subjectLabel}
                 groupAccent={accentOf}
                 backLabel="All subjects"
-                countLabel={(items) => trayCountLabel(items)}
+                countLabel={(items) => trayCountLabel(items, statusOf)}
                 renderItems={(group) => {
                   const gPreparing = group.filter(
                     (b) =>
                       b.status === "toc_extracting" || b.status === "uploading",
                   );
-                  const gReady = group.filter((b) => b.status === "toc_ready");
+                  const readyBooks = group.filter((b) => b.status === "toc_ready");
+                  const gReady = readyBooks.filter((b) => statusOf(b) === "ready");
+                  const gLaunched = readyBooks.filter((b) => statusOf(b) === "launched");
                   const gFailed = group.filter((b) => b.status === "failed");
+                  const readySection = (label: string, list: Book[]) =>
+                    list.length > 0 && (
+                      <div className="space-y-2">
+                        <span className={LBL}>{label}</span>
+                        <CardGrid>
+                          {list.map((b) => (
+                            <ReadyCard
+                              key={b.id}
+                              book={b}
+                              batchedTransports={
+                                batchedTransports.get(b.id) ?? new Set()
+                              }
+                            />
+                          ))}
+                        </CardGrid>
+                      </div>
+                    );
                   return (
                     <div className="space-y-5">
                       {gPreparing.length > 0 && (
@@ -324,22 +342,8 @@ export function FleetLauncher({
                         </div>
                       )}
 
-                      {gReady.length > 0 && (
-                        <div className="space-y-2">
-                          <span className={LBL}>Ready</span>
-                          <CardGrid>
-                            {gReady.map((b) => (
-                              <ReadyCard
-                                key={b.id}
-                                book={b}
-                                batchedTransports={
-                                  batchedTransports.get(b.id) ?? new Set()
-                                }
-                              />
-                            ))}
-                          </CardGrid>
-                        </div>
-                      )}
+                      {readySection("Ready to launch", gReady)}
+                      {readySection("Launched", gLaunched)}
 
                       {gFailed.length > 0 && (
                         <div className="space-y-2">
@@ -393,19 +397,51 @@ function SubjectAvatar({ subject }: { subject: string }) {
   );
 }
 
-/** Status-aware caption for a subject's tray group, e.g. "2 ready · 1 failed".
- *  Falls back to a plain book count if only one bucket is present. */
-function trayCountLabel(items: Book[]): string {
-  const preparing = items.filter(
-    (b) => b.status === "toc_extracting" || b.status === "uploading",
-  ).length;
-  const ready = items.filter((b) => b.status === "toc_ready").length;
-  const failed = items.filter((b) => b.status === "failed").length;
+// Group-level status (caption + sections). The books list does NOT carry
+// per-lesson progress, only batches — so this can only tell "ready" (never
+// launched) from "launched" (has ≥1 batch). The per-book card refines
+// "launched" into generating/complete from its own TOC (see CardStatus).
+type FleetStatus = "preparing" | "ready" | "launched" | "failed";
+
+function bookFleetStatus(book: Book, batches: BatchSummary[]): FleetStatus {
+  if (book.status === "toc_extracting" || book.status === "uploading") return "preparing";
+  if (book.status === "failed") return "failed";
+  return batches.some((b) => b.book_id === book.id) ? "launched" : "ready";
+}
+
+/** Caption for a tray group, e.g. "2 ready · 3 launched". */
+function trayCountLabel(items: Book[], statusOf: (b: Book) => FleetStatus): string {
+  const n: Record<FleetStatus, number> = { preparing: 0, ready: 0, launched: 0, failed: 0 };
+  for (const b of items) n[statusOf(b)] += 1;
   const parts: string[] = [];
-  if (ready) parts.push(`${ready} ready`);
-  if (preparing) parts.push(`${preparing} preparing`);
-  if (failed) parts.push(`${failed} failed`);
+  if (n.ready) parts.push(`${n.ready} ready`);
+  if (n.launched) parts.push(`${n.launched} launched`);
+  if (n.preparing) parts.push(`${n.preparing} preparing`);
+  if (n.failed) parts.push(`${n.failed} failed`);
   return parts.join(" · ") || `${items.length} book${items.length === 1 ? "" : "s"}`;
+}
+
+// Per-book CARD status — accurate, derived from the book's own TOC
+// (latest_job_status per lesson). "complete" requires EVERY lesson done.
+type CardStatus = "ready" | "generating" | "complete";
+const CARD_STATUS_META: Record<CardStatus, { label: string; cls: string }> = {
+  ready: { label: "ready to launch", cls: "bg-sky-400/15 text-sky-200" },
+  generating: { label: "generating", cls: "bg-amber-400/15 text-amber-200" },
+  complete: { label: "complete", cls: "bg-emerald-400/15 text-emerald-300" },
+};
+
+function CardStatusChip({ status }: { status: CardStatus }) {
+  const m = CARD_STATUS_META[status];
+  return (
+    <span
+      className={cn(
+        "rounded-md px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide",
+        m.cls,
+      )}
+    >
+      {m.label}
+    </span>
+  );
 }
 
 function GradeChip({ grade }: { grade: string }) {
@@ -528,6 +564,15 @@ function ReadyCard({
       t.latest_job_status === "cancelling",
   ).length;
   const complete = lessons != null && lessons > 0 && doneCount === lessons;
+  // Accurate per-book status from the book's own TOC: "ready to launch" until any
+  // lesson has a job, "generating" while jobs run, "complete" only when EVERY
+  // lesson is done (so a partial launch never falsely reads as complete).
+  const launched = toc.some((t) => t.latest_job_status);
+  const cardStatus: CardStatus = !launched
+    ? "ready"
+    : complete
+      ? "complete"
+      : "generating";
   // A plain re-launch skips done + in-flight sections and creates jobs only for
   // the rest (failed / never-run / cancelled) — that's the "remaining" count.
   const remaining = Math.max(0, (lessons ?? 0) - doneCount - activeCount);
@@ -632,6 +677,7 @@ function ReadyCard({
           <div className="flex items-center gap-1.5 text-sm font-medium text-white">
             {subjectLabel(book.subject)}
             {book.grade && <GradeChip grade={book.grade} />}
+            <CardStatusChip status={cardStatus} />
           </div>
           <div className="mt-0.5 text-xs text-white/45">
             {lessons ?? "…"} lessons
