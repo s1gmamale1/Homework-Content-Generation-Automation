@@ -137,7 +137,10 @@ async def test_relaunch_reconciles():
             r2 = await c.post("/api/v1/jobs/batch", headers=_HDR, json={"book_id": str(book_id)})
             assert r2.status_code == 201, r2.text
             assert r2.json()["batch_id"] == bid, "re-launch must reuse the same batch"
-            assert r2.json()["jobs_created"] == 2, "only the 2 failed lessons get fresh jobs"
+            # resume-aware relaunch: failed lessons with no saved phases are
+            # resumed (reset_for_retry) not recreated — jobs_created=0, jobs_resumed=2
+            assert r2.json()["jobs_created"] == 0, "failed lessons are resumed, not fresh-created"
+            assert r2.json()["jobs_resumed"] == 2, "2 failed lessons resumed"
             assert r2.json()["lessons_covered"] == 5, "denominator stays 5, not 7"
             assert r2.json()["rollup"].get("pending") == 5
     finally:

@@ -2,6 +2,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +39,8 @@ class BatchLaunchRequest(BaseModel):
     judge_provider: Optional[str] = None
     judge_model: Optional[str] = None
     force: bool = False
+    preview: bool = False                 # compute disposition, don't mutate
+    relaunch_mode: str = "resume"         # "resume" | "discard" for failed/cancelled-with-saved
 
 
 def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None = None) -> dict:
@@ -123,6 +126,29 @@ async def launch_batch(
         if err is not None:
             raise HTTPException(400, f"{role}: {err}")
 
+    # (a) STRICT zero-write preview — compute disposition and return BEFORE any
+    # batch create/mutation. Leaves no phantom batch row in rollups.
+    if body.preview:
+        new = resumable = empty = 0
+        for t in targets:
+            active = await jobs_repo.find_active_for_section(
+                session, body.book_id, t.id, transport=body.transport)
+            if active is not None:
+                continue  # pending/running/done — not "remaining"
+            latest = await jobs_repo.latest_for_section(
+                session, body.book_id, t.id, transport=body.transport)
+            if latest is not None and latest.status in ("failed", "cancelled"):
+                if await jobs_repo.done_phase_count_for_job(session, latest.id) > 0:
+                    resumable += 1
+                else:
+                    empty += 1
+            else:
+                new += 1
+        return JSONResponse(
+            status_code=200,
+            content={"book_id": str(body.book_id), "preview": True,
+                     "new": new, "resumable": resumable, "empty": empty})
+
     batch = await batches_repo.get_or_create_for_book(
         session, book_id=body.book_id, subject=book.subject, grade=book.grade,
         provider=provider, model=body.model, transport=body.transport,
@@ -133,7 +159,7 @@ async def launch_batch(
         judge_provider=body.judge_provider,
         judge_model=body.judge_model)
 
-    created = adopted = skipped = 0
+    created = adopted = skipped = resumed = 0
     for t in targets:
         await jobs_repo.lock_section_for_generate(session, body.book_id, t.id)
         # Transport-scoped lookup (spec §9a): an api batch over a cli-generated
@@ -155,6 +181,17 @@ async def launch_batch(
             else:
                 skipped += 1
             continue
+        # No active (pending/running/done) job → "remaining". Resume a saved
+        # failed/cancelled section instead of discarding it; else create fresh.
+        latest = await jobs_repo.latest_for_section(
+            session, body.book_id, t.id, transport=body.transport)
+        if (latest is not None and latest.status in ("failed", "cancelled")
+                and body.relaunch_mode != "discard"):
+            await jobs_repo.reset_for_retry(session, latest.id)   # reuses done phases
+            resumed += 1
+            continue
+        # brand-new section, OR discard mode → fresh job (discard leaves the old
+        # failed/cancelled row as history; find_active ignores it)
         await jobs_repo.create(session, book_id=body.book_id, toc_entry_id=t.id,
                                subject=book.subject, provider=provider,
                                model=body.model, batch_id=batch.id,
@@ -172,7 +209,8 @@ async def launch_batch(
     await session.commit()
 
     payload = _rollup_payload(batch, tally, book.original_filename)
-    payload.update(jobs_created=created, jobs_adopted=adopted, jobs_skipped=skipped)
+    payload.update(jobs_created=created, jobs_adopted=adopted,
+                   jobs_skipped=skipped, jobs_resumed=resumed)
     return payload
 
 

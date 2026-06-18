@@ -586,6 +586,32 @@ async def resume_failed_in_batch(session: AsyncSession, batch_id: UUID) -> int:
     return len(ids)
 
 
+async def latest_for_section(
+    session: AsyncSession, book_id: UUID, toc_entry_id: UUID, *,
+    transport: Optional[str] = None,
+) -> Optional[HomeworkJob]:
+    """The most recent job for a (book, section) regardless of status — used by
+    relaunch to find a failed/cancelled job to RESUME rather than recreate."""
+    conds = [HomeworkJob.book_id == book_id,
+             HomeworkJob.toc_entry_id == toc_entry_id]
+    if transport is not None:
+        conds.append(HomeworkJob.transport == transport)
+    stmt = (select(HomeworkJob).where(*conds)
+            .order_by(HomeworkJob.created_at.desc()).limit(1))
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def done_phase_count_for_job(session: AsyncSession, job_id: UUID) -> int:
+    """How many `done` phase rows with non-empty output a job has — the 'saved
+    work' a relaunch would discard if it recreated the job."""
+    from app.models.phase_output import PhaseOutput
+    stmt = select(func.count()).select_from(PhaseOutput).where(
+        PhaseOutput.job_id == job_id,
+        PhaseOutput.status == "done",
+        func.coalesce(PhaseOutput.output_md, "") != "")
+    return int((await session.execute(stmt)).scalar_one())
+
+
 async def reclaim_stale_cancelling(
     session: AsyncSession, stale_after_seconds: int
 ) -> int:
