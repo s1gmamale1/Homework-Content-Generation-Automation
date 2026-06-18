@@ -117,6 +117,8 @@ class Settings(BaseSettings):
     extract_window_pages: int = 5        # ± margin around printed page range for scoped extract
     extract_window_max_pages: int = 25   # hard cap on a scoped window (size/cost guard)
     extract_min_chars_per_page: int = 300   # below this avg density → treat PDF as scanned (vision)
+    extract_toc_front_pages: int = 12   # vision-TOC: front pages to attach when the text excerpt is too sparse
+    extract_toc_back_pages: int = 20    # vision-TOC: back pages (a "Mundarija" often prints at the back; larger margin)
     # Gate A (raw local text): below this many chars, or below this printable-
     # letter ratio, the PDF is treated as unreadable (scanned / broken font).
     extract_min_text_chars: int = 500

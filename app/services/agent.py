@@ -1365,6 +1365,34 @@ async def extract_toc(
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _toc_source_pdf(pdf_path: Path, front_pages: int, back_pages: int) -> Optional[Path]:
+    """Write a bounded TOC-search PDF: the first ``front_pages`` + last ``back_pages``
+    pages of ``pdf_path`` (deduped, in order) into a temp PDF. Returns its path, or
+    ``None`` on any problem (caller falls back / fails loud). Bounded so it works for
+    >20MB scans where the whole-PDF attach is rejected."""
+    try:
+        reader = PdfReader(str(pdf_path))
+        n = len(reader.pages)
+        indices = sorted(
+            set(range(0, min(front_pages, n))) | set(range(max(0, n - back_pages), n))
+        )
+        if not indices:
+            return None
+        writer = PdfWriter()
+        for i in indices:
+            writer.add_page(reader.pages[i])
+        if len(writer.pages) == 0:
+            return None
+        fd, tmp = tempfile.mkstemp(suffix=".pdf", prefix="toc_window_")
+        os.close(fd)
+        with open(tmp, "wb") as fh:
+            writer.write(fh)
+        return Path(tmp)
+    except Exception as exc:
+        logger.warning(f"_toc_source_pdf failed ({exc!r})")
+        return None
+
+
 def _subset_pdf(
     pdf_path: Path,
     page_start: Optional[int],

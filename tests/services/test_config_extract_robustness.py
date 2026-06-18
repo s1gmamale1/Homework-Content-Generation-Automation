@@ -11,3 +11,9 @@ def test_extract_robustness_defaults():
     assert s.extract_min_summary_chars >= 400
     # Per-page density floor (sparse/scanned detector)
     assert s.extract_min_chars_per_page == 300
+
+
+def test_toc_config_knobs():
+    s = Settings(database_url="postgresql+asyncpg://x/y", _env_file=None)
+    assert s.extract_toc_front_pages == 12
+    assert s.extract_toc_back_pages == 20
