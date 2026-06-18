@@ -30,6 +30,8 @@ class PhaseOutput(Base, UUIDPK):
     # Deterministic validator output for this phase's markdown (list[str]).
     # Warn-only — never blocks generation. Surfaced per-phase in the console.
     validation_warnings: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    # LLM-judge verdict for this phase: "ok", "major", "minor", or None (not yet judged).
+    judge_status: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

@@ -70,6 +70,7 @@ async def create_or_reset(
         existing.tokens_output = None
         existing.error_message = None
         existing.validation_warnings = None
+        existing.judge_status = None
         existing.provider = None
         existing.started_at = None
         existing.completed_at = None
@@ -108,6 +109,7 @@ async def set_status(
     error_message: Optional[str] = None,
     validation_warnings: Optional[list] = None,
     provider: Optional[str] = None,
+    judge_status: Optional[str] = None,
     guard: bool = True,
 ) -> bool:
     """Set a phase row's status. With ``guard`` (default), a ``done`` phase is
@@ -130,6 +132,8 @@ async def set_status(
         values["validation_warnings"] = validation_warnings
     if provider is not None:
         values["provider"] = provider
+    if judge_status is not None:
+        values["judge_status"] = judge_status
     stmt = update(PhaseOutput).where(PhaseOutput.id == phase_output_id)
     if guard:
         stmt = stmt.where(PhaseOutput.status != "done")
