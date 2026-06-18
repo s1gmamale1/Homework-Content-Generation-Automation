@@ -1188,10 +1188,34 @@ async def extract_toc(
         "explain that you cannot read the PDF."
     )
 
-    lesson_context = None
-    attachment_preamble = prov.format_attachments([pdf_path])
-    attachments = [pdf_path]
-    if has_local_toc_text:
+    toc_text_usable = has_local_toc_text and not extract_text_is_too_sparse(
+        toc_source_text, toc_source_meta.get("pages_read", 0)
+    )
+    window: Optional[Path] = None
+    toc_mode = "attachment"
+    if not toc_text_usable:
+        # Scanned / sparse-text TOC: the local excerpt is watermark junk that would
+        # steer the model to return []. Drop it and vision-attach a bounded front+back
+        # page-window so the provider OCRs the printed contents page (front OR back).
+        window = _toc_source_pdf(
+            pdf_path, settings.extract_toc_front_pages, settings.extract_toc_back_pages
+        )
+        lesson_context = None
+        if window is None:
+            # cannot build a window → no attachment; 0 entries will fail loud + actionable
+            attachment_preamble, attachments = "", []
+        else:
+            logger.info(
+                f"agent.toc | sparse/scanned text "
+                f"({toc_source_meta.get('chars')} chars / {toc_source_meta.get('pages_read')} pages) "
+                f"→ vision-attach front {settings.extract_toc_front_pages} + "
+                f"back {settings.extract_toc_back_pages} pages"
+            )
+            attachment_preamble = prov.format_attachments([window])
+            attachments = [window]
+            transport = "cli"   # vision needs attachments; api is text-only
+            toc_mode = "vision_toc"
+    else:
         lesson_context = (
             "Locally extracted text from the FIRST and LAST pages of the PDF "
             "follows (a textbook's table of contents may be at the front OR the "
@@ -1200,19 +1224,16 @@ async def extract_toc(
             "markers, not textbook page numbers.\n\n"
             f"{toc_source_text}"
         )
-    # R6: gemini reads PDFs natively — for PDFs under its size limit keep the
-    # whole PDF attached (alongside any text excerpt) so it can locate a TOC the
-    # excerpt missed. Other providers, or oversized PDFs, fall back to no
-    # attachment. This guard runs UNCONDITIONALLY so image-only PDFs (no local
-    # TOC text) also get the >20 MB protection instead of crashing on upload.
-    try:
-        pdf_size = pdf_path.stat().st_size
-    except OSError:
-        pdf_size = _GEMINI_PDF_MAX_BYTES + 1  # force no-attachment on stat failure
-    keep_pdf = provider == "gemini" and pdf_size <= _GEMINI_PDF_MAX_BYTES
-    if not keep_pdf:
-        attachment_preamble = ""
-        attachments = []
+        attachment_preamble = prov.format_attachments([pdf_path])
+        attachments = [pdf_path]
+        try:
+            pdf_size = pdf_path.stat().st_size
+        except OSError:
+            pdf_size = _GEMINI_PDF_MAX_BYTES + 1
+        keep_pdf = provider == "gemini" and pdf_size <= _GEMINI_PDF_MAX_BYTES
+        if not keep_pdf:
+            attachment_preamble = ""
+            attachments = []
 
     base_prompt = _build_master_prompt(
         phase_prompt=instruction,
@@ -1231,138 +1252,173 @@ async def extract_toc(
     last_stderr = ""
     max_attempts = 2
 
-    for attempt in range(1, max_attempts + 1):
-        started_at = datetime.now(timezone.utc)
-        t0 = perf_counter()
-        spawn_failed: Optional[Exception] = None
-        rc = -1
-        text = ""
-        stderr = ""
-        usage: dict[str, Any] = {
-            "prompt_tokens": 0,
-            "output_tokens": 0,
-            "cached_tokens": 0,
-            "total_tokens": 0,
-            "raw": {},
-        }
-        try:
-            rc, text, usage, stderr = await _spawn(
-                provider=prov,
-                model=resolved_model,
-                prompt=attempt_prompt,
-                attachments=attachments,
-                transport=transport,
-            )
-        except Exception as exc:
-            spawn_failed = exc
-
-        duration_s = perf_counter() - t0
-        last_text = text
-        last_stderr = stderr
-
-        usage_extra = {
-            "subject": subject,
-            "pdf": pdf_path.name,
-            "attempt": attempt,
-            "source": "local_pdf_text" if has_local_toc_text else "attachment",
-            "source_meta": toc_source_meta,
-        }
-
-        if spawn_failed is not None:
-            await _record_usage(
-                operation="toc.extract",
-                provider=provider,
-                model_name=resolved_model,
-                usage=usage,
-                duration_s=duration_s,
-                started_at=started_at,
-                success=False,
-                auth_mode=transport,
-                book_id=book_id,
-                error_message=str(spawn_failed),
-                extra_envelope=usage_extra,
-            )
-            raise spawn_failed
-
-        if rc != 0:
-            err = f"{provider} CLI exited rc={rc}"
-            await _record_usage(
-                operation="toc.extract",
-                provider=provider,
-                model_name=resolved_model,
-                usage=usage,
-                duration_s=duration_s,
-                started_at=started_at,
-                success=False,
-                auth_mode=transport,
-                book_id=book_id,
-                error_message=err,
-                extra_envelope=usage_extra,
-            )
-            raise RuntimeError(
-                f"toc.extract: {err} :: {_failure_preview(stderr, text)}"
-            )
-
-        candidate = _strip_code_fences(text).strip()
-        try:
-            toc = ExtractedTOC.model_validate_json(candidate)
-        except ValidationError as exc:
-            last_error = exc
-            await _record_usage(
-                operation="toc.extract",
-                provider=provider,
-                model_name=resolved_model,
-                usage=usage,
-                duration_s=duration_s,
-                started_at=started_at,
-                success=False,
-                auth_mode=transport,
-                book_id=book_id,
-                error_message=f"schema validation failed: {exc}",
-                extra_envelope={**usage_extra, "text_preview": candidate[:200]},
-            )
-            logger.warning(
-                f"agent.toc validation failed | provider={provider} "
-                f"attempt={attempt} err={str(exc)[:200]!r}"
-            )
-            if attempt < max_attempts:
-                attempt_prompt = (
-                    base_prompt
-                    + "\n\nYour previous response failed schema validation:\n"
-                    + str(exc)
-                    + "\nRespond with valid JSON matching the schema. "
-                    + "If the TOC cannot be extracted, return {\"entries\": []}."
+    try:
+        for attempt in range(1, max_attempts + 1):
+            started_at = datetime.now(timezone.utc)
+            t0 = perf_counter()
+            spawn_failed: Optional[Exception] = None
+            rc = -1
+            text = ""
+            stderr = ""
+            usage: dict[str, Any] = {
+                "prompt_tokens": 0,
+                "output_tokens": 0,
+                "cached_tokens": 0,
+                "total_tokens": 0,
+                "raw": {},
+            }
+            try:
+                rc, text, usage, stderr = await _spawn(
+                    provider=prov,
+                    model=resolved_model,
+                    prompt=attempt_prompt,
+                    attachments=attachments,
+                    transport=transport,
                 )
-                continue
-            break
+            except Exception as exc:
+                spawn_failed = exc
 
-        await _record_usage(
-            operation="toc.extract",
-            provider=provider,
-            model_name=resolved_model,
-            usage=usage,
-            duration_s=duration_s,
-            started_at=started_at,
-            success=True,
-            auth_mode=transport,
-            book_id=book_id,
-            extra_envelope={**usage_extra, "entries": len(toc.entries)},
-        )
-        logger.success(
-            f"agent.toc done | provider={provider} subject={subject} "
-            f"entries={len(toc.entries)} duration_ms={duration_s * 1000:.0f}"
-        )
-        return toc
+            duration_s = perf_counter() - t0
+            last_text = text
+            last_stderr = stderr
 
-    raise RuntimeError(
-        f"toc.extract: ExtractedTOC validation failed after {max_attempts} "
-        f"attempts: {last_error} :: {_failure_preview(last_stderr, last_text)}"
-    )
+            usage_extra = {
+                "subject": subject,
+                "pdf": pdf_path.name,
+                "attempt": attempt,
+                "source": "vision_toc" if toc_mode == "vision_toc" else ("local_pdf_text" if has_local_toc_text else "attachment"),
+                "source_meta": toc_source_meta,
+            }
+
+            if spawn_failed is not None:
+                await _record_usage(
+                    operation="toc.extract",
+                    provider=provider,
+                    model_name=resolved_model,
+                    usage=usage,
+                    duration_s=duration_s,
+                    started_at=started_at,
+                    success=False,
+                    auth_mode=transport,
+                    book_id=book_id,
+                    error_message=str(spawn_failed),
+                    extra_envelope=usage_extra,
+                )
+                raise spawn_failed
+
+            if rc != 0:
+                err = f"{provider} CLI exited rc={rc}"
+                await _record_usage(
+                    operation="toc.extract",
+                    provider=provider,
+                    model_name=resolved_model,
+                    usage=usage,
+                    duration_s=duration_s,
+                    started_at=started_at,
+                    success=False,
+                    auth_mode=transport,
+                    book_id=book_id,
+                    error_message=err,
+                    extra_envelope=usage_extra,
+                )
+                raise RuntimeError(
+                    f"toc.extract: {err} :: {_failure_preview(stderr, text)}"
+                )
+
+            candidate = _strip_code_fences(text).strip()
+            try:
+                toc = ExtractedTOC.model_validate_json(candidate)
+            except ValidationError as exc:
+                last_error = exc
+                await _record_usage(
+                    operation="toc.extract",
+                    provider=provider,
+                    model_name=resolved_model,
+                    usage=usage,
+                    duration_s=duration_s,
+                    started_at=started_at,
+                    success=False,
+                    auth_mode=transport,
+                    book_id=book_id,
+                    error_message=f"schema validation failed: {exc}",
+                    extra_envelope={**usage_extra, "text_preview": candidate[:200]},
+                )
+                logger.warning(
+                    f"agent.toc validation failed | provider={provider} "
+                    f"attempt={attempt} err={str(exc)[:200]!r}"
+                )
+                if attempt < max_attempts:
+                    attempt_prompt = (
+                        base_prompt
+                        + "\n\nYour previous response failed schema validation:\n"
+                        + str(exc)
+                        + "\nRespond with valid JSON matching the schema. "
+                        + "If the TOC cannot be extracted, return {\"entries\": []}."
+                    )
+                    continue
+                break
+
+            await _record_usage(
+                operation="toc.extract",
+                provider=provider,
+                model_name=resolved_model,
+                usage=usage,
+                duration_s=duration_s,
+                started_at=started_at,
+                success=True,
+                auth_mode=transport,
+                book_id=book_id,
+                extra_envelope={**usage_extra, "entries": len(toc.entries)},
+            )
+            logger.success(
+                f"agent.toc done | provider={provider} subject={subject} "
+                f"entries={len(toc.entries)} duration_ms={duration_s * 1000:.0f}"
+            )
+            return toc
+
+        raise RuntimeError(
+            f"toc.extract: ExtractedTOC validation failed after {max_attempts} "
+            f"attempts: {last_error} :: {_failure_preview(last_stderr, last_text)}"
+        )
+    finally:
+        if window is not None:
+            try:
+                window.unlink()
+            except OSError:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────────────
 # Public API: lesson context (per-section "extract" phase)
 # ─────────────────────────────────────────────────────────────────────
+
+
+def _toc_source_pdf(pdf_path: Path, front_pages: int, back_pages: int) -> Optional[Path]:
+    """Write a bounded TOC-search PDF: the first ``front_pages`` + last ``back_pages``
+    pages of ``pdf_path`` (deduped, in order) into a temp PDF. Returns its path, or
+    ``None`` on any problem (caller falls back / fails loud). Bounded so it works for
+    >20MB scans where the whole-PDF attach is rejected."""
+    try:
+        reader = PdfReader(str(pdf_path))
+        n = len(reader.pages)
+        indices = sorted(
+            set(range(0, min(front_pages, n))) | set(range(max(0, n - back_pages), n))
+        )
+        if not indices:
+            return None
+        writer = PdfWriter()
+        for i in indices:
+            writer.add_page(reader.pages[i])
+        if len(writer.pages) == 0:
+            return None
+        fd, tmp = tempfile.mkstemp(suffix=".pdf", prefix="toc_window_")
+        os.close(fd)
+        with open(tmp, "wb") as fh:
+            writer.write(fh)
+        return Path(tmp)
+    except Exception as exc:
+        logger.warning(f"_toc_source_pdf failed ({exc!r})")
+        return None
 
 
 def _subset_pdf(

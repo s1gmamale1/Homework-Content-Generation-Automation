@@ -64,6 +64,10 @@ async def test_zero_entries_marks_failed_not_ready(monkeypatch):
     assert "failed" in names, "0-entry extraction should fail loudly"
     assert bulk_calls == [], "must not persist an empty entry set"
     assert "error" in events
+    # Refinement: the failure must be actionable — name the cause AND the remedy.
+    failed_msg = next(msg for s, msg in statuses if s == "failed")
+    assert "extract_toc_front_pages" in failed_msg and "extract_toc_back_pages" in failed_msg
+    assert "re-extract" in failed_msg
 
 
 @pytest.mark.asyncio
