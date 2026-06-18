@@ -1,3 +1,4 @@
+import pytest
 from uuid import uuid4
 from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock
@@ -5,8 +6,14 @@ from fastapi.testclient import TestClient
 from main import app
 from app.auth import get_current_user
 
-app.dependency_overrides[get_current_user] = lambda: {"user": "test"}
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _auth_override():
+    app.dependency_overrides[get_current_user] = lambda: {"user": "test"}
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 def test_cancel_pending_is_atomic():

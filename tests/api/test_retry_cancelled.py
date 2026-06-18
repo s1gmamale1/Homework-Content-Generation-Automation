@@ -1,3 +1,4 @@
+import pytest
 from uuid import uuid4
 from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock
@@ -6,8 +7,14 @@ from main import app
 from app.api.v1.jobs import JobOut
 from app.auth import get_current_user
 
-app.dependency_overrides[get_current_user] = lambda: {"user": "test"}
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _auth_override():
+    app.dependency_overrides[get_current_user] = lambda: {"user": "test"}
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 def test_retry_allows_cancelled():
