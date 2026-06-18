@@ -77,6 +77,12 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
 
         # Persist entries + flip status to toc_ready
         async with SessionLocal() as session:
+            # Clear-before-insert so a re-extract (POST /books/{id}/toc/retry)
+            # replaces rather than appends — bulk_create is a naive append and
+            # toc_entries has no unique constraint. Safe because retry excludes
+            # `toc_ready`, so no homework_jobs.toc_entry_id FK references these
+            # rows (they were never surfaced for generation).
+            await toc_repo.delete_for_book(session, book_id)
             rows = await toc_repo.bulk_create(session, book_id, extracted.entries)
             await books_repo.set_status(session, book_id, "toc_ready")
             await session.commit()

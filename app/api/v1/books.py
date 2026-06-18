@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
@@ -41,6 +42,13 @@ router = APIRouter(prefix="/books", tags=["books"])
 # R6: retain references to fire-and-forget TOC tasks so the event loop can't GC
 # (and silently cancel) them mid-run. Mirrors the retain pattern in worker.py.
 _TOC_TASKS: set = set()
+
+
+def _start_toc_extraction(book_id: UUID, pdf_path: Path, subject: str) -> None:
+    """Fire-and-forget the background TOC extraction, keeping a strong task ref."""
+    task = asyncio.create_task(toc_extractor.run(book_id, pdf_path, subject))
+    _TOC_TASKS.add(task)
+    task.add_done_callback(_TOC_TASKS.discard)
 
 
 async def ingest_pdf(
@@ -93,9 +101,7 @@ async def ingest_pdf(
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_path.write_bytes(body)
 
-    task = asyncio.create_task(toc_extractor.run(book.id, pdf_path, subject))
-    _TOC_TASKS.add(task)
-    task.add_done_callback(_TOC_TASKS.discard)
+    _start_toc_extraction(book.id, pdf_path, subject)
 
     return BookOut.model_validate(book)
 
@@ -169,6 +175,33 @@ async def get_book(
     book_id: UUID,
     session: AsyncSession = Depends(get_session),
 ) -> BookOut:
+    return await _book_out_with_toc(session, book_id)
+
+
+@router.post("/{book_id}/toc/retry")
+async def retry_toc_extraction(
+    book_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    user: dict = Depends(get_current_user),
+) -> BookOut:
+    """Re-run TOC extraction for a book stuck in `failed` or `toc_extracting`.
+    Mirrors POST /jobs/{id}/retry for the book-preparation step. The extractor's
+    clear-before-insert makes the re-run idempotent (replaces prior entries)."""
+    book = await books_repo.get(session, book_id)
+    if book is None:
+        raise HTTPException(404, "book not found")
+    if book.status not in ("failed", "toc_extracting"):
+        raise HTTPException(
+            409,
+            f"cannot retry TOC extraction from status '{book.status}' "
+            "(only `failed` or a stuck `toc_extracting`)",
+        )
+    pdf_path = storage.book_pdf_path(book_id)
+    if not pdf_path.exists():
+        raise HTTPException(409, "source PDF missing on disk — re-upload the book")
+    await books_repo.set_status(session, book_id, "toc_extracting", error_message=None)
+    await session.commit()
+    _start_toc_extraction(book_id, pdf_path, book.subject)
     return await _book_out_with_toc(session, book_id)
 
 
