@@ -487,12 +487,16 @@ you configure to match your plan.
 - **TOC extraction scans both ends of the PDF** — the front pages *and* the last ~15 pages —
   because some Uzbek textbooks print their "Mundarija" (contents) at the back. It also
   glyph-decodes broken font subsets. A fully scanned/OCR-less book whose *TOC itself* is an image
-  can still come back empty (you then add the section by hand) — but once a book has a TOC, the
-  per-lesson **extract** is now robust to two cases it used to hard-fail on: an **oversize** text
-  book (whole text > 600K chars) is scoped to the lesson's pages as text, and a **scanned/sparse**
-  lesson body (caught by a per-page density gate) is read by **vision** — a page-window PDF is
-  attached and the model finds the lesson by title (forced `transport=cli`, since the api transport
-  can't take attachments). See worklog 0070.
+  is now also handled (worklog 0072): when the local text excerpt is too sparse (a watermark-only
+  scan), `extract_toc` drops it and **vision-attaches a bounded front+back page-window** so the
+  model OCRs the printed contents (Mundarija prints front OR back; window size is the configurable
+  `extract_toc_front_pages`/`extract_toc_back_pages`). If the contents page falls outside that
+  window the book fails *actionably* ("widen the knobs and re-extract"). Once a book has a TOC, the
+  per-lesson **extract** is likewise robust to two cases it used to hard-fail on: an **oversize**
+  text book (whole text > 600K chars) is scoped to the lesson's pages as text, and a
+  **scanned/sparse** lesson body (caught by a per-page density gate) is read by **vision** — a
+  page-window PDF is attached and the model finds the lesson by title (forced `transport=cli`, since
+  the api transport can't take attachments). See worklogs 0070 + 0072.
 
 ---
 
