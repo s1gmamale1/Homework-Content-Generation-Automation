@@ -365,3 +365,91 @@ async def test_null_model_job_claims_via_not_pair_branch():
         )
     finally:
         await _cleanup_book(book_id)
+
+
+@pytest.mark.asyncio
+async def test_api_gemini_judge_job_claimable_by_vertex_only_worker():
+    """THE live bug (C1 / judge-claimgate-1): a Vertex-only worker has gemini api
+    but NO anthropic key. settings.judge_provider='claude'. A job with
+    transport='api', judge_provider='gemini', judge_transport='inherit' was
+    STRANDED — the old gate used caps['judge_api_ok'] = cap['claude'] = False.
+
+    After the fix: claim_next_job resolves the judge provider per-job via
+    COALESCE(job.judge_provider, settings_judge_provider), then gates on the
+    matching per-provider cap flag — so this job IS claimable.
+    """
+    from app.db import SessionLocal
+
+    # Vertex-only: gemini api yes (SA pair), claude NO.
+    vertex_env = {
+        "GOOGLE_APPLICATION_CREDENTIALS": "/secrets/sa.json",
+        "GOOGLE_CLOUD_PROJECT": "my-project",
+    }
+    # settings defaults: judge=claude, extract=gemini (production defaults).
+    caps = _caps_for(vertex_env)
+    # Sanity: the live-bug pre-conditions must hold — judge_api_ok driven by
+    # settings.judge_provider='claude' on a no-anthropic-key worker = False.
+    assert caps["can_claude_api"] is False
+    assert caps["can_gemini_api"] is True
+    assert caps["judge_api_ok"] is False  # this is the old (wrong) gate value
+
+    async with SessionLocal() as s:
+        book, toc = await _seed_book(s, "c1-strand-test.pdf")
+        # The job explicitly picks gemini as its judge provider.
+        job = await _seed_job(
+            s, book, toc,
+            provider="gemini", model="gemini-2.5-flash",
+            transport="api",
+            judge_provider="gemini",  # per-job override — NOT the settings default
+            judge_transport="inherit",  # resolves to 'api' since transport='api'
+            extract_transport="cli",
+        )
+        await s.commit()
+        book_id, job_id = book.id, job.id
+
+    try:
+        claimed = await _claim_with(caps, {job_id})
+        assert claimed == job_id, (
+            "Vertex-only worker must claim an api job whose judge_provider='gemini', "
+            "even when settings.judge_provider='claude' (COALESCE job over settings)"
+        )
+    finally:
+        await _cleanup_book(book_id)
+
+
+@pytest.mark.asyncio
+async def test_null_judge_provider_falls_back_to_settings():
+    """C1 regression: a job with judge_provider=NULL + judge_transport=api must
+    still use the settings default (settings_judge_provider='claude') for the
+    claim gate. A claude-capable worker must claim it; a gemini-only one must not."""
+    from app.db import SessionLocal
+
+    async with SessionLocal() as s:
+        book, toc = await _seed_book(s, "c1-null-judge-fallback.pdf")
+        job = await _seed_job(
+            s, book, toc,
+            provider="gemini", model="gemini-2.5-flash",
+            transport="cli",
+            judge_transport="api",
+            # judge_provider left NULL → should fall back to settings='claude'
+            extract_transport="cli",
+        )
+        await s.commit()
+        book_id, job_id = book.id, job.id
+
+    try:
+        # gemini-only worker: settings.judge_provider='claude', job.judge_provider=NULL
+        # → resolved = 'claude'; can_claude_api=False → must NOT claim.
+        assert await _claim_with(_caps_for(_GEMINI_ONLY), {job_id}) != job_id, (
+            "gemini-only worker must NOT claim a job whose resolved judge is claude "
+            "(NULL job.judge_provider falls back to settings='claude')"
+        )
+        assert await _status_of(job_id) == "pending"
+
+        # anthropic-only worker: resolved judge='claude'; can_claude_api=True → must claim.
+        claimed = await _claim_with(_caps_for(_ANTHROPIC_ONLY), {job_id})
+        assert claimed == job_id, (
+            "anthropic-only worker must claim a job whose resolved judge is claude"
+        )
+    finally:
+        await _cleanup_book(book_id)

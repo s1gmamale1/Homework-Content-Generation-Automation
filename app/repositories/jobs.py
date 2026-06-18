@@ -314,16 +314,33 @@ async def claim_next_job(
         HomeworkJob.provider == (judge_pair[0] or ""),
         func.coalesce(HomeworkJob.model, "") == (judge_pair[1] or ""),
     )
+    # C1: resolve judge/extract provider per-job via COALESCE(job column, settings
+    # default) so the capability gate honors the job's per-job provider override,
+    # not just the settings default. A Vertex-only worker (gemini api, no anthropic
+    # key) with settings.judge_provider='claude' must still claim a job that has
+    # judge_provider='gemini' explicitly set.
+    s_judge = caps.get("settings_judge_provider") or ""
+    s_extract = caps.get("settings_extract_provider") or ""
+    resolved_judge_provider = func.coalesce(HomeworkJob.judge_provider, s_judge)
+    resolved_extract_provider = func.coalesce(HomeworkJob.extract_provider, s_extract)
+
+    def _provider_api_ok(resolved):
+        """Map a SQL-expression resolved provider name to the worker's matching cap flag."""
+        return or_(
+            and_(resolved == "claude", literal(bool(caps.get("can_claude_api")))),
+            and_(resolved == "gemini", literal(bool(caps.get("can_gemini_api")))),
+        )
+
     judge_ok = or_(
         not_(judge_needs_api),
         and_(job_is_judge_pair, literal(bool(caps.get("judge_fallback_api_ok")))),
-        and_(not_(job_is_judge_pair), literal(bool(caps.get("judge_api_ok")))),
+        and_(not_(job_is_judge_pair), _provider_api_ok(resolved_judge_provider)),
     )
     extract_needs_api = or_(
         HomeworkJob.extract_transport == "api",
         and_(HomeworkJob.extract_transport == "inherit", HomeworkJob.transport == "api"),
     )
-    extract_ok = or_(not_(extract_needs_api), literal(bool(caps.get("extract_api_ok"))))
+    extract_ok = or_(not_(extract_needs_api), _provider_api_ok(resolved_extract_provider))
 
     pick_stmt = (
         select(HomeworkJob.id)

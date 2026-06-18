@@ -76,6 +76,10 @@ def _compute_capabilities(env, judge_provider: str, judge_model: str, extract_pr
         "judge_fallback_api_ok": cap.get(fb_provider, False),
         "extract_api_ok": cap.get(extract_provider, False),
         "judge_pair": (judge_provider, judge_model),
+        # C1: settings defaults so claim_next_job can COALESCE(job.judge_provider,
+        # settings_judge_provider) — evaluates per-job provider, not settings-wide.
+        "settings_judge_provider": judge_provider,
+        "settings_extract_provider": extract_provider,
     }
 
 
