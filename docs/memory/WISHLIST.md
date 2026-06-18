@@ -87,8 +87,12 @@
 - _(2026-06-04, blocked on the deferred validator above)_ If/when the notion-archive validator is built, surface its `homework_jobs.notion_validation` result (verified / mismatch / archive-incomplete) in the operator console. **Note:** neither the validator nor the `notion_validation` column exists yet — this is downstream of the parked work above.
 - _(2026-06-04)_ Phase judge writes `"judge-unavailable: <ExcType>"` into `phase_outputs.validation_warnings` on CLI/parse failure — an *infra* signal that renders in the console like a *content* defect. Distinguish them (separate field, or a prefix the console styles differently) so operators don't chase phantom content issues. (Code-review nit from the LLM-phase-validator build.)
 - _(2026-06-02)_ Notion anchor **auto-resolve** (ties to Phase 2): resolve the subject-page ID by crawling (grade → `{N}-sinf` → child matching the subject label) instead of the hand-maintained `NOTION_SUBJECT_PAGES`. Would eliminate the **silent per-subject skip** (Kimyo incident). Surface unmapped skips in the UI/job result either way.
+- `notion-archive-1` (→ ROADMAP **R15**): `archive_job` **swallows push failures** — a failed Notion push leaves `homework_jobs.notion_archived_at` AND `notion_skip_reason` both NULL (invisible, no auto-retry). Live 2026-06-17: 5 Jahon-Tarixi g7 lessons un-archived with no reason; re-trigger fixed 4, Saljuqiylar (`7bd23497`) failed transiently then succeeded on retry. Fix: persist a skip_reason on push failure + bounded retry (+ a re-archive affordance for `done` jobs with `archived_at IS NULL`).
+- `notion-archive-2` (→ ROADMAP **R16**): subject-page resolution is **filename-substring-fragile** — for history (split Jahon / O'zbekiston tarixi) the page is chosen by matching the keyword against the book filename; `"ozbekiston"` won't match a **"Tarix Ozb"** book → silent "no Notion page" skip. Latent (no O'zb-history book uploaded yet); the `"jahon"` side verified resolving correctly 2026-06-17.
 
 ### Frontend
+
+- `fe-subject-variant-1` (→ ROADMAP **R17**): batch / library / launcher cards show only **"History · grade N"** — when both Jahon Tarixi and O'zbekiston Tarixi books exist for a grade they're **indistinguishable** in the UI. Surface the book/variant (filename or a Jahon/O'zbekiston label). Screenshot 2026-06-17.
 
 ### Database / Persistence
 

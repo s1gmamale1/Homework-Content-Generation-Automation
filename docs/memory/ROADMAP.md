@@ -53,6 +53,30 @@
 
 ---
 
+## R15 — Notion archival silently swallows push failures (invisible, no retry)
+
+- **Issue:** a `done` job that fails to archive to Notion is **indistinguishable from one never attempted** — both leave `homework_jobs.notion_archived_at` NULL **and** `notion_skip_reason` NULL — and nothing retries. **Observed live 2026-06-17:** 5 Jahon-Tarixi grade-7 lessons (Slavyan / Yangi din / Arab xalifaligi / Saljuqiylar / Mo'g'ullar) were all un-archived with no reason; a manual re-trigger archived 4 immediately, and Saljuqiylar (job `7bd23497`) **failed transiently once, then succeeded on retry** — confirming the failure mode is transient *and* silently swallowed.
+- **Root cause:** `archive_job`'s catch-all (`app/services/notion_archive.py:230-231`) only `log.warning(..., exc_info=True)` on a push exception — it does **not** set `notion_skip_reason` (unlike the explicit skip paths, which do) and there is **no retry**. So a transient Notion API error vanishes from the DB and is never auto-recovered; the NULL/NULL state uniquely (and confusingly) means "disabled-or-swallowed-failure."
+- **Deliverable:** on push failure, persist `notion_skip_reason="push error: <type/msg>"` so it's visible like the other skip paths; add a **bounded retry** (e.g. 2–3 attempts with backoff) before giving up; and a **re-archive affordance** (small endpoint or script) for `done` jobs with `notion_archived_at IS NULL`. Ties to the WISHLIST "surface unmapped skips in the UI" item.
+
+---
+
+## R16 — Notion subject-page resolution is filename-fragile (Jahon vs O'zbekiston Tarixi)
+
+- **Issue:** for an app-subject split across multiple Notion pages (history → **Jahon tarixi** / **O'zbekiston tarixi**), the correct page is chosen by **substring-matching the keyword against the book filename**. This works for `"jahon"` (book `7-sinf_jahon_tarixi_2022.pdf` resolved to the jahon page, **verified 2026-06-17**), but an O'zbekiston-Tarixi book named **"Tarix Ozb"** would **not** contain `"ozbekiston"` → resolver returns `None` → silent "no Notion page" skip. **Latent** — no O'zb-history book is uploaded yet, so it will bite on the first one.
+- **Root cause:** `_resolve_subject_page_id` (`app/services/notion_archive.py:43`) folds the filename `hint` and tests `_fold(keyword) in folded` for each keyword in the dict-form `NOTION_SUBJECT_PAGES` value; the keyword is the literal `"ozbekiston"`/`"jahon"`, so any abbreviated/variant filename misses. Same fragility family as the WISHLIST "Notion anchor auto-resolve" item.
+- **Deliverable:** make variant matching robust — (a) require uploaded O'zb-history filenames to contain `"ozbekiston"`, **or** (b) add aliases (`"ozb"`, `"o'zbekiston"`, …) in the mapping / a normalizer, **or** (c) fold into the broader anchor auto-resolve crawl. Guard against loose-match collisions (a too-broad `"ozb"` could mis-match unrelated books).
+
+---
+
+## R17 — Frontend doesn't name subject variants (shows only "History · grade N")
+
+- **Issue:** in the batch / launcher / library UI a history book renders only as **"History · grade 7"** (screenshot 2026-06-17, the Jahon-Tarixi batch). When both **Jahon Tarixi** and **O'zbekiston Tarixi** ("Tarix Ozb") books exist for the same grade, they are **indistinguishable** — the operator can't tell which history book a batch/lesson belongs to.
+- **Root cause:** the FE labels by the coarse app-subject code (`"history"`) + grade only (`web/src/lib/subjects.ts` `SUBJECT_LABELS`; the batch/library/launcher cards), and surfaces nothing about the specific book. The app-subject is intentionally coarse (one `history`), but the real variant lives in the **book filename** (and the Notion jahon/ozbekiston split).
+- **Deliverable:** surface the book identity/variant alongside "History · grade N" in the batch + library + launcher views — e.g. the book's `original_filename` or a derived **Jahon / O'zbekiston** label — so the two history books are distinguishable. Natural pair with **R16** (same distinction).
+
+---
+
 ## Shipped / Closed
 
 > One line per shipped/closed item — full detail in the cited worklog + git. Nothing here is open.
