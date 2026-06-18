@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
-import { accentOf, subjectLabel } from "@/lib/subjects";
+import { accentOf, subjectLabel, subjectLabelWithVariant } from "@/lib/subjects";
 import type {
   BatchSummary,
   Book,
@@ -463,7 +463,7 @@ function PreparingCard({ book }: { book: Book }) {
       <SubjectAvatar subject={book.subject} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 text-sm font-medium text-white">
-          {subjectLabel(book.subject)}
+          {subjectLabelWithVariant(book.subject, book.subject_variant)}
           {book.grade && <GradeChip grade={book.grade} />}
         </div>
         <div className="mt-1 flex items-center gap-1.5 text-xs text-white/45">
@@ -503,7 +503,7 @@ function FailedCard({ book }: { book: Book }) {
       <SubjectAvatar subject={book.subject} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 text-sm font-medium text-white">
-          {subjectLabel(book.subject)}
+          {subjectLabelWithVariant(book.subject, book.subject_variant)}
           {book.grade && <GradeChip grade={book.grade} />}
         </div>
         <div className="mt-1 text-xs text-rose-300/80">
@@ -705,7 +705,7 @@ function ReadyCard({
         <SubjectAvatar subject={book.subject} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 text-sm font-medium text-white">
-            {subjectLabel(book.subject)}
+            {subjectLabelWithVariant(book.subject, book.subject_variant)}
             {book.grade && <GradeChip grade={book.grade} />}
             <CardStatusChip status={cardStatus} />
           </div>

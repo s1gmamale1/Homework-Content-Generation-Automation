@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import type { BatchSummary } from "@/lib/types";
-import { subjectLabel } from "@/lib/subjects";
+import { subjectLabelWithVariant } from "@/lib/subjects";
 import { CARD, GHOST_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { ApiBadge } from "./launcher";
@@ -17,7 +17,7 @@ function BatchCard({ batch }: { batch: BatchSummary }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold text-white">
-            {subjectLabel(batch.subject)}
+            {subjectLabelWithVariant(batch.subject, batch.subject_variant)}
             {batch.grade ? (
               <span className="font-normal text-white/45"> · grade {batch.grade}</span>
             ) : null}
