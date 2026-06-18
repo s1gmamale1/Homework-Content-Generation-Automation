@@ -110,6 +110,8 @@ class Settings(BaseSettings):
     # judging off claude.
     judge_provider: str = "claude"
     judge_model: str = "claude-opus-4-7"
+    # Maximum regen attempts when a phase fails judge; default 1 = current single-regen behavior.
+    max_judge_regens: int = 1
 
     # ─── Extract robustness (local-text + gates) ──────────────────────────
     # Whole-book local text is injected into the extract prompt; if the book's
