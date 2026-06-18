@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import PhaseOutput
@@ -108,27 +108,33 @@ async def set_status(
     error_message: Optional[str] = None,
     validation_warnings: Optional[list] = None,
     provider: Optional[str] = None,
-) -> None:
-    po = await session.get(PhaseOutput, phase_output_id)
-    if po is None:
-        return
-    po.status = status
+    guard: bool = True,
+) -> bool:
+    """Set a phase row's status. With ``guard`` (default), a ``done`` phase is
+    frozen — protects the resumable set (``_done_phase_md``) from a
+    cancel-race clobber. Returns True iff a row was updated."""
+    values: dict = {"status": status}
     if started_at is not None:
-        po.started_at = started_at
+        values["started_at"] = started_at
     if completed_at is not None:
-        po.completed_at = completed_at
+        values["completed_at"] = completed_at
     if output_md is not None:
-        po.output_md = output_md
+        values["output_md"] = output_md
     if tokens_input is not None:
-        po.tokens_input = tokens_input
+        values["tokens_input"] = tokens_input
     if tokens_output is not None:
-        po.tokens_output = tokens_output
+        values["tokens_output"] = tokens_output
     if error_message is not None:
-        po.error_message = error_message
+        values["error_message"] = error_message
     if validation_warnings is not None:
-        po.validation_warnings = validation_warnings
+        values["validation_warnings"] = validation_warnings
     if provider is not None:
-        po.provider = provider
+        values["provider"] = provider
+    stmt = update(PhaseOutput).where(PhaseOutput.id == phase_output_id)
+    if guard:
+        stmt = stmt.where(PhaseOutput.status != "done")
+    result = await session.execute(stmt.values(**values))
+    return result.rowcount > 0
 
 
 async def list_running_for_sweep(session: AsyncSession) -> list[PhaseOutput]:
