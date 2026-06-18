@@ -69,8 +69,6 @@ export function RoleAgentControls({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transport, provider, manifest]);
 
-  const modelDisabled = !provider;
-
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-2">
@@ -94,24 +92,27 @@ export function RoleAgentControls({
             ))}
           </SelectContent>
         </Select>
-        {/* Model */}
-        <Select
-          value={model ?? AUTO}
-          onValueChange={(v) => onModel(v === AUTO ? null : v)}
-          disabled={modelDisabled}
-        >
-          <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[10rem]")}>
-            <SelectValue placeholder="Auto" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={AUTO}>Auto</SelectItem>
-            {modelOptions.map((m) => (
-              <SelectItem key={m} value={m}>
-                {m}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {/* Model — only shown once a concrete provider is chosen. With provider
+            on "Auto" the model is backend-resolved, so a disabled model dropdown
+            would just be dead UI; hide it entirely. */}
+        {provider && (
+          <Select
+            value={model ?? AUTO}
+            onValueChange={(v) => onModel(v === AUTO ? null : v)}
+          >
+            <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[10rem]")}>
+              <SelectValue placeholder="Auto" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={AUTO}>Auto</SelectItem>
+              {modelOptions.map((m) => (
+                <SelectItem key={m} value={m}>
+                  {m}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         {/* Transport (Auto / CLI / API) */}
         <Select
           value={transport}
