@@ -8,6 +8,20 @@ from sqlalchemy.orm import selectinload
 
 from app.models import HomeworkJob, PhaseOutput
 
+_TERMINAL_STATUSES = ("done", "failed", "cancelled")
+
+
+def status_write_allowed(current: str, target: str) -> bool:
+    """Guard for job status writes (cancel-race-1). A terminal status is frozen;
+    a `cancelling` job may only advance to `cancelled` (never resurrected to
+    running/pending, nor flipped to done/failed). Every other transition is
+    allowed. Mirror this rule in the set_status guarded UPDATE WHERE clause."""
+    if current in _TERMINAL_STATUSES:
+        return False
+    if current == "cancelling" and target != "cancelled":
+        return False
+    return True
+
 
 async def create(
     session: AsyncSession,
@@ -140,19 +154,30 @@ async def set_status(
     completed_at: Optional[datetime] = None,
     error_message: Optional[str] = None,
     current_phase: Optional[str] = None,
-) -> None:
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
-        return
-    job.status = status
+    guard: bool = True,
+) -> bool:
+    """Set a job's status. With ``guard`` (default), a guarded UPDATE refuses to
+    overwrite a terminal status or resurrect a `cancelling` job (cancel-race-1):
+    terminal {done,failed,cancelled} is frozen; from `cancelling` only
+    `cancelled` is allowed. Mirrors ``status_write_allowed``. Returns True iff a
+    row was updated. claim (pending->running) and reset_for_retry
+    (cancelled->pending) use their OWN updates and are unaffected."""
+    values: dict = {"status": status}
     if started_at is not None:
-        job.started_at = started_at
+        values["started_at"] = started_at
     if completed_at is not None:
-        job.completed_at = completed_at
+        values["completed_at"] = completed_at
     if error_message is not None:
-        job.error_message = error_message
+        values["error_message"] = error_message
     if current_phase is not None:
-        job.current_phase = current_phase
+        values["current_phase"] = current_phase
+    stmt = update(HomeworkJob).where(HomeworkJob.id == job_id)
+    if guard:
+        stmt = stmt.where(HomeworkJob.status.not_in(_TERMINAL_STATUSES))
+        if status != "cancelled":
+            stmt = stmt.where(HomeworkJob.status != "cancelling")
+    result = await session.execute(stmt.values(**values))
+    return result.rowcount > 0
 
 
 async def set_notion_archived(
