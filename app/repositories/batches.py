@@ -21,6 +21,8 @@ async def get_or_create_for_book(
     extract_transport: str = "inherit",
     judge_transport: str = "inherit",
     notion_source: Optional[str] = None,
+    custom_prompts: Optional[dict] = None,
+    selected_phases: Optional[list] = None,
 ) -> Batch:
     """Race-safe find-or-create THE batch for a (book, transport) pair
     (UNIQUE(book_id, transport) + ON CONFLICT). Core insert bypasses the ORM
@@ -40,12 +42,15 @@ async def get_or_create_for_book(
             extract_transport=extract_transport,
             judge_transport=judge_transport,
             notion_source=notion_source,
+            custom_prompts=custom_prompts,
+            selected_phases=selected_phases,
             created_at=func.now(),
             updated_at=func.now(),
         )
         .on_conflict_do_update(
             index_elements=["book_id", "transport"],
-            set_={"updated_at": func.now()},
+            set_={"updated_at": func.now(),
+                  "custom_prompts": custom_prompts, "selected_phases": selected_phases},
         )
         .returning(Batch.id)
     )

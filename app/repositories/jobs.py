@@ -22,6 +22,8 @@ async def create(
     transport: str = "cli",
     extract_transport: str = "inherit",
     judge_transport: str = "inherit",
+    custom_prompts: Optional[dict] = None,
+    selected_phases: Optional[list] = None,
 ) -> HomeworkJob:
     kwargs: dict[str, Any] = dict(
         book_id=book_id,
@@ -38,6 +40,10 @@ async def create(
         kwargs["model"] = model
     if batch_id is not None:
         kwargs["batch_id"] = batch_id
+    if custom_prompts is not None:
+        kwargs["custom_prompts"] = custom_prompts
+    if selected_phases is not None:
+        kwargs["selected_phases"] = selected_phases
     job = HomeworkJob(**kwargs)
     session.add(job)
     await session.flush()
