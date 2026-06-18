@@ -88,6 +88,7 @@ export interface Book {
   subject: Subject;
   grade: string | null;
   original_filename: string;
+  subject_variant?: string | null;
   status: BookStatus;
   error_message: string | null;
   gemini_file_expires_at: string | null;
@@ -337,6 +338,7 @@ export interface BatchSummary {
   batch_id: string;
   book_id: string;
   subject: string;
+  subject_variant?: string | null;
   grade: string | null;
   provider: string;
   model: string | null;

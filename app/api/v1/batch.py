@@ -10,6 +10,7 @@ from app.repositories import batches as batches_repo
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
+from app.services import subjects
 from app.services.agent_models import (
     is_valid,
     resolve_role_transport,
@@ -39,11 +40,12 @@ class BatchLaunchRequest(BaseModel):
     force: bool = False
 
 
-def _rollup_payload(batch, tally: dict[str, int]) -> dict:
+def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None = None) -> dict:
     return {
         "batch_id": str(batch.id),
         "book_id": str(batch.book_id),
         "subject": batch.subject,
+        "subject_variant": subjects.history_variant(batch.subject, original_filename),
         "grade": batch.grade,
         "provider": batch.provider,
         "model": batch.model,
@@ -169,7 +171,7 @@ async def launch_batch(
     tally = await batches_repo.rollup_for_batch(session, batch.id)
     await session.commit()
 
-    payload = _rollup_payload(batch, tally)
+    payload = _rollup_payload(batch, tally, book.original_filename)
     payload.update(jobs_created=created, jobs_adopted=adopted, jobs_skipped=skipped)
     return payload
 
@@ -177,7 +179,8 @@ async def launch_batch(
 @router.get("/jobs/batches")
 async def list_batches(session: AsyncSession = Depends(get_session)):
     rows = await batches_repo.list_with_rollups(session)
-    return {"batches": [_rollup_payload(r["batch"], r["rollup"]) for r in rows]}
+    return {"batches": [_rollup_payload(r["batch"], r["rollup"], r.get("original_filename"))
+                        for r in rows]}
 
 
 @router.get("/jobs/batches/{batch_id}")
@@ -187,7 +190,8 @@ async def get_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)
     if batch is None:
         raise HTTPException(404, "batch not found")
     tally = await batches_repo.rollup_for_batch(session, batch_id)
-    return _rollup_payload(batch, tally)
+    book = await books_repo.get(session, batch.book_id)
+    return _rollup_payload(batch, tally, book.original_filename if book else None)
 
 
 @router.get("/jobs/batches/{batch_id}/jobs")

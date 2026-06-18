@@ -39,6 +39,21 @@ export function subjectLabel(subject: string): string {
   return SUBJECT_LABELS[subject as Subject] ?? subject;
 }
 
+export const VARIANT_LABELS: Record<string, string> = {
+  jahon: "Jahon",
+  ozbekiston: "O'zbekiston",
+};
+
+/** "History · O'zbekiston" when a history variant is present, else "History". */
+export function subjectLabelWithVariant(
+  subject: string,
+  variant?: string | null,
+): string {
+  const base = subjectLabel(subject);
+  const v = variant ? VARIANT_LABELS[variant] ?? variant : null;
+  return v ? `${base} · ${v}` : base;
+}
+
 /**
  * Per-subject signature gradient `[from, to]` — mirrors Usage's provider
  * accents. Single source of truth so Library cards and the Fleet launcher tint

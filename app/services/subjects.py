@@ -101,3 +101,31 @@ def notion_keyword_pairs() -> list[tuple[str, str]]:
     pairs = [(kw, d.code) for d in _DEFS for kw in d.keywords]
     pairs.sort(key=lambda kc: -len(kc[0]))
     return pairs
+
+
+# History is one app-subject ("history") but splits into two Notion pages /
+# textbooks: Jahon tarixi (World) and O'zbekiston tarixi (national). The variant
+# is recoverable from the book filename via the SAME folded-keyword basis the
+# Notion archive split uses (notion_archive._resolve_subject_page_id), so the UI
+# label and the archive routing never disagree. Display-only — not persisted.
+_VARIANT_APOSTROPHES = "'‘’ʻ`"
+# (folded-keyword, variant-key). A filename carries at most one in practice;
+# order only decides a pathological both-match. jahon-first mirrors the majority
+# of the per-grade NOTION_SUBJECT_PAGES dicts (archive routing).
+_HISTORY_VARIANT_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("jahon", "jahon"),
+    ("ozbekiston", "ozbekiston"),
+)
+
+
+def history_variant(subject: str, filename: str | None) -> str | None:
+    """For a history book, the variant key ("jahon"|"ozbekiston") derived from the
+    filename, else None. None for non-history subjects, a combined Ancient-World
+    book (Tarix qadimgi dunyo), or a missing/ambiguous filename."""
+    if subject != "history" or not filename:
+        return None
+    folded = filename.lower().translate({ord(c): None for c in _VARIANT_APOSTROPHES})
+    for keyword, variant in _HISTORY_VARIANT_KEYWORDS:
+        if keyword in folded:
+            return variant
+    return None

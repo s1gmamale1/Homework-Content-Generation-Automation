@@ -26,7 +26,7 @@ import { SpaceBackdrop } from "@/components/space-backdrop";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
-import { accentOf, subjectLabel } from "@/lib/subjects";
+import { accentOf, subjectLabel, subjectLabelWithVariant } from "@/lib/subjects";
 import type { Book, BookStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -385,7 +385,7 @@ function BookCard({ book }: { book: Book }) {
               {book.original_filename}
             </h2>
             <span className="mt-0.5 block font-mono text-[0.6rem] uppercase tracking-[0.14em] text-white/45">
-              {subjectLabel(book.subject)}
+              {subjectLabelWithVariant(book.subject, book.subject_variant)}
             </span>
           </div>
         </div>

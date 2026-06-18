@@ -69,11 +69,12 @@
 
 ---
 
-## R17 — Frontend doesn't name subject variants (shows only "History · grade N")
+## R17 — ✅ CLOSED 2026-06-18 — Frontend doesn't name subject variants (shows only "History · grade N")
 
 - **Issue:** in the batch / launcher / library UI a history book renders only as **"History · grade 7"** (screenshot 2026-06-17, the Jahon-Tarixi batch). When both **Jahon Tarixi** and **O'zbekiston Tarixi** ("Tarix Ozb") books exist for the same grade, they are **indistinguishable** — the operator can't tell which history book a batch/lesson belongs to.
 - **Root cause:** the FE labels by the coarse app-subject code (`"history"`) + grade only (`web/src/lib/subjects.ts` `SUBJECT_LABELS`; the batch/library/launcher cards), and surfaces nothing about the specific book. The app-subject is intentionally coarse (one `history`), but the real variant lives in the **book filename** (and the Notion jahon/ozbekiston split).
 - **Deliverable:** surface the book identity/variant alongside "History · grade N" in the batch + library + launcher views — e.g. the book's `original_filename` or a derived **Jahon / O'zbekiston** label — so the two history books are distinguishable. Natural pair with **R16** (same distinction).
+- **✅ CLOSED (2026-06-18, worklog [0074], branch `feat/history-variant-label`):** backend-derived, non-persisted `subject_variant` (`"jahon"|"ozbekiston"|null`) computed from the filename, exposed on `BookOut` (Pydantic `computed_field`) + the batch rollup payload (`_rollup_payload` + a `books` join in `list_with_rollups`); FE `subjectLabelWithVariant` renders **"History · Jahon · grade N"** in the batch funnel, the 3 launcher cards, and the Library subtag. Detector (`subjects.history_variant`) reuses the **same apostrophe-fold as the archive split**, with a drift-guard test cross-checking `notion_archive._fold`. Display-only by decision — **R16** (backend keyword robustness) and the `history|5` config gap remain OPEN.
 
 ---
 
