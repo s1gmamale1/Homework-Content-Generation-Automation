@@ -1,6 +1,7 @@
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import TOCEntry
@@ -32,8 +33,12 @@ async def delete_for_book(session: AsyncSession, book_id: UUID) -> int:
     """Delete every TOC entry for a book. Used by the extractor's
     clear-before-insert so a re-extract replaces rather than appends (the table
     has no unique constraint and bulk_create is a naive append). Returns the
-    number of rows removed."""
-    result = await session.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
+    number of rows removed.
+
+    NOTE: uses ``sa_delete`` (aliased) because this module also defines a public
+    ``delete(session, toc_entry_id)`` single-entry function that would otherwise
+    shadow SQLAlchemy's ``delete`` at call time."""
+    result = await session.execute(sa_delete(TOCEntry).where(TOCEntry.book_id == book_id))
     return result.rowcount or 0
 
 
