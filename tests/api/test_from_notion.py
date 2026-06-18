@@ -1,3 +1,4 @@
+import pytest
 from uuid import uuid4
 from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
@@ -6,8 +7,14 @@ from app.auth import get_current_user
 from app.schemas import BookOut
 import app.services.notion_fetch as nf
 
-app.dependency_overrides[get_current_user] = lambda: {"user": "test"}
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _auth_override():
+    app.dependency_overrides[get_current_user] = lambda: {"user": "test"}
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 def test_from_notion_unsupported_subject_422():

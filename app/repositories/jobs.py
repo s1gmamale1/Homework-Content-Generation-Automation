@@ -375,6 +375,31 @@ async def reclaim_stuck_jobs(
     return result.rowcount or 0
 
 
+async def fail_exhausted_pending_jobs(session: AsyncSession, *, max_attempts: int) -> int:
+    """Mark `pending` jobs whose attempts are exhausted as terminally failed.
+
+    Such rows are skipped by the claim query (attempts >= max_attempts) yet
+    never failed (mark_failed_with_retry only runs for claimed jobs), so
+    without this sweep they wedge in `pending` forever. Returns rows failed.
+    """
+    _msg = "attempts exhausted while pending (stale-pending sweep)"
+    stmt = (
+        update(HomeworkJob)
+        .where(HomeworkJob.status == "pending")
+        .where(HomeworkJob.attempts >= max_attempts)
+        .values(
+            status="failed",
+            completed_at=func.now(),
+            error_message=_msg,
+            last_error=_msg,
+            claimed_at=None,
+            claimed_by=None,
+        )
+    )
+    result = await session.execute(stmt)
+    return result.rowcount or 0
+
+
 async def mark_failed_with_retry(
     session: AsyncSession,
     job_id: UUID,

@@ -29,6 +29,22 @@ from app.services.prompts import get_prompt, get_prompt_hash
 _INTERNAL_PHASES = {"extract", "classify"}
 
 
+def _scheduler_stuck_message(pending, content_phases: list[str]) -> str:
+    """Build the diagnostic message for a stuck DAG scheduler.
+
+    Pure helper (no I/O, no DB) so it is unit-testable in isolation.
+    Computes the resolved-deps dict as a real Python value instead of
+    leaving the comprehension as a literal f-string (the original bug).
+    """
+    resolved = {
+        p: sorted(resolve_phase_deps(p, content_phases)) for p in sorted(pending)
+    }
+    return (
+        f"Phase scheduler stuck — pending={sorted(pending)} but no phase is ready. "
+        f"Resolved deps: {resolved}"
+    )
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -504,8 +520,7 @@ async def _run_content_phases_parallel(
             if not in_flight:
                 if pending and not failed:
                     raise RuntimeError(
-                        f"Phase scheduler stuck — pending={sorted(pending)} but no phase is ready. "
-                        f"Resolved deps: {{p: list(resolve_phase_deps(p, content_phases)) for p in sorted(pending)}}"
+                        _scheduler_stuck_message(pending, content_phases)
                     )
                 break
 
@@ -619,6 +634,29 @@ async def _run_with_failover(
                 last_exc = exc
                 break  # exhausted this provider → next in chain
     raise last_exc or RuntimeError(f"{requested_provider}: all providers exhausted")
+
+
+async def _judge_with_timeout(**kwargs) -> phase_judge.JudgeOutcome:
+    """Wrap phase_judge.judge in the per-attempt timeout.
+
+    On asyncio.TimeoutError the outcome degrades to judge-unavailable (same
+    shape phase_judge.judge itself produces on any CLI/parse error) so the
+    phase completes `done` and the job is NOT failed.  A TimeoutError is NOT
+    an auth error, so the existing _is_auth_error re-raise in _execute_phase
+    is unaffected — this helper swallows only the timeout.
+    """
+    try:
+        return await asyncio.wait_for(
+            phase_judge.judge(**kwargs),
+            timeout=settings.per_attempt_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        return phase_judge.JudgeOutcome(
+            available=False,
+            passed=True,
+            warnings=["judge-unavailable: TimeoutError"],
+            feedback="",
+        )
 
 
 async def _execute_phase(
@@ -858,7 +896,7 @@ async def _execute_phase(
         _jp, _jm = model_tiers.resolve_judge(
             produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
         )
-        outcome = await phase_judge.judge(
+        outcome = await _judge_with_timeout(
             subject=subject, phase_name=phase_name, output_md=output_md,
             lesson_context=lesson_context, prior_outputs=prior_outputs,
             gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
@@ -893,7 +931,7 @@ async def _execute_phase(
                 _jp2, _jm2 = model_tiers.resolve_judge(
                     produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
                 )
-                outcome = await phase_judge.judge(
+                outcome = await _judge_with_timeout(
                     subject=subject, phase_name=phase_name, output_md=output_md,
                     lesson_context=lesson_context, prior_outputs=prior_outputs,
                     gen_provider=produced_by, gen_model=_gen_model_of(produced_by),

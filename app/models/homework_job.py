@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, Timestamps, UUIDPK
@@ -85,6 +85,22 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
             "scheduled_at",
             text("priority DESC"),
             postgresql_where=text("status = 'pending'"),
+        ),
+        CheckConstraint(
+            "status IN ('pending','running','done','failed','cancelling','cancelled')",
+            name="ck_homework_jobs_status",
+        ),
+        CheckConstraint(
+            "transport IN ('cli','api')",
+            name="ck_homework_jobs_transport",
+        ),
+        CheckConstraint(
+            "extract_transport IN ('cli','api','inherit')",
+            name="ck_homework_jobs_extract_transport",
+        ),
+        CheckConstraint(
+            "judge_transport IN ('cli','api','inherit')",
+            name="ck_homework_jobs_judge_transport",
         ),
     )
 

@@ -441,11 +441,20 @@ class Worker:
                         session,
                         older_than_seconds=settings.worker_registry_prune_seconds,
                     )
+                    n_failed = await jobs_repo.fail_exhausted_pending_jobs(
+                        session,
+                        max_attempts=settings.queue_max_attempts,
+                    )
             if n > 0 or n_cancel > 0:
                 logger.warning(
                     f"worker {self.id} reclaimed {n} stuck job(s) "
                     f"and finalized {n_cancel} stale-cancelling job(s) "
                     f"(stale > {settings.reclaim_stale_seconds}s)"
+                )
+            if n_failed > 0:
+                logger.warning(
+                    f"worker {self.id} failed {n_failed} attempts-exhausted pending job(s) "
+                    f"(stale-pending sweep)"
                 )
             if n_pruned > 0:
                 logger.info(

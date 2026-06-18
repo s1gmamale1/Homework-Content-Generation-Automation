@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Load .env into os.environ at import time (a real exported variable always
@@ -56,11 +56,14 @@ class Settings(BaseSettings):
     # When `pending` queue depth exceeds this, /generate returns 503. Set
     # to 0 to disable backpressure and accept-all.
     queue_backpressure_limit: int = 50
-    # Process-wide cap on simultaneous Gemini calls. Protects against
+    # Process-wide cap on simultaneous CLI subprocesses. Protects against
     # rate-limit cascades when multiple workers + parallel scheduler all
-    # fan out at once.
-    agent_max_concurrency: int = 8  # process-wide cap on concurrent CLI subprocesses
-    gemini_max_concurrency: int = 8  # DEPRECATED — kept for backwards-compat with agent.py
+    # fan out at once. agent_max_concurrency is the live knob read by
+    # agent._effective_concurrency(); gemini_max_concurrency is a DEPRECATED
+    # fallback used only when agent_max_concurrency is left at its default (8),
+    # so existing .env files that set GEMINI_MAX_CONCURRENCY still work.
+    agent_max_concurrency: int = 8  # LIVE knob — set AGENT_MAX_CONCURRENCY to tune
+    gemini_max_concurrency: int = 8  # DEPRECATED fallback — honoured only when agent_max_concurrency==8
     # transport=api: claude's Messages API REQUIRES max_tokens (gemini does not,
     # and stays uncapped). 16384 gives headroom over the longest uncapped content
     # phases (reading/preview-hard); hitting it fails LOUD, never silent-truncates.
@@ -146,6 +149,22 @@ class Settings(BaseSettings):
     # buys nothing. Other phases keep using the job-level provider/model.
     extract_provider: str = "gemini"
     extract_model: str = "gemini-2.5-flash"
+
+    @field_validator("extract_provider", mode="before")
+    @classmethod
+    def _blank_extract_provider_to_default(cls, v: object) -> object:
+        """Map blank/whitespace-only EXTRACT_PROVIDER to the default "gemini".
+
+        A bare ``EXTRACT_PROVIDER=`` in .env makes pydantic-settings pass an
+        empty string rather than the field default, which later causes
+        ``get_provider("")`` to raise a KeyError.  This before-validator
+        normalises blank/whitespace-only values back to the intended default
+        before the field's type coercion runs.  Scoped strictly to
+        ``extract_provider`` per wishlist item extract-2.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "gemini"
+        return v
 
     # ─── Notion archive (Phase 1 push) ───
     notion_enabled: bool = False

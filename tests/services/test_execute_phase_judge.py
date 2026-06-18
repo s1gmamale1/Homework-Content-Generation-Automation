@@ -5,7 +5,9 @@ from app.services import pipeline
 
 def test_execute_phase_invokes_the_judge():
     src = inspect.getsource(pipeline._execute_phase)
-    assert "phase_judge.judge" in src
+    # _execute_phase now delegates to _judge_with_timeout (which wraps
+    # phase_judge.judge in the per-attempt timeout) — check the indirection.
+    assert "_judge_with_timeout" in src
     assert "produced_by" in src
     assert src.count("_run_with_failover") >= 2
     # the regen is GUARDED — an exhausted regen must not fail the job

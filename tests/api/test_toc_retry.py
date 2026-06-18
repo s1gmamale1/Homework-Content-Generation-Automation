@@ -4,6 +4,7 @@ statuses → 200 + status flips to `toc_extracting` and the background extractor
 is scheduled exactly once; any other status → 409; missing book → 404; missing
 source PDF on disk → 409 (re-upload required). The extractor itself is stubbed
 so no real extraction runs."""
+import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -14,8 +15,14 @@ from main import app
 from app.auth import get_current_user
 from app.schemas import BookOut
 
-app.dependency_overrides[get_current_user] = lambda: {"user": "test"}
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _auth_override():
+    app.dependency_overrides[get_current_user] = lambda: {"user": "test"}
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 def _bookout(book_id, status):
