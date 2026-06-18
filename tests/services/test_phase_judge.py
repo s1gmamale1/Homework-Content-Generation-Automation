@@ -150,6 +150,25 @@ def test_judge_degrades_when_get_prompt_raises(monkeypatch):
     assert out.available is False   # the Critical fix: get_prompt raise must degrade
 
 
+def test_fidelity_flags_catches_world_claim_year_absent_from_source():
+    out = "The treaty was signed in 1991, ending the union."
+    src = "The republic became independent. (no dates given)"
+    flags = pj._fidelity_flags(out, src)
+    assert any("1991" in f for f in flags)
+
+
+def test_fidelity_flags_ignores_math_worked_example_numbers():
+    out = "Solve 3x + 7 = 22. Subtract 7: 3x = 15. Divide by 3: x = 5."
+    src = "Linear equations: isolate the variable using inverse operations."
+    assert pj._fidelity_flags(out, src) == []          # MUST be empty — no regen-tax on math
+
+
+def test_fidelity_flags_passes_year_present_in_source():
+    out = "Independence was declared in 1991."
+    src = "In 1991 the republic declared independence."
+    assert pj._fidelity_flags(out, src) == []
+
+
 def test_sdk_auth_error_strings_trip_auth_signals():
     """Representative google-genai / anthropic / AI-Studio auth-error strings must
     be recognized as auth errors, so an api job fails loud instead of degrading."""

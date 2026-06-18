@@ -12,6 +12,7 @@ error the judge degrades to "unavailable" and never blocks generation.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal, Optional
 from uuid import UUID
@@ -83,9 +84,30 @@ _FIDELITY_RULE = (
 )
 
 
+_YEAR_RE = re.compile(r"\b(1[0-9]{3}|20[0-9]{2})\b")
+# math/exercise cues near a number => generated, never a world-claim
+_MATH_CUES = ("=", "x ", " x", "solve", "equation", "calculate", "simplify",
+              "÷", "×", "·", "√", "step", "answer:", "problem")
+
+
 def _fidelity_flags(output_md: str, lesson_context: Optional[str]) -> list[str]:
-    """Stub — Task A2 replaces the body with real detection logic."""
-    return []
+    """ADVISORY ONLY (never gates a regen): surface declarative world-claim YEARS in the
+    output that are absent from the source. Deliberately narrow — years only, and only when
+    no math/exercise cue sits on the same line — so generated exercise numbers never flag
+    (the R14 regen-tax guard). The LLM judge adjudicates these hints."""
+    src = (lesson_context or "")
+    if not src.strip():
+        return []
+    src_years = set(_YEAR_RE.findall(src))
+    flags: list[str] = []
+    for line in output_md.splitlines():
+        low = line.lower()
+        if any(cue in low for cue in _MATH_CUES):
+            continue                                   # generated/teaching numbers — skip
+        for y in _YEAR_RE.findall(line):
+            if y not in src_years and not any(y in f for f in flags):
+                flags.append(f"output states year {y} as fact; not found in source")
+    return flags[:8]                                   # cap the hint list
 
 
 def _build_judge_prompt(
