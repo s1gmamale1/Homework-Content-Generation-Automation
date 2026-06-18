@@ -1,7 +1,7 @@
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, Timestamps, UUIDPK
@@ -36,4 +36,16 @@ class Batch(Base, UUIDPK, Timestamps):
 
     __table_args__ = (
         UniqueConstraint("book_id", "transport", name="uq_batches_book_id_transport"),
+        CheckConstraint(
+            "transport IN ('cli','api')",
+            name="ck_batches_transport",
+        ),
+        CheckConstraint(
+            "extract_transport IN ('cli','api','inherit')",
+            name="ck_batches_extract_transport",
+        ),
+        CheckConstraint(
+            "judge_transport IN ('cli','api','inherit')",
+            name="ck_batches_judge_transport",
+        ),
     )
