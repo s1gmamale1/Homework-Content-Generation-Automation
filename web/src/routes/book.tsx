@@ -8,6 +8,7 @@ import {
   CircleX,
   Loader2,
   Pencil,
+  RotateCcw,
   Search,
   Trash2,
   X,
@@ -15,6 +16,7 @@ import {
 import { motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { toast } from "sonner";
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -38,6 +40,7 @@ export function BookPage() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [meta, setMeta] = useState<{ name: string; subject: Subject } | null>(null);
+  const [retrying, setRetrying] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -54,6 +57,29 @@ export function BookPage() {
       })
       .catch(() => undefined);
   }, [id]);
+
+  /**
+   * Re-run book preparation (TOC extraction) on a `failed` or stuck book — see
+   * `POST /api/v1/books/<id>/toc/retry`. Mirrors job.tsx's handleRetry: after
+   * the server resets the book, we clear local error/entries state so the
+   * `useEventSource` re-enables (its `enabled` gate is `!entries && !error`)
+   * and the worker's status/toc_ready events repopulate the page.
+   */
+  async function handleRetry() {
+    if (!id) return;
+    setRetrying(true);
+    try {
+      await api.retryBookToc(id);
+      setError(null);
+      setEntries(null);
+      setStatusText("Re-preparing… extracting chapters");
+      toast.success("Re-preparing… extracting chapters");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Retry failed");
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   const handlers = useMemo(
     () => ({
@@ -147,8 +173,21 @@ export function BookPage() {
         )}
 
         {error && (
-          <div className="mt-7 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-            {error}
+          <div className="mt-7 flex flex-col gap-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={handleRetry}
+              disabled={retrying}
+              className="inline-flex w-fit items-center gap-1.5 rounded-xl border border-white/[0.12] bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-white/80 transition-colors hover:bg-white/[0.1] hover:text-white disabled:opacity-50"
+            >
+              {retrying ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <RotateCcw className="size-3.5" />
+              )}
+              Retry preparation
+            </button>
           </div>
         )}
 

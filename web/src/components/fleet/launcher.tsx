@@ -476,6 +476,25 @@ function PreparingCard({ book }: { book: Book }) {
 }
 
 function FailedCard({ book }: { book: Book }) {
+  const qc = useQueryClient();
+  const [retrying, setRetrying] = useState(false);
+
+  // Re-run TOC extraction in place — see `POST /api/v1/books/<id>/toc/retry`.
+  // On success the book flips back to `toc_extracting`; invalidating ["books"]
+  // (same key the prepare/launch paths refresh) moves it out of the failed tray.
+  async function handleRetry() {
+    setRetrying(true);
+    try {
+      await api.retryBookToc(book.id);
+      qc.invalidateQueries({ queryKey: ["books"] });
+      toast.success("Re-preparing… extracting chapters");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Retry failed");
+    } finally {
+      setRetrying(false);
+    }
+  }
+
   return (
     <motion.div
       variants={fadeUpItem}
@@ -490,9 +509,19 @@ function FailedCard({ book }: { book: Book }) {
         <div className="mt-1 text-xs text-rose-300/80">
           {book.error_message ?? "Extraction failed."}
         </div>
-        <div className="mt-1 text-[0.7rem] text-white/35">
-          Re-prepare the subject above to try again.
-        </div>
+        <button
+          type="button"
+          onClick={handleRetry}
+          disabled={retrying}
+          className={cn(GHOST_BTN, "mt-2 inline-flex items-center gap-1.5 disabled:opacity-50")}
+        >
+          {retrying ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <RotateCcw className="size-3.5" />
+          )}
+          Retry
+        </button>
       </div>
     </motion.div>
   );
