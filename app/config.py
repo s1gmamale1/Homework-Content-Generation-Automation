@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Load .env into os.environ at import time (a real exported variable always
@@ -149,6 +149,22 @@ class Settings(BaseSettings):
     # buys nothing. Other phases keep using the job-level provider/model.
     extract_provider: str = "gemini"
     extract_model: str = "gemini-2.5-flash"
+
+    @field_validator("extract_provider", mode="before")
+    @classmethod
+    def _blank_extract_provider_to_default(cls, v: object) -> object:
+        """Map blank/whitespace-only EXTRACT_PROVIDER to the default "gemini".
+
+        A bare ``EXTRACT_PROVIDER=`` in .env makes pydantic-settings pass an
+        empty string rather than the field default, which later causes
+        ``get_provider("")`` to raise a KeyError.  This before-validator
+        normalises blank/whitespace-only values back to the intended default
+        before the field's type coercion runs.  Scoped strictly to
+        ``extract_provider`` per wishlist item extract-2.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "gemini"
+        return v
 
     # ─── Notion archive (Phase 1 push) ───
     notion_enabled: bool = False
