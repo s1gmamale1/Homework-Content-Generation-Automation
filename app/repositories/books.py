@@ -62,8 +62,10 @@ async def set_status(
     if book is None:
         return
     book.status = status
-    if error_message is not None:
-        book.error_message = error_message
+    # Always assign — passing error_message=None must CLEAR a stale error (the
+    # retry path relies on this), and a status that isn't `failed` should never
+    # carry a leftover message.
+    book.error_message = error_message
 
 
 async def list_running_for_sweep(session: AsyncSession) -> list[Book]:

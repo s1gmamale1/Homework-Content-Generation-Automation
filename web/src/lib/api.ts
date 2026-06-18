@@ -228,6 +228,19 @@ export const api = {
   },
 
   /**
+   * Re-run book preparation (TOC extraction) on a `failed` or stuck
+   * `toc_extracting` book — see `POST /api/v1/books/<id>/toc/retry`. Mirrors
+   * `retryJob`: reuses the same book row and returns the updated `Book`.
+   */
+  async retryBookToc(bookId: string): Promise<Book> {
+    const res = await authFetch(
+      `/api/v1/books/${encodeURIComponent(bookId)}/toc/retry`,
+      { method: "POST" },
+    );
+    return unwrap<Book>(res);
+  },
+
+  /**
    * Request cancellation of a pending or running job — see
    * `POST /api/v1/jobs/<id>/cancel`. A queued job moves straight to
    * `cancelled`; a running one transitions to `cancelling` while the worker

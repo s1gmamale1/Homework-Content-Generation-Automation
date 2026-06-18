@@ -16,7 +16,7 @@ What each source file does, grouped by layer. `transport=cli` (default): every m
 - **`log.py`** — loguru setup (stderr + rotating `var/server.log`).
 
 ## `app/api/v1/` — HTTP surface
-- **`books.py`** — upload book, **`/from-notion`** (pull a textbook from the Notion lessons tree), list/get/delete, TOC extraction SSE stream, delete a TOC entry.
+- **`books.py`** — upload book, **`/from-notion`** (pull a textbook from the Notion lessons tree), list/get/delete, TOC extraction SSE stream, **`POST /{id}/toc/retry`** (re-run prep for a failed/stuck book; worklog 0073), delete a TOC entry. (`_start_toc_extraction` is the shared fire-and-forget trigger used by upload/from-notion/retry.)
 - **`jobs.py`** — the core surface: `POST …/sections/{toc}/generate`, `GET /jobs/{id}`, `POST /jobs/{id}/retry`, `POST /jobs/{id}/cancel`, `GET /jobs/{id}/stream` (SSE progress), `GET /jobs/{id}/download` (ZIP of per-phase markdown), `GET /agent/models` (manifest), `GET /agent/stats` (usage windows + per-model breakdown + sparkline series).
 - **`batch.py`** — fleet batch surface: `POST /jobs/batch` (fan out one job per lesson of a `toc_ready` book; skip/adopt existing), `GET /jobs/batches[/{id}]` (computed-on-read rollups), `GET /jobs/batches/{id}/jobs` (per-lesson-latest drill-in).
 - **`workers.py`** — `GET /workers`: fleet liveness (every registered worker + derived `online` flag).
