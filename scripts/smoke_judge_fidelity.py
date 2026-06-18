@@ -7,7 +7,7 @@ Proves the reframed judge (Tasks A1+A2) correctly:
 Uses the REAL claude CLI judge (cli transport = $0 marginal, no API billing).
 No server, no DB — in-process only.
 
-Run:  uv run python scripts/smoke_judge_fidelity.py   (from the repo root)
+Run:  uv run python -m scripts.smoke_judge_fidelity   (from the repo root)
 Exit 0 + "SMOKE PASS" on success; exit 1 if either assertion fails.
 """
 import asyncio
