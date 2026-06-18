@@ -975,3 +975,13 @@ The threshold **300** sits in the wide empty gap between the lone scan (71.5) an
 **Why it slipped through 0073:** the real `delete_for_book` body was never executed in tests — the repo-level test was `RUN_DB_INTEGRATION`-gated/skipped and the extractor idempotency test *mocked* `delete_for_book` (call-order only). Lesson: a function whose only coverage is a mock of itself is untested; the new test executes the actual statement-building.
 
 **Files:** `app/repositories/toc_entries.py` (1-line fix + docstring note), `tests/repositories/test_toc_delete_for_book.py` (new). **775 passed / 51 skipped.** Backend-only, no FE rebuild needed — deploy = `git pull` + restart workers. (Controller-direct small fix per CLAUDE.md — verified root cause from the live traceback, no plan.)
+
+---
+
+## [0076] Fix — `crypto.randomUUID` undefined on HTTP LAN IP broke section retry/generate — 2026-06-18 (fix/safe-uuid-nonsecure → Nggaev-v2)
+
+**What:** The section page's Generate/Retry minted a per-click idempotency key via `crypto.randomUUID()` (`section.tsx:104`). `crypto.randomUUID` exists in modern browsers but **only in a secure context** (HTTPS or `localhost`); served over plain HTTP on a LAN IP (the fleet head, e.g. `http://192.168.x.x:8000`) it is `undefined` → `TypeError: crypto.randomUUID is not a function`, thrown *before* the API call. Symptom: section-page Retry "didn't respond at all" / console TypeError on multiple failed lessons (Adabiyot-g9 Alpomish + another). The **Monitor-page retry worked** because it uses `api.retryJob(jobId)` (reuses the job, no new key) — which is what isolated it to the key-minting path.
+
+**Fix:** new `web/src/lib/uuid.ts::safeUUID()` — prefers native `crypto.randomUUID`, falls back to `crypto.getRandomValues` (which IS available in non-secure contexts) building an RFC4122 v4, then `Math.random` as last resort (it's an idempotency key, not security-sensitive). `section.tsx` now calls `safeUUID()`. Only usage site (grep-confirmed single occurrence).
+
+**Files:** `web/src/lib/uuid.ts` (new), `web/src/routes/section.tsx` (import + 1-line swap + comment). FE-only — controller-direct small fix (root cause verified from the live `TypeError`). tsc clean, vite build OK, `getRandomValues` fallback confirmed in the bundle. **Deploy = rebuild the FE (`cd web && npm run build`) + hard-refresh** — the served `web/dist` is gitignored, so a `git pull` alone won't update it. Note: this is independent of the book-TOC retry (0073); it's the homework-generation retry on the section page.
