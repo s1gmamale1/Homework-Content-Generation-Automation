@@ -22,7 +22,6 @@ pytestmark = pytest.mark.skipif(
 async def test_homework_jobs_bad_status_rejected():
     """A homework_jobs row with status='bogus' must raise IntegrityError."""
     from app.db import SessionLocal
-    from app.models.batch import Batch
     from app.models.book import Book
     from app.models.homework_job import HomeworkJob
     from app.models.toc_entry import TOCEntry
@@ -247,5 +246,133 @@ async def test_homework_jobs_bad_extract_transport_rejected():
         async with SessionLocal() as s:
             await s.execute(delete(HomeworkJob).where(HomeworkJob.book_id == book_id))
             await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
+            await s.execute(delete(Book).where(Book.id == book_id))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_homework_jobs_bad_judge_transport_rejected():
+    """judge_transport='bogus' must raise IntegrityError."""
+    from app.db import SessionLocal
+    from app.models.book import Book
+    from app.models.homework_job import HomeworkJob
+    from app.models.toc_entry import TOCEntry
+
+    async with SessionLocal() as s:
+        book = Book(
+            subject="math-algebra",
+            original_filename="ck_jt.pdf",
+            content_sha256="f" * 64,
+            file_size_bytes=1,
+            status="toc_ready",
+        )
+        s.add(book)
+        await s.flush()
+        toc = TOCEntry(book_id=book.id, section_title="L5", order_index=0)
+        s.add(toc)
+        await s.flush()
+        book_id = book.id
+        toc_id = toc.id
+        await s.commit()
+
+    try:
+        async with SessionLocal() as s:
+            bad_job = HomeworkJob(
+                book_id=book_id,
+                toc_entry_id=toc_id,
+                subject="math-algebra",
+                status="pending",
+                provider="gemini",
+                transport="cli",
+                extract_transport="inherit",
+                judge_transport="bogus",     # invalid
+            )
+            s.add(bad_job)
+            with pytest.raises(IntegrityError):
+                await s.commit()
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(HomeworkJob).where(HomeworkJob.book_id == book_id))
+            await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
+            await s.execute(delete(Book).where(Book.id == book_id))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_batches_bad_extract_transport_rejected():
+    """batches.extract_transport='bogus' must raise IntegrityError."""
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    from app.models.book import Book
+
+    async with SessionLocal() as s:
+        book = Book(
+            subject="math-algebra",
+            original_filename="ck_batch_xt.pdf",
+            content_sha256="1" * 64,
+            file_size_bytes=1,
+            status="toc_ready",
+        )
+        s.add(book)
+        await s.flush()
+        book_id = book.id
+        await s.commit()
+
+    try:
+        async with SessionLocal() as s:
+            bad_batch = Batch(
+                book_id=book_id,
+                subject="math-algebra",
+                provider="gemini",
+                transport="cli",
+                extract_transport="bogus",   # invalid
+                judge_transport="inherit",
+            )
+            s.add(bad_batch)
+            with pytest.raises(IntegrityError):
+                await s.commit()
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(Batch).where(Batch.book_id == book_id))
+            await s.execute(delete(Book).where(Book.id == book_id))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_batches_bad_judge_transport_rejected():
+    """batches.judge_transport='bogus' must raise IntegrityError."""
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    from app.models.book import Book
+
+    async with SessionLocal() as s:
+        book = Book(
+            subject="math-algebra",
+            original_filename="ck_batch_jt.pdf",
+            content_sha256="2" * 64,
+            file_size_bytes=1,
+            status="toc_ready",
+        )
+        s.add(book)
+        await s.flush()
+        book_id = book.id
+        await s.commit()
+
+    try:
+        async with SessionLocal() as s:
+            bad_batch = Batch(
+                book_id=book_id,
+                subject="math-algebra",
+                provider="gemini",
+                transport="cli",
+                extract_transport="inherit",
+                judge_transport="bogus",     # invalid
+            )
+            s.add(bad_batch)
+            with pytest.raises(IntegrityError):
+                await s.commit()
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(Batch).where(Batch.book_id == book_id))
             await s.execute(delete(Book).where(Book.id == book_id))
             await s.commit()
