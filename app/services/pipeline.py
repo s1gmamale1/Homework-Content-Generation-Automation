@@ -730,35 +730,82 @@ async def _execute_phase(
             # Local whole-book text — no CLI file-read (dodges the gitignore block
             # + the >20MB ceiling). The model locates the lesson by title (R2-immune).
             book_text = await asyncio.to_thread(agent.read_whole_book_text, pdf_path)
-            if agent.extract_text_is_oversize(book_text):
-                raise RuntimeError(
-                    "lesson.extract: book too large for whole-text extract — "
-                    "needs subset-TOC/shrink"
+            n_pages = await asyncio.to_thread(agent.pdf_page_count, pdf_path)
+            was_oversize = agent.extract_text_is_oversize(book_text)
+            if was_oversize:
+                # Whole-book text exceeds the budget — scope to the lesson's pages as
+                # TEXT (cheap, keeps transport=api), then run the normal path on the subset.
+                ps, pe = section["page_start"], section["page_end"]
+                if not ps or not pe:
+                    raise RuntimeError(
+                        "lesson.extract: book too large for whole-text extract and no "
+                        "page range to scope a subset"
+                    )
+                book_text = await asyncio.to_thread(
+                    agent.read_page_range_text, pdf_path, ps, pe,
+                    margin=settings.extract_window_pages,
                 )
+                if agent.extract_text_is_oversize(book_text):
+                    raise RuntimeError(
+                        "lesson.extract: lesson page-subset still too large"
+                    )
+            # Scanned detection runs on the WHOLE-book text only (an oversize book is
+            # dense by definition, so its subset is never 'scanned'): Gate A catches a
+            # missing text layer; the density check catches a sparse header-only scan
+            # that Gate A's absolute floor misses.
             gate_a = agent.validate_extract_text(book_text)
-            if gate_a is not None:
-                raise RuntimeError(f"lesson.extract: {gate_a}")
-
-            async def _extract_run(prov: str, mdl: Optional[str]):
-                out, tin_, tout_ = await agent.summarize_lesson(
-                    provider=prov, model=mdl, book_text=book_text,
+            scanned_reason = gate_a
+            if scanned_reason is None and not was_oversize and agent.extract_text_is_too_sparse(book_text, n_pages):
+                scanned_reason = (
+                    f"sparse text layer ({len(book_text.strip()) // max(1, n_pages)} "
+                    f"chars/page) — likely scanned"
+                )
+            if scanned_reason is not None:
+                # Scanned / no-text-layer PDF: the whole-book text is unreadable, so
+                # vision-attach a page-window of the lesson and let the model read it.
+                # Vision requires attachments → forced transport=cli (api is text-only).
+                ps, pe = section["page_start"], section["page_end"]
+                if not ps or not pe:
+                    raise RuntimeError(
+                        f"lesson.extract: {scanned_reason} and no page range to scope a vision extract"
+                    )
+                if extract_transport == "api":
+                    logger.info(
+                        "lesson.extract: scanned PDF → forcing transport=cli for vision; requested=api"
+                    )
+                out_md, tin, tout = await agent.summarize_lesson_vision(
+                    provider=extract_provider, model=extract_model, pdf_path=pdf_path,
                     section_title=section["title"], section_number=section["number"],
-                    page_start=section["page_start"], page_end=section["page_end"],
-                    homework_job_id=job_id, phase_output_id=po_id,
+                    page_start=ps, page_end=pe, homework_job_id=job_id, phase_output_id=po_id,
+                )
+                reason = agent.validate_extract_summary(out_md)
+                if reason is not None:
+                    raise failure_classifier.ExtractRefusal(
+                        f"lesson.extract Gate B (vision): {reason}"
+                    )
+                output_md, produced_by = out_md, extract_provider
+                parsed_struct = None
+            else:
+                async def _extract_run(prov: str, mdl: Optional[str]):
+                    out, tin_, tout_ = await agent.summarize_lesson(
+                        provider=prov, model=mdl, book_text=book_text,
+                        section_title=section["title"], section_number=section["number"],
+                        page_start=section["page_start"], page_end=section["page_end"],
+                        homework_job_id=job_id, phase_output_id=po_id,
+                        transport=extract_transport,
+                    )
+                    reason = agent.validate_extract_summary(out)
+                    if reason is not None:
+                        raise failure_classifier.ExtractRefusal(f"lesson.extract Gate B: {reason}")
+                    return out, tin_, tout_
+
+                output_md, tin, tout, produced_by = await _run_with_failover(
+                    requested_provider=extract_provider,
+                    model=extract_model,
+                    run_fn=_extract_run,
                     transport=extract_transport,
                 )
-                reason = agent.validate_extract_summary(out)
-                if reason is not None:
-                    raise failure_classifier.ExtractRefusal(f"lesson.extract Gate B: {reason}")
-                return out, tin_, tout_
-
-            output_md, tin, tout, produced_by = await _run_with_failover(
-                requested_provider=extract_provider,
-                model=extract_model,
-                run_fn=_extract_run,
-                transport=extract_transport,
-            )
-            parsed_struct = None
+                parsed_struct = None
         else:
             base_phase_prompt = get_prompt(subject, phase_name)
 

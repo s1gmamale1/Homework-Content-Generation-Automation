@@ -36,7 +36,7 @@ from uuid import UUID
 
 from loguru import logger
 from pydantic import BaseModel, ValidationError
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 
 from app.config import settings
 from app.db import SessionLocal
@@ -1021,6 +1021,44 @@ def read_whole_book_text(pdf_path: Path) -> str:
     return "".join(chunks).strip()
 
 
+def read_page_range_text(pdf_path: Path, page_start: int, page_end: int, *, margin: int = 0) -> str:
+    """Glyph-decoded text for printed pages [page_start-margin .. page_end+margin],
+    clamped to the PDF's real [1..n] page range, budgeted to extract_max_text_chars.
+    Returns '' if the range yields no text. Built on _read_pdf_pages."""
+    reader = PdfReader(str(pdf_path))
+    n = len(reader.pages)
+    start = max(1, page_start - margin)
+    end = min(n, page_end + margin)
+    if start > end:
+        return ""
+    chunks, _pages = _read_pdf_pages(
+        reader,
+        range(start, end + 1),
+        budget=settings.extract_max_text_chars,
+        already=set(),
+        pdf_name=pdf_path.name,
+    )
+    return "".join(chunks).strip()
+
+
+def pdf_page_count(pdf_path: Path) -> int:
+    """Physical page count of the PDF; 0 on any read error."""
+    try:
+        return len(PdfReader(str(pdf_path)).pages)
+    except Exception:
+        return 0
+
+
+def extract_text_is_too_sparse(text: str, n_pages: int) -> bool:
+    """True if the local text averages fewer than settings.extract_min_chars_per_page
+    chars per page — a 'has some header/watermark text but the lesson bodies are
+    image-only' scan that Gate A's absolute floor misses. False when n_pages<=0
+    (can't judge) so it never fires spuriously."""
+    if n_pages <= 0:
+        return False
+    return len((text or "").strip()) / n_pages < settings.extract_min_chars_per_page
+
+
 def extract_text_is_oversize(text: str) -> bool:
     """True if the local text exceeds the whole-text budget → terminal 'too
     large, needs subset'. Pure (unit-testable); read_whole_book_text reads a
@@ -1328,11 +1366,23 @@ async def extract_toc(
 
 
 def _subset_pdf(
-    pdf_path: Path, page_start: Optional[int], page_end: Optional[int]
+    pdf_path: Path,
+    page_start: Optional[int],
+    page_end: Optional[int],
+    *,
+    margin: int = 0,
+    max_pages: Optional[int] = None,
 ) -> Optional[Path]:
     """Write pages ``[page_start..page_end]`` (1-based, inclusive) of ``pdf_path``
     into a small temp PDF and return its path; ``None`` on any problem so the
     caller falls back to attaching the full PDF.
+
+    ``margin`` widens the requested range to ``[page_start - margin ..
+    page_end + margin]`` (then clamped to the PDF's real ``[1..n]`` bounds) so a
+    front-matter offset doesn't slice off the section's real pages. ``max_pages``
+    then caps the widened window to at most that many pages, centered on the
+    original ``[page_start..page_end]`` midpoint. With ``margin=0,
+    max_pages=None`` the output is byte-for-byte the legacy range.
 
     Why: the extractor CLI (gemini) rejects PDFs > 20 MB, and its refusal
     message then poisons every downstream phase. Attaching only the section's
@@ -1348,14 +1398,27 @@ def _subset_pdf(
     if not page_start or not page_end or page_start <= 0 or page_end < page_start:
         return None
     try:
-        from pypdf import PdfReader, PdfWriter
-
         reader = PdfReader(str(pdf_path))
         n = len(reader.pages)
-        start_idx = max(0, page_start - 1)
-        end_idx = min(n - 1, page_end - 1)
+        start_idx = max(0, (page_start - margin) - 1)
+        end_idx = min(n - 1, (page_end + margin) - 1)
         if start_idx > end_idx:
             return None
+        if max_pages is not None and (end_idx - start_idx + 1) > max_pages:
+            # Trim to exactly max_pages, centered on the original range midpoint.
+            # NOTE: a single lesson spanning > max_pages pages is clipped to this
+            # window (centered on its midpoint) — acceptable for an extract summary,
+            # but raise extract_window_max_pages if very long lessons get truncated.
+            mid = ((page_start - 1) + (page_end - 1)) // 2
+            start_idx = mid - max_pages // 2
+            end_idx = start_idx + max_pages - 1
+            # Clamp back into bounds, preserving the window width.
+            if start_idx < 0:
+                start_idx = 0
+                end_idx = max_pages - 1
+            if end_idx > n - 1:
+                end_idx = n - 1
+                start_idx = max(0, end_idx - max_pages + 1)
         writer = PdfWriter()
         for i in range(start_idx, end_idx + 1):
             writer.add_page(reader.pages[i])
@@ -1563,6 +1626,13 @@ generation. Summarize only that lesson. {rules}
 ===== END TEXTBOOK TEXT ====="""
 
 
+_SUMMARIZE_VISION_PROMPT = """The attached PDF pages contain a textbook lesson. \
+Locate the lesson titled "{title}" (section {number}; it is printed around pages \
+{ps}-{pe} — treat the page numbers only as a hint, find it by its TITLE) and write \
+a concise, factual summary of THAT lesson's content for downstream homework \
+generation. Summarize only that lesson. {rules}"""
+
+
 async def summarize_lesson(
     *,
     provider: str,
@@ -1622,6 +1692,119 @@ async def summarize_lesson(
     logger.success(
         f"agent.lesson.extract done | provider={provider} section={section_number} "
         f"chars={len(text)} input={prompt_tokens:,} output={output_tokens:,} duration_ms={duration_s * 1000:.0f}"
+    )
+    return text, prompt_tokens, output_tokens
+
+
+# ─────────────────────────────────────────────────────────────────────
+# summarize_lesson_vision — forced-cli, section page-window PDF attached
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def summarize_lesson_vision(
+    *,
+    provider: str,
+    model: Optional[str],
+    pdf_path: Path,
+    section_title: str,
+    section_number: str,
+    page_start: int,
+    page_end: int,
+    homework_job_id: UUID,
+    phase_output_id: UUID,
+) -> tuple[str, int, int]:
+    """VISION fallback extract (scanned / unreadable-text PDFs): attach the
+    section's page window as a small PDF and have the model read it visually.
+
+    Vision is ALWAYS cli — there is no api PDF-attach path — so this function
+    takes no ``transport`` param and hardcodes ``transport="cli"`` for both the
+    spawn and the usage row. Returns ``(text, prompt_tokens, output_tokens)``.
+    Raises ``RuntimeError`` (fail loud) when the page range can't be scoped or
+    the CLI exits non-zero. Records a usage row even on failure."""
+    prov = get_provider(provider)
+    resolved_model = _resolve_model(provider, model)
+
+    # Scope the window BEFORE any spawn — fail loud if we can't carve it.
+    window_pdf = _subset_pdf(
+        pdf_path,
+        page_start,
+        page_end,
+        margin=settings.extract_window_pages,
+        max_pages=settings.extract_window_max_pages,
+    )
+    if window_pdf is None:
+        raise RuntimeError(
+            f"lesson.extract (vision): cannot scope page range "
+            f"{page_start}-{page_end} of {pdf_path.name}"
+        )
+
+    instruction = _SUMMARIZE_VISION_PROMPT.format(
+        title=section_title,
+        number=section_number,
+        ps=page_start if page_start is not None else "?",
+        pe=page_end if page_end is not None else "?",
+        rules=_NO_PREAMBLE,
+    )
+    prompt = _build_master_prompt(
+        phase_prompt=instruction,
+        phase_name="lesson.extract",
+        lesson_context=None,
+        prior_outputs=None,
+        difficulty=None,
+        schema=None,
+        provider_suffix=prov.prompt_suffix(None),
+        attachment_preamble=prov.format_attachments([window_pdf]),
+    )
+
+    started_at = datetime.now(timezone.utc)
+    t0 = perf_counter()
+    try:
+        rc, text, usage, stderr = await _spawn(
+            provider=prov,
+            model=resolved_model,
+            prompt=prompt,
+            attachments=[window_pdf],
+            transport="cli",
+        )
+    finally:
+        # Remove the temp window PDF (never the book's source.pdf).
+        try:
+            window_pdf.unlink()
+        except OSError:
+            pass
+
+    duration_s = perf_counter() - t0
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    ok = rc == 0
+    await _record_usage(
+        operation="lesson.extract",
+        provider=provider,
+        model_name=resolved_model,
+        usage=usage,
+        duration_s=duration_s,
+        started_at=started_at,
+        success=ok,
+        auth_mode="cli",
+        homework_job_id=homework_job_id,
+        phase_output_id=phase_output_id,
+        error_message=None if ok else f"{provider} CLI exited rc={rc}",
+        extra_envelope={
+            "section_number": section_number,
+            "section_title": section_title,
+            "vision": True,
+        },
+    )
+    if not ok:
+        raise RuntimeError(
+            f"lesson.extract (vision): {provider} CLI exited rc={rc} "
+            f":: {_failure_preview(stderr, text)}"
+        )
+    logger.success(
+        f"agent.lesson.extract done (vision) | provider={provider} "
+        f"section={section_number} chars={len(text)} "
+        f"input={prompt_tokens:,} output={output_tokens:,} "
+        f"duration_ms={duration_s * 1000:.0f}"
     )
     return text, prompt_tokens, output_tokens
 

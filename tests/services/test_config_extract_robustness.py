@@ -9,3 +9,5 @@ def test_extract_robustness_defaults():
     assert s.extract_min_summary_chars > 0              # Gate B floor
     # Gate B floor must be ABOVE the observed 275-char refusal that motivated this work
     assert s.extract_min_summary_chars >= 400
+    # Per-page density floor (sparse/scanned detector)
+    assert s.extract_min_chars_per_page == 300

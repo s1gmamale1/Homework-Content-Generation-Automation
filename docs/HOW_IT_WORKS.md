@@ -486,8 +486,13 @@ you configure to match your plan.
   claude is only used for the *derived* content, never the raw textbook read.
 - **TOC extraction scans both ends of the PDF** — the front pages *and* the last ~15 pages —
   because some Uzbek textbooks print their "Mundarija" (contents) at the back. It also
-  glyph-decodes broken font subsets. Very large or scanned/OCR-less books can still come back
-  empty; you then add the section by hand.
+  glyph-decodes broken font subsets. A fully scanned/OCR-less book whose *TOC itself* is an image
+  can still come back empty (you then add the section by hand) — but once a book has a TOC, the
+  per-lesson **extract** is now robust to two cases it used to hard-fail on: an **oversize** text
+  book (whole text > 600K chars) is scoped to the lesson's pages as text, and a **scanned/sparse**
+  lesson body (caught by a per-page density gate) is read by **vision** — a page-window PDF is
+  attached and the model finds the lesson by title (forced `transport=cli`, since the api transport
+  can't take attachments). See worklog 0070.
 
 ---
 
