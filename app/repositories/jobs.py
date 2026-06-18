@@ -571,6 +571,21 @@ async def running_job_ids_in_batch(session: AsyncSession, batch_id: UUID) -> lis
     return list(rows.scalars().all())
 
 
+async def resume_failed_in_batch(session: AsyncSession, batch_id: UUID) -> int:
+    """Re-enqueue every failed/cancelled job in a batch via reset_for_retry
+    (status->pending, attempts->0). reset_for_retry keeps phase rows, so the
+    pipeline RESUMES — done phases are reused, only unfinished ones re-run.
+    Returns the count re-enqueued."""
+    rows = await session.execute(
+        select(HomeworkJob.id).where(
+            HomeworkJob.batch_id == batch_id,
+            HomeworkJob.status.in_(["failed", "cancelled"])))
+    ids = list(rows.scalars().all())
+    for jid in ids:
+        await reset_for_retry(session, jid)
+    return len(ids)
+
+
 async def reclaim_stale_cancelling(
     session: AsyncSession, stale_after_seconds: int
 ) -> int:

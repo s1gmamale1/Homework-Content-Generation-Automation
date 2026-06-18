@@ -213,6 +213,17 @@ async def cancel_batch(batch_id: UUID, session: AsyncSession = Depends(get_sessi
     return {"batch_id": str(batch_id), **counts}
 
 
+@router.post("/jobs/batch/{batch_id}/resume")
+async def resume_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)):
+    from app.models.batch import Batch
+    batch = await session.get(Batch, batch_id)
+    if batch is None:
+        raise HTTPException(404, "batch not found")
+    resumed = await jobs_repo.resume_failed_in_batch(session, batch_id)
+    await session.commit()
+    return {"batch_id": str(batch_id), "jobs_resumed": resumed}
+
+
 @router.get("/jobs/batches/{batch_id}/jobs")
 async def list_batch_jobs(batch_id: UUID, session: AsyncSession = Depends(get_session)):
     from app.models.batch import Batch
