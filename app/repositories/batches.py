@@ -6,6 +6,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.batch import Batch
+from app.models.book import Book
 from app.models.homework_job import HomeworkJob
 
 
@@ -80,14 +81,19 @@ async def rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dict[str, i
 
 
 async def list_with_rollups(session: AsyncSession) -> list[dict]:
-    """Every batch (newest first) + its computed rollup."""
-    batches = (
-        await session.execute(select(Batch).order_by(Batch.created_at.desc()))
-    ).scalars().all()
+    """Every batch (newest first) + its computed rollup + the book filename
+    (for subject-variant labeling)."""
+    rows = (
+        await session.execute(
+            select(Batch, Book.original_filename)
+            .join(Book, Book.id == Batch.book_id)
+            .order_by(Batch.created_at.desc())
+        )
+    ).all()
     out = []
-    for b in batches:
+    for b, original_filename in rows:
         tally = await rollup_for_batch(session, b.id)
-        out.append({"batch": b, "rollup": tally})
+        out.append({"batch": b, "rollup": tally, "original_filename": original_filename})
     return out
 
 
