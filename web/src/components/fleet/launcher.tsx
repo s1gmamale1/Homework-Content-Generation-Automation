@@ -4,10 +4,12 @@ import {
   ChevronDown,
   ListChecks,
   Loader2,
+  MoreHorizontal,
   Plus,
   Rocket,
   RotateCcw,
   Sparkles,
+  XCircle,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
@@ -324,6 +326,9 @@ export function FleetLauncher({
                               batchedTransports={
                                 batchedTransports.get(b.id) ?? new Set()
                               }
+                              bookBatches={(batches ?? []).filter(
+                                (bt) => bt.book_id === b.id,
+                              )}
                             />
                           ))}
                         </CardGrid>
@@ -556,9 +561,11 @@ function SubjectBadge({ subject }: { subject: NotionSubject }) {
 function ReadyCard({
   book,
   batchedTransports,
+  bookBatches,
 }: {
   book: Book;
   batchedTransports: Set<Transport>;
+  bookBatches: BatchSummary[];
 }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -574,6 +581,8 @@ function ReadyCard({
   const [model, setModel] = useState<string | null>(null);
   const [choosing, setChoosing] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // True while the preview fetch is in flight (launch button shows spinner).
+  const [launching, setLaunching] = useState(false);
 
   const modelsQ = useQuery({
     queryKey: ["agent-models"],
@@ -653,26 +662,40 @@ function ReadyCard({
       ? "Judge is weaker than the generator — grading may be unreliable."
       : null;
 
+  // Current batch for this transport — used for cancel-all / resume buttons.
+  const currentBatch = bookBatches.find((b) => b.transport === transport) ?? null;
+  const batchId = currentBatch?.batch_id ?? null;
+  const rollup = currentBatch?.rollup ?? {};
+  // Non-terminal = pending + running + cancelling (can be cancelled).
+  const hasNonTerminal =
+    ((rollup.pending ?? 0) + (rollup.running ?? 0) + (rollup.cancelling ?? 0)) > 0;
+  // Failed/cancelled = resumable via resumeBatch.
+  const hasFailedCancelled = ((rollup.failed ?? 0) + (rollup.cancelled ?? 0)) > 0;
+
+  // Shared body builder for launch / preview calls.
+  const launchBody = (opts: { force?: boolean; tocIds?: string[]; relaunch_mode?: "resume" | "discard" } = {}) => ({
+    book_id: book.id,
+    provider,
+    transport,
+    extract_transport: extractTransport,
+    judge_transport: judgeTransport,
+    extract_provider: extractProvider,
+    extract_model: extractModel,
+    judge_provider: judgeProvider,
+    judge_model: judgeModel,
+    ...(transport === "api" ? { model } : {}),
+    ...(opts.tocIds
+      ? { toc_entry_ids: opts.tocIds }
+      : subset
+        ? { toc_entry_ids: [...selected] }
+        : {}),
+    ...(opts.force ? { force: true } : {}),
+    ...(opts.relaunch_mode ? { relaunch_mode: opts.relaunch_mode } : {}),
+  });
+
   const launch = useMutation({
-    mutationFn: (opts: { force?: boolean; tocIds?: string[] } = {}) =>
-      api.launchBatch({
-        book_id: book.id,
-        provider,
-        transport,
-        extract_transport: extractTransport,
-        judge_transport: judgeTransport,
-        extract_provider: extractProvider,
-        extract_model: extractModel,
-        judge_provider: judgeProvider,
-        judge_model: judgeModel,
-        ...(transport === "api" ? { model } : {}),
-        ...(opts.tocIds
-          ? { toc_entry_ids: opts.tocIds }
-          : subset
-            ? { toc_entry_ids: [...selected] }
-            : {}),
-        ...(opts.force ? { force: true } : {}),
-      }),
+    mutationFn: (opts: { force?: boolean; tocIds?: string[]; relaunch_mode?: "resume" | "discard" } = {}) =>
+      api.launchBatch(launchBody(opts)),
     onSuccess: (r) => {
       toast.success(`Launched ${r.jobs_created} lessons`, {
         action: { label: "View in Monitor", onClick: () => navigate("/monitor") },
@@ -683,6 +706,32 @@ function ReadyCard({
       qc.invalidateQueries({ queryKey: ["books"] });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Launch failed"),
+  });
+
+  const cancelAll = useMutation({
+    mutationFn: () => {
+      if (!batchId) return Promise.reject(new Error("No batch"));
+      return api.cancelBatch(batchId);
+    },
+    onSuccess: (r) => {
+      toast.success(`Cancelling ${r.cancelling}, cancelled ${r.cancelled}`);
+      qc.invalidateQueries({ queryKey: ["batches"] });
+      qc.invalidateQueries({ queryKey: ["books"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Cancel failed"),
+  });
+
+  const resumeAll = useMutation({
+    mutationFn: () => {
+      if (!batchId) return Promise.reject(new Error("No batch"));
+      return api.resumeBatch(batchId);
+    },
+    onSuccess: (r) => {
+      toast.success(`Resuming ${r.jobs_resumed} lessons`);
+      qc.invalidateQueries({ queryKey: ["batches"] });
+      qc.invalidateQueries({ queryKey: ["books"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Resume failed"),
   });
 
   const providers = Object.keys(modelsQ.data?.providers ?? {});
@@ -820,36 +869,95 @@ function ReadyCard({
                   <ListChecks className="size-3.5" />
                   {choosing ? `Choosing (${selected.size})` : "Choose lessons"}
                 </button>
-                {/* Re-run the whole batch (force) — regenerates done lessons too.
-                    Only when this transport already has a batch and not mid-select. */}
-                {alreadyBatched && !choosing && (
+
+                {/* Cancel-all — visible when there are pending/running jobs in this batch. */}
+                {batchId && hasNonTerminal && !choosing && (
+                  <button
+                    type="button"
+                    className={cn(GHOST_BTN, "h-9 px-2.5 text-xs text-rose-300/80 hover:text-rose-200")}
+                    disabled={cancelAll.isPending}
+                    title="Cancel all pending and running lessons in this batch"
+                    onClick={() => cancelAll.mutate()}
+                  >
+                    {cancelAll.isPending ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <XCircle className="size-3.5" />
+                    )}
+                    Cancel all
+                  </button>
+                )}
+
+                {/* Resume failed/cancelled — visible when there are failed/cancelled jobs. */}
+                {batchId && hasFailedCancelled && !choosing && (
                   <button
                     type="button"
                     className={cn(GHOST_BTN, "h-9 px-2.5 text-xs")}
-                    disabled={launch.isPending || missingApiModel}
-                    title={
-                      missingApiModel
-                        ? "Pick a model to launch on API"
-                        : "Re-generate every lesson in this batch (discards completed outputs)"
-                    }
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          `Re-generate ALL ${lessons ?? ""} lessons in this batch? This regenerates completed lessons too${transport === "api" ? " and bills API calls" : ""}.`,
-                        )
-                      )
-                        launch.mutate({ force: true });
-                    }}
+                    disabled={resumeAll.isPending}
+                    title="Resume all failed/cancelled lessons (reuses saved phases)"
+                    onClick={() => resumeAll.mutate()}
                   >
-                    <RotateCcw className="size-3.5" />
-                    Re-run all
+                    {resumeAll.isPending ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <RotateCcw className="size-3.5" />
+                    )}
+                    Resume failed
                   </button>
                 )}
+
+                {/* Re-run all → kebab overflow (destructive, re-bills ALL). */}
+                {alreadyBatched && !choosing && (
+                  <details className="group relative">
+                    <summary
+                      className={cn(
+                        GHOST_BTN,
+                        "h-9 cursor-pointer list-none px-2.5 text-xs select-none",
+                      )}
+                      title="More batch actions"
+                    >
+                      <MoreHorizontal className="size-3.5" />
+                    </summary>
+                    {/* Dropdown panel */}
+                    <div className="absolute left-0 top-full z-10 mt-1 w-52 rounded-xl border border-white/[0.1] bg-[#1a1630] shadow-xl">
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs text-rose-300/90 hover:bg-white/[0.06] hover:text-rose-200 disabled:opacity-50"
+                        disabled={launch.isPending || missingApiModel}
+                        title={
+                          missingApiModel
+                            ? "Pick a model to launch on API"
+                            : "Regenerate every lesson, discarding completed outputs"
+                        }
+                        onClick={(e) => {
+                          // Close the <details> before the confirm so it doesn't
+                          // stay open if the user cancels.
+                          (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open");
+                          if (
+                            window.confirm(
+                              `Regenerate ALL ${lessons ?? ""} lessons, including completed ones? This discards finished outputs and re-bills all ${lessons ?? ""}.`,
+                            )
+                          )
+                            launch.mutate({ force: true });
+                        }}
+                      >
+                        <RotateCcw className="size-3.5 shrink-0" />
+                        Discard &amp; re-run all
+                      </button>
+                    </div>
+                  </details>
+                )}
+
+                {/* Primary: Launch remaining (or Launch all for fresh batch).
+                    For a "choosing" subset, launches the selected lessons only.
+                    When there are remaining lessons, previews first to check for
+                    saved work → dialog for resume vs discard. */}
                 <button
                   type="button"
                   className={cn(PRIMARY_BTN, "ml-auto")}
                   disabled={
                     launch.isPending ||
+                    launching ||
                     (choosing && selected.size === 0) ||
                     missingApiModel ||
                     (!choosing && lessons != null && remaining === 0)
@@ -858,14 +966,46 @@ function ReadyCard({
                     missingApiModel
                       ? "Pick a model to launch on API"
                       : complete
-                        ? "All lessons done — use Re-run all to regenerate"
+                        ? "All lessons done — use ⋯ Re-run all to regenerate"
                         : !choosing && remaining === 0
                           ? "All remaining lessons are in progress"
                           : undefined
                   }
-                  onClick={() => launch.mutate({})}
+                  onClick={async () => {
+                    if (choosing) {
+                      // Choosing mode: launch selected — no preview needed
+                      // (all selected are non-done by definition).
+                      launch.mutate({});
+                      return;
+                    }
+                    setLaunching(true);
+                    try {
+                      const p = await api.previewBatch(launchBody());
+                      if (p.resumable > 0) {
+                        // Some remaining lessons have saved phases.
+                        // Offer: Resume (primary) vs Discard+regenerate (secondary).
+                        const resume = window.confirm(
+                          `${p.resumable} of these lessons have saved work.\n\n` +
+                          `OK = Resume saved + launch new (reuses saved phases, only unfinished re-run).\n\n` +
+                          `Cancel = stop here (use "Discard & re-run all" in ⋯ to regenerate instead).`,
+                        );
+                        if (resume) {
+                          // Primary: resume saved + launch fresh
+                          launch.mutate({ relaunch_mode: "resume" });
+                        }
+                        // Cancel: user bailed — do nothing (they can use kebab)
+                      } else {
+                        // Nothing saved at stake → straight launch
+                        launch.mutate({});
+                      }
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "Preview failed");
+                    } finally {
+                      setLaunching(false);
+                    }
+                  }}
                 >
-                  {launch.isPending ? (
+                  {(launch.isPending || launching) ? (
                     <Loader2 className="size-4 animate-spin" />
                   ) : (
                     <Rocket className="size-4" />
