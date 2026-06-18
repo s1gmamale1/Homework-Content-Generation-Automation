@@ -39,10 +39,13 @@ single new module `app/services/api_transport.py`. This path returns the same
 `(rc, text, usage, stderr)` 4-tuple as the CLI path and is dispatched from `agent._spawn`
 (early, before the binary-lookup, but still inside the concurrency semaphore). Credentials
 (`GEMINI_API_KEY` / Vertex SA for gemini; `ANTHROPIC_API_KEY` for claude) come from the
-worker's process env. `transport=api` was added because the CLI-with-key path bills
-~2.6–10× the tokens and is ~1.5–3× slower for equal-quality output (the gemini CLI prepends
-a ~9.2k-token agent system prompt on every call). Text-only v1: attachments raise a loud
-`NotImplementedError`; TOC extraction stays CLI-pinned.
+worker's process env. `transport=api` was added because the CLI-with-key path bills materially more tokens
+and runs slower for equal-quality output (a measured benchmark, not a code constant —
+the gemini CLI is a multi-turn agent whose output/thinking inflation, plus an agent
+system-prompt input tax, dominate; harness: `scripts/api_vs_cli_compare.py`). Text-only
+v1: attachments raise a loud `NotImplementedError`. The **extract role** is pinned to its
+provider/model (default gemini/`gemini-2.5-flash`, overridable via `EXTRACT_PROVIDER`);
+its **auth** follows the job transport like any other spawn.
 
 **Why do it the CLI way for `transport=cli`?**
 - Each CLI handles its own login/billing — no API key needed. (Phase 4.1 also added
@@ -71,7 +74,7 @@ outside `app/services/api_transport.py`. `app/services/agent.py` is the CLI rout
   │ (React SPA)│                 │   (main.py)      │
   └────────────┘                 └────────┬─────────┘
         ▲                                  │ 1. save PDF to disk
-        │ live progress (SSE)              │ 2. extract Table of Contents (gemini CLI)
+        │ live progress (SSE)              │ 2. extract Table of Contents (extract provider, default gemini)
         │                                  ▼
         │                         ┌──────────────────┐
         │                         │  Postgres DB     │  books, toc_entries,
@@ -480,14 +483,19 @@ you configure to match your plan.
 
 ## 12. PDF handling gotchas (real ones that have bitten us)
 
-- **Gemini CLI rejects PDFs > 20 MB.** TOC extraction is hardcoded through gemini, so a
+- **Gemini CLI rejects PDFs > 20 MB.** TOC extraction runs on the extract provider
+  (default gemini, set by `EXTRACT_PROVIDER` — not hardcoded), so under the default a
   bigger PDF fails with a sandbox error. Pre-shrink it or change `EXTRACT_PROVIDER`.
 - **Kimi can't read PDFs natively.** Its prompt tells the model to shell out to Python
   (`pdfplumber`, falling back to `pypdf`). If those aren't installed, kimi reports failure
   rather than hallucinate.
-- **Claude refuses copyrighted textbooks.** Claude Code's copyright filter will reject
-  extracting from a real published textbook. That's *why* extraction is pinned to gemini —
-  claude is only used for the *derived* content, never the raw textbook read.
+- **Extract is pinned to a cheap model because it's high-input/low-value** (whole-PDF
+  read → flat factual summary), so paying smart-tier rates buys nothing — that's the
+  design reason for the gemini/`gemini-2.5-flash` extract pin (the **provider/model** is
+  pinned; auth follows job transport). Separately, **claude refuses copyrighted
+  textbooks** — Claude Code's copyright filter rejects extracting from a real published
+  textbook, so claude is a poor extract provider for the raw read even though it's fine
+  for the *derived* content.
 - **TOC extraction scans both ends of the PDF** — the front pages *and* the last ~15 pages —
   because some Uzbek textbooks print their "Mundarija" (contents) at the back. It also
   glyph-decodes broken font subsets. A fully scanned/OCR-less book whose *TOC itself* is an image

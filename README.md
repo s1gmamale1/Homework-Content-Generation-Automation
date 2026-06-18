@@ -46,8 +46,9 @@ The flow is a single fixed sequence of **11 phases** per subject (no easy/hard b
                                 ↓                     │
                        each phase → phase_outputs.output_md (markdown)
                                           │
-                       every model call → a provider CLI subprocess
+                       every model call → transport=cli: a provider CLI subprocess
                                           (claude · gemini · codex · kimi · opencode)
+                                          transport=api: claude/gemini SDK (api_transport.py)
 ```
 
 The pipeline lives entirely server-side; the SPA streams progress via SSE and renders each phase's markdown.
@@ -101,7 +102,7 @@ Homework-Content-Generation-Automation/
 │       ├── worker.py             queue worker (embedded or standalone)
 │       └── notion_*/notion/      Notion archive + fetch
 ├── prompts/_general/             the live prompt set (one .md per phase)
-├── alembic/versions/             schema migrations (0001…0026)
+├── alembic/versions/             schema migrations (0001…0027)
 ├── web/                          React SPA (operator console)
 ├── Dockerfile                    multi-stage (node SPA → uv venv → runtime)
 ├── docker-compose.yml            postgres + api (GHCR image, Traefik) + optional scaled worker

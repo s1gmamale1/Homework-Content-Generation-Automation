@@ -37,14 +37,15 @@ not `localhost:8000`. (For a bare local run without Traefik, publish port 8000 y
 |---|---|---|---|
 | `DATABASE_URL` | yes | — | `postgresql+asyncpg://...` (asyncpg driver, not psycopg) |
 | `GEMINI_API_KEY` | no | — | Only for `transport=api` gemini jobs (or use the Vertex SA pair `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT`). Default `cli` jobs need no key. Read from `os.environ` by the api transport — the same-named config field is vestigial. |
-| `ANTHROPIC_API_KEY` | no | — | For `transport=api` claude jobs. A worker only claims **any** api job when it has the needed api creds (`worker._compute_has_api_keys`). |
+| `ANTHROPIC_API_KEY` | no | — | For `transport=api` claude jobs. The worker computes **per-role** api-readiness flags at startup (`worker._compute_capabilities`: `can_claude_api`, `can_gemini_api`, `judge_api_ok`, `judge_fallback_api_ok`, `extract_api_ok`) and `claim_next_job` ANDs each job's *resolved* per-role transports against them — so a worker can claim *some* api jobs without *all* creds (e.g. an api-content gemini job with cli judge+extract needs no `ANTHROPIC_API_KEY`). |
 | `GEMINI_MODEL` | no | `gemini-2.0-flash-exp` | Vestigial (unread by the runtime). The *extract pin* `EXTRACT_MODEL` is separately `gemini-2.5-flash`. |
-| `AUTH_TOKEN` | **strongly recommended** | empty | Empty disables auth (every request `user="anonymous"`). Set this. |
+| `AUTH_TOKEN` | **strongly recommended** | `"123"` | Code default is the literal token `"123"` (`config.py`); `.env.example` ships `AUTH_TOKEN=` (empty) which **disables** auth (every request `user="anonymous"`). ⚠️ A bare-metal run with no `.env` entry gets `"123"` — auth silently ON with a guessable token. Set this to a strong value. |
 | `WORKER_CONCURRENCY` | no | `4` | Embedded worker job concurrency. Set `0` in API-only pods. |
 | `JOB_TIMEOUT_SECONDS` | no | `1800` | Hard ceiling per job. (`.env.example` overrides it to `600`.) |
 | `QUEUE_MAX_ATTEMPTS` | no | `3` | Retries before terminal failure. |
 | `QUEUE_BACKPRESSURE_LIMIT` | no | `50` | Queue depth → 503. `0` disables. |
-| `GEMINI_MAX_CONCURRENCY` | no | `8` | Process-wide cap on Gemini calls. Tune to your RPM tier. |
+| `AGENT_MAX_CONCURRENCY` | no | `8` | **Live** process-wide cap on *all* CLI subprocesses (every provider). Tune to your RPM tier (`AGENT_MAX_CONCURRENCY ≤ your_RPM_tier / 4`). |
+| `GEMINI_MAX_CONCURRENCY` | no | `8` | **DEPRECATED** — kept for backwards-compat; superseded by `AGENT_MAX_CONCURRENCY`. |
 | `MAX_FILE_MB` | no | `50` | Upload size limit. |
 | `ENABLE_DOCS` | no | `false` | Swagger UI at `/docs`. Disable in prod. |
 | `ALLOW_ORIGINS` | no | `*` | Comma-separated CORS allow-list. |
@@ -254,7 +255,7 @@ Behind an ALB, point the target group at the `api` task. Use RDS Postgres. Run `
 - [ ] Healthcheck endpoint `/health` reachable from your platform's liveness probe
 - [ ] Migrations applied: `alembic upgrade head`
 - [ ] Worker concurrency tuned to your tier:
-      `GEMINI_MAX_CONCURRENCY ≤ your_RPM_tier / 4` (each job makes ~3-4 phase calls in parallel)
+      `AGENT_MAX_CONCURRENCY ≤ your_RPM_tier / 4` (each job makes ~3-4 phase calls in parallel)
 - [ ] If horizontally scaling: `WORKER_CONCURRENCY=0` on API pods so they don't double-claim jobs alongside dedicated worker pods
 
 ---
@@ -291,6 +292,6 @@ These aren't wired yet but the data is in the DB / logs — easy to add a `/metr
 
 **SPA + auth.** If `AUTH_TOKEN` is set but the SPA's sessionStorage has no token, every page load redirects to `/login`. The login form takes a token; paste-and-submit. In production, the upstream service either (a) injects the bearer token via reverse proxy, or (b) hands the token to the SPA via postMessage / URL fragment / iframe init.
 
-**Gemini cache columns are dead/legacy (no-op).** The `books.gemini_cache_*` columns are leftovers from the removed Gemini SDK era — nothing reads or writes them, there is no server-side cache anymore. They're kept nullable only for backwards-compat. No pod-lifetime concern.
+**Gemini cache columns are dead/legacy (no-op).** The `books.gemini_cache_*` columns are leftovers from the removed Gemini *file-cache* SDK era — nothing reads or writes them, there is no server-side cache anymore. They're kept nullable only for backwards-compat. No pod-lifetime concern. (Note: this is only about the legacy cache — `transport=api` *does* use SDKs today, `google-genai` + `anthropic` via `app/services/api_transport.py`.)
 
 **Idempotency-Key in-memory cache** is per-process. With multi-pod API, the same Idempotency-Key sent to two pods will create two jobs (the natural-key + advisory lock still prevent same-section duplicates). For strict cross-pod idempotency, move `_IDEMPOTENCY_CACHE` from `app/api/v1/jobs.py` to a Redis or DB table. For most deployments, the natural-key idempotency is sufficient.

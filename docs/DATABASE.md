@@ -2,8 +2,8 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Every claim here was re-verified against branch `Nggaev-v2`, head `a8c7e6d5f4b3`
-> (0026), 2026-06-16. When this doc and the code disagree, the code wins — fix the doc.
+> Every claim here was re-verified against branch `Nggaev-v2`, head `0027_per_role_provider_model`
+> (0027), 2026-06-18. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
 
@@ -28,7 +28,7 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`a8c7e6d5f4b3`** (`0026_drop_difficulty`). Full chain in §7.
+also runs it on deploy). Current head: **`0027_per_role_provider_model`**. Full chain in §7.
 
 ---
 
@@ -109,6 +109,7 @@ Relationship: `toc_entries` (cascade delete-orphan, ordered by `order_index`).
 | `batch_id` | FK → batches NULL | fleet membership (migration 0023); `ix_homework_jobs_batch_id` |
 | `transport` | String(16) NOT NULL, server_default `'cli'` | Phase 4 (migration 0024): `cli` (subscription CLI auth, $0 marginal) vs `api` (pay-per-token keys); validation requires api ⇒ provider ∈ {claude, gemini} + explicit model |
 | `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 (migration 0025): per-role billing override, `cli \| api \| inherit`; `inherit` follows `transport` (`resolve_role_transport`) |
+| `extract_provider` / `extract_model` / `judge_provider` / `judge_model` | String(32 / 128 / 32 / 128) NULL | migration 0027: per-role provider/model override; NULL = role default (extract → `settings.extract_*`; judge → `model_tiers` auto) |
 | `current_phase` | String(64) NULL | live progress marker |
 | `error_message` | Text NULL | |
 | `started_at` / `completed_at` | NULL | `completed_at` is host-clock (record-only, see §2) |
@@ -177,6 +178,7 @@ consumption counts**, not provider quotas.
 | `book_id` | FK → books NOT NULL, part of **UNIQUE (`uq_batches_book_id_transport`)** | one batch per `(book, transport)` since migration 0024 — a different-transport re-launch forks a new batch (the cli-vs-api benchmark, spec §9); same-transport reuses |
 | `transport` | String(16) NOT NULL, server_default `'cli'` | launch-time transport (also on every member job) |
 | `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 launch-default labels stamped onto created jobs — **jobs carry the truth**; on re-launch these labels can go stale |
+| `extract_provider` / `extract_model` / `judge_provider` / `judge_model` | String(32 / 128 / 32 / 128) NULL | migration 0027: per-role provider/model launch labels (NULL = role default); jobs carry the truth |
 | `subject` / `grade` | NOT NULL / NULL | denormalized for display |
 | `provider` / `model` | NOT NULL / NULL | the launch-time pick |
 | `notion_source` | String(512) NULL | |
@@ -335,7 +337,8 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | 23 | 0023_batches | `a1b2c3d4e5f6` | **batches** table + homework_jobs.batch_id (fleet Phase 2) |
 | 24 | 0024_transport_auth_mode | `f7e6d5c4b3a2` | `transport` (jobs+batches) + `agent_usages.auth_mode` + batch key → `(book_id, transport)` (fleet Phase 4) |
 | 25 | 0025_role_transports | `b9d8e7f6a5c4` | `extract_transport`/`judge_transport` (jobs+batches) (fleet Phase 4.1) |
-| 26 | 0026_drop_difficulty | `a8c7e6d5f4b3` | drops the dead `homework_jobs.difficulty` column — **HEAD** |
+| 26 | 0026_drop_difficulty | `a8c7e6d5f4b3` | drops the dead `homework_jobs.difficulty` column |
+| 27 | 0027_per_role_provider_model | `0027_per_role_provider_model` | adds nullable `extract_provider`/`extract_model`/`judge_provider`/`judge_model` to `homework_jobs` + `batches` (NULL = role default) — **HEAD** |
 
 ---
 
