@@ -18,7 +18,7 @@
 1. **One batch-pause primitive, built here, reused by Cluster 5.** Per-batch cap trips `batches.paused_at`/`paused_reason`; `claim_next_job` skips jobs whose batch is paused. C5's `fleet-ctrl-3` (manual pause/resume) reuses the SAME `pause_batch`/`unpause_batch` repo functions — the kill-switch trips them automatically, the operator trips them manually. **Do not invent a second pause mechanism in C5.**
 2. **A separate fleet-global gate** (`budget_state` singleton) because batchless `/generate` api jobs (`batch_id IS NULL`) would slip a per-batch-only pause. The fleet cap must stop **all** api claims.
 3. **Cheap hot path.** `claim_next_job` reads only cheap booleans (batch paused? fleet paused?) — it never computes cost. A periodic **budget monitor** (alongside `worker._sweep_stuck_jobs`, `worker.py:423`) recomputes the ledgers every `cost_check_interval_seconds` and trips/clears the flags. Pause-claim ⇒ a slightly stale flag only ever lets a few extra in-flight jobs through, never a runaway.
-4. **Claim-gate predicate AND-composes, does not replace.** New `.where(batch_not_paused).where(fleet_not_paused_for_api)` are added to the existing `content_ok`/`judge_ok`/`extract_ok` chain (`jobs.py:319-322`). Must not regress C3's claimgate edit (same function — rebase-merge order: C2 → C3 → C4).
+4. **Claim-gate coupling with C3 is signature-level, not just the WHERE list.** New `.where(batch_not_paused).where(fleet_not_paused_for_api)` are added to the existing `content_ok`/`judge_ok`/`extract_ok` chain (`jobs.py:319-322`), AND `claim_next_job` gains a new `fleet_api_paused` parameter (read once at the top of the worker claim loop, like `capabilities`). C3 ALSO changes this function's signature (per-job role resolution). At rebase, reconcile **both the params and the WHERE composition** — additive, never replace. Merge order: C2 → C3 → C4.
 5. **Pricing semantics are NOT collapsed.** `cost_usd`'s per-provider cached branch (`_PROMPT_INCLUDES_CACHED`: gemini `prompt - cached`; claude disjoint, `pricing.py:88-97`) stays exactly as-is. `pricing-1` only **adds** a `cache_write` term for claude — a regression test pins both existing branches.
 
 **Verified facts (against code on this tip):**
@@ -27,9 +27,9 @@
 - `agent_usages` (`agent_usage.py:36-55`): `prompt/output/cached/total_tokens` + `raw_envelope` JSONB, `book_id`/`homework_job_id`/`phase_output_id`, `auth_mode`. **No** `cache_creation_tokens`, **no** `batch_id`.
 - `batches` (`batch.py:18-38`): no status/pause column today; `CheckConstraint` already imported (C1's 0028).
 - claude cache-write lands in `raw_envelope.cache_creation_input_tokens` only; `cost_usd` KNOWN-BIAS comment at `pricing.py:54-58`.
-- Migration head `0028_enum_check_constraints`. **At rebase onto C2/C3, run `alembic heads` and re-point each new migration's `down_revision` + renumber (0029→ next free) — C3 may also add a migration.**
+- Migration head `0028_enum_check_constraints`. **C3 takes `0029_judge_status`; C4 merges after C3, so C4's chain starts at `0030`.** C4 adds **three** schema changes, all additive-nullable / data-safe, linearly chained: `0030` cache_creation (Task 1), `0031` batch pause cols (Task 4), `0032` budget_state table (Task 5). **At rebase, run `alembic heads`, re-point each `down_revision` onto the live head, renumber if taken, and verify a single head.** (May be squashed into one migration if the gate prefers — all three are additive.)
 
-**Merge order:** C4 merges **after C2** (`cancel-race-1` `set_status` guard — our pause-claim rests on reliable status writes) **and after C3** (shared `claim_next_job`). Rebase onto the live tip before PR; expect trivial `MASTER_MEMORY.md`/`INDEX.md`/`WISHLIST.md` append conflicts.
+**Merge order:** C4 merges **after C3** (HARD — shares `claim_next_job` *signature + WHERE* and the migration chain) **and after C2** (SOFTER — Task 7 extends C2's relaunch-confirm response shape + shared `batch.py`/`jobs.py` rebase conflicts). **NB:** pause-claim does **not** need C2's `set_status` guard — it writes `batches.paused_at`/`budget_state`, never a job status (that was the *hard-cancel* dependency, which we rejected). Rebase onto the live tip before PR; expect trivial `MASTER_MEMORY.md`/`INDEX.md`/`WISHLIST.md` append conflicts.
 
 **Acceptance gate (NO mass-gen — hard money rule):** prove the math + the trip with **cheap, synthetic, or single-call** evidence: (a) one minimal-token claude api call that fires `cache_creation` → assert the column captures it and `cost_usd` adds the 1.25× premium; (b) seed synthetic `agent_usages` rows over a $0.01 test cap → assert the monitor pauses the batch + trips the fleet flag and that `claim_next_job` then skips those jobs while still claiming a cli job. Never ramp real homework generation to "test billing."
 
@@ -38,7 +38,7 @@
 ## Tasks (TDD per task, commit per task — `c4:` prefix)
 
 ### Task 1 — `pricing-1a`: capture claude cache-write tokens
-- **Migration `0029_agent_usages_cache_creation`** (additive, data-safe): `agent_usages.cache_creation_tokens Integer NOT NULL server_default '0'`. Backfill in the same migration: `UPDATE agent_usages SET cache_creation_tokens = COALESCE((raw_envelope->>'cache_creation_input_tokens')::int, 0) WHERE raw_envelope ? 'cache_creation_input_tokens'`. Downgrade drops the column.
+- **Migration `0030_agent_usages_cache_creation`** (`down_revision="0029_judge_status"` — confirm at rebase; additive, data-safe): `agent_usages.cache_creation_tokens Integer NOT NULL server_default '0'`. Backfill in the same migration: `UPDATE agent_usages SET cache_creation_tokens = COALESCE((raw_envelope->>'cache_creation_input_tokens')::int, 0) WHERE raw_envelope ? 'cache_creation_input_tokens'`. Downgrade drops the column.
 - **Model:** add the column to `app/models/agent_usage.py` (mirror `cached_tokens`).
 - **Capture path:** in `app/services/api_transport.py` claude usage mapping (`_claude_usage`, ~`:115-126`) and `app/services/providers/claude.py` `parse_envelope` (~`:88`), surface `cache_creation` into the normalized usage dict; thread it through `agent._record_usage` (`agent.py` `_record_usage`, the `cached_tokens=` neighbour) into the new column.
 - **Tests** (`tests/services/test_pricing.py` / `test_agent.py`): (1) migration up→down roundtrip via `alembic` offline check; (2) a claude usage dict carrying `cache_creation` persists to the column through `_record_usage` (mock the DB write boundary, run the real mapping); (3) gemini/cli rows record `cache_creation_tokens=0`.
@@ -59,16 +59,18 @@
 - **Commit:** `c4: cost ledger read functions (per-batch / fleet-day / per-section)`
 
 ### Task 4 — batch-pause primitive + claim-gate skip (the shared primitive)
-- **Migration `0030_cost_safety_state`** (part A): `batches.paused_at TIMESTAMPTZ NULL`, `batches.paused_reason String(64) NULL`.
+- **Migration `0031_batch_pause_columns`** (additive nullable, data-safe): `batches.paused_at TIMESTAMPTZ NULL`, `batches.paused_reason String(64) NULL`.
 - **`app/repositories/batches.py`:** `pause_batch(session, batch_id, reason)`, `unpause_batch(session, batch_id)`, `unpause_by_reason(session, reason)`, `active_batch_ids(session)`.
-- **`claim_next_job` (`jobs.py`):** add `.where(~HomeworkJob.batch_id.in_(select(Batch.id).where(Batch.paused_at.is_not(None))))` (correlated NOT-IN; `batch_id IS NULL` rows are unaffected — correct, batchless jobs aren't batch-capped). AND-composes after `extract_ok`.
-- **Tests:** (1) a pending job in a paused batch is NOT claimed; after `unpause_batch`, it IS; (2) a job in a non-paused batch + a batchless job still claim normally; (3) the existing claimgate tests (content/judge/extract) still pass (AND-composition intact).
+- **`claim_next_job` (`jobs.py`):** add
+  `.where(or_(HomeworkJob.batch_id.is_(None), HomeworkJob.batch_id.not_in(select(Batch.id).where(Batch.paused_at.is_not(None)))))`.
+  🔴 **The explicit `IS NULL` arm is REQUIRED:** `NULL NOT IN (non-empty set)` evaluates to SQL `NULL` → the row is excluded, so without it **every** batchless `/generate` job (`batch_id IS NULL`) stops being claimable the instant ANY batch is paused. Batchless api jobs are governed by the **fleet** gate (Task 5), never this one. AND-composes after `extract_ok`.
+- **Tests:** (1) a pending job in a paused batch is NOT claimed; after `unpause_batch`, it IS; (2) 🔴 **NULL-arm regression** — a batchless `/generate` job stays claimable while a *different* batch is paused; (3) a job in a non-paused batch claims normally; (4) the existing claimgate tests (content/judge/extract) still pass (AND-composition intact); (5) 🔴 **pause-claim guarantee** — an *in-flight* job whose batch gets paused mid-run completes normally (pause gates claiming only, never cancels — asserts "never hard-cancel paid work", not just implied).
 - **Commit:** `c4: batch-pause primitive + claim-gate skip (reused by C5 fleet-ctrl-3)`
 
 ### Task 5 — fleet-daily global pause gate (covers batchless api jobs)
-- **Migration `0030` (part B):** singleton `budget_state` table — `id Integer PK CHECK (id=1)`, `api_paused_at TIMESTAMPTZ NULL`, `api_paused_reason String(64) NULL`; seed the single row in the migration.
+- **Migration `0032_budget_state`:** singleton `budget_state` table — `id Integer PK CHECK (id=1)`, `api_paused_at TIMESTAMPTZ NULL`, `api_paused_reason String(64) NULL`; seed the single row in the migration.
 - **`app/repositories/budget.py`:** `get_state(session)`, `set_api_paused(session, reason)`, `clear_api_paused(session)`.
-- **`claim_next_job`:** compute `job_resolved_api` (reuse the same api-resolution already expressed by `content_ok`/`judge_needs_api`/`extract_needs_api` — a job "spends api" if `transport='api'` OR any resolved role is api). Add `.where(or_(~job_resolved_api, literal(not fleet_api_paused)))`, where `fleet_api_paused` is read once per claim from `budget_state` (passed in like `capabilities`, or a cheap scalar subquery). cli-only jobs are never blocked by the fleet cap.
+- **`claim_next_job`:** compute `job_resolved_api` (reuse the same api-resolution already expressed by `content_ok`/`judge_needs_api`/`extract_needs_api` — a job "spends api" if `transport='api'` OR any resolved role is api). Add `.where(or_(~job_resolved_api, literal(not fleet_api_paused)))`. ⚠️ **`fleet_api_paused` enters `claim_next_job` as a NEW parameter** (read once at the top of the worker claim loop, like `capabilities`) — coordinate this signature change with C3's param change at rebase (see Approach §4). cli-only jobs are never blocked by the fleet cap.
 - **Tests:** (1) fleet paused → a batchless api `/generate` job AND a batched api job are both skipped; (2) a cli job still claims while fleet is paused; (3) clear → api jobs resume.
 - **Commit:** `c4: fleet-daily global pause gate (batchless-safe circuit breaker)`
 
@@ -86,7 +88,7 @@
 
 ### Task 8 — observability + reference-doc de-stale
 - **`/agent/stats`** (or new `GET /jobs/batch/{id}/cost`): expose per-batch api $ (via `batch_api_cost_usd`) + `paused_at`/`paused_reason`, and the fleet `budget_state`. Minimal so the operator can answer "what did this batch cost / why is it paused."
-- **FE:** a small paused/over-budget badge on the batch + the prior-cost warning copy (Task 7). If this collides with C6's FE lane, ship the backend fields here and leave a one-line note deferring the visual to C6.
+- **FE — minimal paused badge, SHIP IN C4 (visibility is part of the safety feature):** a `Paused — budget cap reached (<paused_reason>)` badge/banner on the affected batch, reusing the existing `web/src/lib/ui.ts` badge kit to render the backend `paused_reason` field already shipped (Task 4), plus the Task 7 prior-cost warning copy. **Rationale:** an invisible kill-switch reads as a bug — the operator sees lessons stop with no reason and may force-relaunch (more spend, the opposite of the goal). Only the polished cost-$ dashboard visual defers to C6 (low collision: this is one text badge).
 - **De-stale:** `DEPLOY.md` (new `COST_CAP_*` / `COST_CHECK_INTERVAL_SECONDS` env), `docs/HOW_IT_WORKS.md` + `docs/CODE_MAP.md` (budget monitor, cost ledger, the shared batch-pause primitive), `docs/DATABASE.md` (`agent_usages.cache_creation_tokens`, `batches.paused_*`, `budget_state`).
 - **Commit:** `c4: cost-safety observability + reference-doc de-stale`
 
