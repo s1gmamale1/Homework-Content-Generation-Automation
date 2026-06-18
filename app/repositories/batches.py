@@ -59,10 +59,14 @@ async def get_or_create_for_book(
 
 
 async def rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dict[str, int]:
-    """Per-lesson-latest status tally for a batch: one row per toc_entry (its
-    newest job), then GROUP BY status. Mirrors `jobs.latest_by_section` (DISTINCT
-    ON) but scoped to batch_id, so retries/top-ups can't inflate the count. The
-    denominator is sum(tally.values())."""
+    """Per-lesson-latest status tally for a batch over the WHOLE book: one row
+    per launched toc_entry (its newest job) GROUP BY status — DISTINCT ON, so
+    retries/top-ups can't inflate the count — PLUS a synthetic ``not_started``
+    count for the book's lessons that have no job in this batch yet. The
+    denominator (sum of values) is therefore the book's full lesson count, so a
+    partial launch reads as e.g. 5/47, not 5/5."""
+    from app.models.toc_entry import TOCEntry
+
     latest = (
         select(HomeworkJob.status)
         .where(HomeworkJob.batch_id == batch_id)
@@ -73,7 +77,23 @@ async def rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dict[str, i
     rows = await session.execute(
         select(latest.c.status, func.count()).group_by(latest.c.status)
     )
-    return {status: count for status, count in rows.all()}
+    tally = {status: count for status, count in rows.all()}
+
+    book_id = (
+        await session.execute(select(Batch.book_id).where(Batch.id == batch_id))
+    ).scalar_one_or_none()
+    if book_id is not None:
+        total = (
+            await session.execute(
+                select(func.count())
+                .select_from(TOCEntry)
+                .where(TOCEntry.book_id == book_id)
+            )
+        ).scalar_one()
+        not_started = total - sum(tally.values())
+        if not_started > 0:
+            tally["not_started"] = not_started
+    return tally
 
 
 async def list_with_rollups(session: AsyncSession) -> list[dict]:
@@ -92,8 +112,8 @@ async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
     """One row per lesson in the batch's BOOK (full TOC), LEFT-joined to the
     latest job per toc_entry within this batch. Launched lessons carry their
     job's status/fields; un-launched lessons come back with job_id/status None.
-    Ordered by order_index. The launched-only rollup (rollup_for_batch) is a
-    separate query and is unaffected by the un-launched rows added here."""
+    Ordered by order_index. Companion to rollup_for_batch's whole-book tally:
+    this returns the rows, that returns the per-status counts (incl. not_started)."""
     from app.models.toc_entry import TOCEntry
 
     book_id = (

@@ -44,9 +44,13 @@ def _rollup_payload(batch, tally: dict[str, int]) -> dict:
         "extract_transport": batch.extract_transport,
         "judge_transport": batch.judge_transport,
         "rollup": tally,
-        "lessons_covered": sum(tally.values()),
-        "complete": (tally.get("pending", 0) + tally.get("running", 0)
-                     + tally.get("cancelling", 0)) == 0 and sum(tally.values()) > 0,
+        "lessons_covered": sum(v for k, v in tally.items() if k != "not_started"),
+        "complete": (
+            sum(tally.values()) > 0
+            and tally.get("not_started", 0) == 0
+            and (tally.get("pending", 0) + tally.get("running", 0)
+                 + tally.get("cancelling", 0)) == 0
+        ),
         "created_at": batch.created_at.isoformat(),
     }
 

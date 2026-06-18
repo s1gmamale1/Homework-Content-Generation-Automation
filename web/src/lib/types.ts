@@ -329,7 +329,7 @@ export interface Worker {
   online: boolean;
 }
 
-export type BatchRollup = Partial<Record<JobStatus, number>>;
+export type BatchRollup = Partial<Record<JobStatus | "not_started", number>>;
 
 export interface BatchSummary {
   batch_id: string;

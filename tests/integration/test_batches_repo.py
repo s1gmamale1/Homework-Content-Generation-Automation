@@ -126,8 +126,8 @@ async def test_rollup_is_per_lesson_latest():
 @pytest.mark.asyncio
 async def test_list_jobs_includes_unlaunched_lessons():
     """list_jobs returns one row per book lesson (full TOC), launched lessons
-    carry status, un-launched lessons come back with job_id/status None — while
-    rollup_for_batch stays launched-only (denominator unchanged)."""
+    carry status, un-launched lessons come back with job_id/status None — and
+    rollup_for_batch is whole-book (launched statuses + a not_started count)."""
     from app.db import SessionLocal
     from app.models.batch import Batch
     from app.models.book import Book
@@ -163,8 +163,10 @@ async def test_list_jobs_includes_unlaunched_lessons():
         assert third["job_id"] is None
         assert third["status"] is None
         assert third["section_title"] == "L2"
-        # Rollup stays launched-only: 2 lessons, NOT 3.
-        assert sum(tally.values()) == 2, f"rollup must stay launched-only, got {tally}"
+        # Rollup is whole-book: 2 launched (pending) + 1 not_started = 3 total.
+        assert tally.get("pending") == 2, f"expected 2 launched pending, got {tally}"
+        assert tally.get("not_started") == 1, f"expected 1 not_started, got {tally}"
+        assert sum(tally.values()) == 3, f"denominator must be whole book (3), got {tally}"
     finally:
         async with SessionLocal() as s:
             await s.execute(delete(HomeworkJob).where(HomeworkJob.book_id == book_id))
