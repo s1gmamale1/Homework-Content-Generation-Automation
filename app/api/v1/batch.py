@@ -194,6 +194,25 @@ async def get_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)
     return _rollup_payload(batch, tally, book.original_filename if book else None)
 
 
+@router.post("/jobs/batch/{batch_id}/cancel")
+async def cancel_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)):
+    from app.models.batch import Batch
+    batch = await session.get(Batch, batch_id)
+    if batch is None:
+        raise HTTPException(404, "batch not found")
+    counts = await jobs_repo.cancel_all_in_batch(session, batch_id)
+    running_ids = await jobs_repo.running_job_ids_in_batch(session, batch_id)
+    await session.commit()
+    # Instant local kill for any task running in THIS process (others self-cancel
+    # via the heartbeat within heartbeat_seconds).
+    from app.services.worker import RUNNING_JOBS
+    for jid in running_ids:
+        task = RUNNING_JOBS.get(jid)
+        if task is not None:
+            task.cancel()
+    return {"batch_id": str(batch_id), **counts}
+
+
 @router.get("/jobs/batches/{batch_id}/jobs")
 async def list_batch_jobs(batch_id: UUID, session: AsyncSession = Depends(get_session)):
     from app.models.batch import Batch

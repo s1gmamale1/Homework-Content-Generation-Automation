@@ -545,6 +545,32 @@ async def mark_cancelled(session: AsyncSession, job_id: UUID) -> None:
     )
 
 
+async def cancel_all_in_batch(session: AsyncSession, batch_id: UUID) -> dict[str, int]:
+    """Cancel every non-terminal job in a batch in one transaction: pending ->
+    cancelled (never claimed), running -> cancelling (the worker/heartbeat then
+    kills the task). done/failed/cancelled/cancelling are left untouched.
+    Returns {"cancelled": n_pending, "cancelling": n_running}."""
+    pend = await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.batch_id == batch_id, HomeworkJob.status == "pending")
+        .values(status="cancelled", completed_at=func.now()))
+    run = await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.batch_id == batch_id, HomeworkJob.status == "running")
+        .values(status="cancelling"))
+    return {"cancelled": pend.rowcount, "cancelling": run.rowcount}
+
+
+async def running_job_ids_in_batch(session: AsyncSession, batch_id: UUID) -> list[UUID]:
+    """Job ids that were `cancelling` after cancel_all — so the API can cancel any
+    locally-running tasks instantly (rather than waiting for the heartbeat)."""
+    rows = await session.execute(
+        select(HomeworkJob.id).where(
+            HomeworkJob.batch_id == batch_id,
+            HomeworkJob.status == "cancelling"))
+    return list(rows.scalars().all())
+
+
 async def reclaim_stale_cancelling(
     session: AsyncSession, stale_after_seconds: int
 ) -> int:
