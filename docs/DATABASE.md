@@ -2,8 +2,8 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Every claim here was re-verified against branch `Nggaev-v2`, head `0029_judge_status`
-> (0029), 2026-06-19. When this doc and the code disagree, the code wins — fix the doc.
+> Every claim here was re-verified against branch `Nggaev-v2`, head `0032_budget_state`
+> (0032), 2026-06-19. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
 
@@ -28,8 +28,9 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`0029_judge_status`** (0028 = enum CHECK constraints,
-0029 = `phase_outputs.judge_status`). Full chain in §7.
+also runs it on deploy). Current head: **`0032_budget_state`** (0028 = enum CHECK constraints,
+0029 = `phase_outputs.judge_status`, 0030 = `agent_usages.cache_creation_tokens`,
+0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton). Full chain in §7.
 
 ---
 
