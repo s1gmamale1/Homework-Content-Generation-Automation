@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.repositories import batches as batches_repo
 from app.repositories import books as books_repo
+from app.repositories import budget as budget_repo
 from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
@@ -65,6 +66,9 @@ def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None 
         "complete": (tally.get("pending", 0) + tally.get("running", 0)
                      + tally.get("cancelling", 0)) == 0 and sum(tally.values()) > 0,
         "created_at": batch.created_at.isoformat(),
+        # Cost-safety fields (C4): None when the batch is not paused.
+        "paused_at": batch.paused_at.isoformat() if batch.paused_at else None,
+        "paused_reason": batch.paused_reason,
     }
 
 
@@ -248,6 +252,33 @@ async def get_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)
     tally = await batches_repo.rollup_for_batch(session, batch_id)
     book = await books_repo.get(session, batch.book_id)
     return _rollup_payload(batch, tally, book.original_filename if book else None)
+
+
+@router.get("/jobs/batch/{batch_id}/cost")
+async def get_batch_cost(batch_id: UUID, session: AsyncSession = Depends(get_session)):
+    """Return per-batch API spend + pause state + fleet pause state.
+
+    Designed for operator observability: answers "what did this batch cost and
+    why is it paused?"  The fleet `budget_state` singleton is included so the
+    caller can distinguish a per-batch pause (budget cap reached on that batch)
+    from a fleet-level pause (daily fleet cap reached).
+    """
+    from app.models.batch import Batch
+    batch = await session.get(Batch, batch_id)
+    if batch is None:
+        raise HTTPException(404, "batch not found")
+    batch_cost = await cost_repo.batch_api_cost_usd(session, batch_id)
+    fleet_state = await budget_repo.get_state(session)
+    return {
+        "batch_id": str(batch_id),
+        "batch_api_cost_usd": batch_cost,
+        "paused_at": batch.paused_at.isoformat() if batch.paused_at else None,
+        "paused_reason": batch.paused_reason,
+        "fleet_api_paused_at": (
+            fleet_state.api_paused_at.isoformat() if fleet_state.api_paused_at else None
+        ),
+        "fleet_api_paused_reason": fleet_state.api_paused_reason,
+    }
 
 
 @router.post("/jobs/batch/{batch_id}/cancel")

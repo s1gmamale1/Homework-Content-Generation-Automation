@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, PauseCircle } from "lucide-react";
 import { useState } from "react";
 import type { BatchSummary } from "@/lib/types";
 import { subjectLabelWithVariant } from "@/lib/subjects";
@@ -42,6 +42,18 @@ function BatchCard({ batch }: { batch: BatchSummary }) {
       </div>
 
       <RollupBar rollup={batch.rollup} covered={batch.lessons_covered} />
+
+      {/* Paused badge — shown when the budget monitor (C4) has gated this batch.
+          A polished cost-$ spend dashboard defers to C6. */}
+      {batch.paused_at && (
+        <div className="flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/[0.08] px-2.5 py-1.5 text-xs text-amber-300">
+          <PauseCircle className="size-3.5 shrink-0" />
+          <span>
+            Paused — budget cap reached
+            {batch.paused_reason ? ` (${batch.paused_reason})` : ""}
+          </span>
+        </div>
+      )}
 
       <button
         type="button"

@@ -139,6 +139,7 @@ Windows often already runs its own Postgres on 5432). Seven tables matter
 | `agent_usages` | one CLI subprocess call | provider, model, normalized token counts, duration, success/failure, and the raw envelope. This is how the usage dashboard and the end-of-job cost table are built. |
 | `batches` | fleet batch (one per `(book, transport)` since Phase 4 — a cli and an api batch of the same book coexist for benchmarking) | the launch-time subject/grade/provider/model/transport (+ Phase-4.1 role-transport launch defaults; member jobs carry the truth). **No stored counters** — progress is computed on read from member jobs (one vote per lesson, its newest job), so retries can't inflate the tally. |
 | `workers` | worker process (a fleet PC) | `pc_id` ("hostname:pid"), `last_heartbeat`, status label. Online/offline is **derived** from heartbeat freshness against the DB clock, never stored. |
+| `budget_state` | singleton (id=1) | C4 fleet-level api pause: `api_paused_at` / `api_paused_reason`. Seeded at migration time; `claim_next_job` checks it to skip all api-transport jobs when non-NULL. Also carries per-batch pause state via `batches.paused_at`/`paused_reason`. |
 
 Two things people trip on:
 - **The PDF is on disk, not in the DB.** The path is deterministic. Every phase re-reads it
@@ -203,6 +204,23 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
   failed/cancelled jobs, reusing already-`done` phases). A re-launch over a batch with
   partially-done lessons offers `relaunch_mode` **resume** (default — keep saved phases) vs
   **discard** (regenerate from scratch); the preview is strict zero-write.
+- **Budget monitor** (C4 cost-safety): a `worker._budget_monitor` loop runs inside every
+  worker process (period: `COST_CHECK_INTERVAL_SECONDS`, default 60s). It reads the
+  cost ledger (`app/repositories/cost.py`) — `batch_api_cost_usd` (sums `agent_usages`
+  rows for a batch's api-mode calls) and `fleet_api_cost_usd` (fleet-wide 24h window) —
+  and applies two kill-switches:
+  - **Per-batch cap** (`COST_CAP_BATCH_USD`, default 0 = disabled): when a batch's api
+    spend exceeds this, the monitor calls `batches_repo.pause_batch(batch_id, "batch_cost_cap")`.
+    The paused batch's `paused_at`/`paused_reason` columns are set; `claim_next_job` skips
+    any job whose batch is paused. Already-running jobs are not cancelled ("never hard-cancel
+    paid work" contract). The pause primitive is shared with C5 fleet-ctrl-3 (manual/fleet gate).
+  - **Fleet-daily cap** (`COST_CAP_FLEET_DAILY_USD`, default 0 = disabled): when the
+    rolling 24h api spend exceeds this, the monitor sets the `budget_state` singleton
+    (`api_paused_at`/`api_paused_reason = "fleet_daily_cap"`). `claim_next_job` then skips
+    *all* api-transport jobs fleet-wide until the cap clears.
+  Operator observability: `GET /jobs/batch/{id}/cost` returns `{batch_api_cost_usd,
+  paused_at, paused_reason, fleet_api_paused_at, fleet_api_paused_reason}`. When a batch
+  is paused, the `/monitor` batch card shows a "Paused — budget cap reached" badge.
 - **The `/fleet` page**: launch a Notion subject end-to-end (fetch → TOC-extract →
   launch), with a one-line worker-liveness strip (`OnlineStrip`).
 - **The `/monitor` page**: watch batch funnels fill, see PC liveness cards, and drill

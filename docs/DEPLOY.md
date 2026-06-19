@@ -41,6 +41,9 @@ not `localhost:8000`. (For a bare local run without Traefik, publish port 8000 y
 | `GEMINI_MODEL` | no | `gemini-2.0-flash-exp` | Vestigial (unread by the runtime). The *extract pin* `EXTRACT_MODEL` is separately `gemini-2.5-flash`. |
 | `AUTH_TOKEN` | **strongly recommended** | `"123"` | Code default is the literal token `"123"` (`config.py`); `.env.example` ships `AUTH_TOKEN=` (empty) which **disables** auth (every request `user="anonymous"`). ⚠️ A bare-metal run with no `.env` entry gets `"123"` — auth silently ON with a guessable token. Set this to a strong value. |
 | `WORKER_CONCURRENCY` | no | `4` | Embedded worker job concurrency. Set `0` in API-only pods. |
+| `COST_CAP_BATCH_USD` | no | `0` | Per-batch API spend cap in USD. `0` disables the check. When a batch's api spend exceeds this, the budget monitor pauses it (`batches.paused_at`/`paused_reason`) so no further api jobs from that batch are claimed. The pause reason is set to `batch_cost_cap`. |
+| `COST_CAP_FLEET_DAILY_USD` | no | `0` | Fleet-wide rolling 24h api spend cap in USD. `0` disables. When the 24h api spend across all jobs exceeds this, the budget monitor sets the `budget_state` singleton's `api_paused_at`, blocking all api-transport jobs across the entire fleet. The pause reason is set to `fleet_daily_cap`. |
+| `COST_CHECK_INTERVAL_SECONDS` | no | `60` | How often (seconds) the budget monitor loop runs its spend checks. Lower values catch overruns sooner; at `60` the worst-case overrun is roughly one job's api cost above the cap. |
 | `JOB_TIMEOUT_SECONDS` | no | `1800` | Hard ceiling per job. (`.env.example` overrides it to `600`.) |
 | `QUEUE_MAX_ATTEMPTS` | no | `3` | Retries before terminal failure. |
 | `QUEUE_BACKPRESSURE_LIMIT` | no | `50` | Queue depth → 503. `0` disables. |

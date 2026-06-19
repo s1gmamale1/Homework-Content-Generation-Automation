@@ -66,6 +66,8 @@ _FAKE_BATCH = SimpleNamespace(
     judge_provider=None,
     judge_model=None,
     created_at=datetime(2026, 6, 19, tzinfo=timezone.utc),
+    paused_at=None,
+    paused_reason=None,
 )
 
 _FAKE_JOB = SimpleNamespace(

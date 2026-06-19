@@ -13,6 +13,7 @@ def _fake_batch(subject):
         extract_provider=None, extract_model=None,
         judge_provider=None, judge_model=None,
         created_at=datetime(2026, 6, 17, tzinfo=timezone.utc),
+        paused_at=None, paused_reason=None,
     )
 
 
