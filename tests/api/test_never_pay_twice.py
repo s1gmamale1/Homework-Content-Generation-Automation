@@ -226,8 +226,16 @@ async def test_batch_force_cli_only_prior_no_warning():
     """Force re-launch over a section whose only prior job was cli must
     produce would_rebill=False (cli is free).
 
-    section_prior_api_cost returns (0.0, False) for a cli-only prior because
-    had_done_api_job is False (no done api job).
+    The REAL section_prior_api_cost filters by transport="cli", finds the done
+    cli job (had_done=True), then sums api-auth_mode usages → 0.0 (none exist
+    for a cli job).  So it returns (0.0, True) — had_done IS True but cost IS 0.
+
+    would_rebill = had_done AND cost > 0  →  True AND False  →  False.
+
+    This means the suppression comes from the `prior_cost > 0` guard, NOT from
+    had_done.  If would_rebill were changed to `had_done_api_job` alone (dropping
+    the > 0 check), this test WOULD FAIL: had_done=True would incorrectly produce
+    would_rebill=True and wrongly warn about a free cli job.
     """
     import app.api.v1.batch as batch_mod
     from app.db import get_session
@@ -244,9 +252,10 @@ async def test_batch_force_cli_only_prior_no_warning():
             patch.object(batch_mod.jobs_repo, "latest_for_section", AsyncMock(return_value=None)),
             patch.object(batch_mod.jobs_repo, "create", AsyncMock(return_value=_FAKE_JOB)),
             patch.object(batch_mod.batches_repo, "rollup_for_batch", AsyncMock(return_value={})),
-            # cli-only prior: done job exists but auth_mode=cli → cost 0, had_done=False
+            # FAITHFUL mock: cli done job found (had_done=True) but zero api-auth usages
+            # → (0.0, True).  Suppression is via cost > 0, not had_done.
             patch.object(batch_mod.cost_repo, "section_prior_api_cost",
-                         AsyncMock(return_value=(0.0, False))),
+                         AsyncMock(return_value=(0.0, True))),
         ):
             async with _client() as c:
                 resp = await c.post("/api/v1/jobs/batch", headers=_HDR, json=_cli_body)
@@ -259,7 +268,12 @@ async def test_batch_force_cli_only_prior_no_warning():
     warnings = data["rebill_warnings"]
     assert len(warnings) == 1
     w = warnings[0]
-    assert w["would_rebill"] is False
+    # would_rebill must be False: had_done=True but cost=0.0, so cost > 0 guard fires
+    assert w["would_rebill"] is False, (
+        "would_rebill must be False for cli-only prior: suppression is via cost > 0, "
+        "not had_done.  If the guard were dropped (would_rebill = had_done alone), "
+        "this assertion would FAIL (had_done=True would wrongly warn)."
+    )
     assert w["prior_api_cost_usd"] == pytest.approx(0.0)
 
 
@@ -306,6 +320,55 @@ async def test_batch_no_force_unaffected():
     # rebill_warnings must be empty (no new jobs created on the force path)
     warnings = data.get("rebill_warnings", [])
     assert warnings == [], f"Expected empty rebill_warnings for force=False, got {warnings}"
+
+
+@pytest.mark.asyncio
+async def test_batch_no_force_brand_new_section_no_warning():
+    """Non-force launch over a brand-new section with NO existing active job
+    must NOT call section_prior_api_cost and must produce empty rebill_warnings.
+
+    Flow: force=False → existing = find_active_for_section() → None (brand-new) →
+    the `if body.force:` guard is False → cost_repo is skipped → job is created.
+
+    If the `if body.force:` guard around the cost call were removed, cost_repo
+    would be called here (mock_prior.assert_not_called() would FAIL), proving the
+    guard is load-bearing for the force=False + no-active-job path.
+    """
+    import app.api.v1.batch as batch_mod
+    from app.db import get_session
+
+    mock_prior = AsyncMock(return_value=(0.0, False))
+    _noforce_body = {**_BATCH_BODY, "force": False}
+
+    app_obj = _app()
+    app_obj.dependency_overrides[get_session] = _session_override()[1]
+    try:
+        with (
+            patch.object(batch_mod.books_repo, "get", AsyncMock(return_value=_FAKE_BOOK)),
+            patch.object(batch_mod.toc_repo, "list_for_book", AsyncMock(return_value=[_FAKE_SECTION])),
+            patch.object(batch_mod.batches_repo, "get_or_create_for_book", AsyncMock(return_value=_FAKE_BATCH)),
+            patch.object(batch_mod.jobs_repo, "lock_section_for_generate", AsyncMock()),
+            # force=False path: find_active_for_section IS called (not short-circuited)
+            # but returns None (brand-new section, no active job)
+            patch.object(batch_mod.jobs_repo, "find_active_for_section",
+                         AsyncMock(return_value=None)),
+            # latest_for_section returns None → fresh create (not resume)
+            patch.object(batch_mod.jobs_repo, "latest_for_section", AsyncMock(return_value=None)),
+            patch.object(batch_mod.jobs_repo, "create", AsyncMock(return_value=_FAKE_JOB)),
+            patch.object(batch_mod.batches_repo, "rollup_for_batch", AsyncMock(return_value={})),
+            patch.object(batch_mod.cost_repo, "section_prior_api_cost", mock_prior),
+        ):
+            async with _client() as c:
+                resp = await c.post("/api/v1/jobs/batch", headers=_HDR, json=_noforce_body)
+    finally:
+        app_obj.dependency_overrides.pop(get_session, None)
+
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    # force=False: the `if body.force:` gate is never entered → cost_repo never called
+    mock_prior.assert_not_called()
+    warnings = data.get("rebill_warnings", [])
+    assert warnings == [], f"Expected empty rebill_warnings for force=False brand-new section, got {warnings}"
 
 
 # ─── /generate tests ──────────────────────────────────────────────────────────
