@@ -40,7 +40,10 @@ from loguru import logger
 
 from app.config import settings
 from app.db import SessionLocal
+from app.models.base import _utcnow
+from app.repositories import batches as batches_repo
 from app.repositories import budget as budget_repo
+from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import workers as workers_repo
 from app.services import model_tiers, pipeline
@@ -175,6 +178,7 @@ class Worker:
         self._stop_event = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
         self._last_sweep_at = 0.0
+        self._last_budget_check_at = 0.0
 
     async def run(self) -> None:
         """Main loop. Runs until `stop()`."""
@@ -227,6 +231,9 @@ class Worker:
                 if now - self._last_sweep_at > self.sweep_interval:
                     await self._sweep_stuck_jobs()
                     self._last_sweep_at = now
+                if now - self._last_budget_check_at > settings.cost_check_interval_seconds:
+                    await self._budget_monitor()
+                    self._last_budget_check_at = now
 
                 # Block until a slot is free OR stop is requested.
                 slot_acquired = await self._wait_for_slot_or_stop()
@@ -431,6 +438,87 @@ class Worker:
             logger.exception(
                 f"worker {self.id} job={job_id} failed to record failure"
             )
+
+    async def _budget_monitor(self) -> None:
+        """Periodic kill-switch: trip or clear the pause gates based on live cost.
+
+        Runs at most once per `settings.cost_check_interval_seconds`. One
+        session for the whole check — all reads/writes are consistent within it.
+
+        Per-batch gate (reason="batch-cap"):
+          For each active (un-paused) batch: if its api spend exceeds
+          cost_cap_batch_usd (and the cap is enabled), pause it.
+          For each batch already paused with reason "batch-cap": if its cost
+          is now at/under cap (or the cap was disabled), unpause it.
+          Batches paused with a DIFFERENT reason (manual/fleet) are never touched.
+
+        Fleet gate (reason="fleet-daily-cap"):
+          If fleet api spend over the last 24h exceeds cost_cap_fleet_daily_usd
+          (and the cap is enabled), set the fleet-level api pause.
+          If the fleet is paused with reason "fleet-daily-cap" and cost is now
+          at/under cap (or the cap disabled), clear it.
+          Only reconciles its OWN reason — never clears a manual fleet pause.
+        """
+        try:
+            from datetime import timedelta
+            async with SessionLocal() as session:
+                async with session.begin():
+                    # ── Per-batch ─────────────────────────────────────────
+                    cap = settings.cost_cap_batch_usd
+                    if cap > 0:
+                        # Trip: active batches over cap → pause("batch-cap")
+                        for batch_id in await batches_repo.active_batch_ids(session):
+                            cost = await cost_repo.batch_api_cost_usd(session, batch_id)
+                            if cost > cap:
+                                logger.warning(
+                                    f"budget-monitor: batch={batch_id} api cost ${cost:.4f} "
+                                    f"> cap ${cap:.4f} — pausing (batch-cap)"
+                                )
+                                await batches_repo.pause_batch(session, batch_id, "batch-cap")
+
+                    # Reconcile: batch-cap-paused batches now at/under cap → unpause
+                    for batch_id in await batches_repo.paused_batch_ids_by_reason(session, "batch-cap"):
+                        if cap <= 0:
+                            # Cap disabled — clear our own pause
+                            await batches_repo.unpause_batch(session, batch_id)
+                            logger.info(
+                                f"budget-monitor: batch={batch_id} batch-cap disabled — unpausing"
+                            )
+                        else:
+                            cost = await cost_repo.batch_api_cost_usd(session, batch_id)
+                            if cost <= cap:
+                                logger.info(
+                                    f"budget-monitor: batch={batch_id} api cost ${cost:.4f} "
+                                    f"<= cap ${cap:.4f} — unpausing"
+                                )
+                                await batches_repo.unpause_batch(session, batch_id)
+
+                    # ── Fleet ─────────────────────────────────────────────
+                    fleet_cap = settings.cost_cap_fleet_daily_usd
+                    since = _utcnow() - timedelta(hours=24)
+                    fleet_cost = await cost_repo.fleet_api_cost_usd(session, since)
+
+                    budget_state = await budget_repo.get_state(session)
+                    currently_fleet_paused_by_us = (
+                        budget_state.api_paused_at is not None
+                        and budget_state.api_paused_reason == "fleet-daily-cap"
+                    )
+
+                    if fleet_cap > 0 and fleet_cost > fleet_cap:
+                        if not currently_fleet_paused_by_us:
+                            logger.warning(
+                                f"budget-monitor: fleet api cost ${fleet_cost:.4f} "
+                                f"> cap ${fleet_cap:.4f} — setting fleet-daily-cap pause"
+                            )
+                        await budget_repo.set_api_paused(session, "fleet-daily-cap")
+                    elif currently_fleet_paused_by_us:
+                        logger.info(
+                            f"budget-monitor: fleet api cost ${fleet_cost:.4f} "
+                            f"<= cap ${fleet_cap:.4f} (or cap disabled) — clearing fleet-daily-cap"
+                        )
+                        await budget_repo.clear_api_paused(session)
+        except Exception:
+            logger.exception(f"worker {self.id} budget monitor failed")
 
     async def _sweep_stuck_jobs(self) -> None:
         """Reclaim any `running` jobs whose claim is older than the lease

@@ -186,3 +186,17 @@ async def active_batch_ids(session: AsyncSession) -> list[UUID]:
         select(Batch.id).where(Batch.paused_at.is_(None))
     )
     return list(rows.scalars().all())
+
+
+async def paused_batch_ids_by_reason(session: AsyncSession, reason: str) -> list[UUID]:
+    """Return ids of all batches paused with the given reason.
+
+    Used by the budget monitor to reconcile its OWN pauses without touching
+    batches paused by a different reason (e.g. C5 manual / fleet gate).
+    """
+    rows = await session.execute(
+        select(Batch.id)
+        .where(Batch.paused_at.is_not(None))
+        .where(Batch.paused_reason == reason)
+    )
+    return list(rows.scalars().all())

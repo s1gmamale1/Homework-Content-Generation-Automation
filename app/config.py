@@ -203,6 +203,14 @@ class Settings(BaseSettings):
     agent_limit_gemini_24h: int = 1500
     agent_limit_gemini_7d: int = 10000
 
+    # ─── Budget monitor (kill-switch) ─────────────────────────────────────
+    # Per-batch api spend cap (USD). 0 = disabled (no per-batch pause).
+    cost_cap_batch_usd: float = 0.0
+    # Rolling 24-hour fleet api spend cap (USD). 0 = disabled (no fleet pause).
+    cost_cap_fleet_daily_usd: float = 0.0
+    # How often the budget monitor runs (seconds). Mirrors sweep_interval_seconds.
+    cost_check_interval_seconds: int = 60
+
 
 settings = Settings()
 
