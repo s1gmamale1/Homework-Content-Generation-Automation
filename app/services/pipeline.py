@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -114,6 +115,8 @@ async def run(job_id: UUID) -> None:
             judge_transport = resolve_role_transport(
                 getattr(job, "judge_transport", "inherit") or "inherit", transport
             )
+            custom_prompts = getattr(job, "custom_prompts", None)
+            selected_phases = getattr(job, "selected_phases", None)
             # Per-job judge provider/model override (Task 6): explicit columns
             # let the user steer who grades; NULL falls back to the auto-tier
             # judge. Self-grade is still hard-swapped server-side downstream.
@@ -150,7 +153,15 @@ async def run(job_id: UUID) -> None:
         )
 
         # ─── plan phase sequence (single flow — no classify/easy-hard) ──
-        sequence: list[str] = ["extract", *flow_for(subject)]
+        # Subset: job.selected_phases is the dependency-closure the endpoint stored.
+        # Defensive re-order/filter against the live flow; None ⇒ full flow.
+        full_flow = flow_for(subject)
+        if selected_phases:
+            chosen = set(selected_phases)
+            content_planned = [p for p in full_flow if p in chosen]
+        else:
+            content_planned = full_flow
+        sequence: list[str] = ["extract", *content_planned]
         log.info(f"[job {job_id}] sequence planned | phases={sequence}")
 
         async with SessionLocal() as session:
@@ -213,6 +224,7 @@ async def run(job_id: UUID) -> None:
                     transport=transport,
                     extract_transport=extract_transport,
                     judge_transport=judge_transport,
+                    custom_prompts=custom_prompts,
                     judge_provider_ov=judge_provider_ov,
                     judge_model_ov=judge_model_ov,
                     extract_provider=extract_provider,
@@ -268,6 +280,7 @@ async def run(job_id: UUID) -> None:
                     transport=transport,
                     extract_transport=extract_transport,
                     judge_transport=judge_transport,
+                    custom_prompts=custom_prompts,
                     judge_provider_ov=judge_provider_ov,
                     judge_model_ov=judge_model_ov,
                     extract_provider=extract_provider,
@@ -349,6 +362,7 @@ async def _execute_one_phase(
     transport: str = "cli",
     extract_transport: str = "cli",
     judge_transport: str = "cli",
+    custom_prompts: Optional[dict] = None,
     judge_provider_ov: Optional[str] = None,
     judge_model_ov: Optional[str] = None,
     extract_provider: Optional[str] = None,
@@ -389,6 +403,7 @@ async def _execute_one_phase(
             transport=transport,
             extract_transport=extract_transport,
             judge_transport=judge_transport,
+            custom_prompts=custom_prompts,
             judge_provider_ov=judge_provider_ov,
             judge_model_ov=judge_model_ov,
             extract_provider=extract_provider,
@@ -452,6 +467,7 @@ async def _run_content_phases_parallel(
     transport: str = "cli",
     extract_transport: str = "cli",
     judge_transport: str = "cli",
+    custom_prompts: Optional[dict] = None,
     judge_provider_ov: Optional[str] = None,
     judge_model_ov: Optional[str] = None,
     extract_provider: Optional[str] = None,
@@ -509,6 +525,7 @@ async def _run_content_phases_parallel(
                             transport=transport,
                             extract_transport=extract_transport,
                             judge_transport=judge_transport,
+                            custom_prompts=custom_prompts,
                             judge_provider_ov=judge_provider_ov,
                             judge_model_ov=judge_model_ov,
                             extract_provider=extract_provider,
@@ -659,6 +676,13 @@ async def _judge_with_timeout(**kwargs) -> phase_judge.JudgeOutcome:
         )
 
 
+def _custom_for(phase_name: str, custom_prompts: Optional[dict]) -> Optional[str]:
+    """The stripped custom prompt for this phase, or None (blank/missing).
+    `extract` is never overridden — callers pass it through harmlessly."""
+    c = (custom_prompts or {}).get(phase_name)
+    return c if (c and c.strip()) else None
+
+
 async def _execute_phase(
     *,
     job_id: UUID,
@@ -677,13 +701,17 @@ async def _execute_phase(
     transport: str = "cli",
     extract_transport: str = "cli",
     judge_transport: str = "cli",
+    custom_prompts: Optional[dict] = None,
     judge_provider_ov: Optional[str] = None,
     judge_model_ov: Optional[str] = None,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
+    _custom_md = _custom_for(phase_name, custom_prompts)
     if phase_name == "extract":
         prompt_hash = "builtin:extract:v2"
+    elif _custom_md is not None:
+        prompt_hash = "custom:sha256:" + hashlib.sha256(_custom_md.encode("utf-8")).hexdigest()
     else:
         prompt_hash = get_prompt_hash(subject, phase_name)
 
@@ -845,7 +873,7 @@ async def _execute_phase(
                 )
                 parsed_struct = None
         else:
-            base_phase_prompt = get_prompt(subject, phase_name)
+            base_phase_prompt = _custom_md if _custom_md is not None else get_prompt(subject, phase_name)
 
             def _make_run(prompt_text: str):
                 async def _run(prov: str, mdl: Optional[str]):
@@ -905,6 +933,7 @@ async def _execute_phase(
             judge_provider=_jp, judge_model=_jm,
             homework_job_id=job_id, phase_output_id=po_id,
             transport=judge_transport,
+            contract_override=_custom_md,
         )
         # Retry-once on unavailable: a transient CLI/parse failure (or timeout
         # degraded by C1's _judge_with_timeout) is worth one free retry.
@@ -961,6 +990,7 @@ async def _execute_phase(
                     judge_provider=_jp2, judge_model=_jm2,
                     homework_job_id=job_id, phase_output_id=po_id,
                     transport=judge_transport,
+                    contract_override=_custom_md,
                 )
             except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job (except api auth, below)
                 if (transport == "api" or judge_transport == "api") and phase_judge._is_auth_error(exc):

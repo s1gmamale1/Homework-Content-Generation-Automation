@@ -8,15 +8,17 @@ export const STATUS_COLOR: Record<string, string> = {
   pending: "rgba(255,255,255,0.14)", // faint
   cancelled: "rgba(255,255,255,0.30)", // muted
   failed: "oklch(0.70 0.16 25)", // red
+  not_started: "rgba(255,255,255,0.06)", // dim track — un-launched book lessons
 };
 
-export const STATUS_ORDER: JobStatus[] = [
+export const STATUS_ORDER: (JobStatus | "not_started")[] = [
   "done",
   "running",
   "cancelling",
   "pending",
   "cancelled",
   "failed",
+  "not_started",
 ];
 
 export function colorFor(status: string): string {

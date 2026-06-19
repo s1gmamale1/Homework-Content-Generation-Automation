@@ -8,8 +8,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
+
+from app.models.homework_job import HomeworkJob
 
 from app.auth import get_current_user
 from app.config import settings
@@ -341,6 +344,27 @@ async def delete_toc_entry(
     existing = await toc_repo.get(session, entry_id)
     if existing is None or existing.book_id != book_id:
         raise HTTPException(404, "toc entry not found")
+    # Don't delete a section out from under a worker — refuse while a job for it
+    # is in flight (terminal jobs: done/failed/cancelled are fine to clean up).
+    active = (
+        await session.execute(
+            select(HomeworkJob.id)
+            .where(
+                HomeworkJob.toc_entry_id == entry_id,
+                HomeworkJob.status.in_(["pending", "running", "cancelling"]),
+            )
+            .limit(1)
+        )
+    ).first()
+    if active is not None:
+        raise HTTPException(
+            409,
+            "This section has a job in progress — cancel it before deleting the section.",
+        )
+    # homework_jobs.toc_entry_id is NO ACTION (no cascade), so remove the
+    # section's jobs first. phase_outputs cascade automatically; agent_usages
+    # rows are kept (their job/phase FKs are SET NULL) for billing history.
+    await session.execute(delete(HomeworkJob).where(HomeworkJob.toc_entry_id == entry_id))
     await toc_repo.delete(session, entry_id)
     await session.commit()
 

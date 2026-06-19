@@ -17,7 +17,8 @@ class PhaseOutput(Base, UUIDPK):
     )
     phase_name: Mapped[str] = mapped_column(String(64), nullable=False)
     phase_order: Mapped[int] = mapped_column(Integer, nullable=False)
-    prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 128 (not 64): a custom-prompt hash is "custom:sha256:<64 hex>" = 78 chars.
+    prompt_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
     # The provider that ACTUALLY produced this phase (may differ from the job's
     # requested provider after failover). Nullable; job badge = requested.

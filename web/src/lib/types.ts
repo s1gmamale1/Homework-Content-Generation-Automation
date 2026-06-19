@@ -145,6 +145,9 @@ export interface Job {
   extract_transport: RoleTransport;
   judge_transport: RoleTransport;
   notion_skip_reason?: string | null;
+  /** Full content-phase list this job runs (subset closure, or full subject
+   *  flow); excludes extract. Lets the UI show queued phases up front. */
+  planned_phases?: string[];
 }
 
 export interface ProviderModelManifest {
@@ -332,7 +335,7 @@ export interface Worker {
   online: boolean;
 }
 
-export type BatchRollup = Partial<Record<JobStatus, number>>;
+export type BatchRollup = Partial<Record<JobStatus | "not_started", number>>;
 
 export interface BatchSummary {
   batch_id: string;
@@ -356,12 +359,12 @@ export interface BatchSummary {
 }
 
 export interface BatchLessonRow {
-  job_id: string;
+  job_id: string | null;
   toc_entry_id: string;
   section_title: string;
   order_index: number;
-  status: JobStatus;
-  attempts: number;
+  status: JobStatus | null;
+  attempts: number | null;
   current_phase: string | null;
   error_message: string | null;
 }

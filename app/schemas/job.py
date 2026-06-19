@@ -40,6 +40,8 @@ class JobOut(BaseModel):
     judge_provider: Optional[str] = None
     judge_model: Optional[str] = None
     phases: list[PhaseOut] = []
+    added_phases: list[str] = []   # deps the closure auto-added beyond the user's selection (response only)
+    planned_phases: list[str] = []  # the full content-phase list this job will run (subset closure, or the full subject flow); excludes extract
     notion_skip_reason: Optional[str] = None
     # fleet-api-4: never-pay-twice rebill warning (additive; absent on normal creates).
     # Set only when force=True and a prior done api job exists for this section.
@@ -54,6 +56,8 @@ class GenerateRequest(BaseModel):
     transport: str = "cli"       # "cli" (subprocess) vs "api" (claude/gemini only)
     extract_transport: str = "inherit"   # per-role override; "inherit" follows `transport`
     judge_transport: str = "inherit"
+    custom_prompts: dict[str, str] | None = None   # {phase: markdown}; replaces built-in. Not persisted to prompts/.
+    selected_phases: list[str] | None = None        # subset to run; None = full flow. Dependency-closure-expanded server-side.
     extract_provider: str | None = None   # None ⇒ settings.extract_provider
     extract_model: str | None = None
     judge_provider: str | None = None      # None ⇒ model_tiers auto-tier

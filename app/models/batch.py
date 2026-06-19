@@ -3,6 +3,7 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import CheckConstraint, ForeignKey, String, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, Timestamps, UUIDPK
@@ -28,6 +29,9 @@ class Batch(Base, UUIDPK, Timestamps):
     # Per-role transport overrides: "cli" | "api" | "inherit" (follow the batch's transport).
     extract_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
     judge_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
+    # Mirror of the launch's per-phase overrides + phase subset (provenance label).
+    custom_prompts: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    selected_phases: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     # Per-role provider/model launch-default labels (mirror homework_jobs).
     extract_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     extract_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)

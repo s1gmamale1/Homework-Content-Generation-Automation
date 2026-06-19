@@ -28,6 +28,7 @@ from app.services.agent_models import (
     validate_role_transport,
     validate_transport,
 )
+from app.services.flows import order_phase_selection, flow_for
 from app.services.providers import PROVIDERS
 from app.services.worker import RUNNING_JOBS
 
@@ -145,6 +146,26 @@ async def generate(
         if role_err is not None:
             raise HTTPException(400, role_err)
 
+    # ── custom prompts + phase subset validation (Gate 2/3, fail before DB) ──
+    custom_prompts = body.custom_prompts or None
+    if custom_prompts:
+        valid_phases = set(flow_for(book.subject))
+        for phase, md in custom_prompts.items():
+            if phase == "extract" or phase not in valid_phases:
+                raise HTTPException(400, f"custom_prompts: unknown phase {phase!r}")
+            if len(md) > 20_000:
+                raise HTTPException(
+                    400, f"custom_prompts[{phase}] too long ({len(md)} chars; max 20000).")
+
+    selected_phases: Optional[list[str]] = None
+    if body.selected_phases is not None:
+        try:
+            selected_phases = order_phase_selection(book.subject, body.selected_phases)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    # Gate 1: a custom/subset launch must never reuse a plain job.
+    force_fresh = body.force or bool(custom_prompts) or selected_phases is not None
     # Per-role provider/model: validate only explicit picks. The role's effective
     # transport decides whether an explicit model is mandatory.
     for role, prov, mdl, role_tx in (
@@ -167,7 +188,7 @@ async def generate(
     await jobs_repo.lock_section_for_generate(session, book_id, toc_entry_id)
 
     # Layer 2: natural-key idempotency.
-    if not body.force:
+    if not force_fresh:
         existing = await jobs_repo.find_active_for_section(
             session, book_id, toc_entry_id, transport=body.transport
         )
@@ -215,6 +236,8 @@ async def generate(
         transport=body.transport,
         extract_transport=body.extract_transport,
         judge_transport=body.judge_transport,
+        custom_prompts=custom_prompts,
+        selected_phases=selected_phases,
         extract_provider=body.extract_provider,
         extract_model=body.extract_model,
         judge_provider=body.judge_provider,
@@ -229,10 +252,14 @@ async def generate(
     # process polls `homework_jobs.status='pending'` and claims this row.
     # See `app/services/worker.py`.
     out = await _job_out(session, job.id)
-    # Attach never-pay-twice fields when force=True (additive; absent otherwise).
+    # Attach never-pay-twice fields when force=True (additive; absent otherwise). [C4]
     if prior_api_cost_usd is not None:
         out.prior_api_cost_usd = prior_api_cost_usd
         out.would_rebill = would_rebill
+    # We run exactly the picked phases now (no dependency auto-expansion), so
+    # nothing is ever auto-added. Field kept for response-shape stability. [PR37]
+    out.added_phases = []
+    response.status_code = 201
     return out
 
 
@@ -425,6 +452,14 @@ async def _job_out(session: AsyncSession, job_id: UUID) -> JobOut:
         raise HTTPException(404, "job not found")
     out = JobOut.model_validate(job)
     out.phases = [PhaseOut.model_validate(p) for p in job.phase_outputs]
+    # The full content-phase list this job runs, so the UI can show every phase
+    # (incl. not-yet-started ones as "queued") instead of only those that have
+    # already begun. Subset jobs stored their closure; full-packet jobs run the
+    # subject's whole flow. Either way `extract` is the head, excluded here.
+    try:
+        out.planned_phases = list(job.selected_phases) if job.selected_phases else list(flow_for(job.subject))
+    except KeyError:
+        out.planned_phases = list(job.selected_phases or [])
     return out
 
 
