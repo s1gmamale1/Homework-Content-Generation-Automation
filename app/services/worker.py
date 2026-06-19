@@ -300,11 +300,19 @@ class Worker:
         try:
             async with SessionLocal() as session:
                 async with session.begin():
+                    # Read the fleet-level budget state once per claim attempt.
+                    # If api_paused_at is non-NULL, the fleet gate is active and
+                    # no api-spending job may be claimed (cli jobs are unaffected).
+                    from app.repositories import budget as budget_repo
+                    budget_state = await budget_repo.get_state(session)
+                    fleet_api_paused = budget_state.api_paused_at is not None
+
                     job = await jobs_repo.claim_next_job(
                         session,
                         worker_id=self.id,
                         max_attempts=self.max_attempts,
                         capabilities=CAPABILITIES,
+                        fleet_api_paused=fleet_api_paused,
                     )
                 if job is None:
                     return None
