@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.repositories import batches as batches_repo
 from app.repositories import books as books_repo
+from app.repositories import budget as budget_repo
+from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.services import subjects
@@ -64,6 +66,9 @@ def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None 
         "complete": (tally.get("pending", 0) + tally.get("running", 0)
                      + tally.get("cancelling", 0)) == 0 and sum(tally.values()) > 0,
         "created_at": batch.created_at.isoformat(),
+        # Cost-safety fields (C4): None when the batch is not paused.
+        "paused_at": batch.paused_at.isoformat() if batch.paused_at else None,
+        "paused_reason": batch.paused_reason,
     }
 
 
@@ -160,6 +165,10 @@ async def launch_batch(
         judge_model=body.judge_model)
 
     created = adopted = skipped = resumed = 0
+    # fleet-api-4: per-section rebill warnings (only populated on force path).
+    # Format: [{toc_entry_id, prior_api_cost_usd, would_rebill}, ...]
+    rebill_warnings: list[dict] = []
+
     for t in targets:
         await jobs_repo.lock_section_for_generate(session, body.book_id, t.id)
         # Transport-scoped lookup (spec §9a): an api batch over a cli-generated
@@ -181,6 +190,18 @@ async def launch_batch(
             else:
                 skipped += 1
             continue
+
+        # fleet-api-4: force path — check for prior api spend before creating /
+        # resetting the job so the operator sees what they're about to re-bill.
+        if body.force:
+            prior_cost, had_done_api_job = await cost_repo.section_prior_api_cost(
+                session, body.book_id, t.id, body.transport)
+            rebill_warnings.append({
+                "toc_entry_id": str(t.id),
+                "prior_api_cost_usd": prior_cost,
+                "would_rebill": had_done_api_job and prior_cost > 0,
+            })
+
         # No active (pending/running/done) job → "remaining". Resume a saved
         # failed/cancelled section instead of discarding it; else create fresh.
         latest = await jobs_repo.latest_for_section(
@@ -210,7 +231,8 @@ async def launch_batch(
 
     payload = _rollup_payload(batch, tally, book.original_filename)
     payload.update(jobs_created=created, jobs_adopted=adopted,
-                   jobs_skipped=skipped, jobs_resumed=resumed)
+                   jobs_skipped=skipped, jobs_resumed=resumed,
+                   rebill_warnings=rebill_warnings)
     return payload
 
 
@@ -230,6 +252,33 @@ async def get_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)
     tally = await batches_repo.rollup_for_batch(session, batch_id)
     book = await books_repo.get(session, batch.book_id)
     return _rollup_payload(batch, tally, book.original_filename if book else None)
+
+
+@router.get("/jobs/batch/{batch_id}/cost")
+async def get_batch_cost(batch_id: UUID, session: AsyncSession = Depends(get_session)):
+    """Return per-batch API spend + pause state + fleet pause state.
+
+    Designed for operator observability: answers "what did this batch cost and
+    why is it paused?"  The fleet `budget_state` singleton is included so the
+    caller can distinguish a per-batch pause (budget cap reached on that batch)
+    from a fleet-level pause (daily fleet cap reached).
+    """
+    from app.models.batch import Batch
+    batch = await session.get(Batch, batch_id)
+    if batch is None:
+        raise HTTPException(404, "batch not found")
+    batch_cost = await cost_repo.batch_api_cost_usd(session, batch_id)
+    fleet_state = await budget_repo.get_state(session)
+    return {
+        "batch_id": str(batch_id),
+        "batch_api_cost_usd": batch_cost,
+        "paused_at": batch.paused_at.isoformat() if batch.paused_at else None,
+        "paused_reason": batch.paused_reason,
+        "fleet_api_paused_at": (
+            fleet_state.api_paused_at.isoformat() if fleet_state.api_paused_at else None
+        ),
+        "fleet_api_paused_reason": fleet_state.api_paused_reason,
+    }
 
 
 @router.post("/jobs/batch/{batch_id}/cancel")

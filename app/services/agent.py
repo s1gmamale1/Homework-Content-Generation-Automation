@@ -512,6 +512,7 @@ async def _record_usage(
                 prompt_tokens=int(usage.get("prompt_tokens") or 0),
                 output_tokens=int(usage.get("output_tokens") or 0),
                 cached_tokens=int(usage.get("cached_tokens") or 0),
+                cache_creation_tokens=int(usage.get("cache_creation_tokens") or 0),
                 total_tokens=int(usage.get("total_tokens") or 0),
                 raw_envelope=raw or None,
                 duration=_format_duration(duration_s),

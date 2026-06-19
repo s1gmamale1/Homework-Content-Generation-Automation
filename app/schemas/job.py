@@ -41,6 +41,10 @@ class JobOut(BaseModel):
     judge_model: Optional[str] = None
     phases: list[PhaseOut] = []
     notion_skip_reason: Optional[str] = None
+    # fleet-api-4: never-pay-twice rebill warning (additive; absent on normal creates).
+    # Set only when force=True and a prior done api job exists for this section.
+    prior_api_cost_usd: Optional[float] = None
+    would_rebill: Optional[bool] = None
 
 
 class GenerateRequest(BaseModel):

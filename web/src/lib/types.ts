@@ -349,6 +349,10 @@ export interface BatchSummary {
   lessons_covered: number;
   complete: boolean;
   created_at: string;
+  // Cost-safety fields (C4): null when the batch is not paused by the budget monitor.
+  // A polished cost-$ dashboard (showing batch_api_cost_usd prominently) defers to C6.
+  paused_at: string | null;
+  paused_reason: string | null;
 }
 
 export interface BatchLessonRow {

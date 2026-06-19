@@ -25,6 +25,7 @@ async def create(
     prompt_tokens: int = 0,
     output_tokens: int = 0,
     cached_tokens: int = 0,
+    cache_creation_tokens: int = 0,
     total_tokens: int = 0,
     raw_envelope: Optional[dict[str, Any]] = None,
     # ─── Legacy kwargs (kept for the gemini service which is being
@@ -84,6 +85,7 @@ async def create(
         prompt_tokens=prompt_tokens,
         output_tokens=output_tokens,
         cached_tokens=cached_tokens,
+        cache_creation_tokens=cache_creation_tokens,
         total_tokens=total_tokens,
         raw_envelope=envelope,
         duration=duration,

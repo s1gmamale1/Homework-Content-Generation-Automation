@@ -16,6 +16,7 @@ _EMPTY_USAGE = {
     "prompt_tokens": None,
     "output_tokens": None,
     "cached_tokens": None,
+    "cache_creation_tokens": 0,
     "total_tokens": None,
     "raw": {},
 }
@@ -65,6 +66,7 @@ def _gemini_usage(um) -> dict:
         "prompt_tokens": getattr(um, "prompt_token_count", None),
         "output_tokens": output,
         "cached_tokens": getattr(um, "cached_content_token_count", None),
+        "cache_creation_tokens": 0,
         "total_tokens": getattr(um, "total_token_count", None),
         "raw": {
             "prompt_token_count": getattr(um, "prompt_token_count", None),
@@ -118,6 +120,7 @@ def _claude_usage(u) -> dict:
         "prompt_tokens": inp,
         "output_tokens": out,
         "cached_tokens": cread,
+        "cache_creation_tokens": ccreate,
         "total_tokens": sum(terms) if terms else None,   # matches providers/claude.py
         "raw": {
             "input_tokens": inp,

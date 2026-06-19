@@ -163,6 +163,7 @@ rows `failed`, it doesn't delete them, so a retried job re-INSERTing would trip 
 | `operation` | String(64) NOT NULL | e.g. `lesson.extract`, `phase.boss-arena`, `judge.<phase>`; indexed |
 | `model_name` | String(128) NULL | |
 | `prompt_tokens` / `output_tokens` / `cached_tokens` / `total_tokens` | Integer NOT NULL default 0 | normalized across providers; **kimi reports 0s** (stream-json gap); `<cache>` rows are all-zero so $-math never double-counts |
+| `cache_creation_tokens` | Integer NOT NULL default 0 | claude-only cache-write tokens (migration 0030 C4); priced at 1.25× input via the `cache_write` rate (pricing-1b); the pricing-1 gap is CLOSED. |
 | `raw_envelope` | JSONB NULL | full provider envelope for forensics |
 | `duration` | String(50) NULL | |
 | `success` | Boolean NOT NULL default true | |
@@ -184,6 +185,8 @@ consumption counts**, not provider quotas.
 | `subject` / `grade` | NOT NULL / NULL | denormalized for display |
 | `provider` / `model` | NOT NULL / NULL | the launch-time pick |
 | `notion_source` | String(512) NULL | |
+| `paused_at` | DateTime NULL | C4 batch-pause primitive (migration 0031): set by the budget monitor when this batch's api spend exceeds `COST_CAP_BATCH_USD`; also reused by C5 fleet-ctrl-3 for manual/fleet-gate pauses. NULL = not paused. |
+| `paused_reason` | String(64) NULL | Machine-readable reason string (e.g. `"batch-cap"`, `"manual"`). Used by the budget monitor to reconcile its own pauses without touching batches paused by a different reason. |
 
 Design: **no stored counters**. Progress is computed on read (`rollup_for_batch`):
 `DISTINCT ON (toc_entry_id) … ORDER BY toc_entry_id, created_at DESC` scoped to the batch,
@@ -207,6 +210,19 @@ No mixins — tiny by design:
 **Liveness is derived, never stored**: `GET /workers` fetches `SELECT now()` and computes
 `online = last_heartbeat >= db_now - worker_registry_stale_seconds` (default 90 s = 3 missed
 30-s beats). Both sides of that comparison are DB-clock — see §2.
+
+### 3.8 `budget_state` — fleet-level API pause singleton (C4)
+
+Exactly **one row** (`id=1`) enforced by `CHECK(id = 1)`, seeded by migration 0032.
+No UUIDPK/Timestamps mixins — intentionally minimal.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer PK | always `1` (singleton) |
+| `api_paused_at` | DateTime NULL | set by the budget monitor when the fleet-daily api spend cap is exceeded; `claim_next_job` checks this and skips all api-transport jobs while non-NULL |
+| `api_paused_reason` | String(64) NULL | e.g. `"fleet-daily-cap"` |
+
+`budget_repo.get_state(session)` returns the singleton row; raises `RuntimeError` if the row is missing (indicates a broken migration state — run `alembic upgrade head`). The budget monitor clears the fleet pause if spend drops back below cap (e.g. after UTC midnight resets the 24h window). The singleton's pause state is distinct from per-batch `batches.paused_at` — an operator can check both via `GET /jobs/batch/{id}/cost` (returns `fleet_api_paused_at`/`fleet_api_paused_reason` alongside the per-batch fields).
 
 ---
 
@@ -344,7 +360,10 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | 26 | 0026_drop_difficulty | `a8c7e6d5f4b3` | drops the dead `homework_jobs.difficulty` column |
 | 27 | 0027_per_role_provider_model | `0027_per_role_provider_model` | adds nullable `extract_provider`/`extract_model`/`judge_provider`/`judge_model` to `homework_jobs` + `batches` (NULL = role default) |
 | 28 | 0028_enum_check_constraints | `0028_enum_check_constraints` | CHECK constraints on `status` and `transport` enum columns (cluster-1 hardening) |
-| 29 | 0029_judge_status | `0029_judge_status` | adds `phase_outputs.judge_status` (nullable String, no CHECK) — **HEAD** |
+| 29 | 0029_judge_status | `0029_judge_status` | adds `phase_outputs.judge_status` (nullable String, no CHECK) |
+| 30 | 0030_agent_usages_cache_creation | `0030_agent_usages_cache_creation` | adds `agent_usages.cache_creation_tokens` (C4 cost-safety) |
+| 31 | 0031_batch_pause_columns | `0031_batch_pause_columns` | adds `batches.paused_at` / `paused_reason` (C4 batch-pause primitive; reused by C5) |
+| 32 | 0032_budget_state | `0032_budget_state` | adds `budget_state` singleton table (id=1 CHECK) + seeds the row (C4 fleet-level pause) — **HEAD** |
 
 ---
 

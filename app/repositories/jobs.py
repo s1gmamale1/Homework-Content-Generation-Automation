@@ -6,7 +6,7 @@ from sqlalchemy import and_, func, literal, not_, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import HomeworkJob, PhaseOutput
+from app.models import Batch, HomeworkJob, PhaseOutput
 
 _TERMINAL_STATUSES = ("done", "failed", "cancelled")
 
@@ -258,6 +258,7 @@ async def claim_next_job(
     worker_id: str,
     max_attempts: int,
     capabilities: Optional[dict] = None,
+    fleet_api_paused: bool = False,
 ) -> Optional[HomeworkJob]:
     """Atomically claim the next pending job for this worker.
 
@@ -342,6 +343,38 @@ async def claim_next_job(
     )
     extract_ok = or_(not_(extract_needs_api), _provider_api_ok(resolved_extract_provider))
 
+    # Batch-pause gate: skip jobs whose batch is paused.
+    # CRITICAL: the IS NULL arm is REQUIRED — without it, `NULL NOT IN
+    # (non-empty set)` evaluates to SQL NULL (excluded), so every batchless
+    # /generate job (batch_id IS NULL) would become unclaimable the instant any
+    # batch is paused. Batchless jobs are never governed by the batch-pause gate.
+    not_in_paused_batch = or_(
+        HomeworkJob.batch_id.is_(None),
+        HomeworkJob.batch_id.not_in(
+            select(Batch.id).where(Batch.paused_at.is_not(None))
+        ),
+    )
+    # Fleet-daily global pause gate (Task 5 / C4): when fleet_api_paused=True,
+    # skip any job that would spend api tokens (transport='api' OR any resolved
+    # role is api). cli-only jobs are never blocked.
+    #
+    # job_resolved_api = job touches api on ANY role:
+    #   transport='api' (content phase is api), OR
+    #   judge is api-resolved (judge_transport='api', or 'inherit' under api job), OR
+    #   extract is api-resolved (extract_transport='api', or 'inherit' under api job).
+    #
+    # Reuses the already-computed judge_needs_api / extract_needs_api expressions.
+    #
+    # Gate logic: or_(~job_resolved_api, literal(not fleet_api_paused))
+    #   fleet_api_paused=False → literal(True) → or_ always True → NO-OP (every job passes).
+    #   fleet_api_paused=True  → literal(False) → or_ = ~job_resolved_api → only cli jobs pass.
+    job_resolved_api = or_(
+        HomeworkJob.transport == "api",
+        judge_needs_api,
+        extract_needs_api,
+    )
+    fleet_gate = or_(~job_resolved_api, literal(not fleet_api_paused))
+
     pick_stmt = (
         select(HomeworkJob.id)
         .where(HomeworkJob.status == "pending")
@@ -350,6 +383,8 @@ async def claim_next_job(
         .where(content_ok)
         .where(judge_ok)
         .where(extract_ok)
+        .where(not_in_paused_batch)
+        .where(fleet_gate)
         .order_by(HomeworkJob.priority.desc(), HomeworkJob.scheduled_at.asc())
         .limit(1)
         .with_for_update(skip_locked=True)
