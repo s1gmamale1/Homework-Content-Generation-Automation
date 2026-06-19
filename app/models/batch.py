@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
@@ -33,6 +34,9 @@ class Batch(Base, UUIDPK, Timestamps):
     judge_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     judge_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     notion_source: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # Pause primitive (C5 fleet-ctrl-3 reuses this). NULL = not paused.
+    paused_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    paused_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("book_id", "transport", name="uq_batches_book_id_transport"),

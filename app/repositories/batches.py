@@ -1,7 +1,7 @@
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -139,3 +139,50 @@ async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
         }
         for r in rows
     ]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Batch-pause primitive (reused by C5 fleet-ctrl-3 kill-switch / manual pause)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def pause_batch(
+    session: AsyncSession, batch_id: UUID, reason: str
+) -> None:
+    """Gate a batch: set paused_at=now() + paused_reason. Does NOT alter any
+    job row — pause affects only claim eligibility, never cancels in-flight work
+    ('never hard-cancel paid work' contract)."""
+    await session.execute(
+        update(Batch)
+        .where(Batch.id == batch_id)
+        .values(paused_at=func.now(), paused_reason=reason)
+    )
+
+
+async def unpause_batch(session: AsyncSession, batch_id: UUID) -> None:
+    """Lift the gate: clear paused_at + paused_reason for one batch."""
+    await session.execute(
+        update(Batch)
+        .where(Batch.id == batch_id)
+        .values(paused_at=None, paused_reason=None)
+    )
+
+
+async def unpause_by_reason(session: AsyncSession, reason: str) -> int:
+    """Lift the gate for ALL batches paused with this reason.
+    Returns the number of rows unpaused. Used by C5's kill-switch reset."""
+    result = await session.execute(
+        update(Batch)
+        .where(Batch.paused_at.is_not(None))
+        .where(Batch.paused_reason == reason)
+        .values(paused_at=None, paused_reason=None)
+    )
+    return result.rowcount or 0
+
+
+async def active_batch_ids(session: AsyncSession) -> list[UUID]:
+    """Return ids of all batches that are NOT currently paused."""
+    rows = await session.execute(
+        select(Batch.id).where(Batch.paused_at.is_(None))
+    )
+    return list(rows.scalars().all())

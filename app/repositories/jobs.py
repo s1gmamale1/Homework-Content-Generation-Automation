@@ -6,7 +6,7 @@ from sqlalchemy import and_, func, literal, not_, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import HomeworkJob, PhaseOutput
+from app.models import Batch, HomeworkJob, PhaseOutput
 
 _TERMINAL_STATUSES = ("done", "failed", "cancelled")
 
@@ -342,6 +342,17 @@ async def claim_next_job(
     )
     extract_ok = or_(not_(extract_needs_api), _provider_api_ok(resolved_extract_provider))
 
+    # Batch-pause gate: skip jobs whose batch is paused.
+    # CRITICAL: the IS NULL arm is REQUIRED — without it, `NULL NOT IN
+    # (non-empty set)` evaluates to SQL NULL (excluded), so every batchless
+    # /generate job (batch_id IS NULL) would become unclaimable the instant any
+    # batch is paused. Batchless jobs are never governed by the batch-pause gate.
+    not_in_paused_batch = or_(
+        HomeworkJob.batch_id.is_(None),
+        HomeworkJob.batch_id.not_in(
+            select(Batch.id).where(Batch.paused_at.is_not(None))
+        ),
+    )
     pick_stmt = (
         select(HomeworkJob.id)
         .where(HomeworkJob.status == "pending")
@@ -350,6 +361,7 @@ async def claim_next_job(
         .where(content_ok)
         .where(judge_ok)
         .where(extract_ok)
+        .where(not_in_paused_batch)
         .order_by(HomeworkJob.priority.desc(), HomeworkJob.scheduled_at.asc())
         .limit(1)
         .with_for_update(skip_locked=True)
