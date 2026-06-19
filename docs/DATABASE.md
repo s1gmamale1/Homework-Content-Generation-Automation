@@ -103,12 +103,12 @@ Relationship: `toc_entries` (cascade delete-orphan, ordered by `order_index`).
 | `id`, `created_at`, `updated_at` | mixins | |
 | `book_id` / `toc_entry_id` | FKs NOT NULL | `ix_homework_jobs_book_toc (book_id, toc_entry_id)` |
 | `subject` | String(64) NOT NULL | denormalized from book |
-| `status` | String(32) NOT NULL | `pending → running → done \| failed \| cancelling → cancelled`; `ix_homework_jobs_status` |
+| `status` | String(32) NOT NULL | `pending → running → done \| failed \| cancelling → cancelled`; `ix_homework_jobs_status`; **DB CHECK constraint** (migration 0028) restricts to this set |
 | `provider` | String(32) NOT NULL, server_default `'gemini'` | the user's pick; honored by every phase except the extract pin |
 | `model` | String(128) NULL | NULL = provider default (`_resolve_model`) |
 | `batch_id` | FK → batches NULL | fleet membership (migration 0023); `ix_homework_jobs_batch_id` |
-| `transport` | String(16) NOT NULL, server_default `'cli'` | Phase 4 (migration 0024): `cli` (subscription CLI auth, $0 marginal) vs `api` (pay-per-token keys); validation requires api ⇒ provider ∈ {claude, gemini} + explicit model |
-| `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 (migration 0025): per-role billing override, `cli \| api \| inherit`; `inherit` follows `transport` (`resolve_role_transport`) |
+| `transport` | String(16) NOT NULL, server_default `'cli'` | Phase 4 (migration 0024): `cli` (subscription CLI auth, $0 marginal) vs `api` (pay-per-token keys); validation requires api ⇒ provider ∈ {claude, gemini} + explicit model; **DB CHECK `cli\|api`** (migration 0028) |
+| `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 (migration 0025): per-role billing override, `cli \| api \| inherit`; `inherit` follows `transport` (`resolve_role_transport`); **DB CHECK `cli\|api\|inherit`** (migration 0028) |
 | `extract_provider` / `extract_model` / `judge_provider` / `judge_model` | String(32 / 128 / 32 / 128) NULL | migration 0027: per-role provider/model override; NULL = role default (extract → `settings.extract_*`; judge → `model_tiers` auto) |
 | `current_phase` | String(64) NULL | live progress marker |
 | `error_message` | Text NULL | |
@@ -176,8 +176,8 @@ consumption counts**, not provider quotas.
 |---|---|---|
 | `id`, `created_at`, `updated_at` | mixins | |
 | `book_id` | FK → books NOT NULL, part of **UNIQUE (`uq_batches_book_id_transport`)** | one batch per `(book, transport)` since migration 0024 — a different-transport re-launch forks a new batch (the cli-vs-api benchmark, spec §9); same-transport reuses |
-| `transport` | String(16) NOT NULL, server_default `'cli'` | launch-time transport (also on every member job) |
-| `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 launch-default labels stamped onto created jobs — **jobs carry the truth**; on re-launch these labels can go stale |
+| `transport` | String(16) NOT NULL, server_default `'cli'` | launch-time transport (also on every member job); **DB CHECK `cli\|api`** (migration 0028) |
+| `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 launch-default labels stamped onto created jobs — **jobs carry the truth**; on re-launch these labels can go stale; **DB CHECK `cli\|api\|inherit`** (migration 0028) |
 | `extract_provider` / `extract_model` / `judge_provider` / `judge_model` | String(32 / 128 / 32 / 128) NULL | migration 0027: per-role provider/model launch labels (NULL = role default); jobs carry the truth |
 | `subject` / `grade` | NOT NULL / NULL | denormalized for display |
 | `provider` / `model` | NOT NULL / NULL | the launch-time pick |
