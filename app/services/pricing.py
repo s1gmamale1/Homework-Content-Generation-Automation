@@ -21,15 +21,19 @@ from loguru import logger
 
 from app.services import agent_models
 
-# (provider, model) → {"input": $/Mtok, "output": $/Mtok, "cache_read": $/Mtok}
+# (provider, model) → {"input": $/Mtok, "output": $/Mtok, "cache_read": $/Mtok,
+#                       "cache_write": $/Mtok}
+# cache_write = 1.25 × input (Anthropic cache_creation_input_tokens rate).
+# Gemini entries intentionally have NO cache_write key — .get("cache_write", 0.0)
+# in cost_usd makes the missing key contribute $0, no error.
 PRICE_MAP: dict[tuple[str, str], dict[str, float]] = {
     # ─── Claude (VERIFIED) ────────────────────────────────────────────────
     # as of 2026-06-11, source: Anthropic pricing
     # (platform.claude.com/docs/en/about-claude/models/overview)
-    ("claude", "claude-opus-4-8"): {"input": 5.0, "output": 25.0, "cache_read": 0.50},
-    ("claude", "claude-opus-4-7"): {"input": 5.0, "output": 25.0, "cache_read": 0.50},
-    ("claude", "claude-sonnet-4-6"): {"input": 3.0, "output": 15.0, "cache_read": 0.30},
-    ("claude", "claude-haiku-4-5-20251001"): {"input": 1.0, "output": 5.0, "cache_read": 0.10},
+    ("claude", "claude-opus-4-8"): {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
+    ("claude", "claude-opus-4-7"): {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
+    ("claude", "claude-sonnet-4-6"): {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
+    ("claude", "claude-haiku-4-5-20251001"): {"input": 1.0, "output": 5.0, "cache_read": 0.10, "cache_write": 1.25},
 
     # ─── Gemini (VERIFIED) ────────────────────────────────────────────────
     # as of 2026-06-11, sources (both agree): ai.google.dev/gemini-api/docs/pricing
@@ -51,11 +55,10 @@ PRICE_MAP: dict[tuple[str, str], dict[str, float]] = {
 # per-provider semantics comment in cost_usd).
 _PROMPT_INCLUDES_CACHED: frozenset[str] = frozenset({"gemini"})
 
-# KNOWN BIAS (under-report): Anthropic bills cache WRITES at 1.25× input
-# (cache_creation_input_tokens), but agent_usages has no column for them —
-# the claude provider parses the value into the raw envelope only. When
-# prompt caching fires on claude api rows, the $ readout under-reports by
-# the unbilled cache-write premium. Tracked in WISHLIST (pricing-1).
+# Cache-write (pricing-1b, Task 2): Anthropic bills cache WRITES at 1.25× input
+# (cache_creation_input_tokens). As of this task, agent_usages.cache_creation_tokens
+# carries the value (added in Task 1) and cost_usd prices it via cache_write in
+# PRICE_MAP. The former under-report bias is now resolved.
 # Models we've already logged as missing, so the warning fires once per gap.
 _LOGGED_MISSING: set[tuple[str, Optional[str]]] = set()
 
@@ -94,4 +97,6 @@ def cost_usd(provider: str, model: Optional[str], usage: dict[str, Any]) -> floa
     input_cost = uncached_input * rates["input"] / 1_000_000
     output_cost = output * rates["output"] / 1_000_000
     cache_cost = cached * rates["cache_read"] / 1_000_000
-    return input_cost + output_cost + cache_cost
+    cache_creation = int(usage.get("cache_creation_tokens") or 0)
+    cache_write_cost = cache_creation * rates.get("cache_write", 0.0) / 1_000_000
+    return input_cost + output_cost + cache_cost + cache_write_cost
