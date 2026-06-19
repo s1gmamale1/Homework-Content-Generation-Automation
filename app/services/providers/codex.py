@@ -148,6 +148,7 @@ class Codex(Provider):
             "prompt_tokens": prompt_tokens,
             "output_tokens": output_tokens,
             "cached_tokens": cached_tokens,
+            "cache_creation_tokens": 0,
             "total_tokens": total_tokens,
             "raw": {"events": events, "usage": usage_event},
         }

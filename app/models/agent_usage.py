@@ -48,6 +48,7 @@ class AgentUsage(Base, UUIDPK, Timestamps):
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     cached_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cache_creation_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # Raw provider response envelope (usage_metadata, headers, etc.) as JSON —

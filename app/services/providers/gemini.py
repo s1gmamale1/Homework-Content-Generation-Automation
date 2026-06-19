@@ -99,6 +99,7 @@ class Gemini(Provider):
             "prompt_tokens": None,
             "output_tokens": None,
             "cached_tokens": None,
+            "cache_creation_tokens": 0,
             "total_tokens": None,
             "raw": {},
         }
@@ -147,6 +148,7 @@ class Gemini(Provider):
             "prompt_tokens": prompt_tokens,
             "output_tokens": output_tokens,
             "cached_tokens": cached_tokens,
+            "cache_creation_tokens": 0,
             "total_tokens": total_tokens,
             "raw": envelope,
         }

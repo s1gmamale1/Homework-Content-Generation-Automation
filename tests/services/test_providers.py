@@ -131,6 +131,7 @@ USAGE_KEYS = {
     "prompt_tokens",
     "output_tokens",
     "cached_tokens",
+    "cache_creation_tokens",
     "total_tokens",
     "raw",
 }

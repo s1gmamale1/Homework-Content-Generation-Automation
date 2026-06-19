@@ -62,6 +62,7 @@ class Claude(Provider):
                 "prompt_tokens": None,
                 "output_tokens": None,
                 "cached_tokens": None,
+                "cache_creation_tokens": None,
                 "total_tokens": None,
                 "raw": {},
             }
@@ -71,6 +72,7 @@ class Claude(Provider):
                 "prompt_tokens": None,
                 "output_tokens": None,
                 "cached_tokens": None,
+                "cache_creation_tokens": None,
                 "total_tokens": None,
                 "raw": {},
             }
@@ -102,6 +104,7 @@ class Claude(Provider):
             "prompt_tokens": prompt_tokens,
             "output_tokens": output_tokens,
             "cached_tokens": cached_tokens,
+            "cache_creation_tokens": cache_creation,
             "total_tokens": total_tokens,
             "raw": envelope,
         }

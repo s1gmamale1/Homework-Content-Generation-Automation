@@ -144,6 +144,7 @@ class Kimi(Provider):
             "prompt_tokens": 0,
             "output_tokens": 0,
             "cached_tokens": 0,
+            "cache_creation_tokens": 0,
             "total_tokens": 0,
             "raw": {"events": events},
         }
