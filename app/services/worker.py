@@ -40,6 +40,7 @@ from loguru import logger
 
 from app.config import settings
 from app.db import SessionLocal
+from app.repositories import budget as budget_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import workers as workers_repo
 from app.services import model_tiers, pipeline
@@ -303,7 +304,6 @@ class Worker:
                     # Read the fleet-level budget state once per claim attempt.
                     # If api_paused_at is non-NULL, the fleet gate is active and
                     # no api-spending job may be claimed (cli jobs are unaffected).
-                    from app.repositories import budget as budget_repo
                     budget_state = await budget_repo.get_state(session)
                     fleet_api_paused = budget_state.api_paused_at is not None
 

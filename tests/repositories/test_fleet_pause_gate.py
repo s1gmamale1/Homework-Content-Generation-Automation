@@ -198,56 +198,67 @@ def test_claim_next_job_retains_all_existing_predicates():
 # Test 4 — SQL shape: fleet_api_paused=True includes the blocking predicate
 # ---------------------------------------------------------------------------
 
+# UNIQUE fleet-gate fragment proof (run this to understand why these assertions bite):
+#
+# The fleet gate in jobs.py is:
+#   fleet_gate = or_(~job_resolved_api, literal(not fleet_api_paused))
+#
+# Compiled SQL (paused=True):  ... OR false)
+# Compiled SQL (paused=False): ... OR true)
+#
+# The ambient SQL (without fleet gate) contains 'AND true' (from capability literal()s)
+# and 'NOT' + 'api' (from judge_ok/extract_ok predicates), but NEVER 'OR false)' or
+# 'OR true)' — those tokens are UNIQUE to the fleet gate disjunction arm.
+# Verified manually: remove .where(fleet_gate) → neither 'OR false)' nor 'OR true)'
+# appears in the pick SQL.
+
 @pytest.mark.asyncio
 async def test_fleet_paused_sql_contains_exclusion_predicate():
-    """When fleet_api_paused=True, the compiled pick SQL must exclude api jobs.
+    """When fleet_api_paused=True, the compiled pick SQL must contain 'OR false)'.
 
-    BITE: removing fleet_gate from the .where() chain makes this assertion fail
-    because 'true' literal replaces the NOT expression (api jobs would pass).
+    BITE: removing .where(fleet_gate) from the pick_stmt in jobs.py causes this
+    assertion to fail — 'OR false)' is ONLY emitted by the fleet gate disjunction
+    arm (or_(~job_resolved_api, literal(False))). The ambient predicates (judge_ok,
+    extract_ok) emit 'NOT' and 'api' but never 'OR false)'.
 
-    The compiled SQL for fleet_api_paused=True should NOT contain 'true' as the
-    sole fleet predicate — it must contain the NOT(...) exclusion clause.
+    Red-proof: the ambient SQL without fleet gate contains 'AND true' (capability
+    literals) and 'NOT(...api...)' (judge/extract), but NOT 'OR false)'.
     """
     sql = await _compile_pick_stmt(fleet_api_paused=True)
 
-    # The fleet gate must appear — presence of 'api' in a NOT context.
-    # When paused=True: literal(not True) = literal(False), so the gate is:
-    # NOT (transport='api' OR ...) — the NOT form must be present for api exclusion.
-    assert "fleet_gate" not in sql, "fleet_gate is a Python name, not SQL — checking SQL content"
-
-    # The compiled SQL must contain the transport='api' reference within a NOT context
-    # (SQLAlchemy renders ~or_(...) as NOT (... OR ...) in PostgreSQL dialect).
-    # We check for the characteristic NOT + api combination.
-    sql_upper = sql.upper()
-    assert "NOT" in sql_upper and "'api'" in sql.lower(), (
-        f"fleet_api_paused=True must produce NOT(...'api'...) in SQL; got:\n{sql}"
+    # 'OR false)' is the compiled form of or_(..., literal(False)) — uniquely the
+    # fleet gate arm. The judge/extract predicates use NOT(...) but never 'OR false)'.
+    assert "OR false)" in sql, (
+        f"fleet_api_paused=True must produce 'OR false)' in pick SQL (fleet disjunction "
+        f"arm with literal(False)); got:\n{sql}"
     )
 
-    # Extra sanity: the pick statement must still have the standard predicates.
+    # Extra sanity: standard predicates must still be present.
     assert "pending" in sql, "pick stmt must still filter on status='pending'"
     assert "scheduled_at" in sql.lower(), "pick stmt must still filter on scheduled_at"
 
 
 @pytest.mark.asyncio
 async def test_fleet_unpaused_sql_is_noop():
-    """When fleet_api_paused=False, the compiled SQL must be a no-op (true literal).
+    """When fleet_api_paused=False, the compiled pick SQL must contain 'OR true)'.
 
-    literal(not False) = literal(True) → the or_(~job_resolved_api, True) is always
-    True, so the fleet predicate disappears as a constant in the compiled SQL.
+    BITE: removing .where(fleet_gate) from the pick_stmt in jobs.py causes this
+    assertion to fail — 'OR true)' is ONLY emitted by the fleet gate disjunction
+    arm (or_(~job_resolved_api, literal(True))). The ambient predicates emit
+    'AND true' (capability literals) but never 'OR true)'.
 
-    BITE: if fleet_api_paused=False still injects a blocking clause, api jobs would
-    be blocked even when the fleet gate is inactive.
+    Red-proof: the ambient SQL without fleet gate contains 'AND true' but NOT 'OR true)'.
     """
     sql = await _compile_pick_stmt(fleet_api_paused=False)
 
-    # When fleet_api_paused=False, literal(True) makes the or_ trivially true.
-    # SQLAlchemy optimizes this: the WHERE clause should contain 'true' or
-    # the NOT expression should NOT appear (no blocking clause for fleet gate).
-    # The key invariant: a cli job should not be blocked.
-    # We verify the SQL doesn't contain the specific NOT(transport='api') fleet gate.
-    # (The batch-pause gate's NOT IN may still contain 'api' in table names — ignore.)
+    # 'OR true)' is the compiled form of or_(..., literal(True)) — uniquely the
+    # fleet gate arm with no-op semantics (always passes, every job eligible).
+    assert "OR true)" in sql, (
+        f"fleet_api_paused=False must produce 'OR true)' in pick SQL (fleet disjunction "
+        f"arm with literal(True) = no-op); got:\n{sql}"
+    )
 
-    # Pick statement must still have the standard filters (gate is no-op, not removed).
+    # Pick statement must still have the standard filters.
     assert "pending" in sql, "pick stmt must filter on status='pending' even when fleet unpaused"
     assert "scheduled_at" in sql.lower(), "pick stmt must filter on scheduled_at"
 
@@ -306,42 +317,49 @@ async def test_clear_api_paused_sql_shape():
 
 @pytest.mark.asyncio
 async def test_fleet_unpaused_literal_true_in_sql():
-    """fleet_api_paused=False must produce literal(True) in the fleet gate arm.
+    """fleet_api_paused=False must produce 'OR true)' in the fleet gate arm.
 
-    literal(not False) = literal(True). SQLAlchemy renders this as 'true' in
-    the WHERE clause. If the gate were always-blocking, this would be 'false'.
+    literal(not False) = literal(True). SQLAlchemy renders this as 'OR true)' in
+    the fleet disjunction arm: or_(~job_resolved_api, literal(True)).
 
     BITE: If fleet_api_paused=True is hardcoded (never checking the param),
-    the literal would be 'false' and this test would fail on 'true' assertion.
+    the literal would be 'false' and 'OR true)' would NOT appear. If the fleet
+    gate is removed entirely, 'OR true)' also disappears (only 'AND true' remains
+    from the capability literals — a different token). Both removal and hardcoding
+    cause this test to fail.
+
+    Note: the vacuous 'TRUE' check (just 'AND true' from capability literals) is
+    NOT sufficient — 'AND true' appears even without the fleet gate. The specific
+    fragment 'OR true)' is unique to the fleet gate arm.
     """
     sql = await _compile_pick_stmt(fleet_api_paused=False)
-    sql_upper = sql.upper()
 
-    # When fleet_api_paused=False: literal(True) → 'true' appears in SQL.
-    # The or_(~job_resolved_api, literal(True)) simplifies but 'true' still
-    # appears in the compiled output for the fleet arm.
-    assert "TRUE" in sql_upper, (
-        f"fleet_api_paused=False must inject literal(True) into pick SQL (no-op gate); got:\n{sql}"
+    # 'OR true)' is the compiled form of or_(..., literal(True)) — uniquely the
+    # fleet gate disjunction arm. Capability literals emit 'AND true', not 'OR true)'.
+    assert "OR true)" in sql, (
+        f"fleet_api_paused=False must inject 'OR true)' (fleet disjunction no-op arm); got:\n{sql}"
     )
 
 
 @pytest.mark.asyncio
 async def test_fleet_paused_literal_false_in_sql():
-    """fleet_api_paused=True must produce literal(False) in the fleet gate arm.
+    """fleet_api_paused=True must produce 'OR false)' in the fleet gate arm.
 
     literal(not True) = literal(False). The or_ becomes or_(~job_resolved_api, false)
     which reduces to NOT job_resolved_api — only non-api jobs pass.
 
     BITE: If fleet_api_paused=False is hardcoded (always no-op), the literal
-    would be 'true' and the NOT(...) exclusion clause would not block api jobs.
+    would be 'true' and 'OR false)' would NOT appear. If the fleet gate is removed
+    entirely, 'OR false)' also disappears — the ambient SQL has no 'OR false)' token.
+    Both scenarios fail this assertion.
     """
     sql = await _compile_pick_stmt(fleet_api_paused=True)
-    sql_upper = sql.upper()
 
-    # When fleet_api_paused=True: literal(False) → 'false' appears in the gate arm.
-    # The or_ is NOT trivially true so the NOT(job_resolved_api) clause is emitted.
-    assert "FALSE" in sql_upper, (
-        f"fleet_api_paused=True must inject literal(False) (blocking mode); got:\n{sql}"
+    # 'OR false)' is the compiled form of or_(..., literal(False)) — uniquely the
+    # fleet gate disjunction arm in blocking mode. Without the fleet gate, 'OR false)'
+    # is absent (ambient SQL only has 'AND true' from capability literals).
+    assert "OR false)" in sql, (
+        f"fleet_api_paused=True must inject 'OR false)' (fleet disjunction blocking arm); got:\n{sql}"
     )
 
 
@@ -371,4 +389,116 @@ def test_worker_claim_one_reads_budget_state():
     )
     assert "api_paused_at" in src, (
         "_claim_one must check api_paused_at to determine fleet pause state"
+    )
+
+
+# ---------------------------------------------------------------------------
+# C4 — Behavioral SQL scenarios (offline, compiled-SQL form)
+# ---------------------------------------------------------------------------
+# These three tests verify the semantics of the fleet gate in concrete job
+# scenarios by inspecting the compiled SQL disjunction arm.
+#
+# Each test drives _compile_pick_stmt with a specific fleet_api_paused value
+# and then checks whether the pick SQL would ADMIT or BLOCK a job with given
+# transport characteristics.  The compiled SQL is a correct proxy because the
+# WHERE clause is what the database evaluates — if 'OR false)' is present,
+# the fleet arm can only pass when ~job_resolved_api is true (cli-only jobs).
+#
+# BITE for all three: removing .where(fleet_gate) from pick_stmt in jobs.py
+# removes BOTH 'OR false)' AND 'OR true)' from the SQL, failing assertions 1
+# and 2 below; swapping True↔False in literal() fails assertion 3.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_c4_paused_api_job_blocked_by_fleet_arm():
+    """C4-1: fleet_api_paused=True — api-resolved job is blocked by fleet gate.
+
+    Scenario: a job with transport='api' (content phase spends api tokens).
+    Expected: fleet arm emits 'OR false)' — the disjunction is
+      NOT(transport='api' OR ...) OR false
+    which only passes when ~job_resolved_api is true. Since transport='api'
+    makes job_resolved_api true, the fleet arm evaluates to false, blocking
+    the row from being claimed.
+
+    BITE: removing .where(fleet_gate) eliminates 'OR false)' — the assertion
+    fails, and the fleet gate no longer prevents api job claims during a pause.
+    """
+    sql = await _compile_pick_stmt(fleet_api_paused=True)
+
+    # Fleet arm must be in blocking mode: OR false) is the compiled literal(False).
+    # An api job satisfies 'homework_jobs.transport = 'api'' in job_resolved_api,
+    # so ~job_resolved_api is False, and False OR false = false — row excluded.
+    assert "OR false)" in sql, (
+        "paused=True fleet arm must emit 'OR false)' — api-resolved jobs are excluded; "
+        f"got:\n{sql}"
+    )
+    # The fleet disjunction must reference transport = 'api' in the NOT arm so that
+    # an api job's transport field satisfies job_resolved_api and gets filtered out.
+    assert "homework_jobs.transport = 'api'" in sql, (
+        "fleet arm must reference homework_jobs.transport = 'api' to identify api jobs"
+    )
+
+
+@pytest.mark.asyncio
+async def test_c4_paused_cli_job_passes_fleet_arm():
+    """C4-2: fleet_api_paused=True — cli-only job is NOT blocked by fleet gate.
+
+    Scenario: a job with transport='cli', judge_transport='cli' (or 'inherit'
+    under cli), extract_transport='cli' (or 'inherit' under cli). Such a job
+    touches NO api roles — job_resolved_api is false, so ~job_resolved_api is
+    true, and true OR false = true: the fleet arm passes the row.
+
+    The SQL assertion: 'OR false)' is in the pick SQL (gate is in blocking mode),
+    but the NOT(...) clause for a cli job evaluates to NOT(false OR false OR ...) =
+    NOT(false) = true, so the row passes. The SQL structure guarantees this:
+    transport='cli' does NOT satisfy 'homework_jobs.transport = 'api'', so the
+    job_resolved_api disjunction is false, and NOT(false) = true.
+
+    BITE: removing .where(fleet_gate) eliminates 'OR false)' — the assertion
+    fails; the gate no longer distinguishes cli from api jobs during a pause.
+    """
+    sql = await _compile_pick_stmt(fleet_api_paused=True)
+
+    # Gate is active (blocking mode): 'OR false)' must be present.
+    assert "OR false)" in sql, (
+        "paused=True fleet arm must emit 'OR false)' regardless of individual job transport; "
+        f"got:\n{sql}"
+    )
+    # The NOT arm must include all three role checks so a fully-cli job (all roles cli)
+    # satisfies ~job_resolved_api and passes through.
+    assert "homework_jobs.extract_transport = 'api'" in sql, (
+        "fleet arm must check extract_transport = 'api' so cli-extract jobs pass ~job_resolved_api"
+    )
+    assert "homework_jobs.judge_transport = 'api'" in sql, (
+        "fleet arm must check judge_transport = 'api' so cli-judge jobs pass ~job_resolved_api"
+    )
+
+
+@pytest.mark.asyncio
+async def test_c4_unpaused_fleet_arm_is_noop():
+    """C4-3: fleet_api_paused=False — fleet arm is strictly no-op ('OR true)').
+
+    Scenario: fleet gate inactive. literal(not False) = literal(True), so the
+    fleet disjunction is or_(~job_resolved_api, True) — always true for every job.
+    No job (api or cli) is excluded. The compiled SQL must contain 'OR true)'
+    rather than 'OR false)'.
+
+    This is the strict no-op guarantee: the fleet gate must NEVER exclude any job
+    when fleet_api_paused=False, regardless of transport.
+
+    BITE: removing .where(fleet_gate) eliminates 'OR true)' — the assertion fails.
+    Hardcoding fleet_api_paused=True would emit 'OR false)' instead, breaking api
+    jobs even when the daily limit hasn't been hit.
+    """
+    sql = await _compile_pick_stmt(fleet_api_paused=False)
+
+    # Gate is inactive: 'OR true)' must be present, never 'OR false)'.
+    assert "OR true)" in sql, (
+        "paused=False fleet arm must emit 'OR true)' (no-op — all jobs pass); "
+        f"got:\n{sql}"
+    )
+    assert "OR false)" not in sql, (
+        "paused=False must NOT emit 'OR false)' — that would block api jobs incorrectly; "
+        f"got:\n{sql}"
     )
