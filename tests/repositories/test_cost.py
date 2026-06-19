@@ -84,38 +84,47 @@ class _Job:
 
 
 class _BatchSession:
-    """Fake session: returns usage rows on the first execute (the JOIN query).
+    """Fake session: holds BOTH cli and api rows; filters to auth_mode='api'.
 
-    The real ``batch_api_cost_usd`` runs a single SELECT with a JOIN; we
-    return the pre-filtered rows directly (the WHERE auth_mode='api' is what
-    we're testing at the Python level — the fake returns ONLY the rows we say,
-    proving the function sums them correctly).
+    The real ``batch_api_cost_usd`` builds a JOIN + WHERE auth_mode='api'.
+    Previously the fake only ever returned the api rows, so deleting the WHERE
+    clause from cost.py would not be caught — the cli rows were never offered.
+
+    Now we inject all rows (cli + api) and simulate the SQL filter: any row
+    whose auth_mode != 'api' is dropped before returning, exactly as the DB
+    would do.  This means ``test_batch_api_cost_excludes_cli_rows`` will FAIL
+    if the WHERE clause is ever removed from cost.py.
     """
 
     def __init__(self, api_rows: list[_Usage], cli_rows: list[_Usage]):
-        # Real function builds a JOIN + auth_mode='api' filter → only api rows
-        # survive to the scalars() call.  We simulate the DB doing the filter.
-        self._api_rows = api_rows
-        self._cli_rows = cli_rows
+        # All rows offered to the session (cli + api); the fake will filter.
+        self._all_rows = list(api_rows) + list(cli_rows)
         self.execute_count = 0
 
     async def execute(self, stmt: Any):
         self.execute_count += 1
-        # Simulate DB honouring the auth_mode='api' filter.
+        # Simulate DB honouring the auth_mode='api' WHERE clause.
+        filtered = [r for r in self._all_rows if r.auth_mode == "api"]
         result = MagicMock()
-        result.scalars.return_value.all.return_value = self._api_rows
+        result.scalars.return_value.all.return_value = filtered
         return result
 
 
 class _FleetSession:
-    """Fake session for fleet_api_cost_usd — single query, api rows only."""
+    """Fake session for fleet_api_cost_usd — holds cli + api rows; filters.
 
-    def __init__(self, api_rows: list[_Usage]):
-        self._api_rows = api_rows
+    Same rationale as _BatchSession: inject both kinds of rows so the
+    auth_mode='api' WHERE clause is actually exercised by the fake.
+    """
+
+    def __init__(self, api_rows: list[_Usage], cli_rows: list[_Usage] | None = None):
+        self._all_rows = list(api_rows) + list(cli_rows or [])
 
     async def execute(self, stmt: Any):
+        # Simulate DB honouring the auth_mode='api' WHERE clause.
+        filtered = [r for r in self._all_rows if r.auth_mode == "api"]
         result = MagicMock()
-        result.scalars.return_value.all.return_value = self._api_rows
+        result.scalars.return_value.all.return_value = filtered
         return result
 
 
@@ -146,7 +155,13 @@ class _SectionSession:
 
 @pytest.mark.asyncio
 async def test_batch_api_cost_excludes_cli_rows():
-    """CLI rows contribute $0 and are excluded from batch sum."""
+    """CLI rows are excluded from the batch sum by the auth_mode='api' filter.
+
+    The session is seeded with BOTH a cli row and an api row (same provider,
+    same token counts).  If the WHERE auth_mode='api' clause were removed from
+    cost.py, the cli row would be counted and cost would double to $6.00,
+    failing this test.
+    """
     from app.repositories.cost import batch_api_cost_usd
 
     bid = uuid.uuid4()
@@ -163,14 +178,15 @@ async def test_batch_api_cost_excludes_cli_rows():
         provider="claude",
         model_name="claude-sonnet-4-6",
         auth_mode="cli",
-        prompt_tokens=1_000_000,
+        prompt_tokens=1_000_000,  # same size — would add $3.00 if not filtered
         output_tokens=0,
     )
-    # Session returns only api rows (DB-side filter; cli row excluded)
+    # Session holds BOTH rows; the fake honours the auth_mode='api' filter.
     session = _BatchSession(api_rows=[api_row], cli_rows=[cli_row])
     cost = await batch_api_cost_usd(session, bid)
 
-    # 1 M prompt tokens @ claude-sonnet-4-6 $3/Mtok input = $3.00
+    # Only the api row should be counted: 1M prompt × $3/Mtok = $3.00
+    # If cli row leaked through, cost would be $6.00.
     assert cost == pytest.approx(3.0, rel=1e-6)
 
 
@@ -260,6 +276,40 @@ async def test_batch_api_cost_claude_cache_write():
 # ---------------------------------------------------------------------------
 # fleet_api_cost_usd tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fleet_api_cost_excludes_cli_rows():
+    """CLI rows are excluded from the fleet sum by the auth_mode='api' filter.
+
+    The session is seeded with a cli row alongside an api row (equal token
+    counts).  Without the WHERE auth_mode='api' clause the cost would double;
+    this test would catch such a regression offline.
+    """
+    from app.repositories.cost import fleet_api_cost_usd
+
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    api_row = _Usage(
+        provider="claude",
+        model_name="claude-sonnet-4-6",
+        auth_mode="api",
+        prompt_tokens=1_000_000,
+        output_tokens=0,
+        started_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    cli_row = _Usage(
+        provider="claude",
+        model_name="claude-sonnet-4-6",
+        auth_mode="cli",
+        prompt_tokens=1_000_000,  # same size — would add $3.00 if not filtered
+        output_tokens=0,
+        started_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    session = _FleetSession(api_rows=[api_row], cli_rows=[cli_row])
+    cost = await fleet_api_cost_usd(session, since)
+
+    # Only api row: 1M prompt × $3/Mtok = $3.00
+    assert cost == pytest.approx(3.0, rel=1e-6)
 
 
 @pytest.mark.asyncio
