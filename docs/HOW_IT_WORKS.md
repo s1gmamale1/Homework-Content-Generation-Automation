@@ -197,11 +197,17 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
 - **Batches** (`batches` table + `POST /jobs/batch`): launch a whole book as one batch —
   one job per lesson, fanned into the shared queue. Lessons that already have an active job
   are skipped (or adopted, if they don't belong to a batch yet), so re-launching is a safe
-  "top-up." Progress rollups are computed on read, one vote per lesson.
+  "top-up." Progress rollups are computed on read, one vote per lesson. A whole batch can be
+  **cancelled** (`POST /jobs/batch/{id}/cancel` → cancel *every* non-terminal job: pending +
+  running, i.e. halt the batch) and **resumed** (`POST /jobs/batch/{id}/resume` → re-enqueue
+  failed/cancelled jobs, reusing already-`done` phases). A re-launch over a batch with
+  partially-done lessons offers `relaunch_mode` **resume** (default — keep saved phases) vs
+  **discard** (regenerate from scratch); the preview is strict zero-write.
 - **The `/fleet` page**: launch a Notion subject end-to-end (fetch → TOC-extract →
   launch), with a one-line worker-liveness strip (`OnlineStrip`).
 - **The `/monitor` page**: watch batch funnels fill, see PC liveness cards, and drill
-  into a batch's lessons to cancel/retry individual ones.
+  into a batch's lessons to cancel/retry individual ones. Batch-wide cancel-all / resume /
+  relaunch live on the `/fleet` launcher card.
 
 One caveat worth knowing: the API's *startup* orphan sweep resets **all** `running` jobs to
 `pending` (it assumes a single host). In a multi-pod fleet that would steal live workers'
@@ -411,9 +417,12 @@ Key endpoints:
 - `POST /books/from-notion` — fetch a subject's textbook straight from Notion (by subject
   page id + grade) and ingest it like an upload, TOC extraction included.
 - `POST /jobs/batch` — fleet launch: fan out one job per lesson of a `toc_ready` book
-  (skipping/adopting lessons that already have jobs). `GET /jobs/batches`,
+  (skipping/adopting lessons that already have jobs; `relaunch_mode` resume|discard for a
+  re-launch over partially-done lessons). `GET /jobs/batches`,
   `GET /jobs/batches/{id}`, and `GET /jobs/batches/{id}/jobs` serve the funnel rollups and
-  the per-lesson drill-in. *(Registration order matters: these static routes are registered
+  the per-lesson drill-in. `POST /jobs/batch/{id}/cancel` halts the batch (cancels all
+  pending + running jobs); `POST /jobs/batch/{id}/resume` re-enqueues failed/cancelled jobs
+  (reusing `done` phases). *(Registration order matters: these static routes are registered
   before the dynamic `/jobs/{job_id}`, or FastAPI would parse "batches" as a job id.)*
 - `GET /workers` — fleet liveness: every registered worker plus a derived online/offline flag.
 - `GET /notion/grades` / `GET /notion/grades/{id}/subjects` — the Notion pickers that feed
