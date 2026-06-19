@@ -197,7 +197,7 @@ async def judge(
         # model_tiers.resolve_judge (per-role override + self-grade guard); use
         # them as-given. contract_override carries a per-phase custom prompt.
         contract = contract_override or get_prompt(subject, phase_name)
-        flags = _fidelity_flags(output_md, lesson_context)   # Task A2; stub returns [] until A2 lands
+        flags = _fidelity_flags(output_md, lesson_context)   # C3 advisory year-fidelity hints
         judge_prompt = _build_judge_prompt(
             contract=contract, output_md=output_md, fidelity_flags=flags,
         )
