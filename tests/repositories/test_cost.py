@@ -488,43 +488,76 @@ _SKIP_REASON = "set RUN_DB_INTEGRATION=1 with a live DATABASE_URL to run"
 @pytest.mark.asyncio
 async def test_batch_api_cost_integration():
     """Integration: seed two batches with mixed cli/api usage → per-batch sum."""
-    from app.db import get_async_session
+    from sqlalchemy import delete
+
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    from app.models.book import Book
+    from app.models.homework_job import HomeworkJob
+    from app.models.toc_entry import TOCEntry
     from app.repositories import agent_usage as usage_repo
     from app.repositories import batches as batches_repo
     from app.repositories import books as books_repo
     from app.repositories import jobs as jobs_repo
     from app.repositories.cost import batch_api_cost_usd
 
-    async with get_async_session() as session:
-        # Create minimal fixtures
-        book = await books_repo.create(session, filename="test.pdf", page_count=1, file_size=1)
-        batch_a = await batches_repo.get_or_create_for_book(session, book.id, transport="api")
-        batch_b = await batches_repo.get_or_create_for_book(session, book.id, transport="cli")
+    book_id: uuid.UUID | None = None
+    try:
+        async with SessionLocal() as session:
+            # Seed Book + real TOCEntry (toc_entry_id FK is NOT NULL).
+            book = await books_repo.create(
+                session, subject="math", original_filename="test.pdf",
+                content_sha256="a" * 64, file_size_bytes=1,
+            )
+            book_id = book.id
 
-        toc_id = uuid.uuid4()  # stub — FK is nullable
-        job_a = await jobs_repo.create(
-            session, book_id=book.id, toc_entry_id=toc_id,
-            subject="math", batch_id=batch_a.id, transport="api",
-        )
-        job_b = await jobs_repo.create(
-            session, book_id=book.id, toc_entry_id=toc_id,
-            subject="math", batch_id=batch_b.id, transport="cli",
-        )
+            toc = TOCEntry(
+                book_id=book.id,
+                section_title="Test Section",
+                order_index=0,
+            )
+            session.add(toc)
+            await session.flush()
 
-        await usage_repo.create(
-            session, operation="phase.run", provider="claude",
-            model_name="claude-sonnet-4-6", auth_mode="api",
-            homework_job_id=job_a.id, prompt_tokens=1_000_000,
-        )
-        await usage_repo.create(
-            session, operation="phase.run", provider="claude",
-            model_name="claude-sonnet-4-6", auth_mode="cli",
-            homework_job_id=job_b.id, prompt_tokens=1_000_000,
-        )
-        await session.commit()
+            _bkw = dict(subject="math", grade=None, provider="claude",
+                        model="claude-sonnet-4-6")
+            batch_a = await batches_repo.get_or_create_for_book(
+                session, book_id=book.id, transport="api", **_bkw)
+            batch_b = await batches_repo.get_or_create_for_book(
+                session, book_id=book.id, transport="cli", **_bkw)
 
-        cost_a = await batch_api_cost_usd(session, batch_a.id)
-        cost_b = await batch_api_cost_usd(session, batch_b.id)
+            job_a = await jobs_repo.create(
+                session, book_id=book.id, toc_entry_id=toc.id,
+                subject="math", batch_id=batch_a.id, transport="api",
+            )
+            job_b = await jobs_repo.create(
+                session, book_id=book.id, toc_entry_id=toc.id,
+                subject="math", batch_id=batch_b.id, transport="cli",
+            )
 
-    assert cost_a == pytest.approx(3.0, rel=1e-4)  # 1M input × $3/Mtok
-    assert cost_b == pytest.approx(0.0, rel=1e-4)  # cli only → $0
+            await usage_repo.create(
+                session, operation="phase.run", provider="claude",
+                model_name="claude-sonnet-4-6", auth_mode="api",
+                homework_job_id=job_a.id, prompt_tokens=1_000_000,
+            )
+            await usage_repo.create(
+                session, operation="phase.run", provider="claude",
+                model_name="claude-sonnet-4-6", auth_mode="cli",
+                homework_job_id=job_b.id, prompt_tokens=1_000_000,
+            )
+            await session.commit()
+
+            cost_a = await batch_api_cost_usd(session, batch_a.id)
+            cost_b = await batch_api_cost_usd(session, batch_b.id)
+
+        assert cost_a == pytest.approx(3.0, rel=1e-4)  # 1M input × $3/Mtok
+        assert cost_b == pytest.approx(0.0, rel=1e-4)  # cli only → $0
+    finally:
+        # Clean up seeded rows (CASCADE deletes toc_entries/jobs/usages via FK).
+        if book_id is not None:
+            async with SessionLocal() as s:
+                await s.execute(delete(HomeworkJob).where(HomeworkJob.book_id == book_id))
+                await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
+                await s.execute(delete(Batch).where(Batch.book_id == book_id))
+                await s.execute(delete(Book).where(Book.id == book_id))
+                await s.commit()
