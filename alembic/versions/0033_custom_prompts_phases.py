@@ -8,8 +8,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision: str = "c1d2e3f4a5b6"
-down_revision: Union[str, Sequence[str], None] = "a8c7e6d5f4b3"
+revision: str = "0033_custom_prompts_phases"
+down_revision: Union[str, Sequence[str], None] = "0032_budget_state"
 branch_labels = None
 depends_on = None
 

@@ -9,8 +9,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "d2e3f4a5b6c7"
-down_revision: Union[str, Sequence[str], None] = "c1d2e3f4a5b6"
+revision: str = "0034_widen_prompt_hash"
+down_revision: Union[str, Sequence[str], None] = "0033_custom_prompts_phases"
 branch_labels = None
 depends_on = None
 
