@@ -2,8 +2,8 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Every claim here was re-verified against branch `Nggaev-v2`, head `0032_budget_state`
-> (0032), 2026-06-19. When this doc and the code disagree, the code wins — fix the doc.
+> Every claim here was re-verified against branch `Nggaev-v2`, head `0034_widen_prompt_hash`
+> (0034), 2026-06-19. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
 
@@ -28,9 +28,12 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`0032_budget_state`** (0028 = enum CHECK constraints,
+also runs it on deploy). Current head: **`0034_widen_prompt_hash`** (0028 = enum CHECK constraints,
 0029 = `phase_outputs.judge_status`, 0030 = `agent_usages.cache_creation_tokens`,
-0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton). Full chain in §7.
+0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton,
+0033 = `custom_prompts`/`selected_phases` JSONB on `homework_jobs`+`batches`,
+0034 = widen `phase_outputs.prompt_hash` 64→128 for `custom:sha256:<hex>` provenance).
+Full chain in §7. (Revision IDs stay ≤32 chars — `alembic_version.version_num` is VARCHAR(32).)
 
 ---
 
@@ -112,6 +115,8 @@ Relationship: `toc_entries` (cascade delete-orphan, ordered by `order_index`).
 | `transport` | String(16) NOT NULL, server_default `'cli'` | Phase 4 (migration 0024): `cli` (subscription CLI auth, $0 marginal) vs `api` (pay-per-token keys); validation requires api ⇒ provider ∈ {claude, gemini} + explicit model; **DB CHECK `cli\|api`** (migration 0028) |
 | `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 (migration 0025): per-role billing override, `cli \| api \| inherit`; `inherit` follows `transport` (`resolve_role_transport`); **DB CHECK `cli\|api\|inherit`** (migration 0028) |
 | `extract_provider` / `extract_model` / `judge_provider` / `judge_model` | String(32 / 128 / 32 / 128) NULL | migration 0027: per-role provider/model override; NULL = role default (extract → `settings.extract_*`; judge → `model_tiers` auto) |
+| `custom_prompts` | JSONB NULL | migration 0033 (PR37): `{phase: markdown}` per-phase prompt overrides replacing the built-in contract; NULL = built-in for all phases. Also seen by the judge as `contract_override`. |
+| `selected_phases` | JSONB NULL | migration 0033 (PR37): subset of content phases to run (dependency-closure-expanded at launch); NULL = full subject flow |
 | `current_phase` | String(64) NULL | live progress marker |
 | `error_message` | Text NULL | |
 | `started_at` / `completed_at` | NULL | `completed_at` is host-clock (record-only, see §2) |
@@ -138,7 +143,7 @@ UUIDPK only — **no** `created_at`/`updated_at`; it has `started_at`/`completed
 |---|---|---|
 | `job_id` | FK → homework_jobs **ondelete=CASCADE** NOT NULL | |
 | `phase_name` / `phase_order` | String(64) / Integer NOT NULL | |
-| `prompt_hash` | String(64) NOT NULL | keys the cross-job extract cache |
+| `prompt_hash` | String(128) NOT NULL | keys the cross-job extract cache; widened 64→128 in 0034 to hold a `custom:sha256:<hex>` custom-prompt provenance hash (78 chars) |
 | `model_name` | String(128) NOT NULL | |
 | `provider` | String(32) NULL | who actually produced it (failover may differ from the job's provider; migration 0019) |
 | `output_md` | Text NULL | **the deliverable** — per-phase markdown; there is no assembly step and no structured-JSON columns (dropped in 0018) |
@@ -186,6 +191,7 @@ consumption counts**, not provider quotas.
 | `subject` / `grade` | NOT NULL / NULL | denormalized for display |
 | `provider` / `model` | NOT NULL / NULL | the launch-time pick |
 | `notion_source` | String(512) NULL | |
+| `custom_prompts` / `selected_phases` | JSONB NULL | migration 0033 (PR37): launch-default labels (same shape as on `homework_jobs`); **jobs carry the truth**. On a plain same-transport re-launch with no prompts these are NOT overwritten (the ON-CONFLICT only sets them when the launch carries them — a COALESCE would fail because Python None serializes to JSONB `'null'`, not SQL NULL). |
 | `paused_at` | DateTime NULL | C4 batch-pause primitive (migration 0031): set by the budget monitor when this batch's api spend exceeds `COST_CAP_BATCH_USD`; also reused by C5 fleet-ctrl-3 for manual/fleet-gate pauses. NULL = not paused. |
 | `paused_reason` | String(64) NULL | Machine-readable reason string (e.g. `"batch-cap"`, `"manual"`). Used by the budget monitor to reconcile its own pauses without touching batches paused by a different reason. |
 
@@ -364,7 +370,9 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | 29 | 0029_judge_status | `0029_judge_status` | adds `phase_outputs.judge_status` (nullable String, no CHECK) |
 | 30 | 0030_agent_usages_cache_creation | `0030_agent_usages_cache_creation` | adds `agent_usages.cache_creation_tokens` (C4 cost-safety) |
 | 31 | 0031_batch_pause_columns | `0031_batch_pause_columns` | adds `batches.paused_at` / `paused_reason` (C4 batch-pause primitive; reused by C5) |
-| 32 | 0032_budget_state | `0032_budget_state` | adds `budget_state` singleton table (id=1 CHECK) + seeds the row (C4 fleet-level pause) — **HEAD** |
+| 32 | 0032_budget_state | `0032_budget_state` | adds `budget_state` singleton table (id=1 CHECK) + seeds the row (C4 fleet-level pause) |
+| 33 | 0033_custom_prompts_phases | `0033_custom_prompts_phases` | adds nullable `custom_prompts`/`selected_phases` JSONB to `homework_jobs` + `batches` (PR37 custom-prompt upload + phase-picker) |
+| 34 | 0034_widen_prompt_hash | `0034_widen_prompt_hash` | widens `phase_outputs.prompt_hash` 64→128 for `custom:sha256:<hex>` provenance (PR37) — **HEAD** |
 
 ---
 

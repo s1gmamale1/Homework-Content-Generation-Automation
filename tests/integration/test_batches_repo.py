@@ -121,3 +121,97 @@ async def test_rollup_is_per_lesson_latest():
             await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
             await s.execute(delete(Book).where(Book.id == book_id))
             await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_includes_unlaunched_lessons():
+    """list_jobs returns one row per book lesson (full TOC), launched lessons
+    carry status, un-launched lessons come back with job_id/status None — and
+    rollup_for_batch is whole-book (launched statuses + a not_started count)."""
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    from app.models.book import Book
+    from app.models.toc_entry import TOCEntry
+    from app.models.homework_job import HomeworkJob
+    from app.repositories import batches as batches_repo
+    from app.repositories import jobs as jobs_repo
+
+    async with SessionLocal() as s:
+        book, tocs = await _seed_book_with_lessons(s, n=3)
+        batch = await batches_repo.get_or_create_for_book(
+            s, book_id=book.id, subject="math-algebra", grade=None,
+            provider="claude", model=None, transport="cli")
+        # Launch ONLY lessons 0 and 1; lesson 2 stays un-launched.
+        await jobs_repo.create(s, book_id=book.id, toc_entry_id=tocs[0].id,
+                               subject="math-algebra", batch_id=batch.id)
+        await jobs_repo.create(s, book_id=book.id, toc_entry_id=tocs[1].id,
+                               subject="math-algebra", batch_id=batch.id)
+        await s.commit()
+        book_id, batch_id, third_toc = book.id, batch.id, tocs[2].id
+    try:
+        async with SessionLocal() as s:
+            rows = await batches_repo.list_jobs(s, batch_id)
+            tally = await batches_repo.rollup_for_batch(s, batch_id)
+
+        # All three lessons present, ordered by order_index.
+        assert [r["order_index"] for r in rows] == [0, 1, 2]
+        # Launched lessons carry a job + status.
+        assert rows[0]["job_id"] is not None and rows[0]["status"] == "pending"
+        assert rows[1]["job_id"] is not None and rows[1]["status"] == "pending"
+        # Un-launched lesson: present, but no job/status.
+        third = next(r for r in rows if r["toc_entry_id"] == str(third_toc))
+        assert third["job_id"] is None
+        assert third["status"] is None
+        assert third["section_title"] == "L2"
+        # Rollup is whole-book: 2 launched (pending) + 1 not_started = 3 total.
+        assert tally.get("pending") == 2, f"expected 2 launched pending, got {tally}"
+        assert tally.get("not_started") == 1, f"expected 1 not_started, got {tally}"
+        assert sum(tally.values()) == 3, f"denominator must be whole book (3), got {tally}"
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(HomeworkJob).where(HomeworkJob.book_id == book_id))
+            await s.execute(delete(Batch).where(Batch.book_id == book_id))
+            await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
+            await s.execute(delete(Book).where(Book.id == book_id))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_relaunch_without_prompts_preserves_stored():
+    """A plain same-transport re-launch/top-up (no custom prompts) must NOT NULL
+    out the batch's stored custom_prompts/selected_phases (the ON-CONFLICT bug).
+    COALESCE keeps the existing provenance when the incoming value is NULL."""
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    from app.models.book import Book
+    from app.models.toc_entry import TOCEntry
+    from app.repositories import batches as batches_repo
+
+    async with SessionLocal() as s:
+        book, _ = await _seed_book_with_lessons(s)
+        await s.commit()
+        book_id = book.id
+    try:
+        # First launch carries custom prompts + a phase subset.
+        async with SessionLocal() as s:
+            b1 = await batches_repo.get_or_create_for_book(
+                s, book_id=book_id, subject="math-algebra", grade=None,
+                provider="claude", model=None, transport="api",
+                custom_prompts={"reading": "x"}, selected_phases=["reading"])
+            await s.commit()
+            b1_id = b1.id
+        # Plain same-transport re-launch: no custom prompts passed.
+        async with SessionLocal() as s:
+            b2 = await batches_repo.get_or_create_for_book(
+                s, book_id=book_id, subject="math-algebra", grade=None,
+                provider="claude", model=None, transport="api")
+            await s.commit()
+            assert b2.id == b1_id, "same (book, transport) must reuse the batch"
+            assert b2.custom_prompts == {"reading": "x"}, "custom_prompts must NOT be nulled"
+            assert b2.selected_phases == ["reading"], "selected_phases must NOT be nulled"
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(Batch).where(Batch.book_id == book_id))
+            await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
+            await s.execute(delete(Book).where(Book.id == book_id))
+            await s.commit()

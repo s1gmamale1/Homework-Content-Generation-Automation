@@ -26,35 +26,49 @@ async def get_or_create_for_book(
     judge_provider: Optional[str] = None,
     judge_model: Optional[str] = None,
     notion_source: Optional[str] = None,
+    custom_prompts: Optional[dict] = None,
+    selected_phases: Optional[list] = None,
 ) -> Batch:
     """Race-safe find-or-create THE batch for a (book, transport) pair
     (UNIQUE(book_id, transport) + ON CONFLICT). Core insert bypasses the ORM
     Python defaults, so id/created_at/updated_at are supplied explicitly. On
     conflict the existing row is kept (only updated_at is touched) and its id is
     returned — a different-transport re-launch forks a new batch."""
+    insert = pg_insert(Batch).values(
+        id=uuid4(),
+        book_id=book_id,
+        subject=subject,
+        grade=grade,
+        provider=provider,
+        model=model,
+        transport=transport,
+        extract_transport=extract_transport,
+        judge_transport=judge_transport,
+        extract_provider=extract_provider,
+        extract_model=extract_model,
+        judge_provider=judge_provider,
+        judge_model=judge_model,
+        notion_source=notion_source,
+        custom_prompts=custom_prompts,
+        selected_phases=selected_phases,
+        created_at=func.now(),
+        updated_at=func.now(),
+    )
+    # On conflict, only OVERWRITE custom_prompts/selected_phases when this launch
+    # actually carries them; a plain re-launch/top-up (None) must leave an earlier
+    # custom launch's provenance intact. NOTE: a COALESCE(excluded.x, batches.x)
+    # does NOT work here — SQLAlchemy serializes Python None into a JSONB column as
+    # JSON 'null' (not SQL NULL), so COALESCE keeps the JSON-null and still wipes
+    # the stored value. Conditionally omitting the column from set_ is the fix.
+    on_conflict_set: dict = {"updated_at": func.now()}
+    if custom_prompts is not None:
+        on_conflict_set["custom_prompts"] = insert.excluded.custom_prompts
+    if selected_phases is not None:
+        on_conflict_set["selected_phases"] = insert.excluded.selected_phases
     stmt = (
-        pg_insert(Batch)
-        .values(
-            id=uuid4(),
-            book_id=book_id,
-            subject=subject,
-            grade=grade,
-            provider=provider,
-            model=model,
-            transport=transport,
-            extract_transport=extract_transport,
-            judge_transport=judge_transport,
-            extract_provider=extract_provider,
-            extract_model=extract_model,
-            judge_provider=judge_provider,
-            judge_model=judge_model,
-            notion_source=notion_source,
-            created_at=func.now(),
-            updated_at=func.now(),
-        )
-        .on_conflict_do_update(
+        insert.on_conflict_do_update(
             index_elements=["book_id", "transport"],
-            set_={"updated_at": func.now()},
+            set_=on_conflict_set,
         )
         .returning(Batch.id)
     )
@@ -63,10 +77,14 @@ async def get_or_create_for_book(
 
 
 async def rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dict[str, int]:
-    """Per-lesson-latest status tally for a batch: one row per toc_entry (its
-    newest job), then GROUP BY status. Mirrors `jobs.latest_by_section` (DISTINCT
-    ON) but scoped to batch_id, so retries/top-ups can't inflate the count. The
-    denominator is sum(tally.values())."""
+    """Per-lesson-latest status tally for a batch over the WHOLE book: one row
+    per launched toc_entry (its newest job) GROUP BY status — DISTINCT ON, so
+    retries/top-ups can't inflate the count — PLUS a synthetic ``not_started``
+    count for the book's lessons that have no job in this batch yet. The
+    denominator (sum of values) is therefore the book's full lesson count, so a
+    partial launch reads as e.g. 5/47, not 5/5."""
+    from app.models.toc_entry import TOCEntry
+
     latest = (
         select(HomeworkJob.status)
         .where(HomeworkJob.batch_id == batch_id)
@@ -77,7 +95,23 @@ async def rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dict[str, i
     rows = await session.execute(
         select(latest.c.status, func.count()).group_by(latest.c.status)
     )
-    return {status: count for status, count in rows.all()}
+    tally = {status: count for status, count in rows.all()}
+
+    book_id = (
+        await session.execute(select(Batch.book_id).where(Batch.id == batch_id))
+    ).scalar_one_or_none()
+    if book_id is not None:
+        total = (
+            await session.execute(
+                select(func.count())
+                .select_from(TOCEntry)
+                .where(TOCEntry.book_id == book_id)
+            )
+        ).scalar_one()
+        not_started = total - sum(tally.values())
+        if not_started > 0:
+            tally["not_started"] = not_started
+    return tally
 
 
 async def list_with_rollups(session: AsyncSession) -> list[dict]:
@@ -98,10 +132,19 @@ async def list_with_rollups(session: AsyncSession) -> list[dict]:
 
 
 async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
-    """Per-lesson-latest rows for a batch: one row per toc_entry (its newest job),
-    joined to the lesson title, ordered by order_index. Mirrors rollup_for_batch's
-    DISTINCT ON but returns rows; row count == the rollup denominator."""
+    """One row per lesson in the batch's BOOK (full TOC), LEFT-joined to the
+    latest job per toc_entry within this batch. Launched lessons carry their
+    job's status/fields; un-launched lessons come back with job_id/status None.
+    Ordered by order_index. Companion to rollup_for_batch's whole-book tally:
+    this returns the rows, that returns the per-status counts (incl. not_started)."""
     from app.models.toc_entry import TOCEntry
+
+    book_id = (
+        await session.execute(select(Batch.book_id).where(Batch.id == batch_id))
+    ).scalar_one_or_none()
+    if book_id is None:
+        return []
+
     latest = (
         select(
             HomeworkJob.id.label("job_id"),
@@ -118,17 +161,20 @@ async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
     )
     stmt = (
         select(
-            latest.c.job_id, latest.c.toc_entry_id, latest.c.status,
-            latest.c.attempts, latest.c.current_phase, latest.c.error_message,
+            latest.c.job_id, latest.c.status, latest.c.attempts,
+            latest.c.current_phase, latest.c.error_message,
+            TOCEntry.id.label("toc_entry_id"),
             TOCEntry.section_title, TOCEntry.order_index,
         )
-        .join(TOCEntry, TOCEntry.id == latest.c.toc_entry_id)
+        .select_from(TOCEntry)
+        .outerjoin(latest, latest.c.toc_entry_id == TOCEntry.id)
+        .where(TOCEntry.book_id == book_id)
         .order_by(TOCEntry.order_index)
     )
     rows = await session.execute(stmt)
     return [
         {
-            "job_id": str(r.job_id),
+            "job_id": str(r.job_id) if r.job_id is not None else None,
             "toc_entry_id": str(r.toc_entry_id),
             "section_title": r.section_title,
             "order_index": r.order_index,

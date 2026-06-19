@@ -3,6 +3,7 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, Timestamps, UUIDPK
@@ -28,6 +29,13 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # Per-role transport overrides: "cli" | "api" | "inherit" (follow the job's transport).
     extract_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
     judge_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
+    # Per-phase custom prompt overrides {phase_name: markdown} for this job.
+    # NULL/{} = all built-in. Never written to prompts/.
+    custom_prompts: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Ordered content-phase subset to run (dependency-closure-expanded at launch).
+    # NULL = run the full subject flow. Named selected_phases (not `phases`) to
+    # avoid colliding with JobOut.phases (the phase-outputs list).
+    selected_phases: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     # Per-role provider/model overrides. NULL = fall back to the role default
     # (extract -> settings.extract_provider/model; judge -> model_tiers auto).
     extract_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)

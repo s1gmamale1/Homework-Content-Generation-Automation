@@ -13,7 +13,10 @@ export function Layout() {
   // mounts exactly once and SSE/query effects don't double-subscribe.
   const outlet = useOutlet();
   const wide =
-    pathname.startsWith("/usage") || pathname.startsWith("/library") || pathname.startsWith("/fleet");
+    pathname.startsWith("/usage") ||
+    pathname.startsWith("/library") ||
+    pathname.startsWith("/fleet") ||
+    pathname.startsWith("/monitor");
 
   return (
     <div className="flex min-h-screen flex-col bg-(--color-canvas)">

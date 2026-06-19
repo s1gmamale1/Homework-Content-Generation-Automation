@@ -9,6 +9,7 @@ import {
   Eye,
   Loader2,
   RefreshCcw,
+  Sparkles,
 } from "lucide-react";
 import { motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
@@ -26,7 +27,7 @@ import type { JobStatus, Transport } from "@/lib/types";
 import { BACK_PILL, GLASS_BTN, PRIMARY_BTN } from "@/lib/ui";
 import { cn, formatPhaseName, formatTokens } from "@/lib/utils";
 
-type PhaseUiStatus = "running" | "done" | "failed";
+type PhaseUiStatus = "pending" | "running" | "done" | "failed" | "stopped";
 
 interface PhaseUi {
   name: string;
@@ -48,7 +49,6 @@ function Chip({ children }: { children: React.ReactNode }) {
 export function JobPage() {
   const { id } = useParams<{ id: string }>();
   const [phases, setPhases] = useState<Record<string, PhaseUi>>({});
-  const [order, setOrder] = useState<string[]>([]);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [parents, setParents] = useState<{ bookId: string; sectionId: string } | null>(null);
@@ -77,10 +77,16 @@ export function JobPage() {
     try {
       const updated = await api.retryJob(id);
       queryClient.setQueryData(["job", id], updated);
-      // Reset local UI state so the SSE stream takes over again.
+      // Reset local UI state so the SSE stream takes over again, re-seeding the
+      // full planned phase list as "pending" so the retry shows every phase.
       setError(null);
-      setPhases({});
-      setOrder([]);
+      setPhases(() => {
+        const next: Record<string, PhaseUi> = {};
+        (updated.planned_phases ?? []).forEach((name, i) => {
+          next[name] = { name, order: i + 1, status: "pending" };
+        });
+        return next;
+      });
       setStatus(updated.status);
       toast.success("Retry queued — pipeline restarting");
     } catch (err) {
@@ -126,7 +132,6 @@ export function JobPage() {
       };
       return { ...prev, [name]: merged };
     });
-    setOrder((prev) => (prev.includes(name) ? prev : [...prev, name]));
   }
 
   useEffect(() => {
@@ -148,6 +153,20 @@ export function JobPage() {
             output: p.output_md ?? undefined,
             tokens_input: p.tokens_input,
             tokens_output: p.tokens_output,
+          });
+        }
+        // Seed every phase this job WILL run (incl. ones not yet started) as
+        // "pending", so the user sees the full plan up front instead of phases
+        // popping in one wave at a time. Only fills gaps — never downgrades a
+        // phase that already has a real status. order = index+1 (extract is 0).
+        const planned = j.planned_phases ?? [];
+        if (planned.length) {
+          setPhases((prev) => {
+            const next = { ...prev };
+            planned.forEach((name, i) => {
+              if (!next[name]) next[name] = { name, order: i + 1, status: "pending" };
+            });
+            return next;
           });
         }
         setStatus(j.status);
@@ -226,10 +245,34 @@ export function JobPage() {
     };
   }, [id, status]);
 
-  const visiblePhases = order
-    .map((name) => phases[name])
-    .filter((p): p is PhaseUi => Boolean(p))
-    .filter((p) => p.name !== "extract" && p.name !== "classify");
+  /**
+   * Once a job is cancelling/cancelled, stop the spinners: a phase that was
+   * in flight never receives a terminal SSE event (the stream is torn down on
+   * cancel), so without this it keeps showing "Running" and the page looks like
+   * it's still generating. Flip any lingering "running" phase to "stopped".
+   */
+  useEffect(() => {
+    if (status !== "cancelling" && status !== "cancelled") return;
+    setPhases((prev) => {
+      let changed = false;
+      const next: Record<string, PhaseUi> = {};
+      for (const [name, p] of Object.entries(prev)) {
+        // Running phases were killed; pending phases will never start now.
+        if (p.status === "running" || p.status === "pending") {
+          next[name] = { ...p, status: "stopped" };
+          changed = true;
+        } else {
+          next[name] = p;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [status]);
+
+  const visiblePhases = Object.values(phases)
+    .filter((p) => p.name !== "extract" && p.name !== "classify")
+    // Show in canonical flow order regardless of which wave finished first.
+    .sort((a, b) => a.order - b.order);
 
   const doneCount = visiblePhases.filter((p) => p.status === "done").length;
   const totalCount = visiblePhases.length;
@@ -403,33 +446,56 @@ export function JobPage() {
 
 function PipelineWarmup() {
   // Shown after the user clicks Generate and lands on /job/:id, but before
-  // the first phase_started event arrives over SSE. Without this, the page
-  // looks blank for the few seconds it takes the worker to pick up the job.
-  const placeholders = [0, 1, 2, 3];
+  // the first phase_started event arrives over SSE. We don't yet know HOW MANY
+  // phases will run (a 1-phase pick vs the full packet), so we show a single
+  // indeterminate loader — never a fixed row count that would flash the wrong
+  // number and then collapse.
+  const RAINBOW =
+    "conic-gradient(from 0deg, #7c5cff, #4d8dff, #22d3ee, #34d399, #f9d65c, #f472b6, #7c5cff)";
   return (
-    <div className="mt-7">
-      <div className="inline-flex items-center gap-2 font-mono text-[0.7rem] font-medium uppercase tracking-[0.16em] text-[#9cc0ff]">
-        <Loader2 className="size-3.5 animate-spin" />
-        Warming up the pipeline
-      </div>
-      <p className="mt-2 max-w-[55ch] text-sm leading-relaxed text-white/55">
-        Queueing the section and reserving a worker. The first phase
-        usually starts within a few seconds.
-      </p>
-      <ol className="mt-5 flex flex-col gap-2" aria-hidden>
-        {placeholders.map((i) => (
-          <li
-            key={i}
-            className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-2xl border border-white/[0.09] bg-white/[0.04] px-3.5 py-3 backdrop-blur-xl"
+    <div className="mt-7 overflow-hidden rounded-2xl border border-white/[0.09] bg-white/[0.04] px-5 py-12 backdrop-blur-xl">
+      <div className="flex flex-col items-center text-center">
+        <div className="relative grid size-28 place-items-center">
+          {/* Soft RGB glow that breathes behind the ring. */}
+          <motion.div
+            className="absolute size-28 rounded-full blur-2xl"
+            style={{ background: RAINBOW }}
+            animate={{ rotate: 360, opacity: [0.25, 0.5, 0.25] }}
+            transition={{
+              rotate: { duration: 3.5, repeat: Infinity, ease: "linear" },
+              opacity: { duration: 2.2, repeat: Infinity, ease: "easeInOut" },
+            }}
+          />
+          {/* The spinning rainbow ring (conic gradient, hollow centre via mask). */}
+          <motion.div
+            className="size-24 rounded-full"
+            style={{
+              background: RAINBOW,
+              WebkitMask:
+                "radial-gradient(farthest-side, transparent calc(100% - 8px), #000 calc(100% - 8px))",
+              mask: "radial-gradient(farthest-side, transparent calc(100% - 8px), #000 calc(100% - 8px))",
+            }}
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1.1, repeat: Infinity, ease: "linear" }}
+          />
+          {/* Pulsing sparkle core. */}
+          <motion.div
+            className="absolute grid place-items-center"
+            animate={{ scale: [1, 1.18, 1] }}
+            transition={{ duration: 1.4, repeat: Infinity, ease: "easeInOut" }}
           >
-            <span className="w-7 font-mono text-[0.7rem] tabular-nums text-white/40">
-              {String(i + 1).padStart(2, "0")}
-            </span>
-            <span className="h-3 animate-pulse rounded-md bg-white/[0.08]" />
-            <Loader2 className="size-3 animate-spin text-white/40" />
-          </li>
-        ))}
-      </ol>
+            <Sparkles className="size-7 text-white/85 drop-shadow-[0_0_10px_rgba(124,92,255,0.8)]" />
+          </motion.div>
+        </div>
+
+        <p className="mt-7 font-mono text-[0.72rem] font-medium uppercase tracking-[0.18em] text-[#9cc0ff]">
+          Warming up the pipeline
+        </p>
+        <p className="mt-2 max-w-[44ch] text-sm leading-relaxed text-white/55">
+          Reserving a worker and reading the lesson. Your phases will appear here as
+          soon as the first one starts.
+        </p>
+      </div>
     </div>
   );
 }
@@ -551,6 +617,14 @@ function PhaseRow({ phase }: { phase: PhaseUi }) {
 }
 
 function PhaseStatus({ status }: { status: PhaseUiStatus }) {
+  if (status === "pending") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[0.7rem] font-medium text-white/35">
+        <span className="size-1.5 rounded-full bg-white/30" />
+        Queued
+      </span>
+    );
+  }
   if (status === "running") {
     return (
       <span className="inline-flex items-center gap-1.5 text-[0.7rem] font-medium text-white/55">
@@ -564,6 +638,14 @@ function PhaseStatus({ status }: { status: PhaseUiStatus }) {
       <span className="inline-flex items-center gap-1.5 text-[0.7rem] font-medium text-emerald-300">
         <CheckCircle2 className="size-3.5" />
         Ready
+      </span>
+    );
+  }
+  if (status === "stopped") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[0.7rem] font-medium text-white/40">
+        <Ban className="size-3.5" />
+        Stopped
       </span>
     );
   }

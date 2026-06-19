@@ -161,3 +161,27 @@ def resolve_phase_deps(phase_name: str, content_phases: list[str]) -> set[str]:
                 resolved.add(a)
                 break
     return resolved
+
+
+def order_phase_selection(subject: str, selected: list[str]) -> list[str]:
+    """Validate a user's phase selection and order it by the subject's flow.
+
+    Runs *exactly* what the user picked — no dependency auto-expansion. A phase
+    whose declared deps are not also selected simply runs on the lesson summary
+    alone (the scheduler resolves deps against the live sequence, and
+    `filter_prior_outputs` only injects deps that are actually present).
+
+    Returns the selection ordered by the subject's canonical flow (deduped).
+    Raises ValueError on an empty selection or any phase not in the subject's
+    flow. `extract` is never selectable (it is the pinned head).
+    """
+    if not selected:
+        raise ValueError("phase selection is empty — pick at least one phase")
+    flow = flow_for(subject)
+    flow_set = set(flow)
+    unknown = [p for p in selected if p not in flow_set]
+    if unknown:
+        raise ValueError(f"phases not in {subject} flow: {unknown}")
+
+    chosen = set(selected)
+    return [p for p in flow if p in chosen]

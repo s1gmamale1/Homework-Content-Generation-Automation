@@ -46,7 +46,7 @@ export function RollupBar({
                 style={{ background: colorFor(status) }}
               />
               <span>
-                {status} {rollup[status]}
+                {status.replace("_", " ")} {rollup[status]}
               </span>
             </span>
           ))}

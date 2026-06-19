@@ -36,6 +36,8 @@ async def create(
     transport: str = "cli",
     extract_transport: str = "inherit",
     judge_transport: str = "inherit",
+    custom_prompts: Optional[dict] = None,
+    selected_phases: Optional[list] = None,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
     judge_provider: Optional[str] = None,
@@ -56,6 +58,10 @@ async def create(
         kwargs["model"] = model
     if batch_id is not None:
         kwargs["batch_id"] = batch_id
+    if custom_prompts is not None:
+        kwargs["custom_prompts"] = custom_prompts
+    if selected_phases is not None:
+        kwargs["selected_phases"] = selected_phases
     for _k, _v in (
         ("extract_provider", extract_provider),
         ("extract_model", extract_model),

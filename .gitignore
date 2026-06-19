@@ -41,3 +41,6 @@ AGENTS.md
 pc-transfer.zip
 .claude-flow
 classarecruiter20@gmail.com.json
+
+# Manual test scratch — sample custom prompts uploaded by hand, not part of the app
+samples/

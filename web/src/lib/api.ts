@@ -159,12 +159,14 @@ export const api = {
       transport?: Transport;
       extract_transport?: RoleTransport;
       judge_transport?: RoleTransport;
+      custom_prompts?: Record<string, string> | null;
+      selected_phases?: string[] | null;
       extract_provider?: string | null;
       extract_model?: string | null;
       judge_provider?: string | null;
       judge_model?: string | null;
     } = {},
-  ): Promise<Job> {
+  ): Promise<Job & { added_phases?: string[] }> {
     const {
       force = false,
       idempotencyKey,
@@ -173,6 +175,8 @@ export const api = {
       transport = "cli",
       extract_transport = "inherit",
       judge_transport = "inherit",
+      custom_prompts = null,
+      selected_phases = null,
       extract_provider = null,
       extract_model = null,
       judge_provider = null,
@@ -192,6 +196,8 @@ export const api = {
           transport,
           extract_transport,
           judge_transport,
+          custom_prompts,
+          selected_phases,
           extract_provider,
           extract_model,
           judge_provider,

@@ -20,6 +20,7 @@ from app.services.agent_models import (
     validate_role_transport,
     validate_transport,
 )
+from app.services.flows import order_phase_selection, flow_for
 
 router = APIRouter(tags=["batches"])
 
@@ -43,6 +44,8 @@ class BatchLaunchRequest(BaseModel):
     force: bool = False
     preview: bool = False                 # compute disposition, don't mutate
     relaunch_mode: str = "resume"         # "resume" | "discard" for failed/cancelled-with-saved
+    custom_prompts: dict[str, str] | None = None
+    selected_phases: list[str] | None = None
 
 
 def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None = None) -> dict:
@@ -62,9 +65,13 @@ def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None 
         "judge_provider": batch.judge_provider,
         "judge_model": batch.judge_model,
         "rollup": tally,
-        "lessons_covered": sum(tally.values()),
-        "complete": (tally.get("pending", 0) + tally.get("running", 0)
-                     + tally.get("cancelling", 0)) == 0 and sum(tally.values()) > 0,
+        "lessons_covered": sum(v for k, v in tally.items() if k != "not_started"),
+        "complete": (
+            sum(tally.values()) > 0
+            and tally.get("not_started", 0) == 0
+            and (tally.get("pending", 0) + tally.get("running", 0)
+                 + tally.get("cancelling", 0)) == 0
+        ),
         "created_at": batch.created_at.isoformat(),
         # Cost-safety fields (C4): None when the batch is not paused.
         "paused_at": batch.paused_at.isoformat() if batch.paused_at else None,
@@ -116,6 +123,24 @@ async def launch_batch(
         if role_err is not None:
             raise HTTPException(400, role_err)
 
+    custom_prompts = body.custom_prompts or None
+    if custom_prompts:
+        valid_phases = set(flow_for(book.subject))
+        for phase, md in custom_prompts.items():
+            if phase == "extract" or phase not in valid_phases:
+                raise HTTPException(400, f"custom_prompts: unknown phase {phase!r}")
+            if len(md) > 20_000:
+                raise HTTPException(
+                    400, f"custom_prompts[{phase}] too long ({len(md)} chars; max 20000).")
+
+    selected_phases = None
+    if body.selected_phases is not None:
+        try:
+            selected_phases = order_phase_selection(book.subject, body.selected_phases)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    batch_force = body.force or bool(custom_prompts) or selected_phases is not None
     # Per-role provider/model: validate only explicit picks. The role's effective
     # transport decides whether an explicit model is mandatory.
     for role, prov, mdl, role_tx in (
@@ -159,6 +184,7 @@ async def launch_batch(
         provider=provider, model=body.model, transport=body.transport,
         extract_transport=body.extract_transport,
         judge_transport=body.judge_transport,
+        custom_prompts=custom_prompts, selected_phases=selected_phases,
         extract_provider=body.extract_provider,
         extract_model=body.extract_model,
         judge_provider=body.judge_provider,
@@ -174,7 +200,7 @@ async def launch_batch(
         # Transport-scoped lookup (spec §9a): an api batch over a cli-generated
         # book finds no same-transport job → falls through to create, leaving
         # the cli jobs untouched.
-        existing = None if body.force else await jobs_repo.find_active_for_section(
+        existing = None if batch_force else await jobs_repo.find_active_for_section(
             session, body.book_id, t.id, transport=body.transport)
         if existing is not None:
             # Lookup is transport-scoped, so a returned job always matches —
@@ -219,6 +245,7 @@ async def launch_batch(
                                transport=body.transport,
                                extract_transport=body.extract_transport,
                                judge_transport=body.judge_transport,
+                               custom_prompts=custom_prompts, selected_phases=selected_phases,
                                extract_provider=body.extract_provider,
                                extract_model=body.extract_model,
                                judge_provider=body.judge_provider,

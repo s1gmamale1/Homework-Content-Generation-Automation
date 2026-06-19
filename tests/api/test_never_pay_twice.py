@@ -89,6 +89,8 @@ _FAKE_JOB = SimpleNamespace(
     judge_model=None,
     phase_outputs=[],
     notion_skip_reason=None,
+    custom_prompts=None,        # PR#37 columns — _job_out reads job.selected_phases
+    selected_phases=None,
 )
 
 _HDR = {"Authorization": "Bearer 123"}

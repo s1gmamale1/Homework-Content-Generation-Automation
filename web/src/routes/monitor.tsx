@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { BatchFunnel } from "@/components/fleet/batch-funnel";
+import { MonitorStats } from "@/components/fleet/monitor-stats";
 import { WorkerCards } from "@/components/fleet/worker-cards";
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import { api } from "@/lib/api";
@@ -13,10 +14,14 @@ export function MonitorPage() {
     <>
       <SpaceBackdrop />
       <div className="relative z-10 space-y-5">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Monitor</h1>
-          <p className="mt-1 text-white/55">Workers and live batch progress.</p>
-        </div>
+        <MonitorStats
+          batches={batches.data}
+          workers={
+            workers.data
+              ? { online: workers.data.online, total: workers.data.total }
+              : undefined
+          }
+        />
         <WorkerCards data={workers.data} />
         <BatchFunnel batches={batches.data} />
       </div>
