@@ -163,7 +163,7 @@ rows `failed`, it doesn't delete them, so a retried job re-INSERTing would trip 
 | `operation` | String(64) NOT NULL | e.g. `lesson.extract`, `phase.boss-arena`, `judge.<phase>`; indexed |
 | `model_name` | String(128) NULL | |
 | `prompt_tokens` / `output_tokens` / `cached_tokens` / `total_tokens` | Integer NOT NULL default 0 | normalized across providers; **kimi reports 0s** (stream-json gap); `<cache>` rows are all-zero so $-math never double-counts |
-| `cache_creation_tokens` | Integer NOT NULL default 0 | claude-only cache-write tokens (migration 0030 C4); priced at 1.25× input — currently tracked but not billed in `pricing.cost_usd` (gap noted as `pricing-1`; column reserved for future billing) |
+| `cache_creation_tokens` | Integer NOT NULL default 0 | claude-only cache-write tokens (migration 0030 C4); priced at 1.25× input via the `cache_write` rate (pricing-1b); the pricing-1 gap is CLOSED. |
 | `raw_envelope` | JSONB NULL | full provider envelope for forensics |
 | `duration` | String(50) NULL | |
 | `success` | Boolean NOT NULL default true | |
@@ -186,7 +186,7 @@ consumption counts**, not provider quotas.
 | `provider` / `model` | NOT NULL / NULL | the launch-time pick |
 | `notion_source` | String(512) NULL | |
 | `paused_at` | DateTime NULL | C4 batch-pause primitive (migration 0031): set by the budget monitor when this batch's api spend exceeds `COST_CAP_BATCH_USD`; also reused by C5 fleet-ctrl-3 for manual/fleet-gate pauses. NULL = not paused. |
-| `paused_reason` | String(64) NULL | Machine-readable reason string (e.g. `batch_cost_cap`, `manual`). Used by the budget monitor to reconcile its own pauses without touching batches paused by a different reason. |
+| `paused_reason` | String(64) NULL | Machine-readable reason string (e.g. `"batch-cap"`, `"manual"`). Used by the budget monitor to reconcile its own pauses without touching batches paused by a different reason. |
 
 Design: **no stored counters**. Progress is computed on read (`rollup_for_batch`):
 `DISTINCT ON (toc_entry_id) … ORDER BY toc_entry_id, created_at DESC` scoped to the batch,
@@ -220,7 +220,7 @@ No UUIDPK/Timestamps mixins — intentionally minimal.
 |---|---|---|
 | `id` | Integer PK | always `1` (singleton) |
 | `api_paused_at` | DateTime NULL | set by the budget monitor when the fleet-daily api spend cap is exceeded; `claim_next_job` checks this and skips all api-transport jobs while non-NULL |
-| `api_paused_reason` | String(64) NULL | e.g. `fleet_daily_cap` |
+| `api_paused_reason` | String(64) NULL | e.g. `"fleet-daily-cap"` |
 
 `budget_repo.get_state(session)` returns the singleton row; raises `RuntimeError` if the row is missing (indicates a broken migration state — run `alembic upgrade head`). The budget monitor clears the fleet pause if spend drops back below cap (e.g. after UTC midnight resets the 24h window). The singleton's pause state is distinct from per-batch `batches.paused_at` — an operator can check both via `GET /jobs/batch/{id}/cost` (returns `fleet_api_paused_at`/`fleet_api_paused_reason` alongside the per-batch fields).
 

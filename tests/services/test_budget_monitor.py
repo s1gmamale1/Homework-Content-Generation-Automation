@@ -329,7 +329,11 @@ async def test_different_reason_batch_not_unpaused():
 @pytest.mark.asyncio
 async def test_cap_disabled_clears_own_batch_cap_pauses():
     """With cost_cap_batch_usd=0 a batch still paused with 'batch-cap' must be
-    unpaused — disabling the cap should clear the monitor's own pauses."""
+    unpaused — disabling the cap should clear the monitor's own pauses.
+
+    Fleet cap is set >0 so the early-return guard (both-caps-disabled) does not
+    fire; we are testing only the per-batch reconcile path.
+    """
     bid = uuid.uuid4()
     pause = AsyncMock()
     unpause = AsyncMock()
@@ -343,7 +347,7 @@ async def test_cap_disabled_clears_own_batch_cap_pauses():
         fleet_cost=0.0,
         budget_state_reason=None,
         cost_cap_batch=0.0,                     # DISABLED → must clear own pauses
-        cost_cap_fleet=0.0,
+        cost_cap_fleet=1.0,                     # >0 so early-return does not fire
         patch_batches_pause=pause,
         patch_batches_unpause=unpause,
         patch_budget_set=set_paused,
@@ -453,6 +457,74 @@ async def test_fleet_different_reason_not_cleared():
 
     clear_paused.assert_not_awaited()
     set_paused.assert_not_awaited()
+
+
+# ===========================================================================
+# Test 8b — Both caps disabled (both=0) → monitor makes NO ledger/repo calls
+# BITE: removing the early-return guard means the function proceeds to open a
+#       DB session and call active_batch_ids / fleet_api_cost_usd etc.; the
+#       assert_not_called checks below would then FAIL.
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_both_caps_disabled_no_db_calls():
+    """When both cost_cap_batch_usd=0 and cost_cap_fleet_daily_usd=0, the
+    budget monitor must return immediately without touching any ledger or repo.
+
+    BITE: if the early-return guard is removed, the monitor proceeds to open a
+    session and call active_batch_ids, batch_api_cost_usd, fleet_api_cost_usd,
+    get_state, etc. — any of the assert_not_called checks below will then fail.
+    """
+    from app.services.worker import Worker
+    from unittest.mock import MagicMock, AsyncMock, patch
+
+    with patch("asyncio.Semaphore", return_value=MagicMock()):
+        w = Worker(concurrency=1)
+    w._stop_event = MagicMock()
+
+    mock_session_local = MagicMock()
+    mock_active = AsyncMock()
+    mock_batch_cost = AsyncMock()
+    mock_fleet_cost = AsyncMock()
+    mock_get_state = AsyncMock()
+    mock_pause = AsyncMock()
+    mock_unpause = AsyncMock()
+    mock_set_paused = AsyncMock()
+    mock_clear_paused = AsyncMock()
+
+    patches = {
+        "app.services.worker.SessionLocal": mock_session_local,
+        "app.services.worker.settings": _make_settings(
+            cost_cap_batch=0.0, cost_cap_fleet=0.0
+        ),
+        "app.services.worker.batches_repo.active_batch_ids": mock_active,
+        "app.services.worker.batches_repo.paused_batch_ids_by_reason": AsyncMock(),
+        "app.services.worker.batches_repo.pause_batch": mock_pause,
+        "app.services.worker.batches_repo.unpause_batch": mock_unpause,
+        "app.services.worker.cost_repo.batch_api_cost_usd": mock_batch_cost,
+        "app.services.worker.cost_repo.fleet_api_cost_usd": mock_fleet_cost,
+        "app.services.worker.budget_repo.get_state": mock_get_state,
+        "app.services.worker.budget_repo.set_api_paused": mock_set_paused,
+        "app.services.worker.budget_repo.clear_api_paused": mock_clear_paused,
+    }
+
+    from contextlib import ExitStack
+    with ExitStack() as stack:
+        for target, mock_obj in patches.items():
+            stack.enter_context(patch(target, mock_obj))
+        await w._budget_monitor()
+
+    # Early return fires — no DB session opened, no repo calls made
+    mock_session_local.assert_not_called()
+    mock_active.assert_not_awaited()
+    mock_batch_cost.assert_not_awaited()
+    mock_fleet_cost.assert_not_awaited()
+    mock_get_state.assert_not_awaited()
+    mock_pause.assert_not_awaited()
+    mock_unpause.assert_not_awaited()
+    mock_set_paused.assert_not_awaited()
+    mock_clear_paused.assert_not_awaited()
 
 
 # ===========================================================================

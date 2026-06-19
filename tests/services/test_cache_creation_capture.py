@@ -92,8 +92,8 @@ def test_claude_cli_parse_envelope_missing_cache_creation(tmp_path) -> None:
     })
     sentinel = tmp_path / "last_msg.txt"
     _, usage = Claude().parse_envelope(stdout, last_msg_path=sentinel)
-    # Must not raise; value may be 0 or None
-    assert usage.get("cache_creation_tokens", 0) is not None or True  # no crash
+    # Must not raise; value must be 0 or None (key absent → None from dict.get)
+    assert usage.get("cache_creation_tokens") in (0, None)
 
 
 # ─────────────────────────────────────────────────────────────────────

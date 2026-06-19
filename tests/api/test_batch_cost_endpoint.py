@@ -27,7 +27,7 @@ _PAUSED_AT = datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc)
 _FAKE_BATCH_PAUSED = SimpleNamespace(
     id=_BATCH_ID,
     paused_at=_PAUSED_AT,
-    paused_reason="batch_cost_cap",
+    paused_reason="batch-cap",
 )
 _FAKE_BATCH_UNPAUSED = SimpleNamespace(
     id=_BATCH_ID,
@@ -36,7 +36,7 @@ _FAKE_BATCH_UNPAUSED = SimpleNamespace(
 )
 _FAKE_BUDGET_PAUSED = SimpleNamespace(
     api_paused_at=_PAUSED_AT,
-    api_paused_reason="fleet_daily_cap",
+    api_paused_reason="fleet-daily-cap",
 )
 _FAKE_BUDGET_CLEAR = SimpleNamespace(
     api_paused_at=None,
@@ -108,7 +108,7 @@ async def test_cost_endpoint_paused_batch():
     assert "paused_at" in data, "paused_at must be present"
     assert data["paused_at"] is not None, "paused_at must be non-null for a paused batch"
     assert "paused_reason" in data, "paused_reason must be present"
-    assert data["paused_reason"] == "batch_cost_cap"
+    assert data["paused_reason"] == "batch-cap"
 
     # Fleet state must also be present (even if the fleet is not paused).
     assert "fleet_api_paused_at" in data, "fleet_api_paused_at must be present"
@@ -180,7 +180,7 @@ async def test_cost_endpoint_fleet_paused():
     assert data["fleet_api_paused_at"] is not None, (
         "fleet_api_paused_at must be non-null when the fleet is paused"
     )
-    assert data["fleet_api_paused_reason"] == "fleet_daily_cap"
+    assert data["fleet_api_paused_reason"] == "fleet-daily-cap"
 
 
 @pytest.mark.asyncio

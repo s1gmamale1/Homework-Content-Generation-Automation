@@ -459,6 +459,11 @@ class Worker:
           at/under cap (or the cap disabled), clear it.
           Only reconciles its OWN reason — never clears a manual fleet pause.
         """
+        if (
+            settings.cost_cap_batch_usd <= 0
+            and settings.cost_cap_fleet_daily_usd <= 0
+        ):
+            return
         try:
             async with SessionLocal() as session:
                 async with session.begin():

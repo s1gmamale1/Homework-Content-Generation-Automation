@@ -210,13 +210,13 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
   rows for a batch's api-mode calls) and `fleet_api_cost_usd` (fleet-wide 24h window) —
   and applies two kill-switches:
   - **Per-batch cap** (`COST_CAP_BATCH_USD`, default 0 = disabled): when a batch's api
-    spend exceeds this, the monitor calls `batches_repo.pause_batch(batch_id, "batch_cost_cap")`.
+    spend exceeds this, the monitor calls `batches_repo.pause_batch(batch_id, "batch-cap")`.
     The paused batch's `paused_at`/`paused_reason` columns are set; `claim_next_job` skips
     any job whose batch is paused. Already-running jobs are not cancelled ("never hard-cancel
     paid work" contract). The pause primitive is shared with C5 fleet-ctrl-3 (manual/fleet gate).
   - **Fleet-daily cap** (`COST_CAP_FLEET_DAILY_USD`, default 0 = disabled): when the
     rolling 24h api spend exceeds this, the monitor sets the `budget_state` singleton
-    (`api_paused_at`/`api_paused_reason = "fleet_daily_cap"`). `claim_next_job` then skips
+    (`api_paused_at`/`api_paused_reason = "fleet-daily-cap"`). `claim_next_job` then skips
     *all* api-transport jobs fleet-wide until the cap clears.
   Operator observability: `GET /jobs/batch/{id}/cost` returns `{batch_api_cost_usd,
   paused_at, paused_reason, fleet_api_paused_at, fleet_api_paused_reason}`. When a batch
