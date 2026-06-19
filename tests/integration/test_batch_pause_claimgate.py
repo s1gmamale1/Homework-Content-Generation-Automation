@@ -66,6 +66,7 @@ async def _seed_book(s, name: str):
 async def _seed_job(s, book, toc, **kwargs):
     from app.repositories import jobs as jobs_repo
 
+    kwargs.setdefault("status", "pending")
     job = await jobs_repo.create(
         s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra", **kwargs
     )
@@ -126,15 +127,12 @@ async def test_paused_batch_job_not_claimable_then_claimable_after_unpause():
         book, toc = await _seed_book(s, "pause-test-1.pdf")
         # Create a batch row to attach the job to
         from uuid import uuid4
-        from sqlalchemy import func
         batch = Batch(
             id=uuid4(),
             book_id=book.id,
             subject="math-algebra",
             provider="gemini",
             transport="cli",
-            created_at=func.now(),
-            updated_at=func.now(),
         )
         s.add(batch)
         await s.flush()
@@ -189,15 +187,12 @@ async def test_batchless_job_unaffected_by_paused_batch():
         # Book A: has a batch (will be paused)
         book_a, toc_a = await _seed_book(s, "pause-test-2a.pdf")
         from uuid import uuid4
-        from sqlalchemy import func
         batch = Batch(
             id=uuid4(),
             book_id=book_a.id,
             subject="math-algebra",
             provider="gemini",
             transport="cli",
-            created_at=func.now(),
-            updated_at=func.now(),
         )
         s.add(batch)
         await s.flush()
@@ -246,15 +241,12 @@ async def test_unpaused_batch_job_claims_normally():
         # Book A: paused batch
         book_a, toc_a = await _seed_book(s, "pause-test-3a.pdf")
         from uuid import uuid4
-        from sqlalchemy import func
         batch_a = Batch(
             id=uuid4(),
             book_id=book_a.id,
             subject="math-algebra",
             provider="gemini",
             transport="cli",
-            created_at=func.now(),
-            updated_at=func.now(),
         )
         s.add(batch_a)
         await s.flush()
@@ -268,8 +260,6 @@ async def test_unpaused_batch_job_claims_normally():
             subject="math-algebra",
             provider="gemini",
             transport="cli",
-            created_at=func.now(),
-            updated_at=func.now(),
         )
         s.add(batch_b)
         await s.flush()
@@ -322,15 +312,12 @@ async def test_pause_batch_does_not_alter_job_status():
     async with SessionLocal() as s:
         book, toc = await _seed_book(s, "pause-test-4.pdf")
         from uuid import uuid4
-        from sqlalchemy import func
         batch = Batch(
             id=uuid4(),
             book_id=book.id,
             subject="math-algebra",
             provider="gemini",
             transport="cli",
-            created_at=func.now(),
-            updated_at=func.now(),
         )
         s.add(batch)
         await s.flush()

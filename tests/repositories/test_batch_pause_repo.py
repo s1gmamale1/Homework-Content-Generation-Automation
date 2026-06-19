@@ -116,6 +116,7 @@ async def test_pause_batch_sql_shape():
     assert "batches" in sql, f"UPDATE must target 'batches', got:\n{sql}"
     assert "paused_at" in sql, f"SQL must set paused_at, got:\n{sql}"
     assert "paused_reason" in sql, f"SQL must set paused_reason, got:\n{sql}"
+    assert "NOW()" in sql.upper(), f"SQL must set paused_at via now(), got:\n{sql}"
 
 
 @pytest.mark.asyncio
@@ -228,7 +229,7 @@ async def test_claim_next_job_sql_contains_null_arm():
     sql = session.select_sql
     # The IS NULL arm must appear in the compiled SELECT
     # PostgreSQL compiles batch_id IS NULL as "batch_id IS NULL"
-    assert "batch_id IS NULL" in sql.upper() or "batch_id" in sql, (
+    assert "BATCH_ID IS NULL" in sql.upper(), (
         f"IS NULL arm must appear in pick SELECT, got:\n{sql}"
     )
     assert "paused_at" in sql, (
