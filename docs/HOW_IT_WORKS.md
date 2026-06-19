@@ -203,7 +203,10 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
   running, i.e. halt the batch) and **resumed** (`POST /jobs/batch/{id}/resume` → re-enqueue
   failed/cancelled jobs, reusing already-`done` phases). A re-launch over a batch with
   partially-done lessons offers `relaunch_mode` **resume** (default — keep saved phases) vs
-  **discard** (regenerate from scratch); the preview is strict zero-write.
+  **discard** (regenerate from scratch); the preview is strict zero-write. The `/monitor` rollup
+  is whole-book (PR37): launched-lesson statuses plus a synthetic `not_started` count for the
+  book's un-launched lessons, so a batch reads "complete" only when every lesson is done and none
+  are un-launched. The monitor groups a book's per-transport batches into one card.
 - **Budget monitor** (C4 cost-safety): a `worker._budget_monitor` loop runs inside every
   worker process (period: `COST_CHECK_INTERVAL_SECONDS`, default 60s). It reads the
   cost ledger (`app/repositories/cost.py`) — `batch_api_cost_usd` (sums `agent_usages`
@@ -300,6 +303,13 @@ case-based-preview → flashcards → memory-check → practice-rlc →
 practice-error-detection → practice-memory-match → practice-tictactoe →
 practice-jigsaw → practice-sentence → boss-arena → reflection
 ```
+
+**Custom prompts & phase-picker (PR37).** A `/generate` or `/jobs/batch` request can carry
+`custom_prompts` (`{phase: markdown}`, replacing that phase's built-in contract — the judge then
+grades against the custom prompt, but still fact-checks against the lesson source) and/or
+`selected_phases` (run only a chosen subset of the 11 phases, dependency-closure-expanded). A
+custom/subset launch is always generated fresh (never reuses a plain job). Deselecting a phase's
+dependency degrades quality but never deadlocks the scheduler.
 
 The packet is organized into four "divisions":
 
