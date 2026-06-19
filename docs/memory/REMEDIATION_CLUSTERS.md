@@ -147,7 +147,7 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 4. **`fleet-ctrl-4` PC-level drain** — gracefully stop one worker claiming new jobs + let its in-flight finish before offline.
 5. **`fleet-infra-1/2`** — PgBouncer + hardened head; worker discovery file / movable head (≤60s reconnect). Mostly ops/deploy, not app code.
 
-**Open decisions to lock first:** Redis-or-Postgres for both the token-bucket and the event bus (infra appetite). Get this from the user — it shapes 1, 2, and the deploy.
+**Open decisions to lock first:** ~~Redis-or-Postgres for both the token-bucket and the event bus~~ **RESOLVED 2026-06-19 (user): Postgres-native — no Redis.** Build the token-bucket as a DB table (row-lock / atomic per-`(provider, model)`-per-window check in the spawn path) and the event bus on Postgres `LISTEN/NOTIFY`. Rationale: the fleet is 2–3 PCs (nowhere near a throughput regime that needs Redis), and the system's design invariant is "Postgres is the only moving part" — adding Redis means a new service to install/secure/keep-alive on every machine (and there's already an un-reverted LAN-exposed PG to clean up — don't add a second exposed service). Revisit only if a measured Postgres bottleneck appears at dozens of workers.
 
 ---
 
