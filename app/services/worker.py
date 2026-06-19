@@ -33,7 +33,7 @@ import contextlib
 import os
 import socket
 import signal
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from loguru import logger
@@ -460,7 +460,6 @@ class Worker:
           Only reconciles its OWN reason — never clears a manual fleet pause.
         """
         try:
-            from datetime import timedelta
             async with SessionLocal() as session:
                 async with session.begin():
                     # ── Per-batch ─────────────────────────────────────────

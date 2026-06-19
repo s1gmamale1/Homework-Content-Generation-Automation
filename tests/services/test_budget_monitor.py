@@ -54,7 +54,7 @@ def _make_settings(*, cost_cap_batch: float, cost_cap_fleet: float) -> MagicMock
 async def _run_monitor(
     *,
     active_batch_ids: list,
-    paused_by_batch_cap: list,
+    paused_reasons_map: dict,
     batch_costs: dict,
     fleet_cost: float,
     budget_state_reason: str | None,
@@ -65,7 +65,15 @@ async def _run_monitor(
     patch_budget_set: AsyncMock,
     patch_budget_clear: AsyncMock,
 ) -> None:
-    """Drive Worker._budget_monitor with fully-controlled mocks."""
+    """Drive Worker._budget_monitor with fully-controlled mocks.
+
+    ``paused_reasons_map`` is a dict of {batch_id: pause_reason} mirroring the
+    DB state faithfully.  The fake ``paused_batch_ids_by_reason`` returns only
+    the IDs whose stored reason equals the ``reason`` argument it is called
+    with — exactly what the real query does.  This means Test 5 bites: if
+    production ever calls with a non-scoped list (or drops the reason arg) the
+    wrong IDs bleed through and assertions fail.
+    """
     from app.services.worker import Worker
 
     with patch("asyncio.Semaphore", return_value=MagicMock()):
@@ -85,7 +93,8 @@ async def _run_monitor(
         return active_batch_ids
 
     async def _paused_by_reason(session, reason):
-        return paused_by_batch_cap if reason == "batch-cap" else []
+        # Faithful DB filter: return only IDs whose stored reason matches.
+        return [bid for bid, r in paused_reasons_map.items() if r == reason]
 
     async def _batch_cost(session, bid):
         return batch_costs.get(bid, 0.0)
@@ -138,7 +147,7 @@ async def test_batch_over_cap_pauses_batch():
 
     await _run_monitor(
         active_batch_ids=[bid],
-        paused_by_batch_cap=[],
+        paused_reasons_map={},
         batch_costs={bid: 0.05},  # $0.05 > $0.01 cap
         fleet_cost=0.0,
         budget_state_reason=None,
@@ -173,8 +182,8 @@ async def test_batch_under_cap_unpauses_if_our_reason():
 
     await _run_monitor(
         active_batch_ids=[],
-        paused_by_batch_cap=[bid],  # paused with "batch-cap", now under cap
-        batch_costs={bid: 0.005},   # $0.005 <= $0.01 cap
+        paused_reasons_map={bid: "batch-cap"},  # paused with "batch-cap", now under cap
+        batch_costs={bid: 0.005},               # $0.005 <= $0.01 cap
         fleet_cost=0.0,
         budget_state_reason=None,
         cost_cap_batch=0.01,
@@ -208,7 +217,7 @@ async def test_caps_zero_active_batch_not_paused():
 
     await _run_monitor(
         active_batch_ids=[bid],
-        paused_by_batch_cap=[],
+        paused_reasons_map={},
         batch_costs={bid: 999.0},  # absurdly expensive — but cap=0 means disabled
         fleet_cost=999.0,
         budget_state_reason=None,
@@ -241,7 +250,7 @@ async def test_fleet_cap_zero_no_fleet_pause():
 
     await _run_monitor(
         active_batch_ids=[],
-        paused_by_batch_cap=[],
+        paused_reasons_map={},
         batch_costs={},
         fleet_cost=999.0,  # huge cost — but cap=0 = disabled
         budget_state_reason=None,
@@ -258,17 +267,27 @@ async def test_fleet_cap_zero_no_fleet_pause():
 
 # ===========================================================================
 # Test 5 — batch paused with DIFFERENT reason → NOT touched
-# BITE: Without the `paused_batch_ids_by_reason("batch-cap")` filter the monitor
-#       would also see differently-paused batches — but with the correct filter,
-#       bid_manual is never returned by paused_batch_ids_by_reason.
+# BITE: The fake paused_reasons_map seeds BOTH bid_cap (reason "batch-cap") and
+#       bid_manual (reason "manual").  The fake DB filter returns only IDs whose
+#       stored reason matches the argument.  If production drops the
+#       "batch-cap" reason arg (queries all paused batches), the mock returns
+#       bid_manual too and the assert_awaited_once assertion fails — the test
+#       bites.  With the correct reason-scoped query only bid_cap comes back.
 # ===========================================================================
 
 
 @pytest.mark.asyncio
 async def test_different_reason_batch_not_unpaused():
-    """A batch paused with reason 'manual' must NOT be unpaused by the monitor."""
-    bid_manual = uuid.uuid4()  # paused with 'manual' — not returned by paused_batch_ids_by_reason
-    bid_cap = uuid.uuid4()     # paused with 'batch-cap' — returned, under cap → unpause
+    """A batch paused with reason 'manual' must NOT be unpaused by the monitor.
+
+    The faithful DB mock seeds {bid_cap: "batch-cap", bid_manual: "manual"}.
+    paused_batch_ids_by_reason(session, reason) returns only IDs whose stored
+    reason equals the argument — exactly what the real SQL WHERE clause does.
+    If production ever queries with the wrong reason (or no filter), bid_manual
+    bleeds through and the assertions below fail.
+    """
+    bid_manual = uuid.uuid4()  # paused with 'manual' — must NOT be returned for "batch-cap"
+    bid_cap = uuid.uuid4()     # paused with 'batch-cap' — under cap → must be unpaused
     pause = AsyncMock()
     unpause = AsyncMock()
     set_paused = AsyncMock()
@@ -276,7 +295,8 @@ async def test_different_reason_batch_not_unpaused():
 
     await _run_monitor(
         active_batch_ids=[],
-        paused_by_batch_cap=[bid_cap],   # only "batch-cap" paused batch
+        # Faithful DB state: both batches paused, with DIFFERENT reasons
+        paused_reasons_map={bid_cap: "batch-cap", bid_manual: "manual"},
         batch_costs={bid_cap: 0.001, bid_manual: 0.001},
         fleet_cost=0.0,
         budget_state_reason=None,
@@ -288,13 +308,51 @@ async def test_different_reason_batch_not_unpaused():
         patch_budget_clear=clear_paused,
     )
 
-    # Only the batch-cap one should be unpaused
+    # Only the batch-cap one should be unpaused — exactly once
     unpause.assert_awaited_once()
     call_args = unpause.await_args[0]
     assert call_args[1] == bid_cap, f"Only 'batch-cap' batch must be unpaused; got {call_args}"
     # bid_manual must not appear in any unpause call
     for c in unpause.await_args_list:
         assert c[0][1] != bid_manual, "Monitor must NEVER unpause a batch with a different reason"
+    pause.assert_not_awaited()
+
+
+# ===========================================================================
+# Test 5b — cap DISABLED (cost_cap_batch_usd=0) + batch paused by "batch-cap"
+#            → unpause_batch IS called (disable-cap clears own pauses)
+# BITE: removing the `if cap <= 0: unpause_batch(...)` branch in the reconcile
+#       loop makes unpause never fire → assert_awaited_once fails.
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_cap_disabled_clears_own_batch_cap_pauses():
+    """With cost_cap_batch_usd=0 a batch still paused with 'batch-cap' must be
+    unpaused — disabling the cap should clear the monitor's own pauses."""
+    bid = uuid.uuid4()
+    pause = AsyncMock()
+    unpause = AsyncMock()
+    set_paused = AsyncMock()
+    clear_paused = AsyncMock()
+
+    await _run_monitor(
+        active_batch_ids=[],
+        paused_reasons_map={bid: "batch-cap"},  # leftover pause from when cap was enabled
+        batch_costs={bid: 0.50},                # cost irrelevant — cap disabled
+        fleet_cost=0.0,
+        budget_state_reason=None,
+        cost_cap_batch=0.0,                     # DISABLED → must clear own pauses
+        cost_cap_fleet=0.0,
+        patch_batches_pause=pause,
+        patch_batches_unpause=unpause,
+        patch_budget_set=set_paused,
+        patch_budget_clear=clear_paused,
+    )
+
+    unpause.assert_awaited_once()
+    call_args = unpause.await_args[0]
+    assert call_args[1] == bid, f"unpause_batch must receive the cap-paused batch_id; got {call_args}"
     pause.assert_not_awaited()
 
 
@@ -313,7 +371,7 @@ async def test_fleet_over_cap_sets_api_paused():
 
     await _run_monitor(
         active_batch_ids=[],
-        paused_by_batch_cap=[],
+        paused_reasons_map={},
         batch_costs={},
         fleet_cost=2.50,    # $2.50 > $1.00 cap
         budget_state_reason=None,
@@ -348,7 +406,7 @@ async def test_fleet_under_cap_clears_own_pause():
 
     await _run_monitor(
         active_batch_ids=[],
-        paused_by_batch_cap=[],
+        paused_reasons_map={},
         batch_costs={},
         fleet_cost=0.50,    # $0.50 <= $1.00 cap → should clear
         budget_state_reason="fleet-daily-cap",   # paused by our monitor
@@ -381,7 +439,7 @@ async def test_fleet_different_reason_not_cleared():
 
     await _run_monitor(
         active_batch_ids=[],
-        paused_by_batch_cap=[],
+        paused_reasons_map={},
         batch_costs={},
         fleet_cost=0.10,   # well under cap — would trigger clear if reason matched
         budget_state_reason="manual-operator",   # NOT our reason
