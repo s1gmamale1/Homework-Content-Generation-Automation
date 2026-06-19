@@ -34,32 +34,41 @@ async def get_or_create_for_book(
     Python defaults, so id/created_at/updated_at are supplied explicitly. On
     conflict the existing row is kept (only updated_at is touched) and its id is
     returned — a different-transport re-launch forks a new batch."""
+    insert = pg_insert(Batch).values(
+        id=uuid4(),
+        book_id=book_id,
+        subject=subject,
+        grade=grade,
+        provider=provider,
+        model=model,
+        transport=transport,
+        extract_transport=extract_transport,
+        judge_transport=judge_transport,
+        extract_provider=extract_provider,
+        extract_model=extract_model,
+        judge_provider=judge_provider,
+        judge_model=judge_model,
+        notion_source=notion_source,
+        custom_prompts=custom_prompts,
+        selected_phases=selected_phases,
+        created_at=func.now(),
+        updated_at=func.now(),
+    )
+    # On conflict, only OVERWRITE custom_prompts/selected_phases when this launch
+    # actually carries them; a plain re-launch/top-up (None) must leave an earlier
+    # custom launch's provenance intact. NOTE: a COALESCE(excluded.x, batches.x)
+    # does NOT work here — SQLAlchemy serializes Python None into a JSONB column as
+    # JSON 'null' (not SQL NULL), so COALESCE keeps the JSON-null and still wipes
+    # the stored value. Conditionally omitting the column from set_ is the fix.
+    on_conflict_set: dict = {"updated_at": func.now()}
+    if custom_prompts is not None:
+        on_conflict_set["custom_prompts"] = insert.excluded.custom_prompts
+    if selected_phases is not None:
+        on_conflict_set["selected_phases"] = insert.excluded.selected_phases
     stmt = (
-        pg_insert(Batch)
-        .values(
-            id=uuid4(),
-            book_id=book_id,
-            subject=subject,
-            grade=grade,
-            provider=provider,
-            model=model,
-            transport=transport,
-            extract_transport=extract_transport,
-            judge_transport=judge_transport,
-            extract_provider=extract_provider,
-            extract_model=extract_model,
-            judge_provider=judge_provider,
-            judge_model=judge_model,
-            notion_source=notion_source,
-            custom_prompts=custom_prompts,
-            selected_phases=selected_phases,
-            created_at=func.now(),
-            updated_at=func.now(),
-        )
-        .on_conflict_do_update(
+        insert.on_conflict_do_update(
             index_elements=["book_id", "transport"],
-            set_={"updated_at": func.now(),
-                  "custom_prompts": custom_prompts, "selected_phases": selected_phases},
+            set_=on_conflict_set,
         )
         .returning(Batch.id)
     )

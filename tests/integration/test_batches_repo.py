@@ -174,3 +174,44 @@ async def test_list_jobs_includes_unlaunched_lessons():
             await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
             await s.execute(delete(Book).where(Book.id == book_id))
             await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_relaunch_without_prompts_preserves_stored():
+    """A plain same-transport re-launch/top-up (no custom prompts) must NOT NULL
+    out the batch's stored custom_prompts/selected_phases (the ON-CONFLICT bug).
+    COALESCE keeps the existing provenance when the incoming value is NULL."""
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    from app.models.book import Book
+    from app.models.toc_entry import TOCEntry
+    from app.repositories import batches as batches_repo
+
+    async with SessionLocal() as s:
+        book, _ = await _seed_book_with_lessons(s)
+        await s.commit()
+        book_id = book.id
+    try:
+        # First launch carries custom prompts + a phase subset.
+        async with SessionLocal() as s:
+            b1 = await batches_repo.get_or_create_for_book(
+                s, book_id=book_id, subject="math-algebra", grade=None,
+                provider="claude", model=None, transport="api",
+                custom_prompts={"reading": "x"}, selected_phases=["reading"])
+            await s.commit()
+            b1_id = b1.id
+        # Plain same-transport re-launch: no custom prompts passed.
+        async with SessionLocal() as s:
+            b2 = await batches_repo.get_or_create_for_book(
+                s, book_id=book_id, subject="math-algebra", grade=None,
+                provider="claude", model=None, transport="api")
+            await s.commit()
+            assert b2.id == b1_id, "same (book, transport) must reuse the batch"
+            assert b2.custom_prompts == {"reading": "x"}, "custom_prompts must NOT be nulled"
+            assert b2.selected_phases == ["reading"], "selected_phases must NOT be nulled"
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(Batch).where(Batch.book_id == book_id))
+            await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
+            await s.execute(delete(Book).where(Book.id == book_id))
+            await s.commit()
