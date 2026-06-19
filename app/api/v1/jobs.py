@@ -15,6 +15,7 @@ from app.config import settings
 from app.db import SessionLocal, get_session
 from app.repositories import agent_usage as agent_usage_repo
 from app.repositories import books as books_repo
+from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import GenerateRequest, JobOut, PhaseOut
@@ -177,6 +178,17 @@ async def generate(
             response.status_code = 200
             return await _job_out(session, existing.id)
 
+    # fleet-api-4: never-pay-twice — check for prior api spend before creating
+    # a force-regenerated job so the operator sees what they're about to re-bill.
+    # Runs BEFORE the job create so the lookup is inside the advisory-lock window.
+    prior_api_cost_usd: float | None = None
+    would_rebill: bool | None = None
+    if body.force:
+        _prior_cost, _had_done_api_job = await cost_repo.section_prior_api_cost(
+            session, book_id, toc_entry_id, body.transport)
+        prior_api_cost_usd = _prior_cost
+        would_rebill = _had_done_api_job and _prior_cost > 0
+
     # Backpressure: if the eligible-now queue is too deep, refuse to enqueue
     # rather than letting it grow unbounded. The client can retry later.
     # Skipped when limit=0 (disabled).
@@ -216,7 +228,12 @@ async def generate(
     # Note: no `asyncio.create_task(pipeline.run(...))` here. The worker
     # process polls `homework_jobs.status='pending'` and claims this row.
     # See `app/services/worker.py`.
-    return await _job_out(session, job.id)
+    out = await _job_out(session, job.id)
+    # Attach never-pay-twice fields when force=True (additive; absent otherwise).
+    if prior_api_cost_usd is not None:
+        out.prior_api_cost_usd = prior_api_cost_usd
+        out.would_rebill = would_rebill
+    return out
 
 
 @router.get("/jobs/{job_id}")

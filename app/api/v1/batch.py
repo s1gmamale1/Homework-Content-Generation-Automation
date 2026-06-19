@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.repositories import batches as batches_repo
 from app.repositories import books as books_repo
+from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.services import subjects
@@ -160,6 +161,10 @@ async def launch_batch(
         judge_model=body.judge_model)
 
     created = adopted = skipped = resumed = 0
+    # fleet-api-4: per-section rebill warnings (only populated on force path).
+    # Format: [{toc_entry_id, prior_api_cost_usd, would_rebill}, ...]
+    rebill_warnings: list[dict] = []
+
     for t in targets:
         await jobs_repo.lock_section_for_generate(session, body.book_id, t.id)
         # Transport-scoped lookup (spec §9a): an api batch over a cli-generated
@@ -181,6 +186,18 @@ async def launch_batch(
             else:
                 skipped += 1
             continue
+
+        # fleet-api-4: force path — check for prior api spend before creating /
+        # resetting the job so the operator sees what they're about to re-bill.
+        if body.force:
+            prior_cost, had_done_api_job = await cost_repo.section_prior_api_cost(
+                session, body.book_id, t.id, body.transport)
+            rebill_warnings.append({
+                "toc_entry_id": str(t.id),
+                "prior_api_cost_usd": prior_cost,
+                "would_rebill": had_done_api_job and prior_cost > 0,
+            })
+
         # No active (pending/running/done) job → "remaining". Resume a saved
         # failed/cancelled section instead of discarding it; else create fresh.
         latest = await jobs_repo.latest_for_section(
@@ -210,7 +227,8 @@ async def launch_batch(
 
     payload = _rollup_payload(batch, tally, book.original_filename)
     payload.update(jobs_created=created, jobs_adopted=adopted,
-                   jobs_skipped=skipped, jobs_resumed=resumed)
+                   jobs_skipped=skipped, jobs_resumed=resumed,
+                   rebill_warnings=rebill_warnings)
     return payload
 
 
