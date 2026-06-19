@@ -321,42 +321,49 @@ version only where clearly better — which is nowhere a C1–C4 deliverable wou
 **Files:**
 - Rewrite: `tests/services/test_judge_contract_override.py`
 
-- [ ] **Step 1: Replace the `inspect`-grep test with a behavioral one** that proves the override
-  is the contract actually used (mock the LLM boundary, assert the prompt carries the override):
+- [ ] **Step 1: Replace the `inspect`-grep test with a behavioral one** that lands on the REAL LLM
+  boundary. Verified against `phase_judge.judge`: the boundary is `agent.run_phase(..., phase_prompt=
+  judge_prompt, schema=Verdict)`; the result's `.parsed` must be a `Verdict` instance (a tuple crashes
+  the `isinstance(verdict, Verdict)` guard). The fake captures `phase_prompt` and returns a real `Verdict`.
   ```python
+  import types
   import pytest
   from app.services import phase_judge
+  from app.services.phase_judge import Verdict
+
+  _JUDGE_KW = dict(
+      subject="math", phase_name="reading", output_md="OUT",
+      lesson_context="SRC", prior_outputs={},
+      gen_provider="claude", gen_model="claude-sonnet-4-6",
+      judge_provider="claude", judge_model="claude-sonnet-4-6",
+  )
 
   @pytest.mark.asyncio
   async def test_override_is_the_contract_used(monkeypatch):
       captured = {}
-      async def fake_run(*, prompt, **kw):           # mock the single LLM call boundary
-          captured["prompt"] = prompt
-          return ('{"verdict":"PASS","reasons":[]}', {})
-      monkeypatch.setattr(phase_judge, "_judge_call", fake_run)   # use the real boundary name
-      await phase_judge.judge(
-          subject="math", phase_name="reading", output_md="…",
-          lesson_context="…", contract_override="CUSTOM-CONTRACT-SENTINEL",
-      )
-      assert "CUSTOM-CONTRACT-SENTINEL" in captured["prompt"]
+      async def fake_run_phase(**kw):
+          captured["phase_prompt"] = kw["phase_prompt"]
+          return types.SimpleNamespace(parsed=Verdict(passed=True))
+      monkeypatch.setattr(phase_judge.agent, "run_phase", fake_run_phase)
+      await phase_judge.judge(contract_override="CUSTOM-CONTRACT-SENTINEL", **_JUDGE_KW)
+      assert "CUSTOM-CONTRACT-SENTINEL" in captured["phase_prompt"]
 
   @pytest.mark.asyncio
   async def test_no_override_falls_back_to_get_prompt(monkeypatch):
       captured = {}
-      async def fake_run(*, prompt, **kw):
-          captured["prompt"] = prompt
-          return ('{"verdict":"PASS","reasons":[]}', {})
-      monkeypatch.setattr(phase_judge, "_judge_call", fake_run)
+      async def fake_run_phase(**kw):
+          captured["phase_prompt"] = kw["phase_prompt"]
+          return types.SimpleNamespace(parsed=Verdict(passed=True))
+      monkeypatch.setattr(phase_judge.agent, "run_phase", fake_run_phase)
       monkeypatch.setattr(phase_judge, "get_prompt", lambda s, p: "BUILTIN-CONTRACT-SENTINEL")
-      await phase_judge.judge(
-          subject="math", phase_name="reading", output_md="…",
-          lesson_context="…", contract_override=None,
-      )
-      assert "BUILTIN-CONTRACT-SENTINEL" in captured["prompt"]
+      await phase_judge.judge(contract_override=None, **_JUDGE_KW)
+      assert "BUILTIN-CONTRACT-SENTINEL" in captured["phase_prompt"]
   ```
-  > **Executor note:** the mock targets are placeholders — read `phase_judge.judge` first and mock
-  > the *real* LLM-call symbol and match the real `judge(...)` signature. The assertion (override
-  > text reaches the prompt; absence falls back to `get_prompt`) is the contract that must hold.
+  > **Executor note (gatekeeper-required):** the boundary is `agent.run_phase` with the `phase_prompt`
+  > kwarg — NOT a `_judge_call(prompt=…)` returning a tuple (that symbol doesn't exist). The fake MUST
+  > return an object whose `.parsed` is a real `Verdict(...)`. Re-read `phase_judge.judge` and the
+  > `agent` import before finalizing; if `agent` is imported as `from app.services import agent`, patch
+  > `phase_judge.agent.run_phase` (as above). Match the full keyword-only `judge(...)` signature.
 
 - [ ] **Step 2: Run it** — `uv run python -m pytest tests/services/test_judge_contract_override.py -v` → PASS.
 
