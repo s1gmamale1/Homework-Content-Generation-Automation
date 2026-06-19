@@ -882,10 +882,12 @@ async def _execute_phase(
         raise
 
     warnings: list[str] = []
+    judge_status: Optional[str] = None
     if phase_name != "extract":
         # Judge against the phase's own contract, keyed off the ACTUAL producer
-        # (produced_by + its resolved model). One regen with cited failures fed
-        # back; still failing -> accept with warnings. Never blocks the job.
+        # (produced_by + its resolved model). Capped regen loop (default 1 iter)
+        # feeds cited failures back; budget exhausted → accept with warnings.
+        # Never blocks the job.
         def _gen_model_of(prod: str) -> Optional[str]:
             # After failover, the fallback ran on model=None (provider default), so
             # tier selection uses the provider's DEFAULT model — errs toward a
@@ -904,12 +906,33 @@ async def _execute_phase(
             homework_job_id=job_id, phase_output_id=po_id,
             transport=judge_transport,
         )
+        # Retry-once on unavailable: a transient CLI/parse failure (or timeout
+        # degraded by C1's _judge_with_timeout) is worth one free retry.
+        # Auth errors never reach here — phase_judge re-raises them before
+        # degrading to unavailable — so retrying unavailable is always safe.
+        if not outcome.available:
+            logger.info(
+                f"[job {job_id}] {phase_name} judge unavailable on first attempt — retrying once"
+            )
+            outcome = await _judge_with_timeout(
+                subject=subject, phase_name=phase_name, output_md=output_md,
+                lesson_context=lesson_context, prior_outputs=prior_outputs,
+                gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+                judge_provider=_jp, judge_model=_jm,
+                homework_job_id=job_id, phase_output_id=po_id,
+                transport=judge_transport,
+            )
         # Regenerate ONLY on a MAJOR issue; minor (stylistic/length) nits are
         # recorded as warnings but never trigger an expensive regen.
-        if outcome.available and outcome.has_major:
+        # Loop is bounded by settings.max_judge_regens (default 1 → byte-identical
+        # to the previous single-regen behavior).
+        for _regen_attempt in range(settings.max_judge_regens):
+            if not (outcome.available and outcome.has_major):
+                break
             logger.info(
                 f"[job {job_id}] {phase_name} judge found major issue(s) "
-                f"({len(outcome.warnings)} total) — regenerating once. "
+                f"({len(outcome.warnings)} total) — regenerating "
+                f"(attempt {_regen_attempt + 1}/{settings.max_judge_regens}). "
                 f"Issues: {outcome.warnings}"
             )
             # The regen runs through the failover driver, which CAN exhaust all
@@ -958,6 +981,17 @@ async def _execute_phase(
                 )
                 # output_md/tin/tout/produced_by and `outcome` retain their original
                 # pre-regen values — the phase still completes `done` with warnings.
+                judge_status = "major_regen_failed"
+                break
+        # Compute judge_status from the final outcome (or the soft-degrade above).
+        # judge_status is None for non-judged phases (e.g. extract).
+        if judge_status is None:
+            if not outcome.available:
+                judge_status = "unavailable"
+            elif outcome.passed or not outcome.has_major:
+                judge_status = "ok"
+            else:
+                judge_status = "major_shipped"
         warnings = outcome.warnings
         if warnings:
             logger.warning(f"[job {job_id}] {phase_name} validation warnings: {warnings}")
@@ -970,6 +1004,7 @@ async def _execute_phase(
             tokens_output=tout,
             validation_warnings=warnings or None,
             provider=produced_by,
+            judge_status=judge_status,
         )
         await session.commit()
 

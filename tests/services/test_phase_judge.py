@@ -32,6 +32,23 @@ def test_build_judge_prompt_contains_contract_output_and_protocol():
     assert "VISUAL / SVG RULES" not in p
 
 
+def test_build_judge_prompt_has_fidelity_rule_and_flags():
+    p = pj._build_judge_prompt(
+        contract="CONTRACT-TEXT", output_md="OUTPUT-TEXT",
+        fidelity_flags=["output states year 1991 as fact; not found in source"],
+    )
+    assert "CONTRACT-TEXT" in p and "OUTPUT-TEXT" in p
+    # instruction points the judge at the (separately-injected) LESSON CONTEXT block as truth
+    assert "lesson context" in p.lower() and ("ground truth" in p.lower() or "faithful" in p.lower())
+    assert "1991" in p                      # deterministic hint surfaced
+    assert "POSSIBLE SOURCE ISSUES" in p
+
+
+def test_build_judge_prompt_omits_flags_section_when_empty():
+    p = pj._build_judge_prompt(contract="C", output_md="O", fidelity_flags=[])
+    assert "POSSIBLE SOURCE ISSUES" not in p
+
+
 def test_build_feedback_lists_failures():
     fb = pj._build_feedback(["A — x", "B — y"])
     assert "A — x" in fb and "B — y" in fb
@@ -131,6 +148,25 @@ def test_judge_degrades_when_get_prompt_raises(monkeypatch):
     # run_phase should never be reached; if it is, this would error loudly
     out = _call_judge()
     assert out.available is False   # the Critical fix: get_prompt raise must degrade
+
+
+def test_fidelity_flags_catches_world_claim_year_absent_from_source():
+    out = "The treaty was signed in 1991, ending the union."
+    src = "The republic became independent. (no dates given)"
+    flags = pj._fidelity_flags(out, src)
+    assert any("1991" in f for f in flags)
+
+
+def test_fidelity_flags_ignores_math_worked_example_numbers():
+    out = "Solve 3x + 7 = 22. Subtract 7: 3x = 15. Divide by 3: x = 5."
+    src = "Linear equations: isolate the variable using inverse operations."
+    assert pj._fidelity_flags(out, src) == []          # MUST be empty — no regen-tax on math
+
+
+def test_fidelity_flags_passes_year_present_in_source():
+    out = "Independence was declared in 1991."
+    src = "In 1991 the republic declared independence."
+    assert pj._fidelity_flags(out, src) == []
 
 
 def test_sdk_auth_error_strings_trip_auth_signals():

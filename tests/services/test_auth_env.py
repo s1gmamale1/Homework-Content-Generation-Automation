@@ -198,6 +198,30 @@ def test_compute_capabilities_echoes_judge_pair():
     assert caps["judge_pair"] == ("claude", "claude-opus-4-7")
 
 
+def test_compute_capabilities_echoes_settings_providers():
+    """C1: _compute_capabilities must return settings_judge_provider and
+    settings_extract_provider so claim_next_job can COALESCE the job's
+    per-job column over the settings default."""
+    from app.services import worker
+
+    caps = worker._compute_capabilities(
+        {"ANTHROPIC_API_KEY": "a"}, "claude", "claude-opus-4-7", "gemini"
+    )
+    assert caps["settings_judge_provider"] == "claude"
+    assert caps["settings_extract_provider"] == "gemini"
+
+
+def test_compute_capabilities_echoes_settings_providers_alt():
+    """C1: works for an alternate settings configuration too."""
+    from app.services import worker
+
+    caps = worker._compute_capabilities(
+        {"GEMINI_API_KEY": "g"}, "gemini", "gemini-2.5-pro", "gemini"
+    )
+    assert caps["settings_judge_provider"] == "gemini"
+    assert caps["settings_extract_provider"] == "gemini"
+
+
 def test_claude_api_missing_key_raises_typed_auth_env_error():
     """Phase 4.1 §5a: credential mispredictions must raise the TYPED
     AuthEnvError so auth classification is isinstance-based, not substring."""

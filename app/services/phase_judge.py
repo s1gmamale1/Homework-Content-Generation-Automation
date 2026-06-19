@@ -12,6 +12,7 @@ error the judge degrades to "unavailable" and never blocks generation.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal, Optional
 from uuid import UUID
@@ -71,15 +72,59 @@ _INSTRUCTIONS = (
     "image or an invented http(s) image URL IS a violation — the contract forbids it."
 )
 
+_FIDELITY_RULE = (
+    "\n\nSource-fidelity (CRITICAL): a LESSON CONTEXT section is provided below — the lesson the "
+    "output was authored from. Treat it as ground truth. Raise a `major` failure for any factual "
+    "claim ABOUT THE WORLD in the OUTPUT that is contradicted by, or absent from, the LESSON "
+    "CONTEXT (e.g. an invented date, statistic, name, or definition). DO NOT flag numbers the "
+    "OUTPUT generates for teaching — practice-problem values, worked-example arithmetic, invented "
+    "student names, hypothetical scenarios — these are expected and are NOT fidelity violations. "
+    "A hint list of candidate issues may appear below; verify each against the LESSON CONTEXT "
+    "before trusting it, and drop any you cannot substantiate."
+)
 
-def _build_judge_prompt(*, contract: str, output_md: str) -> str:
-    return (
-        f"{_INSTRUCTIONS}\n\n"
-        "## CONTRACT (the authoring instructions the output must satisfy)\n"
-        f"{contract.strip()}\n\n"
-        "## OUTPUT UNDER REVIEW\n"
-        f"{output_md.strip()}\n"
-    )
+
+_YEAR_RE = re.compile(r"\b(1[0-9]{3}|20[0-9]{2})\b")
+# math/exercise cues near a number => generated, never a world-claim
+_MATH_CUES = ("=", "x ", " x", "solve", "equation", "calculate", "simplify",
+              "÷", "×", "·", "√", "step", "answer:", "problem")
+
+
+def _fidelity_flags(output_md: str, lesson_context: Optional[str]) -> list[str]:
+    """ADVISORY ONLY (never gates a regen): surface declarative world-claim YEARS in the
+    output that are absent from the source. Deliberately narrow — years only, and only when
+    no math/exercise cue sits on the same line — so generated exercise numbers never flag
+    (the R14 regen-tax guard). The LLM judge adjudicates these hints."""
+    src = (lesson_context or "")
+    if not src.strip():
+        return []
+    src_years = set(_YEAR_RE.findall(src))
+    flags: list[str] = []
+    for line in output_md.splitlines():
+        low = line.lower()
+        if any(cue in low for cue in _MATH_CUES):
+            continue                                   # generated/teaching numbers — skip
+        for y in _YEAR_RE.findall(line):
+            if y not in src_years and not any(y in f for f in flags):
+                flags.append(f"output states year {y} as fact; not found in source")
+    return flags[:8]                                   # cap the hint list
+
+
+def _build_judge_prompt(
+    *, contract: str, output_md: str, fidelity_flags: Optional[list[str]] = None,
+) -> str:
+    parts = [
+        _INSTRUCTIONS + _FIDELITY_RULE,
+        "\n\n## CONTRACT (the authoring instructions the output must satisfy)",
+        contract.strip(),
+    ]
+    if fidelity_flags:
+        parts += [
+            "\n## POSSIBLE SOURCE ISSUES (hints — verify against LESSON CONTEXT before trusting)",
+            "\n".join(f"- {f}" for f in fidelity_flags),
+        ]
+    parts += ["\n## OUTPUT UNDER REVIEW", output_md.strip(), ""]
+    return "\n".join(parts)
 
 
 def _serialize_failures(failures: list[Failure]) -> list[str]:
@@ -147,7 +192,10 @@ async def judge(
     swallowed: an api job must fail loudly, not ship unjudged."""
     try:
         contract = get_prompt(subject, phase_name)
-        judge_prompt = _build_judge_prompt(contract=contract, output_md=output_md)
+        flags = _fidelity_flags(output_md, lesson_context)   # Task A2; stub returns [] until A2 lands
+        judge_prompt = _build_judge_prompt(
+            contract=contract, output_md=output_md, fidelity_flags=flags,
+        )
         result = await agent.run_phase(
             provider=judge_provider,
             model=judge_model,
