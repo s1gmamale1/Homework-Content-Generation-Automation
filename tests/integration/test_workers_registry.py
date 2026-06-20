@@ -139,6 +139,76 @@ async def test_prune_stale_removes_only_rows_older_than_window():
 
 
 @pytest.mark.asyncio
+async def test_has_live_workers_fresh_beat_returns_true():
+    """A row with a just-stamped heartbeat must report True."""
+    from sqlalchemy import text
+
+    from app.db import SessionLocal
+    from app.models.worker import WorkerNode
+    from app.repositories import workers as workers_repo
+
+    pc = "test-host:77771"
+    try:
+        async with SessionLocal() as s:
+            await workers_repo.upsert_heartbeat(s, pc)
+            await s.commit()
+        async with SessionLocal() as s:
+            result = await workers_repo.has_live_workers(s, stale_after_seconds=90)
+        assert result is True
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_has_live_workers_only_stale_returns_false():
+    """A row whose heartbeat is older than the window must return False."""
+    from sqlalchemy import text
+
+    from app.db import SessionLocal
+    from app.models.worker import WorkerNode
+    from app.repositories import workers as workers_repo
+
+    pc = "test-host:77772"
+    try:
+        async with SessionLocal() as s:
+            await workers_repo.upsert_heartbeat(s, pc)
+            await s.execute(text(
+                "UPDATE workers SET last_heartbeat = now() - interval '10 minutes' "
+                "WHERE pc_id = :pc"), {"pc": pc})
+            await s.commit()
+        async with SessionLocal() as s:
+            result = await workers_repo.has_live_workers(s, stale_after_seconds=90)
+        assert result is False
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_has_live_workers_empty_table_returns_false():
+    """No workers rows at all must return False.
+
+    DELETE all rows inside the session, assert False, then ROLLBACK — no rows
+    are permanently removed, so the shared DB stays intact for other tests.
+    """
+    from sqlalchemy import delete as sa_delete
+
+    from app.db import SessionLocal
+    from app.models.worker import WorkerNode
+    from app.repositories import workers as workers_repo
+
+    async with SessionLocal() as s:
+        await s.execute(sa_delete(WorkerNode))
+        result = await workers_repo.has_live_workers(s, stale_after_seconds=90)
+        await s.rollback()
+
+    assert result is False
+
+
+@pytest.mark.asyncio
 async def test_deregister_removes_own_row():
     from app.db import SessionLocal
     from app.models.worker import WorkerNode

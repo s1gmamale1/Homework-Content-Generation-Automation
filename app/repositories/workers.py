@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, exists, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,6 +62,16 @@ async def deregister(session: AsyncSession, pc_id: str) -> None:
     """Remove this worker's own row on graceful shutdown. Best-effort bonus —
     `prune_stale` is what actually guarantees cleanup."""
     await session.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc_id))
+
+
+async def has_live_workers(session: AsyncSession, *, stale_after_seconds: int) -> bool:
+    """True iff at least one workers row has a heartbeat within the staleness window.
+    Uses a single EXISTS query against the DB clock — never the host clock."""
+    cutoff = func.now() - timedelta(seconds=stale_after_seconds)
+    result = await session.scalar(
+        select(exists().where(WorkerNode.last_heartbeat >= cutoff))
+    )
+    return bool(result)
 
 
 async def list_with_liveness(session: AsyncSession, *, stale_after_seconds: int) -> list[dict]:
