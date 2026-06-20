@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import delete, exists, func, select
+from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -72,6 +72,23 @@ async def has_live_workers(session: AsyncSession, *, stale_after_seconds: int) -
         select(exists().where(WorkerNode.last_heartbeat >= cutoff))
     )
     return bool(result)
+
+
+async def get_status(session: AsyncSession, pc_id: str) -> str | None:
+    """Return the `status` string for the given pc_id, or None if no such row."""
+    return await session.scalar(
+        select(WorkerNode.status).where(WorkerNode.pc_id == pc_id)
+    )
+
+
+async def set_status(session: AsyncSession, pc_id: str, status: str) -> bool:
+    """UPDATE `status` for pc_id. Does NOT touch `last_heartbeat`. Returns True
+    if a row was matched (pc_id known), False if pc_id unknown — the endpoint
+    uses the False case to send a 404."""
+    result = await session.execute(
+        update(WorkerNode).where(WorkerNode.pc_id == pc_id).values(status=status)
+    )
+    return (result.rowcount or 0) > 0
 
 
 async def list_with_liveness(session: AsyncSession, *, stale_after_seconds: int) -> list[dict]:
