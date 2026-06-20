@@ -1,5 +1,8 @@
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import type { Worker } from "@/lib/types";
-import { CARD } from "@/lib/ui";
+import { api } from "@/lib/api";
+import { CARD, GHOST_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
 const ONLINE_GREEN = "oklch(0.78 0.10 145)";
@@ -20,6 +23,26 @@ export function WorkerCards({
 }: {
   data?: { workers: Worker[]; online: number; total: number };
 }) {
+  const qc = useQueryClient();
+
+  const drainMut = useMutation({
+    mutationFn: (pcId: string) => api.drainWorker(pcId),
+    onSuccess: () => {
+      toast.success("Worker draining — will stop claiming after current jobs");
+      qc.invalidateQueries({ queryKey: ["workers"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Drain failed"),
+  });
+
+  const undrainMut = useMutation({
+    mutationFn: (pcId: string) => api.undrainWorker(pcId),
+    onSuccess: () => {
+      toast.success("Worker back online");
+      qc.invalidateQueries({ queryKey: ["workers"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Undrain failed"),
+  });
+
   return (
     <div className="space-y-3">
       <div className="flex items-baseline justify-between gap-3">
@@ -37,29 +60,63 @@ export function WorkerCards({
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {data.workers.map((w) => (
-            <div key={w.pc_id} className={cn(CARD, "space-y-2")}>
-              <div className="flex items-center gap-2">
-                <span
-                  aria-hidden
-                  className={cn(
-                    "size-2 shrink-0 rounded-full",
-                    !w.online && "bg-white/25",
+          {data.workers.map((w) => {
+            const isDraining = w.status === "draining";
+            const pendingDrain = drainMut.isPending && drainMut.variables === w.pc_id;
+            const pendingUndrain = undrainMut.isPending && undrainMut.variables === w.pc_id;
+            const isPending = pendingDrain || pendingUndrain;
+
+            return (
+              <div key={w.pc_id} className={cn(CARD, "space-y-2")}>
+                <div className="flex items-center gap-2">
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "size-2 shrink-0 rounded-full",
+                      !w.online && "bg-white/25",
+                    )}
+                    style={w.online ? { background: ONLINE_GREEN } : undefined}
+                  />
+                  <span className="truncate font-mono text-sm font-medium text-white">
+                    {w.pc_id}
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between gap-2 text-xs text-white/50">
+                  {isDraining ? (
+                    <span className="inline-flex items-center rounded border border-amber-500/30 bg-amber-500/[0.08] px-1.5 py-0.5 text-[0.7rem] font-medium text-amber-300">
+                      draining
+                    </span>
+                  ) : (
+                    <span className="truncate">{w.status}</span>
                   )}
-                  style={w.online ? { background: ONLINE_GREEN } : undefined}
-                />
-                <span className="truncate font-mono text-sm font-medium text-white">
-                  {w.pc_id}
-                </span>
+                  <span className="shrink-0 font-mono text-white/40">
+                    {ago(w.last_heartbeat)}
+                  </span>
+                </div>
+                {w.online && (
+                  <div className="flex justify-end">
+                    {isDraining ? (
+                      <button
+                        className={cn(GHOST_BTN, "h-7 px-2 text-xs text-amber-300/80 hover:text-amber-200 disabled:opacity-50")}
+                        disabled={isPending}
+                        onClick={() => undrainMut.mutate(w.pc_id)}
+                      >
+                        {pendingUndrain ? "…" : "Undrain"}
+                      </button>
+                    ) : (
+                      <button
+                        className={cn(GHOST_BTN, "h-7 px-2 text-xs disabled:opacity-50")}
+                        disabled={isPending}
+                        onClick={() => drainMut.mutate(w.pc_id)}
+                      >
+                        {pendingDrain ? "…" : "Drain"}
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
-              <div className="flex items-baseline justify-between gap-2 text-xs text-white/50">
-                <span className="truncate">{w.status}</span>
-                <span className="shrink-0 font-mono text-white/40">
-                  {ago(w.last_heartbeat)}
-                </span>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

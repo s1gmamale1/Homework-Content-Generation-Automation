@@ -18,6 +18,7 @@ import type {
   TOCEntry,
   Transport,
   Worker,
+  WorkerStatusResponse,
 } from "./types";
 
 class ApiError extends Error {
@@ -374,6 +375,24 @@ export const api = {
   async listWorkers(): Promise<{ workers: Worker[]; total: number; online: number; stale_after_seconds: number }> {
     const res = await authFetch("/api/v1/workers");
     return unwrap(res);
+  },
+
+  /** Drain a worker — sets status "draining"; worker finishes in-flight jobs then stops claiming. */
+  async drainWorker(pcId: string): Promise<WorkerStatusResponse> {
+    const res = await authFetch(
+      `/api/v1/workers/${encodeURIComponent(pcId)}/drain`,
+      { method: "POST" },
+    );
+    return unwrap<WorkerStatusResponse>(res);
+  },
+
+  /** Undrain a worker — reverts status to "online"; claim gate re-includes it. */
+  async undrainWorker(pcId: string): Promise<WorkerStatusResponse> {
+    const res = await authFetch(
+      `/api/v1/workers/${encodeURIComponent(pcId)}/undrain`,
+      { method: "POST" },
+    );
+    return unwrap<WorkerStatusResponse>(res);
   },
 
   jobDownloadUrl(jobId: string): string {

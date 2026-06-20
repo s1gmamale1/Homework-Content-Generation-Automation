@@ -335,6 +335,11 @@ export interface Worker {
   online: boolean;
 }
 
+export interface WorkerStatusResponse {
+  pc_id: string;
+  status: string;
+}
+
 export type BatchRollup = Partial<Record<JobStatus | "not_started", number>>;
 
 export interface BatchSummary {
