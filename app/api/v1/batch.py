@@ -20,7 +20,7 @@ from app.services.agent_models import (
     validate_role_transport,
     validate_transport,
 )
-from app.services.flows import order_phase_selection, flow_for
+from app.services.flows import order_phase_selection, flow_for, selection_missing_prompts
 
 router = APIRouter(tags=["batches"])
 
@@ -139,6 +139,11 @@ async def launch_batch(
             selected_phases = order_phase_selection(book.subject, body.selected_phases)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+        # Pick-phases requires an uploaded prompt for every picked phase.
+        missing = selection_missing_prompts(selected_phases, custom_prompts)
+        if missing:
+            raise HTTPException(
+                400, f"selected phases missing a custom prompt: {missing}")
 
     batch_force = body.force or bool(custom_prompts) or selected_phases is not None
     # Per-role provider/model: validate only explicit picks. The role's effective

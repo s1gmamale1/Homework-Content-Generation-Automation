@@ -84,14 +84,24 @@ function TransportRow({
  *  separate cards for the same subject. */
 function BookCard({ batches }: { batches: BatchSummary[] }) {
   const head = batches[0];
-  const anyIncomplete = batches.some((b) => !b.complete);
+  // Glow ("in progress" treatment) only while work is ACTUALLY in flight —
+  // queued/running/cancelling jobs. NOT `!complete`: a partial/subset launch
+  // that finished everything it launched is idle (nothing running) even though
+  // the book isn't 100% covered, so it must not keep pulsing as in-progress.
+  const anyInFlight = batches.some(
+    (b) =>
+      (b.rollup.pending ?? 0) +
+        (b.rollup.running ?? 0) +
+        (b.rollup.cancelling ?? 0) >
+      0,
+  );
 
   return (
     <div
       className={cn(
         CARD,
         "space-y-3 transition-transform hover:-translate-y-0.5",
-        anyIncomplete && "glow-rim",
+        anyInFlight && "glow-rim",
       )}
     >
       <div className="min-w-0">

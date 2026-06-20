@@ -11,7 +11,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { motion } from "motion/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { SpaceBackdrop } from "@/components/space-backdrop";
@@ -26,7 +26,7 @@ import {
 import { RoleAgentControls } from "@/components/fleet/RoleAgentControls";
 import { api } from "@/lib/api";
 import { safeUUID } from "@/lib/uuid";
-import { subjectLabel, CONTENT_PHASES, gameForSubject } from "@/lib/subjects";
+import { subjectLabel, CONTENT_PHASES } from "@/lib/subjects";
 import type {
   JobStatus,
   ProviderModelManifest,
@@ -53,21 +53,15 @@ export function SectionPage() {
   // "all" = generate the full packet (send selected_phases=null). "pick" = only
   // the checked phases. Default "all" so most users never touch it.
   const [phaseMode, setPhaseMode] = useState<"all" | "pick">("all");
-  // In "pick" mode the checked set. Seeded once the book's subject is known to
-  // every phase the subject actually runs (all non-game phases + its one game),
-  // so checked = will run and we never pre-check a game this subject can't run.
+  // In "pick" mode the checked set. Starts empty — the user deliberately picks
+  // the phases to run and (required) uploads an md prompt for each one.
   const [selectedPhases, setSelectedPhases] = useState<Set<string>>(new Set());
-  const phasesSeeded = useRef(false);
-  // Once the user touches a checkbox, the auto-seed must never overwrite them
-  // (e.g. a late book refetch). Their selection is theirs from then on.
-  const userTouchedPhases = useRef(false);
   // Per-phase custom prompt {filename, text}, read in-browser — never uploaded as a file.
   const [customPrompts, setCustomPrompts] = useState<Record<string, { name: string; text: string }>>(
     {},
   );
 
   function togglePhase(key: string) {
-    userTouchedPhases.current = true;
     setSelectedPhases((prev) => {
       const next = new Set(prev);
       next.has(key) ? next.delete(key) : next.add(key);
@@ -102,6 +96,10 @@ export function SectionPage() {
 
   // In "pick" mode at least one phase must be checked (the backend 400s on []).
   const noPhasePicked = phaseMode === "pick" && selectedPhases.size === 0;
+  // …and every checked phase needs its own uploaded md — without it we don't
+  // generate (mirrors the backend 400). These are the still-uncovered keys.
+  const missingPromptKeys =
+    phaseMode === "pick" ? [...selectedPhases].filter((k) => !customPrompts[k]) : [];
 
   const { data: book, isLoading } = useQuery({
     queryKey: ["book", bookId],
@@ -148,21 +146,9 @@ export function SectionPage() {
   const existingJobId = section?.latest_job_id ?? null;
   const existingStatus = (section?.latest_job_status ?? null) as JobStatus | null;
 
-  // The single game phase this book's subject runs; the other 3 games grey out.
-  const applicableGame = gameForSubject(book?.subject ?? "");
-  // Phases this subject can actually run: every non-game phase + its one game.
-  const validPhaseKeys = CONTENT_PHASES.filter(
-    (p) => !p.game || p.key === applicableGame,
-  ).map((p) => p.key);
-
-  // Seed the pick-mode selection once we know the subject (default: everything
-  // this subject runs is checked). Runs before the user reaches "Pick phases".
-  useEffect(() => {
-    if (!applicableGame || phasesSeeded.current || userTouchedPhases.current) return;
-    setSelectedPhases(new Set(validPhaseKeys));
-    phasesSeeded.current = true;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applicableGame]);
+  // Every content phase is selectable — the backend generates all four game
+  // variants for every subject, so nothing is locked by subject.
+  const validPhaseKeys = CONTENT_PHASES.map((p) => p.key);
 
   async function handleGenerate(force: boolean) {
     if (!bookId || !sectionId) return;
@@ -312,7 +298,6 @@ export function SectionPage() {
         <PhasePicker
           mode={phaseMode}
           onModeChange={setPhaseMode}
-          applicableGame={applicableGame}
           selectedPhases={selectedPhases}
           onToggle={togglePhase}
           onSelectAll={() => setSelectedPhases(new Set(validPhaseKeys))}
@@ -328,7 +313,11 @@ export function SectionPage() {
           existingStatus={existingStatus}
           busy={busy}
           manifestLoading={manifestLoading}
-          blocked={(transport === "api" && !model) || noPhasePicked}
+          blocked={
+            (transport === "api" && !model) ||
+            noPhasePicked ||
+            missingPromptKeys.length > 0
+          }
           onGenerate={() => handleGenerate(false)}
           onRegenerate={() => handleGenerate(true)}
         />
@@ -340,7 +329,6 @@ export function SectionPage() {
 interface PhasePickerProps {
   mode: "all" | "pick";
   onModeChange: (next: "all" | "pick") => void;
-  applicableGame: string;
   selectedPhases: Set<string>;
   onToggle: (key: string) => void;
   onSelectAll: () => void;
@@ -351,11 +339,11 @@ interface PhasePickerProps {
 }
 
 /** "What should we generate?" — a full-packet/pick-phases toggle over a
- *  self-describing checklist, with an optional per-phase prompt override. */
+ *  self-describing checklist. In "pick" mode every chosen phase REQUIRES an
+ *  uploaded md prompt; generation is blocked until each one has it. */
 function PhasePicker({
   mode,
   onModeChange,
-  applicableGame,
   selectedPhases,
   onToggle,
   onSelectAll,
@@ -364,12 +352,14 @@ function PhasePicker({
   onUpload,
   onRemoveCustom,
 }: PhasePickerProps) {
-  // A game phase is selectable only if it's THIS subject's game; the other
-  // three are shown greyed out ("used by other subjects").
-  const isLockedGame = (p: (typeof CONTENT_PHASES)[number]) =>
-    !!p.game && p.key !== applicableGame;
-  const total = CONTENT_PHASES.filter((p) => !isLockedGame(p)).length;
+  // Every phase is selectable — the backend runs all four game variants for
+  // every subject, so nothing is locked by subject.
+  const total = CONTENT_PHASES.length;
   const count = selectedPhases.size;
+  // Checked phases still missing their required md prompt.
+  const missing = CONTENT_PHASES.filter(
+    (p) => selectedPhases.has(p.key) && !customPrompts[p.key],
+  );
 
   return (
     <section className={CARD}>
@@ -419,12 +409,16 @@ function PhasePicker({
             <span
               className={cn(
                 "text-sm",
-                count === 0 ? "font-medium text-rose-300" : "text-white/60",
+                count === 0 || missing.length > 0
+                  ? "font-medium text-rose-300"
+                  : "text-white/60",
               )}
             >
               {count === 0
                 ? "Pick at least one phase to generate"
-                : `${count} of ${total} selected`}
+                : missing.length > 0
+                  ? `Upload a prompt for: ${missing.map((p) => p.label).join(", ")}`
+                  : `${count} of ${total} selected — ready`}
             </span>
             <div className="flex items-center gap-1.5 text-xs">
               <button
@@ -448,50 +442,20 @@ function PhasePicker({
           <div className="space-y-2">
             {CONTENT_PHASES.map((phase) => {
               const { key, label, icon, blurb } = phase;
-              const locked = isLockedGame(phase);
-              const checked = !locked && selectedPhases.has(key);
+              const checked = selectedPhases.has(key);
               const custom = customPrompts[key];
-              // Locked game: shown greyed, can't be picked or customised (it
-              // belongs to other subjects' flows, not this one).
-              if (locked) {
-                return (
-                  <button
-                    type="button"
-                    key={key}
-                    onClick={() =>
-                      toast.info(
-                        `“${label}” is a game used by other subjects — this lesson's game is already in the list.`,
-                      )
-                    }
-                    className="flex w-full cursor-not-allowed items-start justify-between gap-3 rounded-xl border border-white/[0.05] bg-white/[0.015] px-3 py-2.5 text-left opacity-45"
-                    title="This game runs in other subjects, not this one"
-                  >
-                    <span className="flex items-start gap-3">
-                      <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded border border-white/20 text-[0.6rem] leading-none">
-                        🔒
-                      </span>
-                      <span>
-                        <span className="flex items-center gap-2 text-sm font-medium text-white/70">
-                          <span className="text-base leading-none">{icon}</span>
-                          {label}
-                        </span>
-                        <span className="mt-0.5 block text-xs text-white/40">{blurb}</span>
-                      </span>
-                    </span>
-                    <span className="shrink-0 whitespace-nowrap rounded-lg border border-white/[0.08] px-2 py-1 text-[0.66rem] font-medium text-white/40">
-                      other subjects
-                    </span>
-                  </button>
-                );
-              }
+              // A checked phase with no uploaded md blocks generation.
+              const needsPrompt = checked && !custom;
               return (
                 <div
                   key={key}
                   className={cn(
                     "rounded-xl border px-3 py-2.5 transition-colors",
-                    checked
-                      ? "border-white/[0.12] bg-white/[0.05]"
-                      : "border-white/[0.06] bg-white/[0.02] opacity-60",
+                    needsPrompt
+                      ? "border-rose-400/30 bg-rose-400/[0.05]"
+                      : checked
+                        ? "border-white/[0.12] bg-white/[0.05]"
+                        : "border-white/[0.06] bg-white/[0.02] opacity-60",
                   )}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -511,7 +475,7 @@ function PhasePicker({
                       </span>
                     </label>
 
-                    {/* Per-phase prompt override */}
+                    {/* Per-phase prompt — REQUIRED for a checked phase. */}
                     {custom ? (
                       <span className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-emerald-400/25 bg-emerald-400/[0.08] px-2 py-1 text-xs text-emerald-200">
                         <span className="max-w-[7rem] truncate font-mono">✎ {custom.name}</span>
@@ -526,10 +490,15 @@ function PhasePicker({
                       </span>
                     ) : (
                       <label
-                        className="shrink-0 cursor-pointer whitespace-nowrap rounded-lg border border-white/[0.12] px-2 py-1 text-xs font-medium text-white/60 transition-colors hover:bg-white/[0.06] hover:text-white"
-                        title="Upload a .md to replace this phase's built-in instructions (this run only)"
+                        className={cn(
+                          "shrink-0 cursor-pointer whitespace-nowrap rounded-lg border px-2 py-1 text-xs font-medium transition-colors",
+                          needsPrompt
+                            ? "border-rose-400/40 bg-rose-400/[0.08] text-rose-200 hover:bg-rose-400/[0.14]"
+                            : "border-white/[0.12] text-white/60 hover:bg-white/[0.06] hover:text-white",
+                        )}
+                        title="Upload the .md prompt this phase will run with (this run only)"
                       >
-                        ✎ Customize
+                        {needsPrompt ? "⬆ Upload .md (required)" : "✎ Upload .md"}
                         <input
                           type="file"
                           accept=".md,.markdown,text/markdown"
@@ -539,19 +508,23 @@ function PhasePicker({
                       </label>
                     )}
                   </div>
-                  {custom && (
+                  {custom ? (
                     <p className="mt-1.5 pl-7 text-[0.7rem] text-emerald-200/70">
-                      Replaces the built-in instructions for this phase (this run only — not saved).
+                      Runs this phase with your uploaded prompt (this run only — not saved).
                     </p>
-                  )}
+                  ) : needsPrompt ? (
+                    <p className="mt-1.5 pl-7 text-[0.7rem] text-rose-200/80">
+                      Upload an md prompt to run this phase — without it we won't generate.
+                    </p>
+                  ) : null}
                 </div>
               );
             })}
           </div>
 
           <p className="text-xs text-white/40">
-            We automatically add any phase a chosen one depends on (e.g. Boss fight needs
-            Preview, Flashcards & Memory sprint).
+            We run exactly the phases you check — each with the md prompt you upload for it.
+            Every checked phase needs its own prompt before you can generate.
           </p>
         </div>
       )}
