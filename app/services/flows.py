@@ -185,3 +185,23 @@ def order_phase_selection(subject: str, selected: list[str]) -> list[str]:
 
     chosen = set(selected)
     return [p for p in flow if p in chosen]
+
+
+def selection_missing_prompts(
+    selected_phases: list[str] | None,
+    custom_prompts: dict[str, str] | None,
+) -> list[str]:
+    """Phases in a 'Pick phases' selection that lack an uploaded custom prompt.
+
+    The pick-phases flow requires the user to upload a prompt (md) for every
+    phase they pick — without it we will not generate. Returns the selected
+    phases that have no non-empty entry in ``custom_prompts`` (in selection
+    order). An empty list means every selected phase is covered.
+
+    Full-packet launches (``selected_phases is None``) are exempt and always
+    return ``[]`` — they run the built-in prompts, no upload needed.
+    """
+    if not selected_phases:
+        return []
+    prompts = custom_prompts or {}
+    return [p for p in selected_phases if not (prompts.get(p) or "").strip()]

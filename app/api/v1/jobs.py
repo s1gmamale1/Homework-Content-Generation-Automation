@@ -28,7 +28,7 @@ from app.services.agent_models import (
     validate_role_transport,
     validate_transport,
 )
-from app.services.flows import order_phase_selection, flow_for
+from app.services.flows import order_phase_selection, flow_for, selection_missing_prompts
 from app.services.providers import PROVIDERS
 from app.services.worker import RUNNING_JOBS
 
@@ -163,6 +163,11 @@ async def generate(
             selected_phases = order_phase_selection(book.subject, body.selected_phases)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+        # Pick-phases requires an uploaded prompt for every picked phase.
+        missing = selection_missing_prompts(selected_phases, custom_prompts)
+        if missing:
+            raise HTTPException(
+                400, f"selected phases missing a custom prompt: {missing}")
 
     # Gate 1: a custom/subset launch must never reuse a plain job.
     force_fresh = body.force or bool(custom_prompts) or selected_phases is not None

@@ -75,3 +75,27 @@ async def test_custom_prompt_for_extract_rejected(monkeypatch):
     async with _client() as c:
         r = await _post(c, {"custom_prompts": {"extract": "no"}})
     assert r.status_code == 400, r.text
+
+
+@pytest.mark.asyncio
+async def test_picked_phase_without_prompt_rejected(monkeypatch):
+    # Pick-phases requires an uploaded md for every picked phase.
+    _ready_book_patch(monkeypatch)
+    async with _client() as c:
+        r = await _post(c, {"selected_phases": ["flashcards"]})
+    assert r.status_code == 400, r.text
+    assert "missing a custom prompt" in r.json()["detail"]
+    assert "flashcards" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_partial_prompts_rejects_only_the_uncovered_phase(monkeypatch):
+    _ready_book_patch(monkeypatch)
+    async with _client() as c:
+        r = await _post(c, {
+            "selected_phases": ["flashcards", "boss-arena"],
+            "custom_prompts": {"flashcards": "md"},
+        })
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert "boss-arena" in detail and "flashcards" not in detail
