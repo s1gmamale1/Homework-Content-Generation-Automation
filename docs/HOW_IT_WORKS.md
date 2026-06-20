@@ -200,13 +200,17 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
   are skipped (or adopted, if they don't belong to a batch yet), so re-launching is a safe
   "top-up." Progress rollups are computed on read, one vote per lesson. A whole batch can be
   **cancelled** (`POST /jobs/batch/{id}/cancel` → cancel *every* non-terminal job: pending +
-  running, i.e. halt the batch) and **resumed** (`POST /jobs/batch/{id}/resume` → re-enqueue
-  failed/cancelled jobs, reusing already-`done` phases). A re-launch over a batch with
-  partially-done lessons offers `relaunch_mode` **resume** (default — keep saved phases) vs
-  **discard** (regenerate from scratch); the preview is strict zero-write. The `/monitor` rollup
-  is whole-book (PR37): launched-lesson statuses plus a synthetic `not_started` count for the
-  book's un-launched lessons, so a batch reads "complete" only when every lesson is done and none
-  are un-launched. The monitor groups a book's per-transport batches into one card.
+  running, i.e. halt the batch), **resumed** (`POST /jobs/batch/{id}/resume` → re-enqueue
+  failed/cancelled jobs, reusing already-`done` phases), or **manually paused / unpaused**
+  (`POST /jobs/batch/{id}/pause` / `…/unpause` — reason `"manual"`, reusing C4's
+  `batches.pause_batch` primitive; the `/monitor` batch card shows "Paused by operator" when
+  active; clobber-proof against the C4 budget monitor which only touches reason `"batch-cap"`).
+  A re-launch over a batch with partially-done lessons offers `relaunch_mode` **resume**
+  (default — keep saved phases) vs **discard** (regenerate from scratch); the preview is strict
+  zero-write. The `/monitor` rollup is whole-book (PR37): launched-lesson statuses plus a
+  synthetic `not_started` count for the book's un-launched lessons, so a batch reads "complete"
+  only when every lesson is done and none are un-launched. The monitor groups a book's
+  per-transport batches into one card.
 - **Budget monitor** (C4 cost-safety): a `worker._budget_monitor` loop runs inside every
   worker process (period: `COST_CHECK_INTERVAL_SECONDS`, default 60s). It reads the
   cost ledger (`app/repositories/cost.py`) — `batch_api_cost_usd` (sums `agent_usages`
@@ -224,15 +228,27 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
   Operator observability: `GET /jobs/batch/{id}/cost` returns `{batch_api_cost_usd,
   paused_at, paused_reason, fleet_api_paused_at, fleet_api_paused_reason}`. When a batch
   is paused, the `/monitor` batch card shows a "Paused — budget cap reached" badge.
+- **PC-level drain** (`fleet-ctrl-4`): `POST /workers/{pc_id}/drain` sets the worker's
+  status to `"draining"`. The worker reads its own status on every registry heartbeat
+  (`_drain_check_and_beat`): when draining, it calls `stop()` and **skips** the
+  `upsert_heartbeat("online")` call that would otherwise clobber the signal — so it stops
+  claiming new jobs while letting in-flight jobs finish naturally (`_drain()`). Use
+  `POST /workers/{pc_id}/undrain` to cancel. The `/monitor` worker card shows an amber
+  "draining" chip while the signal is active. The FE exposes Drain / Undrain buttons on each
+  worker card.
 - **The `/fleet` page**: launch a Notion subject end-to-end (fetch → TOC-extract →
   launch), with a one-line worker-liveness strip (`OnlineStrip`).
 - **The `/monitor` page**: watch batch funnels fill, see PC liveness cards, and drill
   into a batch's lessons to cancel/retry individual ones. Batch-wide cancel-all / resume /
   relaunch live on the `/fleet` launcher card.
 
-One caveat worth knowing: the API's *startup* orphan sweep resets **all** `running` jobs to
-`pending` (it assumes a single host). In a multi-pod fleet that would steal live workers'
-jobs — fleet setups rely on the TTL-based sweep instead.
+One caveat worth knowing: on startup the API sweeps orphaned `running` jobs back to
+`pending`. As of Cluster 5 / P1 (`fleet-restart-reclaim-1`) this is **peer-aware**: if no
+other live worker is registered in the `workers` table, it does an immediate reset-all
+(fast single-host recovery, same as before); if live peers are present, only jobs whose
+lease is older than `reclaim_stale_seconds` are reset, so a peer's freshly-heartbeated job
+is never yanked. (Best-effort: a sub-window restart may momentarily see its own old
+`workers` row as a peer and take the lease path for that boot; correctness is unaffected.)
 
 ---
 

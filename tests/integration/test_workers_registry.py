@@ -139,6 +139,182 @@ async def test_prune_stale_removes_only_rows_older_than_window():
 
 
 @pytest.mark.asyncio
+async def test_has_live_workers_fresh_beat_returns_true():
+    """A row with a just-stamped heartbeat must report True."""
+    from sqlalchemy import text
+
+    from app.db import SessionLocal
+    from app.models.worker import WorkerNode
+    from app.repositories import workers as workers_repo
+
+    pc = "test-host:77771"
+    try:
+        async with SessionLocal() as s:
+            await workers_repo.upsert_heartbeat(s, pc)
+            await s.commit()
+        async with SessionLocal() as s:
+            result = await workers_repo.has_live_workers(s, stale_after_seconds=90)
+        assert result is True
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_has_live_workers_only_stale_returns_false():
+    """A row whose heartbeat is older than the window must return False."""
+    from sqlalchemy import text
+
+    from app.db import SessionLocal
+    from app.models.worker import WorkerNode
+    from app.repositories import workers as workers_repo
+
+    pc = "test-host:77772"
+    try:
+        async with SessionLocal() as s:
+            await workers_repo.upsert_heartbeat(s, pc)
+            await s.execute(text(
+                "UPDATE workers SET last_heartbeat = now() - interval '10 minutes' "
+                "WHERE pc_id = :pc"), {"pc": pc})
+            await s.commit()
+        async with SessionLocal() as s:
+            result = await workers_repo.has_live_workers(s, stale_after_seconds=90)
+        assert result is False
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_has_live_workers_empty_table_returns_false():
+    """No workers rows at all must return False.
+
+    DELETE all rows inside the session, assert False, then ROLLBACK — no rows
+    are permanently removed, so the shared DB stays intact for other tests.
+    """
+    from sqlalchemy import delete as sa_delete
+
+    from app.db import SessionLocal
+    from app.models.worker import WorkerNode
+    from app.repositories import workers as workers_repo
+
+    async with SessionLocal() as s:
+        await s.execute(sa_delete(WorkerNode))
+        result = await workers_repo.has_live_workers(s, stale_after_seconds=90)
+        await s.rollback()
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_get_status_after_upsert_returns_online():
+    """get_status returns 'online' for a freshly registered worker."""
+    from app.db import SessionLocal
+    from app.models.worker import WorkerNode
+    from app.repositories import workers as workers_repo
+
+    pc = "test-host:77773"
+    try:
+        async with SessionLocal() as s:
+            await workers_repo.upsert_heartbeat(s, pc)
+            await s.commit()
+        async with SessionLocal() as s:
+            status = await workers_repo.get_status(s, pc)
+        assert status == "online"
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_set_status_draining_returns_true_and_persists():
+    """set_status to draining returns True and get_status reflects the change."""
+    from app.db import SessionLocal
+    from app.models.worker import WorkerNode
+    from app.repositories import workers as workers_repo
+
+    pc = "test-host:77774"
+    try:
+        async with SessionLocal() as s:
+            await workers_repo.upsert_heartbeat(s, pc)
+            await s.commit()
+        async with SessionLocal() as s:
+            ok = await workers_repo.set_status(s, pc, "draining")
+            await s.commit()
+        assert ok is True
+        async with SessionLocal() as s:
+            status = await workers_repo.get_status(s, pc)
+        assert status == "draining"
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_set_status_unknown_pc_returns_false():
+    """set_status on a non-existent pc_id returns False."""
+    from app.db import SessionLocal
+    from app.repositories import workers as workers_repo
+
+    async with SessionLocal() as s:
+        ok = await workers_repo.set_status(s, "no-such-pc:0", "draining")
+        await s.commit()
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_get_status_unknown_pc_returns_none():
+    """get_status on a non-existent pc_id returns None."""
+    from app.db import SessionLocal
+    from app.repositories import workers as workers_repo
+
+    async with SessionLocal() as s:
+        status = await workers_repo.get_status(s, "no-such-pc:0")
+    assert status is None
+
+
+@pytest.mark.asyncio
+async def test_set_status_does_not_touch_last_heartbeat():
+    """set_status must NOT update last_heartbeat — the drain signal is independent
+    of the heartbeat timestamp used for liveness."""
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models.worker import WorkerNode
+    from app.repositories import workers as workers_repo
+
+    pc = "test-host:77775"
+    try:
+        async with SessionLocal() as s:
+            await workers_repo.upsert_heartbeat(s, pc)
+            await s.commit()
+        # Capture the heartbeat before set_status
+        async with SessionLocal() as s:
+            before = await s.scalar(
+                select(WorkerNode.last_heartbeat).where(WorkerNode.pc_id == pc)
+            )
+        async with SessionLocal() as s:
+            await workers_repo.set_status(s, pc, "draining")
+            await s.commit()
+        # Heartbeat must be unchanged
+        async with SessionLocal() as s:
+            after = await s.scalar(
+                select(WorkerNode.last_heartbeat).where(WorkerNode.pc_id == pc)
+            )
+        assert before == after, (
+            f"set_status must NOT change last_heartbeat: before={before}, after={after}"
+        )
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc))
+            await s.commit()
+
+
+@pytest.mark.asyncio
 async def test_deregister_removes_own_row():
     from app.db import SessionLocal
     from app.models.worker import WorkerNode

@@ -4,6 +4,7 @@ import type {
   BatchCancelResponse,
   BatchLaunchResponse,
   BatchLessonRow,
+  BatchPauseResponse,
   BatchPreviewResponse,
   BatchResumeResponse,
   BatchSummary,
@@ -17,6 +18,7 @@ import type {
   TOCEntry,
   Transport,
   Worker,
+  WorkerStatusResponse,
 } from "./types";
 
 class ApiError extends Error {
@@ -351,9 +353,46 @@ export const api = {
     );
     return unwrap<BatchResumeResponse>(res);
   },
+
+  /** Pause a batch — sets paused_at/paused_reason="manual"; claim gate skips it. */
+  async pauseBatch(batchId: string): Promise<BatchPauseResponse> {
+    const res = await authFetch(
+      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/pause`,
+      { method: "POST" },
+    );
+    return unwrap<BatchPauseResponse>(res);
+  },
+
+  /** Unpause a batch — clears paused_at/paused_reason; claim gate re-includes it. */
+  async unpauseBatch(batchId: string): Promise<BatchPauseResponse> {
+    const res = await authFetch(
+      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/unpause`,
+      { method: "POST" },
+    );
+    return unwrap<BatchPauseResponse>(res);
+  },
+
   async listWorkers(): Promise<{ workers: Worker[]; total: number; online: number; stale_after_seconds: number }> {
     const res = await authFetch("/api/v1/workers");
     return unwrap(res);
+  },
+
+  /** Drain a worker — sets status "draining"; worker finishes in-flight jobs then stops claiming. */
+  async drainWorker(pcId: string): Promise<WorkerStatusResponse> {
+    const res = await authFetch(
+      `/api/v1/workers/${encodeURIComponent(pcId)}/drain`,
+      { method: "POST" },
+    );
+    return unwrap<WorkerStatusResponse>(res);
+  },
+
+  /** Undrain a worker — reverts status to "online"; claim gate re-includes it. */
+  async undrainWorker(pcId: string): Promise<WorkerStatusResponse> {
+    const res = await authFetch(
+      `/api/v1/workers/${encodeURIComponent(pcId)}/undrain`,
+      { method: "POST" },
+    );
+    return unwrap<WorkerStatusResponse>(res);
   },
 
   jobDownloadUrl(jobId: string): string {

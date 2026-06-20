@@ -291,3 +291,13 @@ def test_claim_next_job_retains_existing_predicates():
         assert predicate in src, (
             f"claim_next_job source must still contain '{predicate}' after the pause patch"
         )
+
+
+# ---------------------------------------------------------------------------
+# Note: the reason-scoping regression (constraint #2) is covered by the
+# REAL-DB integration test in
+# tests/integration/test_batch_pause_reason_scope.py
+# which proves the WHERE clause BITES against actual Postgres (not a mock).
+# The vacuous mock-based version that lived here was removed because a mock
+# with a pre-set rowcount cannot falsify a deleted WHERE clause.
+# ---------------------------------------------------------------------------

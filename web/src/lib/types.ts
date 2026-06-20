@@ -335,6 +335,11 @@ export interface Worker {
   online: boolean;
 }
 
+export interface WorkerStatusResponse {
+  pc_id: string;
+  status: string;
+}
+
 export type BatchRollup = Partial<Record<JobStatus | "not_started", number>>;
 
 export interface BatchSummary {
@@ -380,6 +385,12 @@ export interface BatchCancelResponse {
 export interface BatchResumeResponse {
   batch_id: string;
   jobs_resumed: number;
+}
+
+/** Response from POST /jobs/batch/{id}/pause and /unpause */
+export interface BatchPauseResponse {
+  batch_id: string;
+  paused: boolean;
 }
 
 /** Response from POST /jobs/batch when preview=true */

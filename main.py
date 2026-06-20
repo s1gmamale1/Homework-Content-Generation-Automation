@@ -45,11 +45,18 @@ async def lifespan(app: FastAPI):
                 completed_at=datetime.now(timezone.utc),
                 error_message="orphaned: worker restarted",
             )
-        # Single-host / embedded assumption (spec §3a): no workers are alive at
-        # boot, so every `running` row is genuinely orphaned → reset all to
-        # `pending`. NOT safe for multi-pod (a restarting pod would reset a live
-        # peer's heartbeated job); for that, use settings.reclaim_stale_seconds.
-        n = await jobs_repo.reclaim_stuck_jobs(session, stale_after_seconds=0)
+        # Peer-aware startup reclaim (fleet-restart-reclaim-1): if any peer
+        # worker has a fresh heartbeat, use the full lease window so its
+        # recently-claimed jobs aren't yanked (avoids double-run + real $ on
+        # api jobs). If no live peer exists (solo restart), window=0 resets
+        # every orphaned `running` row immediately (instant single-host recovery
+        # preserved). Best-effort caveat: on a sub-reclaim_stale_seconds
+        # restart the old process's own heartbeat row may still read as a live
+        # peer → lease path fires, delaying reset by at most one window; this
+        # is safe (correctness unaffected, recovery just isn't instant).
+        n = await jobs_repo.reclaim_orphans_on_startup(
+            session, reclaim_stale_seconds=settings.reclaim_stale_seconds
+        )
         if n:
             log.info(f"Startup: reclaimed {n} orphaned running job(s) -> pending")
         n_exhausted = await jobs_repo.fail_exhausted_pending_jobs(

@@ -568,14 +568,32 @@ class Worker:
         except Exception:
             logger.exception(f"worker {self.id} stuck-job sweep failed")
 
+    async def _drain_check_and_beat(self, session) -> bool:
+        """Read own status; if "draining" call stop() and return False (no beat).
+        Any other value (including None = unregistered) falls through to the
+        normal upsert_heartbeat and returns True. Extracted for testability."""
+        status = await workers_repo.get_status(session, self.id)
+        if status == "draining":
+            logger.info(
+                f"worker {self.id} drain requested -> stopping "
+                f"(no new claims; in-flight will finish)"
+            )
+            self.stop()
+            return False  # do NOT upsert "online" — that would clobber the drain signal
+        await workers_repo.upsert_heartbeat(session, self.id)
+        return True
+
     async def _registry_heartbeat(self) -> None:
         """Register this worker / refresh its heartbeat in the fleet `workers`
         table so the head-side liveness view knows this PC is alive.
+        Reads own status first: if the head has set it to "draining", calls
+        self.stop() and skips the upsert so the drain signal is not clobbered.
         Best-effort: a failed beat is logged, never fatal."""
         try:
             async with SessionLocal() as session:
-                await workers_repo.upsert_heartbeat(session, self.id)
-                await session.commit()
+                kept_beating = await self._drain_check_and_beat(session)
+                if kept_beating:
+                    await session.commit()
         except Exception:
             logger.warning(f"worker {self.id} registry heartbeat failed")
 

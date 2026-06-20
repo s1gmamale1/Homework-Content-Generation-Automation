@@ -5,7 +5,9 @@ import {
   ListChecks,
   Loader2,
   MoreHorizontal,
+  PauseCircle,
   Plus,
+  PlayCircle,
   Rocket,
   RotateCcw,
   Sparkles,
@@ -734,6 +736,21 @@ function ReadyCard({
     onError: (e) => toast.error(e instanceof Error ? e.message : "Resume failed"),
   });
 
+  const isBatchPaused = !!currentBatch?.paused_at;
+
+  const pauseToggle = useMutation({
+    mutationFn: () => {
+      if (!batchId) return Promise.reject(new Error("No batch"));
+      return isBatchPaused ? api.unpauseBatch(batchId) : api.pauseBatch(batchId);
+    },
+    onSuccess: (r) => {
+      toast.success(r.paused ? "Batch paused" : "Batch unpaused");
+      qc.invalidateQueries({ queryKey: ["batches"] });
+      qc.invalidateQueries({ queryKey: ["books"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Pause toggle failed"),
+  });
+
   const providers = Object.keys(modelsQ.data?.providers ?? {});
 
   return (
@@ -885,6 +902,26 @@ function ReadyCard({
                       <XCircle className="size-3.5" />
                     )}
                     Cancel all
+                  </button>
+                )}
+
+                {/* Pause/Resume — visible when batch exists and has non-terminal jobs or is paused. */}
+                {batchId && (hasNonTerminal || isBatchPaused) && !choosing && (
+                  <button
+                    type="button"
+                    className={cn(GHOST_BTN, "h-9 px-2.5 text-xs text-amber-300/80 hover:text-amber-200")}
+                    disabled={pauseToggle.isPending}
+                    title={isBatchPaused ? "Unpause this batch" : "Pause this batch (stops new jobs from starting)"}
+                    onClick={() => pauseToggle.mutate()}
+                  >
+                    {pauseToggle.isPending ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : isBatchPaused ? (
+                      <PlayCircle className="size-3.5" />
+                    ) : (
+                      <PauseCircle className="size-3.5" />
+                    )}
+                    {isBatchPaused ? "Unpause" : "Pause"}
                   </button>
                 )}
 

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Batch, HomeworkJob, PhaseOutput
+from app.repositories import workers as workers_repo
 
 _TERMINAL_STATUSES = ("done", "failed", "cancelled")
 
@@ -456,6 +457,37 @@ async def reclaim_stuck_jobs(
     )
     result = await session.execute(stmt)
     return result.rowcount or 0
+
+
+async def reclaim_orphans_on_startup(
+    session: AsyncSession, *, reclaim_stale_seconds: int
+) -> int:
+    """Peer-aware startup reclaim: reset `running` jobs to `pending` on boot,
+    but only yank a job if no live peer could own it.
+
+    When another worker's heartbeat is fresh (within `reclaim_stale_seconds`),
+    that peer may be mid-run on a recently-claimed job — using window=0 would
+    reset it and cause a double-run (real $ for api jobs). In that case we use
+    the full lease window so any job whose claim is still fresh is left alone.
+
+    When no live peer exists (solo restart / first boot), every `running` row
+    is genuinely orphaned → window=0 resets them all immediately (preserves
+    instant single-host recovery).
+
+    Best-effort caveat: on a sub-`reclaim_stale_seconds` restart, the prior
+    process's own row (same host, old pid) may still have a fresh heartbeat and
+    read as a live peer → lease path fires, so instant reset doesn't happen.
+    Correctness is unaffected (the old row's claim will expire naturally);
+    instant recovery just doesn't fire for that narrow window.
+
+    Does NOT filter by hostname — two processes on one host are legitimately
+    distinct peers; hostname filtering would risk a same-host double-run.
+    """
+    if await workers_repo.has_live_workers(session, stale_after_seconds=reclaim_stale_seconds):
+        window = reclaim_stale_seconds
+    else:
+        window = 0
+    return await reclaim_stuck_jobs(session, stale_after_seconds=window)
 
 
 async def fail_exhausted_pending_jobs(session: AsyncSession, *, max_attempts: int) -> int:

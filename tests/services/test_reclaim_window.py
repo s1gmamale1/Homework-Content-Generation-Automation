@@ -12,8 +12,10 @@ def test_reclaim_uses_lease_ttl_not_job_timeout():
 
 def test_startup_resets_orphaned_running_jobs():
     src = inspect.getsource(main.lifespan)
-    # Startup flips orphaned running jobs back to pending (stale_after_seconds=0
-    # is correct at boot: no workers are alive, so every running row is orphaned).
-    # Assert the actual CALL, not just the word — the lifespan comment already
-    # mentions `reclaim_stuck_jobs`, so a bare substring check never guards.
-    assert "reclaim_stuck_jobs(session, stale_after_seconds=0)" in src
+    # Startup flips orphaned running jobs back to pending via the PEER-AWARE
+    # reclaim (fleet-restart-reclaim-1): it uses stale_after_seconds=0 only when
+    # no live peer exists, else the lease window, so a peer's fresh-beat job is
+    # never yanked. Assert the actual CALL with its window arg, not just the word —
+    # behaviour itself is proven in tests/integration/test_startup_reclaim.py.
+    assert "reclaim_orphans_on_startup(" in src
+    assert "reclaim_stale_seconds=settings.reclaim_stale_seconds" in src
