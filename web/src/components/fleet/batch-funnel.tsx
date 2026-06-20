@@ -57,8 +57,9 @@ function TransportRow({
         <div className="flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/[0.08] px-2.5 py-1.5 text-xs text-amber-300">
           <PauseCircle className="size-3.5 shrink-0" />
           <span>
-            Paused — budget cap reached
-            {batch.paused_reason ? ` (${batch.paused_reason})` : ""}
+            {batch.paused_reason === "manual"
+              ? "Paused by operator"
+              : `Paused — budget cap reached${batch.paused_reason ? ` (${batch.paused_reason})` : ""}`}
           </span>
         </div>
       )}

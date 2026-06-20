@@ -4,6 +4,7 @@ import type {
   BatchCancelResponse,
   BatchLaunchResponse,
   BatchLessonRow,
+  BatchPauseResponse,
   BatchPreviewResponse,
   BatchResumeResponse,
   BatchSummary,
@@ -351,6 +352,25 @@ export const api = {
     );
     return unwrap<BatchResumeResponse>(res);
   },
+
+  /** Pause a batch — sets paused_at/paused_reason="manual"; claim gate skips it. */
+  async pauseBatch(batchId: string): Promise<BatchPauseResponse> {
+    const res = await authFetch(
+      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/pause`,
+      { method: "POST" },
+    );
+    return unwrap<BatchPauseResponse>(res);
+  },
+
+  /** Unpause a batch — clears paused_at/paused_reason; claim gate re-includes it. */
+  async unpauseBatch(batchId: string): Promise<BatchPauseResponse> {
+    const res = await authFetch(
+      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/unpause`,
+      { method: "POST" },
+    );
+    return unwrap<BatchPauseResponse>(res);
+  },
+
   async listWorkers(): Promise<{ workers: Worker[]; total: number; online: number; stale_after_seconds: number }> {
     const res = await authFetch("/api/v1/workers");
     return unwrap(res);

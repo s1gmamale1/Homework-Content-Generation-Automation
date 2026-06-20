@@ -382,6 +382,12 @@ export interface BatchResumeResponse {
   jobs_resumed: number;
 }
 
+/** Response from POST /jobs/batch/{id}/pause and /unpause */
+export interface BatchPauseResponse {
+  batch_id: string;
+  paused: boolean;
+}
+
 /** Response from POST /jobs/batch when preview=true */
 export interface BatchPreviewResponse {
   book_id: string;
