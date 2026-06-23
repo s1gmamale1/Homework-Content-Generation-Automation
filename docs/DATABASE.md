@@ -151,7 +151,7 @@ UUIDPK only — **no** `created_at`/`updated_at`; it has `started_at`/`completed
 | `status` | String(32) NOT NULL | pending/running/done/failed |
 | `error_message` | Text NULL | |
 | `validation_warnings` | JSONB NULL | LLM-judge warnings (migration 0017) |
-| `judge_status` | String NULL | judge outcome (migration 0029): `ok` / `major_shipped` / `major_regen_failed` / `unavailable` / NULL (pre-0029 rows or extract phase) |
+| `judge_status` | String(24) NULL | judge outcome (migration 0029): `ok` / `major_shipped` / `major_regen_failed` / `unavailable` / NULL (pre-0029 rows or extract phase) |
 | `started_at` / `completed_at` | NULL | |
 
 **`uq_phase_output_job_order (job_id, phase_order)`** — and the reason the pipeline must use
@@ -211,7 +211,7 @@ No mixins — tiny by design:
 |---|---|---|
 | `pc_id` | String(128) **PK** | `"hostname:pid"` |
 | `last_heartbeat` | NOT NULL | always stamped with `func.now()` (DB clock) |
-| `status` | String(32) NOT NULL, server_default `'online'` | ⚠️ informational label — `claim_next_job` does **not** check it ("draining" is not enforced yet) |
+| `status` | String(32) NOT NULL, server_default `'online'` | `online` / `draining`; **enforced (C5/P1):** the worker reads its own status each registry beat and self-drains when `draining` (stops claiming + lets in-flight finish) via `_drain_check_and_beat`. `claim_next_job` doesn't filter on it — the worker self-stops instead |
 | `notes` | Text NULL | |
 
 **Liveness is derived, never stored**: `GET /workers` fetches `SELECT now()` and computes
@@ -403,8 +403,9 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 - **Startup sweep caveat (multi-pod):** the API's `reclaim_stuck_jobs(stale_after_seconds=0)`
   at startup assumes it owns all running jobs. Safe single-host; in a fleet, rely on the
   TTL sweep instead (a restarting head would otherwise reset live workers' jobs).
-- **`workers.status` is unenforced** — pausing/draining a PC needs worker-loop support
-  (deferred; `claim_next_job` ignores it today).
+- **`workers.status` drain is live (C5/P1)** — `POST /workers/{pc_id}/drain` sets `status="draining"`;
+  the worker reads its own status each registry beat and self-drains (stops claiming, lets in-flight
+  finish), skipping the `online` re-upsert so the signal isn't clobbered (`worker._drain_check_and_beat`).
 - **Books table fake-status trap:** tests once seeded `status="ready"`, which is not a real
   status — batch readiness keys on `toc_ready`.
 - **Don't `git add -A`** — `var/` holds copyrighted PDFs and `.env` holds secrets; both are

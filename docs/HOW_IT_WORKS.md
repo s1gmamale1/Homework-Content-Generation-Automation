@@ -455,7 +455,10 @@ Key endpoints:
 - `POST /books/{book}/sections/{section}/generate` — enqueue a homework job. Has **three
   layers of idempotency** so a double-click or network retry can't create duplicate jobs:
   an `Idempotency-Key` header cache, a natural-key check (reuse the existing active job for
-  this section unless `force=true`), and a Postgres advisory lock to serialize races.
+  this section unless `force=true`), and a Postgres advisory lock to serialize races. The body
+  optionally carries `custom_prompts` (override a phase's prompt) and `selected_phases` (generate
+  only a chosen subset) — a partial selection must include an uploaded prompt for **every** picked
+  phase or the request is rejected `400` (`flows.selection_missing_prompts`); full launches need neither.
 - `GET /jobs/{id}` — job status + all its phases.
 - `GET /jobs/{id}/stream` — **Server-Sent Events**. First it replays whatever already
   happened (so a late-joining browser catches up), then streams new phase events live until
@@ -469,13 +472,18 @@ Key endpoints:
   page id + grade) and ingest it like an upload, TOC extraction included.
 - `POST /jobs/batch` — fleet launch: fan out one job per lesson of a `toc_ready` book
   (skipping/adopting lessons that already have jobs; `relaunch_mode` resume|discard for a
-  re-launch over partially-done lessons). `GET /jobs/batches`,
+  re-launch over partially-done lessons; same `custom_prompts`/`selected_phases` + pick-phases-400
+  rule as `/generate`). `GET /jobs/batches`,
   `GET /jobs/batches/{id}`, and `GET /jobs/batches/{id}/jobs` serve the funnel rollups and
   the per-lesson drill-in. `POST /jobs/batch/{id}/cancel` halts the batch (cancels all
   pending + running jobs); `POST /jobs/batch/{id}/resume` re-enqueues failed/cancelled jobs
-  (reusing `done` phases). *(Registration order matters: these static routes are registered
-  before the dynamic `/jobs/{job_id}`, or FastAPI would parse "batches" as a job id.)*
+  (reusing `done` phases); `POST /jobs/batch/{id}/pause` | `/unpause` manually gate claiming
+  (reason `"manual"`, distinct from the budget monitor's auto-pause); `GET /jobs/batch/{id}/cost`
+  returns per-batch spend + pause state. *(Registration order matters: these static routes are
+  registered before the dynamic `/jobs/{job_id}`, or FastAPI would parse "batches" as a job id.)*
 - `GET /workers` — fleet liveness: every registered worker plus a derived online/offline flag.
+  `POST /workers/{pc_id}/drain` | `/undrain` gracefully stop / resume a worker claiming new jobs
+  (it finishes in-flight work, then self-drains on its next registry beat).
 - `GET /notion/grades` / `GET /notion/grades/{id}/subjects` — the Notion pickers that feed
   the from-notion flow and the fleet launcher.
 

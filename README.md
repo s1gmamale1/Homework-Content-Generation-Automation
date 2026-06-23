@@ -19,9 +19,11 @@ The flow is a single fixed sequence of **11 phases** per subject (no easy/hard b
 ## Why it's interesting
 
 - **Two-path generation.** `transport=cli` (default): every model call shells out to one of five provider CLIs — `claude`, `gemini`, `codex`, `kimi`, `opencode` — through a single router (`app/services/agent.py`); each CLI uses its own login, no API key required. `transport=api` (claude+gemini only): model calls go directly to the provider SDKs (`google-genai` / `anthropic`) via `app/services/api_transport.py`, using worker-env credentials. The provider is chosen per job.
-- **Per-phase failover + LLM judge.** If a phase fails on its provider, it fails over down a configured provider order (`failover_provider_order`, default `codex → gemini → kimi → opencode`; claude is reserved out for the user's Claude Max allocation). `transport=api` jobs retry on the requested provider only (no cross-provider legs). Every produced phase is then graded by an LLM judge (default `claude-opus-4-7`) that cites violations of the prompt contract and severity-gates regeneration.
+- **Per-phase failover + LLM judge.** If a phase fails on its provider, it fails over down a configured provider order (`failover_provider_order`, default `codex → gemini → kimi → opencode`; claude is reserved out for the user's Claude Max allocation). `transport=api` jobs retry on the requested provider only (no cross-provider legs). Every produced phase is then graded by an LLM judge (default `claude-opus-4-7`) that cites violations of the prompt contract **and fact-checks the output against the source lesson** (the injected `LESSON CONTEXT`), severity-gates regeneration, re-checks the regenerated output, and records the outcome in a queryable `phase_outputs.judge_status` (`ok` / `major_shipped` / `major_regen_failed` / `unavailable`).
 - **DAG-parallel pipeline.** Phases run concurrently once their declared dependencies (`flows.PHASE_DEPS`) are satisfied — roughly a 2× wall-clock win over sequential.
-- **Postgres-backed job queue** using `SELECT … FOR UPDATE SKIP LOCKED`. Workers run embedded in the API process or standalone via `python -m app.services.worker`. Restart-safe via a heartbeat + lease-reclaim (orphaned `running` jobs return to `pending`); jobs are cancellable (the provider CLI's whole process tree is reaped).
+- **Postgres-backed job queue** using `SELECT … FOR UPDATE SKIP LOCKED`. Workers run embedded in the API process or standalone via `python -m app.services.worker`. Restart-safe via a heartbeat + lease-reclaim; the startup reclaim is **peer-aware** (a head restart won't yank a live peer's heartbeated job). Jobs are cancellable (the provider CLI's whole process tree is reaped); batches can be **paused/resumed** (`POST /jobs/batch/{id}/pause|unpause`) and individual workers **drained** (`POST /workers/{pc_id}/drain`).
+- **Cost safety for paid (`api`) runs.** A per-call cost ledger plus a budget monitor with per-batch and fleet-daily `$` caps that **pause-claim** (stop claiming, let in-flight finish — never hard-cancel paid work) when a cap trips; claude cache-write tokens are priced (1.25× input). Caps via `COST_CAP_BATCH_USD` / `COST_CAP_FLEET_DAILY_USD` (0 = disabled).
+- **Custom prompts + phase picker.** An operator can override a phase's prompt and/or generate only a chosen subset of phases (`custom_prompts` / `selected_phases`); a partial selection must carry an uploaded prompt for every picked phase (else the launch is rejected 400). Default launches run the full 11-phase flow with built-in prompts.
 - **Cross-job extract reuse.** A per-section lesson extract already produced by another job (same `toc_entry_id` + prompt hash) is reused for free instead of re-reading the PDF.
 - **Token auth** via `Authorization: Bearer` header (REST) + `?token=` query param (SSE — `EventSource` can't set headers). Empty `AUTH_TOKEN` disables auth (everyone is `anonymous`).
 
@@ -102,7 +104,7 @@ Homework-Content-Generation-Automation/
 │       ├── worker.py             queue worker (embedded or standalone)
 │       └── notion_*/notion/      Notion archive + fetch
 ├── prompts/_general/             the live prompt set (one .md per phase)
-├── alembic/versions/             schema migrations (0001…0027)
+├── alembic/versions/             schema migrations (0001…0034)
 ├── web/                          React SPA (operator console)
 ├── Dockerfile                    multi-stage (node SPA → uv venv → runtime)
 ├── docker-compose.yml            postgres + api (GHCR image, Traefik) + optional scaled worker
@@ -131,6 +133,7 @@ All settings via env vars; defaults in [`app/config.py`](./app/config.py). Essen
 | `AGENT_MAX_CONCURRENCY` | Process-wide cap on concurrent CLI subprocesses |
 | `EXTRACT_PROVIDER` / `EXTRACT_MODEL` | Cheap model pinned for TOC + lesson extract (default `gemini` / `gemini-2.5-flash`) |
 | `JUDGE_PROVIDER` / `JUDGE_MODEL` | LLM judge model (default `claude` / `claude-opus-4-7`) |
+| `COST_CAP_BATCH_USD` / `COST_CAP_FLEET_DAILY_USD` | Spend caps that pause-claim when tripped; `0` = disabled (default). `COST_CHECK_INTERVAL_SECONDS` (default 60) sets the monitor cadence |
 | `JOB_TIMEOUT_SECONDS` | Hard ceiling per pipeline run (default 1800) |
 | `QUEUE_BACKPRESSURE_LIMIT` | `503` when `pending` depth exceeds; `0` disables |
 | `NOTION_API_KEY` / `NOTION_*` | Optional: Notion archive + Fetch-From-Notion |
