@@ -12,7 +12,7 @@ import sys
 from loguru import logger
 
 _FMT = (
-    "<green>{time:HH:mm:ss.SSS}</green> | "
+    "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
     "<level>{level: <7}</level> | "
     "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
     "<level>{message}</level>"
@@ -39,6 +39,6 @@ def configure(level: str = "INFO") -> None:
         enqueue=True,
         backtrace=False,
         diagnose=False,
-        rotation="20 MB",    # roll over at 20 MB
+        rotation="00:00",    # roll over daily at midnight (one file per day/run)
         retention="7 days",  # prune logs older than a week
     )
