@@ -549,3 +549,106 @@ def test_rate_limit_delay_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     assert all(d > 0 for d in delays)
     assert delays == sorted(delays)  # non-decreasing
     assert all(d <= cap + base for d in delays)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# _spawn retry loop (concurrency-knob-1, Phase 1) — mocked sleep
+# ─────────────────────────────────────────────────────────────────────
+
+
+class _StubProvider:
+    """Minimal stand-in for a Provider — _spawn only reads ``.name``."""
+
+    name = "gemini"
+
+
+def _patch_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Replace ``asyncio.sleep`` with a no-op that records each delay."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(agent_module.asyncio, "sleep", fake_sleep)
+    return sleeps
+
+
+@pytest.mark.asyncio
+async def test_spawn_retries_on_rate_limit_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two 429s then success → _spawn returns the success tuple after 3
+    attempts, with 2 backoff sleeps in between."""
+    outputs: list[tuple[int, str, dict[str, Any], str]] = [
+        (1, "", {"raw": {}}, "429 RESOURCE_EXHAUSTED"),
+        (1, "", {"raw": {}}, "429 RESOURCE_EXHAUSTED"),
+        (0, "ok", {"raw": {}}, ""),
+    ]
+    calls = {"n": 0}
+
+    async def fake_once(**_kwargs: Any) -> tuple[int, str, dict[str, Any], str]:
+        calls["n"] += 1
+        return outputs.pop(0)
+
+    monkeypatch.setattr(agent_module, "_spawn_once", fake_once)
+    sleeps = _patch_sleep(monkeypatch)
+
+    rc, text, _usage, stderr = await agent_module._spawn(
+        provider=_StubProvider(), model="gemini-2.5-flash", prompt="x",
+        attachments=[], transport="api",
+    )
+
+    assert (rc, text) == (0, "ok")
+    assert calls["n"] == 3
+    assert len(sleeps) == 2
+
+
+@pytest.mark.asyncio
+async def test_spawn_gives_up_after_max_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persistent 429 → _spawn returns the failure tuple after exactly
+    ``max_retries + 1`` attempts (no infinite loop); sleeps == max_retries."""
+    calls = {"n": 0}
+
+    async def fake_once(**_kwargs: Any) -> tuple[int, str, dict[str, Any], str]:
+        calls["n"] += 1
+        return (1, "", {"raw": {}}, "429 RESOURCE_EXHAUSTED")
+
+    monkeypatch.setattr(agent_module, "_spawn_once", fake_once)
+    sleeps = _patch_sleep(monkeypatch)
+
+    rc, _text, _usage, stderr = await agent_module._spawn(
+        provider=_StubProvider(), model="gemini-2.5-flash", prompt="x",
+        attachments=[], transport="api",
+    )
+
+    assert rc == 1
+    assert "RESOURCE_EXHAUSTED" in stderr
+    assert calls["n"] == settings.rate_limit_max_retries + 1
+    assert len(sleeps) == settings.rate_limit_max_retries
+
+
+@pytest.mark.asyncio
+async def test_spawn_does_not_retry_non_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-rate-limit failure (401) returns immediately — no retry, no sleep."""
+    calls = {"n": 0}
+
+    async def fake_once(**_kwargs: Any) -> tuple[int, str, dict[str, Any], str]:
+        calls["n"] += 1
+        return (1, "", "", "401 UNAUTHENTICATED")
+
+    monkeypatch.setattr(agent_module, "_spawn_once", fake_once)
+    sleeps = _patch_sleep(monkeypatch)
+
+    rc, _text, _usage, stderr = await agent_module._spawn(
+        provider=_StubProvider(), model="gemini-2.5-flash", prompt="x",
+        attachments=[], transport="api",
+    )
+
+    assert rc == 1
+    assert "401" in stderr
+    assert calls["n"] == 1
+    assert sleeps == []

@@ -384,6 +384,42 @@ async def _spawn(
     attachments: list[Path],
     transport: str = "cli",
 ) -> tuple[int, str, dict[str, Any], str]:
+    """Run a single provider call with bounded retry-on-rate-limit.
+
+    Delegates each attempt to :func:`_spawn_once`; on a transient 429/
+    rate-limit it backs off (``asyncio.sleep`` holds NO concurrency slot —
+    ``_spawn_once`` acquires the semaphore internally) and retries up to
+    ``settings.rate_limit_max_retries`` times. A persistent rate-limit (or any
+    other failure) returns the failure tuple unchanged, exactly as before.
+    """
+    for attempt in range(settings.rate_limit_max_retries + 1):
+        rc, text, usage, stderr = await _spawn_once(
+            provider=provider, model=model, prompt=prompt,
+            attachments=attachments, transport=transport,
+        )
+        if rc == 0 or not _is_rate_limited(stderr or text):
+            return rc, text, usage, stderr
+        if attempt >= settings.rate_limit_max_retries:
+            logger.warning(
+                f"agent.spawn rate-limited, retries exhausted | provider={provider.name}"
+            )
+            return rc, text, usage, stderr
+        delay = _rate_limit_delay(attempt)
+        logger.warning(
+            f"agent.spawn rate-limited (429) | provider={provider.name} "
+            f"attempt={attempt + 1}/{settings.rate_limit_max_retries} backoff={delay:.1f}s"
+        )
+        await asyncio.sleep(delay)
+
+
+async def _spawn_once(
+    *,
+    provider: Provider,
+    model: Optional[str],
+    prompt: str,
+    attachments: list[Path],
+    transport: str = "cli",
+) -> tuple[int, str, dict[str, Any], str]:
     """Run the provider's CLI once with ``prompt`` on stdin.
 
     Returns ``(returncode, result_text, usage, stderr)``. ``usage`` keys:
