@@ -431,3 +431,63 @@ async def test_spawn_api_cli_only_provider_still_uses_cli(monkeypatch):
                            prompt="p", attachments=[], transport="api")
 
 
+# ── api-error-capture-1 ────────────────────────────────────────────────
+
+
+def test_spawn_failure_message_includes_real_error() -> None:
+    """The failure string must carry the REAL error (api stderr = the 429/DNS/
+    auth cause) and be transport-aware: 'api' for api, 'CLI' for cli."""
+    api_msg = agent_module._spawn_failure_message(
+        provider="gemini", transport="api", rc=1,
+        stderr="429 RESOURCE_EXHAUSTED: quota", text="",
+    )
+    assert "429 RESOURCE_EXHAUSTED" in api_msg
+    assert "api" in api_msg
+    assert "CLI" not in api_msg
+
+    cli_msg = agent_module._spawn_failure_message(
+        provider="claude", transport="cli", rc=2, stderr="boom", text="",
+    )
+    assert "CLI" in cli_msg
+    assert "boom" in cli_msg
+
+
+@pytest.mark.asyncio
+async def test_run_phase_api_failure_records_real_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An api (rc!=0) failure must land the REAL error string in both the
+    recorded ``error_message`` and ``extra_envelope['error']`` (→ raw_envelope),
+    not the old generic 'CLI exited rc=1'."""
+    async def fake_spawn(
+        *, provider: Any, model: Any, prompt: str,
+        attachments: list[Any], transport: str = "cli",
+    ) -> tuple[int, str, dict[str, Any], str]:
+        return (1, "", _make_usage(prompt=0, output=0), "429 RESOURCE_EXHAUSTED: quota exceeded")
+
+    record_calls: list[dict[str, Any]] = []
+
+    async def fake_record(**kwargs: Any) -> None:
+        record_calls.append(kwargs)
+
+    monkeypatch.setattr(agent_module, "_spawn", fake_spawn)
+    monkeypatch.setattr(agent_module, "_record_usage", fake_record)
+
+    with pytest.raises(RuntimeError) as ei:
+        await run_phase(
+            provider="gemini", model="gemini-2.5-flash",
+            phase_prompt="x", phase_name="p",
+            homework_job_id=None, phase_output_id=None,
+            transport="api",
+        )
+
+    assert "429 RESOURCE_EXHAUSTED" in str(ei.value)
+    assert len(record_calls) == 1
+    rec = record_calls[0]
+    assert rec["success"] is False
+    assert "429 RESOURCE_EXHAUSTED" in (rec["error_message"] or "")
+    assert "api" in (rec["error_message"] or "")
+    assert "CLI" not in (rec["error_message"] or "")
+    assert "429 RESOURCE_EXHAUSTED" in rec["extra_envelope"]["error"]
+
+

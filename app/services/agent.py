@@ -476,6 +476,14 @@ def _failure_preview(stderr: str, text: str, *, limit: int = 400) -> str:
     return cleaned
 
 
+def _spawn_failure_message(provider: str, transport: str, rc: int, stderr: str, text: str) -> str:
+    """Transport-aware failure string that INCLUDES the real error preview
+    (api stderr carries the 429/DNS/auth cause; the old 'CLI exited rc=N'
+    wording dropped it). Used at every rc!=0 record-usage + raise site."""
+    word = "api" if transport == "api" else "CLI"
+    return f"{provider} {word} call failed rc={rc}: {_failure_preview(stderr, text)}"
+
+
 async def _record_usage(
     *,
     operation: str,
@@ -721,7 +729,7 @@ async def run_phase(
             raise spawn_failed
 
         if rc != 0:
-            err = f"{provider} CLI exited rc={rc}"
+            err = _spawn_failure_message(provider, transport, rc, stderr, text)
             await _record_usage(
                 operation=operation,
                 provider=provider,
@@ -734,7 +742,7 @@ async def run_phase(
                 homework_job_id=homework_job_id,
                 phase_output_id=phase_output_id,
                 error_message=err,
-                extra_envelope={"phase_name": phase_name, "attempt": attempt},
+                extra_envelope={"phase_name": phase_name, "attempt": attempt, "error": (stderr or "")[:2000]},
             )
             raise RuntimeError(
                 f"phase.run {phase_name}: {err} "
@@ -1754,16 +1762,20 @@ async def summarize_lesson(
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
     output_tokens = int(usage.get("output_tokens") or 0)
     ok = rc == 0
+    err = None if ok else _spawn_failure_message(provider, transport, rc, stderr, text)
+    extra: dict[str, Any] = {"section_number": section_number, "section_title": section_title}
+    if not ok:
+        extra["error"] = (stderr or "")[:2000]
     await _record_usage(
         operation="lesson.extract", provider=provider, model_name=resolved_model,
         usage=usage, duration_s=duration_s, started_at=started_at, success=ok,
         auth_mode=transport,
         homework_job_id=homework_job_id, phase_output_id=phase_output_id,
-        error_message=None if ok else f"{provider} CLI exited rc={rc}",
-        extra_envelope={"section_number": section_number, "section_title": section_title},
+        error_message=err,
+        extra_envelope=extra,
     )
     if not ok:
-        raise RuntimeError(f"lesson.extract: {provider} CLI exited rc={rc} :: {_failure_preview(stderr, text)}")
+        raise RuntimeError(f"lesson.extract: {err}")
     logger.success(
         f"agent.lesson.extract done | provider={provider} section={section_number} "
         f"chars={len(text)} input={prompt_tokens:,} output={output_tokens:,} duration_ms={duration_s * 1000:.0f}"
