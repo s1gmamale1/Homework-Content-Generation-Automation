@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import re
 import shutil
 import tempfile
@@ -328,6 +329,51 @@ def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> d
             env["GOOGLE_GENAI_USE_GCA"] = "true"  # GCA OAuth, wins over any key
         # claude/others: scrubbed keys above IS the whole cli adapter
     return env
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Reactive rate-limit backoff (concurrency-knob-1, Phase 1)
+# ─────────────────────────────────────────────────────────────────────
+
+# Terms that mean "rate-limited, retry will likely succeed". Lower-cased match.
+# Covers Vertex (429 / RESOURCE_EXHAUSTED / "resource exhausted") and anthropic
+# (rate_limit / overloaded_error / 429 / too many requests). Deliberately NOT
+# auth (401/403/PERMISSION_DENIED/UNAUTHENTICATED) or truncation (MAX_TOKENS),
+# which never self-heal and must bubble up unchanged.
+_RATE_LIMIT_TERMS = (
+    "429",
+    "resource_exhausted",
+    "resource exhausted",
+    "rate_limit",
+    "rate limit",
+    "overloaded_error",
+    "too many requests",
+)
+
+
+def _is_rate_limited(text: str) -> bool:
+    """True iff ``text`` names a transient rate-limit worth retrying.
+
+    Matches Vertex + anthropic rate-limit shapes; never matches auth (401/403)
+    or truncation (MAX_TOKENS), which do not self-heal.
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(term in lowered for term in _RATE_LIMIT_TERMS)
+
+
+def _rate_limit_delay(
+    attempt: int, *, base: float | None = None, cap: float | None = None
+) -> float:
+    """Exponential backoff with jitter for retry ``attempt`` (0-indexed).
+
+    ``delay = min(base * 2**attempt, cap) + random.uniform(0, base)`` — the
+    jitter spreads concurrent retriers so they don't re-collide in lockstep.
+    """
+    base = settings.rate_limit_base_delay_seconds if base is None else base
+    cap = settings.rate_limit_max_delay_seconds if cap is None else cap
+    return min(base * (2 ** attempt), cap) + random.uniform(0, base)
 
 
 async def _spawn(

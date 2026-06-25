@@ -113,6 +113,14 @@ class Settings(BaseSettings):
     # Maximum regen attempts when a phase fails judge; default 1 = current single-regen behavior.
     max_judge_regens: int = 1
 
+    # ─── Reactive rate-limit backoff (concurrency-knob-1, Phase 1) ────────
+    # On a transient 429/RESOURCE_EXHAUSTED, agent._spawn retries the SAME call
+    # with exponential backoff + jitter instead of failing. Worst-case total
+    # wait ≈ 30–56s across retries, well under per_attempt_timeout_seconds=600.
+    rate_limit_max_retries: int = 4
+    rate_limit_base_delay_seconds: float = 2.0
+    rate_limit_max_delay_seconds: float = 30.0
+
     # ─── Extract robustness (local-text + gates) ──────────────────────────
     # Whole-book local text is injected into the extract prompt; if the book's
     # text exceeds this it terminal-fails here by design (large-book generation

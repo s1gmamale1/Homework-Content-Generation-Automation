@@ -36,10 +36,13 @@ from pydantic import BaseModel
 from app.services import agent as agent_module
 from app.services.agent import (
     _PROVIDER_DEFAULT_MODEL,
+    _is_rate_limited,
+    _rate_limit_delay,
     _resolve_model,
     extract_toc,
     run_phase,
 )
+from app.config import settings
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -491,3 +494,58 @@ async def test_run_phase_api_failure_records_real_error(
     assert "429 RESOURCE_EXHAUSTED" in rec["extra_envelope"]["error"]
 
 
+
+# ─────────────────────────────────────────────────────────────────────
+# Rate-limit detection + backoff schedule (concurrency-knob-1, Phase 1)
+# ─────────────────────────────────────────────────────────────────────
+
+_LIVE_VERTEX_429 = (
+    "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': "
+    "'Resource exhausted. Please try again later.', 'status': "
+    "'RESOURCE_EXHAUSTED'}}"
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _LIVE_VERTEX_429,
+        "429 RESOURCE_EXHAUSTED",
+        "Resource exhausted",
+        "rate_limit_error",
+        "overloaded_error",
+        "Too Many Requests",
+    ],
+)
+def test_is_rate_limited_true(text: str) -> None:
+    """Retry ONLY on a genuine rate-limit — Vertex + anthropic shapes."""
+    assert _is_rate_limited(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "401 UNAUTHENTICATED",
+        "PERMISSION_DENIED",
+        "output truncated: finish_reason=MAX_TOKENS",
+        "ModelNotFoundError",
+    ],
+)
+def test_is_rate_limited_false(text: str) -> None:
+    """Auth (401/403) and truncation never self-heal — must NOT retry."""
+    assert _is_rate_limited(text) is False
+
+
+def test_rate_limit_delay_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Backoff is positive, non-decreasing, and capped at ``cap + base``.
+
+    Pin the jitter to its max (2nd arg of ``random.uniform``) for determinism.
+    """
+    monkeypatch.setattr("random.uniform", lambda _a, b: b)
+    base = settings.rate_limit_base_delay_seconds
+    cap = settings.rate_limit_max_delay_seconds
+    delays = [_rate_limit_delay(a) for a in range(5)]
+    assert all(d > 0 for d in delays)
+    assert delays == sorted(delays)  # non-decreasing
+    assert all(d <= cap + base for d in delays)
