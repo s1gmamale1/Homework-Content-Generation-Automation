@@ -409,6 +409,17 @@ This is the orchestrator that the pipeline calls. Its job per call:
 A **process-wide semaphore** caps how many CLI subprocesses run at once across the whole app
 (worker slots × per-job parallelism could otherwise fan out and trip rate limits).
 
+`_spawn` itself is a thin **retry-on-rate-limit wrapper**: it calls `_spawn_once` (the real
+single-attempt body that acquires the semaphore and reaps the process tree on cancel) and,
+when the call comes back with a *transient* rate-limit (`429` / `RESOURCE_EXHAUSTED` /
+`overloaded_error` / "too many requests" — deliberately **not** auth `401/403` or
+`MAX_TOKENS`), backs off with exponential delay + jitter and retries up to
+`RATE_LIMIT_MAX_RETRIES` times (config in `app/config.py`). The backoff `asyncio.sleep`
+holds **no** concurrency slot, so a throttled call doesn't block its peers. A persistent
+rate-limit (or any other failure) is returned unchanged — so the phase-level failover still
+sees it. (This is Phase 1 — *reactive* — of `concurrency-knob-1`; a proactive shared
+token-bucket is still future work.)
+
 The functions the pipeline actually calls: `extract_toc` (TOC at upload time),
 `summarize_lesson` / `read_whole_book_text` (the per-section extract), and `run_phase` /
 `run_phase_prompt` (the content phases).
@@ -534,7 +545,12 @@ The routes mirror the user journey:
 ## 11. Usage / cost tracking
 
 Every CLI call writes an `agent_usages` row (provider, model, token counts, duration,
-success). Two things read it:
+success). A **failed** call now records the *real* cause: a shared
+`_spawn_failure_message(provider, transport, rc, stderr, text)` helper builds a
+transport-aware `error_message` (it says "api" not "CLI" on the SDK path and includes a
+preview of the actual 429 / DNS / auth error), and the raw error string is also tucked into
+`raw_envelope["error"]` — so `/agent/stats` and cost/quality reports can categorize an api
+failure without digging through `server.log`. Two things read these rows:
 - The **end-of-job token table** logged to the terminal — a tidy ASCII table showing per-call
   prompt/cached/fresh/output tokens so you can see caching working.
 - The **`/usage` dashboard** — aggregates by provider over rolling 1h / 24h / 7d windows and

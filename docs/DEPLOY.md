@@ -49,6 +49,9 @@ not `localhost:8000`. (For a bare local run without Traefik, publish port 8000 y
 | `QUEUE_BACKPRESSURE_LIMIT` | no | `50` | Queue depth → 503. `0` disables. |
 | `AGENT_MAX_CONCURRENCY` | no | `8` | ⚠️ **The live knob** — process-wide cap on *all* CLI subprocesses. `agent._effective_concurrency()` reads this first; when it is left at its default (8), `GEMINI_MAX_CONCURRENCY` is used as a fallback so existing configs are not broken. Tune to your RPM tier (`AGENT_MAX_CONCURRENCY ≤ your_RPM_tier / 4`). **Per-process** (module global), so the real fleet cap is `N_processes × this`, not deployment-wide. |
 | `GEMINI_MAX_CONCURRENCY` | no | `8` | ⚠️ **Deprecated fallback** — honoured only when `AGENT_MAX_CONCURRENCY` is left at its default (8). Kept for backwards-compat with existing `.env` files. Prefer `AGENT_MAX_CONCURRENCY` for new deployments. |
+| `RATE_LIMIT_MAX_RETRIES` | no | `4` | Reactive 429 backoff (`concurrency-knob-1` ph1): how many times `agent._spawn` retries a call that came back with a transient rate-limit (`429` / `RESOURCE_EXHAUSTED` / `overloaded_error` / "too many requests"; **not** auth `401/403` or `MAX_TOKENS`) before returning the failure to the phase-level failover. `0` disables the in-place retry. |
+| `RATE_LIMIT_BASE_DELAY_SECONDS` | no | `2.0` | First backoff delay; grows exponentially per attempt (with jitter). The backoff `asyncio.sleep` holds **no** concurrency slot. |
+| `RATE_LIMIT_MAX_DELAY_SECONDS` | no | `30.0` | Ceiling on the exponential backoff delay. |
 | `MAX_FILE_MB` | no | `50` | Upload size limit. |
 | `ENABLE_DOCS` | no | `false` | Swagger UI at `/docs`. Disable in prod. |
 | `ALLOW_ORIGINS` | no | `*` | Comma-separated CORS allow-list. |
@@ -265,7 +268,7 @@ Behind an ALB, point the target group at the `api` task. Use RDS Postgres. Run `
 
 ## Observability
 
-The codebase emits structured loguru logs to stdout. In production, route them to your aggregator (Datadog, Loggly, CloudWatch, etc.). Key signals:
+The codebase emits structured loguru logs to stderr **and** to `var/server.log` (date-stamped format, rotated **daily** at midnight, retained 7 days — so a run is greppable in isolation, not conflated across a midnight boundary). In production, route them to your aggregator (Datadog, Loggly, CloudWatch, etc.). Key signals:
 
 | Log line | What to watch for |
 |---|---|
