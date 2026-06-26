@@ -239,6 +239,14 @@ export const api = {
     return unwrap<Job>(res);
   },
 
+  async retryArchiveJob(jobId: string): Promise<Job> {
+    const res = await authFetch(
+      `/api/v1/jobs/${encodeURIComponent(jobId)}/retry-archive`,
+      { method: "POST" },
+    );
+    return unwrap<Job>(res);
+  },
+
   /**
    * Re-run book preparation (TOC extraction) on a `failed` or stuck
    * `toc_extracting` book — see `POST /api/v1/books/<id>/toc/retry`. Mirrors
