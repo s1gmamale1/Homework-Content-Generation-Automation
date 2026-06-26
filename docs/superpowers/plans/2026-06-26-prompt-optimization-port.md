@@ -22,7 +22,7 @@
 ### Conventions
 - **Worktree/branch:** `feat/prompt-optimization-port` at `../HCGA-prompt-port` (cut off `origin/Nggaev-v2` tip `1437221`). All work here.
 - **Commit prefix:** `prompts:`. **Stage only each task's files.**
-- **Worklog ID:** next-free at finish (verify live tip; currently 0087 is highest → likely 0089, reconcile at merge).
+- **Worklog ID:** next-free at finish (verify live tip; **0089 taken by the C5 resilience merge → likely 0090**, reconcile at merge).
 - **No migration.**
 
 ---
@@ -39,9 +39,9 @@ import re, sys
 
 # representative subjects spanning all families
 SUBJECTS = ["matematika", "biologiya", "tarix", "ingliz-tili", "ona-tili"]
-PHASES = ["case-based-preview","flashcards","memory-check","boss-arena","reflection",
-          "practice-error-detection","practice-jigsaw","practice-memory-match",
-          "practice-rlc","practice-sentence","practice-tictactoe"]
+# Derive phases from the live flow (robust to future phase changes); extract has
+# no _general prompt file, so skip it.
+PHASES = [p for p in flow_for(SUBJECTS[0]) if p != "extract"]
 bad = []
 for s in SUBJECTS:
     for ph in PHASES:
