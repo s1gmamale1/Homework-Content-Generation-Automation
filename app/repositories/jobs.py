@@ -566,6 +566,37 @@ async def mark_failed_with_retry(
     return "pending"
 
 
+async def requeue_session_limited(
+    session: AsyncSession,
+    job_id: UUID,
+    *,
+    error: str,
+) -> None:
+    """Requeue a session-limited job without burning a retry attempt.
+
+    Sets status='pending', decrements attempts by 1 (GREATEST to floor at 0),
+    clears claim columns, and sets scheduled_at=NOW() so a healthy peer can
+    claim it immediately. Does NOT mark the job failed — it will be retried
+    once the session limit resets.
+
+    Host-clock note: scheduled_at uses DB clock (func.now()) for consistency
+    with all other queue timestamps (fleet-net-1 ops half).
+    """
+    await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.id == job_id)
+        .values(
+            status="pending",
+            attempts=func.greatest(HomeworkJob.attempts - 1, 0),
+            claimed_at=None,
+            claimed_by=None,
+            current_phase=None,
+            last_error=error,
+            scheduled_at=func.now(),
+        )
+    )
+
+
 async def queue_depth(session: AsyncSession) -> int:
     """Count of pending jobs eligible to run right now. Used by the
     `/generate` endpoint to enforce backpressure."""

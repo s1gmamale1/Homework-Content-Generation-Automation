@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     # "switch" = switch to the failover provider and continue (fast but spends the
     #            failover provider's allocation for the remainder of the batch).
     session_limit_strategy: str = "pause"
+    # Fallback cooldown duration when a session-limit error gives no reset time.
+    # The worker self-cools for this many seconds before resuming claiming.
+    session_limit_default_cooldown_seconds: int = 3600
 
     @field_validator("session_limit_strategy", mode="before")
     @classmethod
