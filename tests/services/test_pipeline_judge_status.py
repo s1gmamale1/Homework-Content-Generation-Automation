@@ -296,3 +296,28 @@ async def test_judge_status_regen_raises_non_auth(monkeypatch, patch_io):
     assert patch_io.judge_status == "major_regen_failed", f"got {patch_io.judge_status!r}"
     # Only the initial judge call fired; no post-regen judge
     assert len(judge_calls) == 1, f"expected 1 judge call, got {len(judge_calls)}"
+
+
+def _refused() -> JudgeOutcome:
+    return JudgeOutcome(
+        available=False, refused=True, passed=True,
+        warnings=["judge-refused: content policy"], feedback="",
+    )
+
+
+async def test_judge_status_refused_skips_retry_once(monkeypatch, patch_io):
+    """A refusal is recorded as judge_status='refused' and is NOT retried (unlike a
+    transient unavailable, which is retried once)."""
+    calls = []
+
+    async def fake_judge(**kw):
+        calls.append("judge")
+        return _refused()
+
+    monkeypatch.setattr(pipeline, "_judge_with_timeout", fake_judge)
+
+    kw = _make_kwargs()
+    await pipeline._execute_phase(**kw)
+
+    assert patch_io.judge_status == "refused", f"got {patch_io.judge_status!r}"
+    assert len(calls) == 1, f"refusal must not be retried; got {len(calls)} judge calls"
