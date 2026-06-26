@@ -209,3 +209,70 @@ def test_in_cooldown_method_exists():
     assert callable(getattr(Worker, "_in_cooldown", None)), (
         "Worker must have an _in_cooldown() method"
     )
+
+
+# ---------------------------------------------------------------------------
+# Behavioral: _execute_job correctly routes SessionLimitPause
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_job_session_limit_pause_behavioral():
+    """Behavioral: _execute_job calls requeue_session_limited (not _mark_failed)
+    when pipeline.run raises SessionLimitPause, and sets self._cooldown_until.
+
+    This test drives the *real* _execute_job code path and will FAIL if the
+    ``except SessionLimitPause`` clause is reordered after ``except Exception``.
+    In that case the generic handler runs instead — it calls _mark_failed and
+    never calls requeue_session_limited — so both the assert_called_once and
+    assert_not_called assertions fire.
+
+    RED-proof summary:
+      - If handler order is wrong: mock_requeue not called → assert_called_once fails.
+      - If handler order is wrong: mock_mark_failed called   → assert_not_called fails.
+      - If cooldown is not set:    _cooldown_until == None   → equality assert fails.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from uuid import uuid4
+
+    from app.services.errors import SessionLimitPause
+
+    job_id = uuid4()
+    reset_at = datetime.now(timezone.utc) + timedelta(hours=2)
+    pause_exc = SessionLimitPause(reset_at=reset_at)
+
+    w = _make_worker()
+
+    # Async-CM stub for `async with SessionLocal() as session` calls in the handler.
+    mock_session = AsyncMock()
+    mock_session_ctx = MagicMock()
+    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        # pipeline.run raises SessionLimitPause immediately.
+        patch("app.services.pipeline.run", new_callable=AsyncMock, side_effect=pause_exc),
+        # Intercept the two competing DB calls at the boundary we care about.
+        patch(
+            "app.repositories.jobs.requeue_session_limited", new_callable=AsyncMock
+        ) as mock_requeue,
+        patch.object(w, "_mark_failed", new_callable=AsyncMock) as mock_mark_failed,
+        # Provide a working async-CM so the handler's SessionLocal() call succeeds.
+        patch("app.services.worker.SessionLocal", return_value=mock_session_ctx),
+    ):
+        await w._execute_job(job_id)
+
+    # --- Pause semantics: requeue must fire, failure must not ---
+    mock_requeue.assert_called_once()
+    _session_arg, requeued_job_id = mock_requeue.call_args.args[:2]
+    assert requeued_job_id == job_id, (
+        f"requeue_session_limited must be called with the right job_id "
+        f"(got {requeued_job_id!r})"
+    )
+
+    mock_mark_failed.assert_not_called()
+
+    # --- Worker must self-park until reset_at ---
+    assert w._cooldown_until == reset_at, (
+        f"_cooldown_until must equal reset_at={reset_at!r}, got {w._cooldown_until!r}"
+    )
