@@ -4,8 +4,8 @@ You are generating ONE compact **Sentence Fill** practice game for this {{SUBJEC
 lesson. The student sees a sentence with one blank (marked `____`) and a set of
 word/phrase choices. Exactly one choice correctly completes the sentence according to
 the lesson concept; the others are plausible distractors that fail for concept-level
-reasons — wrong term, wrong cause/effect, too broad, too narrow, reversed meaning, or
-wrong register.
+reasons — wrong term, wrong cause/effect, reversed/opposite cause-effect connector,
+too broad, too narrow, reversed meaning, opposite meaning, or wrong register.
 
 Keep this a single short game. Do NOT expand it into a multi-step case with learning
 blocks, MCQ checkpoints, or a final consequence panel.

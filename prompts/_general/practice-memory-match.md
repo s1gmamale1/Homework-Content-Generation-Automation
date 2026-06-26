@@ -33,7 +33,8 @@ Write the game as Markdown sections, in this order:
   e.g. `**<left card>** ↔ **<right card>**`. Every side must be non-empty and
   source-supported. Across the set the pairs should be distinguishable only by
   understanding the relationship (term ↔ meaning, part ↔ function, step ↔ result,
-  cause ↔ effect).
+  cause ↔ effect, symbol ↔ rule, word ↔ correct usage, historical event ↔
+  consequence, formula part ↔ quantity).
 - **Why prompt** — for math/science lessons this is **mandatory**; for other
   subjects include it whenever a pair turns on reasoning. ONE open question asking
   the student to explain which concept connects a chosen pair, why those two sides

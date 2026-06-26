@@ -19,8 +19,8 @@ blocks, MCQ checkpoints, state meters, or a final consequence panel.
   the grid unsolvable.
 - **Anti-leak.** Correct cells must not stand out by length, phrasing, or position.
   Wrong cells must be plausible and tempting — a fast-but-unsupported action, an
-  overly broad action, a wrong-order action, or a common-mistake distractor — never
-  obviously silly.
+  overly broad action, a wrong-order action, a plausible-but-incomplete action, a
+  surface-clue-only action, or a common-mistake distractor — never obviously silly.
 
 ## What to produce
 
