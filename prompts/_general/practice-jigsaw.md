@@ -20,8 +20,9 @@ blocks, MCQ checkpoints, or a final consequence panel.
   theorem, not the reverse; the cause leads to the effect, not the reverse. The
   student must assemble pieces in the source-supported direction.
 - **Anti-leak.** Correct partners must not be inferable from piece length, wording, or
-  ordering — only from the relationship. Tempting wrong pairings should be
-  surface-related but unsupported, so a guesser is drawn to them.
+  ordering — only from the relationship. Tempting wrong pairings come in three
+  flavors: surface-related-but-unsupported, one-correct-node-plus-one-wrong-node,
+  and reversed-or-irrelevant pair — so a guesser is drawn to them.
 
 ## What to produce
 

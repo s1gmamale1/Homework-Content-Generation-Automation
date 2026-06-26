@@ -49,6 +49,21 @@ Emit these sections in exactly this order:
   recognition only. Deep reasoning belongs in the DPE, not here.
 - Each checkpoint states its question, its answer choices, the correct choice, and
   feedback that explains why that choice fits the case.
+- Each checkpoint has **3–4 options, exactly one correct**; **at least one distractor
+  must be the lesson's common mistake**. Keep all options similar in length and format
+  so the answer cannot be guessed from shape (anti-leak).
+
+## Grade-band reasoning load
+
+Scale the case to the lesson's grade (the pipeline supplies it in context — there is
+no grade template variable, so read it from the surrounding material):
+- **Lower grades** — one concrete, familiar context; obvious distractors; a short,
+  guided DPE.
+- **Upper grades** — layered context; subtle distractors that require *applying* the
+  rule, not keyword-spotting; a fuller DPE that explicitly weighs the rejected option.
+
+Difficulty scales the **reasoning load only** — never the numbers, formulas, dates, or
+source facts, which stay exactly as the textbook states them at every grade.
 
 ## Learning Blocks (sections 3 & 5)
 
@@ -73,6 +88,10 @@ The student writes 2–4 sentences answering all three of:
 2. Why did you pick this method over the alternatives?
 3. What wrong interpretation would the common mistake have caused?
 
+**Expected components:** concept · method · mistake. Score the answer **Full** (all
+three present), **Partial** (one or two present), or **Retry** (none present) — partial
+credit is allowed.
+
 **Required closing line (non-negotiable):** the DPE section MUST end with one
 explicit evaluation note, written in the output language, stating that this answer
 is NOT auto-passed — it is evaluated by reading the student's reasoning for the
@@ -86,6 +105,14 @@ Show both paths so the consequence reveals the {{SUBJECT}} content, not just a v
 - **Correct path** — walk through the successful outcome when the student's decision is applied.
 - **Wrong path** — show what the common wrong choice produces instead.
 - **Why the wrong path fails** — one required sentence on why it cannot be correct.
+
+## Feedback summary
+
+Close with a feedback section in exactly four parts:
+1. **What the student understood** — the concept(s) they handled correctly.
+2. **What mistake appeared** — the error seen across checkpoints and the DPE (if any).
+3. **What to review** — the specific textbook point to revisit.
+4. **Completion status** — `passed` or `Needs Retry` (never a bare "Not Completed").
 
 ## Source concept rule
 
@@ -130,3 +157,6 @@ answer, depict less instead.
 7. ✓ Every concept traces to this lesson; no invented textbook facts?
 8. ✓ Visuals follow the family policy above (right medium, no fabricated URLs)?
 9. ✓ DPE ends with the required not-auto-passed evaluation note?
+10. ✓ Each checkpoint has 3–4 same-shape options, exactly one correct, with ≥1 distractor being the common mistake (anti-leak)?
+11. ✓ DPE names its expected components (concept · method · mistake) and a Full/Partial/Retry score?
+12. ✓ Feedback summary has all four parts and a `passed`/`Needs Retry` status (never bare "Not Completed")?

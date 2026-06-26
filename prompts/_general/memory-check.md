@@ -27,12 +27,12 @@ Write each item as a `###` heading that states which kind it is and which studie
 - **fill_blank** — write the prompt sentence with `_____` marking the missing concept-bearing word (never a function word). Then state the expected answer and list any alternative spellings or phrasings that should also count as correct. No options in this kind.
 - **why reasoning prompt** — after the answer, add a short "why" reasoning prompt with the key ideas the answer should mention. REQUIRED when {{SUBJECT}} is a science (biology / physics / chemistry, or any subject whose lesson is concept-and-mechanism based); optional otherwise.
 - Short correct/wrong feedback lines are encouraged on each item.
-- Distractors must encode the flawed reasoning that makes them tempting to a half-learned student — every wrong option is a real misconception, never a joke, filler, or nonsense answer. Each item must trace to a card the student studied; keep the kinds balanced (no more than ~60% one kind). Pass gate stays 60%.
+- Distractors must encode the flawed reasoning that makes them tempting to a half-learned student — every wrong option is a real misconception, never a joke, filler, or nonsense answer. Calibrate distractor subtlety to the grade band: **G5–6** plain, obvious mistakes; **G7–8** at least one plausible near-miss; **G9–11** subtle distractors that require knowing the rule, not just recognizing a familiar term. Each item must trace to a card the student studied; keep the kinds balanced (no more than ~60% one kind). Pass gate stays 60%.
 
 ## Rules
 
 - Every item must name the studied card it tests (e.g. **card 3**) in its heading.
-- Use at least 2 of the 3 kinds. No more than 60% of any single kind.
+- Use at least 2 of the 3 kinds. No more than 60% of any single kind. Avoid two consecutive items of the same kind when possible.
 - The pass gate is always **0.60** — do NOT change it.
 - Do NOT test problem-solving or calculation steps here. Only recall of card content.
 

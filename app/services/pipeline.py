@@ -31,6 +31,16 @@ from app.services.prompts import get_prompt, get_prompt_hash
 _INTERNAL_PHASES = {"extract", "classify"}
 
 
+def _inject_grade(lesson_context: Optional[str], grade: Optional[str]) -> Optional[str]:
+    """Prepend the student grade to the lesson context so the content-phase prompts'
+    grade-band rules (deck size, reasoning load, distractor subtlety, question count)
+    have a value to read — without this the grade never reached content generation.
+    No-op when grade or lesson_context is missing."""
+    if not grade or lesson_context is None:
+        return lesson_context
+    return f"Student grade level: {grade}\n\n{lesson_context}"
+
+
 def _scheduler_stuck_message(pending, content_phases: list[str]) -> str:
     """Build the diagnostic message for a stuck DAG scheduler.
 
@@ -96,6 +106,7 @@ async def run(job_id: UUID) -> None:
                 raise RuntimeError("Job is missing book or section context")
             subject = book.subject
             book_id = book.id
+            book_grade = book.grade
             expected_pdf_size = book.file_size_bytes  # R13 integrity guard
             # Per-job provider/model. Pinned at job-creation time so retries
             # hit the same backend; ``model`` may be None — agent._resolve_model
@@ -262,6 +273,11 @@ async def run(job_id: UUID) -> None:
                 source_map_digest = ""
                 source_map_ids = set()
         content_phases = sequence[len(head_phases):]
+
+        # Thread the student grade into lesson_context so the prompts' grade-band
+        # rules have a value to read (book.grade otherwise never reached content
+        # generation). Single point — covers both the fresh and resume paths.
+        lesson_context = _inject_grade(lesson_context, book_grade)
 
         for _name, _md in _done_md.items():
             if _name not in head_phases:

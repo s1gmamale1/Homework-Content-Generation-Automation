@@ -49,9 +49,22 @@ Write the scenario as Markdown sections, in this order:
     units, a skipped factor).
   - **Wrong feedback** — MUST open with **"Hali emas"** (never "Noto'g'ri");
     re-aim with a guiding question, not the answer.
+- **Color the feedback by the confidence + correctness pattern** (this is steering
+  the *tone*, not a points rubric): when the student was **Sure but wrong**, the
+  Wrong feedback should gently name it as a confident misconception — the case
+  most worth correcting, so be direct about the faulty belief, not just the call.
+  When the student was **Guess but right**, don't over-praise: treat it as lucky
+  recall, name the concept that *should* have driven it, and invite them to redo
+  the reasoning so it sticks.
 - **Final summary** — what an expert would have done, what strong reasoning looks
   like (concept/rule/formula applied, not numbers plugged blindly), the likely
   misses, and (G7+) which datum was the red herring and why it didn't matter.
+
+The summary must close the loop back to the named concept. Compact shape (Biology):
+the student, as a clinic nurse, sees a patient with bluish lips → reads it as low
+blood oxygen → ties that to the cellular-respiration concept from the lesson.
+Strong reasoning names that chain; weak reasoning only lists symptoms without
+linking to the mechanism the lesson taught.
 
 ## Non-negotiables
 
@@ -62,6 +75,8 @@ Write the scenario as Markdown sections, in this order:
 - Distractors are genuine {{SUBJECT}} misconceptions, not filler.
 - **No within-scenario branching** — the same decision sequence for all students.
 - Feedback is in-character senior-expert voice, not a rubric read aloud.
+- Decoration is not learning evidence — color, mood, and animation are UI polish,
+  never a substitute for the reasoning the decision tests.
 
 ## Visuals
 

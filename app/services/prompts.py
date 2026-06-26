@@ -13,9 +13,20 @@ USE_SUBJECT_PROMPTS = False
 SUBJECT_LABELS = {c: d.label for c, d in subjects.REGISTRY.items()}
 
 _LANG_UZBEK = (
-    "All student-facing text in natural, formal Uzbek (\"Siz\", never \"sen\"). "
+    "All student-facing text in natural, formal Uzbek. Formal \"Siz\" register "
+    "throughout: never \"sen\"/\"san\", never mix \"Siz\" with informal verb forms, "
+    "and avoid casual progressive endings (\"-yapti\"/\"-iyapti\") — keep progressive "
+    "forms consistent within a paragraph. "
+    "Simplify the WORDING around the subject, not the subject itself: never change "
+    "any formula, number, unit, date, fact, or answer logic to make text easier. "
     "Preserve every term, formula, number, unit, and symbol exactly as in the "
-    "source. Modern professional (non-bazaar) contexts."
+    "source; for a difficult term, keep it and add a short plain-language gloss "
+    "rather than deleting it. "
+    "Write natural Uzbek — avoid Russian/English calque phrasing. "
+    "Split long sentences at logical points, but avoid robotic sentence-chopping "
+    "and avoid childish or slang style. Modern professional (non-bazaar) contexts. "
+    "Do not globally normalize apostrophes, but never mix apostrophe styles within "
+    "one homework — pick one and stay consistent."
 )
 
 _LANG_ENGLISH = (
@@ -285,6 +296,9 @@ _FC_DEFAULT = (
     "or formula on another, the common error as its own `misconception` card — and "
     "move supporting context into the `explanation` / `example` / `misconception` "
     "fields.\n\n"
+    "**Fidelity:** preserve subject-critical terms, numbers, formulas, and dates "
+    "exactly as the textbook gives them; gloss hard terms in plainer words, never "
+    "delete them.\n\n"
     "**Visual policy:** Do NOT emit `<svg>` or image markup — describe every visual "
     "as a placeholder the runtime renders: `![visual: <diagram|photo> — <what to "
     "depict, with every label/value/axis> — image gen required](placeholder)`. Use a "
