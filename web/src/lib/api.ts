@@ -239,6 +239,8 @@ export const api = {
     return unwrap<Job>(res);
   },
 
+  /** Re-attempt the best-effort Notion archive for a `done` job whose push
+   *  previously failed — see `POST /api/v1/jobs/<id>/retry-archive`. */
   async retryArchiveJob(jobId: string): Promise<Job> {
     const res = await authFetch(
       `/api/v1/jobs/${encodeURIComponent(jobId)}/retry-archive`,

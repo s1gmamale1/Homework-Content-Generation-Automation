@@ -64,7 +64,7 @@ def test_archive_no_skip_mark_when_disabled():
     set_skip.assert_not_awaited()
 
 
-def test_archive_marks_skip_on_push_exception(monkeypatch):
+def test_archive_marks_skip_on_push_exception():
     """A push that fails every attempt is retried _PUSH_MAX_ATTEMPTS times, then
     records notion_skip_reason='push error: <Type>' instead of vanishing."""
     jid = uuid4()
