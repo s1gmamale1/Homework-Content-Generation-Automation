@@ -18,6 +18,7 @@ class PhaseOut(BaseModel):
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
     validation_warnings: Optional[list[str]] = None
+    judge_status: Optional[str] = None    # ok | major_shipped | major_regen_failed | unavailable | refused | None
 
 
 class JobOut(BaseModel):

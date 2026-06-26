@@ -1026,7 +1026,11 @@ async def _execute_phase(
                 judge_status = "ok"
             else:
                 judge_status = "major_shipped"
-        warnings = outcome.warnings
+        # Infra states (unavailable/refused) carry ONLY the infra string — keep it
+        # out of validation_warnings (content defects); judge_status records it and
+        # the ExcType stays in the logs. major_shipped/major_regen_failed keep
+        # available=True so their genuine content warnings survive.
+        warnings = outcome.warnings if outcome.available else []
         if warnings:
             logger.warning(f"[job {job_id}] {phase_name} validation warnings: {warnings}")
     async with SessionLocal() as session:
