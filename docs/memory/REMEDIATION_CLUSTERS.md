@@ -207,11 +207,13 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 **Items & exact work:**
 
-1. **`fetch-1`** — only remaining wall is **>50MB giants** (e.g. the 497MB grade-9 Jahon tarixi) → need shrink / subset-TOC pre-fetch (scanned/oversize lesson-extract halves already shipped, 0070/0072).
-2. **`fetch-2`** — Fetch From Notion takes the first PDF in page order when a subject page has multiple attachments; **prefer the textbook (`darslik`) over the workbook (`ish daftari`).** Low priority.
-3. **`r13-fetch-1`** — de-dupe concurrent same-book PDF downloads in one worker (per-`book_id` lock so the first fetches and the rest wait → cached fast path). Bandwidth-only; correctness is fine.
-4. **`extract-1`** — TOC extraction `/Gxx` glyph-loss case poisons the TOC (no-ToUnicode → real-looking WRONG letters injected as authoritative TOC). **NOT a clean drop-in** — needs a short brainstorm on two decisions: glyph-loss detection without false-positiving normal TOCs, and loud-fail vs try-anyway.
-5. **R10** (broken-font PDF → near-empty TOC) — the ROADMAP twin of `extract-1`'s open glyph-ID manifestation; resolve them together.
+> **Status 2026-06-26 (worklog [0088]):** the two clean fetch-lane items (2, 3) **SHIPPED** (Cluster 8 slice, branch `cluster-8-book-ingestion`). Items 1, 4, 5 **DEFERRED to the operator escape hatch by user decision** (not-clean drop-ins, each one rare known book, working workarounds) — revisit only when the definitive campaign subject list proves a *required* textbook hits one of them.
+
+1. **`fetch-1`** — only remaining wall is **>50MB giants** (e.g. the 497MB grade-9 Jahon tarixi) → need shrink / subset-TOC pre-fetch (scanned/oversize lesson-extract halves already shipped, 0070/0072). **⏸ DEFERRED (operator manual-shrink; the reject message already says so).**
+2. **`fetch-2`** — ✅ **SHIPPED [0088]:** `_first_pdf_block` now prefers `darslik` over `ish daftari` (`_pdf_rank` textbook 0 ▸ neutral 1 ▸ workbook 2, `min((rank,page_order))`, preference-not-exclusion). Raised above its "low priority" tag — a workbook-first page silently became the whole subject batch's textbook.
+3. **`r13-fetch-1`** — ✅ **SHIPPED [0088]:** per-`book_id` `threading.Lock` in `ensure_book_pdf_sync` so the first fetches and the rest wait → cached fast path (RED-proved 5→1; per-process by design).
+4. **`extract-1`** — TOC extraction `/Gxx` glyph-loss case poisons the TOC (no-ToUnicode → real-looking WRONG letters injected as authoritative TOC). **NOT a clean drop-in** — needs a short brainstorm on two decisions: glyph-loss detection without false-positiving normal TOCs, and loud-fail vs try-anyway. **⏸ DEFERRED (operator re-source cleaner-font PDF = R19).**
+5. **R10** (broken-font PDF → near-empty TOC) — the ROADMAP twin of `extract-1`'s open glyph-ID manifestation; resolve them together. **⏸ DEFERRED with item 4.**
 
 **Open decision to lock first:** `extract-1`/R10 glyph-loss detection + fail-mode (the brainstorm above) before planning.
 

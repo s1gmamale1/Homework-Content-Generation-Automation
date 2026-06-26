@@ -82,37 +82,42 @@ def test_outbound_auth_header_from_first_token(monkeypatch, tmp_path):
     assert seen["headers"] == {"Authorization": "Bearer tokA"}
 
 
-def test_concurrent_same_book_fetches_use_distinct_temps(monkeypatch, tmp_path):
+def test_concurrent_same_book_fetches_serialize_to_one_download(monkeypatch, tmp_path):
     """Two lessons of the SAME book in one worker process (asyncio tasks share
-    the PID) fetch concurrently. Each must write to its OWN temp file — a shared
-    name races and raises a sharing violation on Windows (the R13 field-test bug)."""
+    the PID) fetch concurrently. The per-book lock (r13-fetch-1) serializes them:
+    the first downloads, the second waits then hits the cached fast path — so the
+    network is hit exactly ONCE and the temps can't collide. (This supersedes the
+    older 'distinct temps' contract, which assumed both threads download — the
+    lock now prevents the concurrent same-book download that contract guarded.)"""
     import threading
+    import time
 
     monkeypatch.setattr(settings, "var_dir", str(tmp_path))
     monkeypatch.setattr(settings, "fleet_head_url", "http://head")
     monkeypatch.setattr(settings, "auth_token", "t")
     bid = uuid4()
     temps: list = []
-    both_in_flight = threading.Barrier(2)
+    start = threading.Barrier(2)
 
     def _slow(url, headers, tmp):
         temps.append(tmp)
-        both_in_flight.wait(timeout=5)  # hold both calls mid-fetch simultaneously
+        time.sleep(0.05)  # hold the lock long enough for the other thread to contend
         tmp.write_bytes(b"%PDF concurrent")
 
+    def worker():
+        start.wait(timeout=5)  # both threads enter ensure_book_pdf_sync together
+        book_fetch.ensure_book_pdf_sync(bid)
+
     monkeypatch.setattr(book_fetch, "_fetch_to_temp", _slow)
-    threads = [
-        threading.Thread(target=book_fetch.ensure_book_pdf_sync, args=(bid,))
-        for _ in range(2)
-    ]
+    threads = [threading.Thread(target=worker) for _ in range(2)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
 
-    assert len(temps) == 2
-    assert temps[0] != temps[1], "concurrent same-book fetches collided on one temp file"
-    assert storage.book_pdf_path(bid).exists()  # one of them won the atomic replace
+    assert len(temps) == 1, "the per-book lock should serialize to a single download"
+    assert storage.book_pdf_path(bid).exists()           # the single fetch promoted
+    assert list(storage.book_pdf_path(bid).parent.glob("*.tmp")) == []  # no leaked temp
 
 
 # ── R13 integrity (`r13-integrity-1`): a corrupt/truncated cached PDF (wrong

@@ -38,19 +38,46 @@ def _map_subject(title: str) -> str | None:
     return None
 
 
+_TEXTBOOK_MARKERS = ("darslik", "textbook")
+_WORKBOOK_MARKERS = ("ish daftari", "ishchi daftar", "workbook", "daftar")
+
+
+def _pdf_name(block: dict) -> str:
+    """Folded, lower-cased filename of a pdf/file block (``""`` when unnamed)."""
+    payload = block.get(block.get("type"), {})
+    return _fold(payload.get("name") or "")
+
+
+def _pdf_rank(name: str) -> int:
+    """Selection rank for a PDF filename — LOWER is preferred. A `darslik`
+    (textbook) beats a neutral PDF beats an `ish daftari` (workbook), so a
+    workbook listed first no longer becomes the batch's 'textbook' (fetch-2)."""
+    if any(m in name for m in _TEXTBOOK_MARKERS):
+        return 0
+    if any(m in name for m in _WORKBOOK_MARKERS):
+        return 2
+    return 1
+
+
 def _first_pdf_block(blocks: list[dict]) -> dict | None:
-    """First textbook PDF in page order, else None. A `pdf` block is inherently a
-    PDF; a `file` block must have a `.pdf` filename - a subject page may also attach
-    a cover image / .docx, which must NOT be fed to the extractor as a 'textbook'."""
-    for b in blocks:
+    """Best textbook PDF block, else None. Prefers a `darslik` over an `ish
+    daftari` when a subject page attaches both; ties broken by page order. A
+    `pdf` block is inherently a PDF; a `file` block needs a `.pdf` filename (a
+    page may also attach a cover image / .docx, which must NOT be the textbook)."""
+    candidates: list[tuple[int, int, dict]] = []
+    for i, b in enumerate(blocks):
         t = b.get("type")
-        if t == "pdf" and _url_from_block(b):
-            return b
-        if t == "file" and _url_from_block(b):
+        if not _url_from_block(b):
+            continue
+        if t == "pdf":
+            candidates.append((_pdf_rank(_pdf_name(b)), i, b))
+        elif t == "file":
             name = (b.get("file", {}).get("name") or "").lower()
             if name.endswith(".pdf"):
-                return b
-    return None
+                candidates.append((_pdf_rank(_pdf_name(b)), i, b))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda c: (c[0], c[1]))[2]
 
 
 def _url_from_block(block: dict) -> str | None:
