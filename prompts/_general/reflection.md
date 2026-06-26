@@ -34,17 +34,24 @@ Tied to THIS session's Boss Arena / Case-Based Preview outputs:
 
 ## 3. One Thinking Question
 
-Pick ONE (rotate):
+Pick ONE (rotate). Prefer questions tied to THIS session's performance over generic curiosity:
 - "Bu bobda eng qiyin tushuncha nima edi?"
 - "Do'stingizga buni qanday tushuntirgan bo'lar edingiz?"
 - "Kundalik hayotda buni qayerda ko'rish mumkin?"
+- "Asosiy qaroringizni nega shunday qabul qildingiz?" (why did you make your main decision?)
+- "Keyingi safar qaysi xatodan qochasiz?" (what mistake would you avoid next time?)
 
 ## 4. Redo Route
 
 - Whether to **redo** the weak-point practice (the student app decides pass/redo — you
   only state the route).
+- A concrete **next-step suggestion** — what to review or practice next (name the specific
+  weak concept or phase to return to), not just "try again".
 - Retake rule: **"Xuddi shu tushunchalar, lekin xuddi shu savollar emas"** (same
   concepts, not the same questions).
+- Pass/retake terminology: when naming a not-passed outcome, use **"Needs Retry"** /
+  **"Attempt completed, homework not passed"** — NEVER a bare **"Not Completed"** after a
+  real attempt (the student did attempt the homework). The app, not you, sets the score.
 
 ## 5. Closing Line
 

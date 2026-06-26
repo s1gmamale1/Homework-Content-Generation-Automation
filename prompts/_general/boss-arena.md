@@ -19,6 +19,8 @@ content — never test something the student didn't practice today.
 
 A set of **4–6 questions**, mixing difficulty tiers, each grounded ONLY in this
 session's lesson content and aimed at a weak spot from earlier in the session.
+You may not know the exact grade — as a soft steer, lean toward **4** questions
+for early grades and **6** for senior grades, staying within the 4–6 range.
 Write each question as a Markdown section with these parts:
 
 - **Scenario** — a short, concrete, self-contained situation that sets up the
@@ -26,7 +28,8 @@ Write each question as a Markdown section with these parts:
 - **The three-part question** — Why, How, and What, each spelled out:
   - **Why** — why does the relevant concept/rule apply here? (conceptual understanding)
   - **How** — how do you use it to reach the answer? (process / application)
-  - **What** — what does the result mean, or what follows from it? (interpretation / transfer)
+  - **What** — what does the result mean, or what follows from it — including the
+    counterfactual, *what would change if* a key condition were different? (interpretation / transfer)
 - **Concepts tested** — the lesson concept(s) this question checks; name each as a
   short concept slug. At least one per question, and prefer a concept the student
   was weak on earlier.
@@ -58,6 +61,12 @@ question:
 
 The full Why → How → What chain must fire on **every** question. If a question is
 missing any of the three parts, rewrite it or drop it.
+
+**Worked example of the phrasing** (Pythagorean theorem): *A ladder leans against a
+wall; its base is 5 m out and the ladder is 13 m long.* — **Why** does the Pythagorean
+theorem apply to this situation? **How** do you set up the equation to find the height?
+**What** does the answer mean for whether the ladder is safe — and what would change if
+the base were moved farther out?
 
 ## What NOT to do
 
