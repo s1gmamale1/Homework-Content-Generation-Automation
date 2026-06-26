@@ -45,6 +45,7 @@ import type {
 import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { RoleAgentControls } from "@/components/fleet/RoleAgentControls";
+import { serveability, providerServeableAnyMode } from "@/lib/serveability";
 
 const LBL = "text-xs font-medium uppercase tracking-[0.12em] text-white/45";
 
@@ -589,6 +590,8 @@ function ReadyCard({
   const modelsQ = useQuery({
     queryKey: ["agent-models"],
     queryFn: api.getAgentModels,
+    refetchInterval: 5000,
+    refetchOnWindowFocus: true,
   });
   const detail = useQuery({
     queryKey: ["book", book.id],
@@ -623,14 +626,34 @@ function ReadyCard({
 
   // Does the picked provider support the pay-per-token API transport? Only
   // claude/gemini do; the toggle is hidden for the rest and transport pins cli.
+  const fleet = modelsQ.data?.fleet;
   const apiSupported = modelsQ.data?.api_supported?.[provider] ?? false;
+  const apiFleetCheck = serveability(fleet, provider, "api");
 
   // Reset transport to cli whenever the provider can't do api (keeps an
-  // unsupported provider from carrying a stale api selection). model=null means
+  // unsupported provider from carrying a stale api selection), OR when the
+  // fleet reports it can't serve api for this provider. model=null means
   // "provider default" — fine for cli, but api forces an explicit model below.
   useEffect(() => {
-    if (!apiSupported && transport === "api") setTransport("cli");
-  }, [apiSupported, transport]);
+    if (!apiSupported && transport === "api") {
+      setTransport("cli");
+      return;
+    }
+    if (fleet?.online && transport === "api" && !serveability(fleet, provider, "api").ok) {
+      setTransport("cli");
+    }
+  }, [apiSupported, transport, fleet, provider]);
+
+  // Provider reset guard: if the current provider becomes unservable (fleet
+  // online + no CLI or API path), nudge to the first servable provider.
+  useEffect(() => {
+    if (!fleet?.online) return;
+    if (providerServeableAnyMode(fleet, provider)) return;
+    const firstServable = Object.keys(modelsQ.data?.providers ?? {}).find((p) =>
+      providerServeableAnyMode(fleet, p),
+    );
+    if (firstServable) setProvider(firstServable);
+  }, [fleet, provider, modelsQ.data]);
 
   // On api, force a concrete model: "provider default" isn't allowed (billing
   // needs an explicit model). Seed/clear the model as transport/provider change.
@@ -816,22 +839,38 @@ function ReadyCard({
             className="overflow-hidden"
           >
             <div className="space-y-3 border-t border-white/[0.07] px-4 pb-4 pt-3">
+              {/* Offline banner — shown only when fleet data has arrived but no
+                  worker is online. Nothing is greyed in this state (fail-open). */}
+              {fleet && !fleet.online && (
+                <p className="text-[0.7rem] leading-snug text-amber-300/90">
+                  No workers online — launches will queue until one connects.
+                </p>
+              )}
               <div className="flex flex-wrap items-center gap-2">
                 <Select value={provider} onValueChange={setProvider}>
                   <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[8.5rem]")}>
                     <SelectValue placeholder="claude" />
                   </SelectTrigger>
                   <SelectContent>
-                    {(providers.length > 0 ? providers : ["claude"]).map((p) => (
-                      <SelectItem key={p} value={p}>
-                        {p}
-                      </SelectItem>
-                    ))}
+                    {(providers.length > 0 ? providers : ["claude"]).map((p) => {
+                      const serveable = providerServeableAnyMode(fleet, p);
+                      return (
+                        <SelectItem key={p} value={p} disabled={!serveable}>
+                          {serveable ? p : `${p} — no worker runs it`}
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
-                {/* CLI | API toggle — only for providers the backend bills via API. */}
+                {/* CLI | API toggle — only for providers the backend bills via API.
+                    API side additionally requires the fleet to have credentials. */}
                 {apiSupported && (
-                  <TransportToggle value={transport} onChange={setTransport} />
+                  <TransportToggle
+                    value={transport}
+                    onChange={setTransport}
+                    apiDisabled={!apiFleetCheck.ok}
+                    apiDisabledReason={!apiFleetCheck.ok ? apiFleetCheck.reason : null}
+                  />
                 )}
                 {/* Per-role provider/model/billing — a cli batch can still pin its
                     extract/judge calls to api (and vice versa). Auto = backend
@@ -845,6 +884,7 @@ function ReadyCard({
                   onProvider={setExtractProvider}
                   onModel={setExtractModel}
                   onTransport={setExtractTransport}
+                  jobTransport={transport}
                 />
                 <RoleAgentControls
                   label="Judge"
@@ -856,6 +896,7 @@ function ReadyCard({
                   onModel={setJudgeModel}
                   onTransport={setJudgeTransport}
                   warning={judgeWarning}
+                  jobTransport={transport}
                 />
                 {/* API forces an explicit model (no "provider default"). */}
                 {transport === "api" && (
@@ -1177,31 +1218,44 @@ function StepLabel({ n, children }: { n: number; children: React.ReactNode }) {
   );
 }
 
-/** CLI | API segmented control. cli is local/free, api is pay-per-token. */
+/** CLI | API segmented control. cli is local/free, api is pay-per-token.
+ *  `apiDisabled` disables the API button (fleet has no creds for this provider);
+ *  `apiDisabledReason` is shown as an amber helper line beneath the toggle. */
 function TransportToggle({
   value,
   onChange,
+  apiDisabled,
+  apiDisabledReason,
 }: {
   value: Transport;
   onChange: (next: Transport) => void;
+  apiDisabled?: boolean;
+  apiDisabledReason?: string | null;
 }) {
   return (
-    <div className="inline-flex h-9 rounded-xl border border-white/[0.1] bg-white/[0.04] p-0.5">
-      {ALL_TRANSPORTS.map((t) => (
-        <button
-          key={t}
-          type="button"
-          onClick={() => onChange(t)}
-          className={cn(
-            "rounded-lg px-2.5 text-xs font-medium uppercase tracking-wide transition-all",
-            t === value
-              ? "bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] text-white shadow-[0_10px_26px_-12px_rgba(99,102,241,0.9)]"
-              : "text-white/55 hover:text-white",
-          )}
-        >
-          {t}
-        </button>
-      ))}
+    <div className="flex flex-col gap-1">
+      <div className="inline-flex h-9 rounded-xl border border-white/[0.1] bg-white/[0.04] p-0.5">
+        {ALL_TRANSPORTS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => { if (t !== "api" || !apiDisabled) onChange(t); }}
+            disabled={t === "api" && !!apiDisabled}
+            className={cn(
+              "rounded-lg px-2.5 text-xs font-medium uppercase tracking-wide transition-all",
+              t === value
+                ? "bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] text-white shadow-[0_10px_26px_-12px_rgba(99,102,241,0.9)]"
+                : "text-white/55 hover:text-white",
+              t === "api" && apiDisabled && "cursor-not-allowed opacity-40",
+            )}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+      {apiDisabledReason && (
+        <p className="text-[0.7rem] leading-snug text-amber-300/90">{apiDisabledReason}</p>
+      )}
     </div>
   );
 }
