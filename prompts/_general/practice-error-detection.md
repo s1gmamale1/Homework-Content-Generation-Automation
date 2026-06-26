@@ -22,8 +22,10 @@ Write the task as Markdown sections, in this order:
 - **Concepts** — the lesson concept(s) the task tests. Test something the student
   already saw in correct form earlier in the session, so they have a reference
   point.
-- **The blocks** — **3 or more** blocks (4 for G1–4, 5–6 for G5–8, 6–8 for
-  G9–11), listed in order. Present each block's content clearly. **EXACTLY ONE
+- **The blocks** — listed in order. Block count is **per block type** and by
+  grade band: equation steps — 3 (G1–4) / 4–5 (G5–8) / 5–6 (G9–11); sentence
+  blocks — 3–4 (G1–4) / 4–5 (G5–8) / 5–6 (G9–11); diagram labels — 4 (G1–4) /
+  5–6 (G5–8) / 6–8 (G9–11). Present each block's content clearly. **EXACTLY ONE
   block is wrong** — it names the wrong thing or applies the wrong step/role for
   the part it represents. Every other block must be correct so the slip is
   subtle, not glaring. Make clear (to the reader of this output, not to the
@@ -50,12 +52,18 @@ Write the task as Markdown sections, in this order:
   confusion a {{SUBJECT}} student actually makes — drawn from real student error
   patterns — NOT an absurd error every student spots instantly. ("3x = 999" as
   the wrong version of "3x = 6" is too obvious; "3x = 16" from miscomputing
-  11 − 5 is a real slip.)
+  11 − 5 is a real slip. Grammar parallel: "She have been to Tashkent last year"
+  → "went" is a real taught-pattern tense slip, not a vocabulary trick.)
 - **No auto-reveal.** No correct content in the hint or any pre-reveal feedback.
 - **Strip Test must pass.** The {{SUBJECT}} concept must be the reason the task is
   solvable: remove it and the task collapses to "tap a block, type something" —
   no answer leakage, no way to find the error from format alone. If a student
   could solve it without the lesson concept, regenerate.
+- **No time pressure.** Don't score for speed or impose a timer — this is
+  recognition + construction, not a race.
+- **Don't over-reject the correction.** Accept any substantively-correct fix
+  even when it isn't an exact string match (spacing, word order, equivalent
+  phrasing) — pair with the accepted-wordings note above.
 - Test something already shown in correct form earlier in the session.
 
 ## Visuals
