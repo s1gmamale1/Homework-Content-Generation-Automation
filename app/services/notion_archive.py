@@ -29,6 +29,12 @@ log = logging.getLogger("notion.archive")
 
 _warned_unconfigured = False
 
+# Bounded retry for the (idempotent) Notion push. A transient network/5xx must
+# not leave the job invisibly un-archived (notion_archived_at + skip_reason both
+# NULL); retry, then record a skip reason on final failure.
+_PUSH_MAX_ATTEMPTS = 3
+_PUSH_BACKOFF_BASE_SECONDS = 1.0
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -161,6 +167,40 @@ def _push_to_notion(
     return homework_id
 
 
+async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md) -> str:
+    """Run the idempotent Notion push in a worker thread, retrying transient
+    failures with exponential backoff. Re-raises the last exception if every
+    attempt fails, so the caller can record a skip reason."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, _PUSH_MAX_ATTEMPTS + 1):
+        try:
+            return await asyncio.to_thread(
+                _push_to_notion,
+                client=client,
+                subject_page_id=subject_page_id,
+                lesson_title=lesson_title,
+                phase_md=phase_md,
+            )
+        except Exception as exc:  # noqa: BLE001 - retried, then recorded as a skip
+            last_exc = exc
+            log.warning("notion: push attempt %d/%d failed: %s",
+                        attempt, _PUSH_MAX_ATTEMPTS, exc)
+            if attempt < _PUSH_MAX_ATTEMPTS:
+                await asyncio.sleep(_PUSH_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+    assert last_exc is not None
+    raise last_exc
+
+
+async def _record_skip(job_id: UUID, reason: str) -> None:
+    """Best-effort persist of a skip reason in a fresh session; never raises."""
+    try:
+        async with SessionLocal() as session:
+            await jobs_repo.set_notion_skip_reason(session, job_id, reason)
+            await session.commit()
+    except Exception:  # noqa: BLE001 - the skip marker is itself best-effort
+        log.warning("notion: could not record skip reason for job %s", job_id, exc_info=True)
+
+
 async def archive_job(job_id: UUID) -> None:
     """Best-effort entry point called from the pipeline after job is `done`."""
     global _warned_unconfigured
@@ -214,13 +254,18 @@ async def archive_job(job_id: UUID) -> None:
             return
 
         client = NotionClientWrapper(api_key=settings.notion_api_key)
-        homework_id = await asyncio.to_thread(
-            _push_to_notion,
-            client=client,
-            subject_page_id=subject_page_id,
-            lesson_title=lesson_title,
-            phase_md=phase_md,
-        )
+        try:
+            homework_id = await _push_with_retry(
+                client=client,
+                subject_page_id=subject_page_id,
+                lesson_title=lesson_title,
+                phase_md=phase_md,
+            )
+        except Exception as exc:  # noqa: BLE001 - push exhausted retries; record + give up
+            log.warning("notion: push failed for job %s after %d attempts (non-fatal)",
+                        job_id, _PUSH_MAX_ATTEMPTS, exc_info=True)
+            await _record_skip(job_id, f"push error: {type(exc).__name__}")
+            return
 
         async with SessionLocal() as session:
             await toc_repo.set_notion_homework_page_id(session, section_id, homework_id)
@@ -229,3 +274,4 @@ async def archive_job(job_id: UUID) -> None:
         log.info("notion: archived job %s → Homework page %s", job_id, homework_id)
     except Exception:
         log.warning("notion: archive failed for job %s (non-fatal)", job_id, exc_info=True)
+        await _record_skip(job_id, "archive error")
