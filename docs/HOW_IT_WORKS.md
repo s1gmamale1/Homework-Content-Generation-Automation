@@ -484,6 +484,10 @@ Key endpoints:
   happened (so a late-joining browser catches up), then streams new phase events live until
   the job completes or fails.
 - `POST /jobs/{id}/retry` — re-run a *failed* job in place (same row, same provider).
+- `POST /jobs/{id}/retry-archive` — re-attempt the best-effort Notion archive for a `done`
+  job whose push previously failed (`notion_archived_at IS NULL`). `archive_job` is idempotent
+  (skips already-populated pages) and clears `notion_skip_reason` on success; 409 for a non-done
+  or already-archived job.
 - `GET /jobs/{id}/download` — download the packet as a ZIP of one markdown file per completed
   (non-extract) phase. There's also `POST /jobs/{id}/cancel` to stop a running job.
 - `GET /agent/models` / `GET /agent/stats` — the model menu, and per-provider rolling usage

@@ -60,6 +60,7 @@ export function JobPage() {
   const [status, setStatus] = useState<JobStatus | null>(null);
   const [notionSkip, setNotionSkip] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const queryClient = useQueryClient();
 
@@ -93,6 +94,25 @@ export function JobPage() {
       toast.error(err instanceof Error ? err.message : "Retry failed");
     } finally {
       setRetrying(false);
+    }
+  }
+
+  async function handleRetryArchive() {
+    if (!id) return;
+    setArchiving(true);
+    try {
+      const updated = await api.retryArchiveJob(id);
+      queryClient.setQueryData(["job", id], updated);
+      setNotionSkip(updated.notion_skip_reason ?? null);
+      if (updated.notion_skip_reason) {
+        toast.error(`Archive failed again: ${updated.notion_skip_reason}`);
+      } else {
+        toast.success("Archived to Notion");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Archive retry failed");
+    } finally {
+      setArchiving(false);
     }
   }
 
@@ -400,6 +420,24 @@ export function JobPage() {
         {status === "done" && notionSkip && (
           <div className="mt-4 inline-flex items-center gap-2 rounded-xl border border-white/[0.12] bg-white/[0.05] px-3 py-2 text-sm text-white/55">
             Not archived to Notion: {notionSkip}
+            <button
+              type="button"
+              onClick={handleRetryArchive}
+              disabled={archiving}
+              className="ml-2 inline-flex items-center gap-1.5 rounded-lg border border-white/[0.15] px-2 py-1 text-xs text-white/75 hover:bg-white/[0.08] disabled:opacity-50"
+            >
+              {archiving ? (
+                <>
+                  <Loader2 className="size-3 animate-spin" />
+                  Archiving…
+                </>
+              ) : (
+                <>
+                  <RefreshCcw className="size-3" />
+                  Retry archive
+                </>
+              )}
+            </button>
           </div>
         )}
 
