@@ -150,12 +150,26 @@ export interface Job {
   planned_phases?: string[];
 }
 
+/** Real-time fleet capability snapshot served by /api/v1/agent/models. */
+export interface FleetCapability {
+  /** True when at least one worker process is reachable. */
+  online: boolean;
+  /** Number of worker processes currently connected. */
+  workers_online: number;
+  /** provider -> CLI available on at least one worker. */
+  cli: Record<string, boolean>;
+  /** provider -> API credentials present on at least one worker. */
+  api: Record<string, boolean>;
+}
+
 export interface ProviderModelManifest {
   providers: Record<string, string[]>;
   /** Which providers can run on the pay-per-token API transport (claude/gemini). */
   api_supported: Record<string, boolean>;
   /** provider -> model -> tier int. */
   tiers?: Record<string, Record<string, number>>;
+  /** Live fleet capability snapshot; absent when the endpoint hasn't loaded yet. */
+  fleet?: FleetCapability;
 }
 
 /* /api/v1/agent/stats — per-provider rolling consumption against caps */
