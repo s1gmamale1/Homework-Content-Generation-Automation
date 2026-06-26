@@ -350,6 +350,39 @@ _RATE_LIMIT_TERMS = (
     "too many requests",
 )
 
+# Terms that mean "transient network / DNS / socket error; retry will likely
+# succeed once connectivity is restored".  Lower-cased substring match.
+# Covers: DNS failures (getaddrinfo / name resolution), urllib3 pool exhaustion
+# (httpsconnectionpool / max retries exceeded), TCP resets/aborts
+# (connection aborted / connection reset), Windows socket errors
+# (winerror 10053/10054/121/1232), and generic timeout shapes.
+# Deliberately NOT auth (401/403/PERMISSION_DENIED/UNAUTHENTICATED) or
+# truncation (MAX_TOKENS / "prompt is too long"), which never self-heal.
+# Also deliberately NOT matching the Claude session-limit string
+# "You've hit your session limit · resets …" — that must propagate unchanged
+# so higher layers can detect and auto-pause the worker (tasks 2-5).
+_TRANSIENT_NET_TERMS = (
+    "getaddrinfo",
+    "name resolution",
+    "nameresolutionerror",
+    "temporary failure in name resolution",
+    "httpsconnectionpool",
+    "max retries exceeded",
+    "connection aborted",
+    "connectionabortederror",
+    "connection reset",
+    "connectionreseterror",
+    "network is unreachable",
+    "the network location cannot be reached",
+    "semaphore timeout",
+    "winerror 10053",
+    "winerror 10054",
+    "winerror 121",
+    "winerror 1232",
+    "timed out",
+    "timeout",
+)
+
 
 def _is_rate_limited(text: str) -> bool:
     """True iff ``text`` names a transient rate-limit worth retrying.
@@ -361,6 +394,19 @@ def _is_rate_limited(text: str) -> bool:
         return False
     lowered = text.lower()
     return any(term in lowered for term in _RATE_LIMIT_TERMS)
+
+
+def _is_transient_net(text: str) -> bool:
+    """True iff ``text`` signals a transient network/DNS/socket error.
+
+    Matches the live error shapes observed in flaky-network workers (DNS
+    failures, TCP resets, Windows socket errors, urllib3 pool timeouts).
+    Never matches auth, truncation, or the Claude session-limit string.
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(term in lowered for term in _TRANSIENT_NET_TERMS)
 
 
 def _rate_limit_delay(
@@ -384,29 +430,34 @@ async def _spawn(
     attachments: list[Path],
     transport: str = "cli",
 ) -> tuple[int, str, dict[str, Any], str]:
-    """Run a single provider call with bounded retry-on-rate-limit.
+    """Run a single provider call with bounded retry-on-rate-limit/net-error.
 
     Delegates each attempt to :func:`_spawn_once`; on a transient 429/
-    rate-limit it backs off (``asyncio.sleep`` holds NO concurrency slot —
-    ``_spawn_once`` acquires the semaphore internally) and retries up to
-    ``settings.rate_limit_max_retries`` times. A persistent rate-limit (or any
-    other failure) returns the failure tuple unchanged, exactly as before.
+    rate-limit **or** a transient network/DNS/socket error it backs off
+    (``asyncio.sleep`` holds NO concurrency slot — ``_spawn_once`` acquires
+    the semaphore internally) and retries up to
+    ``settings.rate_limit_max_retries`` times, reusing the same backoff/jitter.
+    A persistent error (auth 401/403, truncation, session-limit) returns the
+    failure tuple unchanged on the first attempt, exactly as before.
     """
     for attempt in range(settings.rate_limit_max_retries + 1):
         rc, text, usage, stderr = await _spawn_once(
             provider=provider, model=model, prompt=prompt,
             attachments=attachments, transport=transport,
         )
-        if rc == 0 or not _is_rate_limited(stderr or text):
+        combined = stderr or text
+        is_retryable = _is_rate_limited(combined) or _is_transient_net(combined)
+        if rc == 0 or not is_retryable:
             return rc, text, usage, stderr
         if attempt >= settings.rate_limit_max_retries:
             logger.warning(
-                f"agent.spawn rate-limited, retries exhausted | provider={provider.name}"
+                f"agent.spawn retryable error, retries exhausted | provider={provider.name}"
             )
             return rc, text, usage, stderr
         delay = _rate_limit_delay(attempt)
+        reason = "rate-limited (429)" if _is_rate_limited(combined) else "transient net error"
         logger.warning(
-            f"agent.spawn rate-limited (429) | provider={provider.name} "
+            f"agent.spawn {reason} | provider={provider.name} "
             f"attempt={attempt + 1}/{settings.rate_limit_max_retries} backoff={delay:.1f}s"
         )
         await asyncio.sleep(delay)
