@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { RoleAgentControls } from "@/components/fleet/RoleAgentControls";
 import { api } from "@/lib/api";
+import { serveability, providerServeableAnyMode } from "@/lib/serveability";
 import { safeUUID } from "@/lib/uuid";
 import { subjectLabel, CONTENT_PHASES } from "@/lib/subjects";
 import type {
@@ -111,7 +112,8 @@ export function SectionPage() {
   const { data: manifest, isLoading: manifestLoading } = useQuery({
     queryKey: ["agent-models"],
     queryFn: () => api.getAgentModels(),
-    staleTime: 1000 * 60 * 60, // 1h — manifest rarely changes
+    refetchInterval: 5000,
+    refetchOnWindowFocus: true,
   });
 
   // When the manifest loads (or the selected provider changes), reset the
@@ -126,10 +128,30 @@ export function SectionPage() {
   // Only claude/gemini bill via the pay-per-token API transport; the toggle is
   // hidden for everything else. If the provider switches to one that can't do
   // api, drop back to cli so we never send an invalid transport.
+  const fleet = manifest?.fleet;
   const apiSupported = manifest?.api_supported?.[provider] ?? false;
   useEffect(() => {
-    if (!apiSupported && transport === "api") setTransport("cli");
-  }, [apiSupported, transport]);
+    if (!apiSupported && transport === "api") {
+      setTransport("cli");
+      return;
+    }
+    // Fleet reset: if the fleet is online but can't serve api for this provider,
+    // reset to cli so we don't submit a known-unservable combo.
+    if (fleet?.online && transport === "api" && !serveability(fleet, provider, "api").ok) {
+      setTransport("cli");
+    }
+  }, [apiSupported, transport, fleet, provider]);
+
+  // Provider reset guard: if the current provider becomes unservable (fleet
+  // online + no CLI or API path), nudge to the first servable provider.
+  useEffect(() => {
+    if (!fleet?.online || !manifest) return;
+    if (providerServeableAnyMode(fleet, provider)) return;
+    const firstServable = Object.keys(manifest.providers).find((p) =>
+      providerServeableAnyMode(fleet, p),
+    );
+    if (firstServable) setProvider(firstServable);
+  }, [fleet, provider, manifest]);
 
   // Advisory (non-blocking) note when the judge model is weaker (higher tier
   // number) than the generator. Lower tier int = stronger.
@@ -581,9 +603,12 @@ function AgentPicker({
   onJudgeTransportChange,
   judgeWarning,
 }: AgentPickerProps) {
+  const fleet = manifest?.fleet;
   const providerNames = manifest ? Object.keys(manifest.providers) : [];
   const modelOptions = manifest?.providers[provider] ?? [];
   const modelDisabled = !manifest || modelOptions.length === 0;
+  // Fleet gate for the API transport button (anded with apiSupported above).
+  const apiFleetCheck = serveability(fleet, provider, "api");
 
   return (
     <section className={CARD}>
@@ -597,6 +622,14 @@ function AgentPicker({
         Choose which agent runs the pipeline. The model dropdown lists the options exposed by the
         backend manifest for the selected provider.
       </p>
+
+      {/* Offline banner — shown only when fleet data has arrived + no worker online.
+          Nothing is greyed in this state (serveability helpers fail-open offline). */}
+      {fleet && !fleet.online && (
+        <p className="mt-3 text-[0.7rem] leading-snug text-amber-300/90">
+          No workers online — launches will queue until one connects.
+        </p>
+      )}
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="flex flex-col gap-1.5">
@@ -612,11 +645,14 @@ function AgentPicker({
               <SelectValue placeholder={manifestLoading ? "Loading…" : "Provider"} />
             </SelectTrigger>
             <SelectContent>
-              {providerNames.map((name) => (
-                <SelectItem key={name} value={name}>
-                  {name}
-                </SelectItem>
-              ))}
+              {providerNames.map((name) => {
+                const serveable = providerServeableAnyMode(fleet, name);
+                return (
+                  <SelectItem key={name} value={name} disabled={!serveable}>
+                    {serveable ? name : `${name} — no worker runs it`}
+                  </SelectItem>
+                );
+              })}
             </SelectContent>
           </Select>
         </label>
@@ -647,34 +683,44 @@ function AgentPicker({
       {/* CLI | API transport toggle — only for providers the backend bills via
           the pay-per-token API (claude/gemini). Hidden otherwise; transport
           pins to cli. On API the Model select above is required (a concrete
-          model must be chosen — there is no "provider default" billing path). */}
+          model must be chosen — there is no "provider default" billing path).
+          The API button is additionally disabled when the fleet has no creds. */}
       {apiSupported && (
         <div className="mt-4 flex flex-col gap-1.5">
           <span className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/45">
             Transport
           </span>
           <div className="inline-flex w-fit rounded-xl border border-white/[0.1] bg-white/[0.04] p-1">
-            {(["api", "cli"] as Transport[]).map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => onTransportChange(t)}
-                className={cn(
-                  "rounded-lg px-4 py-2 text-sm font-medium uppercase tracking-wide transition-all",
-                  t === transport
-                    ? "bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] text-white shadow-[0_10px_26px_-12px_rgba(99,102,241,0.9)]"
-                    : "text-white/55 hover:bg-white/[0.06] hover:text-white",
-                )}
-              >
-                {t}
-              </button>
-            ))}
+            {(["api", "cli"] as Transport[]).map((t) => {
+              const isApiDisabled = t === "api" && !apiFleetCheck.ok;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => { if (!isApiDisabled) onTransportChange(t); }}
+                  disabled={isApiDisabled}
+                  className={cn(
+                    "rounded-lg px-4 py-2 text-sm font-medium uppercase tracking-wide transition-all",
+                    t === transport
+                      ? "bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] text-white shadow-[0_10px_26px_-12px_rgba(99,102,241,0.9)]"
+                      : "text-white/55 hover:bg-white/[0.06] hover:text-white",
+                    isApiDisabled && "cursor-not-allowed opacity-40",
+                  )}
+                >
+                  {t}
+                </button>
+              );
+            })}
           </div>
-          <p className="mt-1 text-xs text-white/45">
-            {transport === "api"
-              ? "Pay-per-token API — pick a concrete model above (billed)."
-              : "Local CLI subprocess — no per-token billing."}
-          </p>
+          {!apiFleetCheck.ok ? (
+            <p className="text-[0.7rem] leading-snug text-amber-300/90">{apiFleetCheck.reason}</p>
+          ) : (
+            <p className="mt-1 text-xs text-white/45">
+              {transport === "api"
+                ? "Pay-per-token API — pick a concrete model above (billed)."
+                : "Local CLI subprocess — no per-token billing."}
+            </p>
+          )}
         </div>
       )}
 
@@ -692,6 +738,7 @@ function AgentPicker({
           onProvider={onExtractProviderChange}
           onModel={onExtractModelChange}
           onTransport={onExtractTransportChange}
+          jobTransport={transport}
         />
         <RoleAgentControls
           label="Judge"
@@ -703,6 +750,7 @@ function AgentPicker({
           onModel={onJudgeModelChange}
           onTransport={onJudgeTransportChange}
           warning={judgeWarning}
+          jobTransport={transport}
         />
       </div>
       <p className="mt-1.5 text-xs text-white/45">

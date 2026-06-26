@@ -213,10 +213,14 @@ No mixins — tiny by design:
 | `last_heartbeat` | NOT NULL | always stamped with `func.now()` (DB clock) |
 | `status` | String(32) NOT NULL, server_default `'online'` | `online` / `draining`; **enforced (C5/P1):** the worker reads its own status each registry beat and self-drains when `draining` (stops claiming + lets in-flight finish) via `_drain_check_and_beat`. `claim_next_job` doesn't filter on it — the worker self-stops instead |
 | `notes` | Text NULL | |
+| `capabilities` | JSONB NULL (migration 0035) | the worker's published capability blob `{"cli": {<5 providers>: bool}, "api": {"claude": bool, "gemini": bool}}` — which provider CLIs are installed on this PC and which api creds are present. Written on every registry beat (`upsert_heartbeat(..., capabilities=)`, no-clobber on status-only beats). NULL = legacy/never-published. The head unions it over **online** workers (`aggregate_fleet_capability`) to tell the launcher which `(provider × transport)` picks the fleet can actually serve (`launcher-capability-gate-1`, worklog 0085). |
 
 **Liveness is derived, never stored**: `GET /workers` fetches `SELECT now()` and computes
 `online = last_heartbeat >= db_now - worker_registry_stale_seconds` (default 90 s = 3 missed
-30-s beats). Both sides of that comparison are DB-clock — see §2.
+30-s beats). Both sides of that comparison are DB-clock — see §2. The same staleness predicate
+drives `aggregate_fleet_capability` (the launcher's fleet-serveability view) — zero online
+workers ⇒ fail-open `{"online": false}` so the launcher shows a "no workers" banner instead of
+greying everything.
 
 ### 3.8 `budget_state` — fleet-level API pause singleton (C4)
 

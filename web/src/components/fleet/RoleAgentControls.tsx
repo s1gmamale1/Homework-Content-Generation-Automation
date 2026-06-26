@@ -9,6 +9,7 @@ import {
 import type { ProviderModelManifest, RoleTransport } from "@/lib/types";
 import { SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
+import { serveability, providerServeableAnyMode, resolveRoleTransport } from "@/lib/serveability";
 
 /** Sentinel <Select> value for "Auto" (null at the data boundary). Radix
  *  Select dislikes empty/null values, so we map null <-> "auto" here. */
@@ -34,6 +35,7 @@ export function RoleAgentControls({
   onModel,
   onTransport,
   warning,
+  jobTransport,
 }: {
   label: string;
   manifest?: ProviderModelManifest;
@@ -44,12 +46,22 @@ export function RoleAgentControls({
   onModel: (v: string | null) => void;
   onTransport: (v: RoleTransport) => void;
   warning?: string | null;
+  jobTransport: "cli" | "api";
 }) {
   // Only providers the backend bills via API are pickable for an api role.
   // For provider selection we offer every manifest provider (the role may run
   // on cli too); the api-forces-model rule below handles the api case.
+  const fleet = manifest?.fleet;
   const providerNames = manifest ? Object.keys(manifest.providers) : [];
   const modelOptions = provider ? (manifest?.providers?.[provider] ?? []) : [];
+
+  // Fleet reason for the currently-effective transport (only when a concrete provider is set).
+  // resolveRoleTransport resolves "inherit" to the job transport.
+  const effectiveTransport = resolveRoleTransport(transport, jobTransport);
+  const fleetCheck = provider
+    ? serveability(fleet, provider, effectiveTransport)
+    : { ok: true, reason: null };
+  const fleetReason = fleetCheck.reason;
 
   // Auto provider => model must be Auto (no provider to list models for).
   useEffect(() => {
@@ -85,11 +97,14 @@ export function RoleAgentControls({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={AUTO}>Auto</SelectItem>
-            {providerNames.map((p) => (
-              <SelectItem key={p} value={p}>
-                {p}
-              </SelectItem>
-            ))}
+            {providerNames.map((p) => {
+              const serveable = providerServeableAnyMode(fleet, p);
+              return (
+                <SelectItem key={p} value={p} disabled={!serveable}>
+                  {serveable ? p : `${p} — no worker runs it`}
+                </SelectItem>
+              );
+            })}
           </SelectContent>
         </Select>
         {/* Model — only shown once a concrete provider is chosen. With provider
@@ -125,16 +140,37 @@ export function RoleAgentControls({
             <SelectValue placeholder="Auto" />
           </SelectTrigger>
           <SelectContent>
-            {ROLE_TRANSPORT_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>
-                {o.label}
-              </SelectItem>
-            ))}
+            {ROLE_TRANSPORT_OPTIONS.map((o) => {
+              // Only gate when a concrete provider is selected (skip for Auto).
+              let disabled = false;
+              if (provider) {
+                if (o.value === "api") {
+                  disabled = !serveability(fleet, provider, "api").ok;
+                } else if (o.value === "inherit") {
+                  // inherit resolves to the job transport; disable if that
+                  // transport is not serveable for this provider.
+                  disabled = !serveability(
+                    fleet,
+                    provider,
+                    resolveRoleTransport("inherit", jobTransport),
+                  ).ok;
+                }
+                // "cli" is never disabled by the fleet gate
+              }
+              return (
+                <SelectItem key={o.value} value={o.value} disabled={disabled}>
+                  {o.label}
+                </SelectItem>
+              );
+            })}
           </SelectContent>
         </Select>
       </div>
       {warning && (
         <p className="text-[0.7rem] leading-snug text-amber-300/90">{warning}</p>
+      )}
+      {fleetReason && (
+        <p className="text-[0.7rem] leading-snug text-amber-300/90">{fleetReason}</p>
       )}
     </div>
   );
