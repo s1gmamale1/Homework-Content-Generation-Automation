@@ -47,6 +47,7 @@ import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { RoleAgentControls } from "@/components/fleet/RoleAgentControls";
 import { serveability, providerServeableAnyMode } from "@/lib/serveability";
+import { type LauncherConfig, loadLauncherConfig, saveLauncherConfig } from "@/lib/launcher-config";
 
 const LBL = "text-xs font-medium uppercase tracking-[0.12em] text-white/45";
 
@@ -574,16 +575,17 @@ function ReadyCard({
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
-  const [provider, setProvider] = useState("claude");
-  const [transport, setTransport] = useState<Transport>("api");
-  const [extractTransport, setExtractTransport] = useState<RoleTransport>("cli");
-  const [judgeTransport, setJudgeTransport] = useState<RoleTransport>("cli");
-  const [sessionLimitStrategy, setSessionLimitStrategy] = useState<SessionLimitStrategy>("inherit");
-  const [extractProvider, setExtractProvider] = useState<string | null>(null);
-  const [extractModel, setExtractModel] = useState<string | null>(null);
-  const [judgeProvider, setJudgeProvider] = useState<string | null>(null);
-  const [judgeModel, setJudgeModel] = useState<string | null>(null);
-  const [model, setModel] = useState<string | null>(null);
+  const saved = useState(() => loadLauncherConfig(book.id))[0];
+  const [provider, setProvider] = useState(() => saved.provider ?? "claude");
+  const [transport, setTransport] = useState<Transport>(() => saved.transport ?? "api");
+  const [extractTransport, setExtractTransport] = useState<RoleTransport>(() => saved.extractTransport ?? "cli");
+  const [judgeTransport, setJudgeTransport] = useState<RoleTransport>(() => saved.judgeTransport ?? "cli");
+  const [sessionLimitStrategy, setSessionLimitStrategy] = useState<SessionLimitStrategy>(() => saved.sessionLimitStrategy ?? "inherit");
+  const [extractProvider, setExtractProvider] = useState<string | null>(() => saved.extractProvider ?? null);
+  const [extractModel, setExtractModel] = useState<string | null>(() => saved.extractModel ?? null);
+  const [judgeProvider, setJudgeProvider] = useState<string | null>(() => saved.judgeProvider ?? null);
+  const [judgeModel, setJudgeModel] = useState<string | null>(() => saved.judgeModel ?? null);
+  const [model, setModel] = useState<string | null>(() => saved.model ?? null);
   const [choosing, setChoosing] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // True while the preview fetch is in flight (launch button shows spinner).
@@ -637,6 +639,7 @@ function ReadyCard({
   // fleet reports it can't serve api for this provider. model=null means
   // "provider default" — fine for cli, but api forces an explicit model below.
   useEffect(() => {
+    if (!modelsQ.data) return; // don't sanitize against an unloaded manifest — would demote a restored api pick
     if (!apiSupported && transport === "api") {
       setTransport("cli");
       return;
@@ -644,7 +647,7 @@ function ReadyCard({
     if (fleet?.online && transport === "api" && !serveability(fleet, provider, "api").ok) {
       setTransport("cli");
     }
-  }, [apiSupported, transport, fleet, provider]);
+  }, [apiSupported, transport, fleet, provider, modelsQ.data]);
 
   // Provider reset guard: if the current provider becomes unservable (fleet
   // online + no CLI or API path), nudge to the first servable provider.
@@ -661,6 +664,7 @@ function ReadyCard({
   // needs an explicit model). Seed/clear the model as transport/provider change.
   const modelOptions = modelsQ.data?.providers?.[provider] ?? [];
   useEffect(() => {
+    if (!modelsQ.data) return; // wait for modelOptions — else a restored api model gets nulled + re-seeded to the wrong one
     if (transport === "api") {
       // Seed the first concrete model if none chosen / stale for this provider.
       if (!model || !modelOptions.includes(model)) {
@@ -673,6 +677,37 @@ function ReadyCard({
     // modelOptions identity changes only when the manifest/provider changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transport, provider, modelsQ.data]);
+
+  // Persist selections per book so navigating away + back (and hard-refresh)
+  // restores them. Only the launch-selection fields — never ephemeral UI state
+  // (expanded / choosing / selected / launching).
+  useEffect(() => {
+    const cfg: LauncherConfig = {
+      provider,
+      transport,
+      extractTransport,
+      judgeTransport,
+      sessionLimitStrategy,
+      extractProvider,
+      extractModel,
+      judgeProvider,
+      judgeModel,
+      model,
+    };
+    saveLauncherConfig(book.id, cfg);
+  }, [
+    book.id,
+    provider,
+    transport,
+    extractTransport,
+    judgeTransport,
+    sessionLimitStrategy,
+    extractProvider,
+    extractModel,
+    judgeProvider,
+    judgeModel,
+    model,
+  ]);
 
   const alreadyBatched = batchedTransports.has(transport);
   // On api we must have an explicit model selected.
