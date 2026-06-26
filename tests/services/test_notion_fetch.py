@@ -28,14 +28,45 @@ def test_map_subject_messy_and_unsupported():
     assert _map_subject("Sinf rahbari soati") is None
 
 
-def test_first_pdf_block_picks_first_pdf_in_order():
+def test_first_pdf_block_prefers_textbook_over_workbook():
     blocks = [
         {"type": "paragraph"},
         {"type": "file", "file": {"name": "ish_daftari.pdf", "file": {"url": "u-wb"}}},
         {"type": "pdf", "pdf": {"file": {"url": "u-tb"}}},
     ]
     b = _first_pdf_block(blocks)
-    assert b is blocks[1]
+    assert b is blocks[2]
+
+
+def test_first_pdf_block_prefers_darslik_by_name():
+    blocks = [
+        {"type": "file", "file": {"name": "ish_daftari.pdf", "file": {"url": "u-wb"}}},
+        {"type": "file", "file": {"name": "8-sinf_algebra_darslik.pdf", "file": {"url": "u-tb"}}},
+    ]
+    assert _first_pdf_block(blocks) is blocks[1]
+
+
+def test_first_pdf_block_falls_back_to_workbook_when_only_one():
+    blocks = [
+        {"type": "file", "file": {"name": "ish_daftari.pdf", "file": {"url": "u-wb"}}},
+    ]
+    assert _first_pdf_block(blocks) is blocks[0]
+
+
+def test_first_pdf_block_textbook_beats_workbook_regardless_of_order():
+    blocks = [
+        {"type": "file", "file": {"name": "8-sinf_algebra_darslik.pdf", "file": {"url": "u-tb"}}},
+        {"type": "file", "file": {"name": "ish_daftari.pdf", "file": {"url": "u-wb"}}},
+    ]
+    assert _first_pdf_block(blocks) is blocks[0]
+
+
+def test_first_pdf_block_ties_break_by_page_order():
+    blocks = [
+        {"type": "pdf", "pdf": {"file": {"url": "u-first"}}},
+        {"type": "pdf", "pdf": {"file": {"url": "u-second"}}},
+    ]
+    assert _first_pdf_block(blocks) is blocks[0]
 
 
 def test_first_pdf_block_none_when_absent():
