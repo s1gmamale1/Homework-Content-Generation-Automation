@@ -114,3 +114,17 @@ def test_distinct_books_each_fetch(monkeypatch, tmp_path):
     for r in results.values():
         assert r is not None
         assert r.read_bytes() != b""
+
+
+# ---------------------------------------------------------------------------
+# test 3: the lock is keyed per book_id (deterministic — proves NOT a global lock)
+# ---------------------------------------------------------------------------
+
+def test_lock_for_is_per_book_identity():
+    """Same book_id → same lock object; different book_ids → different locks.
+    This deterministically proves the lock is per-book, not global (so distinct
+    books never serialize on one shared lock) — the download-count test alone
+    can't distinguish per-book from a global lock."""
+    a, b = str(uuid.uuid4()), str(uuid.uuid4())
+    assert book_fetch._lock_for(a) is book_fetch._lock_for(a)
+    assert book_fetch._lock_for(a) is not book_fetch._lock_for(b)
