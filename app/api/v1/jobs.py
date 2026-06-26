@@ -18,6 +18,7 @@ from app.repositories import books as books_repo
 from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
+from app.repositories import workers as workers_repo
 from app.schemas import GenerateRequest, JobOut, PhaseOut
 from app.services import events_bus, pricing
 from app.services.agent_models import (
@@ -469,7 +470,7 @@ async def _job_out(session: AsyncSession, job_id: UUID) -> JobOut:
 
 
 @router.get("/agent/models")
-async def list_agent_models():
+async def list_agent_models(session: AsyncSession = Depends(get_session)):
     from app.services.model_tiers import tier_of
 
     tiers = {
@@ -480,6 +481,9 @@ async def list_agent_models():
         "providers": MODEL_MANIFEST,
         "api_supported": {p: api_supported(p) for p in MODEL_MANIFEST},
         "tiers": tiers,
+        "fleet": await workers_repo.aggregate_fleet_capability(
+            session, stale_after_seconds=settings.worker_registry_stale_seconds
+        ),
     }
 
 
