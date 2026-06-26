@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import DateTime, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -23,3 +24,4 @@ class WorkerNode(Base):
         String(32), nullable=False, server_default="online"
     )
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    capabilities: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
