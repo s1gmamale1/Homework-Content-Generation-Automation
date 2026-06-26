@@ -29,14 +29,34 @@ def is_online(
     return last_heartbeat >= now - timedelta(seconds=stale_after_seconds)
 
 
-async def upsert_heartbeat(session: AsyncSession, pc_id: str, *, status: str = "online") -> None:
+async def upsert_heartbeat(
+    session: AsyncSession,
+    pc_id: str,
+    *,
+    status: str = "online",
+    capabilities: dict | None = None,
+) -> None:
     """Register the worker (first call) or refresh its heartbeat (every call).
     Stamps `last_heartbeat` with the DB clock (func.now()) so every worker's
-    beat is on the single head-DB clock regardless of its host clock."""
-    stmt = pg_insert(WorkerNode).values(pc_id=pc_id, last_heartbeat=func.now(), status=status)
+    beat is on the single head-DB clock regardless of its host clock.
+
+    `capabilities` is published on the first (full) beat; subsequent status-only
+    beats pass `capabilities=None` and must NOT overwrite the stored blob — only
+    the first/explicit write sets the column (no-clobber guard)."""
+    stmt = pg_insert(WorkerNode).values(
+        pc_id=pc_id,
+        last_heartbeat=func.now(),
+        status=status,
+        capabilities=capabilities,
+    )
+    # Always update last_heartbeat + status; only update capabilities when
+    # explicitly provided (capabilities=None means "don't touch the existing blob").
+    set_: dict = {"last_heartbeat": func.now(), "status": status}
+    if capabilities is not None:
+        set_["capabilities"] = capabilities
     stmt = stmt.on_conflict_do_update(
         index_elements=["pc_id"],
-        set_={"last_heartbeat": func.now(), "status": status},
+        set_=set_,
     )
     await session.execute(stmt)
 

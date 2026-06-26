@@ -46,7 +46,7 @@ from app.repositories import budget as budget_repo
 from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import workers as workers_repo
-from app.services import model_tiers, pipeline
+from app.services import agent, model_tiers, pipeline, providers
 from app.services.agent_models import default_model
 
 
@@ -57,6 +57,31 @@ from app.services.agent_models import default_model
 RUNNING_JOBS: dict[UUID, asyncio.Task] = {}
 
 
+def _api_capable(env: dict) -> dict[str, bool]:
+    """Shared truthiness for api key availability. Used by both _compute_capabilities
+    and _capability_blob so the two never drift on the acceptance rules."""
+    return {
+        "claude": bool(env.get("ANTHROPIC_API_KEY")),
+        "gemini": bool(
+            env.get("GEMINI_API_KEY")
+            or (env.get("GOOGLE_APPLICATION_CREDENTIALS") and env.get("GOOGLE_CLOUD_PROJECT"))
+        ),
+    }
+
+
+def _capability_blob(env: dict) -> dict:
+    """Published worker capability blob — provider × transport view.
+    Shape: {"cli": {name: bool ...}, "api": {"claude": bool, "gemini": bool}}.
+    The cli flags follow shutil.which (via agent.provider_cli_installed); the api
+    flags use the same acceptance rules as _compute_capabilities via _api_capable.
+    Computed once at module load (CAPABILITY_BLOB) and published on each heartbeat."""
+    api = _api_capable(env)
+    return {
+        "cli": {name: agent.provider_cli_installed(name) for name in providers.PROVIDERS},
+        "api": {"claude": api["claude"], "gemini": api["gemini"]},
+    }
+
+
 def _compute_capabilities(env, judge_provider: str, judge_model: str, extract_provider: str) -> dict:
     """Per-side api capability + role-level readiness (Phase 4.1 §4/§4a).
     The gemini side is satisfied by an AI-Studio key OR a Vertex SA pair
@@ -65,12 +90,9 @@ def _compute_capabilities(env, judge_provider: str, judge_model: str, extract_pr
     acceptance rules exactly). `claim_next_job` ANDs these per-role flags
     against each job's resolved transports, so e.g. an api-content gemini job
     with cli judge/extract needs NO anthropic key."""
-    can_claude = bool(env.get("ANTHROPIC_API_KEY"))
-    can_gemini = bool(
-        env.get("GEMINI_API_KEY")
-        or (env.get("GOOGLE_APPLICATION_CREDENTIALS") and env.get("GOOGLE_CLOUD_PROJECT"))
-    )
-    cap = {"claude": can_claude, "gemini": can_gemini}
+    cap = _api_capable(env)
+    can_claude = cap["claude"]
+    can_gemini = cap["gemini"]
     fb_provider, _ = model_tiers._SELF_FALLBACK
     return {
         "can_claude_api": can_claude,
@@ -91,6 +113,11 @@ def _compute_capabilities(env, judge_provider: str, judge_model: str, extract_pr
 CAPABILITIES: dict = _compute_capabilities(
     os.environ, settings.judge_provider, settings.judge_model, settings.extract_provider
 )
+
+# Published capability blob: provider × transport view for the fleet registry.
+# Sent on every heartbeat so the head can display which providers each worker
+# can serve — computed once at startup (a restart is needed to update anyway).
+CAPABILITY_BLOB: dict = _capability_blob(os.environ)
 
 
 def _worker_id() -> str:
@@ -580,7 +607,7 @@ class Worker:
             )
             self.stop()
             return False  # do NOT upsert "online" — that would clobber the drain signal
-        await workers_repo.upsert_heartbeat(session, self.id)
+        await workers_repo.upsert_heartbeat(session, self.id, capabilities=CAPABILITY_BLOB)
         return True
 
     async def _registry_heartbeat(self) -> None:
