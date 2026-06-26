@@ -96,6 +96,19 @@ def resolve_role_transport(role_value: str, job_transport: str) -> str:
     return job_transport if role_value == "inherit" else role_value
 
 
+SESSION_LIMIT_STRATEGIES = ("pause", "switch", "inherit")
+
+
+def validate_session_limit_strategy(value: str) -> str | None:
+    """Return an error string if session_limit_strategy is invalid, else None."""
+    if value not in SESSION_LIMIT_STRATEGIES:
+        return (
+            f"unknown session_limit_strategy {value!r} "
+            f"(expected 'pause' | 'switch' | 'inherit')"
+        )
+    return None
+
+
 def resolve_session_limit_strategy(batch_value: str | None) -> str:
     """Return the effective session-limit strategy for a batch.
 

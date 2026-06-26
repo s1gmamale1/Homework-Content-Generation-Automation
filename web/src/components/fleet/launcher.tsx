@@ -40,6 +40,7 @@ import type {
   Book,
   NotionSubject,
   RoleTransport,
+  SessionLimitStrategy,
   Transport,
 } from "@/lib/types";
 import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
@@ -577,6 +578,7 @@ function ReadyCard({
   const [transport, setTransport] = useState<Transport>("api");
   const [extractTransport, setExtractTransport] = useState<RoleTransport>("cli");
   const [judgeTransport, setJudgeTransport] = useState<RoleTransport>("cli");
+  const [sessionLimitStrategy, setSessionLimitStrategy] = useState<SessionLimitStrategy>("inherit");
   const [extractProvider, setExtractProvider] = useState<string | null>(null);
   const [extractModel, setExtractModel] = useState<string | null>(null);
   const [judgeProvider, setJudgeProvider] = useState<string | null>(null);
@@ -708,6 +710,7 @@ function ReadyCard({
     extract_model: extractModel,
     judge_provider: judgeProvider,
     judge_model: judgeModel,
+    session_limit_strategy: sessionLimitStrategy,
     ...(transport === "api" ? { model } : {}),
     ...(opts.tocIds
       ? { toc_entry_ids: opts.tocIds }
@@ -898,6 +901,25 @@ function ReadyCard({
                   warning={judgeWarning}
                   jobTransport={transport}
                 />
+                {/* Session-limit strategy — what to do when a Claude session limit hits. */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[0.6rem] font-medium uppercase tracking-[0.12em] text-white/35">
+                    On limit
+                  </span>
+                  <Select
+                    value={sessionLimitStrategy}
+                    onValueChange={(v) => setSessionLimitStrategy(v as SessionLimitStrategy)}
+                  >
+                    <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[7rem]")}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="inherit">Auto</SelectItem>
+                      <SelectItem value="pause">Pause</SelectItem>
+                      <SelectItem value="switch">Switch</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
                 {/* API forces an explicit model (no "provider default"). */}
                 {transport === "api" && (
                   <Select value={model ?? ""} onValueChange={(v) => setModel(v)}>
