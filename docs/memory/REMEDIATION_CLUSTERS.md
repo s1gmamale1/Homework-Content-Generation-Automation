@@ -137,22 +137,32 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 ## Cluster 5 — Fleet scale (DESIGN-FIRST; Wave 2; needs infra decisions)
 
+> **Campaign-readiness ordering note:** C5 (throughput/safety) + C7 (judge) come **first**, then C6/C8 for the all-subjects run, C9 last.
+
 **Why:** real fleet-wide throughput + observability; not blocking single-PC use today.
 
 **Items & exact work:**
 
-1. **`concurrency-knob-1` (fleet-wide half)** — after Cluster 1 fixes the dead knob, the cap is still **per-process** (module-global semaphore, `agent.py:203`), so N workers = N×cap, and there's **no 429/`Retry-After` backoff** → Vertex over-quota mass-fails. **Fix:** a shared token-bucket per `(provider, model)` (DB or Redis) + Retry-After-aware backoff in the spawn path. Design: where the bucket lives, how workers coordinate.
-2. **`sse-multipod-1`** — `events_bus._subscribers` is an in-process dict (`events_bus.py:5`); separate worker pods publish to their own process → browser on the API pod sees only the initial DB replay then a frozen stream. **Fix:** back the bus with Postgres `LISTEN/NOTIFY` (no new infra) or Redis pub/sub.
-3. **`fleet-ctrl-3` Pause/Resume a batch** — batch-status gate on the hot `claim_next_job` path (skip paused batches). Pairs with Cluster 4's kill-switch (same gate).
-4. **`fleet-ctrl-4` PC-level drain** — gracefully stop one worker claiming new jobs + let its in-flight finish before offline.
-5. **`fleet-infra-1/2`** — PgBouncer + hardened head; worker discovery file / movable head (≤60s reconnect). Mostly ops/deploy, not app code.
-
-**Current-state updates (2026-06-19, since this brief was written — read before planning):**
-- **Dependencies now MERGED:** C1 (the "read-the-right-knob" half of `concurrency-knob-1`) and C4 (cost-safety). Cut `cluster-5-fleet-scale` off **current `origin/Nggaev-v2`** (includes C1–C4).
-- **Item 3 `fleet-ctrl-3` shrank:** C4 already shipped the **batch-pause primitive** — `batches.paused_at`/`paused_reason`, `pause_batch`/`unpause_batch` in `batches.py`, and the `claim_next_job` `not_in_paused_batch` skip + `fleet_api_paused` gate. So item 3 is now ONLY the **manual operator pause/resume** layer on top (a `POST /jobs/batch/{id}/pause` + `/unpause` endpoint + FE button). **Reuse C4's primitive — do NOT rebuild the gate.** (C4 = the *auto* budget-pause; this = the *manual* one.)
-- **ADD item 6 `fleet-restart-reclaim-1`** (logged 2026-06-19, see `WISHLIST.md`; not in the original list): `main.lifespan` resets **all** `running` jobs to `pending` on boot, double-running live peers' jobs in a multi-PC fleet (real $ on api). Make the startup reset **lease-aware** (only reset rows with `claimed_at` older than `settings.reclaim_stale_seconds`) or gate it behind "no other live worker registered." Small, high-value — good first win. (The old item 6 `fleet-infra-1/2` is mostly ops → likely defer/split.)
+1. **`concurrency-knob-1`** — Phase 1 (reactive 429 backoff) **✅ SHIPPED 2026-06-25 (`90b714d`/`c064040`)**: `agent._spawn` now retries a transient 429 with exponential backoff+jitter, no slot held. **Phase 2 (proactive token-bucket) STILL OPEN:** the cap is still per-process (module-global semaphore, `agent.py`), so N workers = N×cap → Vertex over-quota when both PCs share one project. **Fix:** a shared token-bucket per `(provider, model)` (Postgres-native per resolved decision below). **Blocker: needs the real Vertex quota numbers** (per-model concurrent-call limits) to size the bucket.
+2. **`sse-multipod-1`** (OPEN) — `events_bus._subscribers` is an in-process dict (`events_bus.py:5`); separate worker pods publish to their own process → browser on the API pod sees only the initial DB replay then a frozen stream. **Fix:** back the bus with Postgres `LISTEN/NOTIFY` (no new infra).
+3. **`fleet-ctrl-3` Pause/Resume a batch** — **✅ SHIPPED 2026-06-19 (Cluster 5 / P1, worklog [0081], PR#40):** `POST /jobs/batch/{id}/pause|unpause` (reason "manual") + FE, layered on C4's batch-pause primitive.
+4. **`fleet-ctrl-4` PC-level drain** — **✅ SHIPPED 2026-06-19 (Cluster 5 / P1, worklog [0081], PR#40):** `POST /workers/{pc_id}/drain`, worker self-drains on its registry beat.
+5. **`fleet-restart-reclaim-1` peer-aware reclaim** — **✅ SHIPPED 2026-06-19 (Cluster 5 / P1, worklog [0081], PR#40):** lease-aware `reclaim_orphans_on_startup` (reset-all only when no live peer registered, else lease window) so a head restart no longer double-runs a peer's jobs.
+6. **`fleet-infra-1/2`** (OPEN) — PgBouncer + hardened head; worker discovery file / movable head (≤60s reconnect). Mostly ops/deploy, not app code.
 
 **Open decisions to lock first:** ~~Redis-or-Postgres for both the token-bucket and the event bus~~ **RESOLVED 2026-06-19 (user): Postgres-native — no Redis.** Build the token-bucket as a DB table (row-lock / atomic per-`(provider, model)`-per-window check in the spawn path) and the event bus on Postgres `LISTEN/NOTIFY`. Rationale: the fleet is 2–3 PCs (nowhere near a throughput regime that needs Redis), and the system's design invariant is "Postgres is the only moving part" — adding Redis means a new service to install/secure/keep-alive on every machine (and there's already an un-reverted LAN-exposed PG to clean up — don't add a second exposed service). Revisit only if a measured Postgres bottleneck appears at dozens of workers.
+
+### Campaign-readiness additions (2026-06-26)
+
+> New open items surfaced by the live grade-8 / gemini-API runs (all logged in `WISHLIST.md` — codes only here, no re-paste).
+
+- **`launcher-capability-gate-1`** — fleet-capability endpoint (aggregate over LIVE workers: installed provider-CLIs + per-provider api creds) + FE filtering/greying of unservable `(provider, model, transport)` picks with a reason tooltip. Kills the phantom-pending-job footgun.
+- **`fleet-net-1`** — Oliver network/DNS reliability (wired Ethernet + stable resolver; the failures are genuine DNS/`getaddrinfo`/`HTTPSConnectionPool`, NOT 429s) **+ extend the new 429 backoff to transient connection errors** (DNS / `HTTPSConnectionPool` / timeout / `WinError` aborts). NTP-align both clocks (ties `fleet-ops-2`).
+- **`pg-hba-ipv6-1`** — IPv6 link-local DB connections rejected (`no pg_hba.conf entry for host "fe80::…"`). Pin Oliver's `DATABASE_URL` to literal IPv4 `192.168.1.15`, or add an IPv6 `host` line to `pg_hba.conf`.
+- **`fleet-limited-worker-hogs-1`** — a rate/session-limited worker fail-fast-vacuums the queue + starves healthy workers (Oliver out-claimed the un-limited Mac, insta-failed 33 jobs). A limited worker must **back off / stop claiming**, not vacuum the queue. Prerequisite for the auto-pause item.
+- **`fleet-session-limit-autopause-1`** — classify the Claude session-limit error + parse its stated reset time, return the job to `pending` (don't terminally fail), stop claiming until reset, auto-resume; operator choice of pause-and-wait vs switch-the-role-to-a-non-limited-model. Builds on the C5/P1 pause primitive + Phase-2 backoff.
+
+**Blockers:** Phase-2 token-bucket (`concurrency-knob-1`) needs the **Vertex quota numbers**; `fleet-session-limit-autopause-1` only bites the campaign **if claude-CLI extract is used** (gemini-flash extract sidesteps it).
 
 ---
 
@@ -162,10 +172,58 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 1. **`notion-archive-1` (R15)** — `archive_job`'s catch-all (`notion_archive.py:230`) only `log.warning`s on a push exception — doesn't set `notion_skip_reason` (unlike the explicit skip paths) and never retries → a transient failure leaves `notion_archived_at` AND `notion_skip_reason` both NULL (invisible). **Fix:** persist `notion_skip_reason="push error: <type>"` on failure + bounded retry (2–3, backoff) + a re-archive affordance for `done` jobs with `notion_archived_at IS NULL`. Test: push raises → skip_reason recorded; retry path.
 2. **`notion-archive-2` (R16)** — subject-page resolution is filename-substring-fragile: `_resolve_subject_page_id` (`notion_archive.py:43`) tests `_fold(keyword) in folded`; an O'zbekiston book named "Tarix Ozb" won't contain `"ozbekiston"` → silent "no Notion page" skip. **Fix:** aliases (`"ozb"`, `"o'zbekiston"`) or a normalizer, guarding against loose-match collisions. Latent (no O'zb-history book uploaded yet).
-3. **`fe-redesign` (BRAINSTORM-BLOCKED)** — operator console redesign is deferred mid-brainstorm (light/dark not chosen; mockup at `docs/design/2026-06-05-console-redesign-quiet-precision.html`). **Do not plan until the brainstorm resumes and the user picks the direction.**
-4. **`fleet-ui-2/3/4`** — live SSE dashboard (depends on Cluster 5 item 2), historical-batches view, richer PC cards. Lower priority.
+3. **Notion anchor auto-resolve** (WISHLIST, 2026-06-02) — resolve the subject-page ID by crawling (grade → `{N}-sinf` → child matching the subject label) instead of the hand-maintained `NOTION_SUBJECT_PAGES` dict. Eliminates the silent per-subject skip (Kimyo incident); surface unmapped skips in the UI regardless.
+4. **Notion archive validator** (WISHLIST, spec'd + TDD-planned but parked) — auto, best-effort structural check that the live Notion tree matches `_HOMEWORK_LAYOUT`/`PHASE_TITLES` after `archive_job`, recording `homework_jobs.notion_validation` (verified/mismatch/archive-incomplete/skipped) + surfacing it in the console. Revisit only if archive correctness becomes a real pain.
+5. **`fe-redesign` (BRAINSTORM-BLOCKED)** — operator console redesign is deferred mid-brainstorm (light/dark not chosen; mockup at `docs/design/2026-06-05-console-redesign-quiet-precision.html`). **Do not plan until the brainstorm resumes and the user picks the direction.**
+6. **`fleet-ui-2/3/4`** — live SSE dashboard (`fleet-ui-2` **depends on `sse-multipod-1`** in C5), historical-batches view, richer PC cards. Lower priority.
 
 **Open decision to lock first:** resume the fe-redesign brainstorm (user picks light/dark + confirms Slice 1 scope) before any FE-redesign plan.
+
+---
+
+## Cluster 7 — Judge quality (campaign-readiness; do alongside C5)
+
+**Why:** mass-gen ships unverified content when the judge can't grade; these are the residuals after the cluster-3 judge work ([0079]) landed. **Order: C5 + C7 first** (see top note).
+
+**Items & exact work:**
+
+1. **`judge-self-fallback-1`** — `model_tiers._SELF_FALLBACK = ("gemini","gemini-3.1-pro-preview")` defeats the self-grade guard for a gemini-3.1-pro-preview generator. Two fixes: **(a) test-hygiene** — monkeypatch `settings.judge` in `tests/services/test_judge_resolution.py` so the 2 affected tests are config-independent; **(b) product** — retarget `_SELF_FALLBACK` to a non-gemini-3.1 frontier peer so the guard holds even when the default judge IS gemini-3.1-pro-preview. Campaign-safe today (generator is 2.5-pro/flash).
+2. **`judge-refusal-1`** — a claude judge content-policy refusal parses as no `Verdict` → degrades to `judge_status="unavailable"` (same bucket as a transient error) AND burns the [0079] retry-once. **Fix:** detect the refusal shape in `phase_judge` (distinct `judge_status="refused"`, skip the retry-once for it) so policy-declined-ungraded phases surface distinctly.
+3. **`judge-unavailable` FE rendering** — a distinct `judge_status` column exists (`phase_output.py:35`) but `"judge-unavailable: <ExcType>"` still co-mingles into `validation_warnings` (`pipeline.py:1025`) and the FE doesn't surface `judge_status` → infra signals render like content defects. **Fix:** surface `judge_status` in the console (separate from content warnings) + FE filtering. Observability half only.
+
+**Open decision to lock first:** the `_SELF_FALLBACK` retarget peer (which non-gemini-3.1 model).
+
+---
+
+## Cluster 8 — Book ingestion / coverage (for the all-subjects run)
+
+**Why:** the Oct/Mar campaign needs every subject's textbook to ingest cleanly; these are the remaining fetch/extract walls.
+
+**Items & exact work:**
+
+1. **`fetch-1`** — only remaining wall is **>50MB giants** (e.g. the 497MB grade-9 Jahon tarixi) → need shrink / subset-TOC pre-fetch (scanned/oversize lesson-extract halves already shipped, 0070/0072).
+2. **`fetch-2`** — Fetch From Notion takes the first PDF in page order when a subject page has multiple attachments; **prefer the textbook (`darslik`) over the workbook (`ish daftari`).** Low priority.
+3. **`r13-fetch-1`** — de-dupe concurrent same-book PDF downloads in one worker (per-`book_id` lock so the first fetches and the rest wait → cached fast path). Bandwidth-only; correctness is fine.
+4. **`extract-1`** — TOC extraction `/Gxx` glyph-loss case poisons the TOC (no-ToUnicode → real-looking WRONG letters injected as authoritative TOC). **NOT a clean drop-in** — needs a short brainstorm on two decisions: glyph-loss detection without false-positiving normal TOCs, and loud-fail vs try-anyway.
+5. **R10** (broken-font PDF → near-empty TOC) — the ROADMAP twin of `extract-1`'s open glyph-ID manifestation; resolve them together.
+
+**Open decision to lock first:** `extract-1`/R10 glyph-loss detection + fail-mode (the brainstorm above) before planning.
+
+---
+
+## Cluster 9 — Infra / ops / cleanup (defer; do last)
+
+**Why:** real but low-priority/independent; pick up à la carte or batch after the campaign-critical clusters. (Note `fleet-infra-1/2` lives in C5, not here.)
+
+**Items & exact work:**
+
+1. **`fleet-ops-1`** — pin gemini-cli versions across the fleet (mixed 0.45.2 / 0.46.0 today; auth + envelope shape are version-sensitive).
+2. **`fleet-ops-2`** — make all completion timestamps DB-clock (`func.now()` through `set_status`/`phase_repo.set_status`) so cross-row/duration analytics survive multi-PC clock skew. Touches the `set_status` signature + many call sites → not a small fix.
+3. **`deadcode-1`** — rip the dead `source_map_*` params/threading (~10 fns) + the `difficulty=None` threading (~20 sites) together, once R13 has landed.
+4. **`json-preamble-1`** — strip a prose preamble before `model_validate_json` (balanced-brace extract from the first `{` at `agent.py:793-795` + `:1330`) so claude-CLI's conversational narration doesn't cost a wasted retry. Small gated plan (shared parse path).
+5. **`opencode-flaky`** — only the shorter-per-attempt-timeout-for-flaky-providers half remains open (`per_attempt_timeout_seconds` is a uniform 600s; opencode hangs the full budget on every failover wave). The "keep last-resort" half is already true.
+
+**Open decision to lock first:** none individually; batch them or pick à la carte.
 
 ---
 
@@ -173,5 +231,5 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 - **R19** (stale/missing textbooks) — operator task, user sources + re-uploads PDFs; no code.
 - **`fleet-api-1/2/5`** (batch transport, credential rotation, codex API mode) — user scoped to Anthropic+Gemini; revisit on request.
-- **`opencode` flakiness** — "keep as last-resort fallback" note, not a fix.
-- **`fetch-1` (>50MB giants), `fetch-2` (darslik-vs-workbook), `extract-1`/R10 (`/Gxx` glyph-loss), `r13-fetch-1` (per-book fetch lock), `deadcode-1` (source_map_*/difficulty=None threading), `json-preamble-1` (JSON preamble strip)** — real but low-priority/independent; fold into Cluster 1 as extra tasks if there's appetite, or pick up à la carte. `json-preamble-1` is a nice small win (balanced-brace extract before `model_validate_json` at `agent.py:793-795` + `:1330`).
+
+> (The ingestion/cleanup items formerly parked here — `fetch-1`/`fetch-2`/`extract-1`/R10/`r13-fetch-1`/`deadcode-1`/`json-preamble-1`/`opencode` flakiness — are now formalized into **Cluster 8** and **Cluster 9**.)
