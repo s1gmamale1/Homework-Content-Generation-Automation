@@ -107,6 +107,15 @@ function phaseTitle(name: string): string {
   return PHASE_TITLES[name] ?? name;
 }
 
+// Infra/judge states that are NOT content defects — surfaced distinctly from
+// validation_warnings so an ungraded/declined phase doesn't read like a content bug.
+const JUDGE_STATUS_LABEL: Record<string, string> = {
+  unavailable: "judge unavailable",
+  refused: "judge declined",
+  major_regen_failed: "regen failed",
+  major_shipped: "major issue shipped",
+};
+
 function PhasesPreview({ job }: { job: Job }) {
   const phases = job.phases
     .filter((p) => p.phase_name !== "extract" && p.status === "done" && p.output_md)
@@ -206,6 +215,11 @@ function PhasesPreview({ job }: { job: Job }) {
             {warnings.length > 0 && (
               <span className="rounded-md bg-amber-400/15 px-2 py-0.5 text-[0.7rem] font-medium text-amber-200">
                 ⚠ {warnings.length}
+              </span>
+            )}
+            {p.judge_status && JUDGE_STATUS_LABEL[p.judge_status] && (
+              <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 font-mono text-[0.62rem] uppercase tracking-wider text-amber-300/90">
+                {JUDGE_STATUS_LABEL[p.judge_status]}
               </span>
             )}
           </header>
