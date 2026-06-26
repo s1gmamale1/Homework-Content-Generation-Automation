@@ -42,6 +42,7 @@ class JudgeOutcome:
     warnings: list[str]      # serialized failures, OR ["judge-unavailable: …"]
     feedback: str            # regen prompt addendum (empty when passed/unavailable)
     has_major: bool = False  # any MAJOR failure -> triggers the one regen
+    refused: bool = False    # judge declined on content policy (distinct from a transient error)
 
 
 _INSTRUCTIONS = (
@@ -160,6 +161,28 @@ def _is_auth_error(exc: BaseException) -> bool:
     return any(s in msg for s in _AUTH_SIGNALS)
 
 
+# Anchored first-person-decline phrases that mark a content-policy REFUSAL (the
+# judge emitted prose instead of a Verdict, so run_phase exhausted schema retries
+# and raised — the refusal text rides in the exception via _failure_preview).
+# Deliberately anchored: must NOT match a verbose-but-substantive judge answer
+# ("the output violates requirement 3"), a schema-validation error, or a CLI error.
+_REFUSAL_SIGNALS = (
+    "i cannot assist", "i can't assist",
+    "i cannot help", "i can't help",
+    "i am unable to assist", "i'm unable to assist",
+    "i am unable to help", "i'm unable to help",
+    "i must decline", "i cannot comply", "i can't comply",
+    "i will not provide", "i won't provide",
+    "i cannot create", "i can't create",
+    "against my guidelines", "violates content polic",
+)
+
+
+def _is_refusal(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(s in msg for s in _REFUSAL_SIGNALS)
+
+
 def _build_feedback(warnings: list[str]) -> str:
     bullets = "\n".join(f"- {w}" for w in warnings)
     return (
@@ -224,6 +247,12 @@ async def judge(
         if transport == "api" and _is_auth_error(exc):
             logger.error(f"phase_judge api auth failure for {phase_name}: {exc!r}")
             raise
+        if _is_refusal(exc):
+            logger.warning(f"phase_judge refused (content policy) for {phase_name}: {exc!r}")
+            return JudgeOutcome(
+                available=False, refused=True, passed=True,
+                warnings=["judge-refused: content policy"], feedback="",
+            )
         logger.warning(f"phase_judge unavailable for {phase_name}: {exc!r}")
         return JudgeOutcome(
             available=False, passed=True,
