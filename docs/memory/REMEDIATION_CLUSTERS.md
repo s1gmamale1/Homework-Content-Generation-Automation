@@ -183,7 +183,9 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 ---
 
-## Cluster 7 — Judge quality (campaign-readiness; do alongside C5)
+## Cluster 7 — Judge quality (campaign-readiness; do alongside C5) — ✅ SHIPPED [0087] (2026-06-26)
+
+> **✅ ALL THREE ITEMS SHIPPED — worklog [0087], branch `cluster-7-judge-quality`.** (1) `judge-self-fallback-1` fixed via **Option B** — a generator-aware `_self_fallback` (peers claude-opus-4-7 / gemini-3.1-pro-preview, returns whichever ≠ generator) that is provably non-self for ANY generator, NOT a fixed constant; also fixed `worker._compute_capabilities` (which read the removed `_SELF_FALLBACK` at import) so `judge_fallback_api_ok` tracks `_self_fallback(judge_pair)`. (2) `judge-refusal-1` — `_is_refusal` + `JudgeOutcome.refused`; pipeline records `judge_status="refused"` and skips the retry-once. (3) FE rendering — `judge_status` serialized on `PhaseOut` + distinct preview-console chip; infra warnings no longer co-mingle into `validation_warnings`. The original items/decisions are kept below for history.
 
 **Why:** mass-gen ships unverified content when the judge can't grade; these are the residuals after the cluster-3 judge work ([0079]) landed.
 
