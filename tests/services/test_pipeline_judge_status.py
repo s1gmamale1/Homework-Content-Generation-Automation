@@ -296,3 +296,62 @@ async def test_judge_status_regen_raises_non_auth(monkeypatch, patch_io):
     assert patch_io.judge_status == "major_regen_failed", f"got {patch_io.judge_status!r}"
     # Only the initial judge call fired; no post-regen judge
     assert len(judge_calls) == 1, f"expected 1 judge call, got {len(judge_calls)}"
+
+
+def _refused() -> JudgeOutcome:
+    return JudgeOutcome(
+        available=False, refused=True, passed=True,
+        warnings=["judge-refused: content policy"], feedback="",
+    )
+
+
+async def test_judge_status_refused_skips_retry_once(monkeypatch, patch_io):
+    """A refusal is recorded as judge_status='refused' and is NOT retried (unlike a
+    transient unavailable, which is retried once)."""
+    calls = []
+
+    async def fake_judge(**kw):
+        calls.append("judge")
+        return _refused()
+
+    monkeypatch.setattr(pipeline, "_judge_with_timeout", fake_judge)
+
+    kw = _make_kwargs()
+    await pipeline._execute_phase(**kw)
+
+    assert patch_io.judge_status == "refused", f"got {patch_io.judge_status!r}"
+    assert len(calls) == 1, f"refusal must not be retried; got {len(calls)} judge calls"
+
+
+async def test_unavailable_does_not_comingle_into_validation_warnings(monkeypatch, patch_io):
+    """judge_status captures the infra state; the 'judge-unavailable:' string must
+    NOT leak into validation_warnings (content defects)."""
+    async def fake_judge(**kw):
+        return _unavail()
+
+    monkeypatch.setattr(pipeline, "_judge_with_timeout", fake_judge)
+
+    kw = _make_kwargs()
+    await pipeline._execute_phase(**kw)
+
+    done_call = next(c for c in patch_io.set_status_calls if c[0] == "done")
+    vw = done_call[1].get("validation_warnings")
+    assert not vw, f"infra warning should not co-mingle into validation_warnings; got {vw!r}"
+    assert patch_io.judge_status == "unavailable"
+
+
+async def test_major_shipped_keeps_content_warnings(monkeypatch, patch_io):
+    """A real MAJOR content failure (available=True) keeps its warnings."""
+    monkeypatch.setattr(_settings, "max_judge_regens", 0)
+
+    async def fake_judge(**kw):
+        return _major()
+
+    monkeypatch.setattr(pipeline, "_judge_with_timeout", fake_judge)
+
+    kw = _make_kwargs()
+    await pipeline._execute_phase(**kw)
+
+    done_call = next(c for c in patch_io.set_status_calls if c[0] == "done")
+    assert done_call[1].get("validation_warnings") == ["MAJOR: content issue"]
+    assert patch_io.judge_status == "major_shipped"

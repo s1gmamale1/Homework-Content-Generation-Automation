@@ -128,6 +128,7 @@ export interface PhaseOut {
   completed_at: string | null;
   error_message: string | null;
   validation_warnings: string[] | null;
+  judge_status: string | null;
 }
 
 export interface Job {

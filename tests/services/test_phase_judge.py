@@ -183,3 +183,48 @@ def test_sdk_auth_error_strings_trip_auth_signals():
     ]
     for s in samples:
         assert phase_judge._is_auth_error(RuntimeError(s)), s
+
+
+import pytest
+
+
+@pytest.mark.parametrize("msg", [
+    "I cannot assist with that request.",
+    "I'm unable to help with this content.",
+    "I must decline to evaluate this.",
+    "I won't provide an evaluation of this material.",
+    "This request goes against my guidelines.",
+    "Sorry, this violates content policy and I can't continue.",
+])
+def test_is_refusal_true(msg):
+    assert pj._is_refusal(RuntimeError(msg)) is True
+
+
+@pytest.mark.parametrize("msg", [
+    "",
+    "schema validation failed: 1 validation error for Verdict\npassed\n  Field required",
+    "RuntimeError: CLI exploded",
+    "The output violates requirement 3: only 2 checkpoints found, contract requires 3.",
+    "401 unauthorized: invalid api key",
+])
+def test_is_refusal_false(msg):
+    assert pj._is_refusal(RuntimeError(msg)) is False
+
+
+def test_judge_returns_refused_outcome_and_is_distinct_from_unavailable(monkeypatch):
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+
+    async def _refuse(**kwargs):
+        # mirrors agent.run_phase's raise on a refusal: schema retries exhausted,
+        # the model's refusal prose is embedded in the exception via _failure_preview.
+        raise RuntimeError(
+            "phase.run __judge__: schema Verdict validation failed after 2 attempts: "
+            "... :: I cannot assist with creating or evaluating this content."
+        )
+
+    monkeypatch.setattr(agent, "run_phase", _refuse)
+    out = _call_judge()
+    assert out.available is False        # no verdict
+    assert out.refused is True           # but distinctly a refusal, not a transient error
+    assert out.passed is True            # never blocks generation
+    assert out.warnings and out.warnings[0].startswith("judge-refused")

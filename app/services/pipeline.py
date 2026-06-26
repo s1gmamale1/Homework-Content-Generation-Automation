@@ -939,7 +939,9 @@ async def _execute_phase(
         # degraded by C1's _judge_with_timeout) is worth one free retry.
         # Auth errors never reach here — phase_judge re-raises them before
         # degrading to unavailable — so retrying unavailable is always safe.
-        if not outcome.available:
+        # A content-policy refusal (outcome.refused) is recorded distinctly and
+        # is NOT retried — it won't self-heal.
+        if not outcome.available and not outcome.refused:
             logger.info(
                 f"[job {job_id}] {phase_name} judge unavailable on first attempt — retrying once"
             )
@@ -1016,13 +1018,19 @@ async def _execute_phase(
         # Compute judge_status from the final outcome (or the soft-degrade above).
         # judge_status is None for non-judged phases (e.g. extract).
         if judge_status is None:
-            if not outcome.available:
+            if getattr(outcome, "refused", False):
+                judge_status = "refused"
+            elif not outcome.available:
                 judge_status = "unavailable"
             elif outcome.passed or not outcome.has_major:
                 judge_status = "ok"
             else:
                 judge_status = "major_shipped"
-        warnings = outcome.warnings
+        # Infra states (unavailable/refused) carry ONLY the infra string — keep it
+        # out of validation_warnings (content defects); judge_status records it and
+        # the ExcType stays in the logs. major_shipped/major_regen_failed keep
+        # available=True so their genuine content warnings survive.
+        warnings = outcome.warnings if outcome.available else []
         if warnings:
             logger.warning(f"[job {job_id}] {phase_name} validation warnings: {warnings}")
     async with SessionLocal() as session:

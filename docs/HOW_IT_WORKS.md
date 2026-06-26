@@ -296,8 +296,13 @@ for fact-checking (`_FIDELITY_RULE`). A conservative warning-only deterministic 
 (`_fidelity_flags`) cross-checks 4-digit years in the output against the source (skips
 math/exercise lines; never gates a regen). The regen cap is configurable via
 `settings.max_judge_regens` (default 1). The judge outcome is recorded as
-`phase_outputs.judge_status` (`ok` / `major_shipped` / `major_regen_failed` / `unavailable`),
-making grading results queryable downstream.
+`phase_outputs.judge_status` (`ok` / `major_shipped` / `major_regen_failed` / `unavailable` /
+`refused`), making grading results queryable downstream. A content-policy **refusal** (the judge
+declines instead of returning a verdict) is classified distinctly (`refused`) and — unlike a
+transient `unavailable` — is **not** retried (it won't self-heal). Infra states (`unavailable`/
+`refused`) carry their signal in `judge_status` only; they are kept **out** of
+`validation_warnings` (which is reserved for genuine content defects), and `judge_status` is
+serialized on the phase API + surfaced as a distinct chip in the preview console.
 
 ### (No assembly stage)
 There is **no** assembly step that stitches phases into one document. Each phase's markdown

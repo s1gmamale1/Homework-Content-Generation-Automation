@@ -48,11 +48,25 @@ _MODEL_TIER: dict[str, int] = {
 # Strong, so the judge errs toward a Frontier check rather than under-grading.
 _DEFAULT_TIER = 2
 
-# When the configured judge model IS the generator (e.g. an opus-generated phase
-# judged by opus), fall back to a strong, INSTALLED, non-self peer so a model
-# never grades its own output. gemini-3.1-pro-preview is the strongest non-claude
-# model and is reliably on PATH here.
-_SELF_FALLBACK: tuple[str, str] = ("gemini", "gemini-3.1-pro-preview")
+# No-self rule: when the configured judge model IS the generator, grade with a
+# different strong peer so a model never grades its own output. A *fixed* fallback
+# constant can't satisfy this — whatever model it is, a generator equal to it
+# self-matches again. So the fallback is generator-AWARE: two distinct frontier
+# peers, returning whichever is NOT the generator. claude-opus-4-7 is the strongest
+# peer (and the documented default judge, config.py:111-112); gemini-3.1-pro-preview
+# is the strongest non-claude peer and reliably on PATH. The result is non-self for
+# ANY generator (the two peers are distinct). On a single-provider worker lacking the
+# chosen peer's creds this rare path degrades that one judge call to "unavailable"
+# (safe — never blocks the job).
+_PRIMARY_SELF_FALLBACK: tuple[str, str] = ("claude", "claude-opus-4-7")
+_ALT_SELF_FALLBACK: tuple[str, str] = ("gemini", "gemini-3.1-pro-preview")
+
+
+def _self_fallback(resolved_gen: tuple[str, str]) -> tuple[str, str]:
+    """A strong frontier peer guaranteed != ``resolved_gen`` (the no-self rule).
+    Returns the alternate only when the generator IS the primary peer, so the
+    result is non-self for ANY generator (the two peers are distinct)."""
+    return _ALT_SELF_FALLBACK if resolved_gen == _PRIMARY_SELF_FALLBACK else _PRIMARY_SELF_FALLBACK
 
 
 def tier_of(provider: str, model: Optional[str]) -> int:
@@ -68,12 +82,12 @@ def judge_model_for(gen_provider: str, gen_model: Optional[str]) -> tuple[str, s
 
     The judge is ``settings.judge_provider`` / ``settings.judge_model`` (default
     claude / claude-opus-4-7 — the strongest model, so it is >= every generator).
-    If that would be the generating model itself (no-self), fall back to a
-    frontier non-self peer so a model never grades its own output.
+    If that would be the generating model itself (no-self), fall back to a strong
+    frontier peer that is guaranteed non-self for ANY generator.
     """
     judge = (settings.judge_provider, settings.judge_model)
     resolved_gen = (gen_provider, gen_model or default_model(gen_provider))
-    return _SELF_FALLBACK if judge == resolved_gen else judge
+    return _self_fallback(resolved_gen) if judge == resolved_gen else judge
 
 
 def resolve_judge(
@@ -90,10 +104,10 @@ def resolve_judge(
     Both sides' models are resolved (an Auto/None model -> the provider's
     default) BEFORE comparison: a raw `judge_model` comparison let a same-provider
     judge with model=None (the FE's default for a cli judge) slip past the check
-    and silently self-grade. The self-grade fallback is `judge_model_for`, not the
-    `_SELF_FALLBACK` constant — `_SELF_FALLBACK` is itself a fixed gemini model and
-    would self-match a `gemini-3.1-pro` generator; `judge_model_for` is guaranteed
-    non-self for any generator."""
+    and silently self-grade. The self-grade fallback is `judge_model_for`, which uses
+    the generator-aware `_self_fallback` (a frontier peer guaranteed non-self for ANY
+    generator) rather than a fixed constant that could itself self-match the
+    generator."""
     if judge_provider is None:
         return judge_model_for(gen_provider, gen_model)
     resolved_gen = (gen_provider, gen_model or default_model(gen_provider))

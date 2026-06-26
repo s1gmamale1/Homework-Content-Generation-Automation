@@ -286,7 +286,7 @@ async def claim_next_job(
             (judge_transport == 'api', or 'inherit' under an api job), the
             worker needs `judge_api_ok` — EXCEPT when the job generates ON the
             configured judge pair, in which case `judge_model_for` self-falls
-            back to `model_tiers._SELF_FALLBACK` and the worker needs
+            back to the generator-aware self-fallback peer and the worker needs
             `judge_fallback_api_ok` instead.
           * extract: if the job's resolved extract transport is api, the
             worker needs `extract_api_ok`.
