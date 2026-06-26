@@ -41,6 +41,13 @@ class Batch(Base, UUIDPK, Timestamps):
     # Pause primitive (C5 fleet-ctrl-3 reuses this). NULL = not paused.
     paused_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     paused_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Session-limit strategy: what the worker does when a Claude session-limit hits.
+    # "pause" = pause the batch and wait for the session to reset.
+    # "switch" = switch to the failover provider and continue.
+    # "inherit" = follow the env default (settings.session_limit_strategy).
+    session_limit_strategy: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="inherit"
+    )
 
     __table_args__ = (
         UniqueConstraint("book_id", "transport", name="uq_batches_book_id_transport"),
@@ -55,5 +62,9 @@ class Batch(Base, UUIDPK, Timestamps):
         CheckConstraint(
             "judge_transport IN ('cli','api','inherit')",
             name="ck_batches_judge_transport",
+        ),
+        CheckConstraint(
+            "session_limit_strategy IN ('pause','switch','inherit')",
+            name="ck_batches_session_limit_strategy",
         ),
     )

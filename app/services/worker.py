@@ -47,6 +47,7 @@ from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import workers as workers_repo
 from app.services import agent, model_tiers, pipeline, providers
+from app.services.errors import SessionLimitPause
 from app.services.agent_models import default_model
 
 
@@ -206,6 +207,7 @@ class Worker:
         self._tasks: set[asyncio.Task] = set()
         self._last_sweep_at = 0.0
         self._last_budget_check_at = 0.0
+        self._cooldown_until: datetime | None = None
 
     async def run(self) -> None:
         """Main loop. Runs until `stop()`."""
@@ -331,7 +333,36 @@ class Worker:
                     t.cancel()
             raise
 
+    def _in_cooldown(self) -> bool:
+        """True when this worker is session-limited and should not claim jobs.
+
+        Uses the host clock (datetime.now(timezone.utc)), NOT the DB clock —
+        NTP skew between the host and DB server can cause slight drift
+        (fleet-net-1 ops half). In practice the cooldown is ≥1h so sub-second
+        skew is irrelevant.
+        """
+        return (
+            self._cooldown_until is not None
+            and datetime.now(timezone.utc) < self._cooldown_until
+        )
+
     async def _claim_one(self) -> UUID | None:
+        # Whole-worker cooldown gate: when session-limited, skip claiming until
+        # the reset time passes. A healthy peer will grab the requeued job instead.
+        if self._in_cooldown():
+            remaining = (self._cooldown_until - datetime.now(timezone.utc)).total_seconds()
+            sleep_for = min(remaining, self.poll_interval)
+            logger.debug(
+                f"worker {self.id} in session-limit cooldown for "
+                f"{remaining:.0f}s more — skipping claim"
+            )
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=max(sleep_for, 0.1)
+                )
+            except asyncio.TimeoutError:
+                pass
+            return None
         try:
             async with SessionLocal() as session:
                 async with session.begin():
@@ -429,6 +460,26 @@ class Worker:
                     # Shutdown cancel - leave the row running for reclaim.
                     logger.warning(f"worker {self.id} job={job_id} CANCELLED during shutdown")
                     raise
+            except SessionLimitPause as e:
+                # Requeue without burning a retry attempt so a healthy peer
+                # can pick it up. Self-cooldown until the session resets.
+                try:
+                    async with SessionLocal() as session:
+                        await jobs_repo.requeue_session_limited(
+                            session, job_id, error=str(e)
+                        )
+                        await session.commit()
+                except Exception:
+                    logger.exception(
+                        f"worker {self.id} job={job_id} requeue_session_limited failed"
+                    )
+                self._cooldown_until = e.reset_at or (
+                    _utcnow() + timedelta(seconds=settings.session_limit_default_cooldown_seconds)
+                )
+                logger.warning(
+                    f"worker {self.id} job={job_id} session-limit → requeued + "
+                    f"worker cooldown until {self._cooldown_until.isoformat()}"
+                )
             except Exception as exc:
                 logger.exception(
                     f"worker {self.id} job={job_id} CRASHED: {exc!r}"

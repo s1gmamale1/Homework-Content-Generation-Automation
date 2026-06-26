@@ -28,6 +28,7 @@ async def get_or_create_for_book(
     notion_source: Optional[str] = None,
     custom_prompts: Optional[dict] = None,
     selected_phases: Optional[list] = None,
+    session_limit_strategy: str = "inherit",
 ) -> Batch:
     """Race-safe find-or-create THE batch for a (book, transport) pair
     (UNIQUE(book_id, transport) + ON CONFLICT). Core insert bypasses the ORM
@@ -51,6 +52,7 @@ async def get_or_create_for_book(
         notion_source=notion_source,
         custom_prompts=custom_prompts,
         selected_phases=selected_phases,
+        session_limit_strategy=session_limit_strategy,
         created_at=func.now(),
         updated_at=func.now(),
     )

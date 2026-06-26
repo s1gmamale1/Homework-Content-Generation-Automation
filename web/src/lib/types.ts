@@ -70,6 +70,11 @@ export type Transport = "cli" | "api";
  *  follows the job's `transport`; "cli"/"api" pin that role explicitly. */
 export type RoleTransport = "cli" | "api" | "inherit";
 
+/** Per-batch strategy when a Claude session-limit hit is detected.
+ *  "pause" = pause the batch and wait; "switch" = failover to next provider;
+ *  "inherit" = follow settings.session_limit_strategy (fleet default). */
+export type SessionLimitStrategy = "pause" | "switch" | "inherit";
+
 export interface TOCEntry {
   id: string;
   chapter_number: string | null;
@@ -376,6 +381,8 @@ export interface BatchSummary {
   // A polished cost-$ dashboard (showing batch_api_cost_usd prominently) defers to C6.
   paused_at: string | null;
   paused_reason: string | null;
+  /** Per-batch Claude session-limit strategy (C5). */
+  session_limit_strategy?: SessionLimitStrategy;
 }
 
 export interface BatchLessonRow {

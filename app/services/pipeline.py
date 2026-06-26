@@ -17,7 +17,8 @@ from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
 from app.services import agent, book_fetch, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, storage
-from app.services.agent_models import resolve_role_transport
+from app.services.agent_models import resolve_role_transport, resolve_session_limit_strategy
+from app.services.errors import SessionLimitPause
 from app.services.flows import (
     flow_for,
     file_needed_phases,
@@ -129,6 +130,15 @@ async def run(job_id: UUID) -> None:
                 getattr(job, "extract_provider", None),
                 getattr(job, "extract_model", None),
             )
+            # Session-limit strategy: resolve ONCE per job. Load the batch to
+            # get the per-batch override; fall back to the fleet-wide env default
+            # (settings.session_limit_strategy) via resolve_session_limit_strategy.
+            # Lazy Batch import avoids any circular-import risk at module level.
+            from app.models.batch import Batch as _Batch  # noqa: PLC0415
+            _batch = await session.get(_Batch, job.batch_id) if job.batch_id else None
+            session_limit_strategy: str = resolve_session_limit_strategy(
+                _batch.session_limit_strategy if _batch else None
+            )
             section_data = {
                 "id": section.id,
                 "title": section.section_title,
@@ -229,7 +239,10 @@ async def run(job_id: UUID) -> None:
                     judge_model_ov=judge_model_ov,
                     extract_provider=extract_provider,
                     extract_model=extract_model,
+                    session_limit_strategy=session_limit_strategy,
                 )
+            except SessionLimitPause:
+                raise  # propagate to worker (Task 5) — job must NOT be marked failed
             except Exception:
                 # _execute_one_phase already published the error event and
                 # marked the job failed. We just unwind cleanly.
@@ -285,7 +298,10 @@ async def run(job_id: UUID) -> None:
                     judge_model_ov=judge_model_ov,
                     extract_provider=extract_provider,
                     extract_model=extract_model,
+                    session_limit_strategy=session_limit_strategy,
                 )
+            except SessionLimitPause:
+                raise  # propagate to worker (Task 5) — must not be swallowed
             except RuntimeError as exc:
                 if "content phase failed" in str(exc):
                     # _execute_one_phase already published the error and marked
@@ -316,6 +332,10 @@ async def run(job_id: UUID) -> None:
         )
         await _log_token_summary(job_id, log)
 
+    except SessionLimitPause:
+        # Worker (Task 5) catches this and requeues with a cooldown — the job
+        # must NOT be marked failed here.  Propagate after closing the SSE bus.
+        raise
     except Exception as exc:
         total_s = perf_counter() - t_start
         log.exception(
@@ -367,6 +387,7 @@ async def _execute_one_phase(
     judge_model_ov: Optional[str] = None,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
+    session_limit_strategy: str = "pause",
 ) -> tuple[str, Optional[int], Optional[int], Optional[Any]]:
     """Run a single phase end-to-end with status tracking, SSE emit, and
     error handling. Wraps `_execute_phase` so both the sequential head loop
@@ -408,7 +429,10 @@ async def _execute_one_phase(
             judge_model_ov=judge_model_ov,
             extract_provider=extract_provider,
             extract_model=extract_model,
+            session_limit_strategy=session_limit_strategy,
         )
+    except SessionLimitPause:
+        raise  # worker requeues — job must NOT be marked failed
     except Exception as exc:
         phase_ms = (perf_counter() - t_phase) * 1000
         log.exception(
@@ -472,6 +496,7 @@ async def _run_content_phases_parallel(
     judge_model_ov: Optional[str] = None,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
+    session_limit_strategy: str = "pause",
 ) -> None:
     """Wave-based parallel scheduler for content phases.
 
@@ -530,6 +555,7 @@ async def _run_content_phases_parallel(
                             judge_model_ov=judge_model_ov,
                             extract_provider=extract_provider,
                             extract_model=extract_model,
+                            session_limit_strategy=session_limit_strategy,
                         ),
                         name=f"phase:{name}",
                     )
@@ -552,6 +578,16 @@ async def _run_content_phases_parallel(
                 del in_flight[phase_name]
                 try:
                     output_md, _tin, _tout, parsed_struct = task.result()
+                except SessionLimitPause:
+                    # Cancel in-flight peers, drain, then propagate so the worker
+                    # can requeue with a cooldown.  Do NOT set failed=True — the
+                    # job must NOT be marked failed on a pause.
+                    for peer in in_flight.values():
+                        peer.cancel()
+                    if in_flight:
+                        await asyncio.gather(*in_flight.values(), return_exceptions=True)
+                        in_flight.clear()
+                    raise
                 except Exception:
                     # Already logged + marked failed by _execute_one_phase. Cancel
                     # any peers still in flight and stop launching new phases.
@@ -599,7 +635,12 @@ _SAME_RETRY_BUDGET = {"transient": 2, "hard": 1, "wall": 0}
 
 
 async def _run_with_failover(
-    *, requested_provider: str, model: Optional[str], run_fn, transport: str = "cli"
+    *,
+    requested_provider: str,
+    model: Optional[str],
+    run_fn,
+    transport: str = "cli",
+    session_limit_strategy: str = "pause",
 ):
     """Run a phase across the failover chain. `run_fn(provider, model)` returns
     (output_md, tokens_in, tokens_out). On failure, classify → retry same (per
@@ -613,7 +654,18 @@ async def _run_with_failover(
     (codex/kimi/opencode) have no api support, and an api-claude→api-gemini
     fall would run model=None (violating the explicit-model rule + mis-pricing).
     The chain is pinned to the requested provider; same-provider retry budgets
-    still apply."""
+    still apply.
+
+    session_limit_strategy ('pause' | 'switch'):
+      - 'switch': session-limit error advances to the next provider immediately
+        (treated as a wall — budget 0, no same-provider retry). The existing
+        chain logic carries it to codex/gemini.
+      - 'pause': session-limit error raises SessionLimitPause (with the parsed
+        reset time) immediately — the chain is aborted; the worker requeues the
+        job with a cooldown until reset.
+    The is_session_limit check runs BEFORE failure_classifier.classify so that
+    a "usage limit reached · resets …" string is intercepted here, not treated
+    as a wall (which would silently skip the pause strategy)."""
     chain = _failover_chain(requested_provider)
     if transport == "api":
         chain = [requested_provider]
@@ -643,6 +695,20 @@ async def _run_with_failover(
                 last_exc = exc
                 break
             except Exception as exc:  # noqa: BLE001 — classify, don't swallow
+                # ── Session-limit check MUST run BEFORE failure_classifier.classify ──
+                # "usage limit reached · resets Xam" matches _WALL in classify()
+                # (contains "limit" + "reached"). If classify ran first, the pause
+                # strategy would never fire.  (gatekeeper #1)
+                if failure_classifier.is_session_limit(str(exc)):
+                    if session_limit_strategy == "pause":
+                        raise SessionLimitPause(
+                            failure_classifier.parse_session_limit_reset(
+                                str(exc), now=_utcnow()
+                            )
+                        )
+                    # switch: treat as wall (budget=0) → advance to next provider
+                    last_exc = exc
+                    break
                 budget = _SAME_RETRY_BUDGET[failure_classifier.classify(exc)]
                 if same < budget:
                     same += 1
@@ -706,6 +772,7 @@ async def _execute_phase(
     judge_model_ov: Optional[str] = None,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
+    session_limit_strategy: str = "pause",
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     _custom_md = _custom_for(phase_name, custom_prompts)
     if phase_name == "extract":
@@ -870,6 +937,7 @@ async def _execute_phase(
                     model=extract_model,
                     run_fn=_extract_run,
                     transport=extract_transport,
+                    session_limit_strategy=session_limit_strategy,
                 )
                 parsed_struct = None
         else:
@@ -897,8 +965,11 @@ async def _execute_phase(
             output_md, tin, tout, produced_by = await _run_with_failover(
                 requested_provider=provider, model=model,
                 run_fn=_make_run(base_phase_prompt), transport=transport,
+                session_limit_strategy=session_limit_strategy,
             )
             parsed_struct = None
+    except SessionLimitPause:
+        raise  # propagate to worker — phase must NOT be marked failed on a pause
     except Exception as exc:
         async with SessionLocal() as session:
             await phase_repo.set_status(
@@ -979,6 +1050,7 @@ async def _execute_phase(
                     model=_gen_model_of(produced_by),
                     run_fn=_make_run(regen_prompt),
                     transport=transport,
+                    session_limit_strategy=session_limit_strategy,
                 )
                 # Commit to the regenerated output only after it actually succeeded.
                 output_md, tin, tout, produced_by = r_md, r_tin, r_tout, r_prod
@@ -994,6 +1066,8 @@ async def _execute_phase(
                     transport=judge_transport,
                     contract_override=_custom_md,
                 )
+            except SessionLimitPause:
+                raise  # quota-pause during regen must propagate — not a content failure
             except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job (except api auth, below)
                 if (transport == "api" or judge_transport == "api") and phase_judge._is_auth_error(exc):
                     # This try-block contains TWO spawns with potentially different

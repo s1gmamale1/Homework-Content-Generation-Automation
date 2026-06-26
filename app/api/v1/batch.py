@@ -18,6 +18,7 @@ from app.services.agent_models import (
     is_valid,
     resolve_role_transport,
     validate_role_transport,
+    validate_session_limit_strategy,
     validate_transport,
 )
 from app.services.flows import order_phase_selection, flow_for, selection_missing_prompts
@@ -46,6 +47,7 @@ class BatchLaunchRequest(BaseModel):
     relaunch_mode: str = "resume"         # "resume" | "discard" for failed/cancelled-with-saved
     custom_prompts: dict[str, str] | None = None
     selected_phases: list[str] | None = None
+    session_limit_strategy: str = "inherit"  # "pause" | "switch" | "inherit"
 
 
 def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None = None) -> dict:
@@ -76,6 +78,7 @@ def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None 
         # Cost-safety fields (C4): None when the batch is not paused.
         "paused_at": batch.paused_at.isoformat() if batch.paused_at else None,
         "paused_reason": batch.paused_reason,
+        "session_limit_strategy": batch.session_limit_strategy,
     }
 
 
@@ -122,6 +125,10 @@ async def launch_batch(
         role_err = validate_role_transport(field, value)
         if role_err is not None:
             raise HTTPException(400, role_err)
+
+    sls_err = validate_session_limit_strategy(body.session_limit_strategy)
+    if sls_err is not None:
+        raise HTTPException(400, sls_err)
 
     custom_prompts = body.custom_prompts or None
     if custom_prompts:
@@ -193,7 +200,8 @@ async def launch_batch(
         extract_provider=body.extract_provider,
         extract_model=body.extract_model,
         judge_provider=body.judge_provider,
-        judge_model=body.judge_model)
+        judge_model=body.judge_model,
+        session_limit_strategy=body.session_limit_strategy)
 
     created = adopted = skipped = resumed = 0
     # fleet-api-4: per-section rebill warnings (only populated on force path).

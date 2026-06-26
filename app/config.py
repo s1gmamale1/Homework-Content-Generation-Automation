@@ -69,6 +69,40 @@ class Settings(BaseSettings):
     # phases (reading/preview-hard); hitting it fails LOUD, never silent-truncates.
     api_max_output_tokens: int = 16384  # env API_MAX_OUTPUT_TOKENS
 
+    # ─── Session-limit handling ───────────────────────────────────────────
+    # Default IANA timezone when a Claude session-limit message omits a tz in
+    # its ``resets <time>`` clause.  The real messages (Oliver log 2026-06-23)
+    # always include "(America/Chicago)", but this default makes parse_session_
+    # limit_reset deterministic on bare messages that lack the parenthetical.
+    session_limit_default_tz: str = "America/Chicago"
+    # Fleet-wide default for what the worker does when a Claude session-limit
+    # hits during generation.  Per-batch overrides (batches.session_limit_strategy)
+    # win when they are an explicit "pause" or "switch"; "inherit" defers here.
+    # "pause" = pause the batch and wait for the session to reset (safe default:
+    #           preserves the claude allocation; requires a human/scheduler to resume).
+    # "switch" = switch to the failover provider and continue (fast but spends the
+    #            failover provider's allocation for the remainder of the batch).
+    session_limit_strategy: str = "pause"
+    # Fallback cooldown duration when a session-limit error gives no reset time.
+    # The worker self-cools for this many seconds before resuming claiming.
+    session_limit_default_cooldown_seconds: int = 3600
+
+    @field_validator("session_limit_strategy", mode="before")
+    @classmethod
+    def _validate_session_limit_strategy(cls, v: object) -> object:
+        """Reject any value that is not 'pause' or 'switch'.
+
+        Unlike the per-batch column which also allows 'inherit', the env-level
+        default must be a concrete action (the resolver falls back here, so
+        'inherit' would recurse forever).
+        """
+        valid = {"pause", "switch"}
+        if v not in valid:
+            raise ValueError(
+                f"SESSION_LIMIT_STRATEGY must be 'pause' or 'switch', got {v!r}"
+            )
+        return v
+
     # ─── Resilience: job resume + provider failover ───────────────────────
     # Worker refreshes claimed_at every heartbeat_seconds while a job runs, so a
     # live long job's claim never looks stale. MUST be << reclaim_stale_seconds.

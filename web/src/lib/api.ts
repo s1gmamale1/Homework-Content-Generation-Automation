@@ -14,6 +14,7 @@ import type {
   NotionSubject,
   ProviderModelManifest,
   RoleTransport,
+  SessionLimitStrategy,
   Subject,
   TOCEntry,
   Transport,
@@ -314,6 +315,7 @@ export const api = {
     extract_provider?: string | null; extract_model?: string | null;
     judge_provider?: string | null; judge_model?: string | null;
     relaunch_mode?: "resume" | "discard";
+    session_limit_strategy?: SessionLimitStrategy;
   }): Promise<BatchLaunchResponse> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -331,6 +333,7 @@ export const api = {
     extract_transport?: RoleTransport; judge_transport?: RoleTransport;
     extract_provider?: string | null; extract_model?: string | null;
     judge_provider?: string | null; judge_model?: string | null;
+    session_limit_strategy?: SessionLimitStrategy;
   }): Promise<BatchPreviewResponse> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" },
