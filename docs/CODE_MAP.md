@@ -40,9 +40,9 @@ What each source file does, grouped by layer. `transport=cli` (default): every m
 - **`toc_extractor.py`** — PDF→TOC text helpers (glyph-subset decode, front/tail/reverse-tail scan) feeding gemini extraction.
 - **`grade.py`** — `derive_grade_from_filename` (sinf/klass/класс → 1–11) for Notion archive keying.
 - **`notion_archive.py`** — push a finished job's markdown into the Notion "Homework" tree (`_HOMEWORK_LAYOUT`, `PHASE_TITLES`, subject-page resolution, skip-reason stamping). The push is **bounded-retried** (`_push_with_retry`, 3× backoff) and a failure records `notion_skip_reason="push error: <Type>"` via `_record_skip` (best-effort, never raises) so a transient push error is visible + recoverable (R15/0085), not the old both-NULL invisible state; `_push_to_notion` is idempotent (skips populated pages) so retry/re-archive can't double-write.
-- **`notion_fetch.py`** — download a textbook PDF from a Notion page (size-capped to `max_file_mb`).
+- **`notion_fetch.py`** — download a textbook PDF from a Notion page (size-capped to `max_file_mb`). When a subject page attaches multiple PDFs, `_first_pdf_block` **prefers the textbook (`darslik`) over the workbook (`ish daftari`)** via `_pdf_rank` (textbook 0 ▸ neutral 1 ▸ workbook 2, ties by page order) — preference, not exclusion.
 - **`storage.py`** — `book_pdf_path(book_id)`: the single deterministic on-disk PDF path helper (`<var_dir>/books/<id>/source.pdf`), used by both the writer and the pipeline reader.
-- **`book_fetch.py`** — R13 fleet pull-on-demand: `ensure_book_pdf_sync(book_id)` returns the local PDF, or fetches it once from the head (`FLEET_HEAD_URL` → `GET /books/{id}/source.pdf`) and caches it when missing.
+- **`book_fetch.py`** — R13 fleet pull-on-demand: `ensure_book_pdf_sync(book_id)` returns the local PDF, or fetches it once from the head (`FLEET_HEAD_URL` → `GET /books/{id}/source.pdf`) and caches it when missing. A per-`book_id` `threading.Lock` (`_lock_for`) serializes concurrent same-book fetches so N lessons of one book download once (`r13-fetch-1`); `_cached_ok` is the lock-free fast-path check.
 - **`events_bus.py`** — in-process pub/sub backing the job SSE streams.
 - **`proc_tree.py`** — `kill_tree` (psutil) to reap a provider CLI's whole process tree on cancel/timeout.
 
