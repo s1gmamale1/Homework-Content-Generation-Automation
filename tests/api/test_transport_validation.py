@@ -9,6 +9,7 @@ tests. The `/agent/models` shape check is pure-Python and always runs.
 from __future__ import annotations
 
 import os
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -26,23 +27,43 @@ def _client():
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
 
 
-# ─── /agent/models exposes api_supported (pure-Python, no DB) ────────────────
+# ─── /agent/models exposes api_supported (shape check, no real DB) ───────────
 
 @pytest.mark.asyncio
 async def test_agent_models_exposes_api_supported():
-    async with _client() as c:
-        r = await c.get("/api/v1/agent/models", headers=_HDR)
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert "api_supported" in body
-    sup = body["api_supported"]
-    assert sup["claude"] is True
-    assert sup["gemini"] is True
-    assert sup["kimi"] is False
-    assert sup["codex"] is False
-    assert sup["opencode"] is False
-    # backwards-compat: providers manifest still present
-    assert "providers" in body
+    # The endpoint became DB-touching (it now appends a `fleet` block via
+    # workers_repo.aggregate_fleet_capability). Override get_session with a
+    # no-workers stub so this offline shape check stays offline — the fleet
+    # block resolves to the fail-open online=False shape without a real DB.
+    from main import app
+    from app.db import get_session
+
+    async def _no_workers_session():
+        session = MagicMock()
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = []
+        session.execute = AsyncMock(return_value=result)
+        yield session
+
+    app.dependency_overrides[get_session] = _no_workers_session
+    try:
+        async with _client() as c:
+            r = await c.get("/api/v1/agent/models", headers=_HDR)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "api_supported" in body
+        sup = body["api_supported"]
+        assert sup["claude"] is True
+        assert sup["gemini"] is True
+        assert sup["kimi"] is False
+        assert sup["codex"] is False
+        assert sup["opencode"] is False
+        # backwards-compat: providers manifest still present
+        assert "providers" in body
+        # Task 4: additive fleet block present, offline with no workers
+        assert body["fleet"]["online"] is False
+    finally:
+        app.dependency_overrides.pop(get_session, None)
 
 
 # ─── /generate validation rejections (no real DB needed) ─────────────────────
