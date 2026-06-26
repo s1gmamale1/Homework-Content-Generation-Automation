@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 from types import SimpleNamespace
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from main import app
 from app.api.v1.jobs import JobOut
 from app.auth import get_current_user
+from app.db import get_session
 
 client = TestClient(app)
 
@@ -26,12 +27,25 @@ def test_retry_archive_happy_path():
     out = JobOut(id=jid, book_id=uuid4(), toc_entry_id=uuid4(),
                  subject="kimyo-g7-11", status="done")
     arch = AsyncMock()
-    with patch("app.api.v1.jobs.jobs_repo.get", AsyncMock(return_value=job)), \
-         patch("app.api.v1.jobs.notion_archive.archive_job", arch), \
-         patch("app.api.v1.jobs._job_out", AsyncMock(return_value=out)):
-        r = client.post(f"/api/v1/jobs/{jid}/retry-archive")
+
+    # Inject a fake session so we can assert expire_all() is called.
+    # expire_all() is a sync method on AsyncSession; a plain MagicMock suffices.
+    fake_session = MagicMock()
+    fake_session.expire_all = MagicMock()
+    app.dependency_overrides[get_session] = lambda: fake_session
+    try:
+        with patch("app.api.v1.jobs.jobs_repo.get", AsyncMock(return_value=job)), \
+             patch("app.api.v1.jobs.notion_archive.archive_job", arch), \
+             patch("app.api.v1.jobs._job_out", AsyncMock(return_value=out)):
+            r = client.post(f"/api/v1/jobs/{jid}/retry-archive")
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+
     assert r.status_code == 200
     arch.assert_awaited_once()
+    # Guard: this assertion MUST fail if session.expire_all() is removed from
+    # the endpoint — without it _job_out returns stale notion_skip_reason data.
+    fake_session.expire_all.assert_called_once()
 
 
 def test_retry_archive_rejects_non_done():
