@@ -1390,7 +1390,13 @@ async def extract_toc(
             pdf_size = pdf_path.stat().st_size
         except OSError:
             pdf_size = _GEMINI_PDF_MAX_BYTES + 1
-        keep_pdf = provider == "gemini" and pdf_size <= _GEMINI_PDF_MAX_BYTES
+        # api transport is text-only (api_transport raises on any attachment):
+        # drop the PDF and rely on the local TOC text in lesson_context.
+        keep_pdf = (
+            transport != "api"
+            and provider == "gemini"
+            and pdf_size <= _GEMINI_PDF_MAX_BYTES
+        )
         if not keep_pdf:
             attachment_preamble = ""
             attachments = []

@@ -210,6 +210,23 @@ class Settings(BaseSettings):
             return "gemini"
         return v
 
+    extract_toc_transport: str = "cli"
+
+    @field_validator("extract_toc_transport", mode="before")
+    @classmethod
+    def _blank_toc_transport_to_default(cls, v: object) -> object:
+        """Normalise EXTRACT_TOC_TRANSPORT: blank/whitespace → "cli" (a bare
+        ``EXTRACT_TOC_TRANSPORT=`` in .env passes "" not the field default), and
+        reject anything other than cli|api LOUDLY — a typo'd value silently
+        running cli is exactly the footgun the all-Vertex operator would hit.
+        Default cli keeps existing CLI fleets unchanged; only an all-Vertex
+        operator (no gemini OAuth) sets api to route TOC extraction over Vertex."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "cli"
+        if isinstance(v, str) and v.strip() in ("cli", "api"):
+            return v.strip()
+        raise ValueError(f"EXTRACT_TOC_TRANSPORT must be 'cli' or 'api', got {v!r}")
+
     # ─── Notion archive (Phase 1 push) ───
     notion_enabled: bool = False
     notion_api_key: str = ""

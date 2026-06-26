@@ -600,6 +600,15 @@ you configure to match your plan.
 - **Gemini CLI rejects PDFs > 20 MB.** TOC extraction runs on the extract provider
   (default gemini, set by `EXTRACT_PROVIDER` — not hardcoded), so under the default a
   bigger PDF fails with a sandbox error. Pre-shrink it or change `EXTRACT_PROVIDER`.
+- **TOC extraction defaults to the gemini *CLI* (OAuth), which fails on a headless
+  all-Vertex head.** Book upload is a job-less spawn, so it can't carry a job transport;
+  the cli baseline scrubs gemini auth and the CLI falls back to built-in OAuth
+  (`initOauthClient`) — fine on a logged-in desktop, but an operator with only Vertex
+  service-account creds (no gemini OAuth) gets `FatalCancellationError`. Set
+  `EXTRACT_TOC_TRANSPORT=api` to route the **text-usable** TOC read over the Vertex SDK
+  instead (the local front/back page text feeds the model; no CLI, no OAuth). Scanned /
+  sparse books still vision-OCR via cli unconditionally (the SDK path is text-only), so
+  they continue to need a working gemini CLI login.
 - **Kimi can't read PDFs natively.** Its prompt tells the model to shell out to Python
   (`pdfplumber`, falling back to `pypdf`). If those aren't installed, kimi reports failure
   rather than hallucinate.
