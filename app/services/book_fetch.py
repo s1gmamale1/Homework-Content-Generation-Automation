@@ -44,10 +44,17 @@ def _lock_for(book_id: UUID | str) -> threading.Lock:
 def _cached_ok(path: Path, expected_size: int | None, head: str) -> bool:
     """True when the on-disk PDF can be returned as-is. A wrong-size cache is
     'not ok' ONLY when a head is configured to re-fetch from (on the head the
-    file is canonical — there's nowhere to re-pull, so it stays ok)."""
-    if not path.exists():
-        return False
-    if expected_size and head and path.stat().st_size != expected_size:
+    file is canonical — there's nowhere to re-pull, so it stays ok).
+
+    Tolerates a concurrent unlink: if the file vanishes between exists() and
+    stat() (another thread re-fetching a wrong-size cache under the lock), treat
+    it as not-cached rather than raising out of the lock-free fast path."""
+    try:
+        if not path.exists():
+            return False
+        if expected_size and head and path.stat().st_size != expected_size:
+            return False
+    except OSError:
         return False
     return True
 
@@ -99,10 +106,10 @@ def ensure_book_pdf_sync(book_id: UUID | str, expected_size: int | None = None) 
 
         book_dir = storage.book_dir(book_id)
         book_dir.mkdir(parents=True, exist_ok=True)  # first-time remote: no dir yet
-        # Unique per call: the PID alone collides when one worker process runs
-        # several lessons of the SAME book concurrently (asyncio tasks share the
-        # PID) — they'd race on one temp file (a sharing violation on Windows).
-        # uuid4 makes each fetch's temp distinct; os.replace stays atomic.
+        # Unique per call. The per-book lock above now serializes same-book
+        # fetches, so this is belt-and-suspenders: it keeps temps distinct for
+        # any unrelated concurrent writer and avoids a stale-temp clash from an
+        # earlier interrupted fetch; os.replace stays atomic.
         tmp = book_dir / f"source.pdf.{os.getpid()}.{uuid4().hex}.tmp"  # same fs -> atomic replace
 
         url = f"{head.rstrip('/')}/api/v1/books/{book_id}/source.pdf"
