@@ -123,7 +123,10 @@ function BookCard({ batches }: { batches: BatchSummary[] }) {
         </div>
         {batches.length > 1 && (
           <div className="mt-0.5 text-[0.72rem] text-white/40">
-            CLI + API · {batches.length} transports
+            CLI + API · {batches.length} transports · done{" "}
+            {batches
+              .map((b) => `${b.rollup.done ?? 0} ${b.transport.toUpperCase()}`)
+              .join(" · ")}
           </div>
         )}
       </div>
