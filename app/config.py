@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     # phases (reading/preview-hard); hitting it fails LOUD, never silent-truncates.
     api_max_output_tokens: int = 16384  # env API_MAX_OUTPUT_TOKENS
 
+    # ─── Session-limit handling ───────────────────────────────────────────
+    # Default IANA timezone when a Claude session-limit message omits a tz in
+    # its ``resets <time>`` clause.  The real messages (Oliver log 2026-06-23)
+    # always include "(America/Chicago)", but this default makes parse_session_
+    # limit_reset deterministic on bare messages that lack the parenthetical.
+    session_limit_default_tz: str = "America/Chicago"
+
     # ─── Resilience: job resume + provider failover ───────────────────────
     # Worker refreshes claimed_at every heartbeat_seconds while a job runs, so a
     # live long job's claim never looks stale. MUST be << reclaim_stale_seconds.
