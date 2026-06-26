@@ -68,6 +68,7 @@ _FAKE_BATCH = SimpleNamespace(
     created_at=datetime(2026, 6, 19, tzinfo=timezone.utc),
     paused_at=None,
     paused_reason=None,
+    session_limit_strategy="inherit",
 )
 
 _FAKE_JOB = SimpleNamespace(

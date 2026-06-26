@@ -16,6 +16,7 @@ def _fake_batch(paused=False):
         created_at=datetime(2026, 6, 19, tzinfo=timezone.utc),
         paused_at=datetime(2026, 6, 19, tzinfo=timezone.utc) if paused else None,
         paused_reason="batch cap reached" if paused else None,
+        session_limit_strategy="inherit",
     )
 
 

@@ -28,11 +28,13 @@ _FAKE_BATCH_PAUSED = SimpleNamespace(
     id=_BATCH_ID,
     paused_at=_PAUSED_AT,
     paused_reason="batch-cap",
+    session_limit_strategy="inherit",
 )
 _FAKE_BATCH_UNPAUSED = SimpleNamespace(
     id=_BATCH_ID,
     paused_at=None,
     paused_reason=None,
+    session_limit_strategy="inherit",
 )
 _FAKE_BUDGET_PAUSED = SimpleNamespace(
     api_paused_at=_PAUSED_AT,
