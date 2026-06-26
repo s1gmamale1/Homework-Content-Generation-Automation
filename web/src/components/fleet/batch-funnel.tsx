@@ -1,12 +1,24 @@
 import { ChevronDown, ChevronRight, PauseCircle } from "lucide-react";
-import { useMemo, useState } from "react";
+import { type CSSProperties, useMemo, useState } from "react";
 import type { BatchSummary } from "@/lib/types";
+import { type RowStatus, transportRowStatus } from "@/lib/batch-status";
 import { subjectLabelWithVariant } from "@/lib/subjects";
 import { CARD, GHOST_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { ApiBadge } from "./launcher";
 import { BatchLessonList } from "./batch-lesson-list";
 import { RollupBar } from "./rollup-bar";
+
+const ROW_CHIP: Record<RowStatus, { label: string; className: string; style?: CSSProperties }> = {
+  complete: {
+    label: "complete",
+    className: "text-white/90",
+    style: { background: "oklch(0.78 0.10 145 / 0.25)" },
+  },
+  in_progress: { label: "in progress", className: "bg-white/[0.07] text-white/55" },
+  failed: { label: "failed", className: "bg-red-500/20 text-red-200" },
+  partial: { label: "partial", className: "bg-amber-500/20 text-amber-200" },
+};
 
 /** One transport's progress within a book card: provider/badge, status,
  *  its own rollup bar, and a per-transport lessons drill-in. Kept separate
@@ -21,6 +33,7 @@ function TransportRow({
 }) {
   const [expanded, setExpanded] = useState(false);
   const Chevron = expanded ? ChevronDown : ChevronRight;
+  const chip = ROW_CHIP[transportRowStatus(batch)];
 
   return (
     <div className={cn("space-y-3", divided && "border-t border-white/[0.06] pt-3")}>
@@ -35,18 +48,15 @@ function TransportRow({
             </span>
           )}
         </div>
-        {batch.complete ? (
-          <span
-            className="shrink-0 rounded-full px-2 py-0.5 text-[0.7rem] font-medium text-white/90"
-            style={{ background: "oklch(0.78 0.10 145 / 0.25)" }}
-          >
-            complete
-          </span>
-        ) : (
-          <span className="shrink-0 rounded-full bg-white/[0.07] px-2 py-0.5 text-[0.7rem] text-white/55">
-            in progress
-          </span>
-        )}
+        <span
+          className={cn(
+            "shrink-0 rounded-full px-2 py-0.5 text-[0.7rem] font-medium",
+            chip.className,
+          )}
+          style={chip.style}
+        >
+          {chip.label}
+        </span>
       </div>
 
       <RollupBar rollup={batch.rollup} covered={batch.lessons_covered} />
