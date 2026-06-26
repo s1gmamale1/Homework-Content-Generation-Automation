@@ -94,3 +94,17 @@ def validate_role_transport(field: str, value: str) -> str | None:
 def resolve_role_transport(role_value: str, job_transport: str) -> str:
     """'inherit' follows the job's transport; an explicit value wins (Phase 4.1 §2)."""
     return job_transport if role_value == "inherit" else role_value
+
+
+def resolve_session_limit_strategy(batch_value: str | None) -> str:
+    """Return the effective session-limit strategy for a batch.
+
+    'pause' or 'switch' win as-is (explicit per-batch override).
+    'inherit' or None fall back to ``settings.session_limit_strategy``
+    (the operator's fleet-wide default).
+    """
+    from app.config import settings
+
+    if batch_value in ("pause", "switch"):
+        return batch_value
+    return settings.session_limit_strategy
