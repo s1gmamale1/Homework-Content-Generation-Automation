@@ -194,6 +194,7 @@ consumption counts**, not provider quotas.
 | `custom_prompts` / `selected_phases` | JSONB NULL | migration 0033 (PR37): launch-default labels (same shape as on `homework_jobs`); **jobs carry the truth**. On a plain same-transport re-launch with no prompts these are NOT overwritten (the ON-CONFLICT only sets them when the launch carries them — a COALESCE would fail because Python None serializes to JSONB `'null'`, not SQL NULL). |
 | `paused_at` | DateTime NULL | C4 batch-pause primitive (migration 0031): set by the budget monitor when this batch's api spend exceeds `COST_CAP_BATCH_USD`; also reused by C5 fleet-ctrl-3 for manual/fleet-gate pauses. NULL = not paused. |
 | `paused_reason` | String(64) NULL | Machine-readable reason string (e.g. `"batch-cap"`, `"manual"`). Used by the budget monitor to reconcile its own pauses without touching batches paused by a different reason. |
+| `session_limit_strategy` | String(16) NOT NULL, server_default `'inherit'` | C5 (migration 0036): what a worker does when a Claude session-limit hits a job in this batch — `pause` (requeue + worker self-cooldown until reset) / `switch` (fail the limited role over to a non-limited model) / `inherit` (follow `SESSION_LIMIT_STRATEGY` env via `resolve_session_limit_strategy`). **DB CHECK `pause\|switch\|inherit`** (`ck_batches_session_limit_strategy`). |
 
 Design: **no stored counters**. Progress is computed on read (`rollup_for_batch`):
 `DISTINCT ON (toc_entry_id) … ORDER BY toc_entry_id, created_at DESC` scoped to the batch,

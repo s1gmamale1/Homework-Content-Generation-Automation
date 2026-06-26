@@ -177,6 +177,18 @@ There's also retry-with-backoff (up to `queue_max_attempts`), a per-job timeout,
 **backpressure**: if more than ~50 jobs are already waiting, `/generate` returns `503` instead
 of letting the queue grow forever.
 
+**Surviving Claude session-limits (worklog 0089).** When a Claude CLI worker hits its
+session-limit (`"You've hit your session limit · resets 12:50am …"`), the old behavior was
+fail-fast — the worker insta-failed every job it claimed and *vacuumed* the queue away from a
+healthy peer. Now the failover layer detects the limit (and parses the reset time) and acts on
+the batch's `session_limit_strategy` (per-batch override, else the `SESSION_LIMIT_STRATEGY`
+env default): **`switch`** fails the limited role over to a non-limited model down the failover
+chain and keeps generating; **`pause`** requeues the job *without burning a retry attempt*
+(claimable immediately, so a healthy peer with a different account grabs it) and puts **that
+worker** into a self-cooldown until the parsed reset, after which it auto-resumes. Either way
+the limited worker stops vacuuming. Separately, transient connection/DNS blips (a flaky worker)
+now retry under the same backoff as a 429 instead of dropping the call.
+
 **One clock to rule them all:** every timestamp the queue *compares* (claim eligibility,
 lease staleness, backoff scheduling, worker liveness) is written **and** read with the
 database's clock (`func.now()`), never the host's. This matters because Docker/WSL2 clocks
