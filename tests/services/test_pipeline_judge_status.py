@@ -123,7 +123,7 @@ def patch_io(monkeypatch):
     # Returns (output_md, tin, tout, produced_by); tests can override per-call
     ns.failover_outputs = [("# generated output", 100, 50, "claude")]
 
-    async def fake_failover(*, requested_provider, model, run_fn, transport):
+    async def fake_failover(*, requested_provider, model, run_fn, transport, **kw):
         return ns.failover_outputs.pop(0)
 
     monkeypatch.setattr(pipeline, "_run_with_failover", fake_failover)
@@ -280,7 +280,7 @@ async def test_judge_status_regen_raises_non_auth(monkeypatch, patch_io):
         judge_calls.append("judge")
         return _major()
 
-    async def failing_failover(*, requested_provider, model, run_fn, transport):
+    async def failing_failover(*, requested_provider, model, run_fn, transport, **kw):
         if len(patch_io.failover_outputs) == 0:
             raise RuntimeError("network error during regen")
         return patch_io.failover_outputs.pop(0)
