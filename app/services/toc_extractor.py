@@ -47,7 +47,8 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
         # that doesn't benefit from a smart-tier model.
         log.info(
             f"[book {book_id}] extracting TOC via agent "
-            f"({settings.extract_provider} / {settings.extract_model})"
+            f"({settings.extract_provider} / {settings.extract_model}) "
+            f"transport={settings.extract_toc_transport}"
         )
         t_extract = perf_counter()
         extracted = await agent.extract_toc(
@@ -56,6 +57,7 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
             pdf_path=file_path,
             subject=subject,
             book_id=book_id,
+            transport=settings.extract_toc_transport,
         )
         log.info(
             f"[book {book_id}] TOC extracted | entries={len(extracted.entries)} "

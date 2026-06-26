@@ -128,3 +128,27 @@ async def test_nonzero_entries_still_marks_ready(monkeypatch):
     assert "toc_ready" in names
     assert "failed" not in names
     assert len(bulk_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_passes_extract_toc_transport_setting(monkeypatch):
+    """toc_extractor.run must forward settings.extract_toc_transport into
+    agent.extract_toc so an all-Vertex operator's api choice actually reaches
+    the spawn (else the CLI OAuth path is always used)."""
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(toc_extractor.settings, "extract_toc_transport", "api")
+    seen: dict = {}
+
+    async def fake_extract_toc(**kw):
+        seen.update(kw)
+        return SimpleNamespace(entries=[SimpleNamespace(section_title="L1")])
+
+    monkeypatch.setattr(toc_extractor.agent, "extract_toc", fake_extract_toc)
+    monkeypatch.setattr(
+        toc_extractor.TOCEntryOut, "model_validate",
+        classmethod(lambda cls, r: SimpleNamespace(model_dump=lambda mode=None: {})),
+    )
+
+    await toc_extractor.run(uuid4(), Path("/nonexistent.pdf"), "math-algebra")
+
+    assert seen.get("transport") == "api"
