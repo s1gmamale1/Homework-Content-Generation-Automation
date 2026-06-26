@@ -93,12 +93,12 @@ def _compute_capabilities(env, judge_provider: str, judge_model: str, extract_pr
     cap = _api_capable(env)
     can_claude = cap["claude"]
     can_gemini = cap["gemini"]
-    fb_provider, _ = model_tiers._SELF_FALLBACK
+    fb_provider, _ = model_tiers._self_fallback((judge_provider, judge_model))
     return {
         "can_claude_api": can_claude,
         "can_gemini_api": can_gemini,
         "judge_api_ok": cap.get(judge_provider, False),
-        # §4a: jobs generating ON the judge pair get judged by _SELF_FALLBACK
+        # §4a: jobs generating ON the judge pair get judged by the generator-aware self-fallback peer
         "judge_fallback_api_ok": cap.get(fb_provider, False),
         "extract_api_ok": cap.get(extract_provider, False),
         "judge_pair": (judge_provider, judge_model),

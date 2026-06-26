@@ -146,16 +146,70 @@ def judge_model_for(gen_provider: str, gen_model: Optional[str]) -> tuple[str, s
 
 Update the `resolve_judge` docstring note (`:94-96`) — replace the sentence about `_SELF_FALLBACK` being a fixed gemini model with: "the self-grade fallback is `judge_model_for`, which uses the generator-aware `_self_fallback` (a frontier peer guaranteed non-self for ANY generator) rather than a fixed constant that could itself self-match the generator."
 
-- [ ] **Step 4: Run the tests to verify they pass.**
+- [ ] **Step 4: Run the judge-resolution tests to verify they pass.**
 
 Run: `uv run python -m pytest tests/services/test_judge_resolution.py -q`
 Expected: PASS (all tests in the file, incl. the unchanged `test_both_auto_same_provider_is_not_self_grade` and `test_same_provider_different_explicit_models_is_allowed`).
 
-- [ ] **Step 5: Commit.**
+- [ ] **Step 4b: Fix the consumer of the removed symbol — `worker.py` capability gate (REQUIRED — added during execution).**
+
+`worker._compute_capabilities` reads `model_tiers._SELF_FALLBACK` at module load (`worker.py:74`, via `CAPABILITIES` at `:91`) to compute `judge_fallback_api_ok` — the claim-gate flag (`jobs.py:342-346`) for jobs that generate ON the judge pair (`job_is_judge_pair`, `jobs.py:321-324`), which `judge_model_for` self-falls-back. Removing `_SELF_FALLBACK` crashes the worker at import. **Verified-mechanical fix (NOT a design decision):** `job_is_judge_pair` pins the generator to the judge pair, so the fallback provider is `_self_fallback(judge_pair)` — a single value known at startup, no per-job threading. It also preserves today's behavior: default judge `claude-opus-4-7` → `_self_fallback` returns gemini = the old fixed value; campaign judge `gemini-3.1-pro-preview` → returns claude (the now-correct peer).
+
+In `app/services/worker.py:74`, replace `fb_provider, _ = model_tiers._SELF_FALLBACK` with:
+
+```python
+    fb_provider, _ = model_tiers._self_fallback((judge_provider, judge_model))
+```
+
+Update the `:79` comment `# §4a: jobs generating ON the judge pair get judged by _SELF_FALLBACK` → `# §4a: jobs generating ON the judge pair get judged by the generator-aware self-fallback peer`.
+
+In `app/repositories/jobs.py:289`, update the docstring `back to \`model_tiers._SELF_FALLBACK\` and the worker needs` → `back to the generator-aware self-fallback peer and the worker needs`.
+
+In `tests/services/test_judge_resolution.py` (the unchanged `test_exact_self_grade_is_swapped_to_a_non_self_judge` comment, ~`:25-28`), replace the trailing `NOT _SELF_FALLBACK.` with `NOT the raw fallback constant.` (purely a comment fix for the renamed symbol).
+
+Confirm no bare symbol remains: `grep -rn "_SELF_FALLBACK" app/ tests/` — every hit must be `_PRIMARY_SELF_FALLBACK` / `_ALT_SELF_FALLBACK` / `_self_fallback`, none bare `_SELF_FALLBACK`.
+
+- [ ] **Step 4c: Add the worker-capability test (RED → GREEN with the 4b fix).**
+
+Append to `tests/services/test_auth_env.py` (beside the existing `test_compute_capabilities_*`):
+
+```python
+def test_compute_capabilities_judge_fallback_tracks_generator_aware_peer():
+    """C7/Option-B: with the default judge = gemini-3.1-pro-preview, a job generating
+    ON the judge pair self-falls-back to the CLAUDE peer (not gemini), so
+    judge_fallback_api_ok must track claude creds. The existing tests (judge =
+    claude-opus-4-7 → fallback gemini) still pin the gemini direction."""
+    from app.services import worker
+
+    # anthropic-only worker, judge pinned to gemini-3.1-pro-preview:
+    # fallback peer for a gemini-3.1 generator is claude → reachable here.
+    caps = worker._compute_capabilities(
+        {"ANTHROPIC_API_KEY": "a"}, "gemini", "gemini-3.1-pro-preview", "gemini"
+    )
+    assert caps["judge_fallback_api_ok"] is True
+
+    # gemini-vertex-only worker, same judge: the claude fallback is NOT reachable.
+    caps2 = worker._compute_capabilities(
+        {"GOOGLE_APPLICATION_CREDENTIALS": "/sa.json", "GOOGLE_CLOUD_PROJECT": "p"},
+        "gemini", "gemini-3.1-pro-preview", "gemini",
+    )
+    assert caps2["judge_fallback_api_ok"] is False
+```
+
+Run: `uv run python -m pytest tests/services/test_auth_env.py -q`
+Expected: PASS — the new test + all existing `test_compute_capabilities_*` (they pin judge=claude-opus-4-7, so `_self_fallback` returns gemini, unchanged).
+
+- [ ] **Step 5: Commit (stage the full corrected lane).**
 
 ```bash
-git add app/services/model_tiers.py tests/services/test_judge_resolution.py
+git add app/services/model_tiers.py tests/services/test_judge_resolution.py \
+        app/services/worker.py app/repositories/jobs.py tests/services/test_auth_env.py \
+        docs/superpowers/plans/2026-06-26-cluster-7-judge-quality.md
 git commit -m "c7: generator-aware self-grade fallback (non-self for any generator)
+
+Also fixes worker._compute_capabilities, which read the removed _SELF_FALLBACK
+constant at import: judge_fallback_api_ok now tracks _self_fallback(judge_pair),
+correct for the campaign gemini-3.1 judge and unchanged for the default claude judge.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```

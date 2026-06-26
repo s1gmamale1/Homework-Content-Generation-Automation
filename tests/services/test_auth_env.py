@@ -346,3 +346,25 @@ def test_gemini_api_vertex_branch_defaults_location_global():
     del env["GOOGLE_CLOUD_LOCATION"]
     result = agent._auth_env("gemini", "api", env)
     assert result["GOOGLE_CLOUD_LOCATION"] == "global"
+
+
+def test_compute_capabilities_judge_fallback_tracks_generator_aware_peer():
+    """C7/Option-B: with the default judge = gemini-3.1-pro-preview, a job generating
+    ON the judge pair self-falls-back to the CLAUDE peer (not gemini), so
+    judge_fallback_api_ok must track claude creds. The existing tests (judge =
+    claude-opus-4-7 -> fallback gemini) still pin the gemini direction."""
+    from app.services import worker
+
+    # anthropic-only worker, judge pinned to gemini-3.1-pro-preview:
+    # fallback peer for a gemini-3.1 generator is claude -> reachable here.
+    caps = worker._compute_capabilities(
+        {"ANTHROPIC_API_KEY": "a"}, "gemini", "gemini-3.1-pro-preview", "gemini"
+    )
+    assert caps["judge_fallback_api_ok"] is True
+
+    # gemini-vertex-only worker, same judge: the claude fallback is NOT reachable.
+    caps2 = worker._compute_capabilities(
+        {"GOOGLE_APPLICATION_CREDENTIALS": "/sa.json", "GOOGLE_CLOUD_PROJECT": "p"},
+        "gemini", "gemini-3.1-pro-preview", "gemini",
+    )
+    assert caps2["judge_fallback_api_ok"] is False
