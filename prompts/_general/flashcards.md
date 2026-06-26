@@ -8,12 +8,15 @@ Flash Cards are a simple active-recall tool: one retrievable atom per card, stud
 
 - Textbook page (image or text)
 - Grade band for this {{SUBJECT}} lesson
-- Mode: Easy or Hard
 
-## Output
+## Output — deck size by grade band
 
-- Easy: **5-8 cards**
-- Hard: **8-12 cards**
+The pipeline injects the grade, never a mode. Size the deck to the grade band:
+- **G5-6 → 6-8 cards** — core atoms only, plainest wording.
+- **G7-8 → 8-10 cards** — core atoms plus one `misconception` card.
+- **G9-11 → 10-12 cards** — the full atom set, including subtler distinctions.
+
+Grade scales the retrieval load, never source accuracy.
 
 ## Card format — 8 fields
 
@@ -21,12 +24,12 @@ Each card emits these fields:
 - `id` — stable sequential `card_1, card_2, …` (never skip or reuse).
 - `front` — the cue (term / question / prompt). A bare term is ideal; **keep it short, up to ~14 words. No minimum — a 1–2 word term is a perfectly good cue.**
 - `back` — the answer (definition / value / rule). **Concise; never over 25 words** (a formula or process step may run longer). **No minimum — a short, complete answer is fine.**
-- `type` — REQUIRED. One of: `definition`, `term_to_meaning`, `process_step`, `question_answer`, `misconception`, `image_label`. These are the canonical core types, defined in-prompt; family-specific types may be added in the family rules below. (There is no validating schema for these — flashcards are markdown, so the type is a label you set on the card, not a JSON enum.)
+- `type` — REQUIRED. Core types: `definition`, `term_to_meaning`, `process_step`, `question_answer`, `misconception`, `image_label`. Add `formula` when the lesson is mathematical or scientific (equations, laws); add `grammar` and `vocabulary` when the lesson is a language lesson (`grammar` = pattern → rule, `vocabulary` = L2 word → L1 meaning). These are the canonical types, defined in-prompt; the family rules below say which extensions apply to your subject. (There is no validating schema for these — flashcards are markdown, so the type is a label you set on the card, not a JSON enum.)
 - `difficulty` — REQUIRED. One of: `easy | medium | hard`.
 - `hint` (optional) — a nudge, ≤12 words, never gives away the answer.
 - `explanation` (optional, encouraged) — 1 short sentence on why/how it works.
 - `example` (optional, encouraged) — 1 short concrete example.
-- `misconception` (optional) — 1 sentence naming a common wrong idea. **Required for trap / false-friend cards.**
+- `misconception` (optional) — 1 sentence naming a common wrong idea. **Required for trap / false-friend cards.** Mark its provenance: `source` when the textbook itself states the mistake, `inferred` when you derived it. NEVER present an `inferred` misconception as a textbook-stated fact.
 
 Rules:
 - One retrievable idea per card. Do NOT fold `explanation` / `example` / `misconception` into `back`.
@@ -82,6 +85,7 @@ One card carries one retrievable thing. If a `back` would exceed 25 words, or fo
 - Include formulas only when the {{SUBJECT}} chapter itself treats them as key facts to recall; otherwise keep cards to terms and definitions.
 - Cover every term, name, structure, process, rule, and classification term the {{SUBJECT}} student will encounter in the homework.
 - Cards are returnable throughout the session — student can check them anytime.
+- Self-check before finishing: every card sets `type` + `difficulty`, no `back` packs an un-atomised topic, and every `misconception` card is tagged `source` or `inferred` (never an inferred mistake presented as a textbook fact).
 
 ## Output format
 
