@@ -138,7 +138,7 @@ Windows often already runs its own Postgres on 5432). Seven tables matter
 | `phase_outputs` | one phase of one job | the phase name, order, status, its markdown output, token counts. A unique constraint (`uq_phase_output_job_order`) forbids two rows for the same (job, order). |
 | `agent_usages` | one CLI subprocess call | provider, model, normalized token counts, duration, success/failure, and the raw envelope. This is how the usage dashboard and the end-of-job cost table are built. |
 | `batches` | fleet batch (one per `(book, transport)` since Phase 4 — a cli and an api batch of the same book coexist for benchmarking) | the launch-time subject/grade/provider/model/transport (+ Phase-4.1 role-transport launch defaults; member jobs carry the truth). **No stored counters** — progress is computed on read from member jobs (one vote per lesson, its newest job), so retries can't inflate the tally. |
-| `workers` | worker process (a fleet PC) | `pc_id` ("hostname:pid"), `last_heartbeat`, status label. Online/offline is **derived** from heartbeat freshness against the DB clock, never stored. |
+| `workers` | worker process (a fleet PC) | `pc_id` ("hostname:pid"), `last_heartbeat`, status label, and a `capabilities` JSONB blob (which provider CLIs are installed + which api creds are present, published each beat — migration 0035). Online/offline is **derived** from heartbeat freshness against the DB clock, never stored. |
 | `budget_state` | singleton (id=1) | C4 fleet-level api pause: `api_paused_at` / `api_paused_reason`. Seeded at migration time; `claim_next_job` checks it to skip all api-transport jobs when non-NULL. Also carries per-batch pause state via `batches.paused_at`/`paused_reason`. |
 
 Two things people trip on:
@@ -194,7 +194,16 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
 - **Workers registry** (`workers` table): each worker heartbeats its `pc_id` every 30s on a
   dedicated task (deliberately *not* in the main loop — a busy worker whose slots are full
   would otherwise stop beating and look dead). `GET /workers` derives online/offline from
-  heartbeat freshness (90s = 3 missed beats).
+  heartbeat freshness (90s = 3 missed beats). Each beat also **publishes the worker's
+  capability blob** (`{cli:{installed provider CLIs}, api:{claude,gemini creds present}}`) into
+  `workers.capabilities`. The head unions it over online workers (`aggregate_fleet_capability`)
+  and serves it on `/agent/models` as a `fleet` block, so the **launcher greys out
+  `(provider × transport)` picks the fleet can't actually serve** (e.g. `claude·api` with no
+  Anthropic key on any worker, or a provider whose CLI is installed nowhere) — killing the
+  phantom-pending-job footgun where such a job launched and sat `pending` forever. Fail-open:
+  zero online workers ⇒ nothing greyed + a "no workers online" banner (launches still queue).
+  This is **selection-UX only** — the claim gate is unchanged (it already routes each job to a
+  credentialed worker; this just makes that truth visible at pick time).
 - **Batches** (`batches` table + `POST /jobs/batch`): launch a whole book as one batch —
   one job per lesson, fanned into the shared queue. Lessons that already have an active job
   are skipped (or adopted, if they don't belong to a batch yet), so re-launching is a safe
