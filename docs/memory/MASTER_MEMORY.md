@@ -1237,3 +1237,21 @@ The threshold **300** sits in the wide empty gap between the lone scan (71.5) an
 **Follow-up (gatekeeper/user):** the binding full-book confirmation — re-extract scanned book `e020d51f` with `EXTRACT_PROVIDER=gemini` + `EXTRACT_TOC_TRANSPORT=api` → valid `ExtractedTOC`, no `initOauthClient`, `agent_usages.auth_mode='api'`. (Window size pre-cleared: e020d51f 32-page TOC window = 5.43 MB, under the ~20 MB Vertex inline limit. A future >20 MB window would need the Files API — noted, out of scope.)
 
 **Docs de-staled:** `api_transport` "text-only v1" docstring; `docs/CODE_MAP.md` (`api_transport` multimodal, `toc_extractor` scanned note); `docs/HOW_IT_WORKS.md` (api attachments, scanned TOC + lesson vision now api-capable for gemini); `README.md` (`EXTRACT_TOC_TRANSPORT` scanned note). Plan `git mv`'d to `plans/shipped/`.
+
+## [0095] fetch-1 — raise ingest cap to 250MB + de-conflate oversize reject messages — 2026-06-27 (feat/fetch-1-ingest-cap → Nggaev-v2)
+
+**What:** the 50 MB upload/notion-fetch reject was the only wall stopping >50 MB textbooks (the real book that motivated this was **67.5 MB**) from being ingested. It was **never an LLM limit** — an Explore audit confirmed every downstream PDF read is bounded (TOC = 60 KB text excerpt or a front/back vision window dropped >20 MB; lesson-extract = 600 K-char text budget or a `_subset_pdf` page window; fleet transfer streams chunk-by-chunk), so total book size never reaches a model. The 50 MB cap was therefore a pure ingest/RAM guard with no LLM rationale left. **Shrink was rejected** — no Ghostscript/pikepdf/PyMuPDF installed (only `pypdf`), adding one is a fleet-wide native dep, and image-downsampling is *lossy* for scanned pages the vision extractor must read.
+- **`max_file_mb` default 50 → 250** (`config.py`) — textbook-sized (covers heavy scanned Uzbek textbooks with headroom), **not 600**: 600 × concurrent uploads would create a latent OOM (whole body is read + sha256'd before write), which is exactly what would *force* the streaming rework; 250 keeps per-upload RAM bounded. Still env-overridable via `MAX_FILE_MB`.
+- **De-conflated both reject messages** (`books.py` upload 413 + notion-fetch 422): now name `MAX_FILE_MB` as the lever and state the cap is an ingest/RAM guard, not a model limit — dropping the stale, misleading **"shrink and upload manually"** (the message that burned the operator on the 67.5 MB book).
+
+**Scope decision (user-locked):** Option 1 (config + proof), cap 250. Streaming-to-disk + incremental sha256 (only matters in the 300 MB+/high-concurrency regime) → **WISHLIST follow-up**, not now.
+
+**Acceptance — REAL smoke PASSED** (`scripts/smoke_fetch1_giant.py`, no LLM/DB/$): synthetic 54.4 MB PDF (largest local book doubled) → accepted under the new 250 default (rejected under old 50); `pdf_page_count`=352, `read_whole_book_text`=30 140 chars (scanned→sparse, bounded ~600 K), `_subset_pdf`=1.8 MB window, `_toc_source_pdf`=5.7 MB window (<20 MB Vertex inline), **peak RSS 752 MB, no OOM**. Verified-fact: the controller-direct path (CLAUDE.md small-clear-fix exception) — root cause verified, low risk; TDD (3 tests RED→GREEN: cap default, both messages), real smoke, full finish.
+
+**No migration; 1145 passed / 115 skipped** (the lone `test_default_is_cli` failure is the operator's un-reverted `.env` `EXTRACT_TOC_TRANSPORT=api` detour — proven by removing `.env` → passes; not this change).
+
+**Observations logged (WISHLIST, not fixed here):** (a) streaming-ingest follow-up (above); (b) `read_whole_book_text` on a 352-page scanned book takes **~106 s** before the pipeline detects sparse-text and falls to the vision window — a pre-existing per-lesson cost on large scanned books (my change only raises the cap), a perf candidate.
+
+**Operator follow-up:** the live head's `.env` pins `MAX_FILE_MB=50` — raise it to 250 (or drop the line to inherit the new default) before ingesting the 67.5 MB book. Binding real-book proof: upload/from-notion the 67.5 MB textbook → 201 (not 413/422) → TOC + one lesson extract succeed.
+
+**Docs:** reference docs not stale — `CODE_MAP.md` references `max_file_mb` generically (still accurate); no hardcoded "50 MB" or "shrink" text in README/HOW_IT_WORKS. Controller-direct (no plan file to `git mv`).

@@ -26,7 +26,16 @@ class Settings(BaseSettings):
     # no environment references them.
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash-exp"
-    max_file_mb: int = 50
+    # Ingest cap for upload + Notion-fetch (MB). NOT an LLM limit — every
+    # downstream PDF read is bounded (TOC = 60KB text excerpt or a front/back
+    # vision window; lesson-extract = 600K-char text budget or a _subset_pdf
+    # page window), so total book size never reaches a model. This cap is purely
+    # an ingest/RAM guard. Sized for heavy scanned Uzbek textbooks (fetch-1; the
+    # real book that motivated raising it from 50 was 67.5 MB); 250 keeps
+    # per-upload RAM bounded (whole body is read + hashed before write), so we
+    # don't create a latent OOM. Raise MAX_FILE_MB on the head for bigger books;
+    # genuinely huge (300 MB+) ingest would want the streaming-to-disk rework.
+    max_file_mb: int = 250
     enable_docs: bool = False
     allow_origins: str = "*"
 
