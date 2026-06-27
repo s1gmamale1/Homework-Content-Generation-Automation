@@ -22,7 +22,14 @@ class _FakeSession:
         pass
 
 
-def _patch_common(monkeypatch):
+_DEFAULT_LAUNCH_DEFAULTS = SimpleNamespace(
+    extract_provider="gemini",
+    extract_model="gemini-2.5-flash",
+    toc_transport="cli",
+)
+
+
+def _patch_common(monkeypatch, launch_defaults=None):
     statuses: list[tuple[str, str | None]] = []
     bulk_calls: list = []
     events: list[str] = []
@@ -43,12 +50,18 @@ def _patch_common(monkeypatch):
     async def fake_close(rid):
         pass
 
+    ld_row = launch_defaults if launch_defaults is not None else _DEFAULT_LAUNCH_DEFAULTS
+
+    async def fake_get_launch_defaults(session):
+        return ld_row
+
     monkeypatch.setattr(toc_extractor, "SessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(toc_extractor.books_repo, "set_status", fake_set_status)
     monkeypatch.setattr(toc_extractor.toc_repo, "bulk_create", fake_bulk_create)
     monkeypatch.setattr(toc_extractor.toc_repo, "delete_for_book", fake_delete_for_book)
     monkeypatch.setattr(toc_extractor.events_bus, "publish", fake_publish)
     monkeypatch.setattr(toc_extractor.events_bus, "close", fake_close)
+    monkeypatch.setattr(toc_extractor.launch_defaults_repo, "get", fake_get_launch_defaults)
     return statuses, bulk_calls, events
 
 
@@ -131,12 +144,17 @@ async def test_nonzero_entries_still_marks_ready(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_passes_extract_toc_transport_setting(monkeypatch):
-    """toc_extractor.run must forward settings.extract_toc_transport into
-    agent.extract_toc so an all-Vertex operator's api choice actually reaches
-    the spawn (else the CLI OAuth path is always used)."""
-    _patch_common(monkeypatch)
-    monkeypatch.setattr(toc_extractor.settings, "extract_toc_transport", "api")
+async def test_reads_provider_model_transport_from_launch_defaults(monkeypatch):
+    """toc_extractor.run must source provider, model, and transport from the
+    launch_defaults DB row (not settings.*) and forward them to agent.extract_toc.
+    RED-proof: changing the fake row's values must make the assertion follow —
+    meaning the code actually reads the row, not a hardcoded constant."""
+    custom_ld = SimpleNamespace(
+        extract_provider="claude",
+        extract_model="claude-opus-4-5",
+        toc_transport="api",
+    )
+    _patch_common(monkeypatch, launch_defaults=custom_ld)
     seen: dict = {}
 
     async def fake_extract_toc(**kw):
@@ -151,4 +169,12 @@ async def test_passes_extract_toc_transport_setting(monkeypatch):
 
     await toc_extractor.run(uuid4(), Path("/nonexistent.pdf"), "math-algebra")
 
-    assert seen.get("transport") == "api"
+    assert seen.get("provider") == "claude", (
+        "provider must come from launch_defaults.extract_provider"
+    )
+    assert seen.get("model") == "claude-opus-4-5", (
+        "model must come from launch_defaults.extract_model"
+    )
+    assert seen.get("transport") == "api", (
+        "transport must come from launch_defaults.toc_transport"
+    )
