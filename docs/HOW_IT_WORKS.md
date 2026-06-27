@@ -46,8 +46,8 @@ system-prompt input tax, dominate; harness: `scripts/api_vs_cli_compare.py`). **
 accepts PDF/image attachments** over Vertex (multimodal — scanned-book vision via api,
 `api-vision-1`); **claude stays text-only** (attachments raise a loud `NotImplementedError`).
 The **extract role** is pinned to its
-provider/model (default gemini/`gemini-2.5-flash`, overridable via `EXTRACT_PROVIDER`);
-its **auth** follows the job transport like any other spawn.
+provider/model (default gemini/`gemini-2.5-flash`, editable at `/settings` — DB-backed
+`launch_defaults` singleton); its **auth** follows the job transport like any other spawn.
 
 **Why do it the CLI way for `transport=cli`?**
 - Each CLI handles its own login/billing — no API key needed. (Phase 4.1 also added
@@ -600,15 +600,15 @@ you configure to match your plan.
 ## 12. PDF handling gotchas (real ones that have bitten us)
 
 - **Gemini CLI rejects PDFs > 20 MB.** TOC extraction runs on the extract provider
-  (default gemini, set by `EXTRACT_PROVIDER` — not hardcoded), so under the default a
-  bigger PDF fails with a sandbox error. Pre-shrink it or change `EXTRACT_PROVIDER`.
+  (default gemini, editable at `/settings`), so under the default a bigger PDF fails with a
+  sandbox error. Pre-shrink it or change the extract provider at `/settings`.
 - **TOC extraction defaults to the gemini *CLI* (OAuth), which fails on a headless
   all-Vertex head.** Book upload is a job-less spawn, so it can't carry a job transport;
   the cli baseline scrubs gemini auth and the CLI falls back to built-in OAuth
   (`initOauthClient`) — fine on a logged-in desktop, but an operator with only Vertex
-  service-account creds (no gemini OAuth) gets `FatalCancellationError`. Set
-  `EXTRACT_TOC_TRANSPORT=api` to route the **text-usable** TOC read over the Vertex SDK
-  instead (the local front/back page text feeds the model; no CLI, no OAuth). Scanned /
+  service-account creds (no gemini OAuth) gets `FatalCancellationError`. Flip
+  `toc_transport→api` at `/settings` to route the **text-usable** TOC read over the Vertex
+  SDK instead (the local front/back page text feeds the model; no CLI, no OAuth). Scanned /
   sparse books **also** read over the Vertex SDK for gemini now — the front+back page-window
   PDF attaches as a multimodal `Part` (`api-vision-1`, worklog 0094), so an all-Vertex head
   no longer needs a gemini CLI login at all; only non-gemini (or an explicit cli transport)
@@ -618,11 +618,11 @@ you configure to match your plan.
   rather than hallucinate.
 - **Extract is pinned to a cheap model because it's high-input/low-value** (whole-PDF
   read → flat factual summary), so paying smart-tier rates buys nothing — that's the
-  design reason for the gemini/`gemini-2.5-flash` extract pin (the **provider/model** is
-  pinned; auth follows job transport). Separately, **claude refuses copyrighted
-  textbooks** — Claude Code's copyright filter rejects extracting from a real published
-  textbook, so claude is a poor extract provider for the raw read even though it's fine
-  for the *derived* content.
+  design reason for the gemini/`gemini-2.5-flash` extract default (the **provider/model**
+  is editable at `/settings` via the `launch_defaults` DB singleton; auth follows job
+  transport). Separately, **claude refuses copyrighted textbooks** — Claude Code's copyright
+  filter rejects extracting from a real published textbook, so claude is a poor extract
+  provider for the raw read even though it's fine for the *derived* content.
 - **TOC extraction scans both ends of the PDF** — the front pages *and* the last ~15 pages —
   because some Uzbek textbooks print their "Mundarija" (contents) at the back. It also
   glyph-decodes broken font subsets. A fully scanned/OCR-less book whose *TOC itself* is an image
@@ -679,9 +679,9 @@ You also need the CLIs you intend to use installed and logged-in on `PATH`
    `None` is load-bearing and there's a test for it.
 4. **Don't use raw `phase_repo.create`** for phases — use `create_or_reset`, or retried jobs
    trip the unique constraint.
-5. **Don't add per-call provider/model overrides** anywhere except the existing extract pin.
-   Keeping the job-level provider stable across the pipeline is what makes the usage stats and
-   the UI badge mean something.
+5. **Don't add per-call provider/model overrides** anywhere except the existing extract/judge
+   defaults (edit those at `/settings`, not in code). Keeping the job-level provider stable
+   across the pipeline is what makes the usage stats and the UI badge mean something.
 6. **Don't delete the PDF after TOC extraction** — every later phase re-reads it from disk.
 7. **Don't commit secrets or the textbook PDFs.** `.env` and `var/` are gitignored for a
    reason (a past inline-comment bug in `.gitignore` once almost staged a copyrighted PDF —
@@ -703,6 +703,7 @@ You also need the CLIs you intend to use installed and logged-in on `PATH`
 | Edit what the AI is told to do per phase | `prompts/_general/<phase>.md` (all subjects) |
 | Change language behavior (Uzbek / English-target) | `app/services/prompts.py` (`LANGUAGE_RULES`, `get_prompt`) |
 | Tweak queue/worker/timeout behavior | `app/config.py` + `app/services/worker.py` |
+| Change extract/judge model selection | `/settings` page → `GET`/`PUT /api/v1/settings/launch-defaults` (DB-backed `launch_defaults` singleton) |
 | Understand the DB schema / queue / clocks in depth | `docs/DATABASE.md` |
 | Touch batches / fleet launch / rollups | `app/repositories/batches.py` + `app/api/v1/batch.py` |
 | Touch worker liveness / the registry | `app/repositories/workers.py` + `app/api/v1/workers.py` |

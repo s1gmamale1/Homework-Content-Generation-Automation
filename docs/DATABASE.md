@@ -2,8 +2,8 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Every claim here was re-verified against branch `Nggaev-v2`, head `0034_widen_prompt_hash`
-> (0034), 2026-06-19. When this doc and the code disagree, the code wins — fix the doc.
+> Every claim here was re-verified against branch `feat/global-launch-defaults`, head `0037_launch_defaults`
+> (0037), 2026-06-27. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
 
@@ -28,11 +28,13 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`0034_widen_prompt_hash`** (0028 = enum CHECK constraints,
+also runs it on deploy). Current head: **`0037_launch_defaults`** (0028 = enum CHECK constraints,
 0029 = `phase_outputs.judge_status`, 0030 = `agent_usages.cache_creation_tokens`,
 0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton,
 0033 = `custom_prompts`/`selected_phases` JSONB on `homework_jobs`+`batches`,
-0034 = widen `phase_outputs.prompt_hash` 64→128 for `custom:sha256:<hex>` provenance).
+0034 = widen `phase_outputs.prompt_hash` 64→128 for `custom:sha256:<hex>` provenance,
+0035 = `workers.capabilities` JSONB, 0036 = `batches.session_limit_strategy` + CHECK,
+0037 = `launch_defaults` singleton + seed + NULL-column backfill on `homework_jobs`).
 Full chain in §7. (Revision IDs stay ≤32 chars — `alembic_version.version_num` is VARCHAR(32).)
 
 ---
@@ -114,7 +116,7 @@ Relationship: `toc_entries` (cascade delete-orphan, ordered by `order_index`).
 | `batch_id` | FK → batches NULL | fleet membership (migration 0023); `ix_homework_jobs_batch_id` |
 | `transport` | String(16) NOT NULL, server_default `'cli'` | Phase 4 (migration 0024): `cli` (subscription CLI auth, $0 marginal) vs `api` (pay-per-token keys); validation requires api ⇒ provider ∈ {claude, gemini} + explicit model; **DB CHECK `cli\|api`** (migration 0028) |
 | `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 (migration 0025): per-role billing override, `cli \| api \| inherit`; `inherit` follows `transport` (`resolve_role_transport`); **DB CHECK `cli\|api\|inherit`** (migration 0028) |
-| `extract_provider` / `extract_model` / `judge_provider` / `judge_model` | String(32 / 128 / 32 / 128) NULL | migration 0027: per-role provider/model override; NULL = role default (extract → `settings.extract_*`; judge → `model_tiers` auto) |
+| `extract_provider` / `extract_model` / `judge_provider` / `judge_model` | String(32 / 128 / 32 / 128) NULL | migration 0027: per-role provider/model; stamped at launch from an explicit pick or the `launch_defaults` global default (migration 0037 backfilled existing NULLs with the seed values) |
 | `custom_prompts` | JSONB NULL | migration 0033 (PR37): `{phase: markdown}` per-phase prompt overrides replacing the built-in contract; NULL = built-in for all phases. Also seen by the judge as `contract_override`. |
 | `selected_phases` | JSONB NULL | migration 0033 (PR37): subset of content phases to run (dependency-closure-expanded at launch); NULL = full subject flow |
 | `current_phase` | String(64) NULL | live progress marker |
@@ -236,6 +238,24 @@ No UUIDPK/Timestamps mixins — intentionally minimal.
 
 `budget_repo.get_state(session)` returns the singleton row; raises `RuntimeError` if the row is missing (indicates a broken migration state — run `alembic upgrade head`). The budget monitor clears the fleet pause if spend drops back below cap (e.g. after UTC midnight resets the 24h window). The singleton's pause state is distinct from per-batch `batches.paused_at` — an operator can check both via `GET /jobs/batch/{id}/cost` (returns `fleet_api_paused_at`/`fleet_api_paused_reason` alongside the per-batch fields).
 
+### 3.9 `launch_defaults` — global model-selection singleton (migration 0037)
+
+Exactly **one row** (`id=1`) enforced by `CHECK(id = 1)`, seeded by migration 0037.
+No UUIDPK/Timestamps mixins — intentionally minimal.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer PK | always `1` (singleton) |
+| `judge_provider` / `judge_model` | String(32/128) NOT NULL | provider·model used by the LLM judge when the job's per-job override is Auto (NULL explicit pick); seed: `gemini`/`gemini-2.5-flash` |
+| `judge_transport` | String(16) NOT NULL | `cli` \| `api` \| `inherit`; seed: `inherit` (follows the job's transport) |
+| `extract_provider` / `extract_model` | String(32/128) NOT NULL | provider·model for lesson extract; seed: `gemini`/`gemini-2.5-flash` |
+| `extract_transport` | String(16) NOT NULL | `cli` \| `api` \| `inherit`; seed: `inherit` |
+| `toc_transport` | String(16) NOT NULL | transport for job-less book-upload TOC extraction: `cli` (seed, uses OAuth) or `api` (uses Vertex SDK — required on an all-Vertex head where gemini CLI OAuth is unavailable) |
+
+**Write surface:** `PUT /api/v1/settings/launch-defaults` (validates non-null provider/model; HTTP 422 on null — prevents a launch-bricking footgun; validated against `agent_models.MODEL_MANIFEST`). **Read surface:** `GET /api/v1/settings/launch-defaults` + `launch_defaults_repo.get_or_create()` (called by launch endpoints, `toc_extractor`, and the claim gate). **No credentials here** — those live in `.env`/`os.environ`.
+
+**⚠ Operator note (all-Vertex head):** the seed `toc_transport='cli'` means a worker with only Vertex SA creds and no gemini CLI OAuth will fail TOC extraction. After first deploy on an all-Vertex head, flip `toc_transport→api` at `/settings`.
+
 ---
 
 ## 4. Queue semantics (`app/repositories/jobs.py`)
@@ -326,8 +346,9 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
   deliberately absent to protect the Max pool), and cross-job cache reuse keyed on
   `(toc_entry_id, prompt_hash)` (a free `"<cache>"` usage row records the hit). Tail:
   wave scheduler over `flows.PHASE_DEPS`, `create_or_reset` per phase row, LLM judge
-  (resolved per-job: `COALESCE(job.judge_provider, settings.judge_provider)` / model;
-  default claude/claude-opus-4-7) grading every content phase — regen on MAJOR verdict
+  (reads `job.judge_provider`/`job.judge_model` — stamped at launch from the explicit pick
+  or `launch_defaults` global default; seed gemini/gemini-2.5-flash) grading every content
+  phase — regen on MAJOR verdict
   (cap = `settings.max_judge_regens`, default 1); outcome recorded as
   `phase_outputs.judge_status`. Job `done` → fire-and-forget Notion archive.
 - **Provider router** (`app/services/agent.py` + `providers/`) — argv build, spawn,
@@ -377,7 +398,10 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | 31 | 0031_batch_pause_columns | `0031_batch_pause_columns` | adds `batches.paused_at` / `paused_reason` (C4 batch-pause primitive; reused by C5) |
 | 32 | 0032_budget_state | `0032_budget_state` | adds `budget_state` singleton table (id=1 CHECK) + seeds the row (C4 fleet-level pause) |
 | 33 | 0033_custom_prompts_phases | `0033_custom_prompts_phases` | adds nullable `custom_prompts`/`selected_phases` JSONB to `homework_jobs` + `batches` (PR37 custom-prompt upload + phase-picker) |
-| 34 | 0034_widen_prompt_hash | `0034_widen_prompt_hash` | widens `phase_outputs.prompt_hash` 64→128 for `custom:sha256:<hex>` provenance (PR37) — **HEAD** |
+| 34 | 0034_widen_prompt_hash | `0034_widen_prompt_hash` | widens `phase_outputs.prompt_hash` 64→128 for `custom:sha256:<hex>` provenance (PR37) |
+| 35 | 0035_workers_capabilities | `0035_workers_capabilities` | adds `workers.capabilities` JSONB nullable (launcher-capability-gate-1, worklog 0085) |
+| 36 | 0036_batch_session_limit_strategy | `0036_batch_session_limit_strategy` | adds `batches.session_limit_strategy` NOT NULL server_default `'inherit'` + CHECK `pause\|switch\|inherit` (C5 session-limit autopause, worklog 0089) |
+| 37 | 0037_launch_defaults | `0037_launch_defaults` | creates `launch_defaults` singleton table (id=1 CHECK), seeds the row (judge/extract = gemini/gemini-2.5-flash/inherit, toc_transport=cli), and unconditionally backfills NULL `judge_provider`/`judge_model`/`extract_provider`/`extract_model` on `homework_jobs` — **HEAD** |
 
 ---
 
@@ -395,10 +419,10 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | `queue_max_attempts` | 3 | claim attempts before terminal `failed` |
 | `queue_backpressure_limit` | 50 | pending depth → `/generate` 503 (0 disables) |
 | `gemini_max_concurrency` | 8 | **the live** process-wide CLI subprocess cap (`agent_max_concurrency` is dead) |
-| `extract_provider` / `extract_model` | gemini / gemini-2.5-flash | the extract pin |
-| `judge_provider` / `judge_model` | claude / claude-opus-4-7 | the LLM judge |
 | `failover_provider_order` | codex, gemini, kimi, opencode | per-phase failover (no claude) |
 | `agent_limit_<provider>_<1h\|24h\|7d>` | per provider | local call-count caps for `/usage` bars |
+
+> **Judge/extract model selection** is NOT in `config.py` — it lives in the DB `launch_defaults` singleton (§3.9), edited at the `/settings` page. `EXTRACT_PROVIDER`/`EXTRACT_MODEL`/`JUDGE_PROVIDER`/`JUDGE_MODEL`/`EXTRACT_TOC_TRANSPORT` env vars are **deleted** since migration 0037.
 
 ---
 

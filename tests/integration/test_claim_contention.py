@@ -377,13 +377,17 @@ async def test_null_model_job_with_non_self_grade_judge_claims():
 @pytest.mark.asyncio
 async def test_api_gemini_judge_job_claimable_by_vertex_only_worker():
     """THE live bug (C1 / judge-claimgate-1): a Vertex-only worker has gemini api
-    but NO anthropic key. settings.judge_provider='claude'. A job with
-    transport='api', judge_provider='gemini', judge_transport='inherit' was
-    STRANDED — the old gate used caps['judge_api_ok'] = cap['claude'] = False.
+    but NO anthropic key. The old gate resolved judge_provider via
+    COALESCE(job.judge_provider, settings.judge_provider) where the settings
+    default was 'claude' — so this job was STRANDED (caps['judge_api_ok'] tied
+    to claude = False).
 
-    After the fix: claim_next_job resolves the judge provider per-job via
-    COALESCE(job.judge_provider, settings_judge_provider), then gates on the
-    matching per-provider cap flag — so this job IS claimable.
+    After the 0097 fix (claim gate v3): launch endpoints STAMP a concrete
+    judge_provider onto every job row; settings.judge_provider no longer exists.
+    The gate reads job.judge_provider directly (always non-NULL after migration
+    0037's backfill) and gates on credential-only caps {can_claude_api,
+    can_gemini_api} — so this job IS claimable (judge_provider='gemini' →
+    can_gemini_api required → Vertex-only worker qualifies).
     """
     from app.db import SessionLocal
 

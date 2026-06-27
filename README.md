@@ -86,7 +86,7 @@ For development without Docker: `uv sync` → `uv run alembic upgrade head` → 
 Homework-Content-Generation-Automation/
 ├── main.py                       FastAPI entry, lifespan, embedded worker
 ├── app/
-│   ├── api/v1/                   REST endpoints (books, jobs, batch, workers, notion, health)
+│   ├── api/v1/                   REST endpoints (books, jobs, batch, workers, notion, health, settings)
 │   ├── auth.py                   token-based auth dependency
 │   ├── config.py                 Settings (BaseSettings)
 │   ├── db.py                     async engine + pool
@@ -104,7 +104,7 @@ Homework-Content-Generation-Automation/
 │       ├── worker.py             queue worker (embedded or standalone)
 │       └── notion_*/notion/      Notion archive + fetch
 ├── prompts/_general/             the live prompt set (one .md per phase)
-├── alembic/versions/             schema migrations (0001…0034)
+├── alembic/versions/             schema migrations (0001…0037)
 ├── web/                          React SPA (operator console)
 ├── Dockerfile                    multi-stage (node SPA → uv venv → runtime)
 ├── docker-compose.yml            postgres + api (GHCR image, Traefik) + optional scaled worker
@@ -132,9 +132,7 @@ All settings via env vars; defaults in [`app/config.py`](./app/config.py). Essen
 | `WORKER_CONCURRENCY` | Embedded worker concurrency. Set `0` in API-only pods |
 | `AGENT_MAX_CONCURRENCY` | Process-wide cap on concurrent CLI subprocesses |
 | `RATE_LIMIT_MAX_RETRIES` / `RATE_LIMIT_BASE_DELAY_SECONDS` / `RATE_LIMIT_MAX_DELAY_SECONDS` | Reactive 429 backoff: `agent._spawn` retries a transient rate-limit (429 / `RESOURCE_EXHAUSTED` / `overloaded_error`) with exponential delay + jitter (defaults `4` / `2.0` / `30.0`). The backoff sleep holds no concurrency slot |
-| `EXTRACT_PROVIDER` / `EXTRACT_MODEL` | Cheap model pinned for TOC + lesson extract (default `gemini` / `gemini-2.5-flash`) |
-| `EXTRACT_TOC_TRANSPORT` | Transport for book-upload TOC extraction: `cli` (default) or `api`. Set `api` on a headless all-Vertex head (no gemini OAuth) to route the TOC read over the Vertex SDK instead of the gemini CLI — for **both** text-usable and scanned books (scanned books vision-OCR the page-window over Vertex too, `api-vision-1`), so an all-Vertex head needs no gemini CLI login |
-| `JUDGE_PROVIDER` / `JUDGE_MODEL` | LLM judge model (default `claude` / `claude-opus-4-7`) |
+| Judge/extract model selection | Edited at **`/settings`** (DB-backed `launch_defaults` singleton, migration 0037). Seeds: judge = `gemini`/`gemini-2.5-flash`; extract = `gemini`/`gemini-2.5-flash`; `toc_transport=cli`. **⚠ On an all-Vertex head** (no gemini CLI OAuth): flip `toc_transport→api` at `/settings` after first deploy, or TOC extraction fails. `EXTRACT_PROVIDER`/`EXTRACT_MODEL`/`JUDGE_PROVIDER`/`JUDGE_MODEL`/`EXTRACT_TOC_TRANSPORT` env vars are **deleted** — do not set them. |
 | `COST_CAP_BATCH_USD` / `COST_CAP_FLEET_DAILY_USD` | Spend caps that pause-claim when tripped; `0` = disabled (default). `COST_CHECK_INTERVAL_SECONDS` (default 60) sets the monitor cadence |
 | `JOB_TIMEOUT_SECONDS` | Hard ceiling per pipeline run (default 1800) |
 | `QUEUE_BACKPRESSURE_LIMIT` | `503` when `pending` depth exceeds; `0` disables |
