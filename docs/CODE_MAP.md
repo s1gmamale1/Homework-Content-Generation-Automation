@@ -52,7 +52,7 @@ What each source file does, grouped by layer. `transport=cli` (default): every m
 - **`claude.py` · `gemini.py` · `codex.py` · `kimi.py` · `opencode.py`** — the five providers. gemini = pinned extractor; kimi = no token counts / shells out for PDF; opencode **requires** an explicit `provider/model` (can't run bare).
 
 ### `app/services/notion/` — Notion REST client
-- **`client.py`** (read/write), **`blocks.py`** (markdown→Notion blocks + file-upload blocks), **`page_creator.py`** (find-or-create pages), **`lesson_match.py`** (match a job to its lesson page under "Generated Lessons").
+- **`client.py`** (read/write), **`blocks.py`** (markdown→Notion blocks + file-upload blocks), **`page_creator.py`** (find-or-create pages). Archiving files every homework unconditionally under a `"Generated Homeworks"` container per subject (`notion_archive.CONTAINER_TITLE`) — no human-page matching.
 
 ## `app/schemas/` — Pydantic contracts
 - `book.py`, `toc.py` (`ExtractedTOC`), `job.py` (`GenerateRequest`, `JobOut`, `PhaseOut`), `events.py` (SSE event models). *(Content phases are markdown, not structured — the old per-phase JSON schemas were removed in the md-per-phase reshape; the dead `classify.py` difficulty cluster was removed in worklog 0061/api-3.)*
