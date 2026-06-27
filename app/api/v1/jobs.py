@@ -17,6 +17,7 @@ from app.repositories import agent_usage as agent_usage_repo
 from app.repositories import books as books_repo
 from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
+from app.repositories import launch_defaults as launch_defaults_repo
 from app.repositories import toc_entries as toc_repo
 from app.repositories import workers as workers_repo
 from app.schemas import GenerateRequest, JobOut, PhaseOut
@@ -25,7 +26,9 @@ from app.services.agent_models import (
     MODEL_MANIFEST,
     api_supported,
     is_valid,
+    resolve_role_selection,
     resolve_role_transport,
+    resolve_role_transport_default,
     validate_role_transport,
     validate_transport,
 )
@@ -231,6 +234,22 @@ async def generate(
                 headers={"Retry-After": "30"},
             )
 
+    # Resolve roles against the UI-managed global defaults: explicit pick wins,
+    # else the global default. Stamp CONCRETE provider/model onto the job so it
+    # is self-describing (future-launches-only; agent_usages attribution stays honest).
+    ld = await launch_defaults_repo.get(session)
+    res_judge_provider, res_judge_model = resolve_role_selection(
+        body.judge_provider, body.judge_model, ld.judge_provider, ld.judge_model)
+    res_extract_provider, res_extract_model = resolve_role_selection(
+        body.extract_provider, body.extract_model, ld.extract_provider, ld.extract_model)
+    res_judge_transport = resolve_role_transport_default(body.judge_transport, ld.judge_transport)
+    res_extract_transport = resolve_role_transport_default(body.extract_transport, ld.extract_transport)
+    # Defense-in-depth: resolved pairs must be manifest-valid.
+    for role, prov, mdl in (("judge", res_judge_provider, res_judge_model),
+                            ("extract", res_extract_provider, res_extract_model)):
+        if not is_valid(prov, mdl):
+            raise HTTPException(500, f"{role}: resolved default off-manifest ({prov!r},{mdl!r})")
+
     job = await jobs_repo.create(
         session,
         book_id=book_id,
@@ -240,14 +259,14 @@ async def generate(
         provider=body.provider,
         model=body.model,
         transport=body.transport,
-        extract_transport=body.extract_transport,
-        judge_transport=body.judge_transport,
+        extract_transport=res_extract_transport,
+        judge_transport=res_judge_transport,
         custom_prompts=custom_prompts,
         selected_phases=selected_phases,
-        extract_provider=body.extract_provider,
-        extract_model=body.extract_model,
-        judge_provider=body.judge_provider,
-        judge_model=body.judge_model,
+        extract_provider=res_extract_provider,
+        extract_model=res_extract_model,
+        judge_provider=res_judge_provider,
+        judge_model=res_judge_model,
     )
     await session.commit()  # commit + release advisory lock atomically
 

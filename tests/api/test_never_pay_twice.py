@@ -94,6 +94,15 @@ _FAKE_JOB = SimpleNamespace(
     selected_phases=None,
 )
 
+# Fake launch_defaults singleton row — matches the migration-seeded defaults so
+# resolution is a no-op (Auto → gemini/gemini-2.5-flash, transport inherit→inherit).
+# Added to every batch/generate success-path test that reaches launch_defaults_repo.get.
+_FAKE_LD = SimpleNamespace(
+    judge_provider="gemini", judge_model="gemini-2.5-flash",
+    judge_transport="inherit", extract_provider="gemini",
+    extract_model="gemini-2.5-flash", extract_transport="inherit",
+)
+
 _HDR = {"Authorization": "Bearer 123"}
 _BATCH_BODY = {
     "book_id": str(BOOK_ID),
@@ -157,6 +166,7 @@ async def test_batch_force_with_prior_api_job_warns():
         with (
             patch.object(batch_mod.books_repo, "get", AsyncMock(return_value=_FAKE_BOOK)),
             patch.object(batch_mod.toc_repo, "list_for_book", AsyncMock(return_value=[_FAKE_SECTION])),
+            patch.object(batch_mod.launch_defaults_repo, "get", AsyncMock(return_value=_FAKE_LD)),
             patch.object(batch_mod.batches_repo, "get_or_create_for_book", AsyncMock(return_value=_FAKE_BATCH)),
             patch.object(batch_mod.jobs_repo, "lock_section_for_generate", AsyncMock()),
             # force=True: latest_for_section returns None → branch falls to create
@@ -201,6 +211,7 @@ async def test_batch_force_never_generated_no_warning():
         with (
             patch.object(batch_mod.books_repo, "get", AsyncMock(return_value=_FAKE_BOOK)),
             patch.object(batch_mod.toc_repo, "list_for_book", AsyncMock(return_value=[_FAKE_SECTION])),
+            patch.object(batch_mod.launch_defaults_repo, "get", AsyncMock(return_value=_FAKE_LD)),
             patch.object(batch_mod.batches_repo, "get_or_create_for_book", AsyncMock(return_value=_FAKE_BATCH)),
             patch.object(batch_mod.jobs_repo, "lock_section_for_generate", AsyncMock()),
             patch.object(batch_mod.jobs_repo, "latest_for_section", AsyncMock(return_value=None)),
@@ -252,6 +263,7 @@ async def test_batch_force_cli_only_prior_no_warning():
         with (
             patch.object(batch_mod.books_repo, "get", AsyncMock(return_value=_FAKE_BOOK)),
             patch.object(batch_mod.toc_repo, "list_for_book", AsyncMock(return_value=[_FAKE_SECTION])),
+            patch.object(batch_mod.launch_defaults_repo, "get", AsyncMock(return_value=_FAKE_LD)),
             patch.object(batch_mod.batches_repo, "get_or_create_for_book", AsyncMock(return_value=_FAKE_BATCH)),
             patch.object(batch_mod.jobs_repo, "lock_section_for_generate", AsyncMock()),
             patch.object(batch_mod.jobs_repo, "latest_for_section", AsyncMock(return_value=None)),
@@ -305,6 +317,7 @@ async def test_batch_no_force_unaffected():
         with (
             patch.object(batch_mod.books_repo, "get", AsyncMock(return_value=_FAKE_BOOK)),
             patch.object(batch_mod.toc_repo, "list_for_book", AsyncMock(return_value=[_FAKE_SECTION])),
+            patch.object(batch_mod.launch_defaults_repo, "get", AsyncMock(return_value=_FAKE_LD)),
             patch.object(batch_mod.batches_repo, "get_or_create_for_book", AsyncMock(return_value=_FAKE_BATCH)),
             patch.object(batch_mod.jobs_repo, "lock_section_for_generate", AsyncMock()),
             # existing active job → section is skipped (never reaches force path)
@@ -351,6 +364,7 @@ async def test_batch_no_force_brand_new_section_no_warning():
         with (
             patch.object(batch_mod.books_repo, "get", AsyncMock(return_value=_FAKE_BOOK)),
             patch.object(batch_mod.toc_repo, "list_for_book", AsyncMock(return_value=[_FAKE_SECTION])),
+            patch.object(batch_mod.launch_defaults_repo, "get", AsyncMock(return_value=_FAKE_LD)),
             patch.object(batch_mod.batches_repo, "get_or_create_for_book", AsyncMock(return_value=_FAKE_BATCH)),
             patch.object(batch_mod.jobs_repo, "lock_section_for_generate", AsyncMock()),
             # force=False path: find_active_for_section IS called (not short-circuited)
@@ -395,6 +409,7 @@ async def test_generate_force_with_prior_api_job_warns():
             patch.object(jobs_mod.jobs_repo, "lock_section_for_generate", AsyncMock()),
             # Disable backpressure check (returns 0 queue depth)
             patch.object(jobs_mod.jobs_repo, "queue_depth", AsyncMock(return_value=0)),
+            patch.object(jobs_mod.launch_defaults_repo, "get", AsyncMock(return_value=_FAKE_LD)),
             patch.object(jobs_mod.jobs_repo, "create", AsyncMock(return_value=_FAKE_JOB)),
             patch.object(jobs_mod.jobs_repo, "get_with_phases", AsyncMock(return_value=_FAKE_JOB)),
             # Prior done api job
@@ -434,6 +449,7 @@ async def test_generate_force_never_generated_no_warning():
             patch.object(jobs_mod.toc_repo, "get", AsyncMock(return_value=_FAKE_SECTION)),
             patch.object(jobs_mod.jobs_repo, "lock_section_for_generate", AsyncMock()),
             patch.object(jobs_mod.jobs_repo, "queue_depth", AsyncMock(return_value=0)),
+            patch.object(jobs_mod.launch_defaults_repo, "get", AsyncMock(return_value=_FAKE_LD)),
             patch.object(jobs_mod.jobs_repo, "create", AsyncMock(return_value=_FAKE_JOB)),
             patch.object(jobs_mod.jobs_repo, "get_with_phases", AsyncMock(return_value=_FAKE_JOB)),
             # Never generated: no prior job
