@@ -261,3 +261,5 @@ def test_mime_for_suffix():
     assert _mime_for(Path("x.jpg")) == "image/jpeg"
     assert _mime_for(Path("x.jpeg")) == "image/jpeg"
     assert _mime_for(Path("x.unknown")) == "application/pdf"   # default
+    assert _mime_for(Path("WINDOW.PDF")) == "application/pdf"  # case-insensitive
+    assert _mime_for(Path("scan.JPG")) == "image/jpeg"

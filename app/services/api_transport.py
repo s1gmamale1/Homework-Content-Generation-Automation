@@ -94,17 +94,17 @@ async def _gemini(
     model: str, prompt: str, attachments: "list[Path] | tuple" = ()
 ) -> tuple[int, str, dict, str]:
     client = _gemini_client()
-    contents: object = prompt
+    contents: "str | list" = prompt
     if attachments:
         from google.genai import types  # lazy: only when needed
 
-        parts = [
+        attach_parts = [
             types.Part.from_bytes(
                 data=Path(a).read_bytes(), mime_type=_mime_for(Path(a))
             )
             for a in attachments
         ]
-        contents = [prompt, *parts]
+        contents = [prompt, *attach_parts]
     try:
         resp = await client.aio.models.generate_content(model=model, contents=contents)
     except Exception as exc:  # noqa: BLE001 — surface to run_phase failure/failover
