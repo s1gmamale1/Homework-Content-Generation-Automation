@@ -1,10 +1,14 @@
 """Phase-1 Notion push. Best-effort: archive_job never raises into the pipeline.
 
-Flow: resolve subject page from config map ({subject}|{grade}) → find-or-create
-lesson page → find-or-create `Homework` sub-page → grouped page layout
-(Case-Based Preview · Flashcards[+memory-check] · Gamified Practices[game
-children] · Boss Arena · Reflection), each page's .md attached at the top →
-stamp toc_entry + job."""
+Flow: resolve subject page from config map ({subject}|{grade}) → unconditionally
+find-or-create a 'Generated Homeworks' container under the subject page →
+find-or-create the lesson page under that container → find-or-create a 'Homework'
+sub-page → grouped page layout (Case-Based Preview · Flashcards[+memory-check] ·
+Gamified Practices[game children] · Boss Arena · Reflection), each page's .md
+attached at the top → stamp toc_entry + job.
+
+Every homework is filed under 'Generated Homeworks'; human-page matching/adoption
+is not performed."""
 
 from __future__ import annotations
 
@@ -23,7 +27,10 @@ from app.repositories import phase_outputs as phase_repo
 from app.services.notion import blocks
 from app.services.notion.client import NotionClientWrapper
 from app.services.notion.page_creator import find_or_create
-from app.services.notion.lesson_match import match_lesson, CONTAINER_TITLE
+
+# All generated homeworks are filed under this container, created on demand
+# under the subject page. Human-page matching/adoption is not performed.
+CONTAINER_TITLE = "Generated Homeworks"
 
 log = logging.getLogger("notion.archive")
 
@@ -133,18 +140,14 @@ def _push_to_notion(
     phase_md: dict[str, str],  # phase_name -> markdown (only present/done phases)
     find_or_create: Callable = find_or_create,  # injectable for tests
 ) -> str:
-    """Synchronous Notion I/O. Creates lesson → Homework, then the grouped page
-    layout (`_HOMEWORK_LAYOUT`): Case-Based Preview, Flashcards (flashcards +
-    memory-check inline), Gamified Practices (container of game sub-pages), Boss
-    Arena, Reflection. Idempotent: a page that already has content is skipped.
-    Returns the Homework page id."""
-    human_pages = client.get_child_pages(subject_page_id)
-    hit = match_lesson(lesson_title, human_pages)
-    if hit is not None:
-        lesson_id = hit
-    else:
-        container_id, _ = find_or_create(client, subject_page_id, CONTAINER_TITLE)
-        lesson_id, _ = find_or_create(client, container_id, lesson_title)
+    """Synchronous Notion I/O. Unconditionally creates the path:
+    Subject → 'Generated Homeworks' → <lesson_title> → 'Homework', then the
+    grouped page layout (`_HOMEWORK_LAYOUT`): Case-Based Preview, Flashcards
+    (flashcards + memory-check inline), Gamified Practices (container of game
+    sub-pages), Boss Arena, Reflection. Idempotent: a page that already has
+    content is skipped. Returns the Homework page id."""
+    container_id, _ = find_or_create(client, subject_page_id, CONTAINER_TITLE)
+    lesson_id, _ = find_or_create(client, container_id, lesson_title)
     homework_id, _ = find_or_create(client, lesson_id, "Homework")
 
     def _write_leaf(parent_id: str, title: str, present: list[tuple[str, str]]) -> None:
