@@ -33,6 +33,27 @@ def test_from_notion_oversize_422():
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "alg", "grade": "9"})
     assert r.status_code == 422 and "50 MB" in r.text
+    # fetch-1: de-conflated guidance — the cap is an ingest guard, not a model
+    # limit, so point the operator at the real lever (MAX_FILE_MB) instead of the
+    # stale, misleading "shrink and upload manually".
+    assert "MAX_FILE_MB" in r.text
+    assert "shrink and upload manually" not in r.text
+
+
+def test_upload_oversize_413_points_at_cap_lever(monkeypatch):
+    # fetch-1: oversize upload 413 must name MAX_FILE_MB as the lever, not just
+    # say "too large". Shrink the cap to 1 MB and post a 2 MB body so we exercise
+    # the reject path without building a real giant.
+    from app.config import settings
+    monkeypatch.setattr(settings, "max_file_mb", 1)
+    body = b"%PDF-1.4\n" + b"0" * (2 * 1024 * 1024)
+    r = client.post(
+        "/api/v1/books",
+        files={"file": ("big.pdf", body, "application/pdf")},
+        data={"subject": "matematika"},
+    )
+    assert r.status_code == 413
+    assert "MAX_FILE_MB" in r.text
 
 
 def test_from_notion_happy_path_calls_ingest():

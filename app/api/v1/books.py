@@ -69,7 +69,12 @@ async def ingest_pdf(
         raise HTTPException(400, f"unknown subject; allowed: {SUPPORTED_SUBJECTS}")
 
     if len(body) > settings.max_file_mb * 1024 * 1024:
-        raise HTTPException(413, f"file too large (>{settings.max_file_mb} MB)")
+        raise HTTPException(
+            413,
+            f"file too large: {len(body) // 1048576} MB exceeds the "
+            f"{settings.max_file_mb} MB ingest cap — raise MAX_FILE_MB on the head "
+            f"to accept larger books (the cap is an ingest/RAM guard, not a model limit)",
+        )
     if len(body) == 0:
         raise HTTPException(400, "empty file")
 
@@ -154,7 +159,13 @@ async def book_from_notion(
         body, filename = await asyncio.to_thread(
             notion_fetch.download_textbook, client, req.subject_page_id)
     except notion_fetch.TextbookTooLarge as exc:
-        raise HTTPException(422, f"textbook too large ({exc}) - shrink and upload manually")
+        raise HTTPException(
+            422,
+            f"textbook too large ({exc}) — exceeds the {settings.max_file_mb} MB "
+            f"ingest cap; raise MAX_FILE_MB on the head to ingest it (the cap is an "
+            f"ingest/RAM guard, not a model limit — large books extract fine via "
+            f"bounded page windows)",
+        )
     except notion_fetch.NoTextbook:
         raise HTTPException(422, "this subject has no attached textbook")
     return await ingest_pdf(
