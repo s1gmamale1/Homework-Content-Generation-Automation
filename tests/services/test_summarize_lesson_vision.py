@@ -2,8 +2,8 @@
 
 When the whole-book local-text path can't read a PDF (scanned / broken font),
 extract falls back to attaching the section's page window as a small PDF and
-asking the model to read it visually. Vision is ALWAYS cli (no api PDF path),
-so this function has no ``transport`` param and hardcodes ``transport="cli"``.
+asking the model to read it visually. Vision is cli by default, but a
+``transport="api"`` gemini call attaches the window over Vertex (api-vision-1).
 
 These tests mock ``agent._spawn`` (no real CLI) and ``agent._record_usage`` (no
 real DB) while building a real multi-page PDF so ``_subset_pdf`` produces a real
@@ -212,3 +212,41 @@ async def test_vision_spawns_with_given_transport(
     )
     assert spawn_caps[0]["transport"] == "cli"
     assert usage_caps[0]["auth_mode"] == "cli"
+
+
+@pytest.mark.asyncio
+async def test_vision_api_failure_records_transport_aware_error(
+    monkeypatch: pytest.MonkeyPatch, book_pdf: Path
+) -> None:
+    """A gemini+api vision failure records a transport-aware error_message
+    ('api call failed', not the stale 'CLI exited') with the real cause, and
+    raises with the same wording."""
+    usage_caps: list[dict] = []
+
+    async def fake_spawn(**kw):  # noqa: ANN001, ANN202
+        return (1, "", _FAKE_USAGE, "429 RESOURCE_EXHAUSTED")
+
+    async def fake_record(**kw):  # noqa: ANN001, ANN202
+        usage_caps.append(dict(kw))
+        return None
+
+    monkeypatch.setattr(agent, "_spawn", fake_spawn)
+    monkeypatch.setattr(agent, "_record_usage", fake_record)
+
+    with pytest.raises(RuntimeError) as exc:
+        await agent.summarize_lesson_vision(
+            provider="gemini",
+            model=None,
+            pdf_path=book_pdf,
+            section_title="Photosynthesis",
+            section_number="3.1",
+            page_start=10,
+            page_end=12,
+            homework_job_id=uuid4(),
+            phase_output_id=uuid4(),
+            transport="api",
+        )
+    msg = usage_caps[0]["error_message"]
+    assert "api call failed" in msg and "CLI" not in msg
+    assert "429 RESOURCE_EXHAUSTED" in msg          # real cause captured into the row
+    assert "api call failed" in str(exc.value) and "CLI" not in str(exc.value)

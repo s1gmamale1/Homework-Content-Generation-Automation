@@ -2019,7 +2019,7 @@ async def summarize_lesson_vision(
         auth_mode=transport,
         homework_job_id=homework_job_id,
         phase_output_id=phase_output_id,
-        error_message=None if ok else f"{provider} CLI exited rc={rc}",
+        error_message=None if ok else _spawn_failure_message(provider, transport, rc, stderr, text),
         extra_envelope={
             "section_number": section_number,
             "section_title": section_title,
@@ -2028,8 +2028,7 @@ async def summarize_lesson_vision(
     )
     if not ok:
         raise RuntimeError(
-            f"lesson.extract (vision): {provider} CLI exited rc={rc} "
-            f":: {_failure_preview(stderr, text)}"
+            f"lesson.extract (vision): {_spawn_failure_message(provider, transport, rc, stderr, text)}"
         )
     logger.success(
         f"agent.lesson.extract done (vision) | provider={provider} "
