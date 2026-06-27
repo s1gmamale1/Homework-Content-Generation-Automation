@@ -51,10 +51,10 @@ def _fake_find(c, parent, title):
 
 def test_push_builds_grouped_structure():
     """Homework → Case-Based Preview · Flashcards(=flashcards+memory-check) ·
-    Gamified Practices(container → game children) · Boss Arena · Reflection."""
+    Gamified Practices(container → game children) · Boss Arena · Reflection.
+    Always routes through Generated Homeworks → <lesson> → Homework."""
     client = MagicMock()
     client.page_has_content.return_value = False
-    client.get_child_pages.return_value = []
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     na_find = MagicMock(side_effect=_fake_find)
     phase_md = {
@@ -73,7 +73,7 @@ def test_push_builds_grouped_structure():
     )
     titles = [call.args[2] for call in na_find.call_args_list]
     assert titles == [
-        "Generated Lessons",
+        "Generated Homeworks",
         "1-§ x", "Homework",
         "Case-Based Preview",
         "Flashcards",
@@ -91,7 +91,6 @@ def test_push_builds_grouped_structure():
 def test_flashcards_page_attachments_at_top_then_content():
     client = MagicMock()
     client.page_has_content.return_value = False
-    client.get_child_pages.return_value = []
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     na_find = MagicMock(side_effect=_fake_find)
     na._push_to_notion(
@@ -112,7 +111,6 @@ def test_flashcards_page_attachments_at_top_then_content():
 def test_push_skips_pages_already_populated():
     client = MagicMock()
     client.page_has_content.return_value = True   # already populated → skip writes
-    client.get_child_pages.return_value = []
     na_find = MagicMock(side_effect=lambda c, parent, title: (f"id::{title}", False))
     na._push_to_notion(
         client=client, subject_page_id="subj", lesson_title="L",
@@ -123,42 +121,45 @@ def test_push_skips_pages_already_populated():
     client.upload_bytes.assert_not_called()
 
 
-def test_push_adopts_matching_human_page():
-    """A unique content-word match writes Homework INSIDE the human lesson page —
-    no 'Generated Lessons' container, no lesson find_or_create."""
+def test_push_ignores_matching_human_child_always_routes_via_container():
+    """Adoption is GONE. Even when the subject page already has a child whose title
+    equals the lesson title, the archive still routes unconditionally through
+    'Generated Homeworks' → <lesson> → 'Homework'.
+    Also verifies get_child_pages is never called (the pre-scan is removed)."""
     client = MagicMock()
     client.page_has_content.return_value = False
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    # A child page whose title exactly matches the lesson title would have been adopted
+    # under the old behavior — it must be ignored now.
     client.get_child_pages.return_value = [
-        {"id": "human_lesson", "title": "1-mavzu. German qabilalari va Rim imperiyasi…………………6"}
+        {"id": "human_lesson", "title": "1-§ x"}
     ]
     na_find = MagicMock(side_effect=lambda c, parent, title: (f"id::{title}", True))
     na._push_to_notion(
         client=client, subject_page_id="subj",
-        lesson_title="1 German qabilalari va Rim imperiyasi",
+        lesson_title="1-§ x",
         phase_md={"case-based-preview": "# CBP"}, find_or_create=na_find,
     )
     titles = [c.args[2] for c in na_find.call_args_list]
-    assert "Generated Lessons" not in titles
-    assert titles[0] == "Homework"
-    # Homework was created under the ADOPTED human page, not a new app page
-    assert na_find.call_args_list[0].args[1] == "human_lesson"
+    # Unconditional path: Generated Homeworks → lesson → Homework
+    assert titles[:3] == ["Generated Homeworks", "1-§ x", "Homework"]
+    # Container created under subject, not under any human page
+    assert na_find.call_args_list[0].args[1] == "subj"
+    # get_child_pages should never be called — the pre-scan is removed
+    client.get_child_pages.assert_not_called()
 
 
-def test_push_falls_back_to_container_when_no_match():
-    """No content-word match → Subject > Generated Lessons > <lesson> > Homework."""
+def test_push_unconditional_container_path():
+    """Subject > Generated Homeworks > <lesson> > Homework — always, no fallback logic."""
     client = MagicMock()
     client.page_has_content.return_value = False
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
-    client.get_child_pages.return_value = [
-        {"id": "a1", "title": "1. Yig'indining kvadrati va ayirmaning kvadrati ....57"}
-    ]
     na_find = MagicMock(side_effect=lambda c, parent, title: (f"id::{title}", True))
     na._push_to_notion(
         client=client, subject_page_id="subj", lesson_title="1 Sonli ifodalar",
         phase_md={"case-based-preview": "# CBP"}, find_or_create=na_find,
     )
     titles = [c.args[2] for c in na_find.call_args_list]
-    assert titles[:3] == ["Generated Lessons", "1 Sonli ifodalar", "Homework"]
-    assert na_find.call_args_list[0].args[1] == "subj"                  # container under subject
-    assert na_find.call_args_list[1].args[1] == "id::Generated Lessons"  # lesson under container
+    assert titles[:3] == ["Generated Homeworks", "1 Sonli ifodalar", "Homework"]
+    assert na_find.call_args_list[0].args[1] == "subj"                     # container under subject
+    assert na_find.call_args_list[1].args[1] == "id::Generated Homeworks"  # lesson under container
