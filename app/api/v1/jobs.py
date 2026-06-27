@@ -249,7 +249,18 @@ async def generate(
                             ("extract", res_extract_provider, res_extract_model)):
         if not is_valid(prov, mdl):
             raise HTTPException(500, f"{role}: resolved default off-manifest ({prov!r},{mdl!r})")
-
+    # Gate: if the global default resolved a non-api-capable role provider to an
+    # api effective transport, fail loud at launch rather than silently strand the
+    # job unclaimable. cli-resolving transports always return None from
+    # validate_transport and are never affected.
+    for role, prov, mdl, res_tx in (
+        ("judge", res_judge_provider, res_judge_model, res_judge_transport),
+        ("extract", res_extract_provider, res_extract_model, res_extract_transport),
+    ):
+        eff_tx = resolve_role_transport(res_tx, body.transport)
+        err = validate_transport(prov, mdl, eff_tx)
+        if err is not None:
+            raise HTTPException(400, f"{role} global default: {err}")
     job = await jobs_repo.create(
         session,
         book_id=book_id,
