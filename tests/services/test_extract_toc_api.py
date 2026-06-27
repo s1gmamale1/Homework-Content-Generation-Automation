@@ -95,9 +95,10 @@ async def test_cli_text_usable_still_attaches_pdf(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_api_scanned_book_overrides_back_to_cli(tmp_path, monkeypatch):
-    """A scanned/sparse book launched api must still vision-OCR via cli — the
-    unconditional cli override in the vision branch holds even when api is asked."""
+async def test_api_scanned_book_gemini_keeps_api(tmp_path, monkeypatch):
+    """A scanned/sparse book launched gemini+api now vision-OCRs over Vertex
+    (api-vision-1): the window PDF rides as an attachment through the multimodal
+    api path instead of force-downgrading to cli. (Was: forced cli.)"""
     pdf = _make_pdf(tmp_path)
     monkeypatch.setattr(
         agent, "_extract_toc_source_text",
@@ -111,7 +112,7 @@ async def test_api_scanned_book_overrides_back_to_cli(tmp_path, monkeypatch):
         subject="math", book_id=uuid4(), transport="api",
     )
 
-    # vision attaches a bounded window AND forces cli despite the api request
+    # vision attaches a bounded window AND keeps api for gemini (routes over Vertex)
     assert len(captured["attachments"]) == 1
     assert Path(captured["attachments"][0]).name.startswith("toc_window_")
-    assert captured["transport"] == "cli"
+    assert captured["transport"] == "api"
