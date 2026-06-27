@@ -64,7 +64,7 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 ---
 
-## Cluster 1 — Quick-win hardening (START HERE; low-risk, mostly mechanical)
+## Cluster 1 — Quick-win hardening — ✅ SHIPPED [0077] (low-risk, mostly mechanical)
 
 **Why:** small, high-value, mostly independent fixes; clears noise so the bigger clusters stand alone. Can be one plan with ~8 tasks. No generation impact except where noted → unit tests suffice (no CLI smoke).
 
@@ -85,7 +85,7 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 ---
 
-## Cluster 2 — Cancel / resume correctness (one plan, sequential; all touch jobs+pipeline+launcher)
+## Cluster 2 — Cancel / resume correctness — ✅ SHIPPED [0078] (all touch jobs+pipeline+launcher)
 
 **Why:** a real data-loss bug + an unreliable cancel + the genuinely-missing batch resume — one coherent lane. Found live cancelling the algebra-g9 batch.
 
@@ -104,7 +104,7 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 ---
 
-## Cluster 3 — Judge quality (campaign-critical; one plan, may split claimgate out)
+## Cluster 3 — Judge quality — ✅ SHIPPED [0079] (campaign-critical)
 
 **Why:** without source-fidelity + a regression signal, mass-gen ships unverified content. Highest campaign value.
 
@@ -121,7 +121,7 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 ---
 
-## Cluster 4 — Cost safety (campaign-critical; DESIGN-FIRST; Wave 2)
+## Cluster 4 — Cost safety — ✅ SHIPPED [0080] (campaign-critical)
 
 **Why:** mandatory before any paid mass-gen — today nothing reads `cost_usd` to gate spend, and a re-run silently re-bills.
 
@@ -135,7 +135,7 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 ---
 
-## Cluster 5 — Fleet scale (DESIGN-FIRST; Wave 2; needs infra decisions)
+## Cluster 5 — Fleet scale — 🟡 PARTIAL (P1 [0081] + capability-gate [0085] + resilience trio + fleet-net code-half [0089] SHIPPED; OPEN: token-bucket Phase 2 [blocked on Vertex quota], sse-multipod-1, ops-half configs)
 
 > **Campaign-readiness ordering note:** C5 (throughput/safety) + C7 (judge) come **first**, then C6/C8 for the all-subjects run, C9 last.
 
@@ -168,7 +168,7 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 ---
 
-## Cluster 6 — Notion + Frontend (Wave 3 / as-unblocked)
+## Cluster 6 — Notion + Frontend — 🟡 PARTIAL (R15/notion-archive-1 [0086] SHIPPED; OPEN: R16, crawl-resolve, validator, fe-redesign, fleet-ui-2/3/4)
 
 **Items & exact work:**
 
@@ -193,11 +193,13 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 **Items & exact work:**
 
-1. **`judge-self-fallback-1`** — `model_tiers._SELF_FALLBACK = ("gemini","gemini-3.1-pro-preview")` defeats the self-grade guard for a gemini-3.1-pro-preview generator. Two fixes: **(a) test-hygiene** — monkeypatch `settings.judge` in `tests/services/test_judge_resolution.py` so the 2 affected tests are config-independent; **(b) product** — retarget `_SELF_FALLBACK` to a non-gemini-3.1 frontier peer so the guard holds even when the default judge IS gemini-3.1-pro-preview. Campaign-safe today (generator is 2.5-pro/flash).
-2. **`judge-refusal-1`** — a claude judge content-policy refusal parses as no `Verdict` → degrades to `judge_status="unavailable"` (same bucket as a transient error) AND burns the [0079] retry-once. **Fix:** detect the refusal shape in `phase_judge` (distinct `judge_status="refused"`, skip the retry-once for it) so policy-declined-ungraded phases surface distinctly.
-3. **`judge-unavailable` FE rendering** — a distinct `judge_status` column exists (`phase_output.py:35`) but `"judge-unavailable: <ExcType>"` still co-mingles into `validation_warnings` (`pipeline.py:1025`) and the FE doesn't surface `judge_status` → infra signals render like content defects. **Fix:** surface `judge_status` in the console (separate from content warnings) + FE filtering. Observability half only.
+**⚠️ HISTORICAL (all three SHIPPED [0087], see banner above). Kept for context only — DO NOT re-pick:**
 
-**Open decision to lock first:** the `_SELF_FALLBACK` retarget peer (which non-gemini-3.1 model).
+1. ~~**`judge-self-fallback-1`**~~ ✅ shipped — `model_tiers._SELF_FALLBACK = ("gemini","gemini-3.1-pro-preview")` defeated the self-grade guard for a gemini-3.1-pro-preview generator. Shipped via **Option B** — generator-aware `_self_fallback` (non-self for ANY generator, no fixed constant) + `worker._compute_capabilities` fix.
+2. ~~**`judge-refusal-1`**~~ ✅ shipped — a claude judge content-policy refusal parsed as no `Verdict` → degraded to `judge_status="unavailable"` AND burned the [0079] retry-once. Shipped: `_is_refusal` + `JudgeOutcome.refused`; pipeline records `judge_status="refused"` and skips the retry-once.
+3. ~~**`judge-unavailable` FE rendering**~~ ✅ shipped — `judge_status` now serialized on `PhaseOut` + distinct preview-console chip; infra warnings no longer co-mingle into `validation_warnings`.
+
+**Open decision:** ~~the `_SELF_FALLBACK` retarget peer (which non-gemini-3.1 model).~~ **RESOLVED — Option B (generator-aware peer, no fixed constant). Cluster CLOSED.**
 
 ---
 
