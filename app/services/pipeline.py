@@ -130,6 +130,10 @@ async def run(job_id: UUID) -> None:
             )
             custom_prompts = getattr(job, "custom_prompts", None)
             selected_phases = getattr(job, "selected_phases", None)
+            # Global launch defaults (DB row): the defensive fallback source for
+            # any NULL judge/extract column. Loaded ONCE here, before first use.
+            from app.repositories import launch_defaults as _ld_repo  # noqa: PLC0415
+            _ld = await _ld_repo.get(session)
             # Per-job judge provider/model override: explicit columns let the
             # user steer who grades; NULL defensively falls back to the DB global
             # default (jobs are stamped at launch; this is belt-and-suspenders,
@@ -150,8 +154,6 @@ async def run(job_id: UUID) -> None:
             # Lazy Batch import avoids any circular-import risk at module level.
             from app.models.batch import Batch as _Batch  # noqa: PLC0415
             _batch = await session.get(_Batch, job.batch_id) if job.batch_id else None
-            from app.repositories import launch_defaults as _ld_repo  # noqa: PLC0415
-            _ld = await _ld_repo.get(session)
             session_limit_strategy: str = resolve_session_limit_strategy(
                 _batch.session_limit_strategy if _batch else None
             )
