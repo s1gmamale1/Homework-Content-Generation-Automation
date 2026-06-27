@@ -431,3 +431,15 @@ export type BatchLaunchResponse = BatchSummary & {
   jobs_skipped: number;
   jobs_resumed: number;
 };
+
+/** Global launch defaults — singleton row in launch_defaults. Operator edits
+ *  via PUT /api/v1/settings/launch-defaults; resolved at every batch/job launch. */
+export interface LaunchDefaults {
+  judge_provider: string | null;
+  judge_model: string | null;
+  judge_transport: RoleTransport | null;
+  extract_provider: string | null;
+  extract_model: string | null;
+  extract_transport: RoleTransport | null;
+  toc_transport: "cli" | "api" | null;
+}

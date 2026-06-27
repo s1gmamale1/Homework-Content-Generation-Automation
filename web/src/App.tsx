@@ -13,6 +13,7 @@ import { LoginPage } from "@/routes/login";
 import { PreviewPage } from "@/routes/preview";
 import { SectionPage } from "@/routes/section";
 import { UploadPage } from "@/routes/upload";
+import { SettingsPage } from "@/routes/settings";
 import { UsagePage } from "@/routes/usage";
 
 const queryClient = new QueryClient({
@@ -47,6 +48,7 @@ export default function App() {
             <Route path="/book/:bookId/section/:sectionId" element={<SectionPage />} />
             <Route path="/job/:id" element={<JobPage />} />
             <Route path="/preview/:id" element={<PreviewPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Route>
           </Routes>
         </BrowserRouter>
