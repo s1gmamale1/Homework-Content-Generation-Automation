@@ -79,22 +79,13 @@ async def test_two_concurrent_claims_never_collide():
             await s.commit()
 
 
-# ─── claim gate v2 helpers (Phase 4.1 §4/§4a) ────────────────────────────────
-# Worker judge/extract config used across the matrix — matches the production
-# defaults (settings.judge_provider/judge_model/extract_provider) but passed
-# explicitly so the tests are self-contained.
-_JUDGE_PROVIDER = "claude"
-_JUDGE_MODEL = "claude-opus-4-7"
-_EXTRACT_PROVIDER = "gemini"
-
+# ─── claim gate v2 helpers ───────────────────────────────────────────────────
 
 def _caps_for(env: dict) -> dict:
-    """Capability set a worker with this env would compute at startup."""
+    """Credential-only capability set a worker with this env would compute at startup."""
     from app.services import worker
 
-    return worker._compute_capabilities(
-        env, _JUDGE_PROVIDER, _JUDGE_MODEL, _EXTRACT_PROVIDER
-    )
+    return worker._compute_capabilities(env)
 
 
 _ANTHROPIC_ONLY = {"ANTHROPIC_API_KEY": "a"}
@@ -205,6 +196,9 @@ async def test_api_jobs_gated_on_capabilities():
         api_job = await _seed_job(
             s, book, toc, priority=_FENCE_PRIORITY + 10,
             provider="gemini", model="gemini-2.5-flash", transport="api",
+            # Stamp roles so the job-column gate can route (Task 2 always stamps).
+            judge_provider="claude", judge_model="claude-opus-4-7",
+            extract_provider="gemini", extract_model="gemini-2.5-flash",
         )
         cli_job = await _seed_job(s, book, toc, transport="cli")
         await s.commit()
@@ -274,6 +268,8 @@ async def test_cli_content_with_api_judge_needs_judge_capability():
             s, book, toc,
             provider="gemini", model="gemini-2.5-flash",
             transport="cli", judge_transport="api",
+            # Stamp claude judge (non-self-grade for gemini content).
+            judge_provider="claude", judge_model="claude-opus-4-7",
         )
         await s.commit()
         book_id, job_id = book.id, job.id
@@ -291,12 +287,15 @@ async def test_cli_content_with_api_judge_needs_judge_capability():
 
 @pytest.mark.asyncio
 async def test_judge_pair_job_gates_on_fallback_capability():
-    """Matrix 3 (§4a): a job generating ON the configured judge pair
-    (claude/claude-opus-4-7) is judged by the SELF-FALLBACK (gemini) — so an
-    anthropic-ONLY worker must NOT claim it even though judge=claude; a worker
-    that also has gemini capability must. extract_transport=cli isolates the
-    judge gate (inherit would also need gemini extract capability)."""
+    """Matrix 3 (§4a): a job generating ON the judge pair (claude/claude-opus-4-7)
+    is stamped with judge=(claude,claude-opus-4-7) — self-grade, so the claim gate
+    routes to the SELF-FALLBACK (gemini peer). An anthropic-ONLY worker must NOT
+    claim it; a worker with gemini capability must.
+    extract_transport=cli isolates the judge gate."""
     from app.db import SessionLocal
+
+    _JUDGE_PROVIDER = "claude"
+    _JUDGE_MODEL = "claude-opus-4-7"
 
     async with SessionLocal() as s:
         book, toc = await _seed_book(s, "gate2-m3.pdf")
@@ -304,13 +303,15 @@ async def test_judge_pair_job_gates_on_fallback_capability():
             s, book, toc,
             provider=_JUDGE_PROVIDER, model=_JUDGE_MODEL,
             transport="api", extract_transport="cli", judge_transport="api",
+            # Explicitly stamp the judge as the same pair → self-grade detection fires.
+            judge_provider=_JUDGE_PROVIDER, judge_model=_JUDGE_MODEL,
         )
         await s.commit()
         book_id, job_id = book.id, job.id
 
     try:
         assert await _claim_with(_caps_for(_ANTHROPIC_ONLY), {job_id}) != job_id, (
-            "judge self-falls-back to gemini for judge-pair jobs — anthropic-only must skip"
+            "self-grade job falls back to gemini peer — anthropic-only must skip"
         )
         assert await _status_of(job_id) == "pending"
         claimed = await _claim_with(_caps_for(_BOTH), {job_id})
@@ -339,29 +340,35 @@ async def test_plain_cli_job_claimable_with_no_caps():
 
 
 @pytest.mark.asyncio
-async def test_null_model_job_claims_via_not_pair_branch():
-    """Matrix 5 (NULL-model probe): a cli-content claude job with model=NULL +
-    judge_transport=api must be claimable by an anthropic-capable worker via the
-    not-judge-pair branch. SQL three-valued logic: NULL == 'opus' is NULL, and
-    not_(NULL AND ...) stays NULL — the predicate must handle it (coalesce if
-    the bare comparison trips)."""
+async def test_null_model_job_with_non_self_grade_judge_claims():
+    """Matrix 5 (NULL-model probe): a cli-content claude job with model=NULL and a
+    stamped non-self-grade judge (gemini) must be claimable by a gemini-capable
+    worker. content_model_resolved resolves NULL→claude-sonnet-4-6 (default_model),
+    judge=gemini != claude generator → NOT self-grade → route on judge's cap."""
     from app.db import SessionLocal
 
     async with SessionLocal() as s:
         book, toc = await _seed_book(s, "gate2-m5.pdf")
         job = await _seed_job(
             s, book, toc,
-            provider="claude",  # model stays NULL
+            provider="claude",  # model stays NULL → resolves to claude-sonnet-4-6
             transport="cli", judge_transport="api",
+            # Stamped judge: gemini (non-self) → gate needs can_gemini_api.
+            judge_provider="gemini", judge_model="gemini-2.5-flash",
         )
         await s.commit()
         book_id, job_id = book.id, job.id
 
     try:
-        claimed = await _claim_with(_caps_for(_ANTHROPIC_ONLY), {job_id})
+        # anthropic-only: judge is gemini, can_gemini_api=False → skip.
+        assert await _claim_with(_caps_for(_ANTHROPIC_ONLY), {job_id}) != job_id, (
+            "anthropic-only worker must NOT claim a job with stamped gemini judge"
+        )
+        assert await _status_of(job_id) == "pending"
+        # gemini-only: judge is gemini, can_gemini_api=True → claim.
+        claimed = await _claim_with(_caps_for(_GEMINI_ONLY), {job_id})
         assert claimed == job_id, (
-            "NULL-model claude job must claim via the not-pair branch "
-            "(judge_model_for resolves None to sonnet, not the opus judge pair)"
+            "NULL-model claude job with gemini judge must be claimable by gemini-only worker"
         )
     finally:
         await _cleanup_book(book_id)
@@ -385,13 +392,10 @@ async def test_api_gemini_judge_job_claimable_by_vertex_only_worker():
         "GOOGLE_APPLICATION_CREDENTIALS": "/secrets/sa.json",
         "GOOGLE_CLOUD_PROJECT": "my-project",
     }
-    # settings defaults: judge=claude, extract=gemini (production defaults).
     caps = _caps_for(vertex_env)
-    # Sanity: the live-bug pre-conditions must hold — judge_api_ok driven by
-    # settings.judge_provider='claude' on a no-anthropic-key worker = False.
+    # Sanity: credential-only caps shape — no per-role keys.
     assert caps["can_claude_api"] is False
     assert caps["can_gemini_api"] is True
-    assert caps["judge_api_ok"] is False  # this is the old (wrong) gate value
 
     async with SessionLocal() as s:
         book, toc = await _seed_book(s, "c1-strand-test.pdf")
@@ -410,46 +414,51 @@ async def test_api_gemini_judge_job_claimable_by_vertex_only_worker():
     try:
         claimed = await _claim_with(caps, {job_id})
         assert claimed == job_id, (
-            "Vertex-only worker must claim an api job whose judge_provider='gemini', "
-            "even when settings.judge_provider='claude' (COALESCE job over settings)"
+            "Vertex-only worker must claim an api job whose judge_provider='gemini' "
+            "(job-column-based gate: stamped judge_provider='gemini' → can_gemini_api required)"
         )
     finally:
         await _cleanup_book(book_id)
 
 
 @pytest.mark.asyncio
-async def test_null_judge_provider_falls_back_to_settings():
-    """C1 regression: a job with judge_provider=NULL + judge_transport=api must
-    still use the settings default (settings_judge_provider='claude') for the
-    claim gate. A claude-capable worker must claim it; a gemini-only one must not."""
+async def test_stamped_judge_provider_gates_correctly():
+    """Job-column-based gate: when judge_provider is explicitly stamped (via Task 2
+    launch resolution or the migration backfill), the gate routes on the stamped
+    value — no settings fallback needed.
+
+    Case: job with stamped judge_provider='claude' + judge_transport='api'.
+    A claude-capable worker must claim it; a gemini-only one must not.
+    (Replaces the old test_null_judge_provider_falls_back_to_settings — NULL
+    judge_provider no longer happens after the migration backfill + Task 2 stamping.)
+    """
     from app.db import SessionLocal
 
     async with SessionLocal() as s:
-        book, toc = await _seed_book(s, "c1-null-judge-fallback.pdf")
+        book, toc = await _seed_book(s, "c1-stamped-judge.pdf")
         job = await _seed_job(
             s, book, toc,
             provider="gemini", model="gemini-2.5-flash",
             transport="cli",
             judge_transport="api",
-            # judge_provider left NULL → should fall back to settings='claude'
+            judge_provider="claude",   # stamped explicitly
+            judge_model="claude-opus-4-7",
             extract_transport="cli",
         )
         await s.commit()
         book_id, job_id = book.id, job.id
 
     try:
-        # gemini-only worker: settings.judge_provider='claude', job.judge_provider=NULL
-        # → resolved = 'claude'; can_claude_api=False → must NOT claim.
+        # gemini-only worker: stamped judge_provider='claude'; can_claude_api=False → skip.
         assert await _claim_with(_caps_for(_GEMINI_ONLY), {job_id}) != job_id, (
-            "gemini-only worker must NOT claim a job whose resolved judge is claude "
-            "(NULL job.judge_provider falls back to settings='claude')"
+            "gemini-only worker must NOT claim a job whose stamped judge is claude"
         )
         assert await _status_of(job_id) == "pending"
 
-        # anthropic-only worker: resolved judge='claude'; can_claude_api=True → must claim.
+        # anthropic-only worker: stamped judge_provider='claude'; can_claude_api=True → claim.
         claimed = await _claim_with(_caps_for(_ANTHROPIC_ONLY), {job_id})
         assert claimed == job_id, (
-            "anthropic-only worker must claim a job whose resolved judge is claude"
+            "anthropic-only worker must claim a job whose stamped judge_provider='claude'"
         )
     finally:
         await _cleanup_book(book_id)

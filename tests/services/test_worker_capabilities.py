@@ -248,7 +248,7 @@ def test_api_capable_and_compute_capabilities_agree():
 
     for env in env_cases:
         api = _api_capable(env)
-        caps = _compute_capabilities(env, judge_provider="claude", judge_model="claude-opus-4-5", extract_provider="gemini")
+        caps = _compute_capabilities(env)
         assert api["claude"] == caps["can_claude_api"], (
             f"_api_capable['claude'] != _compute_capabilities['can_claude_api'] for env={env}"
         )
