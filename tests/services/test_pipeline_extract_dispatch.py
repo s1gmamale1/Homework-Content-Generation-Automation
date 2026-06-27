@@ -241,3 +241,68 @@ def test_oversize_subset_still_oversize_fails(monkeypatch):
 
     with pytest.raises(RuntimeError, match="still too large"):
         _run_extract_phase(monkeypatch)
+
+
+# --- Task 3: vision transport routing for scanned PDFs -----------------------
+
+
+def _run_extract_phase_for_provider(
+    monkeypatch,
+    *,
+    page_start: Optional[int] = 1,
+    page_end: Optional[int] = 3,
+    extract_transport: str = "cli",
+    extract_provider: str = "gemini",
+    extract_model: Optional[str] = "gemini-2.5-flash",
+):
+    """Like _run_extract_phase but exposes extract_provider so transport tests
+    can vary the provider without touching the existing tests."""
+    return asyncio.run(pipeline._execute_phase(
+        job_id=uuid4(),
+        phase_name="extract",
+        phase_order=1,
+        subject="biology",
+        provider="claude",
+        model="claude-sonnet-4-6",
+        pdf_path=Path("/tmp/does-not-matter.pdf"),
+        attach_file=False,
+        section={"id": None, "title": "T", "number": "1",
+                 "page_start": page_start, "page_end": page_end},
+        lesson_context=None,
+        prior_outputs={},
+        difficulty=None,
+        transport="cli",
+        extract_transport=extract_transport,
+        judge_transport="cli",
+        extract_provider=extract_provider,
+        extract_model=extract_model,
+    ))
+
+
+def test_scanned_gemini_api_passes_vision_transport_api(monkeypatch):
+    """Scanned PDF with extract_provider=gemini + extract_transport=api →
+    summarize_lesson_vision is called with transport='api' (Vertex)."""
+    _install_harness(monkeypatch)
+    calls = _install_agent_spies(monkeypatch, book_text="x" * 40)
+
+    _run_extract_phase_for_provider(
+        monkeypatch, extract_transport="api", extract_provider="gemini"
+    )
+
+    assert calls["vision"] == 1
+    assert calls["vision_kwargs"]["transport"] == "api"
+
+
+def test_scanned_claude_api_forces_vision_transport_cli(monkeypatch):
+    """Scanned PDF with extract_provider=claude + extract_transport=api →
+    summarize_lesson_vision is called with transport='cli'
+    (only gemini can attach PDFs over api; claude must fall back to cli)."""
+    _install_harness(monkeypatch)
+    calls = _install_agent_spies(monkeypatch, book_text="x" * 40)
+
+    _run_extract_phase_for_provider(
+        monkeypatch, extract_transport="api", extract_provider="claude"
+    )
+
+    assert calls["vision"] == 1
+    assert calls["vision_kwargs"]["transport"] == "cli"

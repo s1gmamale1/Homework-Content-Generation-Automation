@@ -174,6 +174,92 @@ def test_claude_client_requires_key(monkeypatch):
 async def test_guards():
     with pytest.raises(ValueError):
         await api_transport.generate(provider="gemini", model=None, prompt="x", attachments=[])
+    # gemini+attachments is now ALLOWED — see test_generate_gemini_accepts_attachments
+    # claude+attachments still raises — see test_generate_claude_still_rejects_attachments
+
+
+# ---- new multimodal tests (Task 1 additions) ----
+
+class _CapturingModels:
+    """Captures the `contents` arg passed to generate_content for assertion."""
+
+    def __init__(self):
+        self.last_contents = None
+        self._resp = _GResp([_Part("ok")], _FR("STOP"), None)
+
+    async def generate_content(self, *, model, contents):
+        self.last_contents = contents
+        return self._resp
+
+
+class _CapturingClient:
+    def __init__(self):
+        self._models = _CapturingModels()
+        self.aio = type("_aio", (), {"models": self._models})()
+
+    @property
+    def last_contents(self):
+        return self._models.last_contents
+
+
+@pytest.mark.asyncio
+async def test_generate_gemini_accepts_attachments(monkeypatch, tmp_path):
+    """Gemini + attachments → Part per file, no NotImplementedError."""
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 x")
+
+    cap = _CapturingClient()
+    monkeypatch.setattr(api_transport, "_gemini_client", lambda: cap)
+
+    rc, text, _usage, err = await api_transport.generate(
+        provider="gemini", model="gemini-2.5-flash", prompt="hi", attachments=[pdf]
+    )
+    assert rc == 0, f"unexpected failure: {err}"
+    assert text == "ok"
+
+    contents = cap.last_contents
+    assert isinstance(contents, list), "expected [prompt, *parts] list"
+    assert contents[0] == "hi"
+    assert len(contents) == 2, f"expected 2 items (prompt + 1 Part), got {len(contents)}"
+
+    part = contents[1]
+    assert part.inline_data.mime_type == "application/pdf"
+    assert part.inline_data.data == b"%PDF-1.4 x"
+
+
+@pytest.mark.asyncio
+async def test_generate_gemini_no_attachments_unchanged(monkeypatch):
+    """Gemini + no attachments → bare string `contents`, same as before."""
+    cap = _CapturingClient()
+    monkeypatch.setattr(api_transport, "_gemini_client", lambda: cap)
+
+    rc, text, _usage, err = await api_transport.generate(
+        provider="gemini", model="gemini-2.5-flash", prompt="hi", attachments=[]
+    )
+    assert rc == 0 and text == "ok"
+    assert cap.last_contents == "hi", (
+        f"expected bare string 'hi', got {cap.last_contents!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_claude_still_rejects_attachments(tmp_path):
+    """Claude + any attachments → NotImplementedError (claude stays text-only)."""
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"%PDF-1.4 x")
     with pytest.raises(NotImplementedError):
-        await api_transport.generate(provider="gemini", model="m", prompt="x",
-                                     attachments=[Path("/x.pdf")])
+        await api_transport.generate(
+            provider="claude", model="claude-opus-4-8", prompt="hi", attachments=[f]
+        )
+
+
+def test_mime_for_suffix():
+    """_mime_for maps file extensions to MIME types correctly."""
+    _mime_for = api_transport._mime_for
+    assert _mime_for(Path("x.pdf")) == "application/pdf"
+    assert _mime_for(Path("x.png")) == "image/png"
+    assert _mime_for(Path("x.jpg")) == "image/jpeg"
+    assert _mime_for(Path("x.jpeg")) == "image/jpeg"
+    assert _mime_for(Path("x.unknown")) == "application/pdf"   # default
+    assert _mime_for(Path("WINDOW.PDF")) == "application/pdf"  # case-insensitive
+    assert _mime_for(Path("scan.JPG")) == "image/jpeg"

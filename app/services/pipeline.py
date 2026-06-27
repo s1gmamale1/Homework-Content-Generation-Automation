@@ -912,20 +912,28 @@ async def _execute_phase(
             if scanned_reason is not None:
                 # Scanned / no-text-layer PDF: the whole-book text is unreadable, so
                 # vision-attach a page-window of the lesson and let the model read it.
-                # Vision requires attachments → forced transport=cli (api is text-only).
+                # gemini+api attaches the window over Vertex; every other provider/
+                # transport is forced to cli below (api PDF-attach is gemini-only).
                 ps, pe = section["page_start"], section["page_end"]
                 if not ps or not pe:
                     raise RuntimeError(
                         f"lesson.extract: {scanned_reason} and no page range to scope a vision extract"
                     )
-                if extract_transport == "api":
+                vision_transport = (
+                    "api"
+                    if (extract_provider == "gemini" and extract_transport == "api")
+                    else "cli"
+                )
+                if extract_transport == "api" and vision_transport == "cli":
                     logger.info(
-                        "lesson.extract: scanned PDF → forcing transport=cli for vision; requested=api"
+                        "lesson.extract: scanned PDF → forcing cli for vision "
+                        "(only gemini api can attach); requested=api"
                     )
                 out_md, tin, tout = await agent.summarize_lesson_vision(
                     provider=extract_provider, model=extract_model, pdf_path=pdf_path,
                     section_title=section["title"], section_number=section["number"],
                     page_start=ps, page_end=pe, homework_job_id=job_id, phase_output_id=po_id,
+                    transport=vision_transport,
                 )
                 reason = agent.validate_extract_summary(out_md)
                 if reason is not None:

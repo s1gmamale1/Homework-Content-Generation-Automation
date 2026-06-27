@@ -1373,7 +1373,8 @@ async def extract_toc(
             )
             attachment_preamble = prov.format_attachments([window])
             attachments = [window]
-            transport = "cli"   # vision needs attachments; api is text-only
+            if not (transport == "api" and provider == "gemini"):
+                transport = "cli"   # vision needs attachments; api PDF-attach only for gemini
             toc_mode = "vision_toc"
     else:
         lesson_context = (
@@ -1938,13 +1939,17 @@ async def summarize_lesson_vision(
     page_end: int,
     homework_job_id: UUID,
     phase_output_id: UUID,
+    transport: str = "cli",
 ) -> tuple[str, int, int]:
     """VISION fallback extract (scanned / unreadable-text PDFs): attach the
     section's page window as a small PDF and have the model read it visually.
 
-    Vision is ALWAYS cli — there is no api PDF-attach path — so this function
-    takes no ``transport`` param and hardcodes ``transport="cli"`` for both the
-    spawn and the usage row. Returns ``(text, prompt_tokens, output_tokens)``.
+    Vision is cli by default — most providers have no api PDF-attach path.
+    Exception: ``provider="gemini"`` with ``transport="api"`` attaches the
+    window PDF over Vertex (Gemini api natively supports file attachments).
+    For all other providers ``transport`` must remain ``"cli"``.
+
+    Returns ``(text, prompt_tokens, output_tokens)``.
     Raises ``RuntimeError`` (fail loud) when the page range can't be scoped or
     the CLI exits non-zero. Records a usage row even on failure."""
     prov = get_provider(provider)
@@ -1990,7 +1995,7 @@ async def summarize_lesson_vision(
             model=resolved_model,
             prompt=prompt,
             attachments=[window_pdf],
-            transport="cli",
+            transport=transport,
         )
     finally:
         # Remove the temp window PDF (never the book's source.pdf).
@@ -2011,10 +2016,10 @@ async def summarize_lesson_vision(
         duration_s=duration_s,
         started_at=started_at,
         success=ok,
-        auth_mode="cli",
+        auth_mode=transport,
         homework_job_id=homework_job_id,
         phase_output_id=phase_output_id,
-        error_message=None if ok else f"{provider} CLI exited rc={rc}",
+        error_message=None if ok else _spawn_failure_message(provider, transport, rc, stderr, text),
         extra_envelope={
             "section_number": section_number,
             "section_title": section_title,
@@ -2023,8 +2028,7 @@ async def summarize_lesson_vision(
     )
     if not ok:
         raise RuntimeError(
-            f"lesson.extract (vision): {provider} CLI exited rc={rc} "
-            f":: {_failure_preview(stderr, text)}"
+            f"lesson.extract (vision): {_spawn_failure_message(provider, transport, rc, stderr, text)}"
         )
     logger.success(
         f"agent.lesson.extract done (vision) | provider={provider} "
