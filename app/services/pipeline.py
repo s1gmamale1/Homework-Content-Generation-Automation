@@ -912,7 +912,8 @@ async def _execute_phase(
             if scanned_reason is not None:
                 # Scanned / no-text-layer PDF: the whole-book text is unreadable, so
                 # vision-attach a page-window of the lesson and let the model read it.
-                # Vision requires attachments → forced transport=cli (api is text-only).
+                # gemini+api attaches the window over Vertex; every other provider/
+                # transport is forced to cli below (api PDF-attach is gemini-only).
                 ps, pe = section["page_start"], section["page_end"]
                 if not ps or not pe:
                     raise RuntimeError(

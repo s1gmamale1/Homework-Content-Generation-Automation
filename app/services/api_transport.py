@@ -35,7 +35,9 @@ async def generate(
     if provider == "gemini":
         return await _gemini(model, prompt, attachments)
     if attachments:
-        raise NotImplementedError("api transport is text-only for claude in v1")
+        raise NotImplementedError(
+            f"api transport attachments are gemini-only (got provider={provider!r})"
+        )
     if provider == "claude":
         return await _claude(model, prompt)
     raise ValueError(f"api transport not supported for provider {provider!r}")
