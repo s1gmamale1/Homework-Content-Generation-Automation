@@ -158,3 +158,57 @@ async def test_vision_returns_token_shape(
         phase_output_id=uuid4(),
     )
     assert result == (_FAKE_TEXT, 1234, 567)
+
+
+@pytest.mark.asyncio
+async def test_vision_spawns_with_given_transport(
+    monkeypatch: pytest.MonkeyPatch, book_pdf: Path
+) -> None:
+    """transport= param is forwarded to _spawn and recorded as auth_mode."""
+    spawn_caps: list[dict] = []
+    usage_caps: list[dict] = []
+
+    async def fake_spawn(**kw):  # noqa: ANN001, ANN202
+        spawn_caps.append(dict(kw))
+        return (0, _FAKE_TEXT, _FAKE_USAGE, "")
+
+    async def fake_record(**kw):  # noqa: ANN001, ANN202
+        usage_caps.append(dict(kw))
+        return None
+
+    monkeypatch.setattr(agent, "_spawn", fake_spawn)
+    monkeypatch.setattr(agent, "_record_usage", fake_record)
+
+    # Explicit transport="api" → both forwarded as "api"
+    await agent.summarize_lesson_vision(
+        provider="gemini",
+        model=None,
+        pdf_path=book_pdf,
+        section_title="Photosynthesis",
+        section_number="3.1",
+        page_start=10,
+        page_end=12,
+        homework_job_id=uuid4(),
+        phase_output_id=uuid4(),
+        transport="api",
+    )
+    assert spawn_caps[0]["transport"] == "api"
+    assert usage_caps[0]["auth_mode"] == "api"
+
+    spawn_caps.clear()
+    usage_caps.clear()
+
+    # Default (no transport kwarg) → both "cli"
+    await agent.summarize_lesson_vision(
+        provider="gemini",
+        model=None,
+        pdf_path=book_pdf,
+        section_title="Photosynthesis",
+        section_number="3.1",
+        page_start=10,
+        page_end=12,
+        homework_job_id=uuid4(),
+        phase_output_id=uuid4(),
+    )
+    assert spawn_caps[0]["transport"] == "cli"
+    assert usage_caps[0]["auth_mode"] == "cli"
