@@ -42,8 +42,10 @@ single new module `app/services/api_transport.py`. This path returns the same
 worker's process env. `transport=api` was added because the CLI-with-key path bills materially more tokens
 and runs slower for equal-quality output (a measured benchmark, not a code constant —
 the gemini CLI is a multi-turn agent whose output/thinking inflation, plus an agent
-system-prompt input tax, dominate; harness: `scripts/api_vs_cli_compare.py`). Text-only
-v1: attachments raise a loud `NotImplementedError`. The **extract role** is pinned to its
+system-prompt input tax, dominate; harness: `scripts/api_vs_cli_compare.py`). **gemini
+accepts PDF/image attachments** over Vertex (multimodal — scanned-book vision via api,
+`api-vision-1`); **claude stays text-only** (attachments raise a loud `NotImplementedError`).
+The **extract role** is pinned to its
 provider/model (default gemini/`gemini-2.5-flash`, overridable via `EXTRACT_PROVIDER`);
 its **auth** follows the job transport like any other spawn.
 
@@ -607,8 +609,10 @@ you configure to match your plan.
   service-account creds (no gemini OAuth) gets `FatalCancellationError`. Set
   `EXTRACT_TOC_TRANSPORT=api` to route the **text-usable** TOC read over the Vertex SDK
   instead (the local front/back page text feeds the model; no CLI, no OAuth). Scanned /
-  sparse books still vision-OCR via cli unconditionally (the SDK path is text-only), so
-  they continue to need a working gemini CLI login.
+  sparse books **also** read over the Vertex SDK for gemini now — the front+back page-window
+  PDF attaches as a multimodal `Part` (`api-vision-1`, worklog 0094), so an all-Vertex head
+  no longer needs a gemini CLI login at all; only non-gemini (or an explicit cli transport)
+  still falls back to the cli vision path.
 - **Kimi can't read PDFs natively.** Its prompt tells the model to shell out to Python
   (`pdfplumber`, falling back to `pypdf`). If those aren't installed, kimi reports failure
   rather than hallucinate.
@@ -630,8 +634,9 @@ you configure to match your plan.
   per-lesson **extract** is likewise robust to two cases it used to hard-fail on: an **oversize**
   text book (whole text > 600K chars) is scoped to the lesson's pages as text, and a
   **scanned/sparse** lesson body (caught by a per-page density gate) is read by **vision** — a
-  page-window PDF is attached and the model finds the lesson by title (forced `transport=cli`, since
-  the api transport can't take attachments). See worklogs 0070 + 0072.
+  page-window PDF is attached and the model finds the lesson by title (over the Vertex SDK for
+  gemini+api, `api-vision-1` worklog 0094; cli for any other provider/transport). See worklogs
+  0070 + 0072 + 0094.
 
 ---
 

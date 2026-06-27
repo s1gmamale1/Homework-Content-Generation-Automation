@@ -133,7 +133,7 @@ All settings via env vars; defaults in [`app/config.py`](./app/config.py). Essen
 | `AGENT_MAX_CONCURRENCY` | Process-wide cap on concurrent CLI subprocesses |
 | `RATE_LIMIT_MAX_RETRIES` / `RATE_LIMIT_BASE_DELAY_SECONDS` / `RATE_LIMIT_MAX_DELAY_SECONDS` | Reactive 429 backoff: `agent._spawn` retries a transient rate-limit (429 / `RESOURCE_EXHAUSTED` / `overloaded_error`) with exponential delay + jitter (defaults `4` / `2.0` / `30.0`). The backoff sleep holds no concurrency slot |
 | `EXTRACT_PROVIDER` / `EXTRACT_MODEL` | Cheap model pinned for TOC + lesson extract (default `gemini` / `gemini-2.5-flash`) |
-| `EXTRACT_TOC_TRANSPORT` | Transport for book-upload TOC extraction: `cli` (default) or `api`. Set `api` on a headless all-Vertex head (no gemini OAuth) to route the text-usable TOC read over the Vertex SDK instead of the gemini CLI. Scanned books still vision-OCR via cli regardless |
+| `EXTRACT_TOC_TRANSPORT` | Transport for book-upload TOC extraction: `cli` (default) or `api`. Set `api` on a headless all-Vertex head (no gemini OAuth) to route the TOC read over the Vertex SDK instead of the gemini CLI — for **both** text-usable and scanned books (scanned books vision-OCR the page-window over Vertex too, `api-vision-1`), so an all-Vertex head needs no gemini CLI login |
 | `JUDGE_PROVIDER` / `JUDGE_MODEL` | LLM judge model (default `claude` / `claude-opus-4-7`) |
 | `COST_CAP_BATCH_USD` / `COST_CAP_FLEET_DAILY_USD` | Spend caps that pause-claim when tripped; `0` = disabled (default). `COST_CHECK_INTERVAL_SECONDS` (default 60) sets the monitor cadence |
 | `JOB_TIMEOUT_SECONDS` | Hard ceiling per pipeline run (default 1800) |
