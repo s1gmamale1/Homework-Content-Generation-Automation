@@ -156,10 +156,12 @@ def upgrade() -> None:
              'cli', now())
         """
     )
-    # Backfill pre-existing queued jobs launched with "Auto" (NULL judge/extract
-    # provider+model) so every job is self-describing — the claim gate's settings
-    # hint is dropped in this release, and a NULL-provider api-judge job would
-    # otherwise strand unclaimable. Literal values match the seed above.
+    # Backfill EVERY pre-existing job with NULL judge/extract columns (no status
+    # filter): the claim gate's settings hint is dropped in this release, and the
+    # user actively retries/resumes failed+cancelled jobs — retry reuses the row
+    # WITHOUT re-stamping, so a failed/cancelled Auto job retried post-deploy would
+    # strand unclaimable. COALESCE only writes NULL columns, so backfilling done
+    # rows is harmless. This fully delivers the locked "nothing strands" goal.
     op.execute(
         """
         UPDATE homework_jobs
@@ -167,7 +169,8 @@ def upgrade() -> None:
                judge_model      = COALESCE(judge_model,      'gemini-2.5-flash'),
                extract_provider = COALESCE(extract_provider, 'gemini'),
                extract_model    = COALESCE(extract_model,    'gemini-2.5-flash')
-         WHERE status IN ('pending', 'running')
+         WHERE judge_provider IS NULL OR judge_model IS NULL
+            OR extract_provider IS NULL OR extract_model IS NULL
         """
     )
 
@@ -258,6 +261,8 @@ async def test_singleton_invariant_rejects_second_row(db_session):
 ```
 
 Provide a `db_session` fixture in this file (or reuse the existing real-DB conftest fixture if `tests/repositories/conftest.py` defines one — check first and reuse rather than duplicate).
+
+Add a **backfill** test (`tests/migrations/test_0037_backfill.py` or alongside) that proves the unconditional backfill across statuses: starting from `0036`, insert `homework_jobs` rows with NULL judge/extract columns at each of `pending`, `running`, `failed`, `cancelled`, `done`; run `alembic upgrade 0037_launch_defaults`; assert ALL rows now have `judge_provider='gemini'`, `judge_model='gemini-2.5-flash'`, `extract_provider='gemini'`, `extract_model='gemini-2.5-flash'` — especially the `failed`/`cancelled` rows (the retry/resume strand hole). RED-prove by re-adding a `status IN (...)` filter → the failed/cancelled assertions must fail. (Use `alembic downgrade 0036_session_limit_strategy` then `upgrade` within the scratch DB to stage rows pre-backfill.)
 
 - [ ] **Step 5: Run on a scratch DB to verify RED then GREEN.**
 
@@ -521,16 +526,31 @@ Update the call site (was `_compute_capabilities(os.environ, settings.judge_prov
         HomeworkJob.judge_transport == "api",
         and_(HomeworkJob.judge_transport == "inherit", HomeworkJob.transport == "api"),
     )
+    from app.services.agent_models import MODEL_MANIFEST, default_model
+
+    # Resolve content model EXACTLY as Python's resolve_judge does
+    # (`model or default_model(provider)`) so the SQL self-grade test agrees with
+    # the runtime judge decision even when content model is Auto (NULL on cli —
+    # the common case). Built from the manifest: no hardcoded model strings, no
+    # drift. (We deliberately do NOT stamp content model concrete at launch —
+    # that would force gemini-cli Auto-content onto default_model('gemini')=
+    # gemini-3.1-pro-preview, a cost regression, since _PROVIDER_DEFAULT_MODEL
+    # ['gemini'] is None = "let the CLI pick".)
+    content_model_resolved = case(
+        *[(and_(HomeworkJob.model.is_(None), HomeworkJob.provider == p), default_model(p))
+          for p in MODEL_MANIFEST],
+        else_=func.coalesce(HomeworkJob.model, ""),
+    )
     # Self-grade: job's generator == its stamped judge -> judged by the
     # self-fallback peer (claude-opus-4-7, or gemini-3.1-pro-preview when the job
     # IS that primary peer). Gate on the peer's credential for exactly those jobs.
     job_is_self_grade = and_(
         HomeworkJob.provider == HomeworkJob.judge_provider,
-        func.coalesce(HomeworkJob.model, "") == func.coalesce(HomeworkJob.judge_model, ""),
+        content_model_resolved == func.coalesce(HomeworkJob.judge_model, ""),
     )
     self_grade_judge_provider = case(
         (and_(HomeworkJob.provider == _PRIMARY_SELF_FALLBACK[0],
-              HomeworkJob.model == _PRIMARY_SELF_FALLBACK[1]), "gemini"),
+              content_model_resolved == _PRIMARY_SELF_FALLBACK[1]), "gemini"),
         else_="claude",
     )
     judge_ok = or_(
@@ -549,7 +569,7 @@ Add `case` to the SQLAlchemy import in `jobs.py`. Keep `content_ok`, `not_in_pau
 
 - [ ] **Step 3: Update `_drain_check_and_beat` / heartbeat publish** if it references any removed CAPABILITIES key (it publishes `CAPABILITY_BLOB`, which is credential-based already — confirm no removed key is read). Update `tests/services/test_worker_capabilities.py` to the new `{can_claude_api, can_gemini_api}` shape; drop assertions on the removed keys.
 
-- [ ] **Step 4: Update + extend the claim-contention tests.** In `tests/integration/test_claim_contention.py`, replace `capabilities` dicts that carried `settings_judge_provider`/`judge_pair`/etc. with the credential-only shape. Add `tests/integration/test_claim_gate_self_grade.py` (real-DB) covering: (a) a non-self-grade api-judge job with stamped `judge_provider=gemini` is claimable by a gemini-api worker, not a claude-only worker; (b) a self-grade job generated by `claude/claude-opus-4-7` with judge `claude/claude-opus-4-7` (judge→gemini peer) needs `can_gemini_api`; (c) a self-grade job generated by `gemini/gemini-2.5-flash` judged by same (judge→claude peer) needs `can_claude_api`. RED-prove each by flipping the worker's cap flag and asserting non-claim.
+- [ ] **Step 4: Update + extend the claim-contention tests.** In `tests/integration/test_claim_contention.py`, replace `capabilities` dicts that carried `settings_judge_provider`/`judge_pair`/etc. with the credential-only shape. Add `tests/integration/test_claim_gate_self_grade.py` (real-DB) covering: (a) a non-self-grade api-judge job with stamped `judge_provider=gemini` is claimable by a gemini-api worker, not a claude-only worker; (b) a self-grade job generated by `claude/claude-opus-4-7` with judge `claude/claude-opus-4-7` (judge→gemini peer) needs `can_gemini_api`; (c) a self-grade job generated by `gemini/gemini-2.5-flash` judged by same (judge→claude peer) needs `can_claude_api`; **(d) the Auto-content-model case — a job with `provider='gemini'`, `model=NULL`, judge `gemini/gemini-3.1-pro-preview` (= `default_model('gemini')`): `content_model_resolved` makes the SQL see it as self-grade (matching Python), so the gate requires the claude peer's cap, not gemini's.** RED-prove each by flipping the worker's cap flag and asserting non-claim; bite-prove (d) by reverting `content_model_resolved` to `coalesce(model,'')` → (d) must misclassify and the test fail.
 
 - [ ] **Step 5: Run on scratch DB.**
 
@@ -687,7 +707,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.repositories import launch_defaults as launch_defaults_repo
-from app.services.agent_models import is_valid, validate_role_transport, validate_transport
+from app.services.agent_models import is_valid, validate_role_transport
 
 router = APIRouter(tags=["settings"])
 
@@ -919,6 +939,7 @@ dropdb edu_gld_test
   3. Close the relevant `docs/memory/WISHLIST.md`/`ROADMAP.md` item.
   4. `git mv docs/superpowers/plans/2026-06-27-global-launch-defaults.md docs/superpowers/plans/shipped/`.
   5. De-stale `README.md`, `docs/HOW_IT_WORKS.md`, `docs/CODE_MAP.md`, `docs/DATABASE.md` (new `launch_defaults` table; `.env` model vars removed → DB row + `/settings` is the home), `docs/DEPLOY.md` (remove the `JUDGE_*`/`EXTRACT_*` env rows; note credentials/infra stay), and the worker setup runbook.
+  6. **Operational note in the worklog + runbook** (no code): the new judge default `gemini-2.5-flash` (a) silently changes the live judge from `gemini-3.1-pro-preview` → flash on deploy (intended — fixes the cost-doubling AND the 3.1-pro quota bottleneck), and (b) surfaces an existing trap — launching **content** as `gemini-2.5-flash` makes the judge self-grade → fall back to `claude-opus-4-7` → **unclaimable on an all-gemini (claude-less) fleet** (the gate correctly refuses rather than mis-serving). Keep content on `gemini-2.5-pro`. One-line warning suffices.
   6. Push the branch + open a PR; route to the gatekeeper (do NOT self-merge).
 
 ---
