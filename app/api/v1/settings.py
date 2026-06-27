@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.repositories import launch_defaults as launch_defaults_repo
-from app.services.agent_models import is_valid, validate_role_transport
+from app.services.agent_models import api_supported, is_valid, validate_role_transport
 
 router = APIRouter(tags=["settings"])
 
@@ -53,9 +53,18 @@ async def put_launch_defaults(
     current = await launch_defaults_repo.get(session)
     # Validate the merged (provider, model) per role + each transport.
     merged = {**_serialize(current).model_dump(), **fields}
+    # Finding #2: judge/extract provider+model MUST be concrete — they are the
+    # terminal resolver; a null here bricks all Auto-role launches.
     for role in ("judge", "extract"):
-        prov, mdl = merged.get(f"{role}_provider"), merged.get(f"{role}_model")
-        if prov is not None and not is_valid(prov, mdl):
+        prov = merged.get(f"{role}_provider")
+        mdl = merged.get(f"{role}_model")
+        if prov is None or mdl is None:
+            raise HTTPException(
+                422,
+                "judge/extract provider+model must be concrete "
+                "(the global default is the terminal resolver)",
+            )
+        if not is_valid(prov, mdl):
             raise HTTPException(422, f"{role}: off-manifest (provider, model) ({prov!r}, {mdl!r})")
     for role in ("judge", "extract"):
         t = merged.get(f"{role}_transport")
@@ -64,4 +73,10 @@ async def put_launch_defaults(
     toc = merged.get("toc_transport")
     if toc is not None and toc not in ("cli", "api"):
         raise HTTPException(422, "toc_transport must be 'cli' or 'api'")
+    # Finding #5: toc_transport=api requires an api-capable extract provider.
+    if toc == "api" and not api_supported(merged.get("extract_provider") or ""):
+        raise HTTPException(
+            422,
+            "toc_transport=api requires an api-capable extract_provider (claude/gemini)",
+        )
     return _serialize(await launch_defaults_repo.update(session, fields))

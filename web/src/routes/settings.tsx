@@ -15,9 +15,6 @@ import type { LaunchDefaults, RoleTransport } from "@/lib/types";
 import { CARD, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
-/** Sentinel for null (Auto) provider/model. Radix Select dislikes null values. */
-const AUTO = "auto";
-
 const ROLE_TRANSPORT_OPTIONS: { value: RoleTransport; label: string }[] = [
   { value: "inherit", label: "Auto" },
   { value: "cli", label: "CLI" },
@@ -56,20 +53,15 @@ function RoleRow({
       <span className="w-16 shrink-0 text-[0.7rem] font-medium uppercase tracking-wide text-white/50">
         {label}
       </span>
-      {/* Provider */}
+      {/* Provider — no Auto/null option; global defaults must be concrete */}
       <Select
-        value={provider ?? AUTO}
-        onValueChange={(v) => {
-          const next = v === AUTO ? null : v;
-          onProvider(next);
-          if (!next) onModel(null);
-        }}
+        value={provider ?? ""}
+        onValueChange={(v) => onProvider(v)}
       >
         <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[7.5rem]")}>
-          <SelectValue placeholder="Auto" />
+          <SelectValue placeholder="Select…" />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value={AUTO}>Auto</SelectItem>
           {providerNames.map((p) => (
             <SelectItem key={p} value={p}>
               {p}
@@ -77,17 +69,16 @@ function RoleRow({
           ))}
         </SelectContent>
       </Select>
-      {/* Model — only shown when a concrete provider is chosen */}
+      {/* Model — no Auto/null option; always shown (provider is always concrete) */}
       {provider ? (
         <Select
-          value={model ?? AUTO}
-          onValueChange={(v) => onModel(v === AUTO ? null : v)}
+          value={model ?? ""}
+          onValueChange={(v) => onModel(v)}
         >
           <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[13rem]")}>
-            <SelectValue placeholder="Auto" />
+            <SelectValue placeholder="Select…" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={AUTO}>Auto</SelectItem>
             {modelOptions.map((m) => (
               <SelectItem key={m} value={m}>
                 {m}
@@ -97,7 +88,7 @@ function RoleRow({
         </Select>
       ) : (
         <span className="inline-flex h-9 w-[13rem] items-center px-3 text-[0.8rem] text-white/30">
-          Auto (provider auto)
+          (select a provider first)
         </span>
       )}
       {/* Transport */}
@@ -199,6 +190,14 @@ export function SettingsPage() {
 
   function handleSave() {
     setSaveError(null);
+    // Global defaults must be fully concrete — the backend enforces this too,
+    // but catch it early for a cleaner UX.
+    if (!judgeProvider || !judgeModel || !extractProvider || !extractModel) {
+      setSaveError(
+        "Judge and Extract provider+model must both be set — no Auto allowed for global defaults",
+      );
+      return;
+    }
     saveMut.mutate({
       judge_provider: judgeProvider,
       judge_model: judgeModel,

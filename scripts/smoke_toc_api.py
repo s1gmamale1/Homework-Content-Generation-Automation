@@ -1,26 +1,34 @@
 """Acceptance smoke: TOC extraction over transport='api' (Vertex), no gemini CLI.
 Run with Vertex creds in env (GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT):
-    EXTRACT_TOC_TRANSPORT=api uv run python -m scripts.smoke_toc_api <book_id>
+    uv run python -m scripts.smoke_toc_api <book_id>
 Re-extracts the on-disk PDF for <book_id> straight through agent.extract_toc.
 Pass = a non-empty ExtractedTOC came back via the api path (auth_mode=api) with
-no initOauthClient. One real call (a single TOC read) — within the no-mass-gen rule."""
+no initOauthClient. One real call (a single TOC read) — within the no-mass-gen rule.
+
+Reads extract_provider, extract_model, and toc_transport from the launch_defaults
+DB row (operator-editable at /settings). Set toc_transport=api there before running.
+"""
 import asyncio
 import sys
 from uuid import UUID
 
-from app.config import settings
+from app.db import SessionLocal
+from app.repositories import launch_defaults as launch_defaults_repo
 from app.services import agent
 from app.services.storage import book_pdf_path
 
 
 async def _main(book_id: str):
-    assert settings.extract_toc_transport == "api", (
-        "set EXTRACT_TOC_TRANSPORT=api for this smoke")
+    async with SessionLocal() as session:
+        ld = await launch_defaults_repo.get(session)
+
+    assert ld.toc_transport == "api", (
+        "set toc_transport=api in launch defaults (/settings) for this smoke")
     pdf = book_pdf_path(UUID(book_id))
     assert pdf.exists(), f"no PDF on disk at {pdf}"
     toc = await agent.extract_toc(
-        provider=settings.extract_provider,
-        model=settings.extract_model,
+        provider=ld.extract_provider,
+        model=ld.extract_model,
         pdf_path=pdf,
         subject="smoke",
         book_id=UUID(book_id),

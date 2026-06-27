@@ -7,18 +7,20 @@ core guarantee of the per-role-provider-model feature.
 This drives the REAL code paths (`agent.summarize_lesson`, `phase_judge.judge`,
 `pipeline._resolve_extract`, `model_tiers.resolve_judge`) and only stubs the two
 leaf side effects: the subprocess spawn (`agent._spawn`) and the usage DB write
-(`agent._record_usage`). That keeps it $0, key-free, and DB-free while still
-exercising the actual resolution + threading. (A real claude call isn't possible
-here — no ANTHROPIC_API_KEY — and a full-homework API run is barred by the
-no-spam money rule; routing, not model behavior, is what this feature changes.)
+(`agent._record_usage`). That keeps it $0 and key-free while still exercising
+the actual resolution + threading. (A real claude call isn't possible here —
+no ANTHROPIC_API_KEY — and a full-homework API run is barred by the no-spam
+money rule; routing, not model behavior, is what this feature changes.)
 
+Reads the launch_defaults DB row for the extract fallback values.
 Run:  uv run python -m scripts.smoke_per_role   (from the repo root)
 Exit 0 + "SMOKE PASS" on success; raises AssertionError otherwise.
 """
 import asyncio
 from uuid import uuid4
 
-from app.config import settings
+from app.db import SessionLocal
+from app.repositories import launch_defaults as launch_defaults_repo
 from app.services import agent, model_tiers, phase_judge
 from app.services.pipeline import _resolve_extract
 
@@ -40,6 +42,9 @@ async def main() -> None:
     agent._spawn = _fake_spawn          # capture the spawn args, no subprocess
     agent._record_usage = _fake_record  # no DB write
 
+    async with SessionLocal() as session:
+        ld = await launch_defaults_repo.get(session)
+
     extract_kwargs = dict(
         book_text="Lesson 1: the cell is the basic unit of life.",
         section_title="The Cell", section_number="1", page_start=1, page_end=3,
@@ -47,20 +52,20 @@ async def main() -> None:
     )
 
     # 1) EXTRACT honors an explicit per-job override (claude/opus), distinct from
-    #    the generator and from the settings default.
-    ep, em = _resolve_extract("claude", "claude-opus-4-7")
+    #    the generator and from the launch_defaults default.
+    ep, em = _resolve_extract("claude", "claude-opus-4-7", ld)
     _CAPTURED.clear()
     await agent.summarize_lesson(provider=ep, model=em, **extract_kwargs)
     assert _CAPTURED[-1]["provider"] == "claude", _CAPTURED
     assert _CAPTURED[-1]["model"] == "claude-opus-4-7", _CAPTURED
 
-    # 2) EXTRACT Auto (NULL override) falls back to the pinned settings extractor
-    #    (settings.extract_provider/model — env-configured, NOT the generator).
-    ep2, em2 = _resolve_extract(None, None)
-    assert (ep2, em2) == (settings.extract_provider, settings.extract_model), (ep2, em2)
+    # 2) EXTRACT Auto (NULL override) falls back to the launch_defaults DB row
+    #    (NOT settings attributes, which were deleted with the launch_defaults feature).
+    ep2, em2 = _resolve_extract(None, None, ld)
+    assert (ep2, em2) == (ld.extract_provider, ld.extract_model), (ep2, em2)
     _CAPTURED.clear()
     await agent.summarize_lesson(provider=ep2, model=em2, **extract_kwargs)
-    assert _CAPTURED[-1]["provider"] == settings.extract_provider, (_CAPTURED, ep2)
+    assert _CAPTURED[-1]["provider"] == ld.extract_provider, (_CAPTURED, ep2)
     assert _CAPTURED[-1]["model"] == em2, (_CAPTURED, em2)
 
     # 3) JUDGE honors an explicit override, distinct from the generator.
