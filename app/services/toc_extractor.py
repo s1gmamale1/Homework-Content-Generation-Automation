@@ -6,9 +6,9 @@ from uuid import UUID
 
 from loguru import logger
 
-from app.config import settings
 from app.db import SessionLocal
 from app.repositories import books as books_repo
+from app.repositories import launch_defaults as launch_defaults_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import TOCEntryOut
 from app.services import agent, events_bus
@@ -37,27 +37,31 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
         # API handler; no upload step is required.
         async with SessionLocal() as session:
             await books_repo.set_status(session, book_id, "toc_extracting")
+            ld = await launch_defaults_repo.get(session)
+            toc_provider = ld.extract_provider
+            toc_model = ld.extract_model
+            toc_transport = ld.toc_transport
             await session.commit()
         log.info(f"[book {book_id}] status=toc_extracting (committed)")
         await events_bus.publish(resource_id, "status", {"status": "toc_extracting"})
 
-        # Ask the agent for the structured TOC. The provider/model are pinned
-        # to the cheap-extractor settings (gemini-flash by default) regardless
-        # of any per-job choice — TOC extraction is a one-shot factual read
-        # that doesn't benefit from a smart-tier model.
+        # Ask the agent for the structured TOC. The provider/model are sourced
+        # from the launch_defaults DB row (extract_provider / extract_model) so
+        # the operator can change the cheap-extractor choice without a deploy.
+        # The transport comes from launch_defaults.toc_transport (dedicated TOC
+        # column, separate from extract_transport which governs lesson extracts).
         log.info(
             f"[book {book_id}] extracting TOC via agent "
-            f"({settings.extract_provider} / {settings.extract_model}) "
-            f"transport={settings.extract_toc_transport}"
+            f"({toc_provider} / {toc_model}) transport={toc_transport}"
         )
         t_extract = perf_counter()
         extracted = await agent.extract_toc(
-            provider=settings.extract_provider,
-            model=settings.extract_model,
+            provider=toc_provider,
+            model=toc_model,
             pdf_path=file_path,
             subject=subject,
             book_id=book_id,
-            transport=settings.extract_toc_transport,
+            transport=toc_transport,
         )
         log.info(
             f"[book {book_id}] TOC extracted | entries={len(extracted.entries)} "

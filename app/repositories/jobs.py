@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import and_, func, literal, not_, or_, select, text, update
+from sqlalchemy import and_, case, func, literal, not_, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -274,32 +274,33 @@ async def claim_next_job(
     Returns None if no claimable job is available (worker should sleep
     and retry).
 
-    Eligibility rules (claim gate v2 — Phase 4.1 §4/§4a):
+    Eligibility rules (claim gate v3 — job-column-based, Task 4):
       - status == 'pending'
       - scheduled_at <= NOW() (so delayed retries don't fire early)
       - attempts < max_attempts (don't reclaim poison-pill jobs forever)
-      - per-role capability routing against `capabilities` (the dict
-        `worker._compute_capabilities` builds at startup):
+      - per-role capability routing against `capabilities` (the credential-only
+        dict `worker._compute_capabilities` builds at startup):
           * content: transport == 'cli', OR the worker has the api capability
             for the job's content provider (`can_claude_api`/`can_gemini_api`).
-          * judge: if the job's resolved judge transport is api
-            (judge_transport == 'api', or 'inherit' under an api job), the
-            worker needs `judge_api_ok` — EXCEPT when the job generates ON the
-            configured judge pair, in which case `judge_model_for` self-falls
-            back to the generator-aware self-fallback peer and the worker needs
-            `judge_fallback_api_ok` instead.
-          * extract: if the job's resolved extract transport is api, the
-            worker needs `extract_api_ok`.
-        This is the fail-fast gate: a worker missing a needed side never
-        claims the job (covers the extract-failover path too, since the gate
-        is at claim time, before any spawn). Default `capabilities=None` is
-        the most-restrictive all-False set, i.e. cli-only.
+          * judge: if the job's resolved judge transport is api, gate on the
+            STAMPED job.judge_provider — EXCEPT when the job is self-grade
+            (content_model_resolved == job.judge_model, both non-NULL), in which
+            case the self-fallback peer's credential is required instead.
+            `content_model_resolved` is a CASE expression over MODEL_MANIFEST
+            that resolves NULL content model to the provider's default, matching
+            Python's `resolve_judge` logic exactly.
+          * extract: if the job's resolved extract transport is api, gate on
+            the STAMPED job.extract_provider's credential.
+        Default `capabilities=None` is all-False (cli-only).
 
     Order: highest priority first, then oldest scheduled_at first (FIFO
     within a priority band).
     """
+    from app.services.model_tiers import _PRIMARY_SELF_FALLBACK
+    from app.services.agent_models import MODEL_MANIFEST, default_model as _default_model
+
     caps = capabilities or {}
-    judge_pair = caps.get("judge_pair") or (None, None)
+
     content_ok = or_(
         HomeworkJob.transport == "cli",
         and_(HomeworkJob.provider == "claude", literal(bool(caps.get("can_claude_api")))),
@@ -309,28 +310,6 @@ async def claim_next_job(
         HomeworkJob.judge_transport == "api",
         and_(HomeworkJob.judge_transport == "inherit", HomeworkJob.transport == "api"),
     )
-    # §4a: jobs generating ON the configured judge pair are judged by the
-    # self-fallback provider — gate on ITS capability for exactly those jobs.
-    # NULL-model note: a model=NULL job bypasses this SQL equality; safe today
-    # because judge_model_for resolves None via default_model(provider) (sonnet)
-    # != the judge pair (opus). AuthEnvError keeps any future drift loud.
-    # `coalesce(model, '')` keeps the NOT-pair branch usable for NULL-model
-    # jobs: bare `NULL == 'x'` is SQL NULL, and not_(NULL AND ...) stays NULL,
-    # which silently excluded NULL-model jobs whose provider == the judge
-    # provider (proven by test_null_model_job_claims_via_not_pair_branch).
-    job_is_judge_pair = and_(
-        HomeworkJob.provider == (judge_pair[0] or ""),
-        func.coalesce(HomeworkJob.model, "") == (judge_pair[1] or ""),
-    )
-    # C1: resolve judge/extract provider per-job via COALESCE(job column, settings
-    # default) so the capability gate honors the job's per-job provider override,
-    # not just the settings default. A Vertex-only worker (gemini api, no anthropic
-    # key) with settings.judge_provider='claude' must still claim a job that has
-    # judge_provider='gemini' explicitly set.
-    s_judge = caps.get("settings_judge_provider") or ""
-    s_extract = caps.get("settings_extract_provider") or ""
-    resolved_judge_provider = func.coalesce(HomeworkJob.judge_provider, s_judge)
-    resolved_extract_provider = func.coalesce(HomeworkJob.extract_provider, s_extract)
 
     def _provider_api_ok(resolved):
         """Map a SQL-expression resolved provider name to the worker's matching cap flag."""
@@ -339,16 +318,41 @@ async def claim_next_job(
             and_(resolved == "gemini", literal(bool(caps.get("can_gemini_api")))),
         )
 
+    # Resolve content model EXACTLY as Python's resolve_judge does
+    # (`model or default_model(provider)`) so the SQL self-grade test agrees with
+    # the runtime judge decision even when content model is Auto (NULL on cli —
+    # the common case). Built from the manifest: no hardcoded model strings, no
+    # drift. (We deliberately do NOT stamp content model concrete at launch —
+    # that would force gemini-cli Auto-content onto default_model('gemini')=
+    # gemini-3.1-pro-preview, a cost regression, since _PROVIDER_DEFAULT_MODEL
+    # ['gemini'] is None = "let the CLI pick".)
+    content_model_resolved = case(
+        *[(and_(HomeworkJob.model.is_(None), HomeworkJob.provider == p), _default_model(p))
+          for p in MODEL_MANIFEST],
+        else_=func.coalesce(HomeworkJob.model, ""),
+    )
+    # Self-grade: job's generator == its stamped judge -> judged by the
+    # self-fallback peer (claude-opus-4-7, or gemini-3.1-pro-preview when the job
+    # IS that primary peer). Gate on the peer's credential for exactly those jobs.
+    job_is_self_grade = and_(
+        HomeworkJob.provider == HomeworkJob.judge_provider,
+        content_model_resolved == func.coalesce(HomeworkJob.judge_model, ""),
+    )
+    self_grade_judge_provider = case(
+        (and_(HomeworkJob.provider == _PRIMARY_SELF_FALLBACK[0],
+              content_model_resolved == _PRIMARY_SELF_FALLBACK[1]), "gemini"),
+        else_="claude",
+    )
     judge_ok = or_(
         not_(judge_needs_api),
-        and_(job_is_judge_pair, literal(bool(caps.get("judge_fallback_api_ok")))),
-        and_(not_(job_is_judge_pair), _provider_api_ok(resolved_judge_provider)),
+        and_(job_is_self_grade, _provider_api_ok(self_grade_judge_provider)),
+        and_(not_(job_is_self_grade), _provider_api_ok(HomeworkJob.judge_provider)),
     )
     extract_needs_api = or_(
         HomeworkJob.extract_transport == "api",
         and_(HomeworkJob.extract_transport == "inherit", HomeworkJob.transport == "api"),
     )
-    extract_ok = or_(not_(extract_needs_api), _provider_api_ok(resolved_extract_provider))
+    extract_ok = or_(not_(extract_needs_api), _provider_api_ok(HomeworkJob.extract_provider))
 
     # Batch-pause gate: skip jobs whose batch is paused.
     # CRITICAL: the IS NULL arm is REQUIRED — without it, `NULL NOT IN

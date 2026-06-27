@@ -144,15 +144,10 @@ class Settings(BaseSettings):
     )
 
     # ─── Phase validator (LLM judge) ──────────────────────────────────────
-    # The model that grades each generated phase against its prompt contract.
-    # Default claude-opus-4-7 — the strongest model, so it is >= every generator
-    # ("judge must be at least as capable as the generator" trivially holds).
-    # NOTE: this draws the shared claude Max pool on EVERY content phase
-    # (~8/job + regens) — the opposite of the earlier "spare claude" default.
-    # Set JUDGE_PROVIDER=gemini / JUDGE_MODEL=gemini-3.1-pro-preview to move
-    # judging off claude.
-    judge_provider: str = "claude"
-    judge_model: str = "claude-opus-4-7"
+    # Judge provider/model now live in the DB (`launch_defaults`), edited at
+    # /settings in the UI.  `settings.judge_provider` / `settings.judge_model`
+    # have been removed; readers use the DB row (resolved at launch-time into
+    # concrete job columns).
     # Maximum regen attempts when a phase fails judge; default 1 = current single-regen behavior.
     max_judge_regens: int = 1
 
@@ -192,49 +187,6 @@ class Settings(BaseSettings):
     # EMPTY (default) = no fetch: a missing PDF raises as before, so single-box
     # and the head's own embedded worker are unchanged. Set on remote workers.
     fleet_head_url: str = ""
-
-    # ─── Cheap-extractor pin ──────────────────────────────────────────────
-    # Both PDF-reading paths (TOC extraction at upload time + per-section
-    # lesson.extract during a job) are pinned to a cheap model regardless of
-    # which provider/model the user picked for the rest of the job. Reasoning:
-    # extract phases burn the most input tokens (whole-PDF or many-page reads)
-    # and the output is a flat factual summary, so paying smart-tier rates
-    # buys nothing. Other phases keep using the job-level provider/model.
-    extract_provider: str = "gemini"
-    extract_model: str = "gemini-2.5-flash"
-
-    @field_validator("extract_provider", mode="before")
-    @classmethod
-    def _blank_extract_provider_to_default(cls, v: object) -> object:
-        """Map blank/whitespace-only EXTRACT_PROVIDER to the default "gemini".
-
-        A bare ``EXTRACT_PROVIDER=`` in .env makes pydantic-settings pass an
-        empty string rather than the field default, which later causes
-        ``get_provider("")`` to raise a KeyError.  This before-validator
-        normalises blank/whitespace-only values back to the intended default
-        before the field's type coercion runs.  Scoped strictly to
-        ``extract_provider`` per wishlist item extract-2.
-        """
-        if v is None or (isinstance(v, str) and not v.strip()):
-            return "gemini"
-        return v
-
-    extract_toc_transport: str = "cli"
-
-    @field_validator("extract_toc_transport", mode="before")
-    @classmethod
-    def _blank_toc_transport_to_default(cls, v: object) -> object:
-        """Normalise EXTRACT_TOC_TRANSPORT: blank/whitespace → "cli" (a bare
-        ``EXTRACT_TOC_TRANSPORT=`` in .env passes "" not the field default), and
-        reject anything other than cli|api LOUDLY — a typo'd value silently
-        running cli is exactly the footgun the all-Vertex operator would hit.
-        Default cli keeps existing CLI fleets unchanged; only an all-Vertex
-        operator (no gemini OAuth) sets api to route TOC extraction over Vertex."""
-        if v is None or (isinstance(v, str) and not v.strip()):
-            return "cli"
-        if isinstance(v, str) and v.strip() in ("cli", "api"):
-            return v.strip()
-        raise ValueError(f"EXTRACT_TOC_TRANSPORT must be 'cli' or 'api', got {v!r}")
 
     # ─── Notion archive (Phase 1 push) ───
     notion_enabled: bool = False

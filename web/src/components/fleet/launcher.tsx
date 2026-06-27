@@ -597,6 +597,13 @@ function ReadyCard({
     refetchInterval: 5000,
     refetchOnWindowFocus: true,
   });
+  // Fetch global launch defaults so role pickers can show "Auto → <resolved>"
+  // when a role is on Auto. The query key matches what the /settings page
+  // invalidates on PUT, so editing a default there immediately refreshes here.
+  const defaultsQ = useQuery({
+    queryKey: ["launch-defaults"],
+    queryFn: api.getLaunchDefaults,
+  });
   const detail = useQuery({
     queryKey: ["book", book.id],
     queryFn: () => api.getBook(book.id),
@@ -923,6 +930,11 @@ function ReadyCard({
                   onModel={setExtractModel}
                   onTransport={setExtractTransport}
                   jobTransport={transport}
+                  resolvedDefault={{
+                    provider: defaultsQ.data?.extract_provider ?? null,
+                    model: defaultsQ.data?.extract_model ?? null,
+                    transport: defaultsQ.data?.extract_transport ?? null,
+                  }}
                 />
                 <RoleAgentControls
                   label="Judge"
@@ -935,6 +947,11 @@ function ReadyCard({
                   onTransport={setJudgeTransport}
                   warning={judgeWarning}
                   jobTransport={transport}
+                  resolvedDefault={{
+                    provider: defaultsQ.data?.judge_provider ?? null,
+                    model: defaultsQ.data?.judge_model ?? null,
+                    transport: defaultsQ.data?.judge_transport ?? null,
+                  }}
                 />
                 {/* Session-limit strategy — what to do when a Claude session limit hits. */}
                 <div className="flex flex-col gap-1">

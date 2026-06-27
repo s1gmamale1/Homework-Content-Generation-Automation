@@ -70,12 +70,13 @@ def _done_phase_md(rows) -> dict[str, str]:
     }
 
 
-def _resolve_extract(job_extract_provider, job_extract_model):
-    """Extract role provider/model: explicit job override, else global settings.
-    The settings default is the cheap pinned extractor (gemini-flash)."""
+def _resolve_extract(job_extract_provider, job_extract_model, ld):
+    """Extract role provider/model: explicit job override, else the global
+    default from the launch_defaults DB row (jobs are stamped at launch; this
+    is the defensive null-path, no settings read)."""
     return (
-        job_extract_provider or settings.extract_provider,
-        job_extract_model or settings.extract_model,
+        job_extract_provider or ld.extract_provider,
+        job_extract_model or ld.extract_model,
     )
 
 
@@ -129,17 +130,23 @@ async def run(job_id: UUID) -> None:
             )
             custom_prompts = getattr(job, "custom_prompts", None)
             selected_phases = getattr(job, "selected_phases", None)
-            # Per-job judge provider/model override (Task 6): explicit columns
-            # let the user steer who grades; NULL falls back to the auto-tier
-            # judge. Self-grade is still hard-swapped server-side downstream.
-            judge_provider_ov = getattr(job, "judge_provider", None)
-            judge_model_ov = getattr(job, "judge_model", None)
-            # Per-job extract provider/model override (Task 4): explicit columns
-            # win, else the cheap pinned extractor from settings. Content phases
-            # are UNAFFECTED — they keep using job.provider / job.model.
+            # Global launch defaults (DB row): the defensive fallback source for
+            # any NULL judge/extract column. Loaded ONCE here, before first use.
+            from app.repositories import launch_defaults as _ld_repo  # noqa: PLC0415
+            _ld = await _ld_repo.get(session)
+            # Per-job judge provider/model override: explicit columns let the
+            # user steer who grades; NULL defensively falls back to the DB global
+            # default (jobs are stamped at launch; this is belt-and-suspenders,
+            # never reads settings). Self-grade is still hard-swapped downstream.
+            judge_provider_ov = getattr(job, "judge_provider", None) or _ld.judge_provider
+            judge_model_ov = getattr(job, "judge_model", None) or _ld.judge_model
+            # Per-job extract provider/model override: explicit columns win, else
+            # the DB global default (via _ld). Content phases are UNAFFECTED —
+            # they keep using job.provider / job.model.
             extract_provider, extract_model = _resolve_extract(
                 getattr(job, "extract_provider", None),
                 getattr(job, "extract_model", None),
+                _ld,
             )
             # Session-limit strategy: resolve ONCE per job. Load the batch to
             # get the per-batch override; fall back to the fleet-wide env default

@@ -12,11 +12,14 @@ from app.repositories import books as books_repo
 from app.repositories import budget as budget_repo
 from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
+from app.repositories import launch_defaults as launch_defaults_repo
 from app.repositories import toc_entries as toc_repo
 from app.services import subjects
 from app.services.agent_models import (
     is_valid,
+    resolve_role_selection,
     resolve_role_transport,
+    resolve_role_transport_default,
     validate_role_transport,
     validate_session_limit_strategy,
     validate_transport,
@@ -168,6 +171,34 @@ async def launch_batch(
         if err is not None:
             raise HTTPException(400, f"{role}: {err}")
 
+    # Resolve roles against the UI-managed global defaults: explicit pick wins,
+    # else the global default. Stamp CONCRETE provider/model onto job + batch so
+    # jobs are self-describing (future-launches-only; agent_usages stays honest).
+    ld = await launch_defaults_repo.get(session)
+    res_judge_provider, res_judge_model = resolve_role_selection(
+        body.judge_provider, body.judge_model, ld.judge_provider, ld.judge_model)
+    res_extract_provider, res_extract_model = resolve_role_selection(
+        body.extract_provider, body.extract_model, ld.extract_provider, ld.extract_model)
+    res_judge_transport = resolve_role_transport_default(body.judge_transport, ld.judge_transport)
+    res_extract_transport = resolve_role_transport_default(body.extract_transport, ld.extract_transport)
+    # Defense-in-depth: the resolved pairs must be manifest-valid (the global
+    # default could only be off-manifest via a buggy PUT — fail loud, not silent).
+    for role, prov, mdl in (("judge", res_judge_provider, res_judge_model),
+                            ("extract", res_extract_provider, res_extract_model)):
+        if not is_valid(prov, mdl):
+            raise HTTPException(500, f"{role}: resolved default off-manifest ({prov!r},{mdl!r})")
+    # Gate: if the global default resolved a non-api-capable role provider to an
+    # api effective transport, fail loud at launch rather than silently strand the
+    # job unclaimable. cli-resolving transports always return None from
+    # validate_transport and are never affected.
+    for role, prov, mdl, res_tx in (
+        ("judge", res_judge_provider, res_judge_model, res_judge_transport),
+        ("extract", res_extract_provider, res_extract_model, res_extract_transport),
+    ):
+        eff_tx = resolve_role_transport(res_tx, body.transport)
+        err = validate_transport(prov, mdl, eff_tx)
+        if err is not None:
+            raise HTTPException(400, f"{role} global default: {err}")
     # (a) STRICT zero-write preview — compute disposition and return BEFORE any
     # batch create/mutation. Leaves no phantom batch row in rollups.
     if body.preview:
@@ -194,13 +225,13 @@ async def launch_batch(
     batch = await batches_repo.get_or_create_for_book(
         session, book_id=body.book_id, subject=book.subject, grade=book.grade,
         provider=provider, model=body.model, transport=body.transport,
-        extract_transport=body.extract_transport,
-        judge_transport=body.judge_transport,
+        extract_transport=res_extract_transport,
+        judge_transport=res_judge_transport,
         custom_prompts=custom_prompts, selected_phases=selected_phases,
-        extract_provider=body.extract_provider,
-        extract_model=body.extract_model,
-        judge_provider=body.judge_provider,
-        judge_model=body.judge_model,
+        extract_provider=res_extract_provider,
+        extract_model=res_extract_model,
+        judge_provider=res_judge_provider,
+        judge_model=res_judge_model,
         session_limit_strategy=body.session_limit_strategy)
 
     created = adopted = skipped = resumed = 0
@@ -256,13 +287,13 @@ async def launch_batch(
                                subject=book.subject, provider=provider,
                                model=body.model, batch_id=batch.id,
                                transport=body.transport,
-                               extract_transport=body.extract_transport,
-                               judge_transport=body.judge_transport,
+                               extract_transport=res_extract_transport,
+                               judge_transport=res_judge_transport,
                                custom_prompts=custom_prompts, selected_phases=selected_phases,
-                               extract_provider=body.extract_provider,
-                               extract_model=body.extract_model,
-                               judge_provider=body.judge_provider,
-                               judge_model=body.judge_model)
+                               extract_provider=res_extract_provider,
+                               extract_model=res_extract_model,
+                               judge_provider=res_judge_provider,
+                               judge_model=res_judge_model)
         created += 1
 
     await session.flush()

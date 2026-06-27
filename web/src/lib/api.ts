@@ -10,6 +10,7 @@ import type {
   BatchSummary,
   Book,
   Job,
+  LaunchDefaults,
   NotionGrade,
   NotionSubject,
   ProviderModelManifest,
@@ -214,6 +215,18 @@ export const api = {
   async getAgentModels(): Promise<ProviderModelManifest> {
     const res = await authFetch("/api/v1/agent/models");
     return unwrap<ProviderModelManifest>(res);
+  },
+
+  async getLaunchDefaults(): Promise<LaunchDefaults> {
+    return unwrap<LaunchDefaults>(await authFetch("/api/v1/settings/launch-defaults"));
+  },
+
+  async updateLaunchDefaults(patch: Partial<LaunchDefaults>): Promise<LaunchDefaults> {
+    return unwrap<LaunchDefaults>(await authFetch("/api/v1/settings/launch-defaults", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }));
   },
 
   async getAgentStats(): Promise<AgentStats> {

@@ -1,4 +1,4 @@
-import { Activity, Gauge, Library, Plus, Rocket } from "lucide-react";
+import { Activity, Gauge, Library, Plus, Rocket, Settings } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { NavLink, useLocation, useOutlet } from "react-router-dom";
 import { Nameplate } from "./nameplate";
@@ -47,6 +47,9 @@ export function Layout() {
               </NavItem>
               <NavItem to="/monitor" icon={<Activity className="size-4" />}>
                 Monitor
+              </NavItem>
+              <NavItem to="/settings" icon={<Settings className="size-4" />}>
+                Settings
               </NavItem>
             </nav>
           </div>

@@ -112,6 +112,7 @@
 > used on retry/resume. NOTE: items here may have their *fix* in pipeline/worker code
 > even when the *symptom* is about persisted state — tag each with where the fix lives.
 
+- `claim-gate-null-judge-hardening` — defensive loud-fail for NULL judge_provider/judge_model at the claim gate (latent: not reachable today given Task 2 stamping + 0037 backfill; a future unstamped-creation path would silently strand (#1) or mis-claim (#2)). Adversarial review 2026-06-27 traced both; clean loud-fail = non-NULL assert in jobs_repo.create, deferred because it breaks 10+ existing test callers (non-trivial). Revisit if a new job-creation path is added.
 - _(none open)_ — phase-level resume shipped in [0031]; see **Done / promoted**.
 
 ## Done / promoted

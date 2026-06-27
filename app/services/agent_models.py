@@ -96,6 +96,29 @@ def resolve_role_transport(role_value: str, job_transport: str) -> str:
     return job_transport if role_value == "inherit" else role_value
 
 
+def resolve_role_selection(
+    explicit_provider: str | None,
+    explicit_model: str | None,
+    default_provider: str,
+    default_model_: str | None,
+) -> tuple[str, str | None]:
+    """Resolve a role's (provider, model) at launch time.
+
+    Explicit provider wins: its model is the explicit pick or THAT provider's
+    own default (never the global default's model, which belongs to a different
+    provider). Auto provider -> the global default pair verbatim.
+    """
+    if explicit_provider is not None:
+        return explicit_provider, (explicit_model or default_model(explicit_provider))
+    return default_provider, default_model_
+
+
+def resolve_role_transport_default(explicit_transport: str, default_transport: str) -> str:
+    """'inherit' (the launcher 'Auto') -> the global default transport (which may
+    itself be 'inherit'); an explicit 'cli'/'api' wins."""
+    return default_transport if explicit_transport == "inherit" else explicit_transport
+
+
 SESSION_LIMIT_STRATEGIES = ("pause", "switch", "inherit")
 
 

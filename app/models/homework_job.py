@@ -37,7 +37,7 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # avoid colliding with JobOut.phases (the phase-outputs list).
     selected_phases: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     # Per-role provider/model overrides. NULL = fall back to the role default
-    # (extract -> settings.extract_provider/model; judge -> model_tiers auto).
+    # (extract -> global default (launch_defaults); judge -> model_tiers auto).
     extract_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     extract_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     judge_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)

@@ -59,7 +59,7 @@ class GenerateRequest(BaseModel):
     judge_transport: str = "inherit"
     custom_prompts: dict[str, str] | None = None   # {phase: markdown}; replaces built-in. Not persisted to prompts/.
     selected_phases: list[str] | None = None        # subset to run; None = full flow. Dependency-closure-expanded server-side.
-    extract_provider: str | None = None   # None ⇒ settings.extract_provider
+    extract_provider: str | None = None   # None ⇒ global default (launch_defaults)
     extract_model: str | None = None
     judge_provider: str | None = None      # None ⇒ model_tiers auto-tier
     judge_model: str | None = None

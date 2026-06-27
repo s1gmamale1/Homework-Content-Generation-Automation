@@ -258,7 +258,7 @@ Behind an ALB, point the target group at the `api` task. Use RDS Postgres. Run `
 
 - [ ] `AUTH_TOKEN` set to a strong random value (or comma-separated list for multiple services)
 - [ ] `ENABLE_DOCS=false`
-- [ ] `EXTRACT_MODEL` / `EXTRACT_PROVIDER` left at defaults (`gemini-2.5-flash` / `gemini`) or pinned to a stable model; `JUDGE_MODEL` likewise (`GEMINI_MODEL` is vestigial — nothing reads it)
+- [ ] Judge/extract model selection reviewed at **`/settings`** (DB-backed `launch_defaults` singleton, migration 0037). Seed defaults: judge = gemini/gemini-2.5-flash, extract = gemini/gemini-2.5-flash, `toc_transport=cli`. **⚠ On an all-Vertex head** (Vertex SA creds only, no gemini CLI OAuth): flip `toc_transport→api` at `/settings` immediately after first deploy, or book-upload TOC extraction fails. `EXTRACT_MODEL`/`EXTRACT_PROVIDER`/`JUDGE_MODEL`/`JUDGE_PROVIDER`/`EXTRACT_TOC_TRANSPORT` env vars are **deleted** — do not set them. (`GEMINI_MODEL` is also vestigial — nothing reads it.)
 - [ ] `ALLOW_ORIGINS` set to actual frontend origin (not `*`) if API and SPA are on different domains
 - [ ] Postgres has automated backups enabled (managed services usually do this; self-hosted needs `pg_dump` cron)
 - [ ] Healthcheck endpoint `/health` reachable from your platform's liveness probe

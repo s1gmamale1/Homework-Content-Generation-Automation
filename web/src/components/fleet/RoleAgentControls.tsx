@@ -24,7 +24,11 @@ const ROLE_TRANSPORT_OPTIONS: { value: RoleTransport; label: string }[] = [
 /** Per-role agent controls (Extract / Judge): provider + model + transport.
  *  Provider/model default to "Auto" (null = backend default); transport
  *  defaults to "cli". When the role's own transport is api, a concrete model
- *  is forced (billing needs an explicit model — mirrors the generator). */
+ *  is forced (billing needs an explicit model — mirrors the generator).
+ *
+ *  `resolvedDefault` is the global launch-defaults row for this role. When the
+ *  provider picker is on Auto (null), the trigger shows
+ *  `Auto → <resolvedDefault.provider>` so operators always see what will run. */
 export function RoleAgentControls({
   label,
   manifest,
@@ -36,6 +40,7 @@ export function RoleAgentControls({
   onTransport,
   warning,
   jobTransport,
+  resolvedDefault,
 }: {
   label: string;
   manifest?: ProviderModelManifest;
@@ -47,6 +52,7 @@ export function RoleAgentControls({
   onTransport: (v: RoleTransport) => void;
   warning?: string | null;
   jobTransport: "cli" | "api";
+  resolvedDefault?: { provider: string | null; model: string | null; transport: string | null };
 }) {
   // Only providers the backend bills via API are pickable for an api role.
   // For provider selection we offer every manifest provider (the role may run
@@ -87,13 +93,22 @@ export function RoleAgentControls({
         <span className="shrink-0 text-[0.66rem] uppercase tracking-wide text-white/45">
           {label}
         </span>
-        {/* Provider */}
+        {/* Provider — when on Auto, show the resolved global default so the
+            operator can see what will actually run ("Auto → gemini"). */}
         <Select
           value={provider ?? AUTO}
           onValueChange={(v) => onProvider(v === AUTO ? null : v)}
         >
           <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[7.5rem]")}>
-            <SelectValue placeholder="Auto" />
+            {provider == null ? (
+              <SelectValue>
+                {resolvedDefault?.provider
+                  ? `Auto → ${resolvedDefault.provider}`
+                  : "Auto → …"}
+              </SelectValue>
+            ) : (
+              <SelectValue placeholder="Auto" />
+            )}
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={AUTO}>Auto</SelectItem>
@@ -109,14 +124,24 @@ export function RoleAgentControls({
         </Select>
         {/* Model — only shown once a concrete provider is chosen. With provider
             on "Auto" the model is backend-resolved, so a disabled model dropdown
-            would just be dead UI; hide it entirely. */}
+            would just be dead UI; hide it entirely.
+            When model is on Auto and a resolved default is available, show
+            "Auto → <model>" so the operator sees the backend default. */}
         {provider && (
           <Select
             value={model ?? AUTO}
             onValueChange={(v) => onModel(v === AUTO ? null : v)}
           >
             <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[10rem]")}>
-              <SelectValue placeholder="Auto" />
+              {model == null ? (
+                <SelectValue>
+                  {resolvedDefault?.model
+                    ? `Auto → ${resolvedDefault.model}`
+                    : "Auto → …"}
+                </SelectValue>
+              ) : (
+                <SelectValue placeholder="Auto" />
+              )}
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={AUTO}>Auto</SelectItem>
