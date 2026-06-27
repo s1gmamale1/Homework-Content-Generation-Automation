@@ -2,7 +2,8 @@
 
 Returns the SAME 4-tuple as agent._spawn — (rc, text, usage, stderr) — so the CLI
 and api paths are interchangeable at the _spawn chokepoint. cli transport never
-calls this. gemini -> google-genai, claude -> anthropic. Text-only in v1.
+calls this. gemini -> google-genai, claude -> anthropic.
+Text + gemini multimodal (PDF/image attachments via Vertex); claude stays text-only.
 Spec: docs/superpowers/specs/2026-06-16-sdk-api-transport-design.md
 """
 from __future__ import annotations
@@ -27,19 +28,30 @@ async def generate(
 ) -> tuple[int, str, dict, str]:
     """Generate one response via the provider SDK. rc=0+text=success; rc=0+""=blank
     (-> run_phase empty-body retry); rc=1=hard failure incl. truncation (stderr has
-    the cause). Raises (loud) on falsy model / attachments / missing credentials."""
+    the cause). Raises (loud) on falsy model / missing credentials.
+    Gemini accepts PDF/image attachments (multimodal); claude stays text-only."""
     if not model:
         raise ValueError(f"{provider} api requires an explicit model")
-    if attachments:
-        raise NotImplementedError("api transport is text-only in v1")
     if provider == "gemini":
-        return await _gemini(model, prompt)
+        return await _gemini(model, prompt, attachments)
+    if attachments:
+        raise NotImplementedError("api transport is text-only for claude in v1")
     if provider == "claude":
         return await _claude(model, prompt)
     raise ValueError(f"api transport not supported for provider {provider!r}")
 
 
 # ---------------------------------------------------------------- gemini
+def _mime_for(path: Path) -> str:
+    """Return the MIME type for a PDF or image attachment path."""
+    ext = path.suffix.lower()
+    if ext in (".jpg", ".jpeg"):
+        return "image/jpeg"
+    if ext == ".png":
+        return "image/png"
+    return "application/pdf"  # the only current case (window subsets are PDFs)
+
+
 def _gemini_client():
     from google import genai
 
@@ -78,10 +90,23 @@ def _gemini_usage(um) -> dict:
     }
 
 
-async def _gemini(model: str, prompt: str) -> tuple[int, str, dict, str]:
+async def _gemini(
+    model: str, prompt: str, attachments: "list[Path] | tuple" = ()
+) -> tuple[int, str, dict, str]:
     client = _gemini_client()
+    contents: object = prompt
+    if attachments:
+        from google.genai import types  # lazy: only when needed
+
+        parts = [
+            types.Part.from_bytes(
+                data=Path(a).read_bytes(), mime_type=_mime_for(Path(a))
+            )
+            for a in attachments
+        ]
+        contents = [prompt, *parts]
     try:
-        resp = await client.aio.models.generate_content(model=model, contents=prompt)
+        resp = await client.aio.models.generate_content(model=model, contents=contents)
     except Exception as exc:  # noqa: BLE001 — surface to run_phase failure/failover
         return 1, "", dict(_EMPTY_USAGE), str(exc)
     usage = _gemini_usage(getattr(resp, "usage_metadata", None))
