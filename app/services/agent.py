@@ -1373,7 +1373,8 @@ async def extract_toc(
             )
             attachment_preamble = prov.format_attachments([window])
             attachments = [window]
-            transport = "cli"   # vision needs attachments; api is text-only
+            if not (transport == "api" and provider == "gemini"):
+                transport = "cli"   # vision needs attachments; api PDF-attach only for gemini
             toc_mode = "vision_toc"
     else:
         lesson_context = (

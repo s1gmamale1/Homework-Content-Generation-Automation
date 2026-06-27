@@ -163,3 +163,90 @@ async def test_vision_branch_marks_source(tmp_path, monkeypatch):
     )
 
     assert rec["extra_envelope"]["source"] == "vision_toc"
+
+
+# ── Task 2: transport routing in the vision branch ────────────────────────────
+
+def _patch_vision_for_transport(monkeypatch, tmp_path: Path, captured: dict):
+    """Shared setup: sparse text → vision branch, fake window, capture transport."""
+    window = tmp_path / "toc_window_fake.pdf"
+    window.write_bytes(b"%PDF-1.4 fake")
+
+    monkeypatch.setattr(
+        agent,
+        "_extract_toc_source_text",
+        lambda p: ("@WM " * 30, {"pages_read": 27, "chars": 120}),
+    )
+    monkeypatch.setattr(agent, "_toc_source_pdf", lambda *a, **k: window)
+
+    async def _fake_spawn(*, provider, model, prompt, attachments, transport):
+        captured["transport"] = transport
+        captured["attachments"] = list(attachments)
+        return _SPAWN_OK
+
+    monkeypatch.setattr(agent, "_spawn", _fake_spawn)
+    monkeypatch.setattr(agent, "_record_usage", lambda *a, **k: _noop())
+
+    return window
+
+
+async def _noop():
+    return None
+
+
+@pytest.mark.asyncio
+async def test_extract_toc_vision_keeps_api_for_gemini(tmp_path, monkeypatch):
+    """gemini + api: vision branch keeps transport='api' so the window routes via Vertex."""
+    pdf = _make_pdf(tmp_path)
+    captured: dict = {}
+    window = _patch_vision_for_transport(monkeypatch, tmp_path, captured)
+
+    await agent.extract_toc(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        pdf_path=pdf,
+        subject="math",
+        book_id=uuid4(),
+        transport="api",
+    )
+
+    assert captured["transport"] == "api"
+    assert captured["attachments"] == [window]
+
+
+@pytest.mark.asyncio
+async def test_extract_toc_vision_forces_cli_for_claude(tmp_path, monkeypatch):
+    """claude + api: vision branch must still force transport='cli' (no multimodal api for claude)."""
+    pdf = _make_pdf(tmp_path)
+    captured: dict = {}
+    _patch_vision_for_transport(monkeypatch, tmp_path, captured)
+
+    await agent.extract_toc(
+        provider="claude",
+        model="claude-sonnet-4-5",
+        pdf_path=pdf,
+        subject="math",
+        book_id=uuid4(),
+        transport="api",
+    )
+
+    assert captured["transport"] == "cli"
+
+
+@pytest.mark.asyncio
+async def test_extract_toc_vision_forces_cli_when_cli(tmp_path, monkeypatch):
+    """gemini + cli: vision branch keeps transport='cli' (no change; already cli)."""
+    pdf = _make_pdf(tmp_path)
+    captured: dict = {}
+    _patch_vision_for_transport(monkeypatch, tmp_path, captured)
+
+    await agent.extract_toc(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        pdf_path=pdf,
+        subject="math",
+        book_id=uuid4(),
+        transport="cli",
+    )
+
+    assert captured["transport"] == "cli"
