@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { BatchSummary } from "@/lib/types";
+import type { StatusFilter } from "@/lib/monitor-filters";
 import { CARD } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +26,7 @@ function StatTile({
   sub,
   accent,
   alert,
+  onClick,
 }: {
   icon: ReactNode;
   label: string;
@@ -32,15 +34,10 @@ function StatTile({
   sub?: string;
   accent: string;
   alert?: boolean;
+  onClick?: () => void;
 }) {
-  return (
-    <div
-      className={cn(
-        CARD,
-        "relative overflow-hidden p-4",
-        alert && "ring-1 ring-[oklch(0.70_0.16_25_/_0.45)]",
-      )}
-    >
+  const inner = (
+    <>
       {/* faint accent wash in the corner */}
       <div
         aria-hidden
@@ -62,6 +59,34 @@ function StatTile({
           <span className="font-mono text-xs text-white/40">{sub}</span>
         )}
       </div>
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={cn(
+          CARD,
+          "relative overflow-hidden p-4 text-left cursor-pointer transition-colors hover:bg-white/[0.07] w-full",
+          alert && "ring-1 ring-[oklch(0.70_0.16_25_/_0.45)]",
+        )}
+      >
+        {inner}
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        CARD,
+        "relative overflow-hidden p-4",
+        alert && "ring-1 ring-[oklch(0.70_0.16_25_/_0.45)]",
+      )}
+    >
+      {inner}
     </div>
   );
 }
@@ -69,9 +94,11 @@ function StatTile({
 export function MonitorStats({
   batches,
   workers,
+  onFilter,
 }: {
   batches?: BatchSummary[];
   workers?: { online: number; total: number };
+  onFilter?: (f: StatusFilter) => void;
 }) {
   const bs = batches ?? [];
 
@@ -98,6 +125,7 @@ export function MonitorStats({
         value={inProgress}
         sub={inProgress ? "lessons running" : "idle"}
         accent={BLUE}
+        onClick={onFilter ? () => onFilter("running") : undefined}
       />
       <StatTile
         icon={<CheckCircle2 className="size-4" />}
@@ -105,6 +133,7 @@ export function MonitorStats({
         value={done}
         sub={total ? `${pct}% of ${total}` : "—"}
         accent={GREEN}
+        onClick={onFilter ? () => onFilter("complete") : undefined}
       />
       <StatTile
         icon={<AlertTriangle className="size-4" />}
@@ -113,6 +142,7 @@ export function MonitorStats({
         sub={failed ? "failed lessons" : "all clear"}
         accent={RED}
         alert={failed > 0}
+        onClick={onFilter ? () => onFilter("attention") : undefined}
       />
       <StatTile
         icon={<Server className="size-4" />}

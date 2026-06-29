@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight, PauseCircle } from "lucide-react";
 import { type CSSProperties, useMemo, useState } from "react";
 import type { BatchSummary } from "@/lib/types";
 import { type RowStatus, transportRowStatus } from "@/lib/batch-status";
+import { type StatusFilter, bookMatchesStatus } from "@/lib/monitor-filters";
 import { groupBooksByGrade } from "@/lib/monitor-grouping";
 import { subjectLabelWithVariant } from "@/lib/subjects";
 import { CARD, GHOST_BTN } from "@/lib/ui";
@@ -139,12 +140,18 @@ function BookCard({ batches }: { batches: BatchSummary[] }) {
   );
 }
 
-export function BatchFunnel({ batches }: { batches?: BatchSummary[] }) {
-  // Group batches by book so multiple batches for one subject share a card.
-  // Map preserves insertion order; batches arrive newest-first, so the book
-  // with the most recent batch leads. The list is already API-scoped by
-  // monitor.tsx (cli filtered there so stats + cards stay consistent), so a
-  // cli-only book never appears here.
+export function BatchFunnel({
+  batches,
+  statusFilter = "all",
+}: {
+  batches?: BatchSummary[];
+  statusFilter?: StatusFilter;
+}) {
+  // Group batches by book so a subject's batches share a single card. The list
+  // is already API-scoped by monitor.tsx (cli filtered there so stats + cards
+  // stay consistent), so a cli-only book never appears here. After grouping,
+  // drop books that don't match the status filter BEFORE groupBooksByGrade so
+  // grade sections only contain matching books.
   const books = useMemo(() => {
     const byBook = new Map<string, BatchSummary[]>();
     for (const b of batches ?? []) {
@@ -152,8 +159,10 @@ export function BatchFunnel({ batches }: { batches?: BatchSummary[] }) {
       if (arr) arr.push(b);
       else byBook.set(b.book_id, [b]);
     }
-    return [...byBook.values()];
-  }, [batches]);
+    return [...byBook.values()].filter((book) =>
+      bookMatchesStatus(book, statusFilter),
+    );
+  }, [batches, statusFilter]);
 
   const gradeGroups = useMemo(() => groupBooksByGrade(books), [books]);
 
