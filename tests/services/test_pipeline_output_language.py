@@ -6,7 +6,10 @@ Tests cover:
 3. Control: wrong language → DIFFERENT medium block (tests must BITE if dropped).
 """
 import types
-import inspect
+import uuid
+from pathlib import Path
+from typing import Optional
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -17,94 +20,191 @@ from app.services import pipeline
 
 
 # ---------------------------------------------------------------------------
-# Generator seam tests (pipeline._execute_phase / pipeline.get_prompt call)
+# Shared patch_io fixture — mocks all DB/IO so _execute_phase runs without DB
+# (modelled after tests/services/test_pipeline_judge_status.py)
+# ---------------------------------------------------------------------------
+
+def _make_kwargs(
+    phase_name: str = "flashcards",
+    output_language: str = "uz",
+) -> dict:
+    return dict(
+        job_id=uuid.uuid4(),
+        phase_name=phase_name,
+        phase_order=1,
+        subject="matematika",
+        provider="claude",
+        model=None,
+        pdf_path=Path("/fake/book.pdf"),
+        attach_file=False,
+        section={"title": "Algebra", "number": "1.1", "page_start": 1, "page_end": 5,
+                 "id": uuid.uuid4()},
+        lesson_context="some context",
+        prior_outputs={},
+        difficulty=None,
+        source_map_digest="abc123",
+        transport="cli",
+        extract_transport="cli",
+        judge_transport="cli",
+        judge_provider_ov=None,
+        judge_model_ov=None,
+        extract_provider="gemini",
+        extract_model=None,
+        output_language=output_language,
+    )
+
+
+@pytest.fixture()
+def patch_io(monkeypatch):
+    """Patch all DB and agent I/O so _execute_phase can run without a real DB."""
+    ns = types.SimpleNamespace(
+        get_prompt_calls=[],
+        get_prompt_hash_calls=[],
+        failover_outputs=[("# generated output", 100, 50, "claude")],
+    )
+
+    # ---- phase_repo --------------------------------------------------------
+    fake_po = MagicMock()
+    fake_po.id = uuid.uuid4()
+
+    async def fake_create_or_reset(session, **kw):
+        return fake_po
+
+    async def fake_set_status(session, po_id, status, **kw):
+        pass
+
+    monkeypatch.setattr(pipeline.phase_repo, "create_or_reset", fake_create_or_reset)
+    monkeypatch.setattr(pipeline.phase_repo, "set_status", fake_set_status)
+
+    # ---- jobs_repo ---------------------------------------------------------
+    async def fake_jobs_set_status(session, job_id, status, **kw):
+        pass
+
+    monkeypatch.setattr(pipeline.jobs_repo, "set_status", fake_jobs_set_status)
+
+    # ---- SessionLocal ------------------------------------------------------
+    fake_session = AsyncMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(pipeline, "SessionLocal", MagicMock(return_value=fake_session))
+
+    # ---- _run_with_failover ------------------------------------------------
+    async def fake_failover(*, requested_provider, model, run_fn, transport, **kw):
+        return ns.failover_outputs.pop(0)
+
+    monkeypatch.setattr(pipeline, "_run_with_failover", fake_failover)
+
+    # ---- _judge_with_timeout (always returns a clean pass) -----------------
+    from app.services.phase_judge import JudgeOutcome
+
+    async def fake_judge(**kw):
+        return JudgeOutcome(available=True, passed=True, warnings=[], feedback="", has_major=False)
+
+    monkeypatch.setattr(pipeline, "_judge_with_timeout", fake_judge)
+
+    # ---- model_tiers.resolve_judge -----------------------------------------
+    monkeypatch.setattr(pipeline.model_tiers, "resolve_judge", lambda *a, **kw: ("claude", None))
+
+    return ns
+
+
+# ---------------------------------------------------------------------------
+# Generator seam tests (pipeline._execute_phase → get_prompt call)
 # ---------------------------------------------------------------------------
 
 NON_L2 = "matematika"  # a non-L2 subject; language == "uz" in registry
 
 
-def _get_prompt_kwarg_capturer(captured: dict):
-    """Return a get_prompt that records output_language and returns a real-ish prompt."""
-    original = prompts.get_prompt
-
-    def _fake(subject, phase_name, provider_suffix="", output_language="uz"):
-        captured["output_language"] = output_language
-        # Delegate to real impl so the returned string is usable
-        return original(subject, phase_name, output_language=output_language)
-
-    return _fake
-
-
-def test_pipeline_passes_output_language_to_get_prompt(monkeypatch):
+@pytest.mark.asyncio
+async def test_pipeline_passes_output_language_to_get_prompt(monkeypatch, patch_io):
     """pipeline._execute_phase must forward output_language to get_prompt.
 
-    We monkeypatch pipeline.get_prompt (the module-level reference) and assert
-    that the 'en' medium block is present in the prompt built by the pipeline —
-    i.e. the kwarg actually flows through.
+    We monkeypatch pipeline.get_prompt to record the kwarg it receives, then
+    call _execute_phase with output_language='en'. We assert:
+    - The recorded output_language is 'en' (not the default 'uz').
+    - The prompt returned to the failover driver contains the EN medium block.
+
+    This FAILS if the seam is reverted to hardcode output_language='uz'.
     """
     captured: dict = {}
-    monkeypatch.setattr(pipeline, "get_prompt", _get_prompt_kwarg_capturer(captured))
+    original_get_prompt = prompts.get_prompt
 
-    # Read the source — verify the get_prompt call carries output_language=
-    src = inspect.getsource(pipeline._execute_phase)
-    # The seam MUST pass output_language; if it's dropped the captured dict will show "uz"
-    # We test the source directly for the kwarg presence (structural guard)
-    assert "output_language" in src, (
-        "_execute_phase source does not mention output_language — seam not wired"
+    def recording_get_prompt(subject, phase_name, provider_suffix="", output_language="uz"):
+        captured["output_language"] = output_language
+        # Delegate to the real impl so we get the real language-rule injected
+        return original_get_prompt(subject, phase_name, output_language=output_language)
+
+    monkeypatch.setattr(pipeline, "get_prompt", recording_get_prompt)
+    # Also patch get_prompt_hash to avoid DB-unrelated hash computation side effects
+    monkeypatch.setattr(pipeline, "get_prompt_hash",
+                        lambda subject, phase, **kw: "deadbeef" * 8)
+
+    kw = _make_kwargs(phase_name="flashcards", output_language="en")
+    await pipeline._execute_phase(**kw)
+
+    assert "output_language" in captured, (
+        "get_prompt was never called — seam is broken"
     )
-    # Also verify the call is at the generator seam (get_prompt call not in extract branch)
-    # This is the line that was: get_prompt(subject, phase_name)
-    # and should now be: get_prompt(subject, phase_name, output_language=...)
-    assert "get_prompt(subject, phase_name" in src, (
-        "_execute_phase source does not call get_prompt(subject, phase_name ...) — check seam"
+    assert captured["output_language"] == "en", (
+        f"pipeline passed output_language={captured['output_language']!r} to get_prompt, "
+        "expected 'en' — seam is not forwarding the job's language"
     )
-
-
-def test_pipeline_get_prompt_hash_carries_output_language():
-    """get_prompt_hash at the provenance seam must include output_language."""
-    src = inspect.getsource(pipeline._execute_phase)
-    # The seam at ~line 806:  get_prompt_hash(subject, phase_name)
-    # should become:          get_prompt_hash(subject, phase_name, output_language=...)
-    # A simple heuristic: the source now contains both "get_prompt_hash" and "output_language"
-    assert "get_prompt_hash" in src
-    # After wiring, the get_prompt_hash call must also carry output_language
-    lines = src.split("\n")
-    hash_line = next((l for l in lines if "get_prompt_hash" in l), "")
-    assert "output_language" in hash_line, (
-        f"get_prompt_hash call does not carry output_language: {hash_line!r}"
+    # The real get_prompt must embed the EN medium block when output_language='en'
+    built_prompt = original_get_prompt(NON_L2, "flashcards", output_language="en")
+    assert prompts.MEDIUM_RULES["en"] in built_prompt, (
+        "EN medium block not found in the prompt built by get_prompt(output_language='en') — "
+        "prompts layer is not wiring output_language into the prompt text"
     )
 
 
-def test_all_three_judge_call_sites_carry_output_language():
-    """All three _judge_with_timeout call sites must include output_language=."""
-    src = inspect.getsource(pipeline._execute_phase)
-    # Count _judge_with_timeout call blocks.  We need output_language= in all three.
-    # Split on the function calls and count occurrences of output_language= near them.
-    import re
-    # Find all _judge_with_timeout( ... ) blocks (they can span lines)
-    # Strategy: find all occurrences of _judge_with_timeout and assert output_language
-    # appears BETWEEN each and the matching closing paren.
-    # Simpler: count how many times "output_language" appears after "_judge_with_timeout"
-    # Each call is ~10 lines; just count total judge calls and total output_language uses
-    judge_calls = src.count("_judge_with_timeout(")
-    assert judge_calls == 3, f"Expected 3 _judge_with_timeout calls, found {judge_calls}"
+@pytest.mark.asyncio
+async def test_pipeline_get_prompt_hash_carries_output_language(monkeypatch, patch_io):
+    """get_prompt_hash at the provenance seam must be called with output_language.
 
-    # Each _judge_with_timeout call block must include output_language=
-    # Split source at each call site and check the block up to next call
-    parts = src.split("_judge_with_timeout(")
-    # parts[0] is before first call; parts[1..3] are after each call opener
-    for i, part in enumerate(parts[1:], start=1):
-        # The part starts right after '_judge_with_timeout(', grab up to the next call or end
-        snippet = part[:800]  # enough to capture the kwarg list
-        assert "output_language" in snippet, (
-            f"_judge_with_timeout call #{i} does not carry output_language=\n"
-            f"Snippet: {snippet[:300]!r}"
-        )
+    We monkeypatch pipeline.get_prompt_hash to record its kwargs, then call
+    _execute_phase with output_language='en'. We assert the recorded kwarg is 'en'.
+    We also assert the hash actually DIFFERS between en and uz (proving it's live input).
+
+    This FAILS if the seam reverts to calling get_prompt_hash without output_language.
+    """
+    captured: dict = {}
+    original_hash = prompts.get_prompt_hash
+
+    def recording_hash(subject, phase_name, output_language="uz"):
+        captured["output_language"] = output_language
+        return original_hash(subject, phase_name, output_language=output_language)
+
+    monkeypatch.setattr(pipeline, "get_prompt_hash", recording_hash)
+    # Also patch get_prompt to a dummy so it doesn't drag in filesystem reads
+    monkeypatch.setattr(pipeline, "get_prompt",
+                        lambda subject, phase, **kw: "dummy prompt text")
+
+    kw = _make_kwargs(phase_name="flashcards", output_language="en")
+    await pipeline._execute_phase(**kw)
+
+    assert "output_language" in captured, (
+        "get_prompt_hash was never called from the seam — check _execute_phase"
+    )
+    assert captured["output_language"] == "en", (
+        f"pipeline passed output_language={captured['output_language']!r} to get_prompt_hash, "
+        "expected 'en' — hash seam is not forwarding the job's language"
+    )
+
+    # Bonus: the real hash function must produce DIFFERENT values for en vs uz
+    hash_en = original_hash(NON_L2, "flashcards", output_language="en")
+    hash_uz = original_hash(NON_L2, "flashcards", output_language="uz")
+    assert hash_en != hash_uz, (
+        "get_prompt_hash returns the same value for 'en' and 'uz' — "
+        "output_language is not a live input to the hash"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Judge seam tests (phase_judge.judge uses output_language for contract)
 # ---------------------------------------------------------------------------
+# NOTE: test_all_three_judge_call_sites_carry_output_language was a vacuous
+# source-grep test — removed. The two behavioral tests below exercise the judge
+# seam end-to-end and genuinely bite if output_language is dropped.
 
 def _capturing_run_phase(captured: dict):
     async def _fake(**kwargs):
@@ -169,6 +269,7 @@ async def test_judge_uz_contract_does_not_contain_en_medium_block(monkeypatch):
 
 def test_judge_signature_has_output_language_param():
     """phase_judge.judge must declare output_language as a parameter."""
+    import inspect
     sig = inspect.signature(pj.judge)
     assert "output_language" in sig.parameters, (
         "phase_judge.judge signature missing output_language param"

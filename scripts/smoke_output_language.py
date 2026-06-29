@@ -49,9 +49,7 @@ RUNS = [
 
 
 def _count_cyrillic(text: str) -> int:
-    return sum(1 for ch in text if unicodedata.category(ch) == "Ll"
-               and "Ѐ" <= ch <= "ӿ"
-               or "Ѐ" <= ch <= "ӿ" and unicodedata.category(ch) == "Lu")
+    return sum(1 for ch in text if _is_cyrillic_char(ch))
 
 
 def _is_cyrillic_char(ch: str) -> bool:
