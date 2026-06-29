@@ -58,7 +58,8 @@ async def _make_running_job(s, book, toc, *, stale_seconds: int | None = None):
     from app.repositories import jobs as jobs_repo
 
     job = await jobs_repo.create(
-        s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra"
+        s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra",
+        output_language="uz",
     )
     # Directly set status to running + claimed_at to now()
     await s.execute(

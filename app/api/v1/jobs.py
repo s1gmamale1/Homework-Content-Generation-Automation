@@ -26,9 +26,11 @@ from app.services.agent_models import (
     MODEL_MANIFEST,
     api_supported,
     is_valid,
+    resolve_output_language,
     resolve_role_selection,
     resolve_role_transport,
     resolve_role_transport_default,
+    validate_output_language,
     validate_role_transport,
     validate_transport,
 )
@@ -173,6 +175,9 @@ async def generate(
             raise HTTPException(
                 400, f"selected phases missing a custom prompt: {missing}")
 
+    if (err := validate_output_language(body.output_language, allow_none=True)):
+        raise HTTPException(400, err)
+
     # Gate 1: a custom/subset launch must never reuse a plain job.
     force_fresh = body.force or bool(custom_prompts) or selected_phases is not None
     # Per-role provider/model: validate only explicit picks. The role's effective
@@ -196,10 +201,16 @@ async def generate(
     # job the first one just created.
     await jobs_repo.lock_section_for_generate(session, book_id, toc_entry_id)
 
+    # Fetch the launch_defaults singleton early so res_output_language is
+    # available for the idempotency lookup below (language-scoped dedup).
+    ld = await launch_defaults_repo.get(session)
+    res_output_language = resolve_output_language(body.output_language, ld.output_language)
+
     # Layer 2: natural-key idempotency.
     if not force_fresh:
         existing = await jobs_repo.find_active_for_section(
-            session, book_id, toc_entry_id, transport=body.transport
+            session, book_id, toc_entry_id, transport=body.transport,
+            output_language=res_output_language
         )
         if existing is not None:
             await session.commit()  # release the advisory lock
@@ -237,7 +248,6 @@ async def generate(
     # Resolve roles against the UI-managed global defaults: explicit pick wins,
     # else the global default. Stamp CONCRETE provider/model onto the job so it
     # is self-describing (future-launches-only; agent_usages attribution stays honest).
-    ld = await launch_defaults_repo.get(session)
     res_judge_provider, res_judge_model = resolve_role_selection(
         body.judge_provider, body.judge_model, ld.judge_provider, ld.judge_model)
     res_extract_provider, res_extract_model = resolve_role_selection(
@@ -278,6 +288,7 @@ async def generate(
         extract_model=res_extract_model,
         judge_provider=res_judge_provider,
         judge_model=res_judge_model,
+        output_language=res_output_language,
     )
     await session.commit()  # commit + release advisory lock atomically
 

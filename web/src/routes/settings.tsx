@@ -11,7 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api, ApiError } from "@/lib/api";
-import type { LaunchDefaults, RoleTransport } from "@/lib/types";
+import type { LaunchDefaults, OutputLanguage, RoleTransport } from "@/lib/types";
 import { CARD, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
@@ -24,6 +24,12 @@ const ROLE_TRANSPORT_OPTIONS: { value: RoleTransport; label: string }[] = [
 const TOC_TRANSPORT_OPTIONS: { value: "cli" | "api"; label: string }[] = [
   { value: "cli", label: "CLI" },
   { value: "api", label: "API" },
+];
+
+const OUTPUT_LANGUAGE_OPTIONS: { value: OutputLanguage; label: string }[] = [
+  { value: "uz", label: "UZ — O'zbek" },
+  { value: "en", label: "EN — English" },
+  { value: "ru", label: "RU — Русский" },
 ];
 
 /** A labeled row containing provider + model + transport selects (for Judge/Extract). */
@@ -133,6 +139,7 @@ export function SettingsPage() {
   const [extractModel, setExtractModel] = useState<string | null>(null);
   const [extractTransport, setExtractTransport] = useState<RoleTransport>("inherit");
   const [tocTransport, setTocTransport] = useState<"cli" | "api">("cli");
+  const [outputLanguage, setOutputLanguage] = useState<OutputLanguage>("uz");
 
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -148,6 +155,7 @@ export function SettingsPage() {
     setExtractModel(data.extract_model ?? null);
     setExtractTransport((data.extract_transport as RoleTransport) ?? "inherit");
     setTocTransport((data.toc_transport as "cli" | "api") ?? "cli");
+    setOutputLanguage((data.output_language as OutputLanguage) ?? "uz");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data !== undefined]);
 
@@ -206,6 +214,7 @@ export function SettingsPage() {
       extract_model: extractModel,
       extract_transport: extractTransport,
       toc_transport: tocTransport,
+      output_language: outputLanguage,
     });
   }
 
@@ -248,7 +257,7 @@ export function SettingsPage() {
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold text-white">Launch defaults</h2>
             <span className="font-mono text-[0.7rem] uppercase tracking-[0.12em] text-white/40">
-              judge · extract · toc
+              judge · extract · toc · language
             </span>
           </div>
 
@@ -324,6 +333,28 @@ export function SettingsPage() {
                   </SelectTrigger>
                   <SelectContent>
                     {TOC_TRANSPORT_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Output Language row — concrete (no Auto; the global default must be explicit) */}
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="w-16 shrink-0 text-[0.7rem] font-medium uppercase tracking-wide text-white/50">
+                  Language
+                </span>
+                <Select
+                  value={outputLanguage}
+                  onValueChange={(v) => setOutputLanguage(v as OutputLanguage)}
+                >
+                  <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[10rem]")}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {OUTPUT_LANGUAGE_OPTIONS.map((o) => (
                       <SelectItem key={o.value} value={o.value}>
                         {o.label}
                       </SelectItem>

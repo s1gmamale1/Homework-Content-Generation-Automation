@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.repositories import launch_defaults as launch_defaults_repo
-from app.services.agent_models import api_supported, is_valid, validate_role_transport
+from app.services.agent_models import api_supported, is_valid, validate_output_language, validate_role_transport
 
 router = APIRouter(tags=["settings"])
 
@@ -19,6 +19,7 @@ class LaunchDefaultsOut(BaseModel):
     extract_model: str | None
     extract_transport: str | None
     toc_transport: str | None
+    output_language: str | None
 
 
 class LaunchDefaultsUpdate(BaseModel):
@@ -29,6 +30,7 @@ class LaunchDefaultsUpdate(BaseModel):
     extract_model: str | None = None
     extract_transport: str | None = None
     toc_transport: str | None = None
+    output_language: str | None = None
 
 
 def _serialize(row) -> LaunchDefaultsOut:
@@ -36,7 +38,7 @@ def _serialize(row) -> LaunchDefaultsOut:
         judge_provider=row.judge_provider, judge_model=row.judge_model,
         judge_transport=row.judge_transport, extract_provider=row.extract_provider,
         extract_model=row.extract_model, extract_transport=row.extract_transport,
-        toc_transport=row.toc_transport)
+        toc_transport=row.toc_transport, output_language=row.output_language)
 
 
 @router.get("/settings/launch-defaults", response_model=LaunchDefaultsOut)
@@ -79,6 +81,9 @@ async def put_launch_defaults(
             422,
             "toc_transport=api requires an api-capable extract_provider (claude/gemini)",
         )
+    # output_language: the column is NOT NULL — the terminal value must be concrete.
+    if err := validate_output_language(merged.get("output_language"), allow_none=False):
+        raise HTTPException(422, err)
     out = _serialize(await launch_defaults_repo.update(session, fields))
     await session.commit()  # get_session yields without committing; persist the write
     return out

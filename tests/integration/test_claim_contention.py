@@ -51,8 +51,8 @@ async def test_two_concurrent_claims_never_collide():
         # crutch is needed: claim_next_job now filters `scheduled_at <= func.now()`
         # (Phase 0.5), so claimability is wholly on the DB clock and host-vs-DB skew
         # can't flake this test. This un-pinned form IS the skew regression guard.
-        await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra")
-        await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra")
+        await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra", output_language="uz")
+        await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra", output_language="uz")
         await s.commit()
         book_id = book.id
 
@@ -141,6 +141,7 @@ async def _seed_job(s, book, toc, *, priority: int = _FENCE_PRIORITY, **kwargs):
     """Create a pending job behind the attempts fence (see _FENCE_ATTEMPTS)."""
     from app.repositories import jobs as jobs_repo
 
+    kwargs.setdefault("output_language", "uz")
     job = await jobs_repo.create(
         s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra", **kwargs
     )

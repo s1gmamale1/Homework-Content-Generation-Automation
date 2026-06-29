@@ -26,6 +26,8 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     # Generation transport: "cli" (subprocess CLI, default) vs "api" (pay-per-token SDK).
     transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="cli")
+    # Output language for generated content: "uz" (default), "en", or "ru".
+    output_language: Mapped[str] = mapped_column(String(8), nullable=False, server_default="uz")
     # Per-role transport overrides: "cli" | "api" | "inherit" (follow the job's transport).
     extract_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
     judge_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
@@ -109,6 +111,10 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
         CheckConstraint(
             "judge_transport IN ('cli','api','inherit')",
             name="ck_homework_jobs_judge_transport",
+        ),
+        CheckConstraint(
+            "output_language IN ('uz','en','ru')",
+            name="ck_homework_jobs_output_language",
         ),
     )
 

@@ -65,6 +65,50 @@ LANGUAGE_RULES = {
     "_default": _LANG_UZBEK,
 }
 
+# --- Medium-of-instruction rules (whole-output language; decision 2026-06-29) ---
+# Distinct from LANGUAGE_RULES above, which are the L2 *target-language* rules for
+# the English/Russian CLASS subjects. MEDIUM_RULES govern the medium of instruction
+# for every OTHER subject. "uz" reuses _LANG_UZBEK so the UZ path is unchanged.
+_MEDIUM_ENGLISH = (
+    "All student-facing text in natural, formal English. Address the student "
+    "respectfully as \"you\"; never slang or childish phrasing. "
+    "Simplify the WORDING around the subject, not the subject itself: never change "
+    "any formula, number, unit, date, fact, or answer logic to make text easier. "
+    "Preserve every term, formula, number, unit, and symbol exactly as in the "
+    "source; for a difficult term, keep it and add a short plain-language gloss "
+    "rather than deleting it. Write natural English — avoid word-for-word calques "
+    "from the source language. Split long sentences at logical points, but avoid "
+    "robotic sentence-chopping. Modern, professional (non-casual) contexts."
+)
+
+_MEDIUM_RUSSIAN = (
+    "All student-facing text in natural, formal Russian. Use the polite «Вы» "
+    "register throughout; never the informal «ты», and avoid childish or slang "
+    "phrasing. Simplify the WORDING around the subject, not the subject itself: "
+    "never change any formula, number, unit, date, fact, or answer logic to make "
+    "text easier. Preserve every term, formula, number, unit, and symbol exactly "
+    "as in the source; for a difficult term, keep it and add a short plain-language "
+    "gloss rather than deleting it. Write natural Russian — avoid word-for-word "
+    "calques from the source language. Split long sentences at logical points, but "
+    "avoid robotic sentence-chopping. Modern, professional (non-casual) contexts."
+)
+
+MEDIUM_RULES = {
+    "uz": _LANG_UZBEK,          # byte-identical to the legacy `_default`
+    "en": _MEDIUM_ENGLISH,
+    "ru": _MEDIUM_RUSSIAN,
+}
+
+
+def _resolve_language_rule(subject: str, output_language: str) -> str:
+    """L2 language-class subjects (English/Russian) keep their own L2 rule
+    regardless of the medium (decision: medium affects only other subjects).
+    Every other subject renders in the chosen medium (uz/en/ru), defaulting uz."""
+    sd = subjects.REGISTRY.get(subject)
+    if sd and sd.language in ("english", "russian"):
+        return LANGUAGE_RULES[sd.language]
+    return MEDIUM_RULES.get(output_language, MEDIUM_RULES["uz"])
+
 # Derived from the single source of truth (app/services/subjects.py). A family of
 # "default" has no FAMILY_RULES block and falls through to "_default".
 _SUBJECT_FAMILY = {c: d.family for c, d in subjects.REGISTRY.items()}
@@ -375,16 +419,13 @@ def _raw(dirname: str, phase_name: str) -> tuple[str, str]:
     return _cache[dirname][phase_name], _hash_cache[dirname][phase_name]
 
 
-def get_prompt(subject: str, phase_name: str, provider_suffix: str = "") -> str:
+def get_prompt(subject: str, phase_name: str, provider_suffix: str = "",
+               output_language: str = "uz") -> str:
     dirname = _resolve_dir(subject, phase_name)
     body, _h = _raw(dirname, phase_name)
     body = body.replace("{{SUBJECT}}", SUBJECT_LABELS.get(subject, subject))
-    sd = subjects.REGISTRY.get(subject)
-    lang_key = sd.language if sd else None
-    body = body.replace(
-        "{{LANGUAGE_RULES}}",
-        LANGUAGE_RULES.get(lang_key, LANGUAGE_RULES["_default"]),
-    )
+    body = body.replace("{{LANGUAGE_RULES}}",
+                        _resolve_language_rule(subject, output_language))
     phase_blocks = FAMILY_RULES.get(phase_name, {})
     family = _SUBJECT_FAMILY.get(subject)
     family_block = phase_blocks.get(family) or phase_blocks.get("_default", "")
@@ -394,9 +435,9 @@ def get_prompt(subject: str, phase_name: str, provider_suffix: str = "") -> str:
     return body
 
 
-def get_prompt_hash(subject: str, phase_name: str) -> str:
-    # Provenance only (recorded on agent_usages rows); does NOT drive cross-job
-    # reuse — extract uses its own "builtin:extract:v1" hash in pipeline.py.
-    dirname = _resolve_dir(subject, phase_name)
-    _b, h = _raw(dirname, phase_name)
-    return h
+def get_prompt_hash(subject: str, phase_name: str, output_language: str = "uz") -> str:
+    # Provenance only (recorded on agent_usages); does NOT drive cross-job reuse.
+    import hashlib
+    return hashlib.sha256(
+        get_prompt(subject, phase_name, output_language=output_language).encode("utf-8")
+    ).hexdigest()

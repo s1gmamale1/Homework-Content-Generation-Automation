@@ -63,3 +63,4 @@ class GenerateRequest(BaseModel):
     extract_model: str | None = None
     judge_provider: str | None = None      # None ⇒ model_tiers auto-tier
     judge_model: str | None = None
+    output_language: str | None = None    # None ⇒ global default (launch_defaults)

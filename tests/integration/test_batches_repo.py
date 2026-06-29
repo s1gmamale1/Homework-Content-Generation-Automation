@@ -47,13 +47,13 @@ async def test_get_or_create_is_idempotent_per_book_transport():
         async with SessionLocal() as s:
             b1 = await batches_repo.get_or_create_for_book(
                 s, book_id=book_id, subject="math-algebra", grade=None,
-                provider="claude", model=None, transport="cli")
+                provider="claude", model=None, transport="cli", output_language="uz")
             await s.commit()
             b1_id = b1.id
         async with SessionLocal() as s:
             b2 = await batches_repo.get_or_create_for_book(
                 s, book_id=book_id, subject="math-algebra", grade=None,
-                provider="gemini", model=None, transport="cli")
+                provider="gemini", model=None, transport="cli", output_language="uz")
             await s.commit()
             b2_id = b2.id
         assert b1_id == b2_id, "same (book, transport) must return the SAME batch"
@@ -62,7 +62,8 @@ async def test_get_or_create_is_idempotent_per_book_transport():
         async with SessionLocal() as s:
             b3 = await batches_repo.get_or_create_for_book(
                 s, book_id=book_id, subject="math-algebra", grade=None,
-                provider="claude", model="claude-opus-4-8", transport="api")
+                provider="claude", model="claude-opus-4-8", transport="api",
+                output_language="uz")
             await s.commit()
             b3_id = b3.id
         assert b3_id != b1_id, "different transport must fork a new batch"
@@ -88,10 +89,11 @@ async def test_rollup_is_per_lesson_latest():
         book, tocs = await _seed_book_with_lessons(s, n=3)
         batch = await batches_repo.get_or_create_for_book(
             s, book_id=book.id, subject="math-algebra", grade=None,
-            provider="claude", model=None, transport="cli")
+            provider="claude", model=None, transport="cli", output_language="uz")
         for t in tocs:
             await jobs_repo.create(s, book_id=book.id, toc_entry_id=t.id,
-                                   subject="math-algebra", batch_id=batch.id)
+                                   subject="math-algebra", batch_id=batch.id,
+                                   output_language="uz")
         await s.commit()
         book_id, batch_id, first_id = book.id, batch.id, tocs[0].id
     try:
@@ -105,7 +107,8 @@ async def test_rollup_is_per_lesson_latest():
             await s.commit()
         async with SessionLocal() as s:
             await jobs_repo.create(s, book_id=book_id, toc_entry_id=first_id,
-                                   subject="math-algebra", batch_id=batch_id)  # newer pending
+                                   subject="math-algebra", batch_id=batch_id,
+                                   output_language="uz")  # newer pending
             await s.commit()
         async with SessionLocal() as s:
             tally = await batches_repo.rollup_for_batch(s, batch_id)
@@ -140,12 +143,14 @@ async def test_list_jobs_includes_unlaunched_lessons():
         book, tocs = await _seed_book_with_lessons(s, n=3)
         batch = await batches_repo.get_or_create_for_book(
             s, book_id=book.id, subject="math-algebra", grade=None,
-            provider="claude", model=None, transport="cli")
+            provider="claude", model=None, transport="cli", output_language="uz")
         # Launch ONLY lessons 0 and 1; lesson 2 stays un-launched.
         await jobs_repo.create(s, book_id=book.id, toc_entry_id=tocs[0].id,
-                               subject="math-algebra", batch_id=batch.id)
+                               subject="math-algebra", batch_id=batch.id,
+                               output_language="uz")
         await jobs_repo.create(s, book_id=book.id, toc_entry_id=tocs[1].id,
-                               subject="math-algebra", batch_id=batch.id)
+                               subject="math-algebra", batch_id=batch.id,
+                               output_language="uz")
         await s.commit()
         book_id, batch_id, third_toc = book.id, batch.id, tocs[2].id
     try:
@@ -196,7 +201,7 @@ async def test_relaunch_without_prompts_preserves_stored():
         async with SessionLocal() as s:
             b1 = await batches_repo.get_or_create_for_book(
                 s, book_id=book_id, subject="math-algebra", grade=None,
-                provider="claude", model=None, transport="api",
+                provider="claude", model=None, transport="api", output_language="uz",
                 custom_prompts={"reading": "x"}, selected_phases=["reading"])
             await s.commit()
             b1_id = b1.id
@@ -204,7 +209,7 @@ async def test_relaunch_without_prompts_preserves_stored():
         async with SessionLocal() as s:
             b2 = await batches_repo.get_or_create_for_book(
                 s, book_id=book_id, subject="math-algebra", grade=None,
-                provider="claude", model=None, transport="api")
+                provider="claude", model=None, transport="api", output_language="uz")
             await s.commit()
             assert b2.id == b1_id, "same (book, transport) must reuse the batch"
             assert b2.custom_prompts == {"reading": "x"}, "custom_prompts must NOT be nulled"

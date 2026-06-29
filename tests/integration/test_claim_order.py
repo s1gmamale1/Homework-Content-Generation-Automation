@@ -164,6 +164,7 @@ async def test_claim_ascending_lesson_order():
                 book_id=book.id,
                 toc_entry_id=toc.id,
                 subject="math-algebra",
+                output_language="uz",
                 provider="claude",
                 transport="cli",
                 extract_transport="cli",

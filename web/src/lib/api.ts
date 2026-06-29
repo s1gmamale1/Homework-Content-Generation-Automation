@@ -13,6 +13,7 @@ import type {
   LaunchDefaults,
   NotionGrade,
   NotionSubject,
+  OutputLanguage,
   ProviderModelManifest,
   RoleTransport,
   SessionLimitStrategy,
@@ -169,6 +170,7 @@ export const api = {
       extract_model?: string | null;
       judge_provider?: string | null;
       judge_model?: string | null;
+      output_language?: OutputLanguage | null;
     } = {},
   ): Promise<Job & { added_phases?: string[] }> {
     const {
@@ -185,6 +187,7 @@ export const api = {
       extract_model = null,
       judge_provider = null,
       judge_model = null,
+      output_language = null,
     } = opts;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
@@ -206,6 +209,7 @@ export const api = {
           extract_model,
           judge_provider,
           judge_model,
+          ...(output_language != null ? { output_language } : {}),
         }),
       },
     );
@@ -329,6 +333,7 @@ export const api = {
     judge_provider?: string | null; judge_model?: string | null;
     relaunch_mode?: "resume" | "discard";
     session_limit_strategy?: SessionLimitStrategy;
+    output_language?: OutputLanguage | null;
   }): Promise<BatchLaunchResponse> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -347,6 +352,7 @@ export const api = {
     extract_provider?: string | null; extract_model?: string | null;
     judge_provider?: string | null; judge_model?: string | null;
     session_limit_strategy?: SessionLimitStrategy;
+    output_language?: OutputLanguage | null;
   }): Promise<BatchPreviewResponse> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" },

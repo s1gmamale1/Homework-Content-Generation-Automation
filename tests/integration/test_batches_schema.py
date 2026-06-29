@@ -36,7 +36,7 @@ async def test_batch_unique_per_book_and_job_fk():
         s.add(b1)
         await s.flush()
         job = await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id,
-                                     subject="math-algebra")
+                                     subject="math-algebra", output_language="uz")
         job.batch_id = b1.id
         await s.commit()
         book_id, batch_id = book.id, b1.id

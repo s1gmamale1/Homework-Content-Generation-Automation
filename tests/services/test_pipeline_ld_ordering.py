@@ -59,6 +59,7 @@ async def _seed_fixture():
             book_id=book.id,
             toc_entry_id=toc.id,
             subject="math-algebra",
+            output_language="uz",
             provider="claude",
         )
         await s.commit()

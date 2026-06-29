@@ -12,6 +12,7 @@ _MUTABLE = (
     "judge_provider", "judge_model", "judge_transport",
     "extract_provider", "extract_model", "extract_transport",
     "toc_transport",
+    "output_language",
 )
 
 

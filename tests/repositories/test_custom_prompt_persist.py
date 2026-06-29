@@ -47,6 +47,7 @@ async def test_create_persists_custom_fields():
         async with SessionLocal() as s:
             job = await jobs_repo.create(
                 s, book_id=book_id, toc_entry_id=sid, subject="math-algebra",
+                output_language="uz",
                 custom_prompts={"flashcards": "RULES"}, selected_phases=["flashcards"],
             )
             await s.commit()
@@ -65,7 +66,7 @@ async def test_create_without_custom_is_null():
     try:
         async with SessionLocal() as s:
             job = await jobs_repo.create(s, book_id=book_id, toc_entry_id=sid,
-                                         subject="math-algebra")
+                                         subject="math-algebra", output_language="uz")
             await s.commit()
             assert job.custom_prompts is None
             assert job.selected_phases is None

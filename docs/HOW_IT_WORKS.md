@@ -338,8 +338,9 @@ pre-conscription training). Excluded: PE (by decision) and the three textbook-le
 (ethics, spirituality, future-hour). The single source of truth is
 the registry in **`app/services/subjects.py`**; `flows`, `prompts`, `notion_fetch`, and the
 frontend all derive their subject tables from it. Each subject declares a family
-(picks the prompt's family block), a language rule (Uzbek default; English/Russian L2),
-and a practice game.
+(picks the prompt's family block), a `language` field (`uzbek` / `english` / `russian` — identifies whether the subject *is* an L2 language class, not the medium of instruction),
+and a practice game. The medium of instruction (`output_language`: `uz`/`en`/`ru`) is a separate
+per-job operator choice; see the Prompts section below for the interaction with L2 subjects.
 
 **One flow for every subject (Flow v2 MVP).** There's no easy/hard split and no `classify`
 step. `flows.flow_for(subject)` returns the same **11-phase** sequence for every subject —
@@ -386,11 +387,16 @@ generation.
 
 ### Prompts: one general set, parameterized by subject
 All phases now read from **`prompts/_general/<phase>.md`** — a single set serving every
-subject. `app/services/prompts.py`'s `get_prompt(subject, phase)` substitutes two tokens:
+subject. `app/services/prompts.py`'s `get_prompt(subject, phase, output_language="uz")` substitutes two tokens:
 - `{{SUBJECT}}` → the subject label, so the same prompt knows what it's teaching.
-- `{{LANGUAGE_RULES}}` → the language directive: for `english`, **English target content with
-  Uzbek "Siz" scaffolding** (CEFR-leveled by grade); for every other subject, formal Uzbek.
-  There's no model-side language detection — the subject key selects the block at build time.
+- `{{LANGUAGE_RULES}}` → the **medium-of-instruction directive**, resolved by `_resolve_language_rule(subject, output_language)` against `MEDIUM_RULES` (a dict keyed `uz`/`en`/`ru`). There are two orthogonal concepts here, which are easy to confuse:
+  - `subjects.language` — the **L2 target language** on a `SubjectDef` (values `uzbek` / `english` / `russian`). This field identifies whether a subject *is a language class* (English class, Russian class), not what language the homework is *in*.
+  - `output_language` — the **medium of instruction** operator choice (`uz` / `en` / `ru`). This is what language the homework packet is *written in*.
+  - **For language-class subjects** (`subjects.language ∈ {english, russian}`): the subject's existing Uzbek-bridged L2 scaffolding rule is used **regardless** of `output_language`. A Russian-medium school's English class still gets the CEFR-leveled English-target / Uzbek-bridge rule. This is the **L2 carve-out**: medium switches every *other* subject; language-class subjects are carved out.
+  - **For all other subjects**: `MEDIUM_RULES[output_language]` provides the directive — formal "Siz" Uzbek (`uz`), English-medium prose (`en`), or Russian-medium Cyrillic formal "Вы" (`ru`). The default `uz` is byte-identical to the old `_LANG_UZBEK` constant.
+  - There is no model-side language detection — the operator choice (via `output_language` on the job) selects the block at build time.
+
+**Generator + judge use the same language contract.** `pipeline.run` captures `job.output_language` once and passes it to every `get_prompt` call for content phases *and* to `phase_judge.judge(output_language=...)` → the judge's own `get_prompt`. A judge cannot grade an English-medium homework against the Uzbek contract.
 
 The old per-subject `prompts/<subject>/` folders still exist but are **dead** — a future
 override layer gated behind `USE_SUBJECT_PROMPTS=False`.
@@ -704,7 +710,7 @@ You also need the CLIs you intend to use installed and logged-in on `PATH`
 | Add an API endpoint | `app/api/v1/jobs.py` or `books.py` |
 | Change what a phase outputs | `prompts/_general/<phase>.md` (there's no assembly step) |
 | Edit what the AI is told to do per phase | `prompts/_general/<phase>.md` (all subjects) |
-| Change language behavior (Uzbek / English-target) | `app/services/prompts.py` (`LANGUAGE_RULES`, `get_prompt`) |
+| Change medium of instruction (uz/en/ru) | `/settings` → `launch_defaults.output_language`, or per-launch `output_language` field. `app/services/prompts.py` (`MEDIUM_RULES`, `_resolve_language_rule`, `get_prompt`). |
 | Tweak queue/worker/timeout behavior | `app/config.py` + `app/services/worker.py` |
 | Change extract/judge model selection | `/settings` page → `GET`/`PUT /api/v1/settings/launch-defaults` (DB-backed `launch_defaults` singleton) |
 | Understand the DB schema / queue / clocks in depth | `docs/DATABASE.md` |

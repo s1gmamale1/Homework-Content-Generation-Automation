@@ -26,6 +26,8 @@ class Batch(Base, UUIDPK, Timestamps):
     model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     # Generation transport: "cli" (subprocess CLI, default) vs "api" (pay-per-token SDK).
     transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="cli")
+    # Output language for generated content: "uz" (default), "en", or "ru".
+    output_language: Mapped[str] = mapped_column(String(8), nullable=False, server_default="uz")
     # Per-role transport overrides: "cli" | "api" | "inherit" (follow the batch's transport).
     extract_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
     judge_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
@@ -50,7 +52,8 @@ class Batch(Base, UUIDPK, Timestamps):
     )
 
     __table_args__ = (
-        UniqueConstraint("book_id", "transport", name="uq_batches_book_id_transport"),
+        UniqueConstraint("book_id", "transport", "output_language",
+                         name="uq_batches_book_id_transport_output_language"),
         CheckConstraint(
             "transport IN ('cli','api')",
             name="ck_batches_transport",
@@ -66,5 +69,9 @@ class Batch(Base, UUIDPK, Timestamps):
         CheckConstraint(
             "session_limit_strategy IN ('pause','switch','inherit')",
             name="ck_batches_session_limit_strategy",
+        ),
+        CheckConstraint(
+            "output_language IN ('uz','en','ru')",
+            name="ck_batches_output_language",
         ),
     )

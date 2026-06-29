@@ -59,8 +59,8 @@ def _install_harness(monkeypatch):
     monkeypatch.setattr(pipeline.phase_repo, "create_or_reset", _create_or_reset)
     monkeypatch.setattr(pipeline.phase_repo, "set_status", _noop)
     monkeypatch.setattr(pipeline.jobs_repo, "set_status", _noop)
-    monkeypatch.setattr(pipeline, "get_prompt", lambda subject, phase: "PROMPT")
-    monkeypatch.setattr(pipeline, "get_prompt_hash", lambda subject, phase: "hash")
+    monkeypatch.setattr(pipeline, "get_prompt", lambda subject, phase, **kw: "PROMPT")
+    monkeypatch.setattr(pipeline, "get_prompt_hash", lambda subject, phase, **kw: "hash")
     monkeypatch.setattr(pipeline, "max_output_tokens_for", lambda phase: 1024)
 
     # Same-provider retry backoff would add real ~2s sleeps; no-op them so the
@@ -250,7 +250,7 @@ def test_extract_uses_resolved_extract_transport(monkeypatch):
 def _install_real_judge_with_auth_failure(monkeypatch):
     """Drive the REAL phase_judge.judge so its own transport param governs the
     re-raise: stub the judge's internal agent.run_phase to raise AuthEnvError."""
-    monkeypatch.setattr(phase_judge, "get_prompt", lambda subject, phase: "CONTRACT")
+    monkeypatch.setattr(phase_judge, "get_prompt", lambda subject, phase, **kw: "CONTRACT")
 
     async def _judge_llm(**kwargs):
         raise agent.AuthEnvError("ANTHROPIC_API_KEY missing for transport=api")

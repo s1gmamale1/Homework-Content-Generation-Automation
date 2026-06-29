@@ -129,8 +129,8 @@ def patch_io(monkeypatch):
     monkeypatch.setattr(pipeline, "_run_with_failover", fake_failover)
 
     # ---- get_prompt / get_prompt_hash -------------------------------------
-    monkeypatch.setattr(pipeline, "get_prompt", lambda subject, phase: "base prompt text")
-    monkeypatch.setattr(pipeline, "get_prompt_hash", lambda subject, phase: "deadbeef" * 8)
+    monkeypatch.setattr(pipeline, "get_prompt", lambda subject, phase, **kw: "base prompt text")
+    monkeypatch.setattr(pipeline, "get_prompt_hash", lambda subject, phase, **kw: "deadbeef" * 8)
 
     # ---- model_tiers.resolve_judge ----------------------------------------
     monkeypatch.setattr(pipeline.model_tiers, "resolve_judge", lambda *a, **kw: ("claude", None))

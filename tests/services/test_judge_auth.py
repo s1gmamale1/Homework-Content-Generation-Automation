@@ -28,7 +28,7 @@ def _call_judge(transport: str):
 
 
 def test_judge_api_reraises_on_auth_error(monkeypatch):
-    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p, **kw: "CONTRACT")
 
     async def _boom(**kwargs):
         raise RuntimeError(_AUTH_ERR)
@@ -41,7 +41,7 @@ def test_judge_api_reraises_on_auth_error(monkeypatch):
 
 def test_judge_cli_degrades_on_auth_error(monkeypatch):
     """Same auth error under cli transport still degrades gracefully."""
-    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p, **kw: "CONTRACT")
 
     async def _boom(**kwargs):
         raise RuntimeError(_AUTH_ERR)
@@ -56,7 +56,7 @@ def test_judge_cli_degrades_on_auth_error(monkeypatch):
 def test_judge_api_non_auth_error_still_degrades(monkeypatch):
     """An api job with a NON-auth error keeps the graceful degrade — only
     auth/401 errors are escalated to a loud failure."""
-    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p, **kw: "CONTRACT")
 
     async def _boom(**kwargs):
         raise RuntimeError("CLI exploded for unrelated reasons")
@@ -80,7 +80,7 @@ def test_judge_api_reraises_on_auth_env_error(monkeypatch):
     """A typed AuthEnvError whose message matches no signal must still be
     classified as an auth error (isinstance, not substring luck) and re-raise
     under transport=api."""
-    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p, **kw: "CONTRACT")
 
     async def _boom(**kwargs):
         raise agent.AuthEnvError(_AUTH_ENV_ERR)
@@ -93,7 +93,7 @@ def test_judge_api_reraises_on_auth_env_error(monkeypatch):
 
 def test_judge_cli_degrades_on_auth_env_error(monkeypatch):
     """The SAME typed error under cli transport keeps the graceful degrade."""
-    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p, **kw: "CONTRACT")
 
     async def _boom(**kwargs):
         raise agent.AuthEnvError(_AUTH_ENV_ERR)

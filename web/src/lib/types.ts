@@ -66,6 +66,9 @@ export type BookStatus = "uploading" | "toc_extracting" | "toc_ready" | "failed"
 /** Generation transport: "cli" (local subprocess, default) vs "api" (pay-per-token SDK; claude/gemini only). */
 export type Transport = "cli" | "api";
 
+/** Output language for generated content. */
+export type OutputLanguage = "uz" | "en" | "ru";
+
 /** Per-role billing override for the extract/judge phases: "inherit" (default)
  *  follows the job's `transport`; "cli"/"api" pin that role explicitly. */
 export type RoleTransport = "cli" | "api" | "inherit";
@@ -442,4 +445,6 @@ export interface LaunchDefaults {
   extract_model: string | null;
   extract_transport: RoleTransport | null;
   toc_transport: "cli" | "api" | null;
+  /** Concrete global default for generated content language. */
+  output_language: OutputLanguage | null;
 }

@@ -188,6 +188,7 @@ async def test_requeue_session_limited_integration():
                 toc_entry_id=toc.id,
                 subject="math",
                 transport="cli",
+                output_language="uz",
             )
             job_id = job.id
 

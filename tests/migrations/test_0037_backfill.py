@@ -141,3 +141,8 @@ async def test_backfill_stamps_all_statuses():
         if book_id:
             await conn.execute("DELETE FROM books WHERE id = $1", book_id)
         await conn.close()
+        # Restore the shared DB to head. This test pins the upgrade to
+        # 0037_launch_defaults; once a later migration exists (e.g. 0038
+        # output_language) that leaves the shared scratch DB one revision below
+        # head, breaking every subsequent DB test with UndefinedColumnError.
+        _run_alembic(["upgrade", "head"])

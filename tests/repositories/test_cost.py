@@ -520,7 +520,7 @@ async def test_batch_api_cost_integration():
             await session.flush()
 
             _bkw = dict(subject="math", grade=None, provider="claude",
-                        model="claude-sonnet-4-6")
+                        model="claude-sonnet-4-6", output_language="uz")
             batch_a = await batches_repo.get_or_create_for_book(
                 session, book_id=book.id, transport="api", **_bkw)
             batch_b = await batches_repo.get_or_create_for_book(
@@ -529,10 +529,12 @@ async def test_batch_api_cost_integration():
             job_a = await jobs_repo.create(
                 session, book_id=book.id, toc_entry_id=toc.id,
                 subject="math", batch_id=batch_a.id, transport="api",
+                output_language="uz",
             )
             job_b = await jobs_repo.create(
                 session, book_id=book.id, toc_entry_id=toc.id,
                 subject="math", batch_id=batch_b.id, transport="cli",
+                output_language="uz",
             )
 
             await usage_repo.create(

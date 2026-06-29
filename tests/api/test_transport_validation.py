@@ -458,7 +458,7 @@ async def test_api_batch_over_cli_done_creates_fresh_jobs():
         async with SessionLocal() as s:
             for tid in toc_ids:
                 j = await jobs_repo.create(s, book_id=book_id, toc_entry_id=tid,
-                                           subject="math-algebra")
+                                           subject="math-algebra", output_language="uz")
                 j.status = "done"
             await s.commit()
         async with _client() as c:
@@ -502,7 +502,7 @@ async def test_cli_orphan_not_adopted_into_api_batch():
     try:
         async with SessionLocal() as s:
             j = await jobs_repo.create(s, book_id=book_id, toc_entry_id=toc_ids[0],
-                                       subject="math-algebra")  # transport=cli, batch_id NULL
+                                       subject="math-algebra", output_language="uz")  # transport=cli, batch_id NULL
             j.status = "done"
             await s.commit()
             orphan_id = j.id

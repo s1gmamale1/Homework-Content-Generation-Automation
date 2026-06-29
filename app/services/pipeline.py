@@ -157,6 +157,9 @@ async def run(job_id: UUID) -> None:
             session_limit_strategy: str = resolve_session_limit_strategy(
                 _batch.session_limit_strategy if _batch else None
             )
+            # Output language for this job (uz/en/ru). Captured once here to
+            # avoid lazy-load / detachment surprises on later ORM access.
+            job_output_language: str = getattr(job, "output_language", None) or "uz"
             section_data = {
                 "id": section.id,
                 "title": section.section_title,
@@ -258,6 +261,7 @@ async def run(job_id: UUID) -> None:
                     extract_provider=extract_provider,
                     extract_model=extract_model,
                     session_limit_strategy=session_limit_strategy,
+                    output_language=job_output_language,
                 )
             except SessionLimitPause:
                 raise  # propagate to worker (Task 5) — job must NOT be marked failed
@@ -322,6 +326,7 @@ async def run(job_id: UUID) -> None:
                     extract_provider=extract_provider,
                     extract_model=extract_model,
                     session_limit_strategy=session_limit_strategy,
+                    output_language=job_output_language,
                 )
             except SessionLimitPause:
                 raise  # propagate to worker (Task 5) — must not be swallowed
@@ -411,6 +416,7 @@ async def _execute_one_phase(
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
+    output_language: str = "uz",
 ) -> tuple[str, Optional[int], Optional[int], Optional[Any]]:
     """Run a single phase end-to-end with status tracking, SSE emit, and
     error handling. Wraps `_execute_phase` so both the sequential head loop
@@ -453,6 +459,7 @@ async def _execute_one_phase(
             extract_provider=extract_provider,
             extract_model=extract_model,
             session_limit_strategy=session_limit_strategy,
+            output_language=output_language,
         )
     except SessionLimitPause:
         raise  # worker requeues — job must NOT be marked failed
@@ -520,6 +527,7 @@ async def _run_content_phases_parallel(
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
+    output_language: str = "uz",
 ) -> None:
     """Wave-based parallel scheduler for content phases.
 
@@ -579,6 +587,7 @@ async def _run_content_phases_parallel(
                             extract_provider=extract_provider,
                             extract_model=extract_model,
                             session_limit_strategy=session_limit_strategy,
+                            output_language=output_language,
                         ),
                         name=f"phase:{name}",
                     )
@@ -796,6 +805,7 @@ async def _execute_phase(
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
+    output_language: str = "uz",
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     _custom_md = _custom_for(phase_name, custom_prompts)
     if phase_name == "extract":
@@ -803,7 +813,7 @@ async def _execute_phase(
     elif _custom_md is not None:
         prompt_hash = "custom:sha256:" + hashlib.sha256(_custom_md.encode("utf-8")).hexdigest()
     else:
-        prompt_hash = get_prompt_hash(subject, phase_name)
+        prompt_hash = get_prompt_hash(subject, phase_name, output_language=output_language)
 
     # Per-phase model_name on the phase row records exactly what served this
     # call. The ``extract`` phase is pinned to the cheap-extractor settings
@@ -972,7 +982,7 @@ async def _execute_phase(
                 )
                 parsed_struct = None
         else:
-            base_phase_prompt = _custom_md if _custom_md is not None else get_prompt(subject, phase_name)
+            base_phase_prompt = _custom_md if _custom_md is not None else get_prompt(subject, phase_name, output_language=output_language)
 
             def _make_run(prompt_text: str):
                 async def _run(prov: str, mdl: Optional[str]):
@@ -1036,6 +1046,7 @@ async def _execute_phase(
             homework_job_id=job_id, phase_output_id=po_id,
             transport=judge_transport,
             contract_override=_custom_md,
+            output_language=output_language,
         )
         # Retry-once on unavailable: a transient CLI/parse failure (or timeout
         # degraded by C1's _judge_with_timeout) is worth one free retry.
@@ -1054,6 +1065,7 @@ async def _execute_phase(
                 judge_provider=_jp, judge_model=_jm,
                 homework_job_id=job_id, phase_output_id=po_id,
                 transport=judge_transport,
+                output_language=output_language,
             )
         # Regenerate ONLY on a MAJOR issue; minor (stylistic/length) nits are
         # recorded as warnings but never trigger an expensive regen.
@@ -1096,6 +1108,7 @@ async def _execute_phase(
                     homework_job_id=job_id, phase_output_id=po_id,
                     transport=judge_transport,
                     contract_override=_custom_md,
+                    output_language=output_language,
                 )
             except SessionLimitPause:
                 raise  # quota-pause during regen must propagate — not a content failure

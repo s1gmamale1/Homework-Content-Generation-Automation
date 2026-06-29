@@ -4,7 +4,7 @@
  * books keep independent configs. All access is try/catch-wrapped: private mode,
  * quota, or a corrupt blob degrade to a no-op / empty object, never throw.
  */
-import type { RoleTransport, SessionLimitStrategy, Transport } from "./types";
+import type { OutputLanguage, RoleTransport, SessionLimitStrategy, Transport } from "./types";
 
 export interface LauncherConfig {
   provider: string;
@@ -17,6 +17,8 @@ export interface LauncherConfig {
   judgeProvider: string | null;
   judgeModel: string | null;
   model: string | null;
+  /** Output language override — undefined/null means inherit global default. */
+  outputLanguage: OutputLanguage | null;
 }
 
 const keyFor = (bookId: string) => `launcher-config:${bookId}`;

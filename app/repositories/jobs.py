@@ -30,6 +30,7 @@ async def create(
     book_id: UUID,
     toc_entry_id: UUID,
     subject: str,
+    output_language: str,
     status: str = "pending",
     provider: Optional[str] = None,
     model: Optional[str] = None,
@@ -48,6 +49,7 @@ async def create(
         book_id=book_id,
         toc_entry_id=toc_entry_id,
         subject=subject,
+        output_language=output_language,
         status=status,
         transport=transport,
         extract_transport=extract_transport,
@@ -96,6 +98,7 @@ async def find_active_for_section(
     toc_entry_id: UUID,
     *,
     transport: Optional[str] = None,
+    output_language: str,
 ) -> Optional[HomeworkJob]:
     """Return the most recent pending/running/done job for the (book, section).
 
@@ -105,13 +108,16 @@ async def find_active_for_section(
 
     When `transport` is given, the lookup is scoped to jobs of that transport —
     so an api batch over a cli-generated book doesn't find the cli jobs and skip
-    every lesson (spec §9a). Default `None` preserves the transport-blind
-    behavior for existing callers.
+    every lesson (spec §9a).
+
+    `output_language` scopes the lookup so a job in another language is NOT
+    adopted — an 'en' batch must never reuse a 'uz' job (spec §language-key).
     """
     conds = [
         HomeworkJob.book_id == book_id,
         HomeworkJob.toc_entry_id == toc_entry_id,
         HomeworkJob.status.in_(["pending", "running", "done"]),
+        HomeworkJob.output_language == output_language,
     ]
     if transport is not None:
         conds.append(HomeworkJob.transport == transport)
@@ -723,11 +729,19 @@ async def resume_failed_in_batch(session: AsyncSession, batch_id: UUID) -> int:
 async def latest_for_section(
     session: AsyncSession, book_id: UUID, toc_entry_id: UUID, *,
     transport: Optional[str] = None,
+    output_language: str,
 ) -> Optional[HomeworkJob]:
-    """The most recent job for a (book, section) regardless of status — used by
-    relaunch to find a failed/cancelled job to RESUME rather than recreate."""
+    """The most recent job for a (book, section, output_language) regardless of
+    status — used by relaunch to find a failed/cancelled job to RESUME rather
+    than recreate.
+
+    `output_language` scopes the lookup so an EN relaunch over a previously-
+    failed UZ section finds the EN job (not the UZ one) and resumes it correctly
+    instead of creating a new EN job that would duplicate work.
+    """
     conds = [HomeworkJob.book_id == book_id,
-             HomeworkJob.toc_entry_id == toc_entry_id]
+             HomeworkJob.toc_entry_id == toc_entry_id,
+             HomeworkJob.output_language == output_language]
     if transport is not None:
         conds.append(HomeworkJob.transport == transport)
     stmt = (select(HomeworkJob).where(*conds)
