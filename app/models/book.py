@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import BigInteger, DateTime, Index, String, Text
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, Timestamps, UUIDPK
@@ -28,6 +28,8 @@ class Book(Base, UUIDPK, Timestamps):
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Language of the source textbook: "uz" (Uzbek, default), "ru" (Russian), "en" (English).
+    source_language: Mapped[str] = mapped_column(String(8), nullable=False, server_default="uz")
 
     toc_entries: Mapped[list["TOCEntry"]] = relationship(
         back_populates="book",
@@ -35,7 +37,13 @@ class Book(Base, UUIDPK, Timestamps):
         order_by="TOCEntry.order_index",
     )
 
-    __table_args__ = (Index("ix_books_content_sha256", "content_sha256"),)
+    __table_args__ = (
+        Index("ix_books_content_sha256", "content_sha256"),
+        CheckConstraint(
+            "source_language IN ('uz','ru','en')",
+            name="ck_books_source_language",
+        ),
+    )
 
 
 from app.models.toc_entry import TOCEntry  # noqa: E402
