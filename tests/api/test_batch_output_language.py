@@ -28,6 +28,7 @@ _FAKE_BOOK = SimpleNamespace(
     grade="8",
     original_filename=None,
     error_message=None,
+    source_language=None,  # Phase 1 column; None → global default wins
 )
 
 _FAKE_SECTION = SimpleNamespace(
