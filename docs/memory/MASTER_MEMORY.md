@@ -1339,3 +1339,19 @@ Gate-hardening: `PUT /settings/launch-defaults` rejects null provider/model with
 **Files:** `alembic/versions/0039_launch_defaults_content.py` (new migration — adds 3 columns, seeds content row), `app/models/launch_defaults.py` (3 new fields), `app/api/v1/settings.py` (GET/PUT carry content fields), `web/src/routes/settings.tsx` (Content row), `web/src/components/fleet/launcher.tsx` (content-generator only; judge/extract → inherit/null), `tests/api/test_batch_inherit_resolves_default.py` (new bite-test).
 
 **Verified:** Full DB suite **1313 passed**; bite-test `test_batch_inherit_resolves_default.py` confirms global default `cli` vs job transport `api` → job stamped `cli` (the `inherit`→default-wins path is not vacuous). FE `tsc --noEmit` + `npm run build` clean. SDD (fresh subagent per task; controller stress-tested every commit — read diff + re-ran suite). Closes `launcher-role-transport-default-1`.
+
+## [0101] Monitor overhaul — declutter badges + batch actions from Monitor + grade grouping/worker strip — 2026-06-29 (feat/monitor-overhaul → Nggaev-v2, PR #59)
+
+**What:** Three FE-only UI changes to `/monitor`; no migration, no new backend endpoints.
+
+- **#1 — Remove per-batch transport badges:** The Batch card's per-batch provider badge and the `cli`/`API` transport badge were removed (status chip + progress bar retained). Dual-transport books keep only a small muted `cli`/`api` caption. The Monitor page now de-emphasizes transport framing and focuses on batch progress.
+
+- **#4 — Per-batch actions on Monitor (`batch-actions.tsx`):** New `web/src/components/fleet/batch-actions.tsx` renders Pause/Unpause/Cancel-all/Retry-failed buttons directly on each Monitor batch card. Reuses the existing `api.pauseBatch`/`unpauseBatch`/`cancelBatch`/`resumeBatch` endpoints — **no new endpoints**. Cancel shows `window.confirm`. Button visibility gated by `batchActionFlags` (from `lib/monitor-grouping.ts`). Previously, cancel/resume lived only on the Fleet launcher card; they are now accessible from the Monitor without a tab switch.
+
+- **#5 — Grade grouping + compact worker strip:** Batch cards on `/monitor` are now grouped under `Grade N` subheaders (numeric ascending, `Ungraded` last) via new pure helper `web/src/lib/monitor-grouping.ts` (`groupBooksByGrade` + `batchActionFlags`). Worker cards collapsed into a compact strip (no longer large cards).
+
+**Files:** `web/src/components/fleet/batch-actions.tsx` (new), `web/src/lib/monitor-grouping.ts` (new — pure helpers, `npx tsx`-tested), `web/src/components/fleet/batch-funnel.tsx` (badge removal + grade subheaders + compact worker strip integration), plus associated type/style wiring in `web/src/`.
+
+**Verified:** `tsc --noEmit` + `npm run build` clean; `npx tsx` helper test green; `/monitor` renders with 0 console errors (verified by headless screenshot). FE-only; no migration; no backend changes. Built via subagent-driven-development, controller stress-tested every commit (read diff + verified). Acceptance: `tsc` + `build` + `npx tsx` test + `/monitor` headless screenshot.
+
+**Docs:** `CODE_MAP.md` updated (new `batch-actions.tsx` + `monitor-grouping.ts` entries; updated `batch-funnel` + `worker-cards` descriptions; `monitor-overhaul (0101)` note). `HOW_IT_WORKS.md` de-staled (`/monitor` description updated — actions now on Monitor, grade grouping + compact strip noted). Plan `git mv`'d to `docs/superpowers/plans/shipped/`.

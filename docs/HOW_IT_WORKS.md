@@ -265,8 +265,10 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
 - **The `/fleet` page**: launch a Notion subject end-to-end (fetch → TOC-extract →
   launch), with a one-line worker-liveness strip (`OnlineStrip`).
 - **The `/monitor` page**: watch batch funnels fill, see PC liveness cards, and drill
-  into a batch's lessons to cancel/retry individual ones. Batch-wide cancel-all / resume /
-  relaunch live on the `/fleet` launcher card.
+  into a batch's lessons to cancel/retry individual ones. Batch-wide Pause/Unpause/Cancel-all/
+  Retry-failed actions are available directly on the Monitor batch card via `batch-actions.tsx`
+  (reusing the existing pause/unpause/cancel/resume endpoints; no new endpoints). Batch cards
+  are grouped by grade (numeric asc, `Ungraded` last); worker cards are a compact strip.
 
 One caveat worth knowing: on startup the API sweeps orphaned `running` jobs back to
 `pending`. As of Cluster 5 / P1 (`fleet-restart-reclaim-1`) this is **peer-aware**: if no
