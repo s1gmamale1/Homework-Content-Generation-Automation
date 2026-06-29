@@ -161,7 +161,10 @@ request open. So instead:
 - The `/generate` endpoint just writes a `pending` row to `homework_jobs` and returns.
 - A **worker** (`app/services/worker.py`) loops forever, asking Postgres for the next
   pending job using `SELECT … FOR UPDATE SKIP LOCKED`. That SQL trick lets multiple workers
-  grab *different* jobs safely without stepping on each other.
+  grab *different* jobs safely without stepping on each other. The pick is ordered
+  `priority DESC, lesson order ASC (toc_entries.order_index), scheduled_at ASC` — so within a
+  batch lesson 1 is claimed before lesson 2 (they archive into Notion in reading order, not
+  randomly), and across the fleet `SKIP LOCKED` hands ascending lessons to successive workers.
 - The worker holds N "slots" (a semaphore, default 4) so it runs at most N jobs at once.
 
 The worker can run **two ways**:
