@@ -48,6 +48,7 @@ import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { serveability, providerServeableAnyMode } from "@/lib/serveability";
 import { type LauncherConfig, loadLauncherConfig, saveLauncherConfig } from "@/lib/launcher-config";
+import { LANG_LABEL, langBadge } from "@/lib/language";
 
 const LBL = "text-xs font-medium uppercase tracking-[0.12em] text-white/45";
 
@@ -605,10 +606,10 @@ function ReadyCard({
     queryFn: api.getLaunchDefaults,
   });
   // Per-lesson completion is language-scoped: use the explicitly-picked language,
-  // else the resolved global default (the same value shown as "Auto → <lang>").
-  // Keying the query on it makes switching the language picker refetch + recompute
-  // the "complete"/remaining status for that language.
-  const effectiveLang = outputLanguage ?? defaultsQ.data?.output_language ?? null;
+  // else the book's source language (the Auto target), then global default as last
+  // resort. Keying the query on it makes switching the language picker refetch +
+  // recompute the "complete"/remaining status for that language.
+  const effectiveLang = outputLanguage ?? book.source_language ?? defaultsQ.data?.output_language ?? null;
   const detail = useQuery({
     queryKey: ["book", book.id, effectiveLang],
     queryFn: () => api.getBook(book.id, effectiveLang),
@@ -840,6 +841,9 @@ function ReadyCard({
             {subjectLabelWithVariant(book.subject, book.subject_variant)}
             {book.grade && <GradeChip grade={book.grade} />}
             <CardStatusChip status={cardStatus} />
+            <span className={langBadge(book.source_language)}>
+              {book.source_language.toUpperCase()}
+            </span>
           </div>
           <div className="mt-0.5 text-xs text-white/45">
             {lessons ?? "…"} lessons
@@ -934,7 +938,7 @@ function ReadyCard({
                     </SelectContent>
                   </Select>
                 </div>
-                {/* Output language — null = Auto (inherit global default). */}
+                {/* Output language — null = Auto (= book's source language). */}
                 <div className="flex flex-col gap-1">
                   <span className="text-[0.6rem] font-medium uppercase tracking-[0.12em] text-white/35">
                     Language
@@ -945,24 +949,31 @@ function ReadyCard({
                       setOutputLanguage(v === "inherit" ? null : (v as OutputLanguage))
                     }
                   >
-                    <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[8rem]")}>
+                    <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[9rem]")}>
                       {outputLanguage == null ? (
                         <SelectValue>
-                          {defaultsQ.data?.output_language
-                            ? `Auto → ${defaultsQ.data.output_language.toUpperCase()}`
-                            : "Auto → …"}
+                          {`Auto → ${LANG_LABEL[book.source_language]}`}
                         </SelectValue>
                       ) : (
                         <SelectValue />
                       )}
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="inherit">Auto</SelectItem>
+                      <SelectItem value="inherit">
+                        {`Auto → ${LANG_LABEL[book.source_language]}`}
+                      </SelectItem>
                       <SelectItem value="uz">UZ — O'zbek</SelectItem>
                       <SelectItem value="en">EN — English</SelectItem>
                       <SelectItem value="ru">RU — Русский</SelectItem>
                     </SelectContent>
                   </Select>
+                  {/* Translate hint — shown when operator picks a language that
+                      differs from the textbook's own source language. */}
+                  {outputLanguage != null && outputLanguage !== book.source_language && (
+                    <span className="text-[0.65rem] text-amber-300/80">
+                      ↳ translate from {book.source_language.toUpperCase()}
+                    </span>
+                  )}
                 </div>
                 {/* API forces an explicit model (no "provider default"). */}
                 {transport === "api" && (
