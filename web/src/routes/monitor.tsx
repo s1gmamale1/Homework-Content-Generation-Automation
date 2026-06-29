@@ -38,7 +38,7 @@ export function MonitorPage() {
 
   // Language dimension (Phase 2) composes on top of the API-only scope: tabs +
   // counts derive from apiBatches, and the active language further scopes it.
-  const langs = summarizeByLanguage(apiBatches);
+  const langs = useMemo(() => summarizeByLanguage(apiBatches), [apiBatches]);
 
   const [activeLang, setActiveLang] = useState<Lang>("uz");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("attention");

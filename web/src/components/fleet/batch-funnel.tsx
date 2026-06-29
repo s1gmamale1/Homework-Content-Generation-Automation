@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, PauseCircle } from "lucide-react";
+import { PauseCircle } from "lucide-react";
 import { type CSSProperties, useMemo, useState } from "react";
 import type { BatchSummary } from "@/lib/types";
 import { type RowStatus, transportRowStatus } from "@/lib/batch-status";
@@ -9,6 +9,7 @@ import { CARD, GHOST_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { BatchActions } from "./batch-actions";
 import { BatchLessonList } from "./batch-lesson-list";
+import { MonitorDrawer } from "./monitor-drawer";
 import { RollupBar } from "./rollup-bar";
 
 const ROW_CHIP: Record<RowStatus, { label: string; className: string; style?: CSSProperties }> = {
@@ -31,14 +32,14 @@ function TransportRow({
   batch,
   divided,
   transportLabel,
+  onShowLessons,
 }: {
   batch: BatchSummary;
   divided: boolean;
   /** Shown next to the status chip only when the book has >1 transport. */
   transportLabel?: string;
+  onShowLessons: (batchId: string, title: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const Chevron = expanded ? ChevronDown : ChevronRight;
   const chip = ROW_CHIP[transportRowStatus(batch)];
 
   return (
@@ -78,17 +79,14 @@ function TransportRow({
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() => onShowLessons(batch.batch_id, batch.batch_id)}
           className={cn(GHOST_BTN, "px-2 py-1.5 text-xs")}
         >
-          <Chevron className="size-4" />
-          {expanded ? "Hide lessons" : "Show lessons"}
+          Show lessons
         </button>
 
         <BatchActions batch={batch} />
       </div>
-
-      {expanded && <BatchLessonList batchId={batch.batch_id} enabled={expanded} />}
     </div>
   );
 }
@@ -97,7 +95,13 @@ function TransportRow({
  *  `UNIQUE(book_id, transport, output_language)`) collapse into a single card
  *  with one shared header and one TransportRow each, instead of separate cards
  *  for the same subject. (cli batches are filtered out upstream in monitor.tsx.) */
-function BookCard({ batches }: { batches: BatchSummary[] }) {
+function BookCard({
+  batches,
+  onShowLessons,
+}: {
+  batches: BatchSummary[];
+  onShowLessons: (batchId: string, title: string) => void;
+}) {
   const head = batches[0];
   // Glow ("in progress" treatment) only while work is ACTUALLY in flight —
   // queued/running/cancelling jobs. NOT `!complete`: a partial/subset launch
@@ -110,6 +114,13 @@ function BookCard({ batches }: { batches: BatchSummary[] }) {
         (b.rollup.cancelling ?? 0) >
       0,
   );
+
+  const subjectGradeTitle = [
+    subjectLabelWithVariant(head.subject, head.subject_variant),
+    head.grade ? `grade ${head.grade}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <div
@@ -134,6 +145,7 @@ function BookCard({ batches }: { batches: BatchSummary[] }) {
           batch={b}
           divided={i > 0}
           transportLabel={batches.length > 1 ? b.transport : undefined}
+          onShowLessons={(batchId) => onShowLessons(batchId, subjectGradeTitle)}
         />
       ))}
     </div>
@@ -147,6 +159,8 @@ export function BatchFunnel({
   batches?: BatchSummary[];
   statusFilter?: StatusFilter;
 }) {
+  const [drawer, setDrawer] = useState<{ batchId: string; title: string } | null>(null);
+
   // Group batches by book so a subject's batches share a single card. The list
   // is already API-scoped by monitor.tsx (cli filtered there so stats + cards
   // stay consistent), so a cli-only book never appears here. After grouping,
@@ -182,13 +196,25 @@ export function BatchFunnel({
               </p>
               <div className="grid items-start gap-3 md:grid-cols-2">
                 {gradeBooks.map((group) => (
-                  <BookCard key={group[0].book_id} batches={group} />
+                  <BookCard
+                    key={group[0].book_id}
+                    batches={group}
+                    onShowLessons={(batchId, title) => setDrawer({ batchId, title })}
+                  />
                 ))}
               </div>
             </div>
           ))}
         </div>
       )}
+
+      <MonitorDrawer
+        open={!!drawer}
+        title={drawer?.title}
+        onClose={() => setDrawer(null)}
+      >
+        {drawer && <BatchLessonList batchId={drawer.batchId} enabled />}
+      </MonitorDrawer>
     </div>
   );
 }
