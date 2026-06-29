@@ -2,8 +2,8 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Every claim here was re-verified against branch `feat/global-launch-defaults`, head `0037_launch_defaults`
-> (0037), 2026-06-27. When this doc and the code disagree, the code wins — fix the doc.
+> Every claim here was re-verified against branch `feat/multi-language-output`, head `0038_output_language`
+> (0038), 2026-06-29. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
 
@@ -28,13 +28,14 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`0037_launch_defaults`** (0028 = enum CHECK constraints,
+also runs it on deploy). Current head: **`0038_output_language`** (0028 = enum CHECK constraints,
 0029 = `phase_outputs.judge_status`, 0030 = `agent_usages.cache_creation_tokens`,
 0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton,
 0033 = `custom_prompts`/`selected_phases` JSONB on `homework_jobs`+`batches`,
 0034 = widen `phase_outputs.prompt_hash` 64→128 for `custom:sha256:<hex>` provenance,
 0035 = `workers.capabilities` JSONB, 0036 = `batches.session_limit_strategy` + CHECK,
-0037 = `launch_defaults` singleton + seed + NULL-column backfill on `homework_jobs`).
+0037 = `launch_defaults` singleton + seed + NULL-column backfill on `homework_jobs`,
+0038 = `output_language` on `homework_jobs`+`batches`+`launch_defaults` + batch UNIQUE swap).
 Full chain in §7. (Revision IDs stay ≤32 chars — `alembic_version.version_num` is VARCHAR(32).)
 
 ---
@@ -117,6 +118,7 @@ Relationship: `toc_entries` (cascade delete-orphan, ordered by `order_index`).
 | `transport` | String(16) NOT NULL, server_default `'cli'` | Phase 4 (migration 0024): `cli` (subscription CLI auth, $0 marginal) vs `api` (pay-per-token keys); validation requires api ⇒ provider ∈ {claude, gemini} + explicit model; **DB CHECK `cli\|api`** (migration 0028) |
 | `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 (migration 0025): per-role billing override, `cli \| api \| inherit`; `inherit` follows `transport` (`resolve_role_transport`); **DB CHECK `cli\|api\|inherit`** (migration 0028) |
 | `extract_provider` / `extract_model` / `judge_provider` / `judge_model` | String(32 / 128 / 32 / 128) NULL | migration 0027: per-role provider/model; stamped at launch from an explicit pick or the `launch_defaults` global default (migration 0037 backfilled existing NULLs with the seed values) |
+| `output_language` | String(16) NOT NULL, server_default `'uz'` | migration 0038: medium of instruction for generated content — `uz` (Uzbek), `en` (English), `ru` (Russian); **DB CHECK `uz\|en\|ru`**; resolved at launch from the per-launch override or the `launch_defaults.output_language` global default; threaded by `pipeline.run` to `get_prompt` (generator) and `phase_judge.judge` (judge) so both always use the same-language contract; extract is language-neutral (untouched). L2 language-class subjects (English/Russian class `subjects.language ∈ {english,russian}`) always use their Uzbek-bridged L2 rule regardless of this column. Default `'uz'` is byte-identical to pre-0038 behavior. |
 | `custom_prompts` | JSONB NULL | migration 0033 (PR37): `{phase: markdown}` per-phase prompt overrides replacing the built-in contract; NULL = built-in for all phases. Also seen by the judge as `contract_override`. |
 | `selected_phases` | JSONB NULL | migration 0033 (PR37): subset of content phases to run (dependency-closure-expanded at launch); NULL = full subject flow |
 | `current_phase` | String(64) NULL | live progress marker |
@@ -186,8 +188,9 @@ consumption counts**, not provider quotas.
 | Column | Type | Notes |
 |---|---|---|
 | `id`, `created_at`, `updated_at` | mixins | |
-| `book_id` | FK → books NOT NULL, part of **UNIQUE (`uq_batches_book_id_transport`)** | one batch per `(book, transport)` since migration 0024 — a different-transport re-launch forks a new batch (the cli-vs-api benchmark, spec §9); same-transport reuses |
+| `book_id` | FK → books NOT NULL, part of **UNIQUE (`uq_batches_book_id_transport_output_language`)** | one batch per `(book, transport, output_language)` since migration 0038 — a different-transport OR different-language re-launch forks a new batch; same transport+language reuses. The old `uq_batches_book_id_transport` constraint was dropped and replaced. |
 | `transport` | String(16) NOT NULL, server_default `'cli'` | launch-time transport (also on every member job); **DB CHECK `cli\|api`** (migration 0028) |
+| `output_language` | String(16) NOT NULL, server_default `'uz'` | migration 0038: medium of instruction — `uz` / `en` / `ru`; **DB CHECK `uz\|en\|ru`**; part of the batch UNIQUE key (`uq_batches_book_id_transport_output_language`) so an EN re-launch never adopts a UZ batch. `batches_repo.get_or_create_for_book`, `find_active_for_section`, and `latest_for_section` are all language-scoped. |
 | `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 launch-default labels stamped onto created jobs — **jobs carry the truth**; on re-launch these labels can go stale; **DB CHECK `cli\|api\|inherit`** (migration 0028) |
 | `extract_provider` / `extract_model` / `judge_provider` / `judge_model` | String(32 / 128 / 32 / 128) NULL | migration 0027: per-role provider/model launch labels (NULL = role default); jobs carry the truth |
 | `subject` / `grade` | NOT NULL / NULL | denormalized for display |
@@ -201,8 +204,8 @@ consumption counts**, not provider quotas.
 Design: **no stored counters**. Progress is computed on read (`rollup_for_batch`):
 `DISTINCT ON (toc_entry_id) … ORDER BY toc_entry_id, created_at DESC` scoped to the batch,
 then `GROUP BY status` — one vote per lesson (its newest job), so retries/top-ups can never
-inflate the tally, and the denominator is `sum(tally.values())`. `UNIQUE(book_id, transport)` makes
-find-or-create race-safe via `ON CONFLICT DO UPDATE … RETURNING` (conflict target `["book_id", "transport"]`; Core insert — see the
+inflate the tally, and the denominator is `sum(tally.values())`. `UNIQUE(book_id, transport, output_language)` makes
+find-or-create race-safe via `ON CONFLICT DO UPDATE … RETURNING` (conflict target `["book_id", "transport", "output_language"]`; Core insert — see the
 mixin gotcha in §3). Launch semantics: fan-out one job per lesson; an existing *active*
 job (pending/running/done) is skipped, and an orphan (`batch_id IS NULL`) is **adopted**.
 
@@ -251,8 +254,9 @@ No UUIDPK/Timestamps mixins — intentionally minimal.
 | `extract_provider` / `extract_model` | String(32/128) NOT NULL | provider·model for lesson extract; seed: `gemini`/`gemini-2.5-flash` |
 | `extract_transport` | String(16) NOT NULL | `cli` \| `api` \| `inherit`; seed: `inherit` |
 | `toc_transport` | String(16) NOT NULL | transport for job-less book-upload TOC extraction: `cli` (seed, uses OAuth) or `api` (uses Vertex SDK — required on an all-Vertex head where gemini CLI OAuth is unavailable) |
+| `output_language` | String(16) NOT NULL, server_default `'uz'` | migration 0038: the global default medium of instruction — `uz` / `en` / `ru`; **DB CHECK `uz\|en\|ru`**. Per-launch `output_language` overrides this; `null` inherits it. Resolved by `agent_models.resolve_output_language(explicit, global_default)`. Seed: `'uz'` (byte-identical to pre-0038 behavior). |
 
-**Write surface:** `PUT /api/v1/settings/launch-defaults` (validates non-null provider/model; HTTP 422 on null — prevents a launch-bricking footgun; validated against `agent_models.MODEL_MANIFEST`). **Read surface:** `GET /api/v1/settings/launch-defaults` + `launch_defaults_repo.get_or_create()` (called by launch endpoints, `toc_extractor`, and the claim gate). **No credentials here** — those live in `.env`/`os.environ`.
+**Write surface:** `PUT /api/v1/settings/launch-defaults` (validates non-null provider/model + valid output_language; HTTP 422 on null — prevents a launch-bricking footgun; validated against `agent_models.MODEL_MANIFEST` + `OUTPUT_LANGUAGES`). **Read surface:** `GET /api/v1/settings/launch-defaults` + `launch_defaults_repo.get_or_create()` (called by launch endpoints, `toc_extractor`, and the claim gate). **No credentials here** — those live in `.env`/`os.environ`.
 
 **⚠ Operator note (all-Vertex head):** the seed `toc_transport='cli'` means a worker with only Vertex SA creds and no gemini CLI OAuth will fail TOC extraction. After first deploy on an all-Vertex head, flip `toc_transport→api` at `/settings`.
 
@@ -401,7 +405,8 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | 34 | 0034_widen_prompt_hash | `0034_widen_prompt_hash` | widens `phase_outputs.prompt_hash` 64→128 for `custom:sha256:<hex>` provenance (PR37) |
 | 35 | 0035_workers_capabilities | `0035_workers_capabilities` | adds `workers.capabilities` JSONB nullable (launcher-capability-gate-1, worklog 0085) |
 | 36 | 0036_batch_session_limit_strategy | `0036_batch_session_limit_strategy` | adds `batches.session_limit_strategy` NOT NULL server_default `'inherit'` + CHECK `pause\|switch\|inherit` (C5 session-limit autopause, worklog 0089) |
-| 37 | 0037_launch_defaults | `0037_launch_defaults` | creates `launch_defaults` singleton table (id=1 CHECK), seeds the row (judge/extract = gemini/gemini-2.5-flash/inherit, toc_transport=cli), and unconditionally backfills NULL `judge_provider`/`judge_model`/`extract_provider`/`extract_model` on `homework_jobs` — **HEAD** |
+| 37 | 0037_launch_defaults | `0037_launch_defaults` | creates `launch_defaults` singleton table (id=1 CHECK), seeds the row (judge/extract = gemini/gemini-2.5-flash/inherit, toc_transport=cli), and unconditionally backfills NULL `judge_provider`/`judge_model`/`extract_provider`/`extract_model` on `homework_jobs` |
+| 38 | 0038_output_language | `0038_output_language` | adds `output_language` String(16) NOT NULL server_default `'uz'` + DB CHECK `uz\|en\|ru` to `homework_jobs`, `batches`, and `launch_defaults`; drops `uq_batches_book_id_transport` and creates `uq_batches_book_id_transport_output_language` (`book_id`, `transport`, `output_language`) — **HEAD** |
 
 ---
 

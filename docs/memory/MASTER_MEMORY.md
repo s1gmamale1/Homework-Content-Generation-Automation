@@ -1287,6 +1287,31 @@ Gate-hardening: `PUT /settings/launch-defaults` rejects null provider/model with
 
 **Notes:** Branch rebased onto `origin/Nggaev-v2` after PR #52 (worklogs 0095+0096) merged. The seed `toc_transport='cli'` is **NOT behavior-neutral on an all-Vertex head**: an operator with only Vertex SA creds and no gemini CLI OAuth must flip `toc_transport→api` at `/settings` after first deploy, or TOC extraction fails. Plan `git mv`'d to `docs/superpowers/plans/shipped/`.
 
+## [0099] Multi-language output (UZ/EN/RU medium of instruction) — 2026-06-29 (feat/multi-language-output → Nggaev-v2)
+
+**What:** added a concrete **output_language** (medium of instruction) axis: `uz` (Uzbek), `en` (English), `ru` (Russian). Before this, every homework was generated in Uzbek with no operator choice. Now:
+- **Global default** at `/settings` (`launch_defaults.output_language`, server_default `'uz'`).
+- **Per-launch override** on both `POST /jobs/batch` and `POST …/sections/{toc}/generate` (`output_language` field; `null` ⇒ inherit the global default).
+- **Byte-identical UZ:** `MEDIUM_RULES["uz"]` is the old `_LANG_UZBEK` constant — no content change for the default path; proven by smoke.
+
+**Prompt seam (`app/services/prompts.py`):** `get_prompt(subject, phase, provider_suffix="", output_language="uz")` now resolves `{{LANGUAGE_RULES}}` via `_resolve_language_rule(subject, output_language)` against `MEDIUM_RULES` (three blocks: `uz` = formal "Siz" Uzbek / `en` = English-medium, Uzbek "Siz" phrasing where obligatory / `ru` = Russian-medium, formal "Вы"). **Critical L2 carve-out:** the two language-class subjects whose `subjects.language ∈ {english, russian}` keep their existing **Uzbek-bridged L2 rule** regardless of the chosen medium. "Medium" switches every *other* subject — a Russian-medium school's math class generates in Russian, but its English class keeps the Uzbek-scaffolded L2 rule unchanged. The bridged-L2-follows-medium follow-up is logged to WISHLIST (`l2-bridge-follows-medium`).
+
+**Domain helpers (`app/services/agent_models.py`):** `OUTPUT_LANGUAGES = {"uz", "en", "ru"}`, `validate_output_language(v)`, `resolve_output_language(explicit, global_default)`.
+
+**DB (migration `0038_output_language`):** `output_language` column (String(16) NOT NULL server_default `'uz'`, DB CHECK `uz|en|ru`) added to `homework_jobs`, `batches`, and `launch_defaults`. The `batches` UNIQUE constraint was upgraded: `uq_batches_book_id_transport` → **`uq_batches_book_id_transport_output_language`** (`(book_id, transport, output_language)`) — a different-language re-launch forks a new batch (same semantics as a different-transport re-launch; prevents an EN batch from being treated as a UZ batch).
+
+**Language scoping in repos:** `batches_repo.get_or_create_for_book`, `jobs.create`, `batches_repo.find_active_for_section`, and `batches_repo.latest_for_section` are all language-scoped. An EN re-launch never adopts or resumes a UZ job.
+
+**Pipeline threading:** `pipeline.run` captures `job.output_language` once at the start and threads it to every `get_prompt` / `get_prompt_hash` call for content phases, and to all three judge call sites → `phase_judge.judge(output_language=...)` → its internal `get_prompt`. Generator and judge always use the **same-language** prompt contract — a judge can't grade an EN-medium homework against a UZ contract.
+
+**Extract phase:** UNCHANGED (language-neutral; the extract cache key / `prompt_hash` is untouched — extract reuse is cross-language, which is correct since the extract is a raw factual distillation of the source PDF).
+
+**Claim gate / worker capabilities:** UNCHANGED (output_language doesn't affect auth or provider routing).
+
+**FE:** Settings page gains a concrete **Output Language** select (uz/en/ru). Fleet launcher (`ReadyCard`) and the single-section launcher gain an inherit-defaulted select that omits the field when inheriting (same pattern as per-role transport overrides).
+
+**Acceptance:** real claude smoke `scripts/smoke_output_language.py` — matematika uz → Uzbek "Siz", en → English prose, ru → Russian Cyrillic; english-subject under ru → stays Uzbek-bridged L2 (carve-out verified). **Full DB suite green.** Migration 0038 applied clean. `uq_batches_book_id_transport_output_language` constraint in place; DB CHECK verified.
+
 ## [0098] Claim jobs in ascending lesson order (fix randomized lesson generation) — 2026-06-29 (feat/claim-order-lesson-ascending)
 
 **What:** Added an ascending lesson-order tiebreaker to `claim_next_job`'s pick `ORDER BY` in `app/repositories/jobs.py`. Old clause `priority DESC, scheduled_at ASC` → new `priority DESC, lesson_order ASC, scheduled_at ASC`, where `lesson_order` is a **correlated scalar subquery** `select(TOCEntry.order_index).where(TOCEntry.id == HomeworkJob.toc_entry_id).scalar_subquery()`. Imported `TOCEntry` into `jobs.py`; docstring "Order:" note updated.

@@ -112,6 +112,8 @@
 - ~~`notion-archive-1` (→ ROADMAP **R15**): `archive_job` **swallows push failures** — a failed Notion push leaves `notion_archived_at` AND `notion_skip_reason` both NULL (invisible, no auto-retry).~~ ✅ **SHIPPED 2026-06-26 (worklog [0086])** — `_push_with_retry` (3× backoff) + `_record_skip` persists `notion_skip_reason="push error: <Type>"`; re-archive affordance = `POST /jobs/{id}/retry-archive` + FE button.
 - `notion-archive-2` (→ ROADMAP **R16**): subject-page resolution is **filename-substring-fragile** — for history (split Jahon / O'zbekiston tarixi) the page is chosen by matching the keyword against the book filename; `"ozbekiston"` won't match a **"Tarix Ozb"** book → silent "no Notion page" skip. Latent (no O'zb-history book uploaded yet); the `"jahon"` side verified resolving correctly 2026-06-17.
 
+- `l2-bridge-follows-medium` — for L2 language-class subjects (English/Russian classes), make the scaffolding/bridge language follow the chosen medium (e.g. a Russian-medium school's English class bridges through Russian) instead of always Uzbek. Deferred from the 2026-06-29 multi-language feature (decision: medium affects only non-L2 subjects). Requires parameterizing the hardcoded-Uzbek L2 prompt rules.
+
 ### Frontend
 
 - ~~`fe-subject-variant-1`~~ (→ ROADMAP **R17**) — **✅ CLOSED (2026-06-25 code audit): IMPLEMENTED — cards render `subjectLabelWithVariant`/`subject_variant` (`launcher.tsx:473`, `batch-funnel.tsx:109`).** Original: batch / library / launcher cards show only **"History · grade N"** — when both Jahon Tarixi and O'zbekiston Tarixi books exist for a grade they're **indistinguishable** in the UI. Surface the book/variant (filename or a Jahon/O'zbekiston label). Screenshot 2026-06-17.
