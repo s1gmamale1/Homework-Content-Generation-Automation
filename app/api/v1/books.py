@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, select
@@ -22,6 +22,7 @@ from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import BookOut, TOCEntryOut
 from app.services import events_bus, notion_fetch, storage, toc_extractor
+from app.services.agent_models import validate_output_language
 from app.services.flows import SUPPORTED_SUBJECTS
 from app.services.grade import derive_grade_from_filename
 from app.services.notion.client import NotionClientWrapper
@@ -187,9 +188,17 @@ async def list_books(
 @router.get("/{book_id}")
 async def get_book(
     book_id: UUID,
+    output_language: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> BookOut:
-    return await _book_out_with_toc(session, book_id)
+    # The Fleet/Section launchers pass output_language so the per-lesson status
+    # (and the "complete"/launch gate they derive from it) reflects the SELECTED
+    # language. Omitted → all-language aggregate (unchanged for other callers).
+    if output_language is not None:
+        err = validate_output_language(output_language, allow_none=False)
+        if err is not None:
+            raise HTTPException(400, err)
+    return await _book_out_with_toc(session, book_id, output_language)
 
 
 @router.post("/{book_id}/toc/retry")
@@ -380,15 +389,21 @@ async def delete_toc_entry(
     await session.commit()
 
 
-async def _enriched_toc_entries(session: AsyncSession, book) -> list[TOCEntryOut]:
+async def _enriched_toc_entries(
+    session: AsyncSession, book, output_language: Optional[str] = None
+) -> list[TOCEntryOut]:
     """TOC entries, each enriched with its latest homework-job id/status so the
     frontend can show a per-row indicator (Ready / Running / Failed).
 
     Shared by the REST book endpoint AND the SSE ``toc_ready`` replay so the two
     cannot drift: the SSE path used to emit status-less entries that raced in and
     wiped the section-list badges.
+
+    `output_language` (when given) scopes the per-row status to that language so
+    the launcher's completion reflects the selected language; `None` keeps the
+    all-language aggregate for non-launcher callers.
     """
-    latest = await jobs_repo.latest_by_section(session, book.id)
+    latest = await jobs_repo.latest_by_section(session, book.id, output_language)
     entries: list[TOCEntryOut] = []
     for e in book.toc_entries:
         entry_out = TOCEntryOut.model_validate(e)
@@ -400,11 +415,13 @@ async def _enriched_toc_entries(session: AsyncSession, book) -> list[TOCEntryOut
     return entries
 
 
-async def _book_out_with_toc(session: AsyncSession, book_id: UUID) -> BookOut:
+async def _book_out_with_toc(
+    session: AsyncSession, book_id: UUID, output_language: Optional[str] = None
+) -> BookOut:
     book = await books_repo.get_with_toc(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
     out = BookOut.model_validate(book)
     if book.status == "toc_ready":
-        out.toc = await _enriched_toc_entries(session, book)
+        out.toc = await _enriched_toc_entries(session, book, output_language)
     return out

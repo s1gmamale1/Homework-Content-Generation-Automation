@@ -243,16 +243,24 @@ async def list_running_for_sweep(session: AsyncSession) -> list[HomeworkJob]:
 
 
 async def latest_by_section(
-    session: AsyncSession, book_id: UUID
+    session: AsyncSession, book_id: UUID, output_language: Optional[str] = None
 ) -> dict[UUID, HomeworkJob]:
     """One row per (book, section): the most recent job for that section.
 
     Uses Postgres' `DISTINCT ON` for a single-pass index scan instead of a
     correlated subquery. Returns an empty dict if the book has no jobs.
+
+    When `output_language` is given the lookup is scoped to jobs of that language,
+    so the launcher's per-lesson completion reflects the SELECTED language (a book
+    complete in uz is not 'complete' under ru/en). Default `None` preserves the
+    all-language aggregate for non-launcher callers (upload/retry/book detail).
     """
+    conds = [HomeworkJob.book_id == book_id]
+    if output_language is not None:
+        conds.append(HomeworkJob.output_language == output_language)
     stmt = (
         select(HomeworkJob)
-        .where(HomeworkJob.book_id == book_id)
+        .where(*conds)
         .order_by(HomeworkJob.toc_entry_id, HomeworkJob.created_at.desc())
         .distinct(HomeworkJob.toc_entry_id)
     )

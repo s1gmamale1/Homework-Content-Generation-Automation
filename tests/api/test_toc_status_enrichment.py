@@ -28,7 +28,7 @@ def test_enriched_toc_entries_attaches_latest_status(monkeypatch):
     book = SimpleNamespace(id=uuid4(), toc_entries=[e1, e2])
     job = SimpleNamespace(id=uuid4(), status="running")
 
-    async def fake_latest(session, book_id):
+    async def fake_latest(session, book_id, output_language=None):
         # only the first section has a job
         return {e1.id: job}
 
@@ -42,3 +42,24 @@ def test_enriched_toc_entries_attaches_latest_status(monkeypatch):
     # section without a job → null status (no badge)
     assert result[1].latest_job_status is None
     assert result[1].latest_job_id is None
+
+
+def test_enriched_toc_entries_threads_output_language(monkeypatch):
+    """The Fleet/Section launchers fetch per-language completion: the chosen
+    output_language must flow through to latest_by_section so a book complete in
+    uz doesn't read 'complete' under ru/en (language-blind status was the bug)."""
+    e1 = _entry(0)
+    book = SimpleNamespace(id=uuid4(), toc_entries=[e1])
+    captured = {}
+
+    async def fake_latest(session, book_id, output_language=None):
+        captured["output_language"] = output_language
+        return {}
+
+    monkeypatch.setattr(books_api.jobs_repo, "latest_by_section", fake_latest)
+    asyncio.run(books_api._enriched_toc_entries(None, book, output_language="ru"))
+    assert captured["output_language"] == "ru"
+
+    # default (None) preserves the all-language behavior for non-launcher callers
+    asyncio.run(books_api._enriched_toc_entries(None, book))
+    assert captured["output_language"] is None
