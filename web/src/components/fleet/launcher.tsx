@@ -101,9 +101,29 @@ export function FleetLauncher({
   // a prior subject doesn't carry over as a disabled language).
   // (We reset on subjectPageId change via the Select onValueChange handler.)
 
+  // When the availability map loads (or the picked subject changes), default prepLang
+  // to the first language that is actually available for this subject. This prevents
+  // a RU/EN-only subject from silently defaulting to a disabled UZ chip → guaranteed 422.
+  useEffect(() => {
+    if (!availLangsQ.data || !pickedSubject?.app_subject) return;
+    const map = availLangsQ.data[pickedSubject.app_subject] ?? {};
+    const preferred: OutputLanguage[] = ["uz", "ru", "en"];
+    const firstAvail = preferred.find((l) => map[l]?.has_textbook);
+    if (firstAvail && !map[prepLang]?.has_textbook) {
+      setPrepLang(firstAvail);
+    }
+    // Re-run only when the map or picked subject changes; not on every prepLang change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availLangsQ.data, pickedSubject?.app_subject]);
+
   const prepare = useMutation({
-    mutationFn: (v: { subjectPageId: string; grade: string; language: OutputLanguage }) =>
-      api.fetchBookFromNotion(v.subjectPageId, v.grade, v.language !== "uz" ? v.language : undefined),
+    mutationFn: (v: { subjectPageId: string; grade: string; language: OutputLanguage }) => {
+      // For non-uz languages, the per-language klass page (whose title is Cyrillic/English)
+      // must be sent — NOT the UZ subject page. The UZ subject page title ("Algebra") won't
+      // match the RU keyword set ("алгебра") and causes an HTTP 422.
+      const pageId = subjectLangMap?.[v.language]?.page_id ?? v.subjectPageId;
+      return api.fetchBookFromNotion(pageId, v.grade, v.language !== "uz" ? v.language : undefined);
+    },
     onSuccess: () => {
       toast.success("Preparing — extracting lessons…");
       qc.invalidateQueries({ queryKey: ["books"] });

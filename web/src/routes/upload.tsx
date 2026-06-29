@@ -120,8 +120,12 @@ export function UploadPage() {
     setPendingSubjectId(s.page_id);
     setBusy(true);
     try {
+      // For non-uz languages, use the per-language klass page whose title is
+      // Cyrillic/English — book_from_notion maps by title against the language-
+      // specific keyword set, so a UZ Latin title won't match RU → HTTP 422.
+      const pageId = availLangs?.[s.app_subject]?.[language]?.page_id ?? s.page_id;
       const book = await api.fetchBookFromNotion(
-        s.page_id,
+        pageId,
         nGrade,
         language !== "uz" ? language : undefined,
       );
