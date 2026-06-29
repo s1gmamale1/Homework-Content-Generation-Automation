@@ -36,6 +36,13 @@ Rules:
 - Every card MUST set `type` and `difficulty`.
 - Fronts are retrieval cues, never "Explain X" / "Describe Y" prompts.
 - Hints never leak the answer.
+- For math/geometry lessons, run a factual sanity check before finishing:
+  verify algebraic identities by expansion or substitution; cancel only common
+  multiplicative factors, never terms; preserve original domain restrictions for
+  rational expressions; do not reverse theorem implications; remember that a
+  square inherits both rectangle and rhombus properties; and do not reject
+  `(n-2)*180°` for a simple concave polygon (only self-intersecting star figures
+  need separate treatment).
 
 For an English (L2) lesson: the card front is the English target item (word / phrase / grammar structure); the back, hint, and explanation are the Uzbek bridge (gloss / meaning / usage note). For every other subject, both sides follow the Language rules below.
 

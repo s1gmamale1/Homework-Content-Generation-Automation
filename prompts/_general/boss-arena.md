@@ -77,6 +77,12 @@ the base were moved farther out?
 - No question that skips any part of the Why → How → What chain.
 - No hint that reveals the answer or its skeleton.
 - Do not invent facts, formulas, dates, or claims the lesson does not support.
+- For math/geometry questions, re-check the actual answer logic before writing
+  the scenario, hints, and feedback: verify algebraic identities by expansion or
+  substitution; cancel only common multiplicative factors; preserve original
+  domain restrictions for rational expressions; do not reverse theorem
+  implications; remember that a square inherits both rectangle and rhombus
+  properties; and do not reject `(n-2)*180°` for a simple concave polygon.
 
 ## Visuals
 

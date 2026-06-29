@@ -21,6 +21,10 @@ def _assert_clean(rendered: str):
     assert not hits, f"dead JSON vocab still present: {hits}"
 
 
+def _squash_ws(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
 def test_cbp_has_family_token():
     body = (pathlib.Path(__file__).resolve().parents[2]
             / "prompts" / "_general" / "case-based-preview.md").read_text(encoding="utf-8")
@@ -94,6 +98,57 @@ _GAMES = [
     ("geometriya-g7-11", "practice-jigsaw"),
     ("english", "practice-sentence"),
 ]
+
+
+_MATH_ACCURACY_PROMPTS = [
+    "flashcards.md",
+    "memory-check.md",
+    "practice-memory-match.md",
+    "practice-jigsaw.md",
+    "boss-arena.md",
+    "practice-rlc.md",
+    "practice-error-detection.md",
+    "case-based-preview.md",
+]
+
+
+def test_math_accuracy_guardrails_cover_generation_prompts():
+    gdir = pathlib.Path(__file__).resolve().parents[2] / "prompts" / "_general"
+    required = [
+        "expansion or substitution",
+        "rational expressions",
+        "theorem implications",
+        "square inherits",
+        "simple concave polygon",
+    ]
+    missing = {}
+    for prompt_name in _MATH_ACCURACY_PROMPTS:
+        body = _squash_ws((gdir / prompt_name).read_text(encoding="utf-8"))
+        hits = [needle for needle in required if needle not in body]
+        if hits:
+            missing[prompt_name] = hits
+    assert not missing, f"math accuracy guardrails missing: {missing}"
+
+
+def test_error_detection_requires_rederivation_and_feedback_consistency():
+    body = _squash_ws((pathlib.Path(__file__).resolve().parents[2]
+                       / "prompts" / "_general" / "practice-error-detection.md").read_text(encoding="utf-8"))
+    for needle in (
+        "verify every non-broken block",
+        "re-derive every block",
+        "feedback consistency",
+        "the correct version",
+        "never silently switch",
+    ):
+        assert needle in body, f"error-detection missing consistency guard: {needle}"
+
+
+def test_math_family_rules_forbid_unverified_domain_and_geometry_claims():
+    for phase in ("case-based-preview", "flashcards"):
+        rendered = _gp("geometriya-g7-11", phase).lower()
+        assert "unverified domain restrictions" in rendered
+        assert "asserting a geometric property" in rendered
+        assert "standard condition" in rendered
 
 
 def test_games_clean_and_compact():

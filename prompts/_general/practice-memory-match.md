@@ -21,6 +21,13 @@ blocks, MCQ checkpoints, or a final consequence panel.
 - **Close distractors.** When two pairs share a confusable term or near-miss
   function, that is good — the wrong partners should be tempting near-misses, never
   random or silly.
+- **Math/geometry sanity check.** For math lessons, verify identities by expansion
+  or substitution, cancel only common multiplicative factors, and preserve
+  original domain restrictions for rational expressions. For geometry lessons,
+  do not reverse theorem implications, do not treat a general parallelogram as if
+  it has all rectangle/rhombus/square properties, remember that a square inherits
+  both rectangle and rhombus properties, and do not reject `(n-2)*180°` for a
+  simple concave polygon.
 
 ## What to produce
 

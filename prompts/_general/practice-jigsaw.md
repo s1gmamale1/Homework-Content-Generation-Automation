@@ -19,6 +19,13 @@ blocks, MCQ checkpoints, or a final consequence panel.
 - **Direction matters.** A reversed connection is wrong — the condition enables the
   theorem, not the reverse; the cause leads to the effect, not the reverse. The
   student must assemble pieces in the source-supported direction.
+- **Math/geometry sanity check.** For algebra, verify identities by expansion or
+  substitution, cancel only common multiplicative factors, and preserve original
+  domain restrictions for rational expressions. For geometry, do not reverse
+  theorem implications, do not assign rectangle/rhombus/square properties to a
+  general parallelogram unless the condition is stated, remember that a square
+  inherits both rectangle and rhombus properties, and do not reject `(n-2)*180°`
+  for a simple concave polygon.
 - **Anti-leak.** Correct partners must not be inferable from piece length, wording, or
   ordering — only from the relationship. Tempting wrong pairings come in three
   flavors: surface-related-but-unsupported, one-correct-node-plus-one-wrong-node,
