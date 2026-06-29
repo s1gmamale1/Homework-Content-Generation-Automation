@@ -4,18 +4,12 @@
  * books keep independent configs. All access is try/catch-wrapped: private mode,
  * quota, or a corrupt blob degrade to a no-op / empty object, never throw.
  */
-import type { OutputLanguage, RoleTransport, SessionLimitStrategy, Transport } from "./types";
+import type { OutputLanguage, SessionLimitStrategy, Transport } from "./types";
 
 export interface LauncherConfig {
   provider: string;
   transport: Transport;
-  extractTransport: RoleTransport;
-  judgeTransport: RoleTransport;
   sessionLimitStrategy: SessionLimitStrategy;
-  extractProvider: string | null;
-  extractModel: string | null;
-  judgeProvider: string | null;
-  judgeModel: string | null;
   model: string | null;
   /** Output language override — undefined/null means inherit global default. */
   outputLanguage: OutputLanguage | null;
