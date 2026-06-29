@@ -42,6 +42,9 @@ async def test_get_returns_seeded_defaults():
     assert body["extract_model"] == "gemini-2.5-flash"
     assert body["extract_transport"] == "inherit"
     assert body["toc_transport"] == "cli"
+    assert body["content_provider"] == "gemini"
+    assert body["content_model"] == "gemini-2.5-pro"
+    assert body["content_transport"] == "api"
 
 
 @pytest.mark.asyncio
@@ -195,3 +198,53 @@ async def test_put_valid_concrete_still_200():
             s, {"judge_provider": "gemini", "judge_model": "gemini-2.5-flash"}
         )
         await s.commit()
+
+
+# ── content_* fields ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_put_content_concrete_ok():
+    """(content-a) PUT concrete content fields → 200, body content_provider==gemini."""
+    from app.db import SessionLocal
+    from app.repositories import launch_defaults as launch_defaults_repo
+
+    async with _client() as c:
+        r = await c.put(
+            "/api/v1/settings/launch-defaults",
+            headers=_HDR,
+            json={"content_provider": "gemini", "content_model": "gemini-2.5-pro", "content_transport": "api"},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["content_provider"] == "gemini"
+
+    # Restore singleton so other tests aren't poisoned.
+    async with SessionLocal() as s:
+        await launch_defaults_repo.update(
+            s, {"content_provider": "gemini", "content_model": "gemini-2.5-pro", "content_transport": "api"}
+        )
+        await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_null_content_provider():
+    """(content-b) PUT {"content_provider": null} → 422."""
+    async with _client() as c:
+        r = await c.put(
+            "/api/v1/settings/launch-defaults",
+            headers=_HDR,
+            json={"content_provider": None},
+        )
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_content_offmanifest():
+    """(content-c) PUT off-manifest content model → 422."""
+    async with _client() as c:
+        r = await c.put(
+            "/api/v1/settings/launch-defaults",
+            headers=_HDR,
+            json={"content_provider": "gemini", "content_model": "not-a-model"},
+        )
+    assert r.status_code == 422, r.text
