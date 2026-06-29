@@ -5,6 +5,7 @@ import { type RowStatus, transportRowStatus } from "@/lib/batch-status";
 import { subjectLabelWithVariant } from "@/lib/subjects";
 import { CARD, GHOST_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
+import { BatchActions } from "./batch-actions";
 import { BatchLessonList } from "./batch-lesson-list";
 import { RollupBar } from "./rollup-bar";
 
@@ -71,14 +72,18 @@ function TransportRow({
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className={cn(GHOST_BTN, "px-2 py-1.5 text-xs")}
-      >
-        <Chevron className="size-4" />
-        {expanded ? "Hide lessons" : "Show lessons"}
-      </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className={cn(GHOST_BTN, "px-2 py-1.5 text-xs")}
+        >
+          <Chevron className="size-4" />
+          {expanded ? "Hide lessons" : "Show lessons"}
+        </button>
+
+        <BatchActions batch={batch} />
+      </div>
 
       {expanded && <BatchLessonList batchId={batch.batch_id} enabled={expanded} />}
     </div>
