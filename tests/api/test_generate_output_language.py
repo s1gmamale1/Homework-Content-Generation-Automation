@@ -29,6 +29,7 @@ _FAKE_BOOK = SimpleNamespace(
     grade="8",
     original_filename=None,
     error_message=None,
+    source_language="uz",  # Phase 2 column; uz book uses global default as tiebreak
 )
 
 _FAKE_SECTION = SimpleNamespace(
@@ -204,14 +205,25 @@ async def test_generate_explicit_output_language_en_threaded():
 
 @pytest.mark.asyncio
 async def test_generate_inherits_global_default_output_language():
-    """Launch omitting output_language with global default='ru' → job carries 'ru'.
+    """Launch omitting output_language with global default='ru' and book
+    source_language=None → job carries 'ru' (global default as final fallback).
 
-    If resolve_output_language is not called (or its result not threaded in),
+    If resolve_output_language_for_book is not called (or its result not threaded in),
     jobs.create receives None or the wrong default, causing this assertion to fail.
     """
     import app.api.v1.jobs as jobs_mod
     from app.db import get_session
 
+    # Book with no source_language so global default is the only fallback
+    fake_book_no_src = SimpleNamespace(
+        id=BOOK_ID,
+        status="toc_ready",
+        subject="math-algebra",
+        grade="8",
+        original_filename=None,
+        error_message=None,
+        source_language=None,
+    )
     fake_job = _make_fake_job(output_language="ru")
     fake_ld = _make_fake_ld(output_language="ru")  # global default is "ru"
 
@@ -223,7 +235,7 @@ async def test_generate_inherits_global_default_output_language():
     try:
         with (
             patch.object(jobs_mod.books_repo, "get",
-                         AsyncMock(return_value=_FAKE_BOOK)),
+                         AsyncMock(return_value=fake_book_no_src)),
             patch.object(jobs_mod.toc_repo, "get",
                          AsyncMock(return_value=_FAKE_SECTION)),
             patch.object(jobs_mod.jobs_repo, "lock_section_for_generate",
@@ -320,4 +332,141 @@ async def test_generate_language_scoped_dedup_uz_not_adopted_for_en():
     assert kwargs.get("output_language") == "en", (
         f"find_active_for_section called with output_language={kwargs.get('output_language')!r},"
         " expected 'en' — the language-scoped lookup must use the resolved language"
+    )
+
+
+# ─── (e) book source language wins over global default when no explicit pick ─────
+
+@pytest.mark.asyncio
+async def test_generate_book_source_language_wins_over_global_default():
+    """Single-section launch from a RU-source book with no explicit output_language
+    → job must carry 'ru', NOT the global default ('uz').
+
+    Bite-prove: replacing resolve_output_language_for_book with the old 2-arg
+    resolve_output_language (ignoring book.source_language) makes jobs.create
+    receive 'uz' instead of 'ru', causing this assertion to fail.
+    """
+    import app.api.v1.jobs as jobs_mod
+    from app.db import get_session
+
+    # RU-source book; global default is uz
+    fake_book_ru = SimpleNamespace(
+        id=BOOK_ID,
+        status="toc_ready",
+        subject="math-algebra",
+        grade="8",
+        original_filename=None,
+        error_message=None,
+        source_language="ru",
+    )
+    fake_job = _make_fake_job(output_language="ru")
+    fake_ld = _make_fake_ld(output_language="uz")  # global default is uz
+
+    mock_jobs_create = AsyncMock(return_value=fake_job)
+    mock_find_active = AsyncMock(return_value=None)
+
+    app_obj = _app()
+    app_obj.dependency_overrides[get_session] = _session_override()[1]
+    try:
+        with (
+            patch.object(jobs_mod.books_repo, "get",
+                         AsyncMock(return_value=fake_book_ru)),
+            patch.object(jobs_mod.toc_repo, "get",
+                         AsyncMock(return_value=_FAKE_SECTION)),
+            patch.object(jobs_mod.jobs_repo, "lock_section_for_generate",
+                         AsyncMock()),
+            patch.object(jobs_mod.jobs_repo, "find_active_for_section",
+                         mock_find_active),
+            patch.object(jobs_mod.jobs_repo, "queue_depth",
+                         AsyncMock(return_value=0)),
+            patch.object(jobs_mod.launch_defaults_repo, "get",
+                         AsyncMock(return_value=fake_ld)),
+            patch.object(jobs_mod.jobs_repo, "create", mock_jobs_create),
+            patch.object(jobs_mod.jobs_repo, "get_with_phases",
+                         AsyncMock(return_value=fake_job)),
+        ):
+            async with _client() as c:
+                resp = await c.post(
+                    f"/api/v1/books/{BOOK_ID}/sections/{SECTION_ID}/generate",
+                    headers=_HDR,
+                    json={},  # no explicit output_language
+                )
+    finally:
+        app_obj.dependency_overrides.pop(get_session, None)
+
+    assert resp.status_code == 201, resp.text
+
+    # jobs.create must have received output_language="ru" (from book.source_language)
+    _, kwargs = mock_jobs_create.call_args
+    assert kwargs.get("output_language") == "ru", (
+        f"jobs.create called with output_language={kwargs.get('output_language')!r},"
+        " expected 'ru' (book.source_language='ru' must win over global default 'uz')"
+    )
+
+    # find_active_for_section dedup must also use "ru"
+    _, kwargs = mock_find_active.call_args
+    assert kwargs.get("output_language") == "ru", (
+        f"find_active_for_section called with output_language={kwargs.get('output_language')!r},"
+        " expected 'ru' — language-scoped dedup must follow book source language"
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_explicit_wins_over_book_source_language():
+    """Explicit output_language pick must win over book.source_language.
+
+    Book is RU-source, but operator explicitly picks 'en' → job carries 'en'.
+    """
+    import app.api.v1.jobs as jobs_mod
+    from app.db import get_session
+
+    fake_book_ru = SimpleNamespace(
+        id=BOOK_ID,
+        status="toc_ready",
+        subject="math-algebra",
+        grade="8",
+        original_filename=None,
+        error_message=None,
+        source_language="ru",
+    )
+    fake_job = _make_fake_job(output_language="en")
+    fake_ld = _make_fake_ld(output_language="uz")
+
+    mock_jobs_create = AsyncMock(return_value=fake_job)
+
+    app_obj = _app()
+    app_obj.dependency_overrides[get_session] = _session_override()[1]
+    try:
+        with (
+            patch.object(jobs_mod.books_repo, "get",
+                         AsyncMock(return_value=fake_book_ru)),
+            patch.object(jobs_mod.toc_repo, "get",
+                         AsyncMock(return_value=_FAKE_SECTION)),
+            patch.object(jobs_mod.jobs_repo, "lock_section_for_generate",
+                         AsyncMock()),
+            patch.object(jobs_mod.jobs_repo, "find_active_for_section",
+                         AsyncMock(return_value=None)),
+            patch.object(jobs_mod.jobs_repo, "queue_depth",
+                         AsyncMock(return_value=0)),
+            patch.object(jobs_mod.launch_defaults_repo, "get",
+                         AsyncMock(return_value=fake_ld)),
+            patch.object(jobs_mod.jobs_repo, "create", mock_jobs_create),
+            patch.object(jobs_mod.jobs_repo, "get_with_phases",
+                         AsyncMock(return_value=fake_job)),
+        ):
+            async with _client() as c:
+                resp = await c.post(
+                    f"/api/v1/books/{BOOK_ID}/sections/{SECTION_ID}/generate",
+                    headers=_HDR,
+                    json={"output_language": "en"},  # explicit en overrides ru source
+                )
+    finally:
+        app_obj.dependency_overrides.pop(get_session, None)
+
+    assert resp.status_code == 201, resp.text
+
+    _, kwargs = mock_jobs_create.call_args
+    assert kwargs.get("output_language") == "en", (
+        f"jobs.create called with output_language={kwargs.get('output_language')!r},"
+        " expected 'en' (explicit pick must win over book.source_language='ru')"
     )
