@@ -63,6 +63,7 @@ def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None 
         "subject": batch.subject,
         "subject_variant": subjects.history_variant(batch.subject, original_filename),
         "grade": batch.grade,
+        "output_language": batch.output_language,
         "provider": batch.provider,
         "model": batch.model,
         "transport": batch.transport,

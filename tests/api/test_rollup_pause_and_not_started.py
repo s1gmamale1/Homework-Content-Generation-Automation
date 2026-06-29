@@ -10,6 +10,7 @@ from app.api.v1 import batch as batch_api
 def _fake_batch(paused=False):
     return types.SimpleNamespace(
         id="b1", book_id="bk1", subject="math", grade=9,
+        output_language="uz",
         provider="claude", model="claude-sonnet-4-6", transport="api",
         extract_transport="inherit", judge_transport="inherit",
         extract_provider=None, extract_model=None, judge_provider=None, judge_model=None,

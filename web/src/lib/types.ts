@@ -371,6 +371,7 @@ export interface BatchSummary {
   subject: string;
   subject_variant?: string | null;
   grade: string | null;
+  output_language: OutputLanguage;
   provider: string;
   model: string | null;
   transport: Transport;

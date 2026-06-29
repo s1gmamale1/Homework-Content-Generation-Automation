@@ -8,6 +8,7 @@ from app.api.v1.batch import _rollup_payload
 def _fake_batch(subject):
     return SimpleNamespace(
         id=uuid4(), book_id=uuid4(), subject=subject, grade="8",
+        output_language="uz",
         provider="claude", model=None, transport="cli",
         extract_transport="inherit", judge_transport="inherit",
         extract_provider=None, extract_model=None,
