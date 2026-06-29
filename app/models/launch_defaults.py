@@ -26,6 +26,9 @@ class LaunchDefaults(Base):
     extract_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     extract_transport: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     toc_transport: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # Default output language for generated content: "uz", "en", or "ru".
+    # NOT NULL with server_default "uz" — matches the column definition on homework_jobs/batches.
+    output_language: Mapped[str] = mapped_column(String(8), nullable=False, server_default="uz")
     updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     __table_args__ = (
