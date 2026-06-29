@@ -1,0 +1,204 @@
+"""Task 4 — source_language threading tests.
+
+Verifies that:
+- from-notion with language="ru" + a Russian title -> book tagged source_language="ru"
+  with subject resolved via the ru mapper.
+- from-notion with language="ru" + an unrecognised Russian title -> 422.
+- from-notion with language omitted -> "uz" default (byte-identical to before).
+- upload with source_language="en" -> book tagged "en".
+- from-notion / upload with an invalid language ("fr") -> 422.
+
+Bite-proof: if ingest_pdf is hardcoded to source_language="uz", the ru/en kwarg
+assertions will fail — the tests are not vacuous.
+"""
+
+import pytest
+from uuid import uuid4
+from unittest.mock import patch, AsyncMock
+from fastapi.testclient import TestClient
+from main import app
+from app.auth import get_current_user
+from app.schemas import BookOut
+import app.services.notion_fetch as nf
+import app.api.v1.books as books_api
+
+client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _auth_override():
+    app.dependency_overrides[get_current_user] = lambda: {"user": "test"}
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+# ─── from-notion: language="ru" with a recognised Russian title ─────────────
+
+def test_from_notion_ru_language_passes_source_language_ru():
+    """from-notion language="ru" with a Russian title -> ingest_pdf called with
+    source_language="ru" and subject resolved by the Russian mapper."""
+    fake = BookOut(id=uuid4(), subject="math-algebra",
+                   original_filename="alg_ru.pdf", status="uploading")
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Алгебра"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(b"%PDF-1.4 x", "alg_ru.pdf")), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "ru_alg", "grade": "8",
+                              "language": "ru"})
+    assert r.status_code == 201
+    ing.assert_awaited_once()
+    kwargs = ing.await_args.kwargs
+    assert kwargs["source_language"] == "ru", \
+        f"source_language should be 'ru', got {kwargs.get('source_language')!r}"
+    assert kwargs["subject"] == "math-algebra", \
+        f"subject should be 'math-algebra' (ru mapper), got {kwargs.get('subject')!r}"
+
+
+# ─── from-notion: language="ru" with an unrecognised title -> 422 ───────────
+
+def test_from_notion_ru_unrecognised_title_returns_422():
+    """A title that the Russian mapper doesn't know -> 422 with an actionable message."""
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title",
+               return_value="Математика"):  # not in the ru keyword set
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "ru_math", "grade": "5",
+                              "language": "ru"})
+    assert r.status_code == 422
+    assert "Математика" in r.text
+    assert "ru" in r.text
+
+
+# ─── from-notion: language omitted -> "uz" default ──────────────────────────
+
+def test_from_notion_default_language_is_uz():
+    """Omitting language falls back to 'uz' — byte-identical to the pre-Task-4 behavior."""
+    fake = BookOut(id=uuid4(), subject="math-algebra",
+                   original_filename="alg.pdf", status="uploading")
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(b"%PDF-1.4 x", "alg.pdf")), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9"})
+    assert r.status_code == 201
+    ing.assert_awaited_once()
+    kwargs = ing.await_args.kwargs
+    assert kwargs["source_language"] == "uz", \
+        f"default source_language should be 'uz', got {kwargs.get('source_language')!r}"
+
+
+# ─── from-notion: invalid language -> 422 ───────────────────────────────────
+
+def test_from_notion_invalid_language_returns_422():
+    """Sending language='fr' is rejected with 422 before any Notion I/O."""
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"):
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9",
+                              "language": "fr"})
+    assert r.status_code == 422
+    assert "fr" in r.text
+
+
+# ─── upload: source_language="en" -> book tagged "en" ───────────────────────
+
+@pytest.mark.asyncio
+async def test_ingest_pdf_en_passes_source_language_en():
+    """ingest_pdf called with source_language='en' passes it into books_repo.create."""
+    from types import SimpleNamespace
+
+    session = AsyncMock()
+    created_book = SimpleNamespace(id=uuid4(), status="uploading", source_language="en")
+    with patch.object(books_api.books_repo, "find_ready_by_hash",
+                      AsyncMock(return_value=None)), \
+         patch.object(books_api.books_repo, "create",
+                      AsyncMock(return_value=created_book)) as mock_create, \
+         patch.object(books_api, "BookOut") as MockOut, \
+         patch.object(books_api.toc_extractor, "run", AsyncMock()), \
+         patch.object(books_api.storage, "book_pdf_path") as MockPdfPath:
+        MockOut.model_validate.return_value = "OUT"
+        MockPdfPath.return_value = SimpleNamespace(
+            parent=SimpleNamespace(mkdir=lambda **k: None),
+            write_bytes=lambda b: None,
+        )
+        await books_api.ingest_pdf(
+            session, body=b"%PDF-1.4 x", subject="biology",
+            grade="9", filename="bio_en.pdf", source_language="en"
+        )
+    mock_create.assert_awaited_once()
+    kwargs = mock_create.await_args.kwargs
+    assert kwargs["source_language"] == "en", \
+        f"create() should receive source_language='en', got {kwargs.get('source_language')!r}"
+
+
+# ─── upload endpoint: source_language="en" form field ───────────────────────
+
+def test_upload_book_en_source_language():
+    """POST /books with source_language=en form field -> ingest_pdf called with source_language='en'."""
+    fake = BookOut(id=uuid4(), subject="biology",
+                   original_filename="bio.pdf", status="uploading")
+    with patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
+        r = client.post(
+            "/api/v1/books",
+            files={"file": ("bio.pdf", b"%PDF-1.4 x", "application/pdf")},
+            data={"subject": "biology", "source_language": "en"},
+        )
+    assert r.status_code == 201
+    ing.assert_awaited_once()
+    kwargs = ing.await_args.kwargs
+    assert kwargs["source_language"] == "en", \
+        f"ingest_pdf should receive source_language='en', got {kwargs.get('source_language')!r}"
+
+
+# ─── upload endpoint: invalid source_language -> 422 ────────────────────────
+
+def test_upload_book_invalid_source_language_returns_422():
+    """Uploading with source_language='fr' is rejected with 422."""
+    r = client.post(
+        "/api/v1/books",
+        files={"file": ("bio.pdf", b"%PDF-1.4 x", "application/pdf")},
+        data={"subject": "biology", "source_language": "fr"},
+    )
+    assert r.status_code == 422
+    assert "fr" in r.text
+
+
+# ─── Bite-proof: source_language hardcoded to "uz" breaks ru/en checks ──────
+#
+# These tests directly call ingest_pdf with source_language="ru" / "en" and
+# assert the value is forwarded to books_repo.create. If ingest_pdf were to
+# hardcode source_language="uz" instead of reading the parameter, mock_create
+# would receive source_language="uz" and both assertions would fail.
+# (See test_ingest_pdf_en_passes_source_language_en above for the 'en' case.)
+
+@pytest.mark.asyncio
+async def test_ingest_pdf_ru_passes_source_language_ru():
+    """ingest_pdf called with source_language='ru' forwards it to books_repo.create."""
+    from types import SimpleNamespace
+
+    session = AsyncMock()
+    created_book = SimpleNamespace(id=uuid4(), status="uploading", source_language="ru")
+    with patch.object(books_api.books_repo, "find_ready_by_hash",
+                      AsyncMock(return_value=None)), \
+         patch.object(books_api.books_repo, "create",
+                      AsyncMock(return_value=created_book)) as mock_create, \
+         patch.object(books_api, "BookOut") as MockOut, \
+         patch.object(books_api.toc_extractor, "run", AsyncMock()), \
+         patch.object(books_api.storage, "book_pdf_path") as MockPdfPath:
+        MockOut.model_validate.return_value = "OUT"
+        MockPdfPath.return_value = SimpleNamespace(
+            parent=SimpleNamespace(mkdir=lambda **k: None),
+            write_bytes=lambda b: None,
+        )
+        await books_api.ingest_pdf(
+            session, body=b"%PDF-1.4 x", subject="biology",
+            grade="9", filename="bio_ru.pdf", source_language="ru"
+        )
+    mock_create.assert_awaited_once()
+    kwargs = mock_create.await_args.kwargs
+    assert kwargs["source_language"] == "ru", \
+        f"create() should receive source_language='ru', got {kwargs.get('source_language')!r}"

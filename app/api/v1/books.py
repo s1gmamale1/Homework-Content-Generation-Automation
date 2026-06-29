@@ -62,6 +62,7 @@ async def ingest_pdf(
     subject: str,
     grade: str | None,
     filename: str,
+    source_language: str = "uz",
 ) -> BookOut:
     """Shared book-creation path for both upload and Notion-fetch. Mirrors the
     original inline upload logic EXACTLY, including its two return shapes:
@@ -91,6 +92,10 @@ async def ingest_pdf(
     # for genuinely new books.
     grade = grade or derive_grade_from_filename(filename)
 
+    # Dedup is keyed on (sha, subject) — a different-language edition of the same
+    # book will always have a different sha, so no false reuse across languages.
+    # Re-fetching the exact same edition (same bytes) still deduplicates correctly
+    # via the `find_ready_by_hash` check above.
     book = await books_repo.create(
         session,
         subject=subject,
@@ -99,6 +104,7 @@ async def ingest_pdf(
         content_sha256=sha,
         file_size_bytes=len(body),
         status="uploading",
+        source_language=source_language,
     )
     await session.commit()
 
@@ -120,9 +126,13 @@ async def upload_book(
     file: UploadFile = File(...),
     subject: str = Form(...),
     grade: str | None = Form(default=None),
+    source_language: str = Form(default="uz"),
     session: AsyncSession = Depends(get_session),
     user: dict = Depends(get_current_user),
 ) -> BookOut:
+    err = validate_output_language(source_language, allow_none=False)
+    if err is not None:
+        raise HTTPException(422, f"invalid source_language: {err}")
     body = await file.read()
     return await ingest_pdf(
         session,
@@ -130,12 +140,14 @@ async def upload_book(
         subject=subject,
         grade=grade,
         filename=file.filename or "book.pdf",
+        source_language=source_language,
     )
 
 
 class FromNotionRequest(BaseModel):
     subject_page_id: str
     grade: str | None = None
+    language: str = "uz"
 
 
 def _notion_subject_title(client: NotionClientWrapper, subject_page_id: str) -> str:
@@ -149,13 +161,22 @@ async def book_from_notion(
     session: AsyncSession = Depends(get_session),
     user: dict = Depends(get_current_user),
 ) -> BookOut:
+    lang_err = validate_output_language(req.language, allow_none=False)
+    if lang_err is not None:
+        raise HTTPException(422, f"invalid language: {lang_err}")
     if not settings.notion_api_key:
         raise HTTPException(503, "Notion not configured")
     client = NotionClientWrapper(api_key=settings.notion_api_key)
     title = await asyncio.to_thread(_notion_subject_title, client, req.subject_page_id)
-    subject = notion_fetch._map_subject(title)
+    subject = notion_fetch._map_subject_for_language(title, req.language)
     if subject is None:
-        raise HTTPException(422, f"subject '{title}' is not supported for generation")
+        raise HTTPException(
+            422,
+            f"subject '{title}' is not a recognized {req.language} subject — "
+            f"for English, create an English page/container with the textbook in Notion "
+            f"or upload the PDF directly; otherwise check the page is under the right "
+            f"language container.",
+        )
     try:
         body, filename = await asyncio.to_thread(
             notion_fetch.download_textbook, client, req.subject_page_id)
@@ -170,7 +191,8 @@ async def book_from_notion(
     except notion_fetch.NoTextbook:
         raise HTTPException(422, "this subject has no attached textbook")
     return await ingest_pdf(
-        session, body=body, subject=subject, grade=req.grade, filename=filename)
+        session, body=body, subject=subject, grade=req.grade, filename=filename,
+        source_language=req.language)
 
 
 @router.get("")
