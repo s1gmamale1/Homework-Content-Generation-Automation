@@ -438,6 +438,9 @@ export type BatchLaunchResponse = BatchSummary & {
 /** Global launch defaults — singleton row in launch_defaults. Operator edits
  *  via PUT /api/v1/settings/launch-defaults; resolved at every batch/job launch. */
 export interface LaunchDefaults {
+  content_provider: string | null;
+  content_model: string | null;
+  content_transport: "cli" | "api" | null;
   judge_provider: string | null;
   judge_model: string | null;
   judge_transport: RoleTransport | null;

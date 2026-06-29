@@ -43,6 +43,7 @@ function RoleRow({
   onTransport,
   providerNames,
   modelOptions,
+  transportOptions,
 }: {
   label: string;
   provider: string | null;
@@ -53,6 +54,7 @@ function RoleRow({
   onTransport: (v: RoleTransport) => void;
   providerNames: string[];
   modelOptions: string[];
+  transportOptions?: { value: string; label: string }[];
 }) {
   return (
     <div className="flex flex-wrap items-center gap-3">
@@ -106,7 +108,7 @@ function RoleRow({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {ROLE_TRANSPORT_OPTIONS.map((o) => (
+          {(transportOptions ?? ROLE_TRANSPORT_OPTIONS).map((o) => (
             <SelectItem key={o.value} value={o.value}>
               {o.label}
             </SelectItem>
@@ -132,6 +134,9 @@ export function SettingsPage() {
   });
 
   // Local form state — initialised from DB values when they load.
+  const [contentProvider, setContentProvider] = useState<string | null>(null);
+  const [contentModel, setContentModel] = useState<string | null>(null);
+  const [contentTransport, setContentTransport] = useState<"cli" | "api">("api");
   const [judgeProvider, setJudgeProvider] = useState<string | null>(null);
   const [judgeModel, setJudgeModel] = useState<string | null>(null);
   const [judgeTransport, setJudgeTransport] = useState<RoleTransport>("inherit");
@@ -148,6 +153,9 @@ export function SettingsPage() {
   const data = defaultsQ.data;
   useEffect(() => {
     if (!data) return;
+    setContentProvider(data.content_provider ?? null);
+    setContentModel(data.content_model ?? null);
+    setContentTransport((data.content_transport as "cli" | "api") ?? "api");
     setJudgeProvider(data.judge_provider ?? null);
     setJudgeModel(data.judge_model ?? null);
     setJudgeTransport((data.judge_transport as RoleTransport) ?? "inherit");
@@ -162,6 +170,7 @@ export function SettingsPage() {
   const manifest = modelsQ.data;
   const providerNames = manifest ? Object.keys(manifest.providers) : [];
 
+  const contentModelOptions = contentProvider ? (manifest?.providers?.[contentProvider] ?? []) : [];
   const judgeModelOptions = judgeProvider
     ? (manifest?.providers?.[judgeProvider] ?? [])
     : [];
@@ -200,13 +209,16 @@ export function SettingsPage() {
     setSaveError(null);
     // Global defaults must be fully concrete — the backend enforces this too,
     // but catch it early for a cleaner UX.
-    if (!judgeProvider || !judgeModel || !extractProvider || !extractModel) {
+    if (!contentProvider || !contentModel || !judgeProvider || !judgeModel || !extractProvider || !extractModel) {
       setSaveError(
-        "Judge and Extract provider+model must both be set — no Auto allowed for global defaults",
+        "Content, Judge, and Extract provider+model must all be set — no Auto allowed for global defaults",
       );
       return;
     }
     saveMut.mutate({
+      content_provider: contentProvider,
+      content_model: contentModel,
+      content_transport: contentTransport,
       judge_provider: judgeProvider,
       judge_model: judgeModel,
       judge_transport: judgeTransport,
@@ -236,8 +248,8 @@ export function SettingsPage() {
             </h1>
             <p className="mt-2 max-w-[58ch] text-sm leading-6 text-white/55">
               Edit the global launch defaults — provider, model, and transport for
-              the Judge, Extract, and TOC roles. Applied to every new batch and
-              single-job launch unless overridden per-job.
+              the Content, Judge, Extract, and TOC roles. Applied to every new batch
+              and single-job launch unless overridden per-job.
             </p>
           </div>
         </header>
@@ -257,7 +269,7 @@ export function SettingsPage() {
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold text-white">Launch defaults</h2>
             <span className="font-mono text-[0.7rem] uppercase tracking-[0.12em] text-white/40">
-              judge · extract · toc · language
+              content · judge · extract · toc · language
             </span>
           </div>
 
@@ -286,6 +298,20 @@ export function SettingsPage() {
                   Transport
                 </span>
               </div>
+
+              {/* Content row — the primary generation role; cli|api only (no inherit) */}
+              <RoleRow
+                label="Content"
+                provider={contentProvider}
+                model={contentModel}
+                transport={contentTransport as RoleTransport}
+                onProvider={setContentProvider}
+                onModel={setContentModel}
+                onTransport={(v) => setContentTransport(v as "cli" | "api")}
+                providerNames={providerNames}
+                modelOptions={contentModelOptions}
+                transportOptions={TOC_TRANSPORT_OPTIONS}
+              />
 
               {/* Judge row */}
               <RoleRow
