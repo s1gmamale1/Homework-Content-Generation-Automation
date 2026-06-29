@@ -21,10 +21,11 @@ const ROW_CHIP: Record<RowStatus, { label: string; className: string; style?: CS
   partial: { label: "partial", className: "bg-amber-500/20 text-amber-200" },
 };
 
-/** One transport's progress within a book card: status chip, rollup bar,
- *  and a per-transport lessons drill-in. Kept separate per transport (never
- *  merged) because a lesson can be done on CLI yet not-started on API —
- *  summing the two rollups would double-count. */
+/** One batch's progress within a book card: status chip, rollup bar, and a
+ *  per-batch lessons drill-in. Kept separate per batch (never merged) because
+ *  the same lesson can be done in one batch yet not-started in another —
+ *  summing rollups would double-count. (The Monitor is API-only; cli batches
+ *  are filtered out upstream in monitor.tsx.) */
 function TransportRow({
   batch,
   divided,
@@ -91,10 +92,10 @@ function TransportRow({
   );
 }
 
-/** One card per BOOK. A book has at most a CLI batch and an API batch (the
- *  `UNIQUE(book_id, transport)` constraint), so CLI+API collapse into a single
- *  card with one shared header and one TransportRow each — instead of two
- *  separate cards for the same subject. */
+/** One card per BOOK. All of a book's API batches (one per output language —
+ *  `UNIQUE(book_id, transport, output_language)`) collapse into a single card
+ *  with one shared header and one TransportRow each, instead of separate cards
+ *  for the same subject. (cli batches are filtered out upstream in monitor.tsx.) */
 function BookCard({ batches }: { batches: BatchSummary[] }) {
   const head = batches[0];
   // Glow ("in progress" treatment) only while work is ACTUALLY in flight —
@@ -139,21 +140,17 @@ function BookCard({ batches }: { batches: BatchSummary[] }) {
 }
 
 export function BatchFunnel({ batches }: { batches?: BatchSummary[] }) {
-  // Group batches by book so CLI+API for one subject share a single card.
+  // Group batches by book so multiple batches for one subject share a card.
   // Map preserves insertion order; batches arrive newest-first, so the book
-  // with the most recent batch leads. Within a book, CLI sorts before API.
+  // with the most recent batch leads. The list is already API-scoped by
+  // monitor.tsx (cli filtered there so stats + cards stay consistent), so a
+  // cli-only book never appears here.
   const books = useMemo(() => {
     const byBook = new Map<string, BatchSummary[]>();
     for (const b of batches ?? []) {
       const arr = byBook.get(b.book_id);
       if (arr) arr.push(b);
       else byBook.set(b.book_id, [b]);
-    }
-    for (const arr of byBook.values()) {
-      arr.sort(
-        (a, b) =>
-          (a.transport === "api" ? 1 : 0) - (b.transport === "api" ? 1 : 0),
-      );
     }
     return [...byBook.values()];
   }, [batches]);
