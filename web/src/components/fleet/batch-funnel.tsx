@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight, PauseCircle } from "lucide-react";
 import { type CSSProperties, useMemo, useState } from "react";
 import type { BatchSummary } from "@/lib/types";
 import { type RowStatus, transportRowStatus } from "@/lib/batch-status";
+import { groupBooksByGrade } from "@/lib/monitor-grouping";
 import { subjectLabelWithVariant } from "@/lib/subjects";
 import { CARD, GHOST_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
@@ -157,6 +158,8 @@ export function BatchFunnel({ batches }: { batches?: BatchSummary[] }) {
     return [...byBook.values()];
   }, [batches]);
 
+  const gradeGroups = useMemo(() => groupBooksByGrade(books), [books]);
+
   return (
     <div className="space-y-3">
       <h2 className="text-sm font-semibold tracking-tight text-white">Batches</h2>
@@ -165,9 +168,18 @@ export function BatchFunnel({ batches }: { batches?: BatchSummary[] }) {
           No batches launched yet.
         </div>
       ) : (
-        <div className="grid items-start gap-3 md:grid-cols-2">
-          {books.map((group) => (
-            <BookCard key={group[0].book_id} batches={group} />
+        <div className="space-y-5">
+          {gradeGroups.map(({ grade, books: gradeBooks }) => (
+            <div key={grade} className="space-y-3">
+              <p className="text-[0.7rem] font-medium uppercase tracking-[0.12em] text-white/35">
+                {grade === "Ungraded" ? "Ungraded" : `Grade ${grade}`}
+              </p>
+              <div className="grid items-start gap-3 md:grid-cols-2">
+                {gradeBooks.map((group) => (
+                  <BookCard key={group[0].book_id} batches={group} />
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       )}
