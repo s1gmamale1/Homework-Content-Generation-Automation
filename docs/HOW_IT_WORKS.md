@@ -712,7 +712,7 @@ You also need the CLIs you intend to use installed and logged-in on `PATH`
 | Edit what the AI is told to do per phase | `prompts/_general/<phase>.md` (all subjects) |
 | Change medium of instruction (uz/en/ru) | `/settings` → `launch_defaults.output_language`, or per-launch `output_language` field. `app/services/prompts.py` (`MEDIUM_RULES`, `_resolve_language_rule`, `get_prompt`). |
 | Tweak queue/worker/timeout behavior | `app/config.py` + `app/services/worker.py` |
-| Change extract/judge model selection | `/settings` page → `GET`/`PUT /api/v1/settings/launch-defaults` (DB-backed `launch_defaults` singleton) |
+| Change content/extract/judge model selection | `/settings` page → `GET`/`PUT /api/v1/settings/launch-defaults` (DB-backed `launch_defaults` singleton; content fields added migration 0039) |
 | Understand the DB schema / queue / clocks in depth | `docs/DATABASE.md` |
 | Touch batches / fleet launch / rollups | `app/repositories/batches.py` + `app/api/v1/batch.py` |
 | Touch worker liveness / the registry | `app/repositories/workers.py` + `app/api/v1/workers.py` |

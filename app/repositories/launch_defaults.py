@@ -13,6 +13,7 @@ _MUTABLE = (
     "extract_provider", "extract_model", "extract_transport",
     "toc_transport",
     "output_language",
+    "content_provider", "content_model", "content_transport",
 )
 
 

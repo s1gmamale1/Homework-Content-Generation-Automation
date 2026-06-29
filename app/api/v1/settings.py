@@ -20,6 +20,9 @@ class LaunchDefaultsOut(BaseModel):
     extract_transport: str | None
     toc_transport: str | None
     output_language: str | None
+    content_provider: str | None
+    content_model: str | None
+    content_transport: str | None
 
 
 class LaunchDefaultsUpdate(BaseModel):
@@ -31,6 +34,9 @@ class LaunchDefaultsUpdate(BaseModel):
     extract_transport: str | None = None
     toc_transport: str | None = None
     output_language: str | None = None
+    content_provider: str | None = None
+    content_model: str | None = None
+    content_transport: str | None = None
 
 
 def _serialize(row) -> LaunchDefaultsOut:
@@ -38,7 +44,9 @@ def _serialize(row) -> LaunchDefaultsOut:
         judge_provider=row.judge_provider, judge_model=row.judge_model,
         judge_transport=row.judge_transport, extract_provider=row.extract_provider,
         extract_model=row.extract_model, extract_transport=row.extract_transport,
-        toc_transport=row.toc_transport, output_language=row.output_language)
+        toc_transport=row.toc_transport, output_language=row.output_language,
+        content_provider=row.content_provider, content_model=row.content_model,
+        content_transport=row.content_transport)
 
 
 @router.get("/settings/launch-defaults", response_model=LaunchDefaultsOut)
@@ -57,13 +65,13 @@ async def put_launch_defaults(
     merged = {**_serialize(current).model_dump(), **fields}
     # Finding #2: judge/extract provider+model MUST be concrete — they are the
     # terminal resolver; a null here bricks all Auto-role launches.
-    for role in ("judge", "extract"):
+    for role in ("judge", "extract", "content"):
         prov = merged.get(f"{role}_provider")
         mdl = merged.get(f"{role}_model")
         if prov is None or mdl is None:
             raise HTTPException(
                 422,
-                "judge/extract provider+model must be concrete "
+                f"{role} provider+model must be concrete "
                 "(the global default is the terminal resolver)",
             )
         if not is_valid(prov, mdl):
@@ -84,6 +92,11 @@ async def put_launch_defaults(
     # output_language: the column is NOT NULL — the terminal value must be concrete.
     if err := validate_output_language(merged.get("output_language"), allow_none=False):
         raise HTTPException(422, err)
+    ct = merged.get("content_transport")
+    if ct is not None and ct not in ("cli", "api"):
+        raise HTTPException(422, "content_transport must be 'cli' or 'api'")
+    if ct == "api" and not api_supported(merged.get("content_provider") or ""):
+        raise HTTPException(422, "content_transport=api requires an api-capable content_provider (claude/gemini)")
     out = _serialize(await launch_defaults_repo.update(session, fields))
     await session.commit()  # get_session yields without committing; persist the write
     return out

@@ -43,6 +43,8 @@ async def test_migration_seeds_singleton(db_session):
     assert row.judge_transport == "inherit"
     assert row.extract_transport == "inherit"
     assert row.toc_transport == "cli"
+    assert (row.content_provider, row.content_model) == ("gemini", "gemini-2.5-pro")
+    assert row.content_transport == "api"
 
 
 async def test_update_partial_roundtrip(db_session):
@@ -52,6 +54,12 @@ async def test_update_partial_roundtrip(db_session):
     # untouched fields remain
     assert row.extract_provider == "gemini"
     assert row.updated_at is not None
+
+
+async def test_update_content_roundtrip(db_session):
+    await repo.update(db_session, {"content_provider": "claude", "content_model": "claude-opus-4-8", "content_transport": "cli"})
+    row = await repo.get(db_session)
+    assert (row.content_provider, row.content_model, row.content_transport) == ("claude", "claude-opus-4-8", "cli")
 
 
 async def test_singleton_invariant_rejects_second_row(db_session):

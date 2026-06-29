@@ -46,7 +46,6 @@ import type {
 } from "@/lib/types";
 import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
-import { RoleAgentControls } from "@/components/fleet/RoleAgentControls";
 import { serveability, providerServeableAnyMode } from "@/lib/serveability";
 import { type LauncherConfig, loadLauncherConfig, saveLauncherConfig } from "@/lib/launcher-config";
 
@@ -579,19 +578,14 @@ function ReadyCard({
   const saved = useState(() => loadLauncherConfig(book.id))[0];
   const [provider, setProvider] = useState(() => saved.provider ?? "claude");
   const [transport, setTransport] = useState<Transport>(() => saved.transport ?? "api");
-  const [extractTransport, setExtractTransport] = useState<RoleTransport>(() => saved.extractTransport ?? "cli");
-  const [judgeTransport, setJudgeTransport] = useState<RoleTransport>(() => saved.judgeTransport ?? "cli");
   const [sessionLimitStrategy, setSessionLimitStrategy] = useState<SessionLimitStrategy>(() => saved.sessionLimitStrategy ?? "inherit");
-  const [extractProvider, setExtractProvider] = useState<string | null>(() => saved.extractProvider ?? null);
-  const [extractModel, setExtractModel] = useState<string | null>(() => saved.extractModel ?? null);
-  const [judgeProvider, setJudgeProvider] = useState<string | null>(() => saved.judgeProvider ?? null);
-  const [judgeModel, setJudgeModel] = useState<string | null>(() => saved.judgeModel ?? null);
   const [model, setModel] = useState<string | null>(() => saved.model ?? null);
   // Output language override: null = inherit global default (not a concrete language).
   // Do NOT default to a concrete value — see launcher-role-transport-default-1 WISHLIST bug.
   const [outputLanguage, setOutputLanguage] = useState<OutputLanguage | null>(
     () => saved.outputLanguage ?? null,
   );
+  const [contentSeeded, setContentSeeded] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // True while the preview fetch is in flight (launch button shows spinner).
@@ -691,6 +685,17 @@ function ReadyCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transport, provider, modelsQ.data]);
 
+  // One-shot: seed provider/model/transport from the global content default when
+  // no per-book saved value exists and the defaults have loaded.
+  useEffect(() => {
+    if (contentSeeded || !defaultsQ.data) return;
+    const d = defaultsQ.data;
+    if (saved.provider == null && d.content_provider) setProvider(d.content_provider);
+    if (saved.model == null && d.content_model) setModel(d.content_model);
+    if (saved.transport == null && d.content_transport) setTransport(d.content_transport as Transport);
+    setContentSeeded(true);
+  }, [defaultsQ.data, contentSeeded]);
+
   // Persist selections per book so navigating away + back (and hard-refresh)
   // restores them. Only the launch-selection fields — never ephemeral UI state
   // (expanded / choosing / selected / launching).
@@ -698,13 +703,7 @@ function ReadyCard({
     const cfg: LauncherConfig = {
       provider,
       transport,
-      extractTransport,
-      judgeTransport,
       sessionLimitStrategy,
-      extractProvider,
-      extractModel,
-      judgeProvider,
-      judgeModel,
       model,
       outputLanguage,
     };
@@ -713,13 +712,7 @@ function ReadyCard({
     book.id,
     provider,
     transport,
-    extractTransport,
-    judgeTransport,
     sessionLimitStrategy,
-    extractProvider,
-    extractModel,
-    judgeProvider,
-    judgeModel,
     model,
     outputLanguage,
   ]);
@@ -727,17 +720,6 @@ function ReadyCard({
   const alreadyBatched = batchedTransports.has(transport);
   // On api we must have an explicit model selected.
   const missingApiModel = transport === "api" && !model;
-
-  // Advisory (non-blocking) note when the judge model is weaker (higher tier
-  // number) than the generator. Lower tier int = stronger.
-  const tiers = modelsQ.data?.tiers;
-  const genTier = tiers?.[provider]?.[model ?? ""];
-  const judgeTier =
-    judgeProvider && judgeModel ? tiers?.[judgeProvider]?.[judgeModel] : undefined;
-  const judgeWarning =
-    genTier != null && judgeTier != null && judgeTier > genTier
-      ? "Judge is weaker than the generator — grading may be unreliable."
-      : null;
 
   // Current batch for this transport — used for cancel-all / resume buttons.
   const currentBatch = bookBatches.find((b) => b.transport === transport) ?? null;
@@ -754,12 +736,12 @@ function ReadyCard({
     book_id: book.id,
     provider,
     transport,
-    extract_transport: extractTransport,
-    judge_transport: judgeTransport,
-    extract_provider: extractProvider,
-    extract_model: extractModel,
-    judge_provider: judgeProvider,
-    judge_model: judgeModel,
+    extract_transport: "inherit" as RoleTransport,
+    judge_transport: "inherit" as RoleTransport,
+    extract_provider: null,
+    extract_model: null,
+    judge_provider: null,
+    judge_model: null,
     session_limit_strategy: sessionLimitStrategy,
     ...(transport === "api" ? { model } : {}),
     // Only send output_language when explicitly chosen — null/omitted means
@@ -928,42 +910,6 @@ function ReadyCard({
                     apiDisabledReason={!apiFleetCheck.ok ? apiFleetCheck.reason : null}
                   />
                 )}
-                {/* Per-role provider/model/billing — a cli batch can still pin its
-                    extract/judge calls to api (and vice versa). Auto = backend
-                    default (provider/model) or inherit (transport). */}
-                <RoleAgentControls
-                  label="Extract"
-                  manifest={modelsQ.data}
-                  provider={extractProvider}
-                  model={extractModel}
-                  transport={extractTransport}
-                  onProvider={setExtractProvider}
-                  onModel={setExtractModel}
-                  onTransport={setExtractTransport}
-                  jobTransport={transport}
-                  resolvedDefault={{
-                    provider: defaultsQ.data?.extract_provider ?? null,
-                    model: defaultsQ.data?.extract_model ?? null,
-                    transport: defaultsQ.data?.extract_transport ?? null,
-                  }}
-                />
-                <RoleAgentControls
-                  label="Judge"
-                  manifest={modelsQ.data}
-                  provider={judgeProvider}
-                  model={judgeModel}
-                  transport={judgeTransport}
-                  onProvider={setJudgeProvider}
-                  onModel={setJudgeModel}
-                  onTransport={setJudgeTransport}
-                  warning={judgeWarning}
-                  jobTransport={transport}
-                  resolvedDefault={{
-                    provider: defaultsQ.data?.judge_provider ?? null,
-                    model: defaultsQ.data?.judge_model ?? null,
-                    transport: defaultsQ.data?.judge_transport ?? null,
-                  }}
-                />
                 {/* Session-limit strategy — what to do when a Claude session limit hits. */}
                 <div className="flex flex-col gap-1">
                   <span className="text-[0.6rem] font-medium uppercase tracking-[0.12em] text-white/35">

@@ -29,6 +29,9 @@ class LaunchDefaults(Base):
     # Default output language for generated content: "uz", "en", or "ru".
     # NOT NULL with server_default "uz" — matches the column definition on homework_jobs/batches.
     output_language: Mapped[str] = mapped_column(String(8), nullable=False, server_default="uz")
+    content_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    content_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    content_transport: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     __table_args__ = (
