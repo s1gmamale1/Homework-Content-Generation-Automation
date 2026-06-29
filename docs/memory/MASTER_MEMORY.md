@@ -1368,3 +1368,19 @@ Gate-hardening: `PUT /settings/launch-defaults` rejects null provider/model with
 **Files:** `app/services/notion_archive.py` (resolver `language` param + key prefix; `archive_job` threads `job.output_language` + language-explicit skip reason), `tests/services/test_notion_archive_language.py` (new — 6 cases: uz bare-key default, en/ru prefixed, non-uz never falls back to uz key, prefix composes with history-split, no-grade), `tests/services/test_notion_archive_skip.py` (completed the fake jobs with `output_language="uz"`), `.env.example`, `docs/CODE_MAP.md`.
 
 **Verified:** new tests RED→GREEN (6/6); existing notion suite green after completing the fakes; full non-DB suite **1160 passed / 0 failed**. Stacks on #57 (merged); branched off `origin/Nggaev-v2` @ 423ac41.
+
+---
+
+## [0103] Language-aware Fleet/Section completion status — launch in another language — 2026-06-29 (feat/fleet-language-status → Nggaev-v2)
+
+**What:** Bug introduced by multi-language output (0099): the Fleet and per-Section launchers showed a book/lesson as "complete" and disabled the launch button **regardless of the selected output language** — so a book fully generated in Uzbek read "complete" and could not be re-launched in Russian/English (which had zero jobs). The data layer was already correct (batches are keyed `(book_id, transport, output_language)`); only the *status/gate* was language-blind.
+
+**Root cause:** the per-lesson `latest_job_status` (which drives `doneCount`/`complete`/`remaining` + the disabled launch gate) came from `GET /books/{id}` → `_enriched_toc_entries` → `jobs_repo.latest_by_section(book_id)`, which had **no `output_language` filter** (returned the latest job per section across ALL languages). The launchers held an `outputLanguage` state but never passed it to `getBook`.
+
+**Fix (surgical, non-breaking):** `latest_by_section(session, book_id, output_language=None)` — filters when given, `None` preserves the all-language aggregate (so upload/retry/book-detail callers are unchanged; it has exactly one caller). `_enriched_toc_entries` + `_book_out_with_toc` thread it; `GET /books/{id}` accepts a validated optional `output_language` query param (400 on off-domain). FE: `api.getBook(bookId, outputLanguage?)` appends `?output_language=`; the Fleet (`launcher.tsx`) and Section (`section.tsx`) launchers fetch status for the **effective** language (explicit pick, else the resolved global default — the same value shown as "Auto → <lang>") and key the React-Query cache on it, so switching the language picker refetches and recomputes the completion/gate.
+
+**Process:** controller-direct (CLAUDE.md small-clear-fix path — root cause verified via an Explore map, scope locked with the user [Fleet + Section]); PR routed to the gatekeeper.
+
+**Files:** `app/repositories/jobs.py`, `app/api/v1/books.py`, `web/src/lib/api.ts`, `web/src/components/fleet/launcher.tsx`, `web/src/routes/section.tsx`, `tests/api/test_toc_status_enrichment.py` (thread-through unit test + updated fake signature), `tests/integration/test_latest_by_section_language.py` (new DB-gated scoping test).
+
+**Verified:** enrichment unit tests 2/2; DB-gated `latest_by_section` language-scoping test PASS on scratch Postgres (uz→done job, ru→failed job, en→absent/launchable, None→all-language aggregate); full non-DB suite **1164 passed / 0 failed**; FE `tsc --noEmit` + `npm run build` clean.
