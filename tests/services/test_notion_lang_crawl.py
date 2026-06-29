@@ -176,12 +176,23 @@ class TestAvailableLanguagesNoEnglish:
         assert ru_entry["has_textbook"] is True
 
     def test_subject_with_no_textbook_excluded(self):
-        """ru-fiz has no PDF → Физика (physics) should NOT appear under 'ru'."""
+        """ru-fiz has no PDF → Физика (physics) should NOT appear under 'ru'.
+
+        uz-fiz HAS a PDF (see _BLOCKS_BASE), so 'physics' MUST be in the result
+        under 'uz'. The unconditional assertions below ensure the has_textbook
+        filter is actually exercised — a vacuous `if "physics" in result:` guard
+        would let this pass even if the filter were deleted.
+        """
         c = self._make_client()
         result = nf.available_languages(c, GRADE_ID)
-        # physics may appear under 'uz' (Fizika has a PDF)
-        if "physics" in result:
-            assert "ru" not in result["physics"]
+        # uz-Fizika has a PDF → physics MUST appear in the result
+        assert "physics" in result, (
+            "uz-fiz has a PDF block in the fixture; physics should be present under 'uz'"
+        )
+        # ru-Физика has NO PDF → the has_textbook filter must exclude it
+        assert "ru" not in result["physics"], (
+            "ru-fiz has no PDF; has_textbook=False must exclude it from available_languages"
+        )
 
     def test_no_english_key_when_no_en_container(self):
         c = self._make_client()
