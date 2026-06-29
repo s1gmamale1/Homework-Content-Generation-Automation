@@ -79,4 +79,6 @@ async def put_launch_defaults(
             422,
             "toc_transport=api requires an api-capable extract_provider (claude/gemini)",
         )
-    return _serialize(await launch_defaults_repo.update(session, fields))
+    out = _serialize(await launch_defaults_repo.update(session, fields))
+    await session.commit()  # get_session yields without committing; persist the write
+    return out
