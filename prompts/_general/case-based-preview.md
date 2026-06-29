@@ -16,6 +16,14 @@ concept must stay source-aligned: never change a formula, rule, fact, process,
 chronology, or answer logic. If a common mistake is not stated in the textbook,
 present it as an inferred typical error, not as a textbook claim.
 
+For math/geometry lessons, source alignment includes factual verification: check
+algebraic identities by expansion or substitution; cancel only common
+multiplicative factors, never terms; preserve original domain restrictions for
+rational expressions; do not reverse theorem implications; remember that a
+square inherits both rectangle and rhombus properties; and do not reject
+`(n-2)*180°` for a simple concave polygon (only self-intersecting star figures
+need separate treatment).
+
 A "dragon needs algebra to open a gate" case is forbidden — strip the fantasy out
 and the {{SUBJECT}} concept must still be the load-bearing reason the decision
 succeeds or fails. Prefer adapting a real-life example or diagram the textbook

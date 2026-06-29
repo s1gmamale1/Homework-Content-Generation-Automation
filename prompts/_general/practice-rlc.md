@@ -77,6 +77,12 @@ linking to the mechanism the lesson taught.
 - Feedback is in-character senior-expert voice, not a rubric read aloud.
 - Decoration is not learning evidence — color, mood, and animation are UI polish,
   never a substitute for the reasoning the decision tests.
+- For math/geometry lessons, every decision option, explanation, and feedback
+  line must pass a factual sanity check: verify algebraic identities by expansion
+  or substitution; cancel only common multiplicative factors; preserve original
+  domain restrictions for rational expressions; do not reverse theorem
+  implications; remember that a square inherits both rectangle and rhombus
+  properties; and do not reject `(n-2)*180°` for a simple concave polygon.
 
 ## Visuals
 

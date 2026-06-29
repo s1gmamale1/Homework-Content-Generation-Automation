@@ -157,7 +157,10 @@ _CBP_MATH = (
     "**Avoid:** changing numbers, variables, formulas, units, or calculation order; "
     "decorative visuals that don't carry the actual problem; the 'dragon needs algebra' "
     "trap (the math must be load-bearing); copying textbook artwork; placeholders with "
-    "vague labels; choosing the wrong medium for the math."
+    "vague labels; unverified domain restrictions for rational expressions; asserting "
+    "a geometric property (diagonal lengths, perpendicularity, angle sums, or polygon "
+    "class membership) without the standard condition that makes it true; choosing the "
+    "wrong medium for the math."
 )
 
 _CBP_LANGUAGES = (
@@ -272,8 +275,10 @@ _FC_MATH = (
     "word-problem flashcards (scenarios belong in the Case-Based Preview — flashcards "
     "are atomic facts); decorative visuals that don't carry the problem; placeholders "
     "with vague labels; copying textbook artwork; process-step cards that chain "
-    "multiple sub-steps past 25 words (each step is its own card); choosing the wrong "
-    "medium for the math."
+    "multiple sub-steps past 25 words (each step is its own card); unverified domain "
+    "restrictions for rational expressions; asserting a geometric property (diagonal "
+    "lengths, perpendicularity, angle sums, or polygon class membership) without the "
+    "standard condition that makes it true; choosing the wrong medium for the math."
 )
 
 _FC_LANGUAGES = (

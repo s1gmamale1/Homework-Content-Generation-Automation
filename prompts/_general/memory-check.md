@@ -35,6 +35,13 @@ Write each item as a `###` heading that states which kind it is and which studie
 - Use at least 2 of the 3 kinds. No more than 60% of any single kind. Avoid two consecutive items of the same kind when possible.
 - The pass gate is always **0.60** — do NOT change it.
 - Do NOT test problem-solving or calculation steps here. Only recall of card content.
+- For math/geometry lessons, every recalled rule, formula, option, and
+  misconception must pass a factual sanity check: verify algebraic identities by
+  expansion or substitution; preserve original domain restrictions for rational
+  expressions; do not reverse theorem implications; remember that a square
+  inherits both rectangle and rhombus properties; and do not reject
+  `(n-2)*180°` for a simple concave polygon (only self-intersecting star figures
+  need separate treatment).
 
 ## Language
 

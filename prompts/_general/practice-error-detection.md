@@ -48,6 +48,10 @@ Write the task as Markdown sections, in this order:
 ## Non-negotiables
 
 - **Exactly one error.** Any other count is rejected by the validator.
+- **Verify every non-broken block.** Before finishing, re-derive every block that
+  is meant to be correct. For worked equations, re-compute arithmetic and algebra
+  instead of copying it forward; for geometry, name each property by its standard
+  condition. If any non-broken block fails this check, regenerate the task.
 - **Real mistake, not nonsense.** The broken block must be a genuine, common
   confusion a {{SUBJECT}} student actually makes — drawn from real student error
   patterns — NOT an absurd error every student spots instantly. ("3x = 999" as
@@ -65,6 +69,16 @@ Write the task as Markdown sections, in this order:
   even when it isn't an exact string match (spacing, word order, equivalent
   phrasing) — pair with the accepted-wordings note above.
 - Test something already shown in correct form earlier in the session.
+- **Feedback consistency.** The Correct feedback, Wrong-correction feedback, and
+  Reveal must all use the same correction stated in **The correct version**; never
+  silently switch to a newly re-derived or corrected expression later.
+- **Math/geometry sanity check.** For algebra, verify identities by expansion or
+  substitution, cancel only common multiplicative factors, and preserve original
+  domain restrictions for rational expressions. For geometry, do not reverse
+  theorem implications, do not assign rectangle/rhombus/square properties to a
+  general parallelogram unless the condition is stated, remember that a square
+  inherits both rectangle and rhombus properties, and do not reject `(n-2)*180°`
+  for a simple concave polygon.
 
 ## Visuals
 
