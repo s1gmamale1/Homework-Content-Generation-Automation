@@ -208,6 +208,7 @@ async def judge(
     phase_output_id: Optional[UUID] = None,
     transport: str = "cli",
     contract_override: Optional[str] = None,
+    output_language: str = "uz",
 ) -> JudgeOutcome:
     """Grade `output_md` against its phase contract (the custom override when
     supplied, else the built-in prompt). Returns a JudgeOutcome;
@@ -219,7 +220,7 @@ async def judge(
         # judge_provider/judge_model are resolved upstream by
         # model_tiers.resolve_judge (per-role override + self-grade guard); use
         # them as-given. contract_override carries a per-phase custom prompt.
-        contract = contract_override or get_prompt(subject, phase_name)
+        contract = contract_override or get_prompt(subject, phase_name, output_language=output_language)
         flags = _fidelity_flags(output_md, lesson_context)   # C3 advisory year-fidelity hints
         judge_prompt = _build_judge_prompt(
             contract=contract, output_md=output_md, fidelity_flags=flags,

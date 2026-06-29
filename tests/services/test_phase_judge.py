@@ -95,7 +95,7 @@ def _call_judge():
 
 
 def test_judge_pass_outcome(monkeypatch):
-    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p, **kw: "CONTRACT")
     monkeypatch.setattr(agent, "run_phase", _fake_run_phase(pj.Verdict(passed=True)))
     out = _call_judge()
     assert out.available and out.passed
@@ -103,7 +103,7 @@ def test_judge_pass_outcome(monkeypatch):
 
 
 def test_judge_major_failure_has_warnings_feedback_and_flags_major(monkeypatch):
-    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p, **kw: "CONTRACT")
     v = pj.Verdict(passed=False, failures=[
         pj.Failure(requirement="Exactly 3", evidence="found 4", severity="major"),
     ])
@@ -117,7 +117,7 @@ def test_judge_major_failure_has_warnings_feedback_and_flags_major(monkeypatch):
 
 def test_judge_minor_only_does_not_flag_major(monkeypatch):
     """A minor-only verdict records a warning but must NOT trigger a regen."""
-    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p, **kw: "CONTRACT")
     v = pj.Verdict(passed=False, failures=[
         pj.Failure(requirement="Back is concise", evidence="padded filler", severity="minor"),
     ])
@@ -129,7 +129,7 @@ def test_judge_minor_only_does_not_flag_major(monkeypatch):
 
 
 def test_judge_degrades_when_run_phase_raises(monkeypatch):
-    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p, **kw: "CONTRACT")
 
     async def _boom(**kwargs):
         raise RuntimeError("CLI exploded")
@@ -141,7 +141,7 @@ def test_judge_degrades_when_run_phase_raises(monkeypatch):
 
 
 def test_judge_degrades_when_get_prompt_raises(monkeypatch):
-    def _boom_prompt(s, p):
+    def _boom_prompt(s, p, **kw):
         raise KeyError("no such phase")
 
     monkeypatch.setattr(pj, "get_prompt", _boom_prompt)
@@ -212,7 +212,7 @@ def test_is_refusal_false(msg):
 
 
 def test_judge_returns_refused_outcome_and_is_distinct_from_unavailable(monkeypatch):
-    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "CONTRACT")
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p, **kw: "CONTRACT")
 
     async def _refuse(**kwargs):
         # mirrors agent.run_phase's raise on a refusal: schema retries exhausted,

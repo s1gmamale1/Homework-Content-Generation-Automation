@@ -40,6 +40,6 @@ async def test_override_is_the_contract_used(monkeypatch):
 async def test_no_override_falls_back_to_get_prompt(monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(agent, "run_phase", _capturing_run_phase(captured))
-    monkeypatch.setattr(pj, "get_prompt", lambda s, p: "BUILTIN-CONTRACT-SENTINEL")
+    monkeypatch.setattr(pj, "get_prompt", lambda s, p, **kw: "BUILTIN-CONTRACT-SENTINEL")
     await pj.judge(contract_override=None, **_JUDGE_KW)
     assert "BUILTIN-CONTRACT-SENTINEL" in captured["phase_prompt"]
