@@ -156,7 +156,7 @@ async def test_adopt_orphan_job():
     try:
         async with SessionLocal() as s:
             j = await jobs_repo.create(s, book_id=book_id, toc_entry_id=toc_ids[0],
-                                       subject="math-algebra")
+                                       subject="math-algebra", output_language="uz")
             j.status = "done"
             await s.commit()
             orphan_id = j.id

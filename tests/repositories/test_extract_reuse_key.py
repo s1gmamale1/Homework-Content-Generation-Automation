@@ -39,6 +39,7 @@ async def _insert_done_extract(s, *, book_id, toc_entry_id, provider, model_name
 
     job = await jobs_repo.create(
         s, book_id=book_id, toc_entry_id=toc_entry_id, subject="math-algebra",
+        output_language="uz",
     )
     await s.flush()
     po = PhaseOutput(

@@ -41,6 +41,7 @@ async def test_create_persists_role_provider_model():
         try:
             job = await jobs_repo.create(
                 s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra",
+                output_language="uz",
                 extract_provider="gemini", extract_model="gemini-2.5-flash",
                 judge_provider=None, judge_model=None,
             )

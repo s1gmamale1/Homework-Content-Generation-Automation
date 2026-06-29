@@ -55,7 +55,7 @@ async def test_just_scheduled_job_is_immediately_claimable():
     async with SessionLocal() as s:
         book, toc = await _seed_section(s)
         # scheduled_at defaults to server NOW() (we do NOT pin it to the past)
-        await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra")
+        await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra", output_language="uz")
         await s.commit()
         book_id = book.id
     try:
@@ -98,7 +98,7 @@ async def test_retry_backoff_schedules_in_the_future_server_side():
 
     async with SessionLocal() as s:
         book, toc = await _seed_section(s)
-        job = await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra")
+        job = await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra", output_language="uz")
         job.attempts = 1  # one attempt already spent -> retry branch, not terminal
         await s.commit()
         job_id, book_id = job.id, book.id

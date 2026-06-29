@@ -67,6 +67,7 @@ async def _seed_job(s, book, toc, **kwargs):
     from app.repositories import jobs as jobs_repo
 
     kwargs.setdefault("status", "pending")
+    kwargs.setdefault("output_language", "uz")
     job = await jobs_repo.create(
         s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra", **kwargs
     )
@@ -333,6 +334,7 @@ async def test_pause_batch_does_not_alter_job_status():
         running_job_obj = await jobs_repo.create(
             s, book_id=book.id, toc_entry_id=toc2.id,
             subject="math-algebra", batch_id=batch.id, status="running",
+            output_language="uz",
         )
 
         await s.commit()

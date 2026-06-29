@@ -81,6 +81,7 @@ async def _cleanup_book(book_id):
 async def _seed_job(s, book, toc, *, priority: int = _FENCE_PRIORITY, **kwargs):
     from app.repositories import jobs as jobs_repo
 
+    kwargs.setdefault("output_language", "uz")
     job = await jobs_repo.create(
         s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra", **kwargs
     )
