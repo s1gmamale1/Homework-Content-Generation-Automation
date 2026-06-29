@@ -59,7 +59,7 @@ export function WorkerCards({
           No workers have checked in yet.
         </div>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="flex flex-wrap gap-2">
           {data.workers.map((w) => {
             const isDraining = w.status === "draining";
             const pendingDrain = drainMut.isPending && drainMut.variables === w.pc_id;
@@ -67,52 +67,58 @@ export function WorkerCards({
             const isPending = pendingDrain || pendingUndrain;
 
             return (
-              <div key={w.pc_id} className={cn(CARD, "space-y-2")}>
-                <div className="flex items-center gap-2">
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "size-2 shrink-0 rounded-full",
-                      !w.online && "bg-white/25",
-                    )}
-                    style={w.online ? { background: ONLINE_GREEN } : undefined}
-                  />
-                  <span className="truncate font-mono text-sm font-medium text-white">
-                    {w.pc_id}
+              <div
+                key={w.pc_id}
+                className={cn(
+                  "flex items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-1.5",
+                  isDraining && "border-amber-500/20 bg-amber-500/[0.04]",
+                )}
+              >
+                {/* Status dot */}
+                <span
+                  aria-hidden
+                  className={cn("size-2 shrink-0 rounded-full", !w.online && "bg-white/25")}
+                  style={w.online ? { background: ONLINE_GREEN } : undefined}
+                />
+
+                {/* pc_id */}
+                <span className="font-mono text-[0.75rem] font-medium text-white">
+                  {w.pc_id}
+                </span>
+
+                {/* Status / draining tag */}
+                {isDraining ? (
+                  <span className="rounded border border-amber-500/30 bg-amber-500/[0.08] px-1 py-0.5 text-[0.62rem] font-medium text-amber-300">
+                    draining
                   </span>
-                </div>
-                <div className="flex items-baseline justify-between gap-2 text-xs text-white/50">
-                  {isDraining ? (
-                    <span className="inline-flex items-center rounded border border-amber-500/30 bg-amber-500/[0.08] px-1.5 py-0.5 text-[0.7rem] font-medium text-amber-300">
-                      draining
-                    </span>
-                  ) : (
-                    <span className="truncate">{w.status}</span>
-                  )}
-                  <span className="shrink-0 font-mono text-white/40">
-                    {ago(w.last_heartbeat)}
-                  </span>
-                </div>
+                ) : (
+                  <span className="text-[0.7rem] text-white/40">{w.status}</span>
+                )}
+
+                {/* Age */}
+                <span className="font-mono text-[0.62rem] text-white/30">
+                  {ago(w.last_heartbeat)}
+                </span>
+
+                {/* Drain / Undrain button — only for online workers */}
                 {w.online && (
-                  <div className="flex justify-end">
-                    {isDraining ? (
-                      <button
-                        className={cn(GHOST_BTN, "h-7 px-2 text-xs text-amber-300/80 hover:text-amber-200 disabled:opacity-50")}
-                        disabled={isPending}
-                        onClick={() => undrainMut.mutate(w.pc_id)}
-                      >
-                        {pendingUndrain ? "…" : "Undrain"}
-                      </button>
-                    ) : (
-                      <button
-                        className={cn(GHOST_BTN, "h-7 px-2 text-xs disabled:opacity-50")}
-                        disabled={isPending}
-                        onClick={() => drainMut.mutate(w.pc_id)}
-                      >
-                        {pendingDrain ? "…" : "Drain"}
-                      </button>
-                    )}
-                  </div>
+                  isDraining ? (
+                    <button
+                      className={cn(GHOST_BTN, "h-6 px-1.5 text-[0.68rem] text-amber-300/80 hover:text-amber-200 disabled:opacity-50")}
+                      disabled={isPending}
+                      onClick={() => undrainMut.mutate(w.pc_id)}
+                    >
+                      {pendingUndrain ? "…" : "Undrain"}
+                    </button>
+                  ) : (
+                    <button
+                      className={cn(GHOST_BTN, "h-6 px-1.5 text-[0.68rem] disabled:opacity-50")}
+                      disabled={isPending}
+                      onClick={() => drainMut.mutate(w.pc_id)}
+                    >
+                      {pendingDrain ? "…" : "Drain"}
+                    </button>
+                  )
                 )}
               </div>
             );
