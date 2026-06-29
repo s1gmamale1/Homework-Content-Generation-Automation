@@ -97,6 +97,7 @@ export interface Book {
   grade: string | null;
   original_filename: string;
   subject_variant?: string | null;
+  source_language: OutputLanguage;
   status: BookStatus;
   error_message: string | null;
   gemini_file_expires_at: string | null;
