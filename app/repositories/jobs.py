@@ -6,7 +6,7 @@ from sqlalchemy import and_, case, func, literal, not_, or_, select, text, updat
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Batch, HomeworkJob, PhaseOutput
+from app.models import Batch, HomeworkJob, PhaseOutput, TOCEntry
 from app.repositories import workers as workers_repo
 
 _TERMINAL_STATUSES = ("done", "failed", "cancelled")
@@ -293,8 +293,9 @@ async def claim_next_job(
             the STAMPED job.extract_provider's credential.
         Default `capabilities=None` is all-False (cli-only).
 
-    Order: highest priority first, then oldest scheduled_at first (FIFO
-    within a priority band).
+    Order: highest priority first, then ascending lesson order
+    (toc_entries.order_index — so lesson 1 is claimed before lesson 2),
+    then oldest scheduled_at first (FIFO within a priority+lesson band).
     """
     from app.services.model_tiers import _PRIMARY_SELF_FALLBACK
     from app.services.agent_models import MODEL_MANIFEST, default_model as _default_model
@@ -396,7 +397,15 @@ async def claim_next_job(
         .where(extract_ok)
         .where(not_in_paused_batch)
         .where(fleet_gate)
-        .order_by(HomeworkJob.priority.desc(), HomeworkJob.scheduled_at.asc())
+        .order_by(
+            HomeworkJob.priority.desc(),
+            (
+                select(TOCEntry.order_index)
+                .where(TOCEntry.id == HomeworkJob.toc_entry_id)
+                .scalar_subquery()
+            ).asc(),                          # ascending lesson order (NULLS LAST by Postgres default)
+            HomeworkJob.scheduled_at.asc(),   # final FIFO tiebreaker
+        )
         .limit(1)
         .with_for_update(skip_locked=True)
     )
