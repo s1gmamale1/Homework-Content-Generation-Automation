@@ -2,8 +2,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0038_launch_defaults_content"
-down_revision = "0037_launch_defaults"
+revision = "0039_launch_defaults_content"
+down_revision = "0038_output_language"
 branch_labels = None
 depends_on = None
 

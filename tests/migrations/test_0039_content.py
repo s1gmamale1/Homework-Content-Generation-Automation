@@ -1,4 +1,4 @@
-"""Real-DB: 0038 adds content_* columns + seeds gemini-2.5-pro (must differ from the judge default flash)."""
+"""Real-DB: 0039 adds content_* columns + seeds gemini-2.5-pro (must differ from the judge default flash)."""
 from __future__ import annotations
 import os, subprocess, sys
 import pytest
@@ -14,10 +14,10 @@ def _run_alembic(cmd):
     if r.returncode != 0:
         raise RuntimeError(f"alembic {' '.join(cmd)} failed:\n{r.stdout}\n{r.stderr}")
 
-async def test_0038_adds_content_columns_and_seeds():
+async def test_0039_adds_content_columns_and_seeds():
     import asyncpg
-    _run_alembic(["downgrade", "0037_launch_defaults"])
-    _run_alembic(["upgrade", "0038_launch_defaults_content"])
+    _run_alembic(["downgrade", "0038_output_language"])
+    _run_alembic(["upgrade", "0039_launch_defaults_content"])
     conn = await asyncpg.connect(_SYNC_URL)
     try:
         row = await conn.fetchrow(
