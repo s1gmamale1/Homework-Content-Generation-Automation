@@ -39,6 +39,7 @@ import type {
   BatchSummary,
   Book,
   NotionSubject,
+  OutputLanguage,
   RoleTransport,
   SessionLimitStrategy,
   Transport,
@@ -586,6 +587,11 @@ function ReadyCard({
   const [judgeProvider, setJudgeProvider] = useState<string | null>(() => saved.judgeProvider ?? null);
   const [judgeModel, setJudgeModel] = useState<string | null>(() => saved.judgeModel ?? null);
   const [model, setModel] = useState<string | null>(() => saved.model ?? null);
+  // Output language override: null = inherit global default (not a concrete language).
+  // Do NOT default to a concrete value — see launcher-role-transport-default-1 WISHLIST bug.
+  const [outputLanguage, setOutputLanguage] = useState<OutputLanguage | null>(
+    () => saved.outputLanguage ?? null,
+  );
   const [choosing, setChoosing] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // True while the preview fetch is in flight (launch button shows spinner).
@@ -700,6 +706,7 @@ function ReadyCard({
       judgeProvider,
       judgeModel,
       model,
+      outputLanguage,
     };
     saveLauncherConfig(book.id, cfg);
   }, [
@@ -714,6 +721,7 @@ function ReadyCard({
     judgeProvider,
     judgeModel,
     model,
+    outputLanguage,
   ]);
 
   const alreadyBatched = batchedTransports.has(transport);
@@ -754,6 +762,9 @@ function ReadyCard({
     judge_model: judgeModel,
     session_limit_strategy: sessionLimitStrategy,
     ...(transport === "api" ? { model } : {}),
+    // Only send output_language when explicitly chosen — null/omitted means
+    // the backend inherits the global default (same inherit convention as role transports).
+    ...(outputLanguage != null ? { output_language: outputLanguage } : {}),
     ...(opts.tocIds
       ? { toc_entry_ids: opts.tocIds }
       : subset
@@ -969,6 +980,36 @@ function ReadyCard({
                       <SelectItem value="inherit">Auto</SelectItem>
                       <SelectItem value="pause">Pause</SelectItem>
                       <SelectItem value="switch">Switch</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* Output language — null = Auto (inherit global default). */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[0.6rem] font-medium uppercase tracking-[0.12em] text-white/35">
+                    Language
+                  </span>
+                  <Select
+                    value={outputLanguage ?? "inherit"}
+                    onValueChange={(v) =>
+                      setOutputLanguage(v === "inherit" ? null : (v as OutputLanguage))
+                    }
+                  >
+                    <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[8rem]")}>
+                      {outputLanguage == null ? (
+                        <SelectValue>
+                          {defaultsQ.data?.output_language
+                            ? `Auto → ${defaultsQ.data.output_language.toUpperCase()}`
+                            : "Auto → …"}
+                        </SelectValue>
+                      ) : (
+                        <SelectValue />
+                      )}
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="inherit">Auto</SelectItem>
+                      <SelectItem value="uz">UZ — O'zbek</SelectItem>
+                      <SelectItem value="en">EN — English</SelectItem>
+                      <SelectItem value="ru">RU — Русский</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

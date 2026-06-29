@@ -30,6 +30,7 @@ import { safeUUID } from "@/lib/uuid";
 import { subjectLabel, CONTENT_PHASES } from "@/lib/subjects";
 import type {
   JobStatus,
+  OutputLanguage,
   ProviderModelManifest,
   RoleTransport,
   Transport,
@@ -51,6 +52,8 @@ export function SectionPage() {
   const [extractModel, setExtractModel] = useState<string | null>(null);
   const [judgeProvider, setJudgeProvider] = useState<string | null>(null);
   const [judgeModel, setJudgeModel] = useState<string | null>(null);
+  // Output language override: null = inherit global default (not a concrete value).
+  const [outputLanguage, setOutputLanguage] = useState<OutputLanguage | null>(null);
   // "all" = generate the full packet (send selected_phases=null). "pick" = only
   // the checked phases. Default "all" so most users never touch it.
   const [phaseMode, setPhaseMode] = useState<"all" | "pick">("all");
@@ -114,6 +117,13 @@ export function SectionPage() {
     queryFn: () => api.getAgentModels(),
     refetchInterval: 5000,
     refetchOnWindowFocus: true,
+  });
+
+  // Fetch global launch defaults so the language picker can show
+  // "Auto → <resolved default>" when the per-launch override is not set.
+  const { data: launchDefaults } = useQuery({
+    queryKey: ["launch-defaults"],
+    queryFn: () => api.getLaunchDefaults(),
   });
 
   // When the manifest loads (or the selected provider changes), reset the
@@ -207,6 +217,8 @@ export function SectionPage() {
         extract_model: extractModel,
         judge_provider: judgeProvider,
         judge_model: judgeModel,
+        // Only send when explicitly chosen — null/omitted inherits global default.
+        ...(outputLanguage != null ? { output_language: outputLanguage } : {}),
       });
       if (job.added_phases && job.added_phases.length > 0) {
         toast.info(`Also generating dependencies: ${job.added_phases.join(", ")}`);
@@ -312,6 +324,9 @@ export function SectionPage() {
           judgeTransport={judgeTransport}
           onJudgeTransportChange={setJudgeTransport}
           judgeWarning={judgeWarning}
+          outputLanguage={outputLanguage}
+          onOutputLanguageChange={setOutputLanguage}
+          resolvedOutputLanguage={launchDefaults?.output_language ?? null}
         />
 
         {/* What to generate: full packet (default) or a hand-picked subset, with
@@ -577,6 +592,9 @@ interface AgentPickerProps {
   judgeTransport: RoleTransport;
   onJudgeTransportChange: (next: RoleTransport) => void;
   judgeWarning: string | null;
+  outputLanguage: OutputLanguage | null;
+  onOutputLanguageChange: (next: OutputLanguage | null) => void;
+  resolvedOutputLanguage: OutputLanguage | null;
 }
 
 function AgentPicker({
@@ -602,6 +620,9 @@ function AgentPicker({
   judgeTransport,
   onJudgeTransportChange,
   judgeWarning,
+  outputLanguage,
+  onOutputLanguageChange,
+  resolvedOutputLanguage,
 }: AgentPickerProps) {
   const fleet = manifest?.fleet;
   const providerNames = manifest ? Object.keys(manifest.providers) : [];
@@ -753,6 +774,37 @@ function AgentPicker({
           jobTransport={transport}
         />
       </div>
+      {/* Output language — null = Auto (inherit global default). */}
+      <div className="mt-3 flex flex-col gap-1.5">
+        <span className="font-mono text-[0.66rem] uppercase tracking-[0.14em] text-white/45">
+          Output language
+        </span>
+        <Select
+          value={outputLanguage ?? "inherit"}
+          onValueChange={(v) =>
+            onOutputLanguageChange(v === "inherit" ? null : (v as OutputLanguage))
+          }
+        >
+          <SelectTrigger className={cn(SELECT_TRIGGER, "w-[10rem]")}>
+            {outputLanguage == null ? (
+              <SelectValue>
+                {resolvedOutputLanguage
+                  ? `Auto → ${resolvedOutputLanguage.toUpperCase()}`
+                  : "Auto → …"}
+              </SelectValue>
+            ) : (
+              <SelectValue />
+            )}
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="inherit">Auto</SelectItem>
+            <SelectItem value="uz">UZ — O'zbek</SelectItem>
+            <SelectItem value="en">EN — English</SelectItem>
+            <SelectItem value="ru">RU — Русский</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
       <p className="mt-1.5 text-xs text-white/45">
         Auto = backend default / follow job billing. Pin Extract or Judge to a provider, model, or
         CLI/API independently of the run above.
