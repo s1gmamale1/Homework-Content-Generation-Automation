@@ -103,6 +103,37 @@ def _url_from_block(block: dict) -> str | None:
 
 _SINF_RE = re.compile(r"-\s*sinf\b", re.IGNORECASE)
 
+_LANG_CONTAINER_RE: dict[str, re.Pattern[str]] = {
+    "uz": _SINF_RE,
+    "ru": re.compile(r"-\s*(класс|klass)\b", re.I),
+    "en": re.compile(r"-\s*(english|grade|inglizcha)\b", re.I),
+}
+
+
+def _subjects_under(client, grade_page_id: str, container_re: re.Pattern[str], language: str) -> list[dict]:
+    """Subjects under the grade's language-specific container child.
+
+    Finds the container whose title matches ``container_re``, then returns one
+    dict per subject page under it: ``{notion_title, page_id, app_subject|None,
+    has_textbook}``.  Returns ``[]`` when no matching container is found.
+    """
+    container = next(
+        (c for c in client.get_child_pages(grade_page_id) if container_re.search(c["title"])),
+        None,
+    )
+    if container is None:
+        return []
+    out = []
+    for s in client.get_child_pages(container["id"]):
+        blocks = client.get_block_children(s["id"])
+        out.append({
+            "notion_title": s["title"].strip(),
+            "page_id": s["id"],
+            "app_subject": _map_subject_for_language(s["title"], language),
+            "has_textbook": _first_pdf_block(blocks) is not None,
+        })
+    return out
+
 
 def list_grades(client, lessons_root: str) -> list[dict]:
     """Grade pages under the Lessons root, excluding the 'Rules' page."""
@@ -116,21 +147,47 @@ def list_grades(client, lessons_root: str) -> list[dict]:
 
 def list_subjects(client, grade_page_id: str) -> list[dict]:
     """Subjects under the grade's Uzbek 'N - sinf' child (klass ignored). Each:
-    {notion_title, page_id, app_subject|None, has_textbook}."""
-    sinf = next((c for c in client.get_child_pages(grade_page_id)
-                 if _SINF_RE.search(c["title"])), None)
-    if sinf is None:
-        return []
-    out = []
-    for s in client.get_child_pages(sinf["id"]):
-        blocks = client.get_block_children(s["id"])
-        out.append({
-            "notion_title": s["title"].strip(),
-            "page_id": s["id"],
-            "app_subject": _map_subject(s["title"]),
-            "has_textbook": _first_pdf_block(blocks) is not None,
-        })
-    return out
+    {notion_title, page_id, app_subject|None, has_textbook}.
+
+    Backward-compat wrapper around ``_subjects_under`` for existing callers."""
+    return _subjects_under(client, grade_page_id, _SINF_RE, "uz")
+
+
+def list_subjects_for_language(client, grade_page_id: str, language: str) -> list[dict]:
+    """Subjects under the grade's container for the given language (uz/ru/en).
+
+    Thin wrapper around ``_subjects_under`` using the per-language container
+    regex from ``_LANG_CONTAINER_RE``.  Returns ``[]`` when the container is
+    absent (e.g. English is unavailable until the page is created)."""
+    return _subjects_under(client, grade_page_id, _LANG_CONTAINER_RE[language], language)
+
+
+def available_languages(client, grade_page_id: str) -> dict[str, dict[str, dict]]:
+    """Detect which languages are available per subject under this grade page.
+
+    Crawls all three containers (uz/ru/en) and returns a nested mapping:
+    ``{app_subject: {lang: {"page_id": …, "has_textbook": …}}}``.
+
+    Inclusion rule: a subject/language pair is recorded only when
+    - the language's container child EXISTS under the grade page, AND
+    - the subject page maps to a non-None ``app_subject``, AND
+    - the subject page has at least one textbook PDF (``has_textbook=True``).
+
+    A language whose container is absent contributes nothing (e.g. English is
+    simply absent today — UI can treat it as unavailable)."""
+    result: dict[str, dict[str, dict]] = {}
+    for lang in ("uz", "ru", "en"):
+        for entry in _subjects_under(client, grade_page_id, _LANG_CONTAINER_RE[lang], lang):
+            app_subject = entry["app_subject"]
+            if app_subject is None:
+                continue
+            if not entry["has_textbook"]:
+                continue
+            result.setdefault(app_subject, {})[lang] = {
+                "page_id": entry["page_id"],
+                "has_textbook": entry["has_textbook"],
+            }
+    return result
 
 
 class NoTextbook(Exception):
