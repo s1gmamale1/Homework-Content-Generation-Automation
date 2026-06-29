@@ -22,20 +22,35 @@ def _fold(s: str) -> str:
     return s.lower().translate({ord(c): None for c in _APOSTROPHES})
 
 
-def _map_subject(title: str) -> str | None:
-    """Notion subject-page title -> app subject key, or None if unsupported.
+def _map_subject_for_language(title: str, language: str) -> str | None:
+    """Notion subject-page title → app subject key for the given language, or
+    None if the title doesn't match any registered subject.
 
-    Excluded titles (e.g. "Jismoniy tarbiya"/PE, "Axloqiy tarbiya"/Ethics) are
-    rejected BEFORE keyword matching — they contain the bare "tarbiya" keyword
-    (Upbringing) as a substring and would otherwise mis-map to it."""
+    ``language`` must be ``"uz"``, ``"ru"``, or ``"en"`` — it selects which
+    keyword set is consulted (see ``subjects.notion_keyword_pairs``).
+
+    Excluded titles (EXCLUDED_KEYWORDS) are rejected before keyword matching
+    regardless of language — they only apply to the Uzbek set, but guarding them
+    unconditionally is safe (they're Latin-script words absent from ru/en sets)."""
+    keyword_pairs = subjects.notion_keyword_pairs(language)
     folded = _fold(title)
     for excluded in subjects.EXCLUDED_KEYWORDS:
         if excluded in folded:
             return None
-    for keyword, app_subject in _SUBJECT_KEYWORDS:
+    for keyword, app_subject in keyword_pairs:
         if keyword in folded:
             return app_subject
     return None
+
+
+def _map_subject(title: str) -> str | None:
+    """Notion subject-page title -> app subject key, or None if unsupported.
+
+    Uzbek-language wrapper around ``_map_subject_for_language``. Excluded titles
+    (e.g. "Jismoniy tarbiya"/PE, "Axloqiy tarbiya"/Ethics) are rejected BEFORE
+    keyword matching — they contain the bare "tarbiya" keyword (Upbringing) as a
+    substring and would otherwise mis-map to it."""
+    return _map_subject_for_language(title, "uz")
 
 
 _TEXTBOOK_MARKERS = ("darslik", "textbook")

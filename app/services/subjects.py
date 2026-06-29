@@ -32,6 +32,8 @@ class SubjectDef:
     game: str
     language: str
     keywords: tuple[str, ...]
+    ru_keywords: tuple[str, ...] = ()
+    en_keywords: tuple[str, ...] = ()
 
 
 _MEMORY = "practice-memory-match"
@@ -40,22 +42,30 @@ _JIGSAW = "practice-jigsaw"
 _SENTENCE = "practice-sentence"
 
 
-def _d(code, label, family, game, language, *keywords) -> SubjectDef:
-    return SubjectDef(code, label, family, game, language, tuple(keywords))
+def _d(code, label, family, game, language, *keywords,
+       ru: tuple[str, ...] = (), en: tuple[str, ...] = ()) -> SubjectDef:
+    return SubjectDef(code, label, family, game, language, tuple(keywords),
+                      ru_keywords=ru, en_keywords=en)
 
 
 # Order = display order. First 7 = legacy codes, preserved verbatim.
 _DEFS: list[SubjectDef] = [
     # --- legacy (do not change code/family/game/label) ---
-    _d("biology", "Biology (Biologiya)", "sciences", _MEMORY, "uz", "biolog"),
+    _d("biology", "Biology (Biologiya)", "sciences", _MEMORY, "uz", "biolog",
+       ru=("биолог",), en=("biology",)),
     _d("english", "English", "languages", _SENTENCE, "english", "ingliz"),
-    _d("geometriya-g7-11", "Geometry (Geometriya)", "math", _JIGSAW, "uz", "geometriya"),
+    _d("geometriya-g7-11", "Geometry (Geometriya)", "math", _JIGSAW, "uz", "geometriya",
+       ru=("геометрия",), en=("geometry",)),
     _d("history", "History (Tarix)", "humanities", _MEMORY, "uz",
-       "ozbekiston tarixi", "jahon tarixi", "tarix"),
-    _d("kimyo-g7-11", "Chemistry (Kimyo)", "sciences", _TICTACTOE, "uz", "kimyo"),
+       "ozbekiston tarixi", "jahon tarixi", "tarix",
+       ru=("всемирная истори", "история узбекистан")),
+    _d("kimyo-g7-11", "Chemistry (Kimyo)", "sciences", _TICTACTOE, "uz", "kimyo",
+       ru=("хими",)),
     _d("math-algebra", "Mathematics / Algebra (Matematika / Algebra)", "math",
-       _TICTACTOE, "uz", "algebra"),
-    _d("physics", "Physics (Fizika)", "sciences", _TICTACTOE, "uz", "fizika"),
+       _TICTACTOE, "uz", "algebra",
+       ru=("алгебра",), en=("algebra",)),
+    _d("physics", "Physics (Fizika)", "sciences", _TICTACTOE, "uz", "fizika",
+       ru=("физика",), en=("physics",)),
     # --- new subjects ---
     _d("matematika", "Mathematics (Matematika)", "math", _TICTACTOE, "uz", "matematika"),
     _d("ona-tili", "Uzbek (Ona tili)", "languages", _SENTENCE, "uz", "ona tili"),
@@ -95,10 +105,24 @@ REGISTRY: dict[str, SubjectDef] = {d.code: d for d in _DEFS}
 SUBJECT_CODES: list[str] = [d.code for d in _DEFS]
 
 
-def notion_keyword_pairs() -> list[tuple[str, str]]:
+def notion_keyword_pairs(language: str = "uz") -> list[tuple[str, str]]:
     """(folded-keyword, code) pairs sorted by descending keyword length so a
-    compound title is matched before a bare substring it contains."""
-    pairs = [(kw, d.code) for d in _DEFS for kw in d.keywords]
+    compound title is matched before a bare substring it contains.
+
+    ``language`` selects which keyword set to read:
+    - ``"uz"``  — ``SubjectDef.keywords`` (Uzbek, the default)
+    - ``"ru"``  — ``SubjectDef.ru_keywords`` (Russian Cyrillic substrings)
+    - ``"en"``  — ``SubjectDef.en_keywords`` (English substrings)
+
+    The default ``"uz"`` is intentionally backward-compatible: all existing
+    callers that pass no argument continue to receive Uzbek pairs byte-identical
+    to the previous implementation."""
+    if language == "ru":
+        pairs = [(kw, d.code) for d in _DEFS for kw in d.ru_keywords]
+    elif language == "en":
+        pairs = [(kw, d.code) for d in _DEFS for kw in d.en_keywords]
+    else:
+        pairs = [(kw, d.code) for d in _DEFS for kw in d.keywords]
     pairs.sort(key=lambda kc: -len(kc[0]))
     return pairs
 
