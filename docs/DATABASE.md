@@ -2,8 +2,8 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Every claim here was re-verified against branch `feat/multi-language-output`, head `0038_output_language`
-> (0038), 2026-06-29. When this doc and the code disagree, the code wins — fix the doc.
+> Every claim here was re-verified against branch `feat/language-aware-source-books-p3`, head `0040_books_source_language`
+> (0040), 2026-06-29. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
 
@@ -28,14 +28,16 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`0038_output_language`** (0028 = enum CHECK constraints,
+also runs it on deploy). Current head: **`0040_books_source_language`** (0028 = enum CHECK constraints,
 0029 = `phase_outputs.judge_status`, 0030 = `agent_usages.cache_creation_tokens`,
 0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton,
 0033 = `custom_prompts`/`selected_phases` JSONB on `homework_jobs`+`batches`,
 0034 = widen `phase_outputs.prompt_hash` 64→128 for `custom:sha256:<hex>` provenance,
 0035 = `workers.capabilities` JSONB, 0036 = `batches.session_limit_strategy` + CHECK,
 0037 = `launch_defaults` singleton + seed + NULL-column backfill on `homework_jobs`,
-0038 = `output_language` on `homework_jobs`+`batches`+`launch_defaults` + batch UNIQUE swap).
+0038 = `output_language` on `homework_jobs`+`batches`+`launch_defaults` + batch UNIQUE swap,
+0039 = `content_provider`/`content_model`/`content_transport` on `launch_defaults`,
+0040 = `books.source_language` String(8) NOT NULL server_default `'uz'` + CHECK `uz|ru|en`).
 Full chain in §7. (Revision IDs stay ≤32 chars — `alembic_version.version_num` is VARCHAR(32).)
 
 ---
@@ -84,6 +86,7 @@ Seven application tables (plus `alembic_version`). Mixins from `app/models/base.
 | `content_sha256` | String(64) NOT NULL | upload de-dup key; `ix_books_content_sha256` |
 | `file_size_bytes` | BigInteger NOT NULL | |
 | `gemini_file_uri`, `gemini_file_expires_at`, `gemini_cache_name`, `gemini_cache_expires_at` | NULL | **legacy/unused** — kept nullable for backwards-compat from the removed Gemini SDK era |
+| `source_language` | String(8) NOT NULL, server_default `'uz'` | migration 0040: the language of the source textbook — `uz` (Uzbek), `ru` (Russian), `en` (English); **DB CHECK `uz\|ru\|en`**. Set at ingest time (upload form, Notion fetch language picker, or `book_from_notion` `language` field). Controls the Notion fetch tree (`uz` → `N - sinf`, `ru` → `N - класс`/`klass`, `en` → named english/inglizcha/ingliz container); also the default `output_language` for jobs launched over this book (overridable = translation mode). Dedup stays `(content_sha256, subject)` — a different-language PDF for the same subject is a distinct book. |
 | `status` | String(32) NOT NULL | lifecycle: `uploading → toc_extracting → toc_ready \| failed` — note there is **no** `"ready"` status |
 | `error_message` | Text NULL | set when `failed` |
 
@@ -406,7 +409,9 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | 35 | 0035_workers_capabilities | `0035_workers_capabilities` | adds `workers.capabilities` JSONB nullable (launcher-capability-gate-1, worklog 0085) |
 | 36 | 0036_batch_session_limit_strategy | `0036_batch_session_limit_strategy` | adds `batches.session_limit_strategy` NOT NULL server_default `'inherit'` + CHECK `pause\|switch\|inherit` (C5 session-limit autopause, worklog 0089) |
 | 37 | 0037_launch_defaults | `0037_launch_defaults` | creates `launch_defaults` singleton table (id=1 CHECK), seeds the row (judge/extract = gemini/gemini-2.5-flash/inherit, toc_transport=cli), and unconditionally backfills NULL `judge_provider`/`judge_model`/`extract_provider`/`extract_model` on `homework_jobs` |
-| 38 | 0038_output_language | `0038_output_language` | adds `output_language` String(16) NOT NULL server_default `'uz'` + DB CHECK `uz\|en\|ru` to `homework_jobs`, `batches`, and `launch_defaults`; drops `uq_batches_book_id_transport` and creates `uq_batches_book_id_transport_output_language` (`book_id`, `transport`, `output_language`) — **HEAD** |
+| 38 | 0038_output_language | `0038_output_language` | adds `output_language` String(16) NOT NULL server_default `'uz'` + DB CHECK `uz\|en\|ru` to `homework_jobs`, `batches`, and `launch_defaults`; drops `uq_batches_book_id_transport` and creates `uq_batches_book_id_transport_output_language` (`book_id`, `transport`, `output_language`) |
+| 39 | 0039_launch_defaults_content | `0039_launch_defaults_content` | adds `content_provider`, `content_model`, `content_transport` to `launch_defaults`; seeds `gemini`/`gemini-2.5-pro`/`inherit` (deliberately different from judge default to avoid self-grade guard on all-gemini fleet) |
+| 40 | 0040_books_source_language | `0040_books_source_language` | adds `books.source_language` String(8) NOT NULL server_default `'uz'` + DB CHECK `ck_books_source_language IN ('uz','ru','en')` — **HEAD** |
 
 ---
 

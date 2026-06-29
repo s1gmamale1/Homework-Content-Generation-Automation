@@ -8,7 +8,7 @@
 
 ## What it does
 
-1. Upload a curriculum textbook PDF (**26 supported subjects** across sciences, math, languages, and humanities — biology, math/algebra, Uzbek, Russian, English, history, chemistry, physics, geography, law, and more; full registry in `app/services/subjects.py`) — or pull one from a connected Notion lessons tree.
+1. Upload a curriculum textbook PDF (**26 supported subjects** across sciences, math, languages, and humanities — biology, math/algebra, Uzbek, Russian, English, history, chemistry, physics, geography, law, and more; full registry in `app/services/subjects.py`) — or pull one from a connected Notion lessons tree. **Multi-language source textbooks:** books carry a `source_language` (`uz`/`ru`/`en`); the Notion tree is crawled by language (Uzbek `N - sinf`, Russian `N - класс`/`klass`, English named containers); output language defaults to the book's source language, with an explicit override for translation mode.
 2. The table of contents is extracted (pinned to a cheap Gemini model); pick any section.
 3. The pipeline distills that lesson, then runs the content phases **DAG-parallel** (each launches as soon as its dependencies finish). Every phase is graded by an LLM judge against its own prompt contract.
 4. Each phase produces **markdown** (the deliverable). The operator console streams progress over SSE and renders each phase's markdown for review.
@@ -104,7 +104,7 @@ Homework-Content-Generation-Automation/
 │       ├── worker.py             queue worker (embedded or standalone)
 │       └── notion_*/notion/      Notion archive + fetch
 ├── prompts/_general/             the live prompt set (one .md per phase)
-├── alembic/versions/             schema migrations (0001…0037)
+├── alembic/versions/             schema migrations (0001…0040)
 ├── web/                          React SPA (operator console)
 ├── Dockerfile                    multi-stage (node SPA → uv venv → runtime)
 ├── docker-compose.yml            postgres + api (GHCR image, Traefik) + optional scaled worker
