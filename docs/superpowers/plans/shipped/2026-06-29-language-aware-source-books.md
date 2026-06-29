@@ -132,10 +132,10 @@ badge+filter).
 - **Acceptance**: tsc + build; eyeball: picking RU fetches the klass edition (RU badge in tray); English chip is disabled with the create-page/upload hint; uploading with EN selected tags the book `en`.
 - **Commit**: `feat(fe): choose language when preparing a book (RU fetch, EN upload/disabled-with-hint)`
 
-### Task 11 — Monitor batch cards: language badge
-- `web/src/components/fleet/batch-funnel.tsx`: add an `output_language` chip to `BookCard`/`TransportRow` header (line 120-127 / 44-59), alongside grade + transport label. Optionally extend `lib/monitor-grouping.ts` with an opt-in language sub-group (behind the badge — keep grade as the primary group per the monitor-overhaul design).
-- **Acceptance**: tsc + build; eyeball `/monitor`.
-- **Commit**: `feat(fe): language badge on Monitor batch cards`
+### Task 11 — Monitor batch cards: language badge — ❌ DROPPED (user decision, 2026-06-29)
+**Not built.** The Monitor already received language tabs from the monitor-dashboard work (#65), so a per-card `output_language` badge is redundant and would collide with that UI. Skipped entirely; Phase 3 shipped Tasks 7–10 only and touches no Monitor file.
+
+~~- `web/src/components/fleet/batch-funnel.tsx`: add an `output_language` chip to `BookCard`/`TransportRow` header, alongside grade + transport label. Optionally extend `lib/monitor-grouping.ts` with an opt-in language sub-group.~~
 
 ---
 
