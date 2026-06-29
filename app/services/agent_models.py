@@ -91,6 +91,24 @@ def validate_role_transport(field: str, value: str) -> str | None:
     return None
 
 
+# ─── Output Language ───────────────────────────────────────────────────────────
+OUTPUT_LANGUAGES = frozenset({"uz", "en", "ru"})
+
+
+def validate_output_language(value, *, allow_none: bool):
+    """Return an error string if output_language is invalid, else None."""
+    if value is None:
+        return None if allow_none else "output_language is required"
+    if value not in OUTPUT_LANGUAGES:
+        return f"output_language must be one of {sorted(OUTPUT_LANGUAGES)}; got {value!r}"
+    return None
+
+
+def resolve_output_language(explicit, default: str) -> str:
+    """Resolve output_language: explicit value or default fallback."""
+    return explicit or default
+
+
 def resolve_role_transport(role_value: str, job_transport: str) -> str:
     """'inherit' follows the job's transport; an explicit value wins (Phase 4.1 §2)."""
     return job_transport if role_value == "inherit" else role_value
