@@ -58,19 +58,27 @@ def _resolve_subject_page_id(
     subject: str,
     grade: Optional[str],
     hint: str = "",
+    language: str = "uz",
 ) -> Optional[str]:
     """Resolve the Notion subject-page id for a job.
 
-    The value at ``{subject}|{grade}`` is either a plain page-id string (the
-    normal case, incl. grades with a single combined history page), or a
-    ``{keyword: page-id}`` object for grades that split one app-subject across
-    several Notion pages (e.g. history → Jahon tarixi / O‘zbekiston tarixi). For
-    the object form, ``hint`` (the book filename) is folded and matched against
-    each keyword as a substring; no match returns None so the caller logs a skip
-    rather than mis-filing."""
+    The lookup key is ``{subject}|{grade}`` for Uzbek (the default) and
+    ``{language}:{subject}|{grade}`` for a non-Uzbek medium (``en``/``ru``), so
+    English/Russian content files under its OWN Notion root page. A non-uz job
+    whose language page is unconfigured resolves to None — the caller skips and
+    records a reason rather than mis-filing non-Uzbek content into the uz page.
+
+    The value at that key is either a plain page-id string (the normal case,
+    incl. grades with a single combined history page), or a ``{keyword: page-id}``
+    object for grades that split one app-subject across several Notion pages
+    (e.g. history → Jahon tarixi / O‘zbekiston tarixi). For the object form,
+    ``hint`` (the book filename) is folded and matched against each keyword as a
+    substring; no match returns None so the caller logs a skip rather than
+    mis-filing."""
     if not grade:
         return None
-    value = mapping.get(f"{subject}|{grade}")
+    prefix = "" if language == "uz" else f"{language}:"
+    value = mapping.get(f"{prefix}{subject}|{grade}")
     if value is None or isinstance(value, str):
         return value
     folded = _fold(hint)
@@ -229,15 +237,16 @@ async def archive_job(job_id: UUID) -> None:
                 return
             subject_page_id = _resolve_subject_page_id(
                 settings.notion_subject_pages, job.subject, book.grade,
-                book.original_filename or "",
+                book.original_filename or "", language=job.output_language,
             )
             if not subject_page_id:
                 log.warning(
-                    "notion: no subject-page mapping for subject=%s grade=%s — skipping",
-                    job.subject, book.grade,
+                    "notion: no subject-page mapping for language=%s subject=%s grade=%s — skipping",
+                    job.output_language, job.subject, book.grade,
                 )
                 await jobs_repo.set_notion_skip_reason(
-                    session, job_id, f"no Notion page for {job.subject}|{book.grade}")
+                    session, job_id,
+                    f"no Notion page for language={job.output_language} {job.subject}|{book.grade}")
                 await session.commit()
                 return
             section_id = section.id

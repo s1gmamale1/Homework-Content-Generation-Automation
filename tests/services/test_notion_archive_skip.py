@@ -39,7 +39,7 @@ class _FakeSession:
 def test_archive_marks_skip_on_no_mapping():
     jid = uuid4()
     job = SimpleNamespace(id=jid, notion_archived_at=None, subject="math-algebra",
-                          book_id=uuid4(), toc_entry_id=uuid4())
+                          output_language="uz", book_id=uuid4(), toc_entry_id=uuid4())
     book = SimpleNamespace(grade="5", original_filename="x.pdf")
     section = SimpleNamespace(id=uuid4(), section_number="1", section_title="T")
     set_skip = AsyncMock()
@@ -69,7 +69,7 @@ def test_archive_marks_skip_on_push_exception():
     records notion_skip_reason='push error: <Type>' instead of vanishing."""
     jid = uuid4()
     job = SimpleNamespace(id=jid, notion_archived_at=None, subject="math-algebra",
-                          book_id=uuid4(), toc_entry_id=uuid4())
+                          output_language="uz", book_id=uuid4(), toc_entry_id=uuid4())
     book = SimpleNamespace(grade="5", original_filename="x.pdf")
     section = SimpleNamespace(id=uuid4(), section_number="1", section_title="T")
     done_phase = SimpleNamespace(phase_name="case-based-preview", output_md="# x", status="done")
