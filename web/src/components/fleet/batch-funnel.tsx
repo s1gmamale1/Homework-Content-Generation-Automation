@@ -5,7 +5,6 @@ import { type RowStatus, transportRowStatus } from "@/lib/batch-status";
 import { subjectLabelWithVariant } from "@/lib/subjects";
 import { CARD, GHOST_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
-import { ApiBadge } from "./launcher";
 import { BatchLessonList } from "./batch-lesson-list";
 import { RollupBar } from "./rollup-bar";
 
@@ -20,16 +19,19 @@ const ROW_CHIP: Record<RowStatus, { label: string; className: string; style?: CS
   partial: { label: "partial", className: "bg-amber-500/20 text-amber-200" },
 };
 
-/** One transport's progress within a book card: provider/badge, status,
- *  its own rollup bar, and a per-transport lessons drill-in. Kept separate
- *  per transport (never merged) because a lesson can be done on CLI yet
- *  not-started on API — summing the two rollups would double-count. */
+/** One transport's progress within a book card: status chip, rollup bar,
+ *  and a per-transport lessons drill-in. Kept separate per transport (never
+ *  merged) because a lesson can be done on CLI yet not-started on API —
+ *  summing the two rollups would double-count. */
 function TransportRow({
   batch,
   divided,
+  transportLabel,
 }: {
   batch: BatchSummary;
   divided: boolean;
+  /** Shown next to the status chip only when the book has >1 transport. */
+  transportLabel?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const Chevron = expanded ? ChevronDown : ChevronRight;
@@ -38,19 +40,14 @@ function TransportRow({
   return (
     <div className={cn("space-y-3", divided && "border-t border-white/[0.06] pt-3")}>
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 font-mono text-[0.72rem] text-white/45">
-          <span>{batch.provider}</span>
-          {batch.transport === "api" ? (
-            <ApiBadge />
-          ) : (
-            <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[0.62rem] uppercase tracking-wide text-white/45">
-              cli
-            </span>
-          )}
-        </div>
+        {transportLabel && (
+          <span className="font-mono text-[0.62rem] uppercase tracking-wide text-white/35">
+            {transportLabel}
+          </span>
+        )}
         <span
           className={cn(
-            "shrink-0 rounded-full px-2 py-0.5 text-[0.7rem] font-medium",
+            "ml-auto shrink-0 rounded-full px-2 py-0.5 text-[0.7rem] font-medium",
             chip.className,
           )}
           style={chip.style}
@@ -121,18 +118,15 @@ function BookCard({ batches }: { batches: BatchSummary[] }) {
             <span className="font-normal text-white/45"> · grade {head.grade}</span>
           ) : null}
         </div>
-        {batches.length > 1 && (
-          <div className="mt-0.5 text-[0.72rem] text-white/40">
-            CLI + API · {batches.length} transports · done{" "}
-            {batches
-              .map((b) => `${b.rollup.done ?? 0} ${b.transport.toUpperCase()}`)
-              .join(" · ")}
-          </div>
-        )}
       </div>
 
       {batches.map((b, i) => (
-        <TransportRow key={b.batch_id} batch={b} divided={i > 0} />
+        <TransportRow
+          key={b.batch_id}
+          batch={b}
+          divided={i > 0}
+          transportLabel={batches.length > 1 ? b.transport : undefined}
+        />
       ))}
     </div>
   );
