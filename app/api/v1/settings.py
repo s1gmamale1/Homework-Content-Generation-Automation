@@ -71,7 +71,7 @@ async def put_launch_defaults(
         if prov is None or mdl is None:
             raise HTTPException(
                 422,
-                "judge/extract provider+model must be concrete "
+                f"{role} provider+model must be concrete "
                 "(the global default is the terminal resolver)",
             )
         if not is_valid(prov, mdl):
