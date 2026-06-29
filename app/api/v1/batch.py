@@ -17,9 +17,11 @@ from app.repositories import toc_entries as toc_repo
 from app.services import subjects
 from app.services.agent_models import (
     is_valid,
+    resolve_output_language,
     resolve_role_selection,
     resolve_role_transport,
     resolve_role_transport_default,
+    validate_output_language,
     validate_role_transport,
     validate_session_limit_strategy,
     validate_transport,
@@ -45,6 +47,7 @@ class BatchLaunchRequest(BaseModel):
     extract_model: Optional[str] = None
     judge_provider: Optional[str] = None
     judge_model: Optional[str] = None
+    output_language: str | None = None    # explicit pick; None → inherit global default
     force: bool = False
     preview: bool = False                 # compute disposition, don't mutate
     relaunch_mode: str = "resume"         # "resume" | "discard" for failed/cancelled-with-saved
@@ -133,6 +136,10 @@ async def launch_batch(
     if sls_err is not None:
         raise HTTPException(400, sls_err)
 
+    lang_err = validate_output_language(body.output_language, allow_none=True)
+    if lang_err is not None:
+        raise HTTPException(400, lang_err)
+
     custom_prompts = body.custom_prompts or None
     if custom_prompts:
         valid_phases = set(flow_for(book.subject))
@@ -181,6 +188,7 @@ async def launch_batch(
         body.extract_provider, body.extract_model, ld.extract_provider, ld.extract_model)
     res_judge_transport = resolve_role_transport_default(body.judge_transport, ld.judge_transport)
     res_extract_transport = resolve_role_transport_default(body.extract_transport, ld.extract_transport)
+    res_output_language = resolve_output_language(body.output_language, ld.output_language)
     # Defense-in-depth: the resolved pairs must be manifest-valid (the global
     # default could only be off-manifest via a buggy PUT — fail loud, not silent).
     for role, prov, mdl in (("judge", res_judge_provider, res_judge_model),
@@ -205,11 +213,13 @@ async def launch_batch(
         new = resumable = empty = 0
         for t in targets:
             active = await jobs_repo.find_active_for_section(
-                session, body.book_id, t.id, transport=body.transport)
+                session, body.book_id, t.id, transport=body.transport,
+                output_language=res_output_language)
             if active is not None:
                 continue  # pending/running/done — not "remaining"
             latest = await jobs_repo.latest_for_section(
-                session, body.book_id, t.id, transport=body.transport)
+                session, body.book_id, t.id, transport=body.transport,
+                output_language=res_output_language)
             if latest is not None and latest.status in ("failed", "cancelled"):
                 if await jobs_repo.done_phase_count_for_job(session, latest.id) > 0:
                     resumable += 1
@@ -225,6 +235,7 @@ async def launch_batch(
     batch = await batches_repo.get_or_create_for_book(
         session, book_id=body.book_id, subject=book.subject, grade=book.grade,
         provider=provider, model=body.model, transport=body.transport,
+        output_language=res_output_language,
         extract_transport=res_extract_transport,
         judge_transport=res_judge_transport,
         custom_prompts=custom_prompts, selected_phases=selected_phases,
@@ -245,7 +256,8 @@ async def launch_batch(
         # book finds no same-transport job → falls through to create, leaving
         # the cli jobs untouched.
         existing = None if batch_force else await jobs_repo.find_active_for_section(
-            session, body.book_id, t.id, transport=body.transport)
+            session, body.book_id, t.id, transport=body.transport,
+            output_language=res_output_language)
         if existing is not None:
             # Lookup is transport-scoped, so a returned job always matches —
             # guard it as belt-and-suspenders before adopting. A plain `assert`
@@ -275,7 +287,8 @@ async def launch_batch(
         # No active (pending/running/done) job → "remaining". Resume a saved
         # failed/cancelled section instead of discarding it; else create fresh.
         latest = await jobs_repo.latest_for_section(
-            session, body.book_id, t.id, transport=body.transport)
+            session, body.book_id, t.id, transport=body.transport,
+            output_language=res_output_language)
         if (latest is not None and latest.status in ("failed", "cancelled")
                 and body.relaunch_mode != "discard"):
             await jobs_repo.reset_for_retry(session, latest.id)   # reuses done phases
@@ -287,6 +300,7 @@ async def launch_batch(
                                subject=book.subject, provider=provider,
                                model=body.model, batch_id=batch.id,
                                transport=body.transport,
+                               output_language=res_output_language,
                                extract_transport=res_extract_transport,
                                judge_transport=res_judge_transport,
                                custom_prompts=custom_prompts, selected_phases=selected_phases,

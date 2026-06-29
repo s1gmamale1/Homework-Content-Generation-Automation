@@ -101,6 +101,7 @@ _FAKE_LD = SimpleNamespace(
     judge_provider="gemini", judge_model="gemini-2.5-flash",
     judge_transport="inherit", extract_provider="gemini",
     extract_model="gemini-2.5-flash", extract_transport="inherit",
+    output_language="uz",
 )
 
 _HDR = {"Authorization": "Bearer 123"}

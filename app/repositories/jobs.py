@@ -729,11 +729,19 @@ async def resume_failed_in_batch(session: AsyncSession, batch_id: UUID) -> int:
 async def latest_for_section(
     session: AsyncSession, book_id: UUID, toc_entry_id: UUID, *,
     transport: Optional[str] = None,
+    output_language: str,
 ) -> Optional[HomeworkJob]:
-    """The most recent job for a (book, section) regardless of status — used by
-    relaunch to find a failed/cancelled job to RESUME rather than recreate."""
+    """The most recent job for a (book, section, output_language) regardless of
+    status — used by relaunch to find a failed/cancelled job to RESUME rather
+    than recreate.
+
+    `output_language` scopes the lookup so an EN relaunch over a previously-
+    failed UZ section finds the EN job (not the UZ one) and resumes it correctly
+    instead of creating a new EN job that would duplicate work.
+    """
     conds = [HomeworkJob.book_id == book_id,
-             HomeworkJob.toc_entry_id == toc_entry_id]
+             HomeworkJob.toc_entry_id == toc_entry_id,
+             HomeworkJob.output_language == output_language]
     if transport is not None:
         conds.append(HomeworkJob.transport == transport)
     stmt = (select(HomeworkJob).where(*conds)
