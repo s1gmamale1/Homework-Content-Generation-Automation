@@ -106,7 +106,12 @@ _SINF_RE = re.compile(r"-\s*sinf\b", re.IGNORECASE)
 _LANG_CONTAINER_RE: dict[str, re.Pattern[str]] = {
     "uz": _SINF_RE,
     "ru": re.compile(r"-\s*(класс|klass)\b", re.I),
-    "en": re.compile(r"-\s*(english|grade|inglizcha)\b", re.I),
+    # English containers must be explicitly named by the operator ("english" /
+    # "inglizcha" / "ingliz").  The bare word "grade" is dropped: it is a
+    # common cognate that appears in Uzbek container names (e.g. "9 - grade
+    # subjects") and would produce phantom English editions for any subject
+    # whose title is shared across language trees (operator convention).
+    "en": re.compile(r"-\s*(english|inglizcha|ingliz)\b", re.I),
 }
 
 
