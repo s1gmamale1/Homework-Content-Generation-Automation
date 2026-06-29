@@ -56,6 +56,7 @@ _FAKE_BATCH = SimpleNamespace(
     book_id=BOOK_ID,
     subject="math-algebra",
     grade="8",
+    output_language="uz",
     provider="claude",
     model="claude-sonnet-4-6",
     transport="api",
