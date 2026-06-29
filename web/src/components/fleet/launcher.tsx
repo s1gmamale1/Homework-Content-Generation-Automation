@@ -604,9 +604,14 @@ function ReadyCard({
     queryKey: ["launch-defaults"],
     queryFn: api.getLaunchDefaults,
   });
+  // Per-lesson completion is language-scoped: use the explicitly-picked language,
+  // else the resolved global default (the same value shown as "Auto → <lang>").
+  // Keying the query on it makes switching the language picker refetch + recompute
+  // the "complete"/remaining status for that language.
+  const effectiveLang = outputLanguage ?? defaultsQ.data?.output_language ?? null;
   const detail = useQuery({
-    queryKey: ["book", book.id],
-    queryFn: () => api.getBook(book.id),
+    queryKey: ["book", book.id, effectiveLang],
+    queryFn: () => api.getBook(book.id, effectiveLang),
   });
   const toc = detail.data?.toc ?? [];
   const lessons = detail.data?.toc?.length;

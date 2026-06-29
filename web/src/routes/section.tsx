@@ -105,9 +105,24 @@ export function SectionPage() {
   const missingPromptKeys =
     phaseMode === "pick" ? [...selectedPhases].filter((k) => !customPrompts[k]) : [];
 
+  // Fetch global launch defaults so the language picker can show
+  // "Auto → <resolved default>" when the per-launch override is not set, and so
+  // per-lesson status can be scoped to the effective language.
+  const { data: launchDefaults } = useQuery({
+    queryKey: ["launch-defaults"],
+    queryFn: () => api.getLaunchDefaults(),
+  });
+
+  // Per-lesson status is language-scoped: the explicit pick, else the resolved
+  // global default — so a lesson done in uz doesn't read "complete"/block launch
+  // under ru/en. Keying the query on it refetches when the language changes.
+  const effectiveLang = outputLanguage ?? launchDefaults?.output_language ?? null;
   const { data: book, isLoading } = useQuery({
-    queryKey: ["book", bookId],
-    queryFn: () => (bookId ? api.getBook(bookId) : Promise.reject(new Error("no id"))),
+    queryKey: ["book", bookId, effectiveLang],
+    queryFn: () =>
+      bookId
+        ? api.getBook(bookId, effectiveLang)
+        : Promise.reject(new Error("no id")),
     enabled: Boolean(bookId),
     refetchOnWindowFocus: true,
   });
@@ -117,13 +132,6 @@ export function SectionPage() {
     queryFn: () => api.getAgentModels(),
     refetchInterval: 5000,
     refetchOnWindowFocus: true,
-  });
-
-  // Fetch global launch defaults so the language picker can show
-  // "Auto → <resolved default>" when the per-launch override is not set.
-  const { data: launchDefaults } = useQuery({
-    queryKey: ["launch-defaults"],
-    queryFn: () => api.getLaunchDefaults(),
   });
 
   // When the manifest loads (or the selected provider changes), reset the

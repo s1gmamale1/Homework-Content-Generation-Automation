@@ -89,8 +89,13 @@ export const api = {
     return unwrap<Book>(res);
   },
 
-  async getBook(bookId: string): Promise<Book> {
-    const res = await authFetch(`/api/v1/books/${encodeURIComponent(bookId)}`);
+  async getBook(bookId: string, outputLanguage?: string | null): Promise<Book> {
+    // When a language is given, per-lesson status is scoped to it so the
+    // launcher's "complete"/launch gate reflects the selected language.
+    const qs = outputLanguage
+      ? `?output_language=${encodeURIComponent(outputLanguage)}`
+      : "";
+    const res = await authFetch(`/api/v1/books/${encodeURIComponent(bookId)}${qs}`);
     return unwrap<Book>(res);
   },
 
