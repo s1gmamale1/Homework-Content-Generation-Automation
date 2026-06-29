@@ -20,11 +20,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import { LANG_LABEL } from "@/lib/language";
 import { fadeUpItem, staggerContainer, tapScale } from "@/lib/motion";
 import { subjectLabel } from "@/lib/subjects";
 import {
   type NotionGrade,
   type NotionSubject,
+  type OutputLanguage,
   SUBJECTS,
   type Subject,
 } from "@/lib/types";
@@ -40,6 +42,8 @@ export function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [subject, setSubject] = useState<Subject | "">("");
   const [grade, setGrade] = useState("");
+  // Source language for direct upload (the textbook's own language). Default uz.
+  const [sourceLanguage, setSourceLanguage] = useState<OutputLanguage>("uz");
   const [busy, setBusy] = useState(false);
 
   const [nGrade, setNGrade] = useState("");
@@ -47,6 +51,8 @@ export function UploadPage() {
   const [subjects, setSubjects] = useState<NotionSubject[] | null>(null);
   const [pendingSubjectId, setPendingSubjectId] = useState<string | null>(null);
   const [nErr, setNErr] = useState<string | null>(null);
+  // Available language containers per app_subject for the picked Notion grade.
+  const [availLangs, setAvailLangs] = useState<Record<string, Record<string, { page_id: string; has_textbook: boolean }>> | null>(null);
 
   const onDrop = useCallback((accepted: File[]) => {
     if (accepted[0]) setFile(accepted[0]);
@@ -68,7 +74,7 @@ export function UploadPage() {
     }
     setBusy(true);
     try {
-      const book = await api.uploadBook(file, subject as Subject, grade || undefined);
+      const book = await api.uploadBook(file, subject as Subject, grade || undefined, sourceLanguage);
       toast.success("Uploaded.");
       navigate(`/book/${book.id}`);
     } catch (err) {
@@ -93,21 +99,32 @@ export function UploadPage() {
     setNGrade(gradeTitle.replace(/\D/g, ""));
     setSubjects(null);
     setPendingSubjectId(null);
+    setAvailLangs(null);
     setNErr(null);
     try {
-      setSubjects(await api.listNotionSubjects(gradePageId));
+      // Fetch subjects and available-languages in parallel.
+      const [subs, langs] = await Promise.all([
+        api.listNotionSubjects(gradePageId),
+        api.fetchAvailableLanguages(gradePageId).catch(() => null),
+      ]);
+      setSubjects(subs);
+      setAvailLangs(langs);
     } catch (e) {
       setNErr(e instanceof Error ? e.message : "Could not load subjects");
     }
   }
 
-  async function pickSubject(s: NotionSubject) {
+  async function pickSubject(s: NotionSubject, language: OutputLanguage) {
     if (!s.app_subject || !s.has_textbook) return;
     if (busy) return; // guard against a second fetch while one is in flight
     setPendingSubjectId(s.page_id);
     setBusy(true);
     try {
-      const book = await api.fetchBookFromNotion(s.page_id, nGrade);
+      const book = await api.fetchBookFromNotion(
+        s.page_id,
+        nGrade,
+        language !== "uz" ? language : undefined,
+      );
       toast.success("Fetched.");
       navigate(`/book/${book.id}`);
     } catch (e) {
@@ -229,6 +246,29 @@ export function UploadPage() {
                 </Select>
                 <span className="text-xs text-white/45">
                   Files the homework into the matching Notion lesson page.
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label htmlFor="source-language" className={LBL}>
+                  Book language
+                </label>
+                <Select
+                  value={sourceLanguage}
+                  onValueChange={(v) => setSourceLanguage(v as OutputLanguage)}
+                  disabled={busy}
+                >
+                  <SelectTrigger id="source-language" className={SELECT_TRIGGER}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="uz">UZ — O'zbek</SelectItem>
+                    <SelectItem value="ru">RU — Русский</SelectItem>
+                    <SelectItem value="en">EN — English</SelectItem>
+                  </SelectContent>
+                </Select>
+                <span className="text-xs text-white/45">
+                  The language the textbook is written in. Defaults to Uzbek.
                 </span>
               </div>
 
@@ -357,7 +397,7 @@ export function UploadPage() {
                           No subjects found for this grade.
                         </span>
                       ) : (
-                        <div className="flex flex-col gap-2">
+                        <div className="flex flex-col gap-3">
                           {subjects.map((s) => {
                             const usable = !!s.app_subject && s.has_textbook;
                             const reason = !s.has_textbook
@@ -365,33 +405,64 @@ export function UploadPage() {
                               : !s.app_subject
                                 ? "unsupported"
                                 : null;
+                            // Language availability for this subject (null = map not yet loaded).
+                            const langMap = s.app_subject ? (availLangs?.[s.app_subject] ?? null) : null;
                             return (
-                              <button
+                              <div
                                 key={s.page_id}
-                                type="button"
-                                disabled={!usable || busy}
-                                onClick={() => void pickSubject(s)}
                                 className={cn(
-                                  "flex items-center justify-between gap-3 rounded-2xl border border-white/[0.09] bg-white/[0.04] px-4 py-3 text-left backdrop-blur-xl transition-all",
-                                  usable
-                                    ? "hover:-translate-y-0.5 hover:border-white/[0.16] hover:bg-white/[0.06]"
-                                    : "cursor-not-allowed opacity-50",
+                                  "rounded-2xl border border-white/[0.09] bg-white/[0.04] px-4 py-3 backdrop-blur-xl",
+                                  !usable && "opacity-50",
                                   busy && "pointer-events-none opacity-60",
                                 )}
                               >
-                                <span className="text-sm font-medium text-white">
-                                  {s.notion_title}
-                                </span>
-                                {reason ? (
-                                  <span className="font-mono text-[0.66rem] text-white/45">
-                                    {reason}
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className={cn("text-sm font-medium", usable ? "text-white" : "text-white/60")}>
+                                    {s.notion_title}
                                   </span>
-                                ) : s.page_id === pendingSubjectId ? (
-                                  <Loader2 className="size-4 animate-spin text-white/45" />
-                                ) : (
-                                  <ArrowRight className="size-4 text-white/45" />
+                                  {reason ? (
+                                    <span className="font-mono text-[0.66rem] text-white/45">
+                                      {reason}
+                                    </span>
+                                  ) : s.page_id === pendingSubjectId ? (
+                                    <Loader2 className="size-4 animate-spin text-white/45" />
+                                  ) : null}
+                                </div>
+                                {/* Language chips — only for usable subjects */}
+                                {usable && (
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {(["uz", "ru", "en"] as OutputLanguage[]).map((lang) => {
+                                      const info = langMap?.[lang];
+                                      const mapLoaded = availLangs != null;
+                                      const available = !mapLoaded || (info != null && info.has_textbook);
+                                      const tooltip =
+                                        !available && lang === "en"
+                                          ? "No English page yet — create an English page (with the textbook) in Notion, or upload the PDF directly."
+                                          : !available
+                                            ? `No ${LANG_LABEL[lang]} textbook available in Notion for this subject.`
+                                            : undefined;
+                                      return (
+                                        <button
+                                          key={lang}
+                                          type="button"
+                                          title={tooltip}
+                                          disabled={!available || busy}
+                                          onClick={() => void pickSubject(s, lang)}
+                                          className={cn(
+                                            "flex items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs font-medium transition-all",
+                                            available
+                                              ? "border-white/[0.14] bg-white/[0.05] text-white/75 hover:border-white/[0.25] hover:bg-white/[0.1] hover:text-white"
+                                              : "cursor-not-allowed border-white/[0.06] bg-transparent text-white/25 opacity-50",
+                                          )}
+                                        >
+                                          {lang.toUpperCase()}
+                                          {!available && <span className="text-[0.6rem]">✕</span>}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
                                 )}
-                              </button>
+                              </div>
                             );
                           })}
                         </div>

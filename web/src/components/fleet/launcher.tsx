@@ -69,6 +69,8 @@ export function FleetLauncher({
   const [gradePageId, setGradePageId] = useState("");
   const [gradeDigits, setGradeDigits] = useState("");
   const [subjectPageId, setSubjectPageId] = useState("");
+  // Language chosen in the Prepare form (null = UZ default, shown as "UZ" chip selected).
+  const [prepLang, setPrepLang] = useState<OutputLanguage>("uz");
 
   const gradesQ = useQuery({
     queryKey: ["notion-grades"],
@@ -79,13 +81,29 @@ export function FleetLauncher({
     queryFn: () => api.listNotionSubjects(gradePageId),
     enabled: !!gradePageId,
   });
+  // Available languages per subject for the selected grade. Only fetched when
+  // a grade is chosen; used to enable/disable UZ/RU/EN chips in the Prepare form.
+  const availLangsQ = useQuery({
+    queryKey: ["notion-avail-langs", gradePageId],
+    queryFn: () => api.fetchAvailableLanguages(gradePageId),
+    enabled: !!gradePageId,
+  });
 
   const pickedSubject = subjectsQ.data?.find((s) => s.page_id === subjectPageId);
   const subjectUsable = !!pickedSubject?.app_subject && !!pickedSubject?.has_textbook;
 
+  // Available language map for the currently-picked subject (derived from availLangsQ).
+  const subjectLangMap = pickedSubject?.app_subject
+    ? (availLangsQ.data?.[pickedSubject.app_subject] ?? null)
+    : null;
+
+  // Reset prepLang to uz whenever subject changes (so stale selection from
+  // a prior subject doesn't carry over as a disabled language).
+  // (We reset on subjectPageId change via the Select onValueChange handler.)
+
   const prepare = useMutation({
-    mutationFn: (v: { subjectPageId: string; grade: string }) =>
-      api.fetchBookFromNotion(v.subjectPageId, v.grade),
+    mutationFn: (v: { subjectPageId: string; grade: string; language: OutputLanguage }) =>
+      api.fetchBookFromNotion(v.subjectPageId, v.grade, v.language !== "uz" ? v.language : undefined),
     onSuccess: () => {
       toast.success("Preparing — extracting lessons…");
       qc.invalidateQueries({ queryKey: ["books"] });
@@ -94,6 +112,7 @@ export function FleetLauncher({
       setGradePageId("");
       setGradeDigits("");
       setSubjectPageId("");
+      setPrepLang("uz");
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Prepare failed"),
   });
@@ -185,6 +204,7 @@ export function FleetLauncher({
                 setGradePageId(pageId);
                 setGradeDigits(g ? g.title.replace(/\D/g, "") : "");
                 setSubjectPageId("");
+                setPrepLang("uz");
               }}
               disabled={gradesQ.isLoading}
             >
@@ -211,7 +231,7 @@ export function FleetLauncher({
             <StepLabel n={2}>Subject</StepLabel>
             <Select
               value={subjectPageId}
-              onValueChange={setSubjectPageId}
+              onValueChange={(v) => { setSubjectPageId(v); setPrepLang("uz"); }}
               disabled={!gradePageId || subjectsQ.isLoading}
             >
               <SelectTrigger className={SELECT_TRIGGER}>
@@ -243,7 +263,55 @@ export function FleetLauncher({
           </div>
         </div>
 
-        {/* Step ③ Confirmation line + Prepare */}
+        {/* Step ③ Language picker — shown after a usable subject is selected */}
+        {subjectUsable && pickedSubject && (
+          <div className="flex flex-col gap-1.5">
+            <StepLabel n={3}>Language</StepLabel>
+            <div className="flex flex-wrap gap-2">
+              {(["uz", "ru", "en"] as OutputLanguage[]).map((lang) => {
+                const info = subjectLangMap?.[lang];
+                // If the map has loaded but this lang is absent, it's unavailable.
+                const mapLoaded = availLangsQ.data != null;
+                const available = !mapLoaded || (info != null && info.has_textbook);
+                const selected = prepLang === lang;
+                const tooltip =
+                  !available && lang === "en"
+                    ? "No English page yet — create an English page (with the textbook) in Notion, or upload the PDF directly."
+                    : !available
+                      ? `No ${LANG_LABEL[lang]} textbook available in Notion for this subject.`
+                      : undefined;
+                return (
+                  <button
+                    key={lang}
+                    type="button"
+                    title={tooltip}
+                    disabled={!available}
+                    onClick={() => available && setPrepLang(lang)}
+                    className={cn(
+                      "rounded-xl border px-3 py-1.5 text-xs font-medium transition-all",
+                      selected
+                        ? "border-[#7c5cff]/60 bg-[#7c5cff]/20 text-white shadow-[0_0_10px_-4px_rgba(124,92,255,0.6)]"
+                        : available
+                          ? "border-white/[0.1] bg-white/[0.04] text-white/60 hover:border-white/[0.2] hover:text-white"
+                          : "cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-white/25 opacity-50",
+                    )}
+                  >
+                    {lang.toUpperCase()} — {LANG_LABEL[lang]}
+                    {!available && <span className="ml-1 text-[0.6rem]">✕</span>}
+                  </button>
+                );
+              })}
+              {availLangsQ.isLoading && (
+                <span className="flex items-center gap-1.5 text-xs text-white/40">
+                  <Loader2 className="size-3.5 animate-spin" />
+                  Checking language availability…
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Step ④ Confirmation line + Prepare */}
         <div className="relative flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-white/55">
             {subjectUsable && pickedSubject ? (
@@ -252,6 +320,7 @@ export function FleetLauncher({
                 <span className="font-medium text-white">
                   {subjectLabel(pickedSubject.app_subject ?? "")}
                   {gradeDigits && ` · Grade ${gradeDigits}`}
+                  {" · "}{prepLang.toUpperCase()}
                 </span>{" "}
                 — extracts the table of contents (~1–3 min).
               </>
@@ -265,7 +334,7 @@ export function FleetLauncher({
             type="button"
             className={cn(PRIMARY_BTN, "shrink-0")}
             disabled={!subjectUsable || prepare.isPending}
-            onClick={() => prepare.mutate({ subjectPageId, grade: gradeDigits })}
+            onClick={() => prepare.mutate({ subjectPageId, grade: gradeDigits, language: prepLang })}
           >
             {prepare.isPending ? (
               <>
