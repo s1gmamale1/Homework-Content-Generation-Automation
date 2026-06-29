@@ -48,6 +48,7 @@ import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { serveability, providerServeableAnyMode } from "@/lib/serveability";
 import { type LauncherConfig, loadLauncherConfig, saveLauncherConfig } from "@/lib/launcher-config";
+import { LANG_LABEL, langBadge } from "@/lib/language";
 
 const LBL = "text-xs font-medium uppercase tracking-[0.12em] text-white/45";
 
@@ -68,6 +69,8 @@ export function FleetLauncher({
   const [gradePageId, setGradePageId] = useState("");
   const [gradeDigits, setGradeDigits] = useState("");
   const [subjectPageId, setSubjectPageId] = useState("");
+  // Language chosen in the Prepare form (null = UZ default, shown as "UZ" chip selected).
+  const [prepLang, setPrepLang] = useState<OutputLanguage>("uz");
 
   const gradesQ = useQuery({
     queryKey: ["notion-grades"],
@@ -78,13 +81,49 @@ export function FleetLauncher({
     queryFn: () => api.listNotionSubjects(gradePageId),
     enabled: !!gradePageId,
   });
+  // Available languages per subject for the selected grade. Only fetched when
+  // a grade is chosen; used to enable/disable UZ/RU/EN chips in the Prepare form.
+  const availLangsQ = useQuery({
+    queryKey: ["notion-avail-langs", gradePageId],
+    queryFn: () => api.fetchAvailableLanguages(gradePageId),
+    enabled: !!gradePageId,
+  });
 
   const pickedSubject = subjectsQ.data?.find((s) => s.page_id === subjectPageId);
   const subjectUsable = !!pickedSubject?.app_subject && !!pickedSubject?.has_textbook;
 
+  // Available language map for the currently-picked subject (derived from availLangsQ).
+  const subjectLangMap = pickedSubject?.app_subject
+    ? (availLangsQ.data?.[pickedSubject.app_subject] ?? null)
+    : null;
+
+  // Reset prepLang to uz whenever subject changes (so stale selection from
+  // a prior subject doesn't carry over as a disabled language).
+  // (We reset on subjectPageId change via the Select onValueChange handler.)
+
+  // When the availability map loads (or the picked subject changes), default prepLang
+  // to the first language that is actually available for this subject. This prevents
+  // a RU/EN-only subject from silently defaulting to a disabled UZ chip → guaranteed 422.
+  useEffect(() => {
+    if (!availLangsQ.data || !pickedSubject?.app_subject) return;
+    const map = availLangsQ.data[pickedSubject.app_subject] ?? {};
+    const preferred: OutputLanguage[] = ["uz", "ru", "en"];
+    const firstAvail = preferred.find((l) => map[l]?.has_textbook);
+    if (firstAvail && !map[prepLang]?.has_textbook) {
+      setPrepLang(firstAvail);
+    }
+    // Re-run only when the map or picked subject changes; not on every prepLang change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availLangsQ.data, pickedSubject?.app_subject]);
+
   const prepare = useMutation({
-    mutationFn: (v: { subjectPageId: string; grade: string }) =>
-      api.fetchBookFromNotion(v.subjectPageId, v.grade),
+    mutationFn: (v: { subjectPageId: string; grade: string; language: OutputLanguage }) => {
+      // For non-uz languages, the per-language klass page (whose title is Cyrillic/English)
+      // must be sent — NOT the UZ subject page. The UZ subject page title ("Algebra") won't
+      // match the RU keyword set ("алгебра") and causes an HTTP 422.
+      const pageId = subjectLangMap?.[v.language]?.page_id ?? v.subjectPageId;
+      return api.fetchBookFromNotion(pageId, v.grade, v.language !== "uz" ? v.language : undefined);
+    },
     onSuccess: () => {
       toast.success("Preparing — extracting lessons…");
       qc.invalidateQueries({ queryKey: ["books"] });
@@ -93,6 +132,7 @@ export function FleetLauncher({
       setGradePageId("");
       setGradeDigits("");
       setSubjectPageId("");
+      setPrepLang("uz");
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Prepare failed"),
   });
@@ -184,6 +224,7 @@ export function FleetLauncher({
                 setGradePageId(pageId);
                 setGradeDigits(g ? g.title.replace(/\D/g, "") : "");
                 setSubjectPageId("");
+                setPrepLang("uz");
               }}
               disabled={gradesQ.isLoading}
             >
@@ -210,7 +251,7 @@ export function FleetLauncher({
             <StepLabel n={2}>Subject</StepLabel>
             <Select
               value={subjectPageId}
-              onValueChange={setSubjectPageId}
+              onValueChange={(v) => { setSubjectPageId(v); setPrepLang("uz"); }}
               disabled={!gradePageId || subjectsQ.isLoading}
             >
               <SelectTrigger className={SELECT_TRIGGER}>
@@ -242,7 +283,55 @@ export function FleetLauncher({
           </div>
         </div>
 
-        {/* Step ③ Confirmation line + Prepare */}
+        {/* Step ③ Language picker — shown after a usable subject is selected */}
+        {subjectUsable && pickedSubject && (
+          <div className="flex flex-col gap-1.5">
+            <StepLabel n={3}>Language</StepLabel>
+            <div className="flex flex-wrap gap-2">
+              {(["uz", "ru", "en"] as OutputLanguage[]).map((lang) => {
+                const info = subjectLangMap?.[lang];
+                // If the map has loaded but this lang is absent, it's unavailable.
+                const mapLoaded = availLangsQ.data != null;
+                const available = !mapLoaded || (info != null && info.has_textbook);
+                const selected = prepLang === lang;
+                const tooltip =
+                  !available && lang === "en"
+                    ? "No English page yet — create an English page (with the textbook) in Notion, or upload the PDF directly."
+                    : !available
+                      ? `No ${LANG_LABEL[lang]} textbook available in Notion for this subject.`
+                      : undefined;
+                return (
+                  <button
+                    key={lang}
+                    type="button"
+                    title={tooltip}
+                    disabled={!available}
+                    onClick={() => available && setPrepLang(lang)}
+                    className={cn(
+                      "rounded-xl border px-3 py-1.5 text-xs font-medium transition-all",
+                      selected
+                        ? "border-[#7c5cff]/60 bg-[#7c5cff]/20 text-white shadow-[0_0_10px_-4px_rgba(124,92,255,0.6)]"
+                        : available
+                          ? "border-white/[0.1] bg-white/[0.04] text-white/60 hover:border-white/[0.2] hover:text-white"
+                          : "cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-white/25 opacity-50",
+                    )}
+                  >
+                    {lang.toUpperCase()} — {LANG_LABEL[lang]}
+                    {!available && <span className="ml-1 text-[0.6rem]">✕</span>}
+                  </button>
+                );
+              })}
+              {availLangsQ.isLoading && (
+                <span className="flex items-center gap-1.5 text-xs text-white/40">
+                  <Loader2 className="size-3.5 animate-spin" />
+                  Checking language availability…
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Step ④ Confirmation line + Prepare */}
         <div className="relative flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-white/55">
             {subjectUsable && pickedSubject ? (
@@ -251,6 +340,7 @@ export function FleetLauncher({
                 <span className="font-medium text-white">
                   {subjectLabel(pickedSubject.app_subject ?? "")}
                   {gradeDigits && ` · Grade ${gradeDigits}`}
+                  {" · "}{prepLang.toUpperCase()}
                 </span>{" "}
                 — extracts the table of contents (~1–3 min).
               </>
@@ -264,7 +354,7 @@ export function FleetLauncher({
             type="button"
             className={cn(PRIMARY_BTN, "shrink-0")}
             disabled={!subjectUsable || prepare.isPending}
-            onClick={() => prepare.mutate({ subjectPageId, grade: gradeDigits })}
+            onClick={() => prepare.mutate({ subjectPageId, grade: gradeDigits, language: prepLang })}
           >
             {prepare.isPending ? (
               <>
@@ -605,10 +695,10 @@ function ReadyCard({
     queryFn: api.getLaunchDefaults,
   });
   // Per-lesson completion is language-scoped: use the explicitly-picked language,
-  // else the resolved global default (the same value shown as "Auto → <lang>").
-  // Keying the query on it makes switching the language picker refetch + recompute
-  // the "complete"/remaining status for that language.
-  const effectiveLang = outputLanguage ?? defaultsQ.data?.output_language ?? null;
+  // else the book's source language (the Auto target), then global default as last
+  // resort. Keying the query on it makes switching the language picker refetch +
+  // recompute the "complete"/remaining status for that language.
+  const effectiveLang = outputLanguage ?? book.source_language ?? defaultsQ.data?.output_language ?? null;
   const detail = useQuery({
     queryKey: ["book", book.id, effectiveLang],
     queryFn: () => api.getBook(book.id, effectiveLang),
@@ -840,6 +930,9 @@ function ReadyCard({
             {subjectLabelWithVariant(book.subject, book.subject_variant)}
             {book.grade && <GradeChip grade={book.grade} />}
             <CardStatusChip status={cardStatus} />
+            <span className={langBadge(book.source_language)}>
+              {book.source_language.toUpperCase()}
+            </span>
           </div>
           <div className="mt-0.5 text-xs text-white/45">
             {lessons ?? "…"} lessons
@@ -934,7 +1027,7 @@ function ReadyCard({
                     </SelectContent>
                   </Select>
                 </div>
-                {/* Output language — null = Auto (inherit global default). */}
+                {/* Output language — null = Auto (= book's source language). */}
                 <div className="flex flex-col gap-1">
                   <span className="text-[0.6rem] font-medium uppercase tracking-[0.12em] text-white/35">
                     Language
@@ -945,24 +1038,31 @@ function ReadyCard({
                       setOutputLanguage(v === "inherit" ? null : (v as OutputLanguage))
                     }
                   >
-                    <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[8rem]")}>
+                    <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[9rem]")}>
                       {outputLanguage == null ? (
                         <SelectValue>
-                          {defaultsQ.data?.output_language
-                            ? `Auto → ${defaultsQ.data.output_language.toUpperCase()}`
-                            : "Auto → …"}
+                          {`Auto → ${LANG_LABEL[book.source_language]}`}
                         </SelectValue>
                       ) : (
                         <SelectValue />
                       )}
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="inherit">Auto</SelectItem>
+                      <SelectItem value="inherit">
+                        {`Auto → ${LANG_LABEL[book.source_language]}`}
+                      </SelectItem>
                       <SelectItem value="uz">UZ — O'zbek</SelectItem>
                       <SelectItem value="en">EN — English</SelectItem>
                       <SelectItem value="ru">RU — Русский</SelectItem>
                     </SelectContent>
                   </Select>
+                  {/* Translate hint — shown when operator picks a language that
+                      differs from the textbook's own source language. */}
+                  {outputLanguage != null && outputLanguage !== book.source_language && (
+                    <span className="text-[0.65rem] text-amber-300/80">
+                      ↳ translate from {book.source_language.toUpperCase()}
+                    </span>
+                  )}
                 </div>
                 {/* API forces an explicit model (no "provider default"). */}
                 {transport === "api" && (

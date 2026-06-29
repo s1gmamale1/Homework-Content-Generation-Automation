@@ -80,11 +80,12 @@ export const api = {
     return unwrap<Book[]>(res);
   },
 
-  async uploadBook(file: File, subject: Subject, grade?: string): Promise<Book> {
+  async uploadBook(file: File, subject: Subject, grade?: string, sourceLanguage?: OutputLanguage): Promise<Book> {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("subject", subject);
     if (grade) fd.append("grade", grade);
+    if (sourceLanguage) fd.append("source_language", sourceLanguage);
     const res = await authFetch("/api/v1/books", { method: "POST", body: fd });
     return unwrap<Book>(res);
   },
@@ -310,13 +311,28 @@ export const api = {
     return unwrap<NotionSubject[]>(res);
   },
 
-  async fetchBookFromNotion(subjectPageId: string, grade: string): Promise<Book> {
+  async fetchBookFromNotion(subjectPageId: string, grade: string, language?: OutputLanguage): Promise<Book> {
     const res = await authFetch("/api/v1/books/from-notion", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ subject_page_id: subjectPageId, grade }),
+      body: JSON.stringify({
+        subject_page_id: subjectPageId,
+        grade,
+        ...(language ? { language } : {}),
+      }),
     });
     return unwrap<Book>(res);
+  },
+
+  /** Fetch available UZ/RU/EN language containers for each subject in a grade.
+   *  Returns { [app_subject]: { [lang]: { page_id: string; has_textbook: boolean } } }. */
+  async fetchAvailableLanguages(
+    gradePageId: string,
+  ): Promise<Record<string, Record<string, { page_id: string; has_textbook: boolean }>>> {
+    const res = await authFetch(
+      `/api/v1/notion/grades/${encodeURIComponent(gradePageId)}/available-languages`,
+    );
+    return unwrap<Record<string, Record<string, { page_id: string; has_textbook: boolean }>>>(res);
   },
 
   async listBatches(): Promise<BatchSummary[]> {

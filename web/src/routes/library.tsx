@@ -26,8 +26,9 @@ import { SpaceBackdrop } from "@/components/space-backdrop";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
+import { LANG_LABEL, langBadge } from "@/lib/language";
 import { accentOf, subjectLabel, subjectLabelWithVariant } from "@/lib/subjects";
-import type { Book, BookStatus } from "@/lib/types";
+import type { Book, BookStatus, OutputLanguage } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function LibraryPage() {
@@ -47,12 +48,26 @@ export function LibraryPage() {
     },
   });
 
+  /** "all" means no language filter applied. */
+  const [langFilter, setLangFilter] = useState<OutputLanguage | "all">("all");
+
   const totalBooks = books?.length ?? 0;
   const readyCount = books?.filter((b) => b.status === "toc_ready").length ?? 0;
   const totalBytes =
     books?.reduce((sum, b) => sum + (b.file_size_bytes ?? 0), 0) ?? 0;
   const totalSections =
     books?.reduce((sum, b) => sum + (b.toc?.length ?? 0), 0) ?? 0;
+
+  /** Per-language book counts for the summary caption. */
+  const langCounts = {
+    uz: books?.filter((b) => b.source_language === "uz").length ?? 0,
+    ru: books?.filter((b) => b.source_language === "ru").length ?? 0,
+    en: books?.filter((b) => b.source_language === "en").length ?? 0,
+  };
+
+  /** Books visible after applying the language facet. */
+  const visibleBooks =
+    langFilter === "all" ? books : books?.filter((b) => b.source_language === langFilter);
 
   return (
     <div className="relative min-h-[calc(100vh-9rem)]">
@@ -99,7 +114,11 @@ export function LibraryPage() {
               tint="#4d9bff"
               label="Total Books"
               value={String(totalBooks)}
-              caption="In the library"
+              caption={
+                totalBooks > 0
+                  ? `UZ ${langCounts.uz} · RU ${langCounts.ru} · EN ${langCounts.en}`
+                  : "In the library"
+              }
             />
             <SummaryStat
               icon={<CheckCheck className="size-5" />}
@@ -149,8 +168,30 @@ export function LibraryPage() {
         )}
 
         {books && books.length > 0 && (
-          <CategoryBrowser
-            items={books}
+          <>
+            {/* Language filter facet */}
+            <div className="flex flex-wrap gap-1">
+              {(["all", "uz", "ru", "en"] as const).map((lang) => (
+                <button
+                  key={lang}
+                  type="button"
+                  onClick={() => setLangFilter(lang)}
+                  className={cn(
+                    "rounded-xl px-3 py-1.5 text-xs font-medium transition-colors",
+                    langFilter === lang
+                      ? "bg-white/[0.12] text-white"
+                      : "text-white/45 hover:text-white/70",
+                  )}
+                >
+                  {lang === "all"
+                    ? `All (${totalBooks})`
+                    : `${lang.toUpperCase()} (${langCounts[lang]})`}
+                </button>
+              ))}
+            </div>
+
+            <CategoryBrowser
+            items={visibleBooks ?? []}
             getGroupKey={(b) => gradeKey(b.grade)}
             groupLabel={gradeLabel}
             groupAccent={gradeAccent}
@@ -189,6 +230,7 @@ export function LibraryPage() {
               />
             )}
           />
+          </>
         )}
       </div>
     </div>
@@ -391,7 +433,12 @@ function BookCard({ book }: { book: Book }) {
         </div>
 
         <div className="mt-4 flex items-center justify-between gap-2 border-t border-white/[0.07] pt-3">
-          <StatusBadge status={book.status} />
+          <div className="flex items-center gap-1.5">
+            <StatusBadge status={book.status} />
+            <span className={langBadge(book.source_language)}>
+              {LANG_LABEL[book.source_language]}
+            </span>
+          </div>
           <span className="flex items-center gap-2 font-mono text-[0.66rem] text-white/45">
             {book.created_at && <span>{formatRelative(book.created_at)}</span>}
             {book.file_size_bytes != null && (

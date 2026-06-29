@@ -134,12 +134,12 @@ Windows often already runs its own Postgres on 5432). Seven tables matter
 
 | Table | One row per… | Holds |
 |-------|--------------|-------|
-| `books` | uploaded PDF | subject, filename, file hash, status. The PDF itself lives on **disk** at `var/books/<book_id>/source.pdf`, not in the DB. |
+| `books` | uploaded PDF | subject, filename, file hash, **`source_language`** (`uz`/`ru`/`en` — the language of the source textbook, migration 0040), status. The PDF itself lives on **disk** at `var/books/<book_id>/source.pdf`, not in the DB. |
 | `toc_entries` | chapter section | chapter/section number + title, page range. This is what the user picks to generate homework from. |
 | `homework_jobs` | generation request | the chosen `provider`/`model`, `status` (pending/running/done/failed/cancelling/cancelled), `current_phase`, the queue columns (`attempts`, `claimed_at`, …), an optional `batch_id` (fleet membership), and Notion-archive markers. The generated content lives on `phase_outputs`, **not** here — there are no structured-JSON columns. |
 | `phase_outputs` | one phase of one job | the phase name, order, status, its markdown output, token counts. A unique constraint (`uq_phase_output_job_order`) forbids two rows for the same (job, order). |
 | `agent_usages` | one CLI subprocess call | provider, model, normalized token counts, duration, success/failure, and the raw envelope. This is how the usage dashboard and the end-of-job cost table are built. |
-| `batches` | fleet batch (one per `(book, transport)` since Phase 4 — a cli and an api batch of the same book coexist for benchmarking) | the launch-time subject/grade/provider/model/transport (+ Phase-4.1 role-transport launch defaults; member jobs carry the truth). **No stored counters** — progress is computed on read from member jobs (one vote per lesson, its newest job), so retries can't inflate the tally. |
+| `batches` | fleet batch (one per `(book, transport, output_language)` since migration 0038 — a different-transport OR different-language re-launch forks a new batch for clean per-combination benchmarking) | the launch-time subject/grade/provider/model/transport (+ Phase-4.1 role-transport launch defaults; member jobs carry the truth). **No stored counters** — progress is computed on read from member jobs (one vote per lesson, its newest job), so retries can't inflate the tally. |
 | `workers` | worker process (a fleet PC) | `pc_id` ("hostname:pid"), `last_heartbeat`, status label, and a `capabilities` JSONB blob (which provider CLIs are installed + which api creds are present, published each beat — migration 0035). Online/offline is **derived** from heartbeat freshness against the DB clock, never stored. |
 | `budget_state` | singleton (id=1) | C4 fleet-level api pause: `api_paused_at` / `api_paused_reason`. Seeded at migration time; `claim_next_job` checks it to skip all api-transport jobs when non-NULL. Also carries per-batch pause state via `batches.paused_at`/`paused_reason`. |
 
@@ -400,6 +400,15 @@ subject. `app/services/prompts.py`'s `get_prompt(subject, phase, output_language
 
 **Generator + judge use the same language contract.** `pipeline.run` captures `job.output_language` once and passes it to every `get_prompt` call for content phases *and* to `phase_judge.judge(output_language=...)` → the judge's own `get_prompt`. A judge cannot grade an English-medium homework against the Uzbek contract.
 
+### Source language — where the textbook comes from
+
+Every `books` row now carries a **`source_language`** (`uz` / `ru` / `en`, migration 0040) that describes the language the source textbook is written in. This is distinct from the output (medium-of-instruction) language above:
+
+- **Ingest**: the upload form has a source-language selector; `POST /books/from-notion` accepts a `language` field; both paths stamp `source_language` onto the `books` row.
+- **Notion fetch**: `notion_fetch.py` crawls the Notion grade tree by language — Uzbek books live under `N - sinf` containers, Russian under `N - класс`/`klass`, English under explicitly named `english`/`inglizcha`/`ingliz` containers (bare "grade" is NOT matched for EN to avoid mis-mapping). Subject matching uses per-language keyword sets (`subjects.notion_keyword_pairs(language)` + `SubjectDef.ru_keywords`/`en_keywords`). The Fleet launcher's prepare-from-Notion panel shows UZ/RU/EN availability chips (fetched via `GET /notion/grades/{id}/available-languages`); EN shows a "create a Notion page or upload directly" hint when unavailable.
+- **Output-language default**: when a batch or single-section job is launched with no explicit `output_language`, it defaults to the **book's `source_language`** (via `resolve_output_language_for_book`). An explicit override still wins — this is how you generate a Russian-textbook homework in Uzbek (translation mode). The Library and Fleet launcher both show a language badge and the launcher displays an "Auto → {source}" hint when no override is set.
+- **Notion archival**: RU content archives under `ru:<subject>|<grade>` keys in `NOTION_SUBJECT_PAGES`; English has no native Notion tree yet — content should be downloaded directly or a custom page created.
+
 The old per-subject `prompts/<subject>/` folders still exist but are **dead** — a future
 override layer gated behind `USE_SUBJECT_PROMPTS=False`.
 
@@ -540,6 +549,9 @@ Key endpoints:
   (it finishes in-flight work, then self-drains on its next registry beat).
 - `GET /notion/grades` / `GET /notion/grades/{id}/subjects` — the Notion pickers that feed
   the from-notion flow and the fleet launcher.
+- `GET /notion/grades/{id}/available-languages` — returns per-subject, per-language availability
+  (`{app_subject: {lang: {page_id, has_textbook}}}`); used by the Fleet launcher's prepare-from-Notion
+  language picker to show UZ/RU/EN chips and disable EN when no Notion page exists.
 
 **Why SSE and not WebSockets?** Progress is one-directional (server → browser) and SSE is
 simpler. One quirk: the browser's `EventSource` can't send auth headers, so the stream/
