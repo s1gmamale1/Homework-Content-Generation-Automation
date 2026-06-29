@@ -16,6 +16,7 @@ class BookOut(BaseModel):
     grade: Optional[str] = None
     original_filename: str
     status: str
+    source_language: str = "uz"
     error_message: Optional[str] = None
     gemini_file_expires_at: Optional[datetime] = None
     file_size_bytes: Optional[int] = None

@@ -207,12 +207,14 @@ class TestAvailableLanguagesNoEnglish:
 
 class TestAvailableLanguagesWithEnglish:
     def _make_client(self):
+        # Container titled "9 - english" (explicit English marker — operator convention).
+        # "9 - grade" was the old title; after tightening the regex it no longer matches.
         children = {
             **_CHILDREN_BASE,
             GRADE_ID: [
                 {"id": UZ_CONTAINER_ID, "title": "9 - sinf"},
                 {"id": RU_CONTAINER_ID, "title": "9 - класс"},
-                {"id": "en-grade", "title": "9 - grade"},
+                {"id": "en-grade", "title": "9 - english"},
             ],
             "en-grade": [
                 {"id": "en-alg", "title": "Algebra"},
@@ -238,6 +240,46 @@ class TestAvailableLanguagesWithEnglish:
         result = nf.available_languages(c, GRADE_ID)
         assert result["math-algebra"]["en"]["page_id"] == "en-alg"
         assert result["math-algebra"]["en"]["has_textbook"] is True
+
+
+# ---------------------------------------------------------------------------
+# Regression: bare "grade" in a container title must NOT match English.
+# A Uzbek-ish container like "9 - grade subjects" would previously have
+# surfaced as an English container — the tightened regex prevents this.
+# ---------------------------------------------------------------------------
+
+class TestBareGradeNotEnglish:
+    """A tree whose only extra container is named "9 - grade subjects" must
+    produce NO 'en' entries — bare "grade" is not an English marker."""
+
+    def _make_client(self):
+        children = {
+            **_CHILDREN_BASE,
+            GRADE_ID: [
+                {"id": UZ_CONTAINER_ID, "title": "9 - sinf"},
+                {"id": RU_CONTAINER_ID, "title": "9 - класс"},
+                {"id": "grade-only", "title": "9 - grade subjects"},
+            ],
+            "grade-only": [
+                {"id": "go-alg", "title": "Algebra"},
+            ],
+        }
+        blocks = {
+            **_BLOCKS_BASE,
+            "go-alg": [_pdf_block("http://cdn/go-algebra.pdf")],
+        }
+        return _client(children, blocks)
+
+    def test_no_en_entries_for_bare_grade_container(self):
+        """available_languages must NOT report any en entries when the only
+        extra container title is "9 - grade subjects"."""
+        c = self._make_client()
+        result = nf.available_languages(c, GRADE_ID)
+        for app_subject, langs in result.items():
+            assert "en" not in langs, (
+                f"Phantom English entry for {app_subject!r}: bare 'grade' "
+                "container should not match the English regex"
+            )
 
 
 # ---------------------------------------------------------------------------

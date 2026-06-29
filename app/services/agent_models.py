@@ -109,6 +109,12 @@ def resolve_output_language(explicit, default: str) -> str:
     return explicit or default
 
 
+def resolve_output_language_for_book(explicit, book_source_language: str, global_default: str) -> str:
+    """Output language precedence: explicit operator pick → book's source
+    language → global launch default."""
+    return explicit or book_source_language or global_default
+
+
 def resolve_role_transport(role_value: str, job_transport: str) -> str:
     """'inherit' follows the job's transport; an explicit value wins (Phase 4.1 §2)."""
     return job_transport if role_value == "inherit" else role_value

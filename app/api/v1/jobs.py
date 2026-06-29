@@ -26,7 +26,7 @@ from app.services.agent_models import (
     MODEL_MANIFEST,
     api_supported,
     is_valid,
-    resolve_output_language,
+    resolve_output_language_for_book,
     resolve_role_selection,
     resolve_role_transport,
     resolve_role_transport_default,
@@ -204,7 +204,8 @@ async def generate(
     # Fetch the launch_defaults singleton early so res_output_language is
     # available for the idempotency lookup below (language-scoped dedup).
     ld = await launch_defaults_repo.get(session)
-    res_output_language = resolve_output_language(body.output_language, ld.output_language)
+    res_output_language = resolve_output_language_for_book(
+        body.output_language, book.source_language, ld.output_language)
 
     # Layer 2: natural-key idempotency.
     if not force_fresh:

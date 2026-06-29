@@ -18,6 +18,7 @@ from app.services import subjects
 from app.services.agent_models import (
     is_valid,
     resolve_output_language,
+    resolve_output_language_for_book,
     resolve_role_selection,
     resolve_role_transport,
     resolve_role_transport_default,
@@ -189,7 +190,8 @@ async def launch_batch(
         body.extract_provider, body.extract_model, ld.extract_provider, ld.extract_model)
     res_judge_transport = resolve_role_transport_default(body.judge_transport, ld.judge_transport)
     res_extract_transport = resolve_role_transport_default(body.extract_transport, ld.extract_transport)
-    res_output_language = resolve_output_language(body.output_language, ld.output_language)
+    res_output_language = resolve_output_language_for_book(
+        body.output_language, book.source_language, ld.output_language)
     # Defense-in-depth: the resolved pairs must be manifest-valid (the global
     # default could only be off-manifest via a buggy PUT — fail loud, not silent).
     for role, prov, mdl in (("judge", res_judge_provider, res_judge_model),
