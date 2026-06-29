@@ -1355,3 +1355,16 @@ Gate-hardening: `PUT /settings/launch-defaults` rejects null provider/model with
 **Verified:** `tsc --noEmit` + `npm run build` clean; `npx tsx` helper test green; `/monitor` renders with 0 console errors (verified by headless screenshot). FE-only; no migration; no backend changes. Built via subagent-driven-development, controller stress-tested every commit (read diff + verified). Acceptance: `tsc` + `build` + `npx tsx` test + `/monitor` headless screenshot.
 
 **Docs:** `CODE_MAP.md` updated (new `batch-actions.tsx` + `monitor-grouping.ts` entries; updated `batch-funnel` + `worker-cards` descriptions; `monitor-overhaul (0101)` note). `HOW_IT_WORKS.md` de-staled (`/monitor` description updated — actions now on Monitor, grade grouping + compact strip noted). Plan `git mv`'d to `docs/superpowers/plans/shipped/`.
+---
+
+## [0102] Language-aware Notion archival — en/ru content files under its own page — 2026-06-29 (feat/notion-language-pages → Nggaev-v2)
+
+**What:** Follow-up to multi-language output (0099): the Notion archival path was language-blind, so an EN/RU homework would file into the same subject page → same "Generated Homeworks" container as UZ. Now `_resolve_subject_page_id` takes a `language` param: `uz` (default) uses the bare `"{subject}|{grade}"` key (**byte-identical** — existing config untouched); `en`/`ru` use a language-prefixed `"{language}:{subject}|{grade}"` key so non-Uzbek content roots at its OWN Notion page (same lesson/Homework structure, different page). `archive_job` threads `job.output_language`. A non-uz job whose language page is unconfigured resolves to None → **skip + record reason** (`notion_skip_reason="no Notion page for language=<lang> <subject>|<grade>"`) — non-Uzbek content is NEVER mis-filed into the uz page (locked decision).
+
+**Config:** `NOTION_SUBJECT_PAGES` gains optional language-prefixed keys, e.g. `{"ru:geometriya-g7-11|8": "<ru-page-id>"}`. The history-split `{keyword: page-id}` object form composes under a language prefix. `.env.example` documents it.
+
+**Process:** controller-direct (CLAUDE.md small-clear-fix path — root cause verified, decisions locked with the user, backward-compatible one-resolver change), NOT the full plan gate; PR still routed to the gatekeeper. Decisions (missing-page → skip+reason; separate follow-up PR) confirmed by the user.
+
+**Files:** `app/services/notion_archive.py` (resolver `language` param + key prefix; `archive_job` threads `job.output_language` + language-explicit skip reason), `tests/services/test_notion_archive_language.py` (new — 6 cases: uz bare-key default, en/ru prefixed, non-uz never falls back to uz key, prefix composes with history-split, no-grade), `tests/services/test_notion_archive_skip.py` (completed the fake jobs with `output_language="uz"`), `.env.example`, `docs/CODE_MAP.md`.
+
+**Verified:** new tests RED→GREEN (6/6); existing notion suite green after completing the fakes; full non-DB suite **1160 passed / 0 failed**. Stacks on #57 (merged); branched off `origin/Nggaev-v2` @ 423ac41.
