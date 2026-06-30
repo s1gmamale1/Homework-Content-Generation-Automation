@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user_strict
@@ -65,3 +65,18 @@ async def delete_sa_key(key_id: UUID, session: AsyncSession = Depends(get_sessio
     await session.commit()
     storage.sa_key_path(key_id).unlink(missing_ok=True)
     return {"deleted": str(key_id)}
+
+
+@router.get("/{key_id}/download")
+async def download_sa_key(
+    key_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(get_current_user_strict),  # header-only; overrides router dep
+) -> Response:
+    row = await repo.get(session, key_id)
+    if row is None:
+        raise HTTPException(404, "no such key")
+    path = storage.sa_key_path(key_id)
+    if not path.exists():
+        raise HTTPException(404, "key bytes missing on disk")
+    return Response(content=path.read_bytes(), media_type="application/json")
