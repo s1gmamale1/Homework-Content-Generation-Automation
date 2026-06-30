@@ -388,6 +388,9 @@ export interface BatchSummary {
   paused_reason: string | null;
   /** Per-batch Claude session-limit strategy (C5). */
   session_limit_strategy?: SessionLimitStrategy;
+  /** Notion archive progress for the batch's done lessons (batch re-archive). */
+  archived: number;
+  unarchived: number;
 }
 
 export interface BatchLessonRow {
@@ -412,6 +415,13 @@ export interface BatchCancelResponse {
 export interface BatchResumeResponse {
   batch_id: string;
   jobs_resumed: number;
+}
+
+/** Response from POST /jobs/batch/{id}/retry-archive */
+export interface BatchRearchiveResponse {
+  batch_id: string;
+  queued: number;
+  already_running: boolean;
 }
 
 /** Response from POST /jobs/batch/{id}/pause and /unpause */

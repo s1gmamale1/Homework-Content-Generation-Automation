@@ -119,6 +119,56 @@ async def rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dict[str, i
     return tally
 
 
+async def archive_rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dict[str, int]:
+    """Among the batch's `done` lessons (latest job per toc_entry), split by
+    Notion archive state: {"archived": n, "unarchived": m}. Mirrors
+    rollup_for_batch's DISTINCT-ON latest-per-lesson so retries don't double-count."""
+    latest = (
+        select(
+            HomeworkJob.status.label("status"),
+            HomeworkJob.notion_archived_at.label("notion_archived_at"),
+        )
+        .where(HomeworkJob.batch_id == batch_id)
+        .order_by(HomeworkJob.toc_entry_id, HomeworkJob.created_at.desc())
+        .distinct(HomeworkJob.toc_entry_id)
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(latest.c.notion_archived_at).where(latest.c.status == "done")
+        )
+    ).all()
+    archived = sum(1 for (ts,) in rows if ts is not None)
+    unarchived = sum(1 for (ts,) in rows if ts is None)
+    return {"archived": archived, "unarchived": unarchived}
+
+
+async def done_unarchived_job_ids(session: AsyncSession, batch_id: UUID) -> list[UUID]:
+    """Latest job per toc_entry in the batch that is `done` AND not yet archived —
+    the worklist the head-side re-archive sweep iterates. Stable order."""
+    latest = (
+        select(
+            HomeworkJob.id.label("job_id"),
+            HomeworkJob.status.label("status"),
+            HomeworkJob.notion_archived_at.label("notion_archived_at"),
+            HomeworkJob.toc_entry_id.label("toc_entry_id"),
+        )
+        .where(HomeworkJob.batch_id == batch_id)
+        .order_by(HomeworkJob.toc_entry_id, HomeworkJob.created_at.desc())
+        .distinct(HomeworkJob.toc_entry_id)
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(latest.c.job_id)
+            .where(latest.c.status == "done")
+            .where(latest.c.notion_archived_at.is_(None))
+            .order_by(latest.c.toc_entry_id)
+        )
+    ).all()
+    return [r.job_id for r in rows]
+
+
 async def list_with_rollups(session: AsyncSession) -> list[dict]:
     """Every batch (newest first) + its computed rollup + the book filename
     (for subject-variant labeling)."""
@@ -132,7 +182,9 @@ async def list_with_rollups(session: AsyncSession) -> list[dict]:
     out = []
     for b, original_filename in rows:
         tally = await rollup_for_batch(session, b.id)
-        out.append({"batch": b, "rollup": tally, "original_filename": original_filename})
+        archive = await archive_rollup_for_batch(session, b.id)
+        out.append({"batch": b, "rollup": tally, "archive": archive,
+                    "original_filename": original_filename})
     return out
 
 

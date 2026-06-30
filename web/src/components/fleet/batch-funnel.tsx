@@ -63,6 +63,12 @@ function TransportRow({
 
       <RollupBar rollup={batch.rollup} covered={batch.lessons_covered} />
 
+      {batch.archived + batch.unarchived > 0 && (
+        <div className="text-[0.7rem] text-white/45">
+          Notion archive · {batch.archived}/{batch.archived + batch.unarchived}
+        </div>
+      )}
+
       {/* Paused badge — shown when the budget monitor (C4) has gated this batch.
           A polished cost-$ spend dashboard defers to C6. */}
       {batch.paused_at && (
