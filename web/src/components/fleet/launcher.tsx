@@ -16,7 +16,7 @@ import {
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   CategoryBrowser,
   compareGradeGroups,
@@ -155,7 +155,7 @@ export function FleetLauncher({
   const preparing = all.filter(
     (b) => b.status === "toc_extracting" || b.status === "uploading",
   );
-  const failed = all.filter((b) => b.status === "failed");
+  const failed = all.filter((b) => b.status === "failed" || b.status === "toc_review");
   // Every prepared book stays in the tray regardless of batch state; its card
   // reflects ready/generating/complete via statusOf.
   const ready = all.filter((b) => b.status === "toc_ready");
@@ -408,7 +408,9 @@ export function FleetLauncher({
                   const readyBooks = group.filter((b) => b.status === "toc_ready");
                   const gReady = readyBooks.filter((b) => statusOf(b) === "ready");
                   const gLaunched = readyBooks.filter((b) => statusOf(b) === "launched");
-                  const gFailed = group.filter((b) => b.status === "failed");
+                  const gFailed = group.filter(
+                    (b) => b.status === "failed" || b.status === "toc_review",
+                  );
                   const readySection = (label: string, list: Book[]) =>
                     list.length > 0 && (
                       <div className="space-y-2">
@@ -505,7 +507,7 @@ type FleetStatus = "preparing" | "ready" | "launched" | "failed";
 
 function bookFleetStatus(book: Book, batches: BatchSummary[]): FleetStatus {
   if (book.status === "toc_extracting" || book.status === "uploading") return "preparing";
-  if (book.status === "failed") return "failed";
+  if (book.status === "failed" || book.status === "toc_review") return "failed";
   return batches.some((b) => b.book_id === book.id) ? "launched" : "ready";
 }
 
@@ -593,6 +595,33 @@ function FailedCard({ book }: { book: Book }) {
     } finally {
       setRetrying(false);
     }
+  }
+
+  // toc_review books need operator attention on the book page, not a silent retry.
+  if (book.status === "toc_review") {
+    return (
+      <motion.div
+        variants={fadeUpItem}
+        className="flex items-start gap-3 rounded-2xl border border-amber-400/25 bg-amber-400/[0.06] p-4"
+      >
+        <SubjectAvatar subject={book.subject} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 text-sm font-medium text-white">
+            {subjectLabelWithVariant(book.subject, book.subject_variant)}
+            {book.grade && <GradeChip grade={book.grade} />}
+          </div>
+          <div className="mt-1 text-xs text-amber-300/80">
+            TOC needs review — validator flagged issues.
+          </div>
+          <Link
+            to={`/book/${book.id}`}
+            className={cn(GHOST_BTN, "mt-2 inline-flex items-center gap-1.5")}
+          >
+            Review TOC
+          </Link>
+        </div>
+      </motion.div>
+    );
   }
 
   return (
