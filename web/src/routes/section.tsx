@@ -106,22 +106,23 @@ export function SectionPage() {
     phaseMode === "pick" ? [...selectedPhases].filter((k) => !customPrompts[k]) : [];
 
   // Fetch global launch defaults so the language picker can show
-  // "Auto → <resolved default>" when the per-launch override is not set, and so
-  // per-lesson status can be scoped to the effective language.
+  // "Auto → <resolved default>" when neither a per-launch override nor the
+  // book's own source language applies.
   const { data: launchDefaults } = useQuery({
     queryKey: ["launch-defaults"],
     queryFn: () => api.getLaunchDefaults(),
   });
 
-  // Per-lesson status is language-scoped: the explicit pick, else the resolved
-  // global default — so a lesson done in uz doesn't read "complete"/block launch
-  // under ru/en. Keying the query on it refetches when the language changes.
-  const effectiveLang = outputLanguage ?? launchDefaults?.output_language ?? null;
+  // Existing-homework detection is language-AGNOSTIC: the section's latest done
+  // job is surfaced (and opened) in whatever language it was generated — matching
+  // the unscoped TOC badge on book.tsx, so "done on the TOC" always means
+  // "openable here". The output-language picker below governs only what a NEW
+  // generate run produces, not what's already openable.
   const { data: book, isLoading } = useQuery({
-    queryKey: ["book", bookId, effectiveLang],
+    queryKey: ["book", bookId],
     queryFn: () =>
       bookId
-        ? api.getBook(bookId, effectiveLang)
+        ? api.getBook(bookId)
         : Promise.reject(new Error("no id")),
     enabled: Boolean(bookId),
     refetchOnWindowFocus: true,
@@ -334,7 +335,7 @@ export function SectionPage() {
           judgeWarning={judgeWarning}
           outputLanguage={outputLanguage}
           onOutputLanguageChange={setOutputLanguage}
-          resolvedOutputLanguage={launchDefaults?.output_language ?? null}
+          resolvedOutputLanguage={book?.source_language ?? launchDefaults?.output_language ?? null}
         />
 
         {/* What to generate: full packet (default) or a hand-picked subset, with
