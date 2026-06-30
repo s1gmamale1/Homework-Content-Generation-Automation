@@ -234,6 +234,11 @@ class Worker:
         # handful.
         await self._sweep_stuck_jobs()
 
+        # Apply this host's assigned SA key (if any) BEFORE the claim loop, so a
+        # keyless boot that has an assignment gains gemini-api capability before
+        # it ever tries to claim. Idle by construction here (no jobs yet).
+        await self._sync_sa_key()
+
         # Registry heartbeat on its OWN task so a busy worker (all slots full)
         # still reports alive — the main loop blocks while slots are occupied.
         registry_hb = asyncio.create_task(self._registry_heartbeat_loop())
@@ -250,6 +255,9 @@ class Worker:
                 if now - self._last_budget_check_at > settings.cost_check_interval_seconds:
                     await self._budget_monitor()
                     self._last_budget_check_at = now
+                if now - self._last_key_sync_at > settings.heartbeat_seconds:
+                    await self._sync_sa_key()
+                    self._last_key_sync_at = now
 
                 # Block until a slot is free OR stop is requested.
                 slot_acquired = await self._wait_for_slot_or_stop()
