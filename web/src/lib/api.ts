@@ -6,6 +6,7 @@ import type {
   BatchLessonRow,
   BatchPauseResponse,
   BatchPreviewResponse,
+  BatchRearchiveResponse,
   BatchResumeResponse,
   BatchSummary,
   Book,
@@ -271,6 +272,14 @@ export const api = {
       { method: "POST" },
     );
     return unwrap<Job>(res);
+  },
+
+  async retryArchiveBatch(batchId: string): Promise<BatchRearchiveResponse> {
+    const res = await authFetch(
+      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/retry-archive`,
+      { method: "POST" },
+    );
+    return unwrap<BatchRearchiveResponse>(res);
   },
 
   /**
