@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2, PauseCircle, PlayCircle, RotateCcw, XCircle } from "lucide-react";
+import { CloudUpload, Loader2, PauseCircle, PlayCircle, RotateCcw, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import type { BatchSummary } from "@/lib/types";
 import { api } from "@/lib/api";
@@ -47,7 +47,21 @@ export function BatchActions({ batch }: { batch: BatchSummary }) {
     onError: (e) => toast.error(e instanceof Error ? e.message : "Action failed"),
   });
 
-  if (!canPause && !isPaused && !canCancel && !canRetry) return null;
+  const rearchiveMut = useMutation({
+    mutationFn: () => api.retryArchiveBatch(batch.batch_id),
+    onSuccess: (res) => {
+      toast.success(
+        res.already_running
+          ? "Re-archive already running"
+          : `Re-archiving ${res.queued} lesson(s) to Notion`,
+      );
+      qc.invalidateQueries({ queryKey: ["batches"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Action failed"),
+  });
+
+  const canRearchive = batch.unarchived > 0;
+  if (!canPause && !isPaused && !canCancel && !canRetry && !canRearchive) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -120,6 +134,23 @@ export function BatchActions({ batch }: { batch: BatchSummary }) {
             <RotateCcw className="size-3.5" />
           )}
           Retry failed
+        </button>
+      )}
+
+      {canRearchive && (
+        <button
+          type="button"
+          className={cn(GHOST_BTN, PRESSABLE, FRAME_OFF, "h-7 px-2 text-xs disabled:opacity-50")}
+          disabled={rearchiveMut.isPending}
+          title={`Re-push ${batch.unarchived} un-archived lesson(s) to Notion (head PC)`}
+          onClick={() => rearchiveMut.mutate()}
+        >
+          {rearchiveMut.isPending ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <CloudUpload className="size-3.5" />
+          )}
+          Re-archive ({batch.unarchived})
         </button>
       )}
     </div>
