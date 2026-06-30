@@ -486,6 +486,7 @@ function BookCard({ book }: { book: Book }) {
 function StatusBadge({ status }: { status: BookStatus }) {
   const map: Record<BookStatus, { label: string; cls: string }> = {
     toc_ready: { label: "ready", cls: "bg-emerald-400/15 text-emerald-300" },
+    toc_review: { label: "review", cls: "bg-violet-400/15 text-violet-300" },
     failed: { label: "failed", cls: "bg-rose-500/15 text-rose-300" },
     uploading: { label: "uploading", cls: "bg-sky-400/15 text-sky-300" },
     toc_extracting: { label: "indexing", cls: "bg-amber-400/15 text-amber-200" },
