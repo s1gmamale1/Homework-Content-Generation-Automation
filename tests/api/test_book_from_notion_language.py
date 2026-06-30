@@ -62,12 +62,12 @@ def test_from_notion_ru_unrecognised_title_returns_422():
     """A title that the Russian mapper doesn't know -> 422 with an actionable message."""
     with patch("app.api.v1.books.NotionClientWrapper"), \
          patch("app.api.v1.books._notion_subject_title",
-               return_value="Математика"):  # not in the ru keyword set
+               return_value="Несуществующий предмет"):  # not in any ru keyword set
         r = client.post("/api/v1/books/from-notion",
-                        json={"subject_page_id": "ru_math", "grade": "5",
+                        json={"subject_page_id": "ru_unknown", "grade": "5",
                               "language": "ru"})
     assert r.status_code == 422
-    assert "Математика" in r.text
+    assert "Несуществующий предмет" in r.text
     assert "ru" in r.text
 
 
