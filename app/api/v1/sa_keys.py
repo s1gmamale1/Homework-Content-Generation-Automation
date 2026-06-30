@@ -20,7 +20,7 @@ def _meta(row) -> dict:
     return {
         "id": str(row.id), "project_id": row.project_id,
         "client_email": row.client_email, "original_filename": row.original_filename,
-        "label": row.label, "byte_size": row.byte_size,
+        "label": row.label, "byte_size": row.byte_size, "worker_count": 0,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
