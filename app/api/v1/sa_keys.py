@@ -4,6 +4,7 @@ import hashlib
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user_strict
@@ -80,3 +81,45 @@ async def download_sa_key(
     if not path.exists():
         raise HTTPException(404, "key bytes missing on disk")
     return Response(content=path.read_bytes(), media_type="application/json")
+
+
+# ---------------------------------------------------------------------------
+# Assignment routes  (literal "/assignments" prefix — declared before any
+# {key_id} wildcard so FastAPI resolves "assignments" as a literal, not a UUID)
+# ---------------------------------------------------------------------------
+
+class AssignRequest(BaseModel):
+    key_id: UUID
+
+
+@router.get("/assignments")
+async def list_assignments(session: AsyncSession = Depends(get_session)) -> dict:
+    rows = await repo.list_assignments(session)
+    for r in rows:
+        r["key_id"] = str(r["key_id"]) if r["key_id"] else None
+    return {"assignments": rows}
+
+
+@router.put("/assignments/{hostname}")
+async def assign_sa_key(
+    hostname: str, req: AssignRequest, session: AsyncSession = Depends(get_session),
+) -> dict:
+    if await repo.get(session, req.key_id) is None:
+        raise HTTPException(404, "no such key")
+    await repo.assign(session, hostname, req.key_id)
+    await session.commit()
+    return {"hostname": hostname, "key_id": str(req.key_id)}
+
+
+@router.delete("/assignments/{hostname}")
+async def unassign_sa_key(hostname: str, session: AsyncSession = Depends(get_session)) -> dict:
+    await repo.unassign(session, hostname)
+    await session.commit()
+    return {"hostname": hostname, "unassigned": True}
+
+
+@router.post("/assignments/{hostname}/scrub")
+async def scrub_sa_key(hostname: str, session: AsyncSession = Depends(get_session)) -> dict:
+    await repo.scrub(session, hostname)
+    await session.commit()
+    return {"hostname": hostname, "scrub": True}
