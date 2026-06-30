@@ -16,14 +16,21 @@ def _run_alembic(cmd):
 
 async def test_0039_adds_content_columns_and_seeds():
     import asyncpg
-    _run_alembic(["downgrade", "0038_output_language"])
-    _run_alembic(["upgrade", "0039_launch_defaults_content"])
-    conn = await asyncpg.connect(_SYNC_URL)
     try:
-        row = await conn.fetchrow(
-            "SELECT content_provider, content_model, content_transport FROM launch_defaults WHERE id=1")
-        assert row["content_provider"] == "gemini"
-        assert row["content_model"] == "gemini-2.5-pro"
-        assert row["content_transport"] == "api"
+        _run_alembic(["downgrade", "0038_output_language"])
+        _run_alembic(["upgrade", "0039_launch_defaults_content"])
+        conn = await asyncpg.connect(_SYNC_URL)
+        try:
+            row = await conn.fetchrow(
+                "SELECT content_provider, content_model, content_transport FROM launch_defaults WHERE id=1")
+            assert row["content_provider"] == "gemini"
+            assert row["content_model"] == "gemini-2.5-pro"
+            assert row["content_transport"] == "api"
+        finally:
+            await conn.close()
     finally:
-        await conn.close()
+        # Restore the shared scratch DB to head. This test pins the upgrade to
+        # 0039, so once a later migration exists (0040, 0041, …) it would
+        # otherwise leave the shared DB stranded below head and fail every
+        # subsequent DB-integration test (same fix as test_0037_backfill).
+        _run_alembic(["upgrade", "head"])
