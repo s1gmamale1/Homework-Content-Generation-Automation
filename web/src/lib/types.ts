@@ -463,3 +463,24 @@ export interface LaunchDefaults {
   /** Concrete global default for generated content language. */
   output_language: OutputLanguage | null;
 }
+
+/** A stored Google Cloud service-account key file. */
+export interface SaKey {
+  id: string;
+  project_id: string;
+  client_email: string;
+  original_filename: string;
+  label: string | null;
+  byte_size: number;
+  created_at: string | null;
+  worker_count: number;
+}
+
+/** Per-worker SA key assignment state served by GET /api/v1/sa-keys/assignments. */
+export interface SaKeyAssignment {
+  hostname: string;
+  key_id: string | null;
+  project_id: string | null;
+  label: string | null;
+  scrub: boolean;
+}
