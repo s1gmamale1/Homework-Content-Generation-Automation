@@ -1,5 +1,5 @@
 import { PauseCircle } from "lucide-react";
-import { type CSSProperties, useMemo, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import type { BatchSummary } from "@/lib/types";
 import { type RowStatus, transportRowStatus } from "@/lib/batch-status";
 import { type StatusFilter, bookMatchesStatus } from "@/lib/monitor-filters";
@@ -160,6 +160,7 @@ export function BatchFunnel({
   statusFilter?: StatusFilter;
 }) {
   const [drawer, setDrawer] = useState<{ batchId: string; title: string } | null>(null);
+  const [gradeFilter, setGradeFilter] = useState<string | null>(null);
 
   // Group batches by book so a subject's batches share a single card. The list
   // is already API-scoped by monitor.tsx (cli filtered there so stats + cards
@@ -180,16 +181,81 @@ export function BatchFunnel({
 
   const gradeGroups = useMemo(() => groupBooksByGrade(books), [books]);
 
+  // Keep gradeFilter valid as data/filters change: reset to null if the
+  // selected grade is no longer present in gradeGroups.
+  useEffect(() => {
+    if (gradeFilter && !gradeGroups.some((g) => g.grade === gradeFilter)) {
+      setGradeFilter(null);
+    }
+  }, [gradeGroups, gradeFilter]);
+
+  // When a specific grade is selected, show only that grade's group.
+  const visibleGroups = gradeFilter
+    ? gradeGroups.filter((g) => g.grade === gradeFilter)
+    : gradeGroups;
+
   return (
     <div className="space-y-3">
       <h2 className="text-sm font-semibold tracking-tight text-white">Batches</h2>
+
+      {/* Grade filter strip — only when there is something to filter */}
+      {gradeGroups.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {/* "All grades" chip */}
+          <button
+            type="button"
+            onClick={() => setGradeFilter(null)}
+            className={cn(
+              "rounded-xl px-3 py-1 text-xs font-medium transition-colors",
+              gradeFilter === null
+                ? "bg-white/[0.12] text-white"
+                : "text-white/45 hover:text-white/70",
+            )}
+          >
+            All grades
+          </button>
+
+          {gradeGroups.map((group) => {
+            const failed = group.books.reduce(
+              (a, book) =>
+                a +
+                book.reduce(
+                  (x, b) => x + ((b.rollup as Record<string, number>).failed ?? 0),
+                  0,
+                ),
+              0,
+            );
+            const label =
+              group.grade === "Ungraded" ? "Ungraded" : `Grade ${group.grade}`;
+            return (
+              <button
+                key={group.grade}
+                type="button"
+                onClick={() => setGradeFilter(group.grade)}
+                className={cn(
+                  "rounded-xl px-3 py-1 text-xs font-medium transition-colors",
+                  gradeFilter === group.grade
+                    ? "bg-white/[0.12] text-white"
+                    : "text-white/45 hover:text-white/70",
+                )}
+              >
+                {label}
+                {failed > 0 && (
+                  <span className="ml-1 text-red-300">· {failed} failed</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {books.length === 0 ? (
         <div className={cn(CARD, "text-sm text-white/50")}>
           No batches launched yet.
         </div>
       ) : (
         <div className="space-y-5">
-          {gradeGroups.map(({ grade, books: gradeBooks }) => (
+          {visibleGroups.map(({ grade, books: gradeBooks }) => (
             <div key={grade} className="space-y-3">
               <p className="text-[0.7rem] font-medium uppercase tracking-[0.12em] text-white/35">
                 {grade === "Ungraded" ? "Ungraded" : `Grade ${grade}`}
