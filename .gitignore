@@ -47,3 +47,6 @@ abdscorpion0@gmail.com.json
 
 # Manual test scratch — sample custom prompts uploaded by hand, not part of the app
 samples/
+
+# Local QA harness — student-simulation teaching test (not part of the app)
+tools/teaching_test/
