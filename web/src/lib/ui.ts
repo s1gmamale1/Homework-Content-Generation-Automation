@@ -28,3 +28,21 @@ export const SELECT_TRIGGER =
 /** Clear bordered back-nav pill with a hover arrow nudge (apply to a Link). */
 export const BACK_PILL =
   "group inline-flex items-center gap-2 rounded-xl border border-white/[0.1] bg-white/[0.05] px-3 py-2 text-sm font-medium text-white/75 transition-colors hover:bg-white/[0.1] hover:text-white";
+
+/**
+ * Pressable affordance for the Monitor's filter chips, language tabs, and
+ * action buttons: a resting frame, a hover lift, and the "press" (dip + scale)
+ * on click. Size-agnostic — compose with sizing + a frame state:
+ *   cn("rounded-xl px-3 py-1.5", PRESSABLE, active ? FRAME_ON : FRAME_OFF)
+ * `cn` is tailwind-merge, so later classes (intent colors, sizing) win cleanly.
+ */
+export const PRESSABLE =
+  "border transition-[transform,background-color,border-color,color] duration-200 ease-[cubic-bezier(0.05,0.7,0.1,1)] active:translate-y-0 active:scale-[0.97]";
+
+/** Resting (un-selected) frame: subtle border + hover lift/brighten. */
+export const FRAME_OFF =
+  "border-white/[0.11] bg-white/[0.03] text-white/60 hover:-translate-y-px hover:border-white/20 hover:bg-white/[0.07] hover:text-white";
+
+/** Selected/filled frame (for toggle chips that are active). */
+export const FRAME_ON =
+  "border-white/20 bg-white/[0.13] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]";

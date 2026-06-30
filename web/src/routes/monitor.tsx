@@ -6,6 +6,7 @@ import { MonitorStats } from "@/components/fleet/monitor-stats";
 import { WorkerCards } from "@/components/fleet/worker-cards";
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import { api } from "@/lib/api";
+import { FRAME_OFF, FRAME_ON, PRESSABLE } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import {
   type Lang,
@@ -66,10 +67,9 @@ export function MonitorPage() {
                 type="button"
                 onClick={() => setActiveLang(s.lang)}
                 className={cn(
-                  "flex flex-col items-start rounded-xl px-4 py-2 text-left transition-colors",
-                  activeLang === s.lang
-                    ? "bg-white/[0.1] text-white"
-                    : "text-white/55 hover:text-white/80",
+                  "flex flex-col items-start rounded-xl px-4 py-2 text-left",
+                  PRESSABLE,
+                  activeLang === s.lang ? FRAME_ON : FRAME_OFF,
                 )}
               >
                 <span className="text-sm font-semibold">{LANG_LABEL[s.lang]}</span>
@@ -89,10 +89,9 @@ export function MonitorPage() {
               type="button"
               onClick={() => setStatusFilter(f)}
               className={cn(
-                "rounded-xl px-3 py-1.5 text-xs font-medium transition-colors",
-                statusFilter === f
-                  ? "bg-white/[0.12] text-white"
-                  : "text-white/45 hover:text-white/70",
+                "rounded-xl px-3 py-1.5 text-xs font-medium",
+                PRESSABLE,
+                statusFilter === f ? FRAME_ON : FRAME_OFF,
               )}
             >
               {STATUS_LABEL[f]}

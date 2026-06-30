@@ -5,7 +5,7 @@ import { type RowStatus, transportRowStatus } from "@/lib/batch-status";
 import { type StatusFilter, bookMatchesStatus } from "@/lib/monitor-filters";
 import { groupBooksByGrade } from "@/lib/monitor-grouping";
 import { subjectLabelWithVariant } from "@/lib/subjects";
-import { CARD, GHOST_BTN } from "@/lib/ui";
+import { CARD, FRAME_OFF, FRAME_ON, GHOST_BTN, PRESSABLE } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { BatchActions } from "./batch-actions";
 import { BatchLessonList } from "./batch-lesson-list";
@@ -80,7 +80,7 @@ function TransportRow({
         <button
           type="button"
           onClick={() => onShowLessons(batch.batch_id, batch.batch_id)}
-          className={cn(GHOST_BTN, "px-2 py-1.5 text-xs")}
+          className={cn(GHOST_BTN, PRESSABLE, FRAME_OFF, "px-2 py-1.5 text-xs")}
         >
           Show lessons
         </button>
@@ -206,10 +206,9 @@ export function BatchFunnel({
             type="button"
             onClick={() => setGradeFilter(null)}
             className={cn(
-              "rounded-xl px-3 py-1 text-xs font-medium transition-colors",
-              gradeFilter === null
-                ? "bg-white/[0.12] text-white"
-                : "text-white/45 hover:text-white/70",
+              "rounded-xl px-3 py-1 text-xs font-medium",
+              PRESSABLE,
+              gradeFilter === null ? FRAME_ON : FRAME_OFF,
             )}
           >
             All grades
@@ -233,10 +232,9 @@ export function BatchFunnel({
                 type="button"
                 onClick={() => setGradeFilter(group.grade)}
                 className={cn(
-                  "rounded-xl px-3 py-1 text-xs font-medium transition-colors",
-                  gradeFilter === group.grade
-                    ? "bg-white/[0.12] text-white"
-                    : "text-white/45 hover:text-white/70",
+                  "rounded-xl px-3 py-1 text-xs font-medium",
+                  PRESSABLE,
+                  gradeFilter === group.grade ? FRAME_ON : FRAME_OFF,
                 )}
               >
                 {label}
