@@ -30,7 +30,10 @@ book, before the book is allowed into generation. Verdict gates the book status:
 - Status is free-form `String(32)` (`book.py:29`); adding `toc_review` needs no enum
   migration. `_book_out_with_toc` only attaches `toc` for `toc_ready` (`books.py:447`)
   — must extend to `toc_review` so the operator can review the entries.
-- Migration head = `0040_books_source_language`; next = `0041`.
+- Migration head was `0040_books_source_language`, but **another in-flight plan adds `0041`
+  and merges first** (user-flagged 2026-06-30). At execution time, after rebasing onto the
+  merged base, run `uv run alembic heads` and use the **next free number with the REAL current
+  head as `down_revision`** — do NOT assume `0041`/`0040`.
 - `launch_defaults.toc_transport` (`launch_defaults.py:28`) governs TOC-call transport;
   the validator follows it. Validator provider/model pinned-but-configurable like
   extract (`settings.toc_validation_provider`/`_model`, default `gemini`/`gemini-2.5-flash`).
@@ -43,13 +46,15 @@ book, before the book is allowed into generation. Verdict gates the book status:
 
 ---
 
-## Task 1 — `books.toc_validation` + `toc_validation_detail` columns + migration 0041
+## Task 1 — `books.toc_validation` + `toc_validation_detail` columns + migration (next free number)
 
+- **PRE-STEP (execution time):** `uv run alembic heads` → use that as `down_revision` and the next
+  free integer as the new revision id (NOT a hardcoded `0041` — a sibling plan took that).
 - **Model** `app/models/book.py`: add
   `toc_validation: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)`
   and `toc_validation_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)`
   (Text already imported). Add a `CheckConstraint("toc_validation IS NULL OR toc_validation IN ('verified','mismatch','skipped')", name="ck_books_toc_validation")` to `__table_args__`.
-- **Migration** `alembic/versions/0041_books_toc_validation.py` (down_revision `0040_books_source_language`):
+- **Migration** `alembic/versions/<NNNN>_books_toc_validation.py` (down_revision = the real current head):
   `add_column` both (nullable, no server_default — existing books stay NULL = "not validated") + `create_check_constraint`; downgrade drops constraint + both columns.
 - **Test** `tests/repositories/test_books_toc_validation.py` (DB-integration): upgrade head →
   insert book with `toc_validation=None` ok; set `"verified"`/`"mismatch"`/`"skipped"` ok;
