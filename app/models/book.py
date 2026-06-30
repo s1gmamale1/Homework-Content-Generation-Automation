@@ -30,6 +30,9 @@ class Book(Base, UUIDPK, Timestamps):
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Language of the source textbook: "uz" (Uzbek, default), "ru" (Russian), "en" (English).
     source_language: Mapped[str] = mapped_column(String(8), nullable=False, server_default="uz")
+    # Post-TOC-extract vision validator result: verified | mismatch | skipped | NULL (not yet run).
+    toc_validation: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    toc_validation_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     toc_entries: Mapped[list["TOCEntry"]] = relationship(
         back_populates="book",
@@ -42,6 +45,10 @@ class Book(Base, UUIDPK, Timestamps):
         CheckConstraint(
             "source_language IN ('uz','ru','en')",
             name="ck_books_source_language",
+        ),
+        CheckConstraint(
+            "toc_validation IS NULL OR toc_validation IN ('verified','mismatch','skipped')",
+            name="ck_books_toc_validation",
         ),
     )
 
