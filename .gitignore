@@ -41,6 +41,9 @@ AGENTS.md
 pc-transfer.zip
 .claude-flow
 classarecruiter20@gmail.com.json
+abdscorpion0@gmail.com.json
+# Catch any future email-named service-account key dropped in the tree
+*@*.json
 
 # Manual test scratch — sample custom prompts uploaded by hand, not part of the app
 samples/
