@@ -7,7 +7,7 @@ import { ArrowUpRight, Loader2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { GHOST_BTN } from "@/lib/ui";
+import { FRAME_OFF, GHOST_BTN, PRESSABLE } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { colorFor } from "./status";
 
@@ -125,7 +125,7 @@ export function BatchLessonList({
                     type="button"
                     onClick={() => cancel.mutate(row.job_id!)}
                     disabled={cancel.isPending}
-                    className={cn(GHOST_BTN, "px-2 py-1 text-xs")}
+                    className={cn(GHOST_BTN, PRESSABLE, FRAME_OFF, "px-2 py-1 text-xs")}
                   >
                     Cancel
                   </button>
@@ -135,14 +135,14 @@ export function BatchLessonList({
                     type="button"
                     onClick={() => retry.mutate(row.job_id!)}
                     disabled={retry.isPending}
-                    className={cn(GHOST_BTN, "px-2 py-1 text-xs")}
+                    className={cn(GHOST_BTN, PRESSABLE, FRAME_OFF, "px-2 py-1 text-xs")}
                   >
                     Retry
                   </button>
                 )}
                 <Link
                   to={`/job/${row.job_id}`}
-                  className={cn(GHOST_BTN, "px-2 py-1 text-xs")}
+                  className={cn(GHOST_BTN, PRESSABLE, FRAME_OFF, "px-2 py-1 text-xs")}
                 >
                   Open
                   <ArrowUpRight className="size-3.5" />

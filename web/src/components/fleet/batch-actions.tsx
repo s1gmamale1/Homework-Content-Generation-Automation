@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import type { BatchSummary } from "@/lib/types";
 import { api } from "@/lib/api";
 import { batchActionFlags } from "@/lib/monitor-grouping";
-import { GHOST_BTN } from "@/lib/ui";
+import { FRAME_OFF, GHOST_BTN, PRESSABLE } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
 export function BatchActions({ batch }: { batch: BatchSummary }) {
@@ -54,7 +54,7 @@ export function BatchActions({ batch }: { batch: BatchSummary }) {
       {canPause && (
         <button
           type="button"
-          className={cn(GHOST_BTN, "h-7 px-2 text-xs text-amber-300/80 hover:text-amber-200 disabled:opacity-50")}
+          className={cn(GHOST_BTN, PRESSABLE, FRAME_OFF, "h-7 px-2 text-xs text-amber-300/80 hover:text-amber-200 border-amber-500/30 hover:border-amber-400/50 disabled:opacity-50")}
           disabled={pauseMut.isPending}
           title="Pause this batch (stops new jobs from starting)"
           onClick={() => pauseMut.mutate()}
@@ -71,7 +71,7 @@ export function BatchActions({ batch }: { batch: BatchSummary }) {
       {isPaused && (
         <button
           type="button"
-          className={cn(GHOST_BTN, "h-7 px-2 text-xs text-amber-300/80 hover:text-amber-200 disabled:opacity-50")}
+          className={cn(GHOST_BTN, PRESSABLE, FRAME_OFF, "h-7 px-2 text-xs text-amber-300/80 hover:text-amber-200 border-amber-500/30 hover:border-amber-400/50 disabled:opacity-50")}
           disabled={unpauseMut.isPending}
           title="Unpause this batch"
           onClick={() => unpauseMut.mutate()}
@@ -88,7 +88,7 @@ export function BatchActions({ batch }: { batch: BatchSummary }) {
       {canCancel && (
         <button
           type="button"
-          className={cn(GHOST_BTN, "h-7 px-2 text-xs text-rose-300/80 hover:text-rose-200 disabled:opacity-50")}
+          className={cn(GHOST_BTN, PRESSABLE, FRAME_OFF, "h-7 px-2 text-xs text-rose-300/80 hover:text-rose-200 border-rose-500/30 hover:border-rose-400/50 disabled:opacity-50")}
           disabled={cancelMut.isPending}
           title="Cancel all pending and running lessons in this batch"
           onClick={() => {
@@ -109,7 +109,7 @@ export function BatchActions({ batch }: { batch: BatchSummary }) {
       {canRetry && (
         <button
           type="button"
-          className={cn(GHOST_BTN, "h-7 px-2 text-xs disabled:opacity-50")}
+          className={cn(GHOST_BTN, PRESSABLE, FRAME_OFF, "h-7 px-2 text-xs disabled:opacity-50")}
           disabled={retryMut.isPending}
           title="Retry all failed/cancelled lessons"
           onClick={() => retryMut.mutate()}
