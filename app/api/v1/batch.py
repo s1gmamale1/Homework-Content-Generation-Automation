@@ -57,7 +57,8 @@ class BatchLaunchRequest(BaseModel):
     session_limit_strategy: str = "inherit"  # "pause" | "switch" | "inherit"
 
 
-def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None = None) -> dict:
+def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None = None,
+                    *, archived: int = 0, unarchived: int = 0) -> dict:
     return {
         "batch_id": str(batch.id),
         "book_id": str(batch.book_id),
@@ -87,6 +88,8 @@ def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None 
         "paused_at": batch.paused_at.isoformat() if batch.paused_at else None,
         "paused_reason": batch.paused_reason,
         "session_limit_strategy": batch.session_limit_strategy,
+        "archived": archived,
+        "unarchived": unarchived,
     }
 
 
@@ -315,9 +318,11 @@ async def launch_batch(
 
     await session.flush()
     tally = await batches_repo.rollup_for_batch(session, batch.id)
+    archive = await batches_repo.archive_rollup_for_batch(session, batch.id)
     await session.commit()
 
-    payload = _rollup_payload(batch, tally, book.original_filename)
+    payload = _rollup_payload(batch, tally, book.original_filename,
+                              archived=archive["archived"], unarchived=archive["unarchived"])
     payload.update(jobs_created=created, jobs_adopted=adopted,
                    jobs_skipped=skipped, jobs_resumed=resumed,
                    rebill_warnings=rebill_warnings)
@@ -327,7 +332,9 @@ async def launch_batch(
 @router.get("/jobs/batches")
 async def list_batches(session: AsyncSession = Depends(get_session)):
     rows = await batches_repo.list_with_rollups(session)
-    return {"batches": [_rollup_payload(r["batch"], r["rollup"], r.get("original_filename"))
+    return {"batches": [_rollup_payload(r["batch"], r["rollup"], r.get("original_filename"),
+                                        archived=r["archive"]["archived"],
+                                        unarchived=r["archive"]["unarchived"])
                         for r in rows]}
 
 
@@ -338,8 +345,10 @@ async def get_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)
     if batch is None:
         raise HTTPException(404, "batch not found")
     tally = await batches_repo.rollup_for_batch(session, batch_id)
+    archive = await batches_repo.archive_rollup_for_batch(session, batch_id)
     book = await books_repo.get(session, batch.book_id)
-    return _rollup_payload(batch, tally, book.original_filename if book else None)
+    return _rollup_payload(batch, tally, book.original_filename if book else None,
+                           archived=archive["archived"], unarchived=archive["unarchived"])
 
 
 @router.get("/jobs/batch/{batch_id}/cost")
