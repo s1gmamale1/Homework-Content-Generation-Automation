@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { FleetLauncher } from "@/components/fleet/launcher";
 import { OnlineStrip } from "@/components/fleet/online-strip";
+import { SaKeysPanel } from "@/components/fleet/sa-keys-panel";
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import { api } from "@/lib/api";
 
@@ -19,6 +20,7 @@ export function FleetPage() {
         </div>
         <OnlineStrip />
         <FleetLauncher books={books.data} batches={batches.data} />
+        <SaKeysPanel />
       </div>
     </>
   );

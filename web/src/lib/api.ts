@@ -17,6 +17,8 @@ import type {
   OutputLanguage,
   ProviderModelManifest,
   RoleTransport,
+  SaKey,
+  SaKeyAssignment,
   SessionLimitStrategy,
   Subject,
   TOCEntry,
@@ -467,6 +469,59 @@ export const api = {
 
   jobStreamUrl(jobId: string): string {
     return withTokenParam(`/api/v1/jobs/${encodeURIComponent(jobId)}/stream`);
+  },
+
+  // --- SA key management ---
+
+  async listSaKeys(): Promise<{ keys: SaKey[] }> {
+    const res = await authFetch("/api/v1/sa-keys");
+    return unwrap<{ keys: SaKey[] }>(res);
+  },
+
+  /** Upload a JSON service-account key file. Uses FormData so the browser sets
+   *  the multipart boundary — matches the uploadBook pattern (no forced Content-Type). */
+  async uploadSaKey(file: File): Promise<SaKey> {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await authFetch("/api/v1/sa-keys", { method: "POST", body: form });
+    if (!res.ok) throw new Error((await res.json()).detail ?? "upload failed");
+    return res.json() as Promise<SaKey>;
+  },
+
+  async deleteSaKey(id: string): Promise<void> {
+    const res = await authFetch(`/api/v1/sa-keys/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error((await res.json()).detail ?? "delete failed");
+  },
+
+  async listSaKeyAssignments(): Promise<{ assignments: SaKeyAssignment[] }> {
+    const res = await authFetch("/api/v1/sa-keys/assignments");
+    return unwrap<{ assignments: SaKeyAssignment[] }>(res);
+  },
+
+  async assignSaKey(hostname: string, keyId: string): Promise<void> {
+    const res = await authFetch(
+      `/api/v1/sa-keys/assignments/${encodeURIComponent(hostname)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key_id: keyId }),
+      },
+    );
+    if (!res.ok) throw new Error((await res.json()).detail ?? "assign failed");
+  },
+
+  async unassignSaKey(hostname: string): Promise<void> {
+    await authFetch(
+      `/api/v1/sa-keys/assignments/${encodeURIComponent(hostname)}`,
+      { method: "DELETE" },
+    );
+  },
+
+  async scrubSaKey(hostname: string): Promise<void> {
+    await authFetch(
+      `/api/v1/sa-keys/assignments/${encodeURIComponent(hostname)}/scrub`,
+      { method: "POST" },
+    );
   },
 };
 

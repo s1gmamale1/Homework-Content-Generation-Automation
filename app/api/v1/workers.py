@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_session
+from app.repositories import sa_keys as sa_keys_repo
 from app.repositories import workers as workers_repo
 
 router = APIRouter()
@@ -15,11 +16,15 @@ async def list_workers(session: AsyncSession = Depends(get_session)) -> dict:
         session, stale_after_seconds=settings.worker_registry_stale_seconds
     )
     online = sum(1 for r in rows if r["online"])
+    assignments = await sa_keys_repo.list_assignments(session)
+    for a in assignments:
+        a["key_id"] = str(a["key_id"]) if a["key_id"] else None
     return {
         "workers": rows,
         "total": len(rows),
         "online": online,
         "stale_after_seconds": settings.worker_registry_stale_seconds,
+        "assignments": assignments,
     }
 
 

@@ -34,6 +34,7 @@ import os
 import socket
 import signal
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from uuid import UUID
 
 from loguru import logger
@@ -45,9 +46,11 @@ from app.repositories import batches as batches_repo
 from app.repositories import budget as budget_repo
 from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
+from app.repositories import sa_keys as sa_keys_repo
 from app.repositories import workers as workers_repo
-from app.services import agent, pipeline, providers
+from app.services import agent, pipeline, providers, sa_key_apply
 from app.services.errors import SessionLimitPause
+from app.services.storage import sa_key_active_path
 
 
 # Maps job_id -> the in-flight _execute_job task, so a same-process cancel
@@ -97,6 +100,21 @@ CAPABILITIES: dict = _compute_capabilities(os.environ)
 # Sent on every heartbeat so the head can display which providers each worker
 # can serve — computed once at startup (a restart is needed to update anyway).
 CAPABILITY_BLOB: dict = _capability_blob(os.environ)
+
+# Worker's project-root .env path. Module-level so tests can override it via
+# monkeypatch without touching the real file.
+_WORKER_ENV_PATH = Path(".env")
+
+
+def _rebind_capabilities() -> None:
+    """Recompute the frozen capability globals from the CURRENT os.environ after a
+    live SA-key apply/scrub. The claim gate reads CAPABILITIES at call time
+    (worker.py _claim_one) and the heartbeat publishes CAPABILITY_BLOB, so
+    reassigning the module globals is what makes a freshly-keyed worker start
+    claiming gemini-api jobs without a restart."""
+    global CAPABILITIES, CAPABILITY_BLOB
+    CAPABILITIES = _compute_capabilities(os.environ)
+    CAPABILITY_BLOB = _capability_blob(os.environ)
 
 
 def _worker_id() -> str:
@@ -175,6 +193,9 @@ class Worker:
         sweep_interval_seconds: int = 60,
     ):
         self.id = _worker_id()
+        self.hostname = socket.gethostname()
+        self._applied_key_sha: str | None = None
+        self._last_key_sync_at = 0.0
         self.concurrency = concurrency
         self.poll_interval = poll_interval
         self.job_timeout = job_timeout_seconds
@@ -213,6 +234,11 @@ class Worker:
         # handful.
         await self._sweep_stuck_jobs()
 
+        # Apply this host's assigned SA key (if any) BEFORE the claim loop, so a
+        # keyless boot that has an assignment gains gemini-api capability before
+        # it ever tries to claim. Idle by construction here (no jobs yet).
+        await self._sync_sa_key()
+
         # Registry heartbeat on its OWN task so a busy worker (all slots full)
         # still reports alive — the main loop blocks while slots are occupied.
         registry_hb = asyncio.create_task(self._registry_heartbeat_loop())
@@ -229,6 +255,9 @@ class Worker:
                 if now - self._last_budget_check_at > settings.cost_check_interval_seconds:
                     await self._budget_monitor()
                     self._last_budget_check_at = now
+                if now - self._last_key_sync_at > settings.heartbeat_seconds:
+                    await self._sync_sa_key()
+                    self._last_key_sync_at = now
 
                 # Block until a slot is free OR stop is requested.
                 slot_acquired = await self._wait_for_slot_or_stop()
@@ -654,6 +683,60 @@ class Worker:
                 )
             except asyncio.TimeoutError:
                 await self._registry_heartbeat()
+
+    async def _sync_sa_key(self) -> None:
+        """Resolve this host's SA-key assignment and apply/scrub it LIVE when it
+        changed. Idle-gated: the os.environ swap runs only when no job is in
+        flight (len(self._tasks)==0), so no concurrent agent spawn snapshots a
+        torn credential state. Best-effort: any failure is logged, never fatal."""
+        try:
+            async with SessionLocal() as session:
+                asg = await sa_keys_repo.get_assignment_with_key(session, self.hostname)
+        except Exception:
+            logger.warning(f"worker {self.id} sa-key assignment read failed")
+            return
+        if asg is None:
+            return  # non-destructive: keep whatever is currently applied
+
+        # Scrub: actively clear this host's key (the revoke path).
+        if asg["scrub"]:
+            if self._applied_key_sha is not None:
+                if self._tasks:
+                    return  # defer the clear until idle
+                sa_key_apply.clear_credentials_env(os.environ)
+                sa_key_apply.upsert_env_file(
+                    _WORKER_ENV_PATH,
+                    {"GOOGLE_APPLICATION_CREDENTIALS": None, "GOOGLE_CLOUD_PROJECT": None},
+                )
+                sa_key_active_path().unlink(missing_ok=True)
+                _rebind_capabilities()
+                self._applied_key_sha = None
+                logger.warning(f"worker {self.id} SA key SCRUBBED (revoked)")
+            return
+
+        if asg["sha256"] == self._applied_key_sha:
+            return  # unchanged — fast no-op
+        if self._tasks:
+            return  # in-flight jobs: defer the swap to the next idle moment
+
+        try:
+            key_bytes = await asyncio.to_thread(sa_key_apply.pull_key_bytes, str(asg["key_id"]))
+            dest = sa_key_active_path()
+            sa_key_apply.write_active_key(key_bytes, dest)
+            creds_path = str(dest.resolve())
+            sa_key_apply.set_credentials_env(os.environ, creds_path, asg["project_id"])
+            sa_key_apply.upsert_env_file(
+                _WORKER_ENV_PATH,
+                {"GOOGLE_APPLICATION_CREDENTIALS": creds_path, "GOOGLE_CLOUD_PROJECT": asg["project_id"]},
+            )
+            _rebind_capabilities()
+            self._applied_key_sha = asg["sha256"]
+            logger.info(
+                f"worker {self.id} applied SA key project={asg['project_id']} "
+                f"(live, no restart) — gemini_api={CAPABILITIES['can_gemini_api']}"
+            )
+        except Exception:
+            logger.exception(f"worker {self.id} SA key apply failed")
 
     async def _drain(self) -> None:
         """Wait for in-flight tasks to finish before returning. Bounded by

@@ -2,8 +2,8 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Every claim here was re-verified against branch `feat/language-aware-source-books-p3`, head `0040_books_source_language`
-> (0040), 2026-06-29. When this doc and the code disagree, the code wins — fix the doc.
+> Last updated: branch `feat/sa-key-web-distribution`, head `0041_sa_keys`
+> (0041), 2026-06-30. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
 
@@ -28,7 +28,7 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`0040_books_source_language`** (0028 = enum CHECK constraints,
+also runs it on deploy). Current head: **`0041_sa_keys`** (0028 = enum CHECK constraints,
 0029 = `phase_outputs.judge_status`, 0030 = `agent_usages.cache_creation_tokens`,
 0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton,
 0033 = `custom_prompts`/`selected_phases` JSONB on `homework_jobs`+`batches`,
@@ -37,7 +37,8 @@ also runs it on deploy). Current head: **`0040_books_source_language`** (0028 = 
 0037 = `launch_defaults` singleton + seed + NULL-column backfill on `homework_jobs`,
 0038 = `output_language` on `homework_jobs`+`batches`+`launch_defaults` + batch UNIQUE swap,
 0039 = `content_provider`/`content_model`/`content_transport` on `launch_defaults`,
-0040 = `books.source_language` String(8) NOT NULL server_default `'uz'` + CHECK `uz|ru|en`).
+0040 = `books.source_language` String(8) NOT NULL server_default `'uz'` + CHECK `uz|ru|en`,
+0041 = `sa_keys` table + `sa_key_assignments` table).
 Full chain in §7. (Revision IDs stay ≤32 chars — `alembic_version.version_num` is VARCHAR(32).)
 
 ---
@@ -263,6 +264,34 @@ No UUIDPK/Timestamps mixins — intentionally minimal.
 
 **⚠ Operator note (all-Vertex head):** the seed `toc_transport='cli'` means a worker with only Vertex SA creds and no gemini CLI OAuth will fail TOC extraction. After first deploy on an all-Vertex head, flip `toc_transport→api` at `/settings`.
 
+### 3.10 `sa_keys` — pool of uploaded GCP service-account keys (migration 0041)
+
+The DB row holds **metadata only**; the raw JSON bytes live on disk at `<var_dir>/sa_keys/<id>.json` (never in the DB).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID **PK** | |
+| `original_filename` | Text NOT NULL | the uploaded file's name |
+| `project_id` | Text NOT NULL | GCP project id auto-extracted from the uploaded JSON |
+| `client_email` | Text NOT NULL | service-account email auto-extracted from the uploaded JSON |
+| `sha256` | Text **UNIQUE** NOT NULL | content hash of the uploaded bytes; re-uploading identical bytes dedups to the existing row |
+| `byte_size` | Integer NOT NULL | size of the uploaded JSON |
+| `label` | Text NULL | optional operator nickname |
+| `created_at` | timestamptz NOT NULL | |
+
+Uploaded via `POST /sa-keys` (multipart; validated by `sa_key_validate.parse_and_validate_sa_key` — must be `type=="service_account"` with non-empty `project_id`/`client_email`/`private_key`, else 422). Downloaded via `GET /sa-keys/{id}/download` (**header-auth only** — rejects `?token=`; 503 when `AUTH_TOKEN` is empty; raw bytes). Listed via `GET /sa-keys` (metadata + `worker_count`; never returns `private_key`). Deleted via `DELETE /sa-keys/{id}` (409 if still assigned to any host).
+
+### 3.11 `sa_key_assignments` — per-hostname key assignment
+
+| Column | Type | Notes |
+|---|---|---|
+| `hostname` | Text **PK** | bare hostname (`socket.gethostname()`) of the worker PC — stable across restarts (unlike `workers.pc_id` = `hostname:pid`) |
+| `key_id` | UUID FK → sa_keys **ondelete=RESTRICT** NULL | which key this host should use; NULL together with `scrub_requested_at` set = an active "clear this host's key" signal |
+| `scrub_requested_at` | timestamptz NULL | set by the scrub/revoke endpoint |
+| `updated_at` | timestamptz NOT NULL | |
+
+Many hostnames may point at one key (shared-key case). Upsert on `PUT /sa-keys/assignments/{hostname}`; `DELETE /sa-keys/assignments/{hostname}` removes the row (non-destructive — the worker keeps its applied key); `POST /sa-keys/assignments/{hostname}/scrub` requests an active clear. On startup-before-claim and on a throttled main-loop tick, a worker calls `sa_keys_repo.get_assignment_with_key(hostname)`; when the assignment's `sha256` differs from what it last applied (and the worker is idle, `len(self._tasks)==0`), `worker._sync_sa_key` pulls the bytes (`sa_key_apply.pull_key_bytes`), writes `<var_dir>/sa_keys/active.json` atomically (`write_active_key` → temp + `os.replace`), sets `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` in `os.environ` and upserts them into the worker's `.env` (UTF-8, line-preserving), and calls `worker._rebind_capabilities()` to reassign the frozen `CAPABILITIES`/`CAPABILITY_BLOB` globals so a freshly-keyed idle worker begins claiming gemini-api jobs. The scrub path clears `os.environ`/`.env`, deletes `active.json`, and rebinds capabilities down.
+
 ---
 
 ## 4. Queue semantics (`app/repositories/jobs.py`)
@@ -411,7 +440,8 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | 37 | 0037_launch_defaults | `0037_launch_defaults` | creates `launch_defaults` singleton table (id=1 CHECK), seeds the row (judge/extract = gemini/gemini-2.5-flash/inherit, toc_transport=cli), and unconditionally backfills NULL `judge_provider`/`judge_model`/`extract_provider`/`extract_model` on `homework_jobs` |
 | 38 | 0038_output_language | `0038_output_language` | adds `output_language` String(16) NOT NULL server_default `'uz'` + DB CHECK `uz\|en\|ru` to `homework_jobs`, `batches`, and `launch_defaults`; drops `uq_batches_book_id_transport` and creates `uq_batches_book_id_transport_output_language` (`book_id`, `transport`, `output_language`) |
 | 39 | 0039_launch_defaults_content | `0039_launch_defaults_content` | adds `content_provider`, `content_model`, `content_transport` to `launch_defaults`; seeds `gemini`/`gemini-2.5-pro`/`inherit` (deliberately different from judge default to avoid self-grade guard on all-gemini fleet) |
-| 40 | 0040_books_source_language | `0040_books_source_language` | adds `books.source_language` String(8) NOT NULL server_default `'uz'` + DB CHECK `ck_books_source_language IN ('uz','ru','en')` — **HEAD** |
+| 40 | 0040_books_source_language | `0040_books_source_language` | adds `books.source_language` String(8) NOT NULL server_default `'uz'` + DB CHECK `ck_books_source_language IN ('uz','ru','en')` |
+| 41 | 0041_sa_keys | `0041_sa_keys` | adds `sa_keys` table (UUID PK, `original_filename`, `project_id`, `client_email`, `sha256` UNIQUE, `byte_size`, `label` NULL, `created_at`) + `sa_key_assignments` table (`hostname` PK, `key_id` FK→sa_keys ondelete=RESTRICT NULL, `scrub_requested_at` NULL, `updated_at`) — **HEAD** |
 
 ---
 

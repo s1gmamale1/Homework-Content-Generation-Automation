@@ -107,10 +107,12 @@ subscription.
 |---|---|
 | CLI-only jobs | just the CLI logins (step 4 above) — no keys |
 | api-claude work | `ANTHROPIC_API_KEY` in the worker env/.env |
-| api-gemini work | `GEMINI_API_KEY` **or** a Vertex service account (`GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT`) — **the SA path must be THIS machine's path**, not copied from another OS |
+| api-gemini work | a Vertex service account, applied via **Fleet → Keys** (see "SA key distribution" below) **or** manually: `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` in `.env` — **the path must be THIS machine's path** |
 
 A worker missing a credential simply **never claims jobs that need it** (it
 logs which side is missing at startup) — cli jobs are unaffected.
+
+**SA key distribution (Fleet → Keys panel):** instead of copying `.json` files manually, upload each service-account key once from the web UI (Fleet → Keys). The head stores the key and you assign it to a worker hostname from the same panel. The worker then downloads and applies the key automatically on the next startup or main-loop tick — no manual `.env` edit and no restart needed. Applying the key writes `<var_dir>/sa_keys/active.json`, updates `GOOGLE_APPLICATION_CREDENTIALS`/`GOOGLE_CLOUD_PROJECT` in the process environment and the worker's `.env`, and recomputes the capability flags so a previously keyless idle worker starts claiming gemini-api jobs immediately. The download endpoint requires a real `AUTH_TOKEN` and never exposes the `private_key` field — keep `AUTH_TOKEN` a genuine secret when using SA key distribution (it is a credential vault endpoint).
 
 **Two required one-time settings in `~/.gemini/settings.json` on every worker:**
 
@@ -137,7 +139,11 @@ Full billing/acceptance detail: `docs/runbooks/phase4-transport-operator-accepta
 - **PDFs:** ✅ solved (ROADMAP **R13**, shipped). A worker missing a book's PDF
   fetches it from the head on demand (`FLEET_HEAD_URL` + matching `AUTH_TOKEN`)
   and caches it locally; a shared `var/books` folder still works as an alternative.
-- **AI login:** each PC signs in to the CLIs once, per subscription account. For API billing, keys/SA files are per-PC too (see "Choosing who pays").
+- **SA keys for Vertex/gemini-api:** ✅ solved (worklog 0106, shipped). Upload keys + assign
+  to hostnames from Fleet → Keys; the worker pulls and applies them live on startup/each loop
+  tick (see "SA key distribution" in "Choosing who pays" above) — no manual file copy or restart.
+- **AI login:** each PC signs in to the CLIs once, per subscription account. For API billing,
+  keys are now distributed via Fleet → Keys (see above).
 - **No "Start" button yet:** you bring a worker online by provisioning the PC
   (Part B). A dashboard Start/Pause/Off button is a future feature
   (`fleet-ctrl-3/4`). For now, the Docker "start on login" setting is your

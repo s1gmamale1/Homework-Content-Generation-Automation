@@ -49,3 +49,28 @@ async def get_current_user(
             headers={"WWW-Authenticate": 'Bearer realm="api"'},
         )
     return {"user_id": "authenticated", "auth": "token"}
+
+
+async def get_current_user_strict(
+    authorization: Optional[str] = Header(default=None),
+) -> dict:
+    """Header-only auth for serving credential bytes. Unlike get_current_user
+    this rejects the ?token= query param (which would leak the token into
+    proxy/access logs) and refuses entirely (503) when auth is disabled — a
+    service-account-key vault must never be served wide-open."""
+    valid = valid_auth_tokens()
+    if not valid:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SA-key download requires AUTH_TOKEN to be configured",
+        )
+    provided: Optional[str] = None
+    if authorization and authorization.lower().startswith("bearer "):
+        provided = authorization.split(None, 1)[1].strip()
+    if not provided or provided not in valid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing or invalid auth token",
+            headers={"WWW-Authenticate": 'Bearer realm="api"'},
+        )
+    return {"user_id": "authenticated", "auth": "token"}
