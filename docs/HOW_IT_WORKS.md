@@ -264,11 +264,15 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
   worker card.
 - **The `/fleet` page**: launch a Notion subject end-to-end (fetch → TOC-extract →
   launch), with a one-line worker-liveness strip (`OnlineStrip`).
-- **The `/monitor` page**: watch batch funnels fill, see PC liveness cards, and drill
-  into a batch's lessons to cancel/retry individual ones. Batch-wide Pause/Unpause/Cancel-all/
-  Retry-failed actions are available directly on the Monitor batch card via `batch-actions.tsx`
-  (reusing the existing pause/unpause/cancel/resume endpoints; no new endpoints). Batch cards
-  are grouped by grade (numeric asc, `Ungraded` last); worker cards are a compact strip.
+- **The `/monitor` page**: a **Language → Grade → Subject → Lessons** curriculum-dashboard
+  (worklog 0105, PRs #62/#65/#67/#69). **Language tabs** (UZ/RU/EN) scope the batch list by
+  `output_language`; the active-language summary drives per-language counts. A **status filter
+  bar** (default "Needs attention") further narrows what's shown; clicking stat tiles flips the
+  filter. Within a language + status scope, batch cards are further filtered by a **grade strip**
+  ("All grades" + per-grade buttons). Drilling into a batch card opens a hand-rolled right-side
+  **lesson drawer** (Esc-close, no new dep) so the card grid stays stable. Batch-wide
+  Pause/Unpause/Cancel-all/Retry-failed actions remain on the Monitor batch card via
+  `batch-actions.tsx` (existing endpoints; no new endpoints); worker cards are a compact strip.
 
 One caveat worth knowing: on startup the API sweeps orphaned `running` jobs back to
 `pending`. As of Cluster 5 / P1 (`fleet-restart-reclaim-1`) this is **peer-aware**: if no
