@@ -61,7 +61,7 @@ async def test_sparse_text_routes_to_vision_window(tmp_path, monkeypatch):
     monkeypatch.setattr(
         agent,
         "_extract_toc_source_text",
-        lambda p: ("@WM " * 30, {"pages_read": 27, "chars": 120}),
+        lambda p: ("@WM " * 30, {"pages_read": 27, "pages_scanned": 27, "chars": 120}),
     )
     captured: dict = {}
     _patch_spawn(monkeypatch, captured)
@@ -88,6 +88,41 @@ async def test_sparse_text_routes_to_vision_window(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scanned_cover_routes_to_vision_not_text(tmp_path, monkeypatch):
+    """Regression (idum.uz RU-textbook bug): a scanned book whose ONLY text is a
+    dense cover must route to VISION. The sparseness denominator must be pages
+    SCANNED (the window), not pages that happened to yield text — else a few
+    text-bearing cover pages (414 chars/page over 8) mask a 55-page scan that is
+    actually image-only (60 chars/page), the TOC image never reaches the model,
+    and extraction returns 0 lessons."""
+    pdf = _make_pdf(tmp_path)
+    cover = "Алгебра 8 класс " * 207  # ~3300 chars of cover, no contents list
+    monkeypatch.setattr(
+        agent,
+        "_extract_toc_source_text",
+        lambda p: (cover, {"pages_read": 8, "pages_scanned": 55, "chars": len(cover)}),
+    )
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_record_usage(monkeypatch, {})
+
+    toc = await agent.extract_toc(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        pdf_path=pdf,
+        subject="math",
+        book_id=uuid4(),
+    )
+
+    assert len(toc.entries) == 1
+    # VISION branch: a window temp is attached (not the raw pdf), and the cover
+    # text was dropped rather than injected as the (uselessly TOC-less) excerpt.
+    assert len(captured["attachments"]) == 1
+    assert Path(captured["attachments"][0]).name.startswith("toc_window_")
+    assert "Алгебра 8 класс" not in captured["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_dense_text_keeps_text_path(tmp_path, monkeypatch):
     pdf = _make_pdf(tmp_path)
     # >300 chars/page over 20 pages so extract_text_is_too_sparse() is False
@@ -96,7 +131,7 @@ async def test_dense_text_keeps_text_path(tmp_path, monkeypatch):
     monkeypatch.setattr(
         agent,
         "_extract_toc_source_text",
-        lambda p: (dense, {"pages_read": 20, "chars": len(dense)}),
+        lambda p: (dense, {"pages_read": 20, "pages_scanned": 20, "chars": len(dense)}),
     )
     captured: dict = {}
     _patch_spawn(monkeypatch, captured)
@@ -123,7 +158,7 @@ async def test_window_none_falls_back_clean(tmp_path, monkeypatch):
     monkeypatch.setattr(
         agent,
         "_extract_toc_source_text",
-        lambda p: ("@WM " * 30, {"pages_read": 27, "chars": 120}),
+        lambda p: ("@WM " * 30, {"pages_read": 27, "pages_scanned": 27, "chars": 120}),
     )
     monkeypatch.setattr(agent, "_toc_source_pdf", lambda *a, **k: None)
     captured: dict = {}
@@ -148,7 +183,7 @@ async def test_vision_branch_marks_source(tmp_path, monkeypatch):
     monkeypatch.setattr(
         agent,
         "_extract_toc_source_text",
-        lambda p: ("@WM " * 30, {"pages_read": 27, "chars": 120}),
+        lambda p: ("@WM " * 30, {"pages_read": 27, "pages_scanned": 27, "chars": 120}),
     )
     _patch_spawn(monkeypatch, {})
     rec: dict = {}
@@ -175,7 +210,7 @@ def _patch_vision_for_transport(monkeypatch, tmp_path: Path, captured: dict):
     monkeypatch.setattr(
         agent,
         "_extract_toc_source_text",
-        lambda p: ("@WM " * 30, {"pages_read": 27, "chars": 120}),
+        lambda p: ("@WM " * 30, {"pages_read": 27, "pages_scanned": 27, "chars": 120}),
     )
     monkeypatch.setattr(agent, "_toc_source_pdf", lambda *a, **k: window)
 

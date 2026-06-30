@@ -1219,6 +1219,17 @@ def extract_text_is_too_sparse(text: str, n_pages: int) -> bool:
     return len((text or "").strip()) / n_pages < settings.extract_min_chars_per_page
 
 
+def _toc_pages_scanned(total_pages: int) -> int:
+    """Pages the TOC text-scan COVERS (front window + non-overlapping tail) — the
+    correct denominator for sparseness. Using pages-that-yielded-text instead
+    lets a few dense cover/watermark pages mask an otherwise image-only scan
+    (the scanned RU-textbook bug: 3317 chars over 8 text pages reads as 414/page
+    and skips vision, when the same text over the 55 scanned pages is 60/page)."""
+    front = min(total_pages, _TOC_TEXT_MAX_PAGES)
+    tail = min(_TOC_TAIL_PAGES, max(0, total_pages - front))
+    return front + tail
+
+
 def extract_text_is_oversize(text: str) -> bool:
     """True if the local text exceeds the whole-text budget → terminal 'too
     large, needs subset'. Pure (unit-testable); read_whole_book_text reads a
@@ -1285,6 +1296,7 @@ def _extract_toc_source_text(pdf_path: Path) -> tuple[str, dict[str, Any]]:
     meta["front_pages"] = front_pages
     meta["tail_pages_read"] = tail_pages
     meta["pages_read"] = len(front_pages) + len(tail_pages)
+    meta["pages_scanned"] = _toc_pages_scanned(total_pages)
     meta["chars"] = len(text)
     return text, meta
 
@@ -1349,7 +1361,7 @@ async def extract_toc(
     )
 
     toc_text_usable = has_local_toc_text and not extract_text_is_too_sparse(
-        toc_source_text, toc_source_meta.get("pages_read", 0)
+        toc_source_text, toc_source_meta.get("pages_scanned", 0)
     )
     window: Optional[Path] = None
     toc_mode = "attachment"

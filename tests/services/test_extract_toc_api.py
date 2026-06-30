@@ -54,7 +54,7 @@ async def test_api_text_usable_drops_pdf_attachment(tmp_path, monkeypatch):
     dense = "1-§ Kirish — 5\n2-§ Boshqa mavzu — 9\n" * 250  # not sparse
     monkeypatch.setattr(
         agent, "_extract_toc_source_text",
-        lambda p: (dense, {"pages_read": 20, "chars": len(dense)}),
+        lambda p: (dense, {"pages_read": 20, "pages_scanned": 20, "chars": len(dense)}),
     )
     captured: dict = {}
     _patch(monkeypatch, captured)
@@ -80,7 +80,7 @@ async def test_cli_text_usable_still_attaches_pdf(tmp_path, monkeypatch):
     dense = "1-§ Kirish — 5\n2-§ Boshqa mavzu — 9\n" * 250
     monkeypatch.setattr(
         agent, "_extract_toc_source_text",
-        lambda p: (dense, {"pages_read": 20, "chars": len(dense)}),
+        lambda p: (dense, {"pages_read": 20, "pages_scanned": 20, "chars": len(dense)}),
     )
     captured: dict = {}
     _patch(monkeypatch, captured)
@@ -102,7 +102,7 @@ async def test_api_scanned_book_gemini_keeps_api(tmp_path, monkeypatch):
     pdf = _make_pdf(tmp_path)
     monkeypatch.setattr(
         agent, "_extract_toc_source_text",
-        lambda p: ("@WM " * 30, {"pages_read": 27, "chars": 120}),  # sparse junk
+        lambda p: ("@WM " * 30, {"pages_read": 27, "pages_scanned": 27, "chars": 120}),  # sparse junk
     )
     captured: dict = {}
     _patch(monkeypatch, captured)
