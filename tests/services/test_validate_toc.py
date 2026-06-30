@@ -347,3 +347,51 @@ async def test_validate_toc_no_window_skipped_no_spawn(
     assert not spawn_called, "_spawn must NOT be called when window is None"
     # No usage record should be written (early return before spawn)
     assert len(record_calls) == 0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# (g) pre-spawn failure (prompt build raises) → skipped, no leak, no spawn
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_validate_toc_prebuild_raises_skipped_and_unlinks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """A failure BEFORE the spawn (here: _build_master_prompt raises) must still
+    degrade to 'skipped', never raise into the caller, NOT call _spawn, and
+    unlink the temp window (no leak). Guards the never-raise/always-unlink
+    invariant for the prompt-building region."""
+    window = _make_fake_window(tmp_path)
+    pdf = tmp_path / "book.pdf"
+    pdf.write_bytes(b"%PDF-stub")
+
+    monkeypatch.setattr(agent_module, "_toc_source_pdf", lambda *_: window)
+
+    def boom_build(*args: Any, **kwargs: Any) -> str:
+        raise RuntimeError("prompt build blew up")
+
+    spawn_called = False
+
+    async def fake_spawn(**kwargs: Any):
+        nonlocal spawn_called
+        spawn_called = True
+        return (0, "{}", _make_usage(), "")
+
+    monkeypatch.setattr(agent_module, "_build_master_prompt", boom_build)
+    monkeypatch.setattr(agent_module, "_spawn", fake_spawn)
+
+    result = await validate_toc(
+        entries=_ENTRIES,
+        pdf_path=pdf,
+        subject="math",
+        book_id=BOOK_ID,
+        provider="gemini",
+        model="gemini-2.5-flash",
+        transport="cli",
+    )
+
+    assert result.status == "skipped"
+    assert "validate_toc error" in result.detail
+    assert not spawn_called, "_spawn must NOT run after a prompt-build failure"
+    assert not window.exists(), "temp window must be unlinked even on pre-spawn failure"

@@ -1621,53 +1621,56 @@ async def validate_toc(
             detail="no contents-page window",
         )
 
-    # Vision transport rule — mirrors extract_toc:1376–1377.
-    # api PDF-attach only works for gemini; all other paths use cli.
-    if not (transport == "api" and provider == "gemini"):
-        transport = "cli"
-
-    attachment_preamble = prov.format_attachments([window])
-    attachments: list[Path] = [window]
-
-    # Build the compact entry list for the prompt.
-    entry_lines = "\n".join(
-        f"{e.section_number or ''}  {e.section_title}  p.{e.page_start or '?'}"
-        for e in entries
-    )
-    instruction = (
-        f"You are reviewing a {subject} curriculum textbook. "
-        "The attached pages are the textbook's printed contents page(s). "
-        "The extracted TOC entries below should faithfully reflect what is printed. "
-        "Decide whether the extraction is correct. "
-        "Return mismatch ONLY if entries are clearly wrong, garbled, invented, "
-        "or if major sections are missing. "
-        "Minor ordering differences or small page-number discrepancies are verified.\n\n"
-        "Extracted entries:\n"
-        f"{entry_lines}"
-    )
-
-    prompt = _build_master_prompt(
-        phase_prompt=instruction,
-        phase_name="toc.validate",
-        lesson_context=None,
-        prior_outputs=None,
-        difficulty=None,
-        schema=TOCValidation,
-        provider_suffix=prov.prompt_suffix(None),
-        attachment_preamble=attachment_preamble,
-    )
-
-    started_at = datetime.now(timezone.utc)
-    t0 = perf_counter()
-    usage: dict[str, Any] = {
-        "prompt_tokens": 0,
-        "output_tokens": 0,
-        "cached_tokens": 0,
-        "total_tokens": 0,
-        "raw": {},
-    }
-
+    # Everything from here is inside try/finally so ANY failure (prompt build,
+    # spawn, parse) returns "skipped" and the temp window is always unlinked —
+    # validate_toc must never raise into toc_extractor.run (hard invariant).
     try:
+        # Vision transport rule — mirrors extract_toc:1376–1377.
+        # api PDF-attach only works for gemini; all other paths use cli.
+        if not (transport == "api" and provider == "gemini"):
+            transport = "cli"
+
+        attachment_preamble = prov.format_attachments([window])
+        attachments: list[Path] = [window]
+
+        # Build the compact entry list for the prompt.
+        entry_lines = "\n".join(
+            f"{e.section_number or ''}  {e.section_title}  p.{e.page_start or '?'}"
+            for e in entries
+        )
+        instruction = (
+            f"You are reviewing a {subject} curriculum textbook. "
+            "The attached pages are the textbook's printed contents page(s). "
+            "The extracted TOC entries below should faithfully reflect what is printed. "
+            "Decide whether the extraction is correct. "
+            "Return mismatch ONLY if entries are clearly wrong, garbled, invented, "
+            "or if major sections are missing. "
+            "Minor ordering differences or small page-number discrepancies are verified.\n\n"
+            "Extracted entries:\n"
+            f"{entry_lines}"
+        )
+
+        prompt = _build_master_prompt(
+            phase_prompt=instruction,
+            phase_name="toc.validate",
+            lesson_context=None,
+            prior_outputs=None,
+            difficulty=None,
+            schema=TOCValidation,
+            provider_suffix=prov.prompt_suffix(None),
+            attachment_preamble=attachment_preamble,
+        )
+
+        started_at = datetime.now(timezone.utc)
+        t0 = perf_counter()
+        usage: dict[str, Any] = {
+            "prompt_tokens": 0,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "total_tokens": 0,
+            "raw": {},
+        }
+
         try:
             rc, text, usage, stderr = await _spawn(
                 provider=prov,
@@ -1773,6 +1776,16 @@ async def validate_toc(
             detail=detail,
         )
 
+    except Exception as exc:
+        # Pre-spawn failures (format_attachments, prompt build) or any
+        # uncaught error — degrade to skipped rather than raising.
+        logger.warning(f"agent.validate_toc unexpected error | {exc!r}")
+        return TOCValidationResult(
+            status="skipped",
+            confidence=None,
+            issues=[],
+            detail=f"validate_toc error: {str(exc)[:200]}",
+        )
     finally:
         try:
             window.unlink()
