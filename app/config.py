@@ -177,6 +177,11 @@ class Settings(BaseSettings):
     # Gate B (summary): a real lesson summary is thousands of chars; the silent
     # refusal that motivated this was 275. Below this → reject → fail over.
     extract_min_summary_chars: int = 400
+    # TOC vision validator: runs after extract_toc, before persisting status.
+    # Disabled → toc_validation DB column stays NULL (distinct from "skipped").
+    toc_validation_enabled: bool = True
+    toc_validation_provider: str = "gemini"
+    toc_validation_model: str = "gemini-2.5-flash"
 
     # ─── Filesystem ───────────────────────────────────────────────────────
     # Where PDFs are persisted on disk.
