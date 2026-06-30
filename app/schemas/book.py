@@ -18,6 +18,8 @@ class BookOut(BaseModel):
     status: str
     source_language: str = "uz"
     error_message: Optional[str] = None
+    toc_validation: Optional[str] = None
+    toc_validation_detail: Optional[str] = None
     gemini_file_expires_at: Optional[datetime] = None
     file_size_bytes: Optional[int] = None
     created_at: Optional[datetime] = None

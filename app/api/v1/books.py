@@ -235,11 +235,11 @@ async def retry_toc_extraction(
     book = await books_repo.get(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
-    if book.status not in ("failed", "toc_extracting"):
+    if book.status not in ("failed", "toc_extracting", "toc_review"):
         raise HTTPException(
             409,
             f"cannot retry TOC extraction from status '{book.status}' "
-            "(only `failed` or a stuck `toc_extracting`)",
+            "(only `failed`, a stuck `toc_extracting`, or `toc_review`)",
         )
     pdf_path = storage.book_pdf_path(book_id)
     if not pdf_path.exists():
@@ -247,6 +247,25 @@ async def retry_toc_extraction(
     await books_repo.set_status(session, book_id, "toc_extracting", error_message=None)
     await session.commit()
     _start_toc_extraction(book_id, pdf_path, book.subject)
+    return await _book_out_with_toc(session, book_id)
+
+
+@router.post("/{book_id}/toc/accept")
+async def accept_toc(
+    book_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    user: dict = Depends(get_current_user),
+) -> BookOut:
+    """Accept the TOC entries for a `toc_review` book, promoting it to `toc_ready`.
+    The toc_validation / toc_validation_detail columns are preserved as an audit trail.
+    """
+    book = await books_repo.get(session, book_id)
+    if book is None:
+        raise HTTPException(404, "book not found")
+    if book.status != "toc_review":
+        raise HTTPException(409, "can only accept a book in toc_review")
+    await books_repo.set_status(session, book_id, "toc_ready")
+    await session.commit()
     return await _book_out_with_toc(session, book_id)
 
 
@@ -288,6 +307,18 @@ async def stream_toc(book_id: UUID, request: Request):
                 initial.append({"event": "toc_ready",
                                 "data": json.dumps({"entries": entries})})
                 terminal = True
+            elif book.status == "toc_review":
+                enriched = await _enriched_toc_entries(session, book)
+                entries = [eo.model_dump(mode="json") for eo in enriched]
+                initial.append({"event": "toc_review",
+                                "data": json.dumps({
+                                    "entries": entries,
+                                    "validation": {
+                                        "verdict": book.toc_validation,
+                                        "detail": book.toc_validation_detail,
+                                    },
+                                })})
+                terminal = True
             elif book.status == "failed":
                 initial.append({"event": "error",
                                 "data": json.dumps({"message": book.error_message or "failed"})})
@@ -308,7 +339,7 @@ async def stream_toc(book_id: UUID, request: Request):
                 if payload is None:
                     break
                 yield {"event": payload["event"], "data": json.dumps(payload["data"])}
-                if payload["event"] in ("toc_ready", "error"):
+                if payload["event"] in ("toc_ready", "toc_review", "error"):
                     break
         finally:
             events_bus.unsubscribe(resource_id, q)
@@ -444,6 +475,6 @@ async def _book_out_with_toc(
     if book is None:
         raise HTTPException(404, "book not found")
     out = BookOut.model_validate(book)
-    if book.status == "toc_ready":
+    if book.status in ("toc_ready", "toc_review"):
         out.toc = await _enriched_toc_entries(session, book, output_language)
     return out
