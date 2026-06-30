@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from typing import Optional
 from uuid import UUID
 
@@ -30,6 +32,32 @@ from app.services.agent_models import (
 from app.services.flows import order_phase_selection, flow_for, selection_missing_prompts
 
 router = APIRouter(tags=["batches"])
+
+log = logging.getLogger(__name__)
+
+# Tracks in-flight head-side re-archive sweeps so a double-click can't launch a
+# second concurrent sweep of the same batch (archive_job is idempotent, so this
+# is an efficiency/politeness guard). Single-process (head: WORKER_CONCURRENCY=0);
+# under --workers N the guard wouldn't span workers (harmless — idempotent).
+_REARCHIVE_TASKS: dict[UUID, "asyncio.Task"] = {}
+
+
+async def _rearchive_sweep(batch_id: UUID, job_ids: list[UUID]) -> None:
+    """Sequentially re-run the idempotent, best-effort archive_job for each
+    done-but-unarchived job in a batch, in the API process. Backgrounded; never
+    raises (archive_job swallows + records skip reasons). Sequential because the
+    Notion client is globally rate-limited."""
+    from app.services import notion_archive
+    try:
+        for jid in job_ids:
+            try:
+                await notion_archive.archive_job(jid)
+            except Exception:  # defensive; archive_job is already best-effort
+                log.warning("[batch %s] re-archive of job %s failed (non-fatal)",
+                            batch_id, jid, exc_info=True)
+    finally:
+        _REARCHIVE_TASKS.pop(batch_id, None)
+
 
 # Fleet batches default to the cli-first provider (master spec §1a); diverges
 # from /generate's gemini default deliberately. model=None -> provider default.
@@ -428,6 +456,25 @@ async def unpause_batch(batch_id: UUID, session: AsyncSession = Depends(get_sess
     await batches_repo.unpause_batch(session, batch_id)
     await session.commit()
     return {"batch_id": str(batch_id), "paused": False}
+
+
+@router.post("/jobs/batch/{batch_id}/retry-archive")
+async def retry_archive_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)):
+    """Re-push every done-but-unarchived lesson of a batch to Notion from the
+    HEAD process (which carries NOTION_SUBJECT_PAGES). Backgrounded + idempotent:
+    returns immediately with how many jobs were queued. A second call while a
+    sweep is in flight is a no-op (already_running)."""
+    from app.models.batch import Batch
+    batch = await session.get(Batch, batch_id)
+    if batch is None:
+        raise HTTPException(404, "batch not found")
+    if batch_id in _REARCHIVE_TASKS:
+        return {"batch_id": str(batch_id), "queued": 0, "already_running": True}
+    job_ids = await batches_repo.done_unarchived_job_ids(session, batch_id)
+    if not job_ids:
+        return {"batch_id": str(batch_id), "queued": 0, "already_running": False}
+    _REARCHIVE_TASKS[batch_id] = asyncio.create_task(_rearchive_sweep(batch_id, job_ids))
+    return {"batch_id": str(batch_id), "queued": len(job_ids), "already_running": False}
 
 
 @router.get("/jobs/batches/{batch_id}/jobs")
