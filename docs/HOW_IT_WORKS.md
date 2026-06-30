@@ -576,7 +576,7 @@ A single-page app. In dev it runs on Vite's `:5173` and proxies `/api` to the ba
 
 The routes mirror the user journey:
 - `login` → paste a token (stored in sessionStorage, attached to every call).
-- `upload` → drop a PDF, choose subject.
+- `upload` (at `/upload`, reached via Library's **Upload book** button — no longer a top-level nav item) → drop a PDF, choose subject.
 - `library` → all uploaded books.
 - `book` → a book's TOC; pick a section.
 - `section` → choose provider/model, click Generate.
@@ -585,7 +585,7 @@ The routes mirror the user journey:
   component) plus any validation warnings. (Older interactive renderers under `components/`
   predate the markdown-per-phase flip.)
 - `usage` → the per-provider consumption dashboard.
-- `fleet` → the launch page: prepare/launch a Notion subject as a batch, plus an
+- `fleet` → **the default landing page (`/`)**; the launch page: prepare/launch a Notion subject as a batch, plus an
   `OnlineStrip` worker-liveness line.
 - `monitor` → the monitoring page: batch funnel bars with per-lesson drill-in
   (cancel/retry/open) and worker PC liveness cards. Polls `/jobs/batches*` + `/workers`
