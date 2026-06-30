@@ -92,7 +92,7 @@ export function LibraryPage() {
           </div>
 
           <Link
-            to="/"
+            to="/upload"
             className="inline-flex shrink-0 items-center gap-2 rounded-2xl bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] px-4 py-2.5 text-sm font-medium text-white shadow-[0_10px_26px_-12px_rgba(99,102,241,0.9)] transition-transform hover:-translate-y-0.5"
           >
             <Plus className="size-4" />
@@ -158,7 +158,7 @@ export function LibraryPage() {
             <BookOpen className="size-6 text-white/40" />
             <span className="text-sm text-white/55">No books yet.</span>
             <Link
-              to="/"
+              to="/upload"
               className="mt-1 inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-[#7c5cff] to-[#4d8dff] px-4 py-2.5 text-sm font-medium text-white shadow-[0_10px_26px_-12px_rgba(99,102,241,0.9)] transition-transform hover:-translate-y-0.5"
             >
               <Plus className="size-4" />

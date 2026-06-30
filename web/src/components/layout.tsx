@@ -1,4 +1,4 @@
-import { Activity, Gauge, Library, Plus, Rocket, Settings } from "lucide-react";
+import { Activity, Gauge, Library, Rocket, Settings } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { NavLink, useLocation, useOutlet } from "react-router-dom";
 import { Nameplate } from "./nameplate";
@@ -13,9 +13,9 @@ export function Layout() {
   // mounts exactly once and SSE/query effects don't double-subscribe.
   const outlet = useOutlet();
   const wide =
+    pathname === "/" ||
     pathname.startsWith("/usage") ||
     pathname.startsWith("/library") ||
-    pathname.startsWith("/fleet") ||
     pathname.startsWith("/monitor");
 
   return (
@@ -33,20 +33,17 @@ export function Layout() {
             />
 
             <nav aria-label="Primary" className="flex items-center gap-1">
-              <NavItem to="/" end icon={<Plus className="size-4" />}>
-                Upload
+              <NavItem to="/" end icon={<Rocket className="size-4" />}>
+                Fleet
+              </NavItem>
+              <NavItem to="/monitor" icon={<Activity className="size-4" />}>
+                Monitor
               </NavItem>
               <NavItem to="/library" icon={<Library className="size-4" />}>
                 Library
               </NavItem>
               <NavItem to="/usage" icon={<Gauge className="size-4" />}>
                 Usage
-              </NavItem>
-              <NavItem to="/fleet" icon={<Rocket className="size-4" />}>
-                Fleet
-              </NavItem>
-              <NavItem to="/monitor" icon={<Activity className="size-4" />}>
-                Monitor
               </NavItem>
               <NavItem to="/settings" icon={<Settings className="size-4" />}>
                 Settings

@@ -39,10 +39,12 @@ export default function App() {
               </ProtectedRoute>
             }
           >
-            <Route index element={<UploadPage />} />
+            {/* Fleet is the default landing page. Upload is reachable only
+                via the Library → "Upload book" button, at an explicit path. */}
+            <Route index element={<FleetPage />} />
+            <Route path="/upload" element={<UploadPage />} />
             <Route path="/library" element={<LibraryPage />} />
             <Route path="/usage" element={<UsagePage />} />
-            <Route path="/fleet" element={<FleetPage />} />
             <Route path="/monitor" element={<MonitorPage />} />
             <Route path="/book/:id" element={<BookPage />} />
             <Route path="/book/:bookId/section/:sectionId" element={<SectionPage />} />
