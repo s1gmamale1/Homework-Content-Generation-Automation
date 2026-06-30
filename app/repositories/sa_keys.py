@@ -3,8 +3,10 @@ from __future__ import annotations
 from uuid import UUID
 
 from sqlalchemy import delete as sa_delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.base import _utcnow
 from app.models.sa_key import SAKey, SAKeyAssignment
 
 
@@ -90,3 +92,65 @@ async def delete(session: AsyncSession, key_id: UUID) -> str:
         return "assigned"
     await session.execute(sa_delete(SAKey).where(SAKey.id == key_id))
     return "deleted"
+
+
+async def assign(session: AsyncSession, hostname: str, key_id: UUID) -> None:
+    stmt = pg_insert(SAKeyAssignment).values(
+        hostname=hostname, key_id=key_id, scrub_requested_at=None, updated_at=_utcnow(),
+    ).on_conflict_do_update(
+        index_elements=["hostname"],
+        set_={"key_id": key_id, "scrub_requested_at": None, "updated_at": _utcnow()},
+    )
+    await session.execute(stmt)
+
+
+async def unassign(session: AsyncSession, hostname: str) -> bool:
+    res = await session.execute(
+        sa_delete(SAKeyAssignment).where(SAKeyAssignment.hostname == hostname)
+    )
+    return (res.rowcount or 0) > 0
+
+
+async def scrub(session: AsyncSession, hostname: str) -> None:
+    stmt = pg_insert(SAKeyAssignment).values(
+        hostname=hostname, key_id=None, scrub_requested_at=_utcnow(), updated_at=_utcnow(),
+    ).on_conflict_do_update(
+        index_elements=["hostname"],
+        set_={"key_id": None, "scrub_requested_at": _utcnow(), "updated_at": _utcnow()},
+    )
+    await session.execute(stmt)
+
+
+async def get_assignment_with_key(session: AsyncSession, hostname: str) -> dict | None:
+    row = (await session.execute(
+        select(SAKeyAssignment, SAKey)
+        .outerjoin(SAKey, SAKeyAssignment.key_id == SAKey.id)
+        .where(SAKeyAssignment.hostname == hostname)
+    )).first()
+    if row is None:
+        return None
+    asg, key = row
+    return {
+        "key_id": asg.key_id,
+        "sha256": key.sha256 if key is not None else None,
+        "project_id": key.project_id if key is not None else None,
+        "scrub": asg.scrub_requested_at is not None,
+    }
+
+
+async def list_assignments(session: AsyncSession) -> list[dict]:
+    rows = (await session.execute(
+        select(SAKeyAssignment, SAKey)
+        .outerjoin(SAKey, SAKeyAssignment.key_id == SAKey.id)
+        .order_by(SAKeyAssignment.hostname)
+    )).all()
+    return [
+        {
+            "hostname": asg.hostname,
+            "key_id": asg.key_id,
+            "project_id": key.project_id if key is not None else None,
+            "label": key.label if key is not None else None,
+            "scrub": asg.scrub_requested_at is not None,
+        }
+        for asg, key in rows
+    ]

@@ -37,13 +37,12 @@ async def test_create_dedups_on_sha_and_delete_guards_assigned():
         assert any(k["id"] == a.id and k["worker_count"] == 0 for k in listed)
         assert all("private_key" not in k for k in listed)
 
-    # uncommented in Task 5 once assign/unassign exist
-    # async with SessionLocal() as s:
-    #     async with s.begin():
-    #         await repo.assign(s, "host-pool", a.id)
-    #     async with s.begin():
-    #         assert await repo.delete(s, a.id) == "assigned"  # blocked
-    #     async with s.begin():
-    #         await repo.unassign(s, "host-pool")
-    #     async with s.begin():
-    #         assert await repo.delete(s, a.id) == "deleted"
+    async with SessionLocal() as s:
+        async with s.begin():
+            await repo.assign(s, "host-pool", a.id)
+        async with s.begin():
+            assert await repo.delete(s, a.id) == "assigned"  # blocked
+        async with s.begin():
+            await repo.unassign(s, "host-pool")
+        async with s.begin():
+            assert await repo.delete(s, a.id) == "deleted"
