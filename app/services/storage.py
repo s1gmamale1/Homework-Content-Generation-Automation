@@ -22,3 +22,19 @@ def book_dir(book_id: UUID | str) -> Path:
 def book_pdf_path(book_id: UUID | str) -> Path:
     """Deterministic path to a book's source PDF: ``<var_dir>/books/<id>/source.pdf``."""
     return book_dir(book_id) / "source.pdf"
+
+
+def sa_key_dir() -> Path:
+    """Directory holding uploaded SA-key JSONs: ``<var_dir>/sa_keys``."""
+    return Path(settings.var_dir) / "sa_keys"
+
+
+def sa_key_path(key_id: UUID | str) -> Path:
+    """On-disk path to one uploaded SA key: ``<var_dir>/sa_keys/<id>.json``."""
+    return sa_key_dir() / f"{key_id}.json"
+
+
+def sa_key_active_path() -> Path:
+    """The single key a worker has currently applied: ``<var_dir>/sa_keys/active.json``.
+    GOOGLE_APPLICATION_CREDENTIALS points at the resolved absolute form of this."""
+    return sa_key_dir() / "active.json"
