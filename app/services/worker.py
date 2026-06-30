@@ -99,6 +99,17 @@ CAPABILITIES: dict = _compute_capabilities(os.environ)
 CAPABILITY_BLOB: dict = _capability_blob(os.environ)
 
 
+def _rebind_capabilities() -> None:
+    """Recompute the frozen capability globals from the CURRENT os.environ after a
+    live SA-key apply/scrub. The claim gate reads CAPABILITIES at call time
+    (worker.py _claim_one) and the heartbeat publishes CAPABILITY_BLOB, so
+    reassigning the module globals is what makes a freshly-keyed worker start
+    claiming gemini-api jobs without a restart."""
+    global CAPABILITIES, CAPABILITY_BLOB
+    CAPABILITIES = _compute_capabilities(os.environ)
+    CAPABILITY_BLOB = _capability_blob(os.environ)
+
+
 def _worker_id() -> str:
     """Stable identity for `claimed_by`. Hostname:pid is enough to attribute
     a stuck job to a specific process in logs / Kubernetes pod listings."""
