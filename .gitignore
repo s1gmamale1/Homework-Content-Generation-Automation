@@ -50,3 +50,6 @@ samples/
 
 # Local QA harness — student-simulation teaching test (not part of the app)
 tools/teaching_test/
+
+# Local operations runbooks — host-specific ops notes, not part of the app
+/docs/operations/
