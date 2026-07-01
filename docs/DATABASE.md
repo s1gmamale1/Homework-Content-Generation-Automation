@@ -88,7 +88,9 @@ Seven application tables (plus `alembic_version`). Mixins from `app/models/base.
 | `file_size_bytes` | BigInteger NOT NULL | |
 | `gemini_file_uri`, `gemini_file_expires_at`, `gemini_cache_name`, `gemini_cache_expires_at` | NULL | **legacy/unused** — kept nullable for backwards-compat from the removed Gemini SDK era |
 | `source_language` | String(8) NOT NULL, server_default `'uz'` | migration 0040: the language of the source textbook — `uz` (Uzbek), `ru` (Russian), `en` (English); **DB CHECK `uz\|ru\|en`**. Set at ingest time (upload form, Notion fetch language picker, or `book_from_notion` `language` field). Controls the Notion fetch tree (`uz` → `N - sinf`, `ru` → `N - класс`/`klass`, `en` → named english/inglizcha/ingliz container); also the default `output_language` for jobs launched over this book (overridable = translation mode). Dedup stays `(content_sha256, subject)` — a different-language PDF for the same subject is a distinct book. |
-| `status` | String(32) NOT NULL | lifecycle: `uploading → toc_extracting → toc_ready \| failed` — note there is **no** `"ready"` status |
+| `toc_validation` | String(16) NULL | migration 0042: post-extract vision-validator verdict — `NULL` (validator disabled or not yet run), `verified` (TOC matches the book's printed contents page), `mismatch` (vision model flagged a discrepancy → book held in `toc_review`), `skipped` (validator ran but skipped — no usable page window, spawn error, or parse failure; treated as `verified` for generation). **DB CHECK `NULL \| verified \| mismatch \| skipped`**. |
+| `toc_validation_detail` | Text NULL | migration 0042: human-readable explanation from the vision call (issues list when `mismatch`, confirmation when `verified`, reason when `skipped`). Preserved even after operator accept (audit trail). |
+| `status` | String(32) NOT NULL | lifecycle: `uploading → toc_extracting → toc_ready \| toc_review \| failed`. `toc_review` means the vision validator flagged a mismatch — TOC entries are persisted but generation is blocked until an operator accepts or retries. Note there is **no** `"ready"` status. |
 | `error_message` | Text NULL | set when `failed` |
 
 The PDF itself lives **on disk**, not in the DB: `var/books/<book_id>/source.pdf`
@@ -441,7 +443,8 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | 38 | 0038_output_language | `0038_output_language` | adds `output_language` String(16) NOT NULL server_default `'uz'` + DB CHECK `uz\|en\|ru` to `homework_jobs`, `batches`, and `launch_defaults`; drops `uq_batches_book_id_transport` and creates `uq_batches_book_id_transport_output_language` (`book_id`, `transport`, `output_language`) |
 | 39 | 0039_launch_defaults_content | `0039_launch_defaults_content` | adds `content_provider`, `content_model`, `content_transport` to `launch_defaults`; seeds `gemini`/`gemini-2.5-pro`/`inherit` (deliberately different from judge default to avoid self-grade guard on all-gemini fleet) |
 | 40 | 0040_books_source_language | `0040_books_source_language` | adds `books.source_language` String(8) NOT NULL server_default `'uz'` + DB CHECK `ck_books_source_language IN ('uz','ru','en')` |
-| 41 | 0041_sa_keys | `0041_sa_keys` | adds `sa_keys` table (UUID PK, `original_filename`, `project_id`, `client_email`, `sha256` UNIQUE, `byte_size`, `label` NULL, `created_at`) + `sa_key_assignments` table (`hostname` PK, `key_id` FK→sa_keys ondelete=RESTRICT NULL, `scrub_requested_at` NULL, `updated_at`) — **HEAD** |
+| 41 | 0041_sa_keys | `0041_sa_keys` | adds `sa_keys` table (UUID PK, `original_filename`, `project_id`, `client_email`, `sha256` UNIQUE, `byte_size`, `label` NULL, `created_at`) + `sa_key_assignments` table (`hostname` PK, `key_id` FK→sa_keys ondelete=RESTRICT NULL, `scrub_requested_at` NULL, `updated_at`) |
+| 42 | 0042_books_toc_validation | `0042_books_toc_validation` | adds `books.toc_validation` String(16) NULL + DB CHECK `NULL\|verified\|mismatch\|skipped` and `books.toc_validation_detail` Text NULL — vision-validator verdict + explanation columns (worklog 0108) — **HEAD** |
 
 ---
 

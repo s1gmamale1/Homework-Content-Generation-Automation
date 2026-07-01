@@ -95,3 +95,11 @@ def test_retry_missing_pdf_409():
     r, run_spy, _ = _retry(bid, book=book, pdf_exists=False)
     assert r.status_code == 409
     run_spy.assert_not_awaited()
+
+
+def test_retry_from_toc_review_allowed():
+    bid = uuid4()
+    book = SimpleNamespace(id=bid, status="toc_review", subject="math-algebra")
+    r, run_spy, _ = _retry(bid, book=book)
+    assert r.status_code == 200
+    run_spy.assert_awaited_once()

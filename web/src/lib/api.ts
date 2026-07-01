@@ -298,6 +298,19 @@ export const api = {
   },
 
   /**
+   * Accept the TOC for a book in `toc_review` status — transitions the book
+   * to `toc_ready` without re-running extraction. Mirrors `retryBookToc`.
+   * See `POST /api/v1/books/<id>/toc/accept`.
+   */
+  async acceptToc(bookId: string): Promise<Book> {
+    const res = await authFetch(
+      `/api/v1/books/${encodeURIComponent(bookId)}/toc/accept`,
+      { method: "POST" },
+    );
+    return unwrap<Book>(res);
+  },
+
+  /**
    * Request cancellation of a pending or running job — see
    * `POST /api/v1/jobs/<id>/cancel`. A queued job moves straight to
    * `cancelled`; a running one transitions to `cancelling` while the worker

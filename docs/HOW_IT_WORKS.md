@@ -108,8 +108,7 @@ outside `app/services/api_transport.py`. `app/services/agent.py` is the CLI rout
 The flow in words:
 1. **Upload.** Browser sends a PDF + subject. Server saves the PDF to disk and kicks off
    Table-of-Contents extraction in the background.
-2. **TOC.** The `gemini` CLI reads the PDF and returns the chapter/section list. Those
-   become editable rows the user can see.
+2. **TOC.** The `gemini` CLI (or Vertex SDK) reads the PDF and returns the chapter/section list. Those become editable rows the user can see. Immediately after extraction, a **vision validator** (`agent.validate_toc`) makes one Gemini-2.5-flash vision call comparing the extracted TOC against the book's printed contents page (front + back page window). If the validator flags a mismatch, the book enters **`toc_review`** status (entries persisted; generation blocked). An operator can **Accept anyway** (flips to `toc_ready`, preserves the columns as audit trail) or **Retry** the extraction. If the validator returns `verified` or `skipped` (no usable window, spawn error, or parse failure — the call never raises), the book proceeds normally to `toc_ready`. The validator is behind `settings.toc_validation_enabled` (default True); disabled → `toc_validation` stays NULL.
 3. **Generate.** User picks a section and a provider/model, clicks Generate. The server
    inserts a `homework_jobs` row with `status='pending'` and returns immediately. **No work
    happens in the web request** — it just enqueues.

@@ -31,7 +31,15 @@ import { cn, formatPages } from "@/lib/utils";
 const STATUS_LABEL: Record<string, string> = {
   uploading: "Uploading…",
   toc_extracting: "Indexing chapters and sections…",
+  toc_review: "Needs review",
 };
+
+// Shown in the review panel when the validator flagged the TOC but returned no
+// specific issue text (a mismatch with an empty issues list). Guarantees a
+// toc_review book ALWAYS renders the panel + Accept/Retry affordance, so a
+// soft-gated book is never stuck without a way to act on it.
+const REVIEW_FALLBACK =
+  "The validator flagged this table of contents — review the entries below before using it.";
 
 export function BookPage() {
   const { id } = useParams<{ id: string }>();
@@ -41,6 +49,9 @@ export function BookPage() {
   const [filter, setFilter] = useState("");
   const [meta, setMeta] = useState<{ name: string; subject: Subject } | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [accepting, setAccepting] = useState(false);
+  // Non-null when the book is in toc_review: holds the joined validation issues text.
+  const [tocReviewDetail, setTocReviewDetail] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -50,6 +61,11 @@ export function BookPage() {
         setMeta({ name: b.original_filename, subject: b.subject });
         if (b.status === "toc_ready" && b.toc) {
           setEntries(b.toc);
+          setStatusText("");
+        } else if (b.status === "toc_review") {
+          // Show the entries so the operator can inspect them; surface review detail.
+          if (b.toc) setEntries(b.toc);
+          setTocReviewDetail(b.toc_validation_detail || REVIEW_FALLBACK);
           setStatusText("");
         } else if (b.status === "failed") {
           setError(b.error_message ?? "Extraction failed.");
@@ -72,12 +88,34 @@ export function BookPage() {
       await api.retryBookToc(id);
       setError(null);
       setEntries(null);
+      setTocReviewDetail(null);
       setStatusText("Re-preparing… extracting chapters");
       toast.success("Re-preparing… extracting chapters");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Retry failed");
     } finally {
       setRetrying(false);
+    }
+  }
+
+  /**
+   * Accept the TOC for a book in `toc_review` status — transitions it to
+   * `toc_ready` without re-extracting. Mirrors handleRetry's state reset pattern.
+   */
+  async function handleAccept() {
+    if (!id) return;
+    setAccepting(true);
+    try {
+      const b = await api.acceptToc(id);
+      // Server flipped to toc_ready; reflect that locally.
+      setTocReviewDetail(null);
+      setStatusText("");
+      if (b.toc) setEntries(b.toc);
+      toast.success("TOC accepted — book is ready to launch.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Accept failed");
+    } finally {
+      setAccepting(false);
     }
   }
 
@@ -88,17 +126,43 @@ export function BookPage() {
       },
       toc_ready: (data: any) => {
         setEntries(data?.entries ?? []);
+        setTocReviewDetail(null);
         setStatusText("");
+      },
+      toc_review: (data: any) => {
+        // Terminal SSE event: extraction done but validator flagged it.
+        // Populate entries now; drive the issue text from a REST refetch so
+        // we always get the canonical toc_validation_detail (avoids depending
+        // on whether the live payload uses .detail or .issues array).
+        if (data?.entries) setEntries(data.entries);
+        setStatusText("");
+        // Refetch book to get the authoritative toc_validation_detail.
+        if (id) {
+          api
+            .getBook(id)
+            .then((b) => setTocReviewDetail(b.toc_validation_detail || REVIEW_FALLBACK))
+            .catch(() => {
+              // Fallback: read from SSE payload defensively
+              const detail =
+                data?.validation?.detail ??
+                (Array.isArray(data?.validation?.issues)
+                  ? (data.validation.issues as string[]).join("; ")
+                  : null);
+              setTocReviewDetail(detail || REVIEW_FALLBACK);
+            });
+        }
       },
       error: (data: any) => {
         setError(data?.message ?? "Stream failed.");
       },
     }),
-    [],
+    [id],
   );
 
   useEventSource(id ? api.bookTocStreamUrl(id) : null, handlers, {
-    enabled: !entries && !error,
+    // Disable once we have terminal state: entries (toc_ready), an error (failed),
+    // OR a review panel (toc_review — entries may be populated alongside it).
+    enabled: !entries && !error && tocReviewDetail === null,
   });
 
   const filtered = useMemo(() => {
@@ -165,10 +229,51 @@ export function BookPage() {
           </div>
         )}
 
-        {!entries && !error && (
+        {!entries && !error && tocReviewDetail === null && (
           <div className="mt-7 flex items-center gap-2 text-sm text-white/60">
             <Loader2 className="size-3.5 animate-spin text-[#5b8dff]" />
             {statusText}
+          </div>
+        )}
+
+        {tocReviewDetail !== null && (
+          <div className="mt-7 flex flex-col gap-3 rounded-2xl border border-amber-400/30 bg-amber-400/[0.08] px-4 py-3 text-sm text-amber-200">
+            <div className="flex flex-col gap-1">
+              <span className="font-medium text-amber-100">
+                The validator flagged this table of contents — review the entries below before using it.
+              </span>
+              {tocReviewDetail && (
+                <span className="text-xs text-amber-200/80">{tocReviewDetail}</span>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleAccept}
+                disabled={accepting || retrying}
+                className="inline-flex w-fit items-center gap-1.5 rounded-xl bg-gradient-to-r from-amber-500/70 to-amber-400/60 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:from-amber-500/90 hover:to-amber-400/80 disabled:opacity-50"
+              >
+                {accepting ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Check className="size-3.5" />
+                )}
+                Accept anyway
+              </button>
+              <button
+                type="button"
+                onClick={handleRetry}
+                disabled={retrying || accepting}
+                className="inline-flex w-fit items-center gap-1.5 rounded-xl border border-white/[0.12] bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-white/80 transition-colors hover:bg-white/[0.1] hover:text-white disabled:opacity-50"
+              >
+                {retrying ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="size-3.5" />
+                )}
+                Retry extraction
+              </button>
+            </div>
           </div>
         )}
 
@@ -191,7 +296,7 @@ export function BookPage() {
           </div>
         )}
 
-        {!entries && !error && (
+        {!entries && !error && tocReviewDetail === null && (
           <div className="mt-7 flex flex-col gap-2">
             {Array.from({ length: 6 }).map((_, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: skeleton placeholder

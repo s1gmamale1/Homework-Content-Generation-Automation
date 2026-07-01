@@ -6,6 +6,7 @@ from uuid import UUID
 
 from loguru import logger
 
+from app.config import settings
 from app.db import SessionLocal
 from app.repositories import books as books_repo
 from app.repositories import launch_defaults as launch_defaults_repo
@@ -81,7 +82,22 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
                 "extract_toc_front_pages / extract_toc_back_pages and re-extract."
             )
 
-        # Persist entries + flip status to toc_ready
+        # Soft-gate: run vision validator BEFORE persisting status.
+        # Disabled (toc_validation_enabled=False) → result stays None → behaves
+        # exactly like today (toc_ready, no toc_validation DB row written).
+        result = None
+        if settings.toc_validation_enabled:
+            result = await agent.validate_toc(
+                entries=extracted.entries,
+                pdf_path=file_path,
+                subject=subject,
+                book_id=book_id,
+                provider=settings.toc_validation_provider,
+                model=settings.toc_validation_model,
+                transport=toc_transport,
+            )
+
+        # Persist entries + flip status (toc_review on mismatch, toc_ready otherwise)
         async with SessionLocal() as session:
             # Clear-before-insert so a re-extract (POST /books/{id}/toc/retry)
             # replaces rather than appends — bulk_create is a naive append and
@@ -90,16 +106,40 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
             # rows (they were never surfaced for generation).
             await toc_repo.delete_for_book(session, book_id)
             rows = await toc_repo.bulk_create(session, book_id, extracted.entries)
-            await books_repo.set_status(session, book_id, "toc_ready")
+            final_status = (
+                "toc_review" if (result is not None and result.status == "mismatch")
+                else "toc_ready"
+            )
+            await books_repo.set_status(session, book_id, final_status)
+            if result is not None:
+                await books_repo.set_toc_validation(
+                    session, book_id, result.status, result.detail or None
+                )
             await session.commit()
             entries_out = [TOCEntryOut.model_validate(r) for r in rows]
-        log.info(f"[book {book_id}] entries persisted | count={len(rows)}")
-
-        await events_bus.publish(
-            resource_id,
-            "toc_ready",
-            {"entries": [e.model_dump(mode="json") for e in entries_out]},
+        log.info(
+            f"[book {book_id}] entries persisted | count={len(rows)}"
         )
+        log.info(
+            f"[book {book_id}] toc validation: "
+            f"{result.status if result else 'disabled'} → status={final_status}"
+        )
+
+        if final_status == "toc_review":
+            await events_bus.publish(
+                resource_id,
+                "toc_review",
+                {
+                    "entries": [e.model_dump(mode="json") for e in entries_out],
+                    "validation": {"verdict": result.status, "issues": result.issues},
+                },
+            )
+        else:
+            await events_bus.publish(
+                resource_id,
+                "toc_ready",
+                {"entries": [e.model_dump(mode="json") for e in entries_out]},
+            )
 
         total_ms = (perf_counter() - t_start) * 1000
         log.success(

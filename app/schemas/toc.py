@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -36,3 +36,9 @@ class TOCEntryExtracted(BaseModel):
 
 class ExtractedTOC(BaseModel):
     entries: list[TOCEntryExtracted]
+
+
+class TOCValidation(BaseModel):
+    verdict: Literal["verified", "mismatch"]
+    confidence: Literal["low", "medium", "high"]
+    issues: list[str]  # concrete problems; empty when verified

@@ -1459,3 +1459,24 @@ Gate-hardening: `PUT /settings/launch-defaults` rejects null provider/model with
 - Assignment keys on **bare hostname** (not `hostname:pid`) so it survives worker restarts.
 
 **Notes:** plan `git mv`'d to `docs/superpowers/plans/shipped/`. Migration head: `0041_sa_keys`. Operator owes the live no-restart acceptance (boot keyless → assign → `gemini_api=True` within ≤30s, no restart) as the final gate.
+
+---
+
+## [0108] TOC vision validator (soft-gate) — 2026-06-30 (feat/toc-vision-validator → Nggaev-v2)
+
+**What:** New capability (not a backlog item; unrelated to Cluster 6's Notion-archive validator). After `agent.extract_toc` produces entries, **`agent.validate_toc`** makes ONE Gemini-2.5-flash **vision** call comparing the extracted TOC against the book's printed contents-page image (front + back page window via `_toc_source_pdf`). The call **never raises** — any failure (no usable window, spawn error, parse failure, prompt-build error) returns `status="skipped"` (the prompt-build is inside try/finally so no partial state escapes; this was the one Important finding from the final opus review, fixed before ship).
+
+**Soft-gate in `toc_extractor.run`:** `mismatch` verdict → book status set to **`toc_review`** (TOC entries persisted, `books.toc_validation`/`toc_validation_detail` recorded; generation blocked — `batch.py`/`jobs.py` already gate on `toc_ready`). `verified`/`skipped` → `toc_ready` (unchanged). Behind `settings.toc_validation_enabled` (default True); disabled → column stays NULL (distinct from `skipped`). Provider/model configurable (`settings.toc_validation_provider`/`_model`, default `gemini`/`gemini-2.5-flash`); transport follows `launch_defaults.toc_transport`.
+
+**Migration `0042_books_toc_validation`** (chains off `0041_sa_keys`): adds `books.toc_validation` (String(16), DB CHECK `NULL | verified | mismatch | skipped`) + `books.toc_validation_detail` (Text NULL).
+
+**API + FE:**
+- `POST /books/{id}/toc/accept` (409 unless `toc_review` → flips to `toc_ready`, preserves validation columns as audit trail); `POST /books/{id}/toc/retry` now also accepts `toc_review` books.
+- `BookOut` exposes `toc_validation`/`toc_validation_detail`; `_book_out_with_toc` returns the TOC for `toc_review` books; `stream_toc` has a `toc_review` SSE branch that emits `toc_validation_detail`.
+- FE: `StatusBadge` amber `toc_review` chip; book-page review panel (issues from `toc_validation_detail`, **Accept anyway** + **Retry** buttons, `REVIEW_FALLBACK` ensures the panel renders even with null detail); Fleet launcher puts `toc_review` in the failed/attention bucket (distinct amber "Review TOC" card → book page, never vanishes); `Book` type + `api.acceptToc`.
+
+**Acceptance:** `scripts/toc_validate_smoke.py` — real Gemini smoke PASSED: geometriya-g7-11 (75 entries) genuine TOC → `verified`/high confidence; scrambled TOC → `mismatch`/high (model identified the book as "GEOMETRIYA 8" and the entries as fabricated).
+
+**Process:** built via `superpowers:subagent-driven-development` (8 tasks, fresh subagent per task, controller stress-tested every commit) + final whole-branch opus review (verdict SHIP, one Important finding → fixed before ship). Rebased onto `8345356`.
+
+**Files:** `app/services/agent.py` (`validate_toc` + `_toc_source_pdf` reuse), `app/services/toc_extractor.py` (soft-gate), `alembic/versions/0042_books_toc_validation.py`, `app/models/book.py`, `app/api/v1/books.py` (accept endpoint + SSE branch + BookOut fields + retry allows toc_review), `app/repositories/books.py`, `app/schemas/book.py`, `web/src/lib/types.ts` (`Book.toc_validation`/`toc_validation_detail`, `api.acceptToc`), `web/src/components/...` (StatusBadge chip, review panel, fleet launcher bucket), tests. Plan `git mv`'d to `docs/superpowers/plans/shipped/`.

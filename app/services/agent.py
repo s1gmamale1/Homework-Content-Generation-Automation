@@ -45,6 +45,8 @@ from app.db import SessionLocal
 from app.repositories import agent_usage as usage_repo
 from app.schemas import (
     ExtractedTOC,
+    TOCEntryExtracted,
+    TOCValidation,
 )
 from app.services.providers import Provider, get_provider
 from app.services.proc_tree import kill_tree
@@ -69,6 +71,22 @@ class PhaseResult:
     parsed: Optional[BaseModel] = None
     usage: dict[str, Any] = field(default_factory=dict)
     raw_envelope: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TOCValidationResult:
+    """Outcome of a ``validate_toc`` call.
+
+    ``status`` is one of "verified", "mismatch", or "skipped".
+    "skipped" means the validator was unable to produce a verdict (window
+    build failure, spawn error, or parse error) and the caller should
+    treat the TOC as unverified rather than failing loudly.
+    """
+
+    status: str  # "verified" | "mismatch" | "skipped"
+    confidence: Optional[str]  # "low" | "medium" | "high" | None
+    issues: list[str]
+    detail: str
 
 
 # Default-model lookup. **Regression guard from a prior session**:
@@ -1567,6 +1585,214 @@ async def extract_toc(
                 pass
 
 
+
+async def validate_toc(
+    *,
+    entries: list[TOCEntryExtracted],
+    pdf_path: Path,
+    subject: str,
+    book_id: UUID,
+    provider: str,
+    model: Optional[str],
+    transport: str = "cli",
+) -> TOCValidationResult:
+    """Vision-check extracted TOC entries against the textbook's printed contents page.
+
+    Builds a bounded front+back page window (same as ``extract_toc``), makes a
+    one-shot Gemini-flash vision call constrained to ``TOCValidation``, and
+    returns a ``TOCValidationResult``.
+
+    Designed to degrade gracefully: ANY failure (window build, spawn error,
+    rc != 0, parse error) returns status="skipped" rather than raising.  The
+    caller treats a skipped verdict as "unverified" and continues the pipeline.
+    """
+    prov = get_provider(provider)
+    resolved_model = _resolve_model(provider, model)
+
+    # Build the front+back page window PDF.
+    window = _toc_source_pdf(
+        pdf_path, settings.extract_toc_front_pages, settings.extract_toc_back_pages
+    )
+    if window is None:
+        return TOCValidationResult(
+            status="skipped",
+            confidence=None,
+            issues=[],
+            detail="no contents-page window",
+        )
+
+    # Everything from here is inside try/finally so ANY failure (prompt build,
+    # spawn, parse) returns "skipped" and the temp window is always unlinked —
+    # validate_toc must never raise into toc_extractor.run (hard invariant).
+    try:
+        # Vision transport rule — mirrors extract_toc:1376–1377.
+        # api PDF-attach only works for gemini; all other paths use cli.
+        if not (transport == "api" and provider == "gemini"):
+            transport = "cli"
+
+        attachment_preamble = prov.format_attachments([window])
+        attachments: list[Path] = [window]
+
+        # Build the compact entry list for the prompt.
+        entry_lines = "\n".join(
+            f"{e.section_number or ''}  {e.section_title}  p.{e.page_start or '?'}"
+            for e in entries
+        )
+        instruction = (
+            f"You are reviewing a {subject} curriculum textbook. "
+            "The attached pages are the textbook's printed contents page(s). "
+            "The extracted TOC entries below should faithfully reflect what is printed. "
+            "Decide whether the extraction is correct. "
+            "Return mismatch ONLY if entries are clearly wrong, garbled, invented, "
+            "or if major sections are missing. "
+            "Minor ordering differences or small page-number discrepancies are verified.\n\n"
+            "Extracted entries:\n"
+            f"{entry_lines}"
+        )
+
+        prompt = _build_master_prompt(
+            phase_prompt=instruction,
+            phase_name="toc.validate",
+            lesson_context=None,
+            prior_outputs=None,
+            difficulty=None,
+            schema=TOCValidation,
+            provider_suffix=prov.prompt_suffix(None),
+            attachment_preamble=attachment_preamble,
+        )
+
+        started_at = datetime.now(timezone.utc)
+        t0 = perf_counter()
+        usage: dict[str, Any] = {
+            "prompt_tokens": 0,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "total_tokens": 0,
+            "raw": {},
+        }
+
+        try:
+            rc, text, usage, stderr = await _spawn(
+                provider=prov,
+                model=resolved_model,
+                prompt=prompt,
+                attachments=attachments,
+                transport=transport,
+            )
+        except Exception as exc:
+            duration_s = perf_counter() - t0
+            await _record_usage(
+                operation="toc.validate",
+                provider=provider,
+                model_name=resolved_model,
+                usage=usage,
+                duration_s=duration_s,
+                started_at=started_at,
+                success=False,
+                auth_mode=transport,
+                book_id=book_id,
+                error_message=str(exc),
+            )
+            logger.warning(f"agent.validate_toc spawn error | {exc!r}")
+            return TOCValidationResult(
+                status="skipped",
+                confidence=None,
+                issues=[],
+                detail=f"spawn error: {str(exc)[:200]}",
+            )
+
+        duration_s = perf_counter() - t0
+
+        if rc != 0:
+            err = f"{provider} CLI exited rc={rc}"
+            await _record_usage(
+                operation="toc.validate",
+                provider=provider,
+                model_name=resolved_model,
+                usage=usage,
+                duration_s=duration_s,
+                started_at=started_at,
+                success=False,
+                auth_mode=transport,
+                book_id=book_id,
+                error_message=err,
+            )
+            logger.warning(f"agent.validate_toc {err}")
+            return TOCValidationResult(
+                status="skipped",
+                confidence=None,
+                issues=[],
+                detail=err,
+            )
+
+        candidate = _strip_code_fences(text).strip()
+        try:
+            toc_validation = TOCValidation.model_validate_json(candidate)
+        except Exception as exc:
+            await _record_usage(
+                operation="toc.validate",
+                provider=provider,
+                model_name=resolved_model,
+                usage=usage,
+                duration_s=duration_s,
+                started_at=started_at,
+                success=False,
+                auth_mode=transport,
+                book_id=book_id,
+                error_message=f"parse error: {exc}",
+            )
+            logger.warning(
+                f"agent.validate_toc parse error | provider={provider} err={str(exc)[:200]!r}"
+            )
+            return TOCValidationResult(
+                status="skipped",
+                confidence=None,
+                issues=[],
+                detail=f"parse error: {str(exc)[:200]}",
+            )
+
+        await _record_usage(
+            operation="toc.validate",
+            provider=provider,
+            model_name=resolved_model,
+            usage=usage,
+            duration_s=duration_s,
+            started_at=started_at,
+            success=True,
+            auth_mode=transport,
+            book_id=book_id,
+        )
+        status = "mismatch" if toc_validation.verdict == "mismatch" else "verified"
+        detail = "; ".join(toc_validation.issues)[:1000]
+        logger.info(
+            f"agent.validate_toc done | provider={provider} subject={subject} "
+            f"status={status} confidence={toc_validation.confidence} "
+            f"issues={len(toc_validation.issues)} duration_ms={duration_s * 1000:.0f}"
+        )
+        return TOCValidationResult(
+            status=status,
+            confidence=toc_validation.confidence,
+            issues=toc_validation.issues,
+            detail=detail,
+        )
+
+    except Exception as exc:
+        # Pre-spawn failures (format_attachments, prompt build) or any
+        # uncaught error — degrade to skipped rather than raising.
+        logger.warning(f"agent.validate_toc unexpected error | {exc!r}")
+        return TOCValidationResult(
+            status="skipped",
+            confidence=None,
+            issues=[],
+            detail=f"validate_toc error: {str(exc)[:200]}",
+        )
+    finally:
+        try:
+            window.unlink()
+        except OSError:
+            pass
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Public API: lesson context (per-section "extract" phase)
 # ─────────────────────────────────────────────────────────────────────
@@ -2136,10 +2362,12 @@ async def record_cached_lesson_extract(
 
 __all__ = [
     "PhaseResult",
+    "TOCValidationResult",
     "_PROVIDER_DEFAULT_MODEL",
     "_resolve_model",
     "run_phase",
     "extract_toc",
+    "validate_toc",
     "extract_lesson_context",
     "run_phase_prompt",
     "record_cached_lesson_extract",

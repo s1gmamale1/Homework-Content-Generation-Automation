@@ -61,7 +61,7 @@ export const SUBJECTS: Subject[] = [
   "chqbt",
 ];
 
-export type BookStatus = "uploading" | "toc_extracting" | "toc_ready" | "failed";
+export type BookStatus = "uploading" | "toc_extracting" | "toc_ready" | "toc_review" | "failed";
 
 /** Generation transport: "cli" (local subprocess, default) vs "api" (pay-per-token SDK; claude/gemini only). */
 export type Transport = "cli" | "api";
@@ -100,6 +100,8 @@ export interface Book {
   source_language: OutputLanguage;
   status: BookStatus;
   error_message: string | null;
+  toc_validation?: "verified" | "mismatch" | "skipped" | null;
+  toc_validation_detail?: string | null;
   gemini_file_expires_at: string | null;
   file_size_bytes: number | null;
   created_at: string | null;

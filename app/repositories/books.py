@@ -70,6 +70,16 @@ async def set_status(
     book.error_message = error_message
 
 
+async def set_toc_validation(
+    session: AsyncSession, book_id: UUID, verdict: Optional[str], detail: Optional[str]
+) -> None:
+    book = await session.get(Book, book_id)
+    if book is None:
+        return
+    book.toc_validation = verdict
+    book.toc_validation_detail = detail
+
+
 async def list_running_for_sweep(session: AsyncSession) -> list[Book]:
     stmt = select(Book).where(Book.status.in_(["uploading", "toc_extracting"]))
     return list((await session.execute(stmt)).scalars().all())

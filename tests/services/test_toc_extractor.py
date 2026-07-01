@@ -55,13 +55,23 @@ def _patch_common(monkeypatch, launch_defaults=None):
     async def fake_get_launch_defaults(session):
         return ld_row
 
+    async def fake_validate_toc(**kw):
+        return toc_extractor.agent.TOCValidationResult(
+            status="skipped", confidence=None, issues=[], detail=""
+        )
+
+    async def fake_set_toc_validation(session, book_id, verdict, detail):
+        pass
+
     monkeypatch.setattr(toc_extractor, "SessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(toc_extractor.books_repo, "set_status", fake_set_status)
+    monkeypatch.setattr(toc_extractor.books_repo, "set_toc_validation", fake_set_toc_validation)
     monkeypatch.setattr(toc_extractor.toc_repo, "bulk_create", fake_bulk_create)
     monkeypatch.setattr(toc_extractor.toc_repo, "delete_for_book", fake_delete_for_book)
     monkeypatch.setattr(toc_extractor.events_bus, "publish", fake_publish)
     monkeypatch.setattr(toc_extractor.events_bus, "close", fake_close)
     monkeypatch.setattr(toc_extractor.launch_defaults_repo, "get", fake_get_launch_defaults)
+    monkeypatch.setattr(toc_extractor.agent, "validate_toc", fake_validate_toc)
     return statuses, bulk_calls, events
 
 
