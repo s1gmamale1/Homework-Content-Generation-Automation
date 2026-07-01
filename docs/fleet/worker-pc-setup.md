@@ -33,9 +33,19 @@ This PC is already your head. To let the other PCs reach it:
 
 That's it — the head is ready. It just needs to stay on.
 
+> **Run the head with `WORKER_CONCURRENCY=0`** so the API/head process does **not** also
+> claim and generate jobs — the head coordinates, the worker PCs generate. (Worker PCs run
+> with `WORKER_CONCURRENCY>0`.) Set it in the head's `.env`.
+
 ---
 
 ## Part B — Set up each worker PC (repeat on every PC)
+
+**Automated path (recommended):** run **`SETUP-ALL.bat`** on the worker PC. It does the
+whole bring-up for you — pins the repo to branch **`Nggaev-v2`**, boots the worker
+**keyless** (keys arrive later via Fleet → Keys), and sets `VAR_DIR` for the local PDF/key
+cache. The manual steps below are what that script does under the hood; run them by hand
+only if you're not using `SETUP-ALL.bat`. (`SETUP-ALL.bat` lives in a separate setup repo.)
 
 Do this once per PC. After that, the PC generates on its own forever.
 
@@ -106,8 +116,14 @@ subscription.
 | Worker should claim… | Needs on that PC |
 |---|---|
 | CLI-only jobs | just the CLI logins (step 4 above) — no keys |
-| api-claude work | `ANTHROPIC_API_KEY` in the worker env/.env |
-| api-gemini work | a Vertex service account, applied via **Fleet → Keys** (see "SA key distribution" below) **or** manually: `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` in `.env` — **the path must be THIS machine's path** |
+| api-gemini work | a Vertex service account, applied live via **Fleet → Keys** (assign by hostname — see "SA key distribution" below); this is the **primary** path |
+| api-claude work | (legacy/fallback) `ANTHROPIC_API_KEY` in the worker env/.env |
+
+**Primary key path is Fleet → Keys** (assign a key to the worker's hostname; the worker
+boots keyless and picks it up live — see "SA key distribution" below). The manual `.env`
+env vars — `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` (Vertex, **the path
+must be THIS machine's path**) and `ANTHROPIC_API_KEY` (claude) — still work as a
+**legacy/fallback** option, but prefer the Keys UI for a fleet.
 
 A worker missing a credential simply **never claims jobs that need it** (it
 logs which side is missing at startup) — cli jobs are unaffected.

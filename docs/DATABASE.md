@@ -2,8 +2,8 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Last updated: branch `feat/sa-key-web-distribution`, head `0041_sa_keys`
-> (0041), 2026-06-30. When this doc and the code disagree, the code wins — fix the doc.
+> Last updated: branch `Nggaev-v2`, head `0042_books_toc_validation`
+> (0042), 2026-07-01. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
 
@@ -17,7 +17,8 @@ transactional consistency between "claim a job" and "see its data."
 | Environment | Container | Port | Database |
 |---|---|---|---|
 | Local dev | `edu-postgres` | **5433** (host has its own PG on 5432) | `edu_homework` |
-| Fleet test env | `fleet-pg` (throwaway) | **5436** | `edu_copy` (clone of dev) |
+| **Production (head)** | native PG on head `192.168.1.124` | 5432 | **`edu_copy`** (current prod DB, alembic head **0042**) |
+| Fleet test env | `fleet-pg` (throwaway) | **5436** | `edu_copy` (dev clone — historical; the prod `edu_copy` above is authoritative) |
 | Guarded integration tests | any throwaway | 5436/5437 | migrated to head first |
 
 **Engine / session config** (`app/db.py`):
@@ -28,7 +29,7 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`0041_sa_keys`** (0028 = enum CHECK constraints,
+also runs it on deploy). Current head: **`0042_books_toc_validation`** (0028 = enum CHECK constraints,
 0029 = `phase_outputs.judge_status`, 0030 = `agent_usages.cache_creation_tokens`,
 0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton,
 0033 = `custom_prompts`/`selected_phases` JSONB on `homework_jobs`+`batches`,
@@ -38,7 +39,8 @@ also runs it on deploy). Current head: **`0041_sa_keys`** (0028 = enum CHECK con
 0038 = `output_language` on `homework_jobs`+`batches`+`launch_defaults` + batch UNIQUE swap,
 0039 = `content_provider`/`content_model`/`content_transport` on `launch_defaults`,
 0040 = `books.source_language` String(8) NOT NULL server_default `'uz'` + CHECK `uz|ru|en`,
-0041 = `sa_keys` table + `sa_key_assignments` table).
+0041 = `sa_keys` table + `sa_key_assignments` table,
+0042 = `books.toc_validation`/`toc_validation_detail` — post-TOC vision-validator verdict columns).
 Full chain in §7. (Revision IDs stay ≤32 chars — `alembic_version.version_num` is VARCHAR(32).)
 
 ---
@@ -370,9 +372,10 @@ installs SIGTERM/SIGINT handlers). All workers point at the same head DB; whole-
 work-stealing, no host affinity.
 
 **Subprocess concurrency:** independent of slots, a process-wide semaphore caps concurrent
-CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (default 8,
-`agent.py:203`) — `agent_max_concurrency` exists in config but is **dead**; tune
-`GEMINI_MAX_CONCURRENCY` until the rename lands.
+CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
+`AGENT_MAX_CONCURRENCY`, default 8; `agent._effective_concurrency()`, `agent.py:223-233`).
+`gemini_max_concurrency` is a **deprecated fallback**, honored only when
+`agent_max_concurrency` is left at its default 8; tune `AGENT_MAX_CONCURRENCY`.
 
 ---
 
@@ -461,7 +464,8 @@ CLI subprocesses. ⚠️ The live semaphore reads **`gemini_max_concurrency`** (
 | `per_attempt_timeout_seconds` | 600 | one failover attempt (one provider try) |
 | `queue_max_attempts` | 3 | claim attempts before terminal `failed` |
 | `queue_backpressure_limit` | 50 | pending depth → `/generate` 503 (0 disables) |
-| `gemini_max_concurrency` | 8 | **the live** process-wide CLI subprocess cap (`agent_max_concurrency` is dead) |
+| `agent_max_concurrency` | 8 | **the live** process-wide CLI subprocess cap (env `AGENT_MAX_CONCURRENCY`, `agent._effective_concurrency()`) |
+| `gemini_max_concurrency` | 8 | deprecated fallback — honored only when `agent_max_concurrency` is left at default 8 |
 | `failover_provider_order` | codex, gemini, kimi, opencode | per-phase failover (no claude) |
 | `agent_limit_<provider>_<1h\|24h\|7d>` | per provider | local call-count caps for `/usage` bars |
 

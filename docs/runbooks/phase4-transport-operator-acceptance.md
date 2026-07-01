@@ -149,6 +149,14 @@ real-time toggle.
 
 ## Gemini via Vertex AI service account (fleet-api-6, shipped 2026-06-11)
 
+> **⚠️ SUPERSEDED (current api path = SDKs, not CLIs).** `transport=api` now generates
+> through the provider **SDKs** directly (`google-genai` / `anthropic`, `app/services/api_transport.py`),
+> **not** by spawning gemini-cli. The **credential forms below still hold** (`GEMINI_API_KEY`, or the
+> Vertex SA pair `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT`), but the CLI-specific
+> setup — gemini-cli 0.46.0, `~/.gemini/settings.json`, `selectedType`/`ignoreLocalEnv`/dotenv traps
+> (the sections further down) — **no longer applies on the api path**. Keys are now distributed live
+> via **Fleet → Keys** (assign by hostname; workers boot keyless).
+
 The gemini side of `transport=api` accepts EITHER `GEMINI_API_KEY` (AI Studio) OR a Vertex service account:
 `GOOGLE_APPLICATION_CREDENTIALS=/path/sa.json` + `GOOGLE_CLOUD_PROJECT=<project>` (+ optional `GOOGLE_CLOUD_LOCATION`, defaults to `global` — regional endpoints may 404). An explicit `GEMINI_API_KEY` wins when both are present. The worker claim gate accepts either form. Requirements: the persisted `security.auth.selectedType` must be removed from `~/.gemini/settings.json` (same §3 rule as everything else), and the SA's GCP project must have Vertex AI enabled with the SA holding Vertex AI User. Verified live 2026-06-11 (gemini-cli 0.46.0): in-process `run_phase(transport="api")` with only SA creds → Vertex-billed generation, `agent_usages.auth_mode=api`.
 
@@ -212,6 +220,14 @@ judge from cli to api to benchmark cost) returns the **existing** job — your n
 billing choice is silently ignored. Pass `force=true` on `POST /generate` (or
 the batch endpoint) to actually re-run with the new role transports. Operators
 WILL hit this and wonder why the `$` didn't move.
+
+> **⚠️ SUPERSEDED for the api path — historical CLI mechanics below.** The two subsections
+> that follow (gemini-cli dotenv self-poisoning + Vertex-vs-persisted-OAuth `selectedType`) describe
+> the **old CLI-based api transport** (gemini-cli 0.46.0 spawns reading `~/.gemini/settings.json`).
+> `transport=api` now uses the **google-genai / anthropic SDKs** directly (`api_transport.py`), so the
+> `selectedType`, `ignoreLocalEnv`, and dotenv-poisoning concerns **no longer apply on the current api
+> path**. They still matter for `transport=cli` gemini spawns, which continue to drive gemini-cli. The
+> capability-gate content above and the `force=true` re-dedup note above remain valid.
 
 ### ⚠️ gemini-cli dotenv self-poisoning — REQUIRED worker setting (live incident, 2026-06-12)
 

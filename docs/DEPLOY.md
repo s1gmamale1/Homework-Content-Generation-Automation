@@ -36,8 +36,15 @@ not `localhost:8000`. (For a bare local run without Traefik, publish port 8000 y
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `DATABASE_URL` | yes | — | `postgresql+asyncpg://...` (asyncpg driver, not psycopg) |
-| `GEMINI_API_KEY` | no | — | Only for `transport=api` gemini jobs (or use the Vertex SA pair `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT`). Default `cli` jobs need no key. Read from `os.environ` by the api transport — the same-named config field is vestigial. |
+| `GEMINI_API_KEY` | no | — | Only for `transport=api` gemini jobs (or use the Vertex SA pair `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT`). Default `cli` jobs need no key. Read from `os.environ` by the api transport — the same-named config field is vestigial. **Primary path is now the Fleet → Keys UI** (see the note below the table): workers boot **keyless** and are handed a Vertex SA key live, assigned by hostname; these env vars remain a fallback/legacy option. |
 | `ANTHROPIC_API_KEY` | no | — | For `transport=api` claude jobs. The worker computes **per-role** api-readiness flags at startup (`worker._compute_capabilities`: `can_claude_api`, `can_gemini_api`, `judge_api_ok`, `judge_fallback_api_ok`, `extract_api_ok`) and `claim_next_job` ANDs each job's *resolved* per-role transports against them — so a worker can claim *some* api jobs without *all* creds (e.g. an api-content gemini job with cli judge+extract needs no `ANTHROPIC_API_KEY`). |
+
+> **Key distribution — Fleet → Keys UI (primary):** Vertex/SA credentials are now distributed to
+> workers **live from the head's Fleet → Keys page** — upload the SA key on the head, assign it to a
+> worker by hostname, and the worker (which boots **keyless**) picks it up at runtime. The
+> `GOOGLE_APPLICATION_CREDENTIALS`/`GOOGLE_CLOUD_PROJECT`/`GEMINI_API_KEY`/`ANTHROPIC_API_KEY`
+> env vars above still work as a **fallback/legacy** path, but the Keys UI is the recommended
+> mechanism for a fleet.
 | `GEMINI_MODEL` | no | `gemini-2.0-flash-exp` | Vestigial (unread by the runtime). The *extract pin* `EXTRACT_MODEL` is separately `gemini-2.5-flash`. |
 | `AUTH_TOKEN` | **strongly recommended** | `"123"` | Code default is the literal token `"123"` (`config.py`); `.env.example` ships `AUTH_TOKEN=` (empty) which **disables** auth (every request `user="anonymous"`). ⚠️ A bare-metal run with no `.env` entry gets `"123"` — auth silently ON with a guessable token. Set this to a strong value. |
 | `WORKER_CONCURRENCY` | no | `4` | Embedded worker job concurrency. Set `0` in API-only pods. |
@@ -259,6 +266,7 @@ Behind an ALB, point the target group at the `api` task. Use RDS Postgres. Run `
 - [ ] `AUTH_TOKEN` set to a strong random value (or comma-separated list for multiple services)
 - [ ] `ENABLE_DOCS=false`
 - [ ] Judge/extract model selection reviewed at **`/settings`** (DB-backed `launch_defaults` singleton, migration 0037). Seed defaults: judge = gemini/gemini-2.5-flash, extract = gemini/gemini-2.5-flash, `toc_transport=cli`. **⚠ On an all-Vertex head** (Vertex SA creds only, no gemini CLI OAuth): flip `toc_transport→api` at `/settings` immediately after first deploy, or book-upload TOC extraction fails. `EXTRACT_MODEL`/`EXTRACT_PROVIDER`/`JUDGE_MODEL`/`JUDGE_PROVIDER`/`EXTRACT_TOC_TRANSPORT` env vars are **deleted** — do not set them. (`GEMINI_MODEL` is also vestigial — nothing reads it.)
+- [ ] Vertex/SA keys distributed via the head's **Fleet → Keys** UI (upload once, assign per worker hostname; workers boot keyless). Env-var creds (`GOOGLE_APPLICATION_CREDENTIALS`/`GOOGLE_CLOUD_PROJECT`/`GEMINI_API_KEY`/`ANTHROPIC_API_KEY`) remain a fallback/legacy option.
 - [ ] `ALLOW_ORIGINS` set to actual frontend origin (not `*`) if API and SPA are on different domains
 - [ ] Postgres has automated backups enabled (managed services usually do this; self-hosted needs `pg_dump` cron)
 - [ ] Healthcheck endpoint `/health` reachable from your platform's liveness probe

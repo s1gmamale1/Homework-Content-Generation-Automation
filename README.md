@@ -9,7 +9,7 @@
 ## What it does
 
 1. Upload a curriculum textbook PDF (**26 supported subjects** across sciences, math, languages, and humanities — biology, math/algebra, Uzbek, Russian, English, history, chemistry, physics, geography, law, and more; full registry in `app/services/subjects.py`) — or pull one from a connected Notion lessons tree. **Multi-language source textbooks:** books carry a `source_language` (`uz`/`ru`/`en`); the Notion tree is crawled by language (Uzbek `N - sinf`, Russian `N - класс`/`klass`, English named containers); output language defaults to the book's source language, with an explicit override for translation mode.
-2. The table of contents is extracted (pinned to a cheap Gemini model); pick any section.
+2. The table of contents is extracted (pinned to a cheap Gemini model), then a **post-TOC vision validator** re-checks it against the PDF pages; a `mismatch` verdict parks the book in a `toc_review` state (generation blocked until you Accept or Retry in the UI), while `verified`/`skipped` pass through to `toc_ready`. Pick any section.
 3. The pipeline distills that lesson, then runs the content phases **DAG-parallel** (each launches as soon as its dependencies finish). Every phase is graded by an LLM judge against its own prompt contract.
 4. Each phase produces **markdown** (the deliverable). The operator console streams progress over SSE and renders each phase's markdown for review.
 5. The packet downloads as a **ZIP of one markdown file per phase**.
@@ -104,7 +104,7 @@ Homework-Content-Generation-Automation/
 │       ├── worker.py             queue worker (embedded or standalone)
 │       └── notion_*/notion/      Notion archive + fetch
 ├── prompts/_general/             the live prompt set (one .md per phase)
-├── alembic/versions/             schema migrations (0001…0040)
+├── alembic/versions/             schema migrations (chain + head in docs/DATABASE.md §7)
 ├── web/                          React SPA (operator console)
 ├── Dockerfile                    multi-stage (node SPA → uv venv → runtime)
 ├── docker-compose.yml            postgres + api (GHCR image, Traefik) + optional scaled worker
@@ -138,7 +138,7 @@ All settings via env vars; defaults in [`app/config.py`](./app/config.py). Essen
 | `JOB_TIMEOUT_SECONDS` | Hard ceiling per pipeline run (default 1800) |
 | `QUEUE_BACKPRESSURE_LIMIT` | `503` when `pending` depth exceeds; `0` disables |
 | `NOTION_API_KEY` / `NOTION_*` | Optional: Notion archive + Fetch-From-Notion |
-| `ANTHROPIC_API_KEY` + (`GEMINI_API_KEY` **or** `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT`) | Only for `transport=api` jobs (Phase 4 toggle); works from `.env` (loaded at startup, exported env wins) — see `.env.example` "TRANSPORT=API" |
+| `ANTHROPIC_API_KEY` + (`GEMINI_API_KEY` **or** `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT`) | Only for `transport=api` jobs (Phase 4 toggle); works from `.env` (loaded at startup, exported env wins) — see `.env.example` "TRANSPORT=API". **Primary path for a fleet is the Fleet → Keys UI** (upload a Vertex SA key on the head, assign by hostname; workers boot keyless and pick it up live) — these env vars remain a fallback/legacy option. |
 
 > `GEMINI_MODEL` is **vestigial** (leftover from the removed SDK era) — nothing reads it. `GEMINI_API_KEY` is no longer vestigial: since Phase 4 it selects API-key auth for `transport=api` gemini jobs.
 
