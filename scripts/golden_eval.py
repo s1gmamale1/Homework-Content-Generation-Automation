@@ -110,6 +110,67 @@ def _total_llm_cost(score: ge.PacketScore, provider: str, model: str | None) -> 
     return total
 
 
+def _emit_baseline_or_refuse(score: ge.PacketScore, path: pathlib.Path) -> int:
+    """**E4 guard**: refuses to write `path` (and returns 1) if ANY dimension's
+    `detail` contains "unavailable" — never freeze a scorer-outage degrade-to-pass
+    as ground truth. Otherwise writes the score as JSON and returns 0.
+
+    Pure decision logic (no DB, no model calls) — takes an already-scored
+    `PacketScore`, so it's directly unit-testable (see `tests/golden/test_runner.py`)."""
+    unavailable = [
+        dim for dim, ds in score.scores.items() if "unavailable" in ds.detail.lower()
+    ]
+    if unavailable:
+        print(
+            f"ERROR: refusing to emit baseline — scorer-unavailable degrade-to-pass "
+            f"on dimension(s) {unavailable}; re-run once the scorer is healthy.",
+            file=sys.stderr,
+        )
+        return 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(ge.packet_score_to_dict(score), indent=2), encoding="utf-8")
+    print(f"baseline written: {path}")
+    return 0
+
+
+def _regression_exit(baseline_score: ge.PacketScore, current_score: ge.PacketScore) -> int:
+    """Prints `ge.diff_scores(baseline_score, current_score)` and returns 1 if any
+    regression was found, else 0. Pure — no DB, no model calls."""
+    regressions = ge.diff_scores(baseline_score, current_score)
+    if regressions:
+        print("REGRESSIONS DETECTED:")
+        for r in regressions:
+            print(f"  - {r}")
+        return 1
+    print("no regressions vs baseline.")
+    return 0
+
+
+def _audit_mismatches(entry: ge.GoldenEntry, score: ge.PacketScore) -> list[str]:
+    """Compares every manifest dimension's `audit_verdict` against `score`.
+    A dimension OMITTED from `score.scores` (an LLM-only dim under `--no-llm`)
+    is printed SKIPPED, not counted as a mismatch. Returns the list of
+    dimension names that WERE measured and disagree with the audit — that is
+    the real acceptance failure `--audit-check` gates on. Pure — no DB, no
+    model calls."""
+    print("--- audit-check (got vs expected audit_verdict) ---")
+    mismatches: list[str] = []
+    for dim, expected in entry.audit_verdict.items():
+        got = score.scores.get(dim)
+        if got is None:
+            print(f"  {dim:16s}  expected={expected:5s}  got=(omitted)  SKIPPED (no-llm run)")
+            continue
+        match = "OK" if got.verdict == expected else "MISMATCH"
+        if match == "MISMATCH":
+            mismatches.append(dim)
+        print(f"  {dim:16s}  expected={expected:5s}  got={got.verdict:9s}  {match}")
+    if mismatches:
+        print(f"--- audit-check: {len(mismatches)} dimension(s) mismatch the manifest audit_verdict ---")
+    else:
+        print("--- audit-check: all measured dimensions match the manifest audit_verdict ---")
+    return mismatches
+
+
 async def _run(args: argparse.Namespace) -> int:
     entry = _find_entry(args.job)
     phases = await ge._load_phases_from_db(args.job)
@@ -136,34 +197,17 @@ async def _run(args: argparse.Namespace) -> int:
     exit_code = 0
 
     if args.emit_baseline:
-        unavailable = [
-            dim for dim, ds in score.scores.items() if "unavailable" in ds.detail.lower()
-        ]
-        if unavailable:
-            print(
-                f"ERROR: refusing to emit baseline — scorer-unavailable degrade-to-pass "
-                f"on dimension(s) {unavailable}; re-run once the scorer is healthy.",
-                file=sys.stderr,
-            )
-            return 1
-        out_path = pathlib.Path(args.emit_baseline)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(ge.packet_score_to_dict(score), indent=2), encoding="utf-8")
-        print(f"baseline written: {out_path}")
+        rc = _emit_baseline_or_refuse(score, pathlib.Path(args.emit_baseline))
+        if rc:
+            return rc
 
     if args.baseline:
         baseline_path = pathlib.Path(args.baseline)
         if not baseline_path.exists():
             raise SystemExit(f"baseline file not found: {baseline_path}")
         baseline = ge.packet_score_from_dict(json.loads(baseline_path.read_text(encoding="utf-8")))
-        regressions = ge.diff_scores(baseline, score)
-        if regressions:
-            print("REGRESSIONS DETECTED:")
-            for r in regressions:
-                print(f"  - {r}")
+        if _regression_exit(baseline, score):
             exit_code = 1
-        else:
-            print("no regressions vs baseline.")
 
     if args.audit_check:
         # Full acceptance semantics (Task 5): compare every manifest dimension's
@@ -173,22 +217,8 @@ async def _run(args: argparse.Namespace) -> int:
         # compare (mirrors `diff_scores`'s omitted-dim handling). Exit non-zero
         # only when a dimension that WAS actually measured disagrees with the
         # audit — that is the real acceptance failure this mode gates on.
-        print("--- audit-check (got vs expected audit_verdict) ---")
-        mismatches = 0
-        for dim, expected in entry.audit_verdict.items():
-            got = score.scores.get(dim)
-            if got is None:
-                print(f"  {dim:16s}  expected={expected:5s}  got=(omitted)  SKIPPED (no-llm run)")
-                continue
-            match = "OK" if got.verdict == expected else "MISMATCH"
-            if match == "MISMATCH":
-                mismatches += 1
-            print(f"  {dim:16s}  expected={expected:5s}  got={got.verdict:9s}  {match}")
-        if mismatches:
-            print(f"--- audit-check: {mismatches} dimension(s) mismatch the manifest audit_verdict ---")
+        if _audit_mismatches(entry, score):
             exit_code = 1
-        else:
-            print("--- audit-check: all measured dimensions match the manifest audit_verdict ---")
 
     return exit_code
 
