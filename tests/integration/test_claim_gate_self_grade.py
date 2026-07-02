@@ -139,6 +139,7 @@ async def test_case_a_non_self_grade_api_judge_gemini():
             judge_model="gemini-2.5-flash",
             judge_transport="api",
             extract_transport="cli",
+            solver_transport="cli",             # isolate: judge is under test, not solver
         )
         await s.commit()
         book_id, job_id = book.id, job.id
@@ -178,6 +179,7 @@ async def test_case_b_self_grade_claude_opus_needs_gemini_peer():
             judge_provider="claude", judge_model="claude-opus-4-7",  # self-grade
             judge_transport="api",
             extract_transport="cli",
+            solver_transport="cli",             # isolate: judge is under test, not solver
         )
         await s.commit()
         book_id, job_id = book.id, job.id
@@ -220,6 +222,7 @@ async def test_case_c_self_grade_gemini_flash_needs_claude_peer():
             judge_provider="gemini", judge_model="gemini-2.5-flash",  # self-grade
             judge_transport="api",
             extract_transport="cli",
+            solver_transport="cli",             # isolate: judge is under test, not solver
         )
         await s.commit()
         book_id, job_id = book.id, job.id
@@ -273,6 +276,7 @@ async def test_case_d_auto_content_model_null_self_grade_needs_claude_peer():
             judge_model=gemini_default,  # 'gemini-3.1-pro-preview'
             judge_transport="api",
             extract_transport="cli",
+            solver_transport="cli",             # isolate: judge is under test, not solver
         )
         await s.commit()
         book_id, job_id = book.id, job.id
@@ -410,5 +414,199 @@ async def test_case_d_coalesce_fallback_misclassifies():
             "for this case — the test setup or assertion is wrong."
         )
 
+    finally:
+        await _cleanup_book(book_id)
+
+
+# ─── Solver role (Task 8 / R1) ──────────────────────────────────────────────
+#
+# Mirrors the judge claim-gate cases above onto the solver_* columns. The
+# solver's api-auth error re-raises (job-level failure) — on an all-Vertex
+# fleet (no ANTHROPIC_API_KEY) a job whose resolved solver is claude/api must
+# NOT be claimed by a worker that can't serve it.
+
+
+@pytest.mark.asyncio
+async def test_case_s_a_non_self_solve_api_solver_gemini():
+    """Case (S-a): non-self-solve, stamped solver_provider=gemini +
+    solver_transport=api (solver_model differs from the resolved content
+    model, so it is NOT a self-solve). Content/judge/extract are all cli so
+    ONLY the solver clause can force an api requirement.
+
+    Must be claimable by can_gemini_api=True, NOT by can_claude_api-only.
+
+    BITE: flip can_gemini_api → job NOT claimed.
+    """
+    from app.db import SessionLocal
+
+    async with SessionLocal() as s:
+        book, toc = await _seed_book(s, "solver-case-a.pdf")
+        job = await _seed_job(
+            s, book, toc,
+            provider="gemini", model=None,           # content = gemini, Auto
+            transport="cli",
+            judge_transport="cli",
+            extract_transport="cli",
+            solver_provider="gemini",
+            solver_model="gemini-2.5-flash",          # != default_model('gemini') -> not self-solve
+            solver_transport="api",
+        )
+        await s.commit()
+        book_id, job_id = book.id, job.id
+
+    try:
+        # BITE: claude-only worker — solver is gemini, can_gemini_api=False → skip.
+        assert await _claim_with(_caps_for(_ANTHROPIC_ONLY), {job_id}) != job_id, (
+            "case (S-a) BITE: claude-only worker must NOT claim a gemini-solver/api job"
+        )
+        assert await _status_of(job_id) == "pending"
+
+        # Correct worker: can_gemini_api=True → claim.
+        claimed = await _claim_with(_caps_for(_GEMINI_ONLY), {job_id})
+        assert claimed == job_id, (
+            "case (S-a): gemini-api worker must claim a non-self-solve gemini-solver job"
+        )
+    finally:
+        await _cleanup_book(book_id)
+
+
+@pytest.mark.asyncio
+async def test_case_s_b_solver_claude_on_gemini_content_needs_claude_cap():
+    """Case (S-b) — THE R1 SCENARIO: content=gemini, stamped solver_provider=
+    claude + solver_transport=api (e.g. the self-grade swap of a
+    gemini-3.1-pro-preview generator, or an explicit override). Judge/extract
+    stay cli so ONLY the solver clause is under test.
+
+    On the real all-Vertex fleet (can_gemini_api=True, can_claude_api=False,
+    i.e. no ANTHROPIC_API_KEY) this job must NOT be claimed — a worker that
+    claimed it would die on the solver's api-auth re-raise.
+
+    BITE: the SAME job IS claimed once can_claude_api=True is added, proving
+    the gate keys specifically on the solver's claude requirement (not some
+    unrelated content/judge/extract clause).
+    """
+    from app.db import SessionLocal
+
+    async with SessionLocal() as s:
+        book, toc = await _seed_book(s, "solver-case-b.pdf")
+        job = await _seed_job(
+            s, book, toc,
+            provider="gemini", model="gemini-2.5-flash",   # content = gemini
+            transport="cli",
+            judge_transport="cli",
+            extract_transport="cli",
+            solver_provider="claude",
+            solver_model="claude-opus-4-7",
+            solver_transport="api",
+        )
+        await s.commit()
+        book_id, job_id = book.id, job.id
+
+    try:
+        # The real fleet shape: gemini-api capable, no ANTHROPIC_API_KEY.
+        fleet_caps = _caps_for(_GEMINI_ONLY)
+        assert await _claim_with(fleet_caps, {job_id}) != job_id, (
+            "case (S-b) R1: an all-Vertex worker (no ANTHROPIC_API_KEY) must NOT "
+            "claim a job whose resolved solver is claude/api"
+        )
+        assert await _status_of(job_id) == "pending"
+
+        # BITE: same job, add can_claude_api=True → now claimable. Proves the
+        # gate is keyed on the solver's claude requirement specifically.
+        claimed = await _claim_with(_caps_for(_BOTH), {job_id})
+        assert claimed == job_id, (
+            "case (S-b): a worker with can_claude_api=True must claim the "
+            "claude-solver job once it can actually serve the solver role"
+        )
+    finally:
+        await _cleanup_book(book_id)
+
+
+@pytest.mark.asyncio
+async def test_case_s_b_bite_without_solver_gate_wrongly_claims():
+    """Load-bearing bite-proof for (S-b): reproduce the claim-gate SQL with the
+    solver_ok clause OMITTED (i.e. the pre-fix predicate) and show it WOULD
+    claim the claude-solver/api job even for a worker with ZERO api
+    capability. This documents that `solver_ok` — not some other clause — is
+    what blocks case (S-b); a test that would still pass if the guard were
+    deleted is worthless, so this test targets the guard directly.
+    """
+    from app.db import SessionLocal as SL
+    from app.models.homework_job import HomeworkJob
+    from sqlalchemy import and_, func, literal, not_, or_, select
+
+    async with SL() as s:
+        book, toc = await _seed_book(s, "solver-case-b-bite.pdf")
+        job = await _seed_job(
+            s, book, toc,
+            provider="gemini", model="gemini-2.5-flash",
+            transport="cli",
+            judge_transport="cli",
+            extract_transport="cli",
+            solver_provider="claude",
+            solver_model="claude-opus-4-7",
+            solver_transport="api",
+        )
+        await s.commit()
+        book_id, job_id = book.id, job.id
+
+    try:
+        caps: dict = {}  # zero api capability whatsoever
+
+        async with SL() as s:
+            # Reproduce the pre-fix gate: content_ok/judge_ok/extract_ok/paused
+            # gates only — NO solver_ok clause at all.
+            content_ok = or_(
+                HomeworkJob.transport == "cli",
+                and_(HomeworkJob.provider == "claude", literal(bool(caps.get("can_claude_api")))),
+                and_(HomeworkJob.provider == "gemini", literal(bool(caps.get("can_gemini_api")))),
+            )
+            judge_needs_api = or_(
+                HomeworkJob.judge_transport == "api",
+                and_(HomeworkJob.judge_transport == "inherit", HomeworkJob.transport == "api"),
+            )
+
+            def _provider_api_ok(resolved):
+                return or_(
+                    and_(resolved == "claude", literal(bool(caps.get("can_claude_api")))),
+                    and_(resolved == "gemini", literal(bool(caps.get("can_gemini_api")))),
+                )
+
+            job_is_self_grade = and_(
+                HomeworkJob.provider == HomeworkJob.judge_provider,
+                func.coalesce(HomeworkJob.model, "") == func.coalesce(HomeworkJob.judge_model, ""),
+            )
+            judge_ok = or_(
+                not_(judge_needs_api),
+                and_(job_is_self_grade, _provider_api_ok(HomeworkJob.judge_provider)),
+                and_(not_(job_is_self_grade), _provider_api_ok(HomeworkJob.judge_provider)),
+            )
+            extract_needs_api = or_(
+                HomeworkJob.extract_transport == "api",
+                and_(HomeworkJob.extract_transport == "inherit", HomeworkJob.transport == "api"),
+            )
+            extract_ok = or_(not_(extract_needs_api), _provider_api_ok(HomeworkJob.extract_provider))
+
+            pick_stmt = (
+                select(HomeworkJob.id)
+                .where(HomeworkJob.id == job_id)
+                .where(HomeworkJob.status == "pending")
+                .where(HomeworkJob.scheduled_at <= func.now())
+                .where(HomeworkJob.attempts < _FENCE_MAX)
+                .where(content_ok)
+                .where(judge_ok)
+                .where(extract_ok)
+                # NOTE: no .where(solver_ok) — this is the pre-fix predicate.
+                .with_for_update(skip_locked=True)
+            )
+            found_id = (await s.execute(pick_stmt)).scalar_one_or_none()
+            await s.rollback()
+
+        assert found_id == job_id, (
+            "Bite-proof FAILED: without a solver_ok clause, a zero-capability worker "
+            "should wrongly match the claude-solver/api job (documenting that the "
+            "solver_ok clause added in the fix is the thing actually blocking it). "
+            f"Expected job_id={job_id}, got {found_id!r}."
+        )
     finally:
         await _cleanup_book(book_id)
