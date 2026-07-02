@@ -16,7 +16,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
-from app.services import agent, book_fetch, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, storage
+from app.services import agent, book_fetch, content_lint, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, storage
 from app.services.agent_models import resolve_role_transport, resolve_session_limit_strategy
 from app.services.errors import SessionLimitPause
 from app.services.flows import (
@@ -1180,6 +1180,16 @@ async def _execute_phase(
         # the ExcType stays in the logs. major_shipped/major_regen_failed keep
         # available=True so their genuine content warnings survive.
         warnings = outcome.warnings if outcome.available else []
+        # CQ-B (R21.3/R21.4): deterministic content lint. WARN-ONLY — findings
+        # join validation_warnings under a `lint:` prefix, never gate a regen,
+        # never fail a job. Pure function; defensively wrapped regardless.
+        try:
+            _lint = content_lint.lint_phase(
+                phase_name, output_md, subject=subject, output_language=output_language,
+            )
+            warnings = warnings + content_lint.findings_to_warnings(_lint)
+        except Exception as exc:  # noqa: BLE001 — lint must NEVER fail a job
+            logger.warning(f"[job {job_id}] {phase_name} content_lint error ({exc!r}); skipping")
         if warnings:
             logger.warning(f"[job {job_id}] {phase_name} validation warnings: {warnings}")
     async with SessionLocal() as session:
