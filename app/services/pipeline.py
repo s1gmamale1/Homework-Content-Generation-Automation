@@ -41,6 +41,31 @@ def _inject_grade(lesson_context: Optional[str], grade: Optional[str]) -> Option
     return f"Student grade level: {grade}\n\n{lesson_context}"
 
 
+def _inject_lesson_boundary(
+    lesson_context: Optional[str], next_lesson_title: Optional[str]
+) -> Optional[str]:
+    """Prepend a curriculum-boundary note naming the NEXT lesson so content
+    phases stop at this lesson's edge instead of reaching for the concept's
+    natural completion (the audit's #1 defect: Pythagorean converse, parallelogram
+    criteria, 'asymptote' — all next-lesson material). Rides inside lesson_context
+    so every content phase sees it via _build_master_prompt's LESSON CONTEXT block;
+    extract is unaffected (its lesson_context is None). No-op when there is no
+    successor (last lesson) or no context."""
+    if not next_lesson_title or lesson_context is None:
+        return lesson_context
+    note = (
+        "CURRICULUM BOUNDARY:\n"
+        f"The NEXT lesson in this textbook is: «{next_lesson_title}».\n"
+        "Teach and test ONLY the CURRENT lesson's concepts. Do NOT use, teach, "
+        "hint at, or build any question on the next lesson's material — including "
+        "the converse or inverse of this lesson's theorem/rule, its recognition "
+        "criteria (alomatlari), or any generalization the next lesson introduces. "
+        "If a natural 'next step' of this concept belongs to the next lesson, stop "
+        "at this lesson's boundary."
+    )
+    return f"{note}\n\n{lesson_context}"
+
+
 def _scheduler_stuck_message(pending, content_phases: list[str]) -> str:
     """Build the diagnostic message for a stuck DAG scheduler.
 
@@ -168,6 +193,11 @@ async def run(job_id: UUID) -> None:
                 "page_end": section.page_end,
                 "chapter": section.chapter_title or "",
             }
+            # Next teaching lesson in the book (by order_index), if any — used
+            # to inject a curriculum-boundary note into lesson_context below so
+            # content phases don't reach into next-lesson material (R21.1).
+            _next = await toc_repo.get_next_in_book(session, book_id, section.order_index)
+            next_lesson_title: Optional[str] = _next.section_title if _next else None
 
         # Local on-disk PDF; on a multi-PC fleet a worker may be missing it, so
         # fetch-on-demand from the head (R13). Sync helper off the event loop —
@@ -289,6 +319,7 @@ async def run(job_id: UUID) -> None:
         # rules have a value to read (book.grade otherwise never reached content
         # generation). Single point — covers both the fresh and resume paths.
         lesson_context = _inject_grade(lesson_context, book_grade)
+        lesson_context = _inject_lesson_boundary(lesson_context, next_lesson_title)
 
         for _name, _md in _done_md.items():
             if _name not in head_phases:
