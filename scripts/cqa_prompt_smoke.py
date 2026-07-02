@@ -42,8 +42,17 @@ from app.services.pipeline import _inject_grade, _inject_lesson_boundary
 from app.services.prompts import get_prompt
 
 BOOK_ID_PREFIX = "860e86aa"
-SECTION_NUMBER = "17"
-SECTION_TITLE_HINT = "Pifagor"
+# transport=api requires an explicit model. gemini-2.5-flash = the campaign
+# content-tier model; the boundary/reflection fixes are model-agnostic prompt edits.
+GEN_MODEL = "gemini-2.5-flash"
+# The audit's packet #5 lesson: §17 "Pifagor teoremasi va uning turli isbotlari"
+# (pp 41-43). Its successor is §18 "…teskari teorema" (the converse) — exactly the
+# next-lesson material boss-arena must NOT reach for. NB: this book stores
+# section_number as "17-mavzu", and several rows contain "Pifagor" (§4/§17/§18/§19),
+# so we pin the §17 row by its distinctive title ("turli isbot") to avoid selecting
+# the wrong lesson (a wasted billed call).
+SECTION_NUMBER = "17-mavzu"
+SECTION_TITLE_HINT = "turli isbot"
 
 # markers the boundary note injects — must NEVER appear in student-facing output
 _NOTE_MARKERS = ("CURRICULUM BOUNDARY", "The NEXT lesson in this textbook")
@@ -173,7 +182,7 @@ async def check_boundary(book: Book, section: TOCEntry, next_title: Optional[str
     lesson_context = await _build_lesson_context(book, section, next_title)
     prompt = get_prompt(book.subject, "boss-arena", output_language="uz")
     text, tin, tout = await agent.run_phase_prompt(
-        provider="gemini", model=None,
+        provider="gemini", model=GEN_MODEL,
         phase_prompt=prompt, lesson_context=lesson_context, prior_outputs={},
         difficulty=None, phase_name="boss-arena", transport="api",
     )
@@ -199,7 +208,7 @@ async def check_reflection(book: Book, section: TOCEntry, next_title: Optional[s
     lesson_context = await _build_lesson_context(book, section, next_title)
     prompt = get_prompt(book.subject, "reflection", output_language="uz")
     text, tin, tout = await agent.run_phase_prompt(
-        provider="gemini", model=None,
+        provider="gemini", model=GEN_MODEL,
         phase_prompt=prompt, lesson_context=lesson_context, prior_outputs={},
         difficulty=None, phase_name="reflection", transport="api",
     )
