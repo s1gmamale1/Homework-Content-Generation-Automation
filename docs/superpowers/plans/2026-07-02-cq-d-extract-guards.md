@@ -378,6 +378,11 @@ def extract_math_expressions(text: str) -> set[str]:
     algebraic (a−b)/(a+b) worked examples; skips prose slashes (va/yoki)."""
     found: set[str] = set()
     for m in _FIDELITY_EXPR_RE.findall(text or ""):
+        # The char class allows '.' (needed for decimals like 3.14), so a token
+        # can trail a sentence period ("21/120." ). Strip leading/trailing
+        # sentence punctuation — decimals keep their INTERNAL period — else a
+        # grounded value falsely reads as ungrounded ("21/120." vs source "21/120=").
+        m = m.strip(".,;:")
         if ("/" not in m) and ("=" not in m):
             continue
         if any(c.isdigit() for c in m) or ("(" in m) or (")" in m):
