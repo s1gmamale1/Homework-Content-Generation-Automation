@@ -69,6 +69,25 @@ def _lint_language(output_md: str) -> list[LintFinding]:
     return out
 
 
+# --- misconception provenance tag check (flashcards only) --------------------
+
+_MISCONCEPTION_LINE = re.compile(r"(?im)^\s*\**\s*misconception\s*:\**\s*(?P<body>.+)$")
+_PROVENANCE = re.compile(r"\b(source|inferred)\b", re.IGNORECASE)
+
+
+def _lint_misconception_tags(output_md: str) -> list[LintFinding]:
+    out: list[LintFinding] = []
+    for m in _MISCONCEPTION_LINE.finditer(output_md):
+        body = m.group("body")
+        if not _PROVENANCE.search(body):
+            snippet = body.strip()[:60]
+            out.append(LintFinding(
+                "misconception_untagged",
+                f"misconception card missing source/inferred tag: {snippet!r}",
+            ))
+    return out
+
+
 # --- dispatcher --------------------------------------------------------------
 
 def lint_phase(phase_name: str, output_md: str, *, subject: str, output_language: str) -> list[LintFinding]:
@@ -76,6 +95,8 @@ def lint_phase(phase_name: str, output_md: str, *, subject: str, output_language
     if phase_name == "extract" or not (output_md or "").strip():
         return []
     findings = _lint_language(output_md)
+    if phase_name == "flashcards":
+        findings += _lint_misconception_tags(output_md)
     return findings[:_MAX_FINDINGS]
 
 
