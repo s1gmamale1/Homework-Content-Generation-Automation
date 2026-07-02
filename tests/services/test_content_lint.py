@@ -95,3 +95,11 @@ def test_errdet_check_only_runs_on_that_phase():
     md = (FIX / "errdet-zero-markers.md").read_text(encoding="utf-8")
     findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
     assert not [f for f in findings if f.code.startswith("errdet_")]
+
+
+def test_findings_to_warnings_prefixes_lint():
+    findings = cl.lint_phase("flashcards", "### Mode: Hard\n**misconception:** x", subject="matematika", output_language="uz")
+    warnings = cl.findings_to_warnings(findings)
+    assert warnings, "expected at least one warning string"
+    assert all(w.startswith("lint:") for w in warnings)
+    assert any(w.startswith("lint:english_template") for w in warnings)
