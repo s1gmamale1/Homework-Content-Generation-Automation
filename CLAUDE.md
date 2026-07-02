@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FastAPI + React app that turns a textbook PDF into a multi-phase homework packet (preview, flashcards, memory sprint, mini-games, boss-fight quiz, reading, reflection). Background workers run a DAG-parallel pipeline that drives **CLI subprocesses** of one of five LLM providers — `claude`, `kimi`, `codex`, `gemini`, `opencode` — chosen per job by the user.
 
-Everything LLM-facing goes through `app/services/agent.py`. For `transport=cli` it drives the provider **CLIs** (the CLI router — the five CLIs must be installed on `PATH`); for `transport=api` it calls the provider **SDKs** directly via `app/services/api_transport.py` (gemini `google-genai`, claude `anthropic`). Each job (and batch) carries a **`transport`** enum — `cli` (default: each CLI's own subscription/OAuth login, $0 marginal) or `api` (pay-per-token, claude+gemini only) — see "Transport toggle" below.
+Everything LLM-facing goes through `app/services/agent.py`. For `transport=cli` it drives the provider **CLIs** (the CLI router — the five CLIs must be installed on `PATH`); for `transport=api` it calls the provider **SDKs** directly via `app/services/api_transport.py` (gemini `google-genai`, claude `anthropic`). Each job (and batch) carries a **`transport`** enum — `cli` (default enum value: each CLI's own subscription/OAuth login, $0 marginal) or `api` (pay-per-token, claude+gemini only) — see "Transport toggle" below.
+
+> **⚠️ Standing decision (2026-07-01): the cli transport is RETIRED from operational use but stays in the code.** All real generation (the Oct/Mar campaign, launches, smokes, acceptance gates) runs `transport=api` (gemini over Vertex SA keys / claude over `ANTHROPIC_API_KEY`). Do NOT plan, verify, or benchmark against the cli path as if it were production; do not "fix" cli-only issues unless asked. The cli code path is kept working (it's the schema default and a fallback), so don't delete or break it either — tests covering it stay. When docs/prompts/plans say "CLI call/smoke", read that as legacy wording for "real model call" — run it over api.
 
 ## Implementation workflow
 
