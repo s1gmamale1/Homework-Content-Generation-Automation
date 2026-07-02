@@ -1135,6 +1135,53 @@ def _alpha_plausibility_ratio(text: str) -> float:
     return good / len(letters)
 
 
+# A worked-example expression worth grounding: a run of digits/letters/parens/
+# operators that has a structural math operator ('/' or '=') AND (a digit OR a
+# parenthesis). The parenthesis arm is load-bearing: audited drift #2 is a
+# DIGITLESS invented example — (a−b)/(a+b), (a−b)²/(a+b) — which a digit-only
+# gate would never surface (and the flash verify can only catch what this
+# surfaces). Prose like 'va/yoki' has '/' but no digit and no paren → excluded,
+# so the false-positive posture (bare numbers, page ranges) is preserved.
+_FIDELITY_EXPR_RE = re.compile(r"[0-9A-Za-z()][0-9A-Za-z()/=+\-−–.·*×÷²³]{1,38}")
+_FIDELITY_MAX_CANDIDATES = 12
+
+
+def _normalize_expr(s: str) -> str:
+    out = s.lower().replace(" ", "")
+    for ch in "−–—":          # minus variants → ascii hyphen
+        out = out.replace(ch, "-")
+    for ch in "·*×":          # multiplication variants
+        out = out.replace(ch, "*")
+    out = out.replace("÷", "/")
+    return out
+
+
+def extract_math_expressions(text: str) -> set[str]:
+    """Normalized fraction/equation expressions in `text`: contain '/' or '=' AND
+    (a digit OR a parenthesis). Captures both numeric (21/100, x=5) and digitless
+    algebraic (a−b)/(a+b) worked examples; skips prose slashes (va/yoki)."""
+    found: set[str] = set()
+    for m in _FIDELITY_EXPR_RE.findall(text or ""):
+        # char class allows '.' (decimals like 3.14) so a token can trail a
+        # sentence period ("21/120.") — strip surrounding punctuation first.
+        m = m.strip(".,;:")
+        if ("/" not in m) and ("=" not in m):
+            continue
+        if any(c.isdigit() for c in m) or ("(" in m) or (")" in m):
+            found.add(_normalize_expr(m))
+    return {e for e in found if len(e) >= 3}
+
+
+def extract_fidelity_candidates(summary: str, book_text: str) -> list[str]:
+    """Worked-example expressions in the extract SUMMARY that do not appear in the
+    source BOOK_TEXT — candidate transcription drift. Free (no model call).
+    Grounds against the FULL book_text (conservative → fewer wasted verify calls).
+    An empty list means the deterministic pass found nothing to verify."""
+    norm_book = _normalize_expr(book_text or "")
+    cands = sorted(e for e in extract_math_expressions(summary) if e not in norm_book)
+    return cands[:_FIDELITY_MAX_CANDIDATES]
+
+
 def validate_extract_text(text: str) -> Optional[str]:
     """Gate A — deterministic check on the RAW local PDF text. Returns a failure
     reason string, or None if the text looks like real, readable content. A
