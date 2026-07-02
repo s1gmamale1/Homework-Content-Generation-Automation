@@ -151,6 +151,10 @@ class Settings(BaseSettings):
     # Maximum regen attempts when a phase fails judge; default 1 = current single-regen behavior.
     max_judge_regens: int = 1
 
+    # ─── Answer-key solver (CQ-C) ──────────────────────────────────────────
+    solver_enabled: bool = True
+    max_solve_regens: int = 1
+
     # ─── Reactive rate-limit backoff (concurrency-knob-1, Phase 1) ────────
     # On a transient 429/RESOURCE_EXHAUSTED, agent._spawn retries the SAME call
     # with exponential backoff + jitter instead of failing. Worst-case total
