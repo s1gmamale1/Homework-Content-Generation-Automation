@@ -1273,6 +1273,17 @@ def extract_text_is_too_sparse(text: str, n_pages: int) -> bool:
     return len((text or "").strip()) / n_pages < settings.extract_min_chars_per_page
 
 
+def _toc_text_is_usable(toc_source_text: str, pages_scanned: int) -> bool:
+    """True when the locally-extracted TOC text is present, dense enough (not a
+    watermark-only scan), AND written in a real alphabet (not mojibake/glyph
+    garbage). Any failure → the caller vision-attaches the printed contents page."""
+    if not toc_source_text:
+        return False
+    if extract_text_is_too_sparse(toc_source_text, pages_scanned):
+        return False
+    return _alpha_plausibility_ratio(toc_source_text) >= settings.extract_min_alpha_ratio
+
+
 def _toc_pages_scanned(total_pages: int) -> int:
     """Pages the TOC text-scan COVERS (front window + non-overlapping tail) — the
     correct denominator for sparseness. Using pages-that-yielded-text instead
@@ -1414,7 +1425,7 @@ async def extract_toc(
         "explain that you cannot read the PDF."
     )
 
-    toc_text_usable = has_local_toc_text and not extract_text_is_too_sparse(
+    toc_text_usable = _toc_text_is_usable(
         toc_source_text, toc_source_meta.get("pages_scanned", 0)
     )
     window: Optional[Path] = None
