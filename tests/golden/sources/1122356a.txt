@@ -1,0 +1,263 @@
+4- §.
+
+PIFAGOR TEOREMASI VA UNING TATBIQLARI
+
+17. PIFAGOR TEOREMASI VA UNING TURLI ISBOTLARI
+1. Pifagor teoremasi  geometriyaning muhim teoremalaridan biridir.
+Buyuk yunon matematigi Pifagor hayoti haqida malumotlar juda kam.
+Pifagor maktabi shakllarni ajratish va togri chiziqli shakllarni tengdosh
+shakllarga almashtirishning geometrik usulidan teoremalarni isbot qilish va
+masalalar yechishda foydalangani yunon matematiklarining asarlaridangina
+malum. Xususan, geometriyaning fan sifatida tarkib topishiga Pifagor va
+uning maktabi katta hissa qoshgan. Quyida keltiriladigan teorema Pifagor
+nomi bilan yuritiladi.
+Teorema.
+
+(Pifagor teoremasi.) Togri burchakli uchburchak gipotenuzasining
+kvadrati uning katetlari kvadratlarining yigindisiga teng.
+Bu teorema togri burchakli uchbur1
+chakka oid bolib, uchburchak tomonlariga
+teng kvadratlarning yuzlari orasidagi munosabatni korsatadi. Pifagor bu teoremaning
+nazariy isbotini keltirgan. Pifagor teoremasi
+c2
+bilan aniqlangan geometrik munosabatning
+c
+a2 a
+xususiy hollari Pifagordan oldin ham turli
+xalqlarga malum bolgan, ammo teoremaning umumiy shakli Pifagor maktabi tomob
+nidan yaratilgan.
+b2
+Katetlari a va b, gipotenuzasi c bolgan
+togri burchakli ABC uchburchak berilgan
+bolsin, u holda Pifagor teoremasi
+(1)
+c2 = a2 + b2,
+2
+2
+formula bilan ifodalanadi, bunda a , b , c2  tomonlari a, b, c bolgan kvadratlarning yuzlariga teng. Shuning uchun bu tenglik tomoni gipotenuzaning
+uzunligiga teng kvadratning yuzi tomonlari katetlarga teng kvadratlarning
+yuzlari yigindisiga teng ekanini korsatadi (1- rasm).
+2. Pifagor teoremasining otkir burchak
+kosinusi orqali isbotlanishi.
+Isbot. ABC  berilgan togri burchakli
+uchburchak bolib, uning C burchagi
+togri burchak bolsin. Togri burchakli
+uchburchakning C uchidan CD balandlikni
+otkazamiz (2- rasm).
+
+C
+
+2
+
+α
+α
+A
+
+41
+
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+D
+
+B
+
+Togri burchakli ACD va ABC uchburchaklardan burchak kosinusining
+tarifiga kora:
+cos A =
+
+AD
+AC
+=
+.
+AC
+AB
+
+Bundan AD · AB = AC 2 (2).
+Togri burchakli BCD va ABC uchburchaklardan burchak kosinusining
+tarifiga kora:
+cos B =
+
+BD
+BC
+=
+.
+BC
+AB
+
+Bundan BD · AB = BC 2 (3).
+Hosil bolgan (2) va (3) tengliklarni hadma-had qoshib va AD + DB = AB
+ekanini inobatga olib,
+AC 2 + BC 2 = AB · D + BD · AB = AB · (AD + BD) · AB = AB 2
+tenglikni hosil qilamiz. Teorema isbotlandi.
+Togri burchakli ABC (∠C = 90°) uchburchakning tomonlarini mos
+ravishda a = BC, b = AC, c = AB deb belgilab, Pifagor formulasini hosil
+qilamiz:
+c 2 = a 2 + b 2.
+3. Pifagor teoremasining yuzalar orqali isbotlanishi.
+Katetlari a, b va gipotenuzasi c ga teng bolgan togri burchakli uchburchak berilgan. Bu uchburchak uchun Pifagor teoremasi orinli ekanini
+isbotlaymiz, yani
+a2 + b2 = c2
+ekanini korsatamiz.
+Isbot. Tomoni (a + b) ga teng bolgan ikkita kvadrat yasaymiz. Ularni 3- rasmda korsatilgan usul bilan togri burchakli uchburchaklar, kvadratlar va togri tortburchaklarga ajratib chiqamiz. 3- à rasmdagi tortburchak tomoni c bolgan kvadrat ekanini korsatamiz. Haqiqatan ham, avvalo
+bu tortburchak romb, chunki uning tomoni katetlari a va b bolgan togri
+burchakli uchburchakning gipotenuzasi c ga teng. Endi chizmadagi x burchak
+a
+
+3
+b
+
+SH
+
+1
+
+c
+
+SH
+
+x
+
+c
+
+3
+a
+
+b
+
+b
+
+2
+
+b
+a
+a
+
+c
+SH
+
+b
+
+SH
+
+a
+
+SH
+
+b
+
+SH
+
+c
+
+SH
+
+b2
+
+a
+
+a2
+SH
+
+b
+
+b
+
+a
+
+b
+
+42
+
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+a
+
+a
+
+A
+
+5 cm
+
+A
+
+5
+
+x cm
+y
+
+B
+cm
+
+1
+
+cm
+
+yc
+m
+
+xc
+m
+
+B
+
+3 cm
+
+4
+
+D
+
+7 cm
+
+D
+
+C
+
+1 cm
+
+C
+
+togri ekanini korsatamiz. Haqiqatan, ∠x + ∠1 + .3 = 180°, ∠3 = ∠2
+(chunki uchburchaklar teng) va ∠1 = 90° − ∠2 ekanini etiborga olib topamiz:
+∠x = 90°. Shuning uchun bu tortburchak burchaklaridan biri 90° ga teng
+bolgan romb, yani kvadrat boladi. Qaralayotgan ikkala katta kvadrat tengdosh, yani ularning yuzlari teng. Shuningdek, birinchi kvadrat yuzi
+4S + c2 ga, ikkinchi kvadratning yuzi esa 4S + a2 + b2 ga teng (3- b rasm).
+Shuning uchun
+4S + c2 = 4S + a2 + b 2.
+Demak, c 2 = a 2 + b 2. Teorema isbotlandi.
+Masala. 4- rasmdagi nomalum kesmalar uzunligini toping.
+Yechish. 1) HABC  togri burchakli, ∠B = 90° (4- rasm). Pifagor teore2
+2
+masiga kora: x 2 = 5 + 3 , bundan x 2 = 34 ⇒ x = 34 (x > 0).
+2) HACD  togri burchakli, ∠CAD = 90° (4- rasm). Pifagor teoremasiga
+2
+kora, y 2 + ( 34 ) = 72 , bundan y 2 + 34 = 49, y 2 = 15, y = 15 (y > 0).
+Javob: x = 34 cm; y = 15 cm.
+Savol, masala va topshiriqlar
+1. 1) Pifagor teoremasining qanday isbotlarini bilasiz?
+«Gipotenuzaning kvadrati», «katetning kvadrati» degan iboralarni
+? 2)
+qanday tushunasiz?
+2. Togri burchakli uchburchakning a va b katetlari berilgan. Agar:
+1) a = 5, b = 12; 2) a = 4 2 , b = 7; 3) a = 0,7, b = 2,4; 4) a = 5, b = 6;
+5) a =
+
+5
+12
+, b=
+13
+13
+
+bolsa, c gipotenuzani toping.
+
+3. Rombning diagonallari: 1) 12 cm va 16 cm; 2) 14 cm va 48 cm.
+Rombning perimetrini toping.
+4. Nomalum kesmalar uzunligini toping (5- rasm).
+5. Togri burchakli uchburchakda a va b  katetlar, c  gipotenuza. Agar:
+1) a = 1,2, c = 1,3; 2) a = 7, c = 9; 3) a = 1,5, c = 1,7; 4) a = 2, c = 2,5
+bolsa, b katetni toping.
+6. Togri tortburchakning tomonlari: 1) 2,4 dm va 7 cm; 2) 50 cm va
+12 dm; 3) 8 dm va 1,5 m. Uning diagonalini toping.
+43
+
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+

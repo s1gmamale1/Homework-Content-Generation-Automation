@@ -1,0 +1,92 @@
+[
+  {
+    "job_id": "3ca0da6f-7997-4437-885d-105c1959a47f",
+    "book_id": "50b71915-9d70-49b7-9fd3-151d102fadbe",
+    "subject": "math-algebra",
+    "grade": "8",
+    "language": "uz",
+    "source_pages": "12-17",
+    "source_pdf_pages": "12-17",
+    "audit_verdict": {
+      "boundary": "pass",
+      "answer_key": "flag",
+      "broken_question": "flag",
+      "language": "flag",
+      "reflection": "pass",
+      "extract_fidelity": "flag"
+    },
+    "reflection_evidence": "Redo Route only says to redo weak-point topics generically ('Mashg'ulotni mustahkamlash uchun zaif tomonlarda ko'rsatilgan mavzular ... mashqlarni qayta ishlash tavsiya etiladi') — no pre-asserted outcome ('Needs Retry'/'not passed') and no fabricated performance narrative."
+  },
+  {
+    "job_id": "8f734563-962c-4ba0-bb4a-358f9706e23d",
+    "book_id": "50b71915-9d70-49b7-9fd3-151d102fadbe",
+    "subject": "math-algebra",
+    "grade": "8",
+    "language": "uz",
+    "source_pages": "22-26",
+    "source_pdf_pages": "22-26",
+    "audit_verdict": {
+      "boundary": "pass",
+      "answer_key": "flag",
+      "broken_question": "pass",
+      "language": "flag",
+      "reflection": "pass",
+      "extract_fidelity": "flag"
+    },
+    "reflection_evidence": "Redo Route only says to redo weak-point topics generically ('Zaif tomonlar bo'yicha — minus qavs qoidasi va ko'p hadli kasrlarda qo'shimcha ko'paytuvchi — qayta mashq tavsiya etiladi') — no pre-asserted outcome and no fabricated performance narrative."
+  },
+  {
+    "job_id": "263d99c5-00ce-45fe-a9f4-5fd9c2c2ddb2",
+    "book_id": "50b71915-9d70-49b7-9fd3-151d102fadbe",
+    "subject": "math-algebra",
+    "grade": "8",
+    "language": "uz",
+    "source_pages": "34-38",
+    "source_pdf_pages": "34-38",
+    "audit_verdict": {
+      "boundary": "flag",
+      "answer_key": "flag",
+      "broken_question": "pass",
+      "language": "flag",
+      "reflection": "flag",
+      "extract_fidelity": "pass"
+    },
+    "reflection_evidence": "Redo Route directly asserts (non-conditional, past tense) 'Zaif tomonlarda — grafik siljishi va toqlik isbotida — qiyinchilik sezdingiz.' ('you experienced difficulty in ...') — a fabricated claim about how the student's actual attempt performed, generated before any real attempt exists."
+  },
+  {
+    "job_id": "9504ad94-a368-40d0-beef-ee3c76f09ba3",
+    "book_id": "860e86aa-a68b-4ca1-b271-5f5cde0e1d6e",
+    "subject": "geometriya-g7-11",
+    "grade": "8",
+    "language": "uz",
+    "source_pages": "8-10",
+    "source_pdf_pages": "8-10",
+    "audit_verdict": {
+      "boundary": "flag",
+      "answer_key": "pass",
+      "broken_question": "pass",
+      "language": "flag",
+      "reflection": "flag",
+      "extract_fidelity": "pass"
+    },
+    "reflection_evidence": "Redo Route pre-asserts the outcome with no conditional framing: 'Ushbu urinish yakuniga ko'ra, natija \"Needs Retry\" (Attempt completed, homework not passed) deb baholandi.' Also section 2 fabricates a specific performance observation: 'balandliklar munosabatini aniqlashda biroz ikkilanishlar kuzatildi.'"
+  },
+  {
+    "job_id": "1122356a-96e6-404a-be10-c3e5e2ea1ff2",
+    "book_id": "860e86aa-a68b-4ca1-b271-5f5cde0e1d6e",
+    "subject": "geometriya-g7-11",
+    "grade": "8",
+    "language": "uz",
+    "source_pages": "41-43",
+    "source_pdf_pages": "41-43",
+    "audit_verdict": {
+      "boundary": "flag",
+      "answer_key": "pass",
+      "broken_question": "flag",
+      "language": "flag",
+      "reflection": "pass",
+      "extract_fidelity": "pass"
+    },
+    "reflection_evidence": "Redo Route hedges the outcome conditionally: 'Agar natijangiz \"Needs Retry\" (Attempt completed, homework not passed) holatida bo'lsa, ...' ('IF your result is Needs Retry, then...') — no pre-asserted outcome, matches the neutral/conditional structure, not a fabricated performance claim."
+  }
+]
