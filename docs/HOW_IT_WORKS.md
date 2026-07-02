@@ -317,7 +317,13 @@ before the job moves on. The judge receives the full lesson source (via `_build_
 for fact-checking (`_FIDELITY_RULE`). A conservative warning-only deterministic year-signal
 (`_fidelity_flags`) cross-checks 4-digit years in the output against the source (skips
 math/exercise lines; never gates a regen). The regen cap is configurable via
-`settings.max_judge_regens` (default 1). The judge outcome is recorded as
+`settings.max_judge_regens` (default 1). After the judge, each non-extract phase
+also runs a deterministic **no-LLM content lint** (`content_lint.py`, CQ-B): its
+`lint:`-prefixed findings — mixed Latin+Cyrillic words, structural English-template
+tokens (`Mode:`, `Needs Retry`), calques, untagged flashcard misconceptions, and
+error-detection EXACTLY-ONE-broken-block violations — join the same
+`validation_warnings`, warn-only, never gating a regen (semantic answer-key
+correctness is out of scope — that is the CQ-C solver pass). The judge outcome is recorded as
 `phase_outputs.judge_status` (`ok` / `major_shipped` / `major_regen_failed` / `unavailable` /
 `refused`), making grading results queryable downstream. A content-policy **refusal** (the judge
 declines instead of returning a verdict) is classified distinctly (`refused`) and — unlike a
