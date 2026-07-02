@@ -152,7 +152,9 @@ git commit -m "cqc: SolveVerdict/Discrepancy schema + solver_enabled/max_solve_r
 
 **Files:**
 - Create: `alembic/versions/0043_solver_role_columns.py` (re-derive number/down_revision at execution)
-- Test: `tests/integration/test_migration_0043_solver.py` (new; DB-gated, mirrors `0025`/`0027` migration tests)
+- Test: `tests/integration/test_migration_0043_solver.py` (new; DB-gated)
+
+> **⚠️ CORRECTION (applied at execution):** the Step-1 test code below uses sync `create_engine`, which this **asyncpg-only** codebase has no driver for (`env.py` overrides `sqlalchemy.url` from `settings.database_url`; there is no psycopg2/psycopg dependency). The test as BUILT keeps `alembic command.upgrade/downgrade` (they run async via `env.py`) but does its schema introspection with **`asyncpg.connect()`** (mirroring `tests/migrations/test_0041_sa_keys.py`'s async convention), and additionally asserts the CHECK-constraint definitions via `pg_get_constraintdef` + the R2 seed value. Do NOT use sync `create_engine` here.
 
 **Interfaces:** adds columns consumed by Task 3 (models) and Task 5 (stamping).
 
