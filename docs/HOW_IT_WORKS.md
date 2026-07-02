@@ -293,9 +293,17 @@ machine with two stages (a head and a parallel tail):
    ("lesson_context"). This is **pinned to a cheap model** (`gemini` / `gemini-2.5-flash`)
    regardless of which provider the user picked, because it's a high-input / low-creativity
    task — paying premium rates here buys nothing. It has its own readability gates and fails
-   over if the pinned provider can't read the book.
+   over if the pinned provider can't read the book. Two extract-quality guards run here
+   (worklog 0111): a **garbled-text detector** — an "expected-alphabet plausibility" ratio
+   (Latin∪Cyrillic∪Uzbek) that catches text which is letter-dense but written in the wrong
+   alphabet (cp1251 mojibake, broken subset fonts) that the letter-density gate passes, and
+   routes such books to the **vision** extract; and an **extract-fidelity check** — a free
+   scan for worked-example expressions (fractions/equations) that don't appear in the source,
+   which on a hit triggers one cheap gemini-flash verify (over the lesson's own pages) and, on
+   confirmed drift, regenerates the extract once with a correction hint. The judge can't catch
+   extract drift (it grades later phases against the extract, not the book), so it's guarded here.
    *(Also: results are cached across jobs. If the same section was already extracted, the
-   prior output is reused for free.)*
+   prior output is reused for free — the fidelity guard runs only on first production.)*
 
    *(Two steps that used to live here are gone: a `classify` step that decided EASY vs HARD,
    and a `source-map` step that built a concept list for injection. Flow v2 runs one sequence
