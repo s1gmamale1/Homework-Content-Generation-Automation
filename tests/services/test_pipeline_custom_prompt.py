@@ -21,8 +21,9 @@ def test_execute_phase_uses_custom_prompt_and_hash():
     assert "_custom_for(phase_name, custom_prompts)" in src
     # provenance: sha256 of the custom text when custom is used
     assert "sha256" in src
-    # judge: the override is threaded into BOTH judge() calls
-    assert src.count("contract_override=") == 2
+    # judge: the override is threaded into BOTH judge() calls, AND (CQ-C)
+    # into BOTH solver.solve() calls — same contract, same override.
+    assert src.count("contract_override=") == 4
 
 
 def test_run_builds_sequence_from_selected_phases():

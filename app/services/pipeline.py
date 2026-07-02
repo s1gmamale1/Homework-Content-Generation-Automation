@@ -16,7 +16,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
-from app.services import agent, book_fetch, content_lint, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, storage
+from app.services import agent, book_fetch, content_lint, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, solver, storage
 from app.services.agent_models import resolve_role_transport, resolve_session_limit_strategy
 from app.services.errors import SessionLimitPause
 from app.services.flows import (
@@ -29,6 +29,10 @@ from app.services.flows import (
 from app.services.prompts import get_prompt, get_prompt_hash
 
 _INTERNAL_PHASES = {"extract", "classify"}
+
+# CQ-C: key-bearing phases the independent answer-key solver re-checks after
+# the judge has run (so it checks the FINAL, possibly judge-regenerated output).
+_SOLVER_PHASES = ("memory-check", "practice-error-detection", "practice-rlc")
 
 
 def _inject_grade(lesson_context: Optional[str], grade: Optional[str]) -> Optional[str]:
@@ -165,6 +169,13 @@ async def run(job_id: UUID) -> None:
             # never reads settings). Self-grade is still hard-swapped downstream.
             judge_provider_ov = getattr(job, "judge_provider", None) or _ld.judge_provider
             judge_model_ov = getattr(job, "judge_model", None) or _ld.judge_model
+            # CQ-C: per-role solver transport/provider/model — same 'inherit'
+            # resolution + DB-global fallback pattern as the judge, above.
+            solver_transport = resolve_role_transport(
+                getattr(job, "solver_transport", "inherit") or "inherit", transport
+            )
+            solver_provider_ov = getattr(job, "solver_provider", None) or _ld.solver_provider
+            solver_model_ov = getattr(job, "solver_model", None) or _ld.solver_model
             # Per-job extract provider/model override: explicit columns win, else
             # the DB global default (via _ld). Content phases are UNAFFECTED —
             # they keep using job.provider / job.model.
@@ -285,9 +296,12 @@ async def run(job_id: UUID) -> None:
                     transport=transport,
                     extract_transport=extract_transport,
                     judge_transport=judge_transport,
+                    solver_transport=solver_transport,
                     custom_prompts=custom_prompts,
                     judge_provider_ov=judge_provider_ov,
                     judge_model_ov=judge_model_ov,
+                    solver_provider_ov=solver_provider_ov,
+                    solver_model_ov=solver_model_ov,
                     extract_provider=extract_provider,
                     extract_model=extract_model,
                     session_limit_strategy=session_limit_strategy,
@@ -351,9 +365,12 @@ async def run(job_id: UUID) -> None:
                     transport=transport,
                     extract_transport=extract_transport,
                     judge_transport=judge_transport,
+                    solver_transport=solver_transport,
                     custom_prompts=custom_prompts,
                     judge_provider_ov=judge_provider_ov,
                     judge_model_ov=judge_model_ov,
+                    solver_provider_ov=solver_provider_ov,
+                    solver_model_ov=solver_model_ov,
                     extract_provider=extract_provider,
                     extract_model=extract_model,
                     session_limit_strategy=session_limit_strategy,
@@ -441,9 +458,12 @@ async def _execute_one_phase(
     transport: str = "cli",
     extract_transport: str = "cli",
     judge_transport: str = "cli",
+    solver_transport: str = "cli",
     custom_prompts: Optional[dict] = None,
     judge_provider_ov: Optional[str] = None,
     judge_model_ov: Optional[str] = None,
+    solver_provider_ov: Optional[str] = None,
+    solver_model_ov: Optional[str] = None,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
@@ -484,9 +504,12 @@ async def _execute_one_phase(
             transport=transport,
             extract_transport=extract_transport,
             judge_transport=judge_transport,
+            solver_transport=solver_transport,
             custom_prompts=custom_prompts,
             judge_provider_ov=judge_provider_ov,
             judge_model_ov=judge_model_ov,
+            solver_provider_ov=solver_provider_ov,
+            solver_model_ov=solver_model_ov,
             extract_provider=extract_provider,
             extract_model=extract_model,
             session_limit_strategy=session_limit_strategy,
@@ -552,9 +575,12 @@ async def _run_content_phases_parallel(
     transport: str = "cli",
     extract_transport: str = "cli",
     judge_transport: str = "cli",
+    solver_transport: str = "cli",
     custom_prompts: Optional[dict] = None,
     judge_provider_ov: Optional[str] = None,
     judge_model_ov: Optional[str] = None,
+    solver_provider_ov: Optional[str] = None,
+    solver_model_ov: Optional[str] = None,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
@@ -612,9 +638,12 @@ async def _run_content_phases_parallel(
                             transport=transport,
                             extract_transport=extract_transport,
                             judge_transport=judge_transport,
+                            solver_transport=solver_transport,
                             custom_prompts=custom_prompts,
                             judge_provider_ov=judge_provider_ov,
                             judge_model_ov=judge_model_ov,
+                            solver_provider_ov=solver_provider_ov,
+                            solver_model_ov=solver_model_ov,
                             extract_provider=extract_provider,
                             extract_model=extract_model,
                             session_limit_strategy=session_limit_strategy,
@@ -879,9 +908,12 @@ async def _execute_phase(
     transport: str = "cli",
     extract_transport: str = "cli",
     judge_transport: str = "cli",
+    solver_transport: str = "cli",
     custom_prompts: Optional[dict] = None,
     judge_provider_ov: Optional[str] = None,
     judge_model_ov: Optional[str] = None,
+    solver_provider_ov: Optional[str] = None,
+    solver_model_ov: Optional[str] = None,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
@@ -1108,6 +1140,7 @@ async def _execute_phase(
 
     warnings: list[str] = []
     judge_status: Optional[str] = None
+    solver_status: Optional[str] = None
     if phase_name != "extract":
         # Judge against the phase's own contract, keyed off the ACTUAL producer
         # (produced_by + its resolved model). Capped regen loop (default 1 iter)
@@ -1229,6 +1262,64 @@ async def _execute_phase(
                 judge_status = "ok"
             else:
                 judge_status = "major_shipped"
+
+        # CQ-C (R21.2): independent answer-key solver over the key-bearing phases.
+        # Runs AFTER the judge so it checks the FINAL (possibly judge-regenerated)
+        # output. On a HIGH-confidence key mismatch, regenerate ONCE (mirrors the
+        # judge regen) then re-solve; solver_status records the outcome. Never fails
+        # a job except an api auth error (like the judge). The solver-regen output is
+        # adopted WITHOUT re-judging (accepted risk — the solver only fixes the key).
+        if settings.solver_enabled and phase_name in _SOLVER_PHASES:
+            _sp, _sm = model_tiers.resolve_solver(
+                produced_by, _gen_model_of(produced_by), solver_provider_ov, solver_model_ov,
+            )
+            s_outcome = await solver.solve(
+                subject=subject, phase_name=phase_name, phase_output_md=output_md,
+                lesson_context=lesson_context, prior_outputs=prior_outputs,
+                output_language=output_language,
+                solver_provider=_sp, solver_model=_sm, transport=solver_transport,
+                homework_job_id=job_id, phase_output_id=po_id, contract_override=_custom_md,
+            )
+            if not s_outcome.available:
+                solver_status = "refused" if s_outcome.refused else "unavailable"
+            elif not s_outcome.has_mismatch:
+                solver_status = "ok"
+            else:
+                solver_status = "mismatch_shipped"  # default until a regen fixes it
+                for _s_regen in range(settings.max_solve_regens):
+                    try:
+                        regen_prompt = base_phase_prompt + s_outcome.feedback
+                        r_md, r_tin, r_tout, r_prod = await _run_with_failover(
+                            requested_provider=produced_by,
+                            model=_gen_model_of(produced_by),
+                            run_fn=_make_run(regen_prompt),
+                            transport=transport,
+                            session_limit_strategy=session_limit_strategy,
+                        )
+                        output_md, tin, tout, produced_by = r_md, r_tin, r_tout, r_prod
+                        _sp2, _sm2 = model_tiers.resolve_solver(
+                            produced_by, _gen_model_of(produced_by), solver_provider_ov, solver_model_ov,
+                        )
+                        s_outcome = await solver.solve(
+                            subject=subject, phase_name=phase_name, phase_output_md=output_md,
+                            lesson_context=lesson_context, prior_outputs=prior_outputs,
+                            output_language=output_language,
+                            solver_provider=_sp2, solver_model=_sm2, transport=solver_transport,
+                            homework_job_id=job_id, phase_output_id=po_id, contract_override=_custom_md,
+                        )
+                        if not s_outcome.has_mismatch:
+                            solver_status = "mismatch_regen"
+                            break
+                    except SessionLimitPause:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 — never fail a job except api auth
+                        if (transport == "api" or solver_transport == "api") and phase_judge._is_auth_error(exc):
+                            logger.error(f"[job {job_id}] {phase_name} api auth failure during solver regen ({exc!r})")
+                            raise
+                        logger.warning(f"[job {job_id}] {phase_name} solver regen failed ({exc!r}); keeping output")
+                        solver_status = "mismatch_regen_failed"
+                        break
+
         # Infra states (unavailable/refused) carry ONLY the infra string — keep it
         # out of validation_warnings (content defects); judge_status records it and
         # the ExcType stays in the logs. major_shipped/major_regen_failed keep
@@ -1256,6 +1347,7 @@ async def _execute_phase(
             validation_warnings=warnings or None,
             provider=produced_by,
             judge_status=judge_status,
+            solver_status=solver_status,
         )
         await session.commit()
 
