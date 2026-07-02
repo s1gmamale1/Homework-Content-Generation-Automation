@@ -306,3 +306,85 @@ def test_scanned_claude_api_forces_vision_transport_cli(monkeypatch):
 
     assert calls["vision"] == 1
     assert calls["vision_kwargs"]["transport"] == "cli"
+
+
+# --- Task 6: item-1 verify+regen-once fidelity guard -------------------------
+
+from unittest.mock import AsyncMock
+from app.services import agent as agent_mod  # noqa: F401
+
+_SECTION = {"title": "T", "number": "1", "page_start": 1, "page_end": 2}
+_GOOD = "Ishlangan misol natija −3/a bo‘ladi. " * 30
+_DRIFT = "Ishlangan misol natija −3/(2a) bo‘ladi. " * 30
+_BOOK = "Manba matni: qisqartirish natijasi −3/a. " * 40   # grounds -3/a, NOT -3/(2a)
+
+
+@pytest.mark.asyncio
+async def test_regens_once_on_confirmed_drift(monkeypatch):
+    calls = {"n": 0}
+
+    async def fake_summarize(*, correction_hint="", **kw):
+        calls["n"] += 1
+        return (_GOOD if correction_hint else _DRIFT), 2, 3
+
+    monkeypatch.setattr(pipeline.agent, "summarize_lesson", fake_summarize)
+    monkeypatch.setattr(pipeline.agent, "verify_extract_fidelity",
+                        AsyncMock(return_value=["summary says -3/(2a); source has -3/a"]))
+    # R2: verify source is lesson-scoped; monkeypatch the page read to the section text.
+    monkeypatch.setattr(pipeline.agent, "read_page_range_text", lambda *a, **k: _BOOK)
+    out, xin, xout = await pipeline._verify_and_maybe_regen_extract(
+        out=_DRIFT, book_text=_BOOK, pdf_path="x.pdf", prov="gemini",
+        mdl="gemini-2.5-flash", transport="api", section=_SECTION, job_id=None, po_id=None,
+    )
+    assert calls["n"] == 1                     # exactly one regen
+    # NOTE: fixtures use U+2212 (unicode minus) — match it, not ASCII '-'.
+    assert "−3/(2a)" not in out and "−3/a" in out
+    assert (xin, xout) == (2, 3)               # regen tokens billed
+
+
+@pytest.mark.asyncio
+async def test_verify_source_is_lesson_scoped(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(pipeline.agent, "read_page_range_text",
+                        lambda pdf, ps, pe, **k: f"SCOPED[{ps}-{pe}]")
+
+    async def fake_verify(*, book_text, **kw):
+        seen["source"] = book_text
+        return []
+
+    monkeypatch.setattr(pipeline.agent, "verify_extract_fidelity", fake_verify)
+    await pipeline._verify_and_maybe_regen_extract(
+        out=_DRIFT, book_text=_BOOK, pdf_path="x.pdf", prov="gemini", mdl=None,
+        transport="api", section=_SECTION, job_id=None, po_id=None,
+    )
+    assert seen["source"] == "SCOPED[1-2]"     # bounded to the section pages, not whole book
+
+
+@pytest.mark.asyncio
+async def test_no_verify_call_when_no_candidates(monkeypatch):
+    spy = AsyncMock(return_value=[])
+    monkeypatch.setattr(pipeline.agent, "verify_extract_fidelity", spy)
+    out, xin, xout = await pipeline._verify_and_maybe_regen_extract(
+        out=_GOOD, book_text=_BOOK, pdf_path="x.pdf", prov="gemini", mdl=None,
+        transport="api", section=_SECTION, job_id=None, po_id=None,
+    )
+    assert out == _GOOD and (xin, xout) == (0, 0)
+    spy.assert_not_called()                    # -3/a is grounded → no paid call
+
+
+@pytest.mark.asyncio
+async def test_no_regen_when_verify_clean(monkeypatch):
+    monkeypatch.setattr(pipeline.agent, "verify_extract_fidelity", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pipeline.agent, "read_page_range_text", lambda *a, **k: _BOOK)
+    called = {"n": 0}
+
+    async def fake_summarize(**kw):
+        called["n"] += 1
+        return _GOOD, 1, 1
+
+    monkeypatch.setattr(pipeline.agent, "summarize_lesson", fake_summarize)
+    out, xin, xout = await pipeline._verify_and_maybe_regen_extract(
+        out=_DRIFT, book_text=_BOOK, pdf_path="x.pdf", prov="gemini", mdl=None,
+        transport="api", section=_SECTION, job_id=None, po_id=None,
+    )
+    assert out == _DRIFT and called["n"] == 0 and (xin, xout) == (0, 0)

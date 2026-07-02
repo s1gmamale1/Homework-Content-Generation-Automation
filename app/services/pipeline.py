@@ -812,6 +812,55 @@ def _custom_for(phase_name: str, custom_prompts: Optional[dict]) -> Optional[str
     return c if (c and c.strip()) else None
 
 
+async def _verify_source_for_section(pdf_path, book_text: str, section: dict) -> str:
+    """R2 (money-rule guard): bound the fidelity VERIFY call's source to the
+    lesson's own pages (±1) instead of the whole book_text (0035's normal path
+    ships the entire book). The section's worked examples live on its pages.
+    Falls back to the full book_text if the page read yields nothing."""
+    ps, pe = section.get("page_start"), section.get("page_end")
+    if not ps or not pe:
+        return book_text
+    try:
+        scoped = await asyncio.to_thread(
+            agent.read_page_range_text, pdf_path, ps, pe, margin=1
+        )
+    except Exception:
+        return book_text
+    return scoped or book_text
+
+
+async def _verify_and_maybe_regen_extract(
+    *, out: str, book_text: str, pdf_path, prov: str, mdl, transport: str,
+    section: dict, job_id, po_id,
+) -> tuple[str, int, int]:
+    """Item 1 guard: free candidate scan → flash verify (lesson-scoped source) on
+    hits → one regen on confirmed drift. Returns
+    (text, extra_prompt_tokens, extra_output_tokens). Fail-open: any problem
+    keeps the original extract."""
+    candidates = agent.extract_fidelity_candidates(out, book_text)
+    if not candidates:
+        return out, 0, 0                                   # no paid call
+    source = await _verify_source_for_section(pdf_path, book_text, section)
+    mismatches = await agent.verify_extract_fidelity(
+        summary=out, book_text=source, candidates=candidates,
+        provider=prov, model=mdl, transport=transport,
+        homework_job_id=job_id, phase_output_id=po_id,
+    )
+    if not mismatches:
+        return out, 0, 0
+    logger.warning(f"[job {job_id}] extract fidelity: {len(mismatches)} drift(s) → regen: {mismatches}")
+    corrected, tin2, tout2 = await agent.summarize_lesson(
+        provider=prov, model=mdl, book_text=book_text,   # regen uses the SAME input the extract had
+        section_title=section["title"], section_number=section["number"],
+        page_start=section["page_start"], page_end=section["page_end"],
+        homework_job_id=job_id, phase_output_id=po_id, transport=transport,
+        correction_hint="\n".join(f"- {m}" for m in mismatches),
+    )
+    if agent.validate_extract_summary(corrected) is None:
+        return corrected, tin2, tout2      # accept corrected
+    return out, tin2, tout2                # regen refused → keep original, but bill the call
+
+
 async def _execute_phase(
     *,
     job_id: UUID,
@@ -1002,7 +1051,12 @@ async def _execute_phase(
                     reason = agent.validate_extract_summary(out)
                     if reason is not None:
                         raise failure_classifier.ExtractRefusal(f"lesson.extract Gate B: {reason}")
-                    return out, tin_, tout_
+                    out, xin, xout = await _verify_and_maybe_regen_extract(
+                        out=out, book_text=book_text, pdf_path=pdf_path,
+                        prov=prov, mdl=mdl, transport=extract_transport,
+                        section=section, job_id=job_id, po_id=po_id,
+                    )
+                    return out, tin_ + xin, tout_ + xout
 
                 output_md, tin, tout, produced_by = await _run_with_failover(
                     requested_provider=extract_provider,
