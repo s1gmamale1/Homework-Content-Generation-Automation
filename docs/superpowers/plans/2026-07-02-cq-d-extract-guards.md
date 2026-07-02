@@ -16,6 +16,8 @@
 - **Item 2 — glyph/garbage detection (locked: char-plausibility → route to vision).** Signal = an **expected-alphabet plausibility ratio**: `(alphabetic chars in Latin ∪ Cyrillic ∪ Uzbek-modifier) / (all alphabetic chars)`. *Measured on the real 26-book corpus:* every real book (Uzbek-Latin, Cyrillic, English, glyph-recovered, homoglyph) scores **0.999–1.000**; the one genuinely-garbled book `f20db30c` (RU cp1251 mojibake — `Ó÷åáíèê äëÿ` for "Учебник для") scores **0.073**. Floor **0.70** separates them with enormous margin. Added to Gate A (`validate_extract_text`) and the TOC `toc_text_usable` gate; a failure returns a reason string, which the pipeline **already routes to the vision path** (`pipeline.py:929`); loud-fail only if vision also fails (existing Gate B). No new dependency.
 - **Load-bearing fact (verified, reshapes item 2):** `_decode_glyph_text` (shipped [0035]/[0036]) **already recovers all four local `/Gxx` books perfectly** (letterratio 0.77–0.94, correct Uzbek). So the pure-glyph case is *not* the live gap — the letter-density ratio in `validate_extract_text` passes it correctly. The live, currently-**unguarded** gap is text that is letter-dense but written in the *wrong alphabet* (mojibake, or a subset font whose glyph≠byte) — `f20db30c` passes today's Gate A at letterratio 0.88. The plausibility ratio is the signal density can't see.
 - **Item 1 — extract-example fidelity (locked: hybrid free pre-check → LLM-on-hits → regen once).** Root cause verified in code: the drift is *in the extract* (`summarize_lesson`), and the judge cannot see it — `_FIDELITY_RULE` (`phase_judge.py:76`) **explicitly exempts** "worked-example arithmetic," and the judge grades downstream phases against the *extract* (LESSON CONTEXT = extract), never the book. Extract-time is the only place we hold the source (`book_text`). Mechanism: after Gate B, a **free** deterministic pass finds numeric/equation expressions in the summary that are absent from `book_text` (`extract_fidelity_candidates`); only if candidates exist do we spend **one** gemini-flash `verify_extract_fidelity` call; only on a **confirmed** mismatch do we re-run `summarize_lesson` **once** with a correction hint (Gate-B'd; keep original if the regen refuses). Extract is cached cross-job (`find_latest_extract`, `pipeline.py:861`), so the guard runs on first production only → cost amortizes. Pinned to the extract provider/model/transport (gemini-flash).
+- **Pre-check breadth (gate R1):** a candidate expression needs a `/` or `=` **AND (a digit OR a parenthesis)** — the parenthesis arm surfaces the *digitless* invented-example drift (`(a−b)/(a+b)`, audited packet #2/`8f734563`) that a digit-only gate would hide from the verify call; prose slashes (`va/yoki`) stay excluded.
+- **Verify-source bound (gate R2, money-rule):** the fired flash verify sees only the lesson's own pages (`read_page_range_text(pdf, page_start, page_end, margin=1)`, fallback to full `book_text`), never the whole book that 0035's normal path holds — the section's worked examples live on its pages, so this bounds every paid call to lesson-sized input.
 - **Rejected:** LLM-verify-always (unbounded per-lesson $, violates the money rule); deterministic-only fidelity (blind to "invented Example-1" structural drift); dictionary-hit-ratio detector (needs a wordlist asset for no accuracy gain over the alphabet ratio at these margins); glyph-decode-dominance signal (would false-flag all four recovered `/Gxx` books).
 
 ---
@@ -288,7 +290,7 @@ git commit -m "cqd: TOC usable-gate rejects garbled text → vision (item 2)"
 # tests/services/test_extract_fidelity.py
 from app.services.agent import (
     _normalize_expr,
-    extract_numeric_expressions,
+    extract_math_expressions,
     extract_fidelity_candidates,
 )
 
@@ -297,12 +299,24 @@ def test_normalize_unifies_minus_and_slash_and_spaces():
     assert _normalize_expr("−3 / (2a)") == _normalize_expr("-3/(2a)")
 
 
-def test_extract_numeric_expressions_requires_operator():
-    exprs = extract_numeric_expressions("Javob: −3/a va tekshiring x=5. Sahifa 12.")
+def test_extract_math_expressions_captures_operator_forms():
+    exprs = extract_math_expressions("Javob: −3/a va tekshiring x=5. Sahifa 12.")
     # fractions/equations captured; the bare page number is not.
     assert any("3/a" in e for e in exprs)
     assert any("x=5" in e.replace(" ", "") for e in exprs)
     assert all("12" != e for e in exprs)
+
+
+def test_digitless_parenthesized_fraction_is_captured():
+    # audited drift #2 (8f734563): invented digitless algebra example. Must be a
+    # candidate — no digit, but has '/' AND parentheses.
+    exprs = extract_math_expressions("Ayniyat: (a−b)/(a+b) koʻrinishida.")
+    assert any(_normalize_expr("(a-b)/(a+b)") == e for e in exprs)
+
+
+def test_prose_slash_word_is_not_captured():
+    # 'va/yoki' has '/' but no digit and no parens → not a candidate (FP guard).
+    assert extract_math_expressions("Buni va/yoki oʻqing.") == set()
 
 
 def test_candidate_is_drifted_expression_absent_from_source():
@@ -312,6 +326,13 @@ def test_candidate_is_drifted_expression_absent_from_source():
     # both drifted values are ungrounded in the source
     assert any("3/(2a)" in c for c in cands)
     assert any("21/100" in c for c in cands)
+
+
+def test_digitless_invented_example_is_candidate():
+    book = "Kasrlarni qoʻshamiz. Namuna: a/b + c/d."
+    summary = "Ishlangan misol: (a−b)/(a+b) + (a−b)²/(a+b)."   # not in source
+    cands = extract_fidelity_candidates(summary, book)
+    assert any("(a-b)/(a+b)" in c for c in cands)
 
 
 def test_no_candidates_when_grounded():
@@ -330,12 +351,14 @@ Expected: FAIL — ImportError.
 In `app/services/agent.py` (near the other extract helpers):
 
 ```python
-# A worked-example value worth grounding: a run of digits/letters/parens that
-# contains at least one digit AND a structural math operator ('/' or '='). This
-# targets fractions and equation results (the drift class: -3/(2a) vs -3/a,
-# 21/100 vs 21/120) and deliberately SKIPS bare numbers and page ranges (which
-# legitimately reappear in prose and would only cost a wasted verify call).
-_FIDELITY_EXPR_RE = re.compile(r"[0-9A-Za-z()][0-9A-Za-z()/=+\-−–.·*×÷]{1,38}")
+# A worked-example expression worth grounding: a run of digits/letters/parens/
+# operators that has a structural math operator ('/' or '=') AND (a digit OR a
+# parenthesis). The parenthesis arm is load-bearing: audited drift #2 is a
+# DIGITLESS invented example — (a−b)/(a+b), (a−b)²/(a+b) — which a digit-only
+# gate would never surface (and the flash verify can only catch what this
+# surfaces). Prose like 'va/yoki' has '/' but no digit and no paren → excluded,
+# so the false-positive posture (bare numbers, page ranges) is preserved.
+_FIDELITY_EXPR_RE = re.compile(r"[0-9A-Za-z()][0-9A-Za-z()/=+\-−–.·*×÷²³]{1,38}")
 _FIDELITY_MAX_CANDIDATES = 12
 
 
@@ -349,21 +372,26 @@ def _normalize_expr(s: str) -> str:
     return out
 
 
-def extract_numeric_expressions(text: str) -> set[str]:
-    """Normalized fraction/equation expressions in `text` (digit + '/' or '=')."""
+def extract_math_expressions(text: str) -> set[str]:
+    """Normalized fraction/equation expressions in `text`: contain '/' or '=' AND
+    (a digit OR a parenthesis). Captures both numeric (21/100, x=5) and digitless
+    algebraic (a−b)/(a+b) worked examples; skips prose slashes (va/yoki)."""
     found: set[str] = set()
     for m in _FIDELITY_EXPR_RE.findall(text or ""):
-        if any(c.isdigit() for c in m) and ("/" in m or "=" in m):
+        if ("/" not in m) and ("=" not in m):
+            continue
+        if any(c.isdigit() for c in m) or ("(" in m) or (")" in m):
             found.add(_normalize_expr(m))
     return {e for e in found if len(e) >= 3}
 
 
 def extract_fidelity_candidates(summary: str, book_text: str) -> list[str]:
     """Worked-example expressions in the extract SUMMARY that do not appear in the
-    source BOOK_TEXT — candidate transcription drift. Free (no model call). An
-    empty list means the deterministic pass found nothing to verify."""
+    source BOOK_TEXT — candidate transcription drift. Free (no model call).
+    Grounds against the FULL book_text (conservative → fewer wasted verify calls).
+    An empty list means the deterministic pass found nothing to verify."""
     norm_book = _normalize_expr(book_text or "")
-    cands = sorted(e for e in extract_numeric_expressions(summary) if e not in norm_book)
+    cands = sorted(e for e in extract_math_expressions(summary) if e not in norm_book)
     return cands[:_FIDELITY_MAX_CANDIDATES]
 ```
 
@@ -573,9 +601,11 @@ async def test_regens_once_on_confirmed_drift(monkeypatch):
     monkeypatch.setattr(pipeline.agent, "summarize_lesson", fake_summarize)
     monkeypatch.setattr(pipeline.agent, "verify_extract_fidelity",
                         AsyncMock(return_value=["summary says -3/(2a); source has -3/a"]))
+    # R2: verify source is lesson-scoped; monkeypatch the page read to the section text.
+    monkeypatch.setattr(pipeline.agent, "read_page_range_text", lambda *a, **k: _BOOK)
     out, xin, xout = await pipeline._verify_and_maybe_regen_extract(
-        out=_DRIFT, book_text=_BOOK, prov="gemini", mdl="gemini-2.5-flash",
-        transport="api", section=_SECTION, job_id=None, po_id=None,
+        out=_DRIFT, book_text=_BOOK, pdf_path="x.pdf", prov="gemini",
+        mdl="gemini-2.5-flash", transport="api", section=_SECTION, job_id=None, po_id=None,
     )
     assert calls["n"] == 1                     # exactly one regen
     assert "-3/(2a)" not in out and "-3/a" in out
@@ -583,12 +613,30 @@ async def test_regens_once_on_confirmed_drift(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_verify_source_is_lesson_scoped(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(pipeline.agent, "read_page_range_text",
+                        lambda pdf, ps, pe, **k: f"SCOPED[{ps}-{pe}]")
+
+    async def fake_verify(*, book_text, **kw):
+        seen["source"] = book_text
+        return []
+
+    monkeypatch.setattr(pipeline.agent, "verify_extract_fidelity", fake_verify)
+    await pipeline._verify_and_maybe_regen_extract(
+        out=_DRIFT, book_text=_BOOK, pdf_path="x.pdf", prov="gemini", mdl=None,
+        transport="api", section=_SECTION, job_id=None, po_id=None,
+    )
+    assert seen["source"] == "SCOPED[1-2]"     # bounded to the section pages, not whole book
+
+
+@pytest.mark.asyncio
 async def test_no_verify_call_when_no_candidates(monkeypatch):
     spy = AsyncMock(return_value=[])
     monkeypatch.setattr(pipeline.agent, "verify_extract_fidelity", spy)
     out, xin, xout = await pipeline._verify_and_maybe_regen_extract(
-        out=_GOOD, book_text=_BOOK, prov="gemini", mdl=None, transport="api",
-        section=_SECTION, job_id=None, po_id=None,
+        out=_GOOD, book_text=_BOOK, pdf_path="x.pdf", prov="gemini", mdl=None,
+        transport="api", section=_SECTION, job_id=None, po_id=None,
     )
     assert out == _GOOD and (xin, xout) == (0, 0)
     spy.assert_not_called()                    # -3/a is grounded → no paid call
@@ -597,6 +645,7 @@ async def test_no_verify_call_when_no_candidates(monkeypatch):
 @pytest.mark.asyncio
 async def test_no_regen_when_verify_clean(monkeypatch):
     monkeypatch.setattr(pipeline.agent, "verify_extract_fidelity", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pipeline.agent, "read_page_range_text", lambda *a, **k: _BOOK)
     called = {"n": 0}
 
     async def fake_summarize(**kw):
@@ -605,8 +654,8 @@ async def test_no_regen_when_verify_clean(monkeypatch):
 
     monkeypatch.setattr(pipeline.agent, "summarize_lesson", fake_summarize)
     out, xin, xout = await pipeline._verify_and_maybe_regen_extract(
-        out=_DRIFT, book_text=_BOOK, prov="gemini", mdl=None, transport="api",
-        section=_SECTION, job_id=None, po_id=None,
+        out=_DRIFT, book_text=_BOOK, pdf_path="x.pdf", prov="gemini", mdl=None,
+        transport="api", section=_SECTION, job_id=None, po_id=None,
     )
     assert out == _DRIFT and called["n"] == 0 and (xin, xout) == (0, 0)
 ```
@@ -618,21 +667,40 @@ Expected: FAIL (only one summarize call today; no regen).
 
 - [ ] **Step 3: Implement the wiring**
 
-To keep it testable, add a helper in `pipeline.py` and call it from `_extract_run` after Gate B:
+Wire the guard **only on the local-text branch** (inside `_extract_run`, the non-scanned `else` at `pipeline.py:963`). The vision branch (`summarize_lesson_vision`, scanned/garbled PDFs) has no usable local `book_text` to ground against — skipping it there is correct. To keep it testable, add a helper in `pipeline.py` and call it from `_extract_run` after Gate B:
 
 ```python
+async def _verify_source_for_section(pdf_path, book_text: str, section: dict) -> str:
+    """R2 (money-rule guard): bound the fidelity VERIFY call's source to the
+    lesson's own pages (±1) instead of the whole book_text (0035's normal path
+    ships the entire book). The section's worked examples live on its pages.
+    Falls back to the full book_text if the page read yields nothing."""
+    ps, pe = section.get("page_start"), section.get("page_end")
+    if not ps or not pe:
+        return book_text
+    try:
+        scoped = await asyncio.to_thread(
+            agent.read_page_range_text, pdf_path, ps, pe, margin=1
+        )
+    except Exception:
+        return book_text
+    return scoped or book_text
+
+
 async def _verify_and_maybe_regen_extract(
-    *, out: str, book_text: str, prov: str, mdl, transport: str,
+    *, out: str, book_text: str, pdf_path, prov: str, mdl, transport: str,
     section: dict, job_id, po_id,
 ) -> tuple[str, int, int]:
-    """Item 1 guard: free candidate scan → flash verify on hits → one regen on
-    confirmed drift. Returns (text, extra_prompt_tokens, extra_output_tokens).
-    Fail-open: any problem keeps the original extract."""
+    """Item 1 guard: free candidate scan → flash verify (lesson-scoped source) on
+    hits → one regen on confirmed drift. Returns
+    (text, extra_prompt_tokens, extra_output_tokens). Fail-open: any problem
+    keeps the original extract."""
     candidates = agent.extract_fidelity_candidates(out, book_text)
     if not candidates:
-        return out, 0, 0
+        return out, 0, 0                                   # no paid call
+    source = await _verify_source_for_section(pdf_path, book_text, section)
     mismatches = await agent.verify_extract_fidelity(
-        summary=out, book_text=book_text, candidates=candidates,
+        summary=out, book_text=source, candidates=candidates,
         provider=prov, model=mdl, transport=transport,
         homework_job_id=job_id, phase_output_id=po_id,
     )
@@ -640,7 +708,7 @@ async def _verify_and_maybe_regen_extract(
         return out, 0, 0
     logger.warning(f"[job {job_id}] extract fidelity: {len(mismatches)} drift(s) → regen: {mismatches}")
     corrected, tin2, tout2 = await agent.summarize_lesson(
-        provider=prov, model=mdl, book_text=book_text,
+        provider=prov, model=mdl, book_text=book_text,   # regen uses the SAME input the extract had
         section_title=section["title"], section_number=section["number"],
         page_start=section["page_start"], page_end=section["page_end"],
         homework_job_id=job_id, phase_output_id=po_id, transport=transport,
@@ -651,20 +719,18 @@ async def _verify_and_maybe_regen_extract(
     return out, tin2, tout2                # regen refused → keep original, but bill the call
 ```
 
-Use the module-level `logger` (loguru) — **not** `log` (that name is the per-job `logger.bind(...)` local inside the job coroutine, not in scope here). Match the `logger.info(f"[job {job_id}] …")` style already used in this file.
+Use the module-level `logger` (loguru) — **not** `log` (that name is the per-job `logger.bind(...)` local inside the job coroutine, not in scope here). Match the `logger.info(f"[job {job_id}] …")` style already used in this file. `pdf_path` is already in scope in `_execute_phase` (the extract branch reads it).
 
 Then inside `_extract_run`, after the Gate B block and before `return out, tin_, tout_`:
 
 ```python
                     out, xin, xout = await _verify_and_maybe_regen_extract(
-                        out=out, book_text=book_text, prov=prov, mdl=mdl,
-                        transport=extract_transport, section=section,
-                        job_id=job_id, po_id=po_id,
+                        out=out, book_text=book_text, pdf_path=pdf_path,
+                        prov=prov, mdl=mdl, transport=extract_transport,
+                        section=section, job_id=job_id, po_id=po_id,
                     )
                     return out, tin_ + xin, tout_ + xout
 ```
-
-Rewrite the Step-1 test to target `_verify_and_maybe_regen_extract` directly (cleaner than driving the whole branch): assert 2 summarize calls when verify returns a mismatch, 0 regens when candidates empty, 0 regens when verify returns [].
 
 - [ ] **Step 4: Run to verify it passes + no dispatch regressions**
 
@@ -731,4 +797,4 @@ If the base moved ahead, rebase onto `origin/Nggaev-v2`, resolve conflicts, re-r
 - `git mv docs/superpowers/plans/2026-07-02-cq-d-extract-guards.md docs/superpowers/plans/shipped/`.
 - De-stale reference docs the change touched: `docs/HOW_IT_WORKS.md` (extract guards) + `docs/CODE_MAP.md` (`agent.py` extract helpers + `pipeline.py` extract branch).
 
-- [ ] **Step 4: Open PR** titled `[CQ-D] Extract-quality guards: fidelity verify + garbled-text detection` to `Nggaev-v2` (route to the gate; no self-merge).
+- [ ] **Step 4: Open PR** titled `[CQ-D] Extract-quality guards: fidelity verify + garbled-text detection` to `Nggaev-v2` (route to the gate; no self-merge). **PR body MUST include the full 26-book corpus plausibility-ratio sweep table** (every book's `_alpha_plausibility_ratio`, incl. the RU books + `f20db30c`) — the gate's original validation condition. Regenerate it with a short throwaway script over `var/books/*/source.pdf` (whole-book text via `read_whole_book_text` → `_alpha_plausibility_ratio`).
