@@ -97,3 +97,28 @@ async def test_packet_score_json_round_trip_preserves_diff_semantics():
     assert roundtripped.job_id == base.job_id
     assert roundtripped.scores["reflection"].verdict == base.scores["reflection"].verdict
     assert ge.diff_scores(roundtripped, base) == []
+
+
+def _ps(job, **dims):
+    from app.services.golden_eval import PacketScore, DimensionScore
+    scores = {}
+    for d, (verdict, mech) in dims.items():
+        scores[d] = DimensionScore(d, verdict, "x", mech)
+    return PacketScore(job_id=job, scores=scores)
+
+
+def test_gated_only_ignores_llm_dim_regression():
+    from app.services.golden_eval import diff_scores, GATED_DIMENSIONS
+    base = _ps("j", boundary=("pass", "llm"), language=("pass", "deterministic"))
+    cur = _ps("j", boundary=("flag", "llm"), language=("pass", "deterministic"))
+    # full diff sees the LLM-dim regression; gated diff ignores it
+    assert any("boundary" in r for r in diff_scores(base, cur))
+    assert diff_scores(base, cur, gated_only=True) == []
+    assert "boundary" not in GATED_DIMENSIONS
+
+
+def test_gated_only_still_catches_deterministic_regression():
+    from app.services.golden_eval import diff_scores
+    base = _ps("j", language=("pass", "deterministic"))
+    cur = _ps("j", language=("flag", "deterministic"))
+    assert any("language" in r for r in diff_scores(base, cur, gated_only=True))

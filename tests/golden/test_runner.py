@@ -66,11 +66,21 @@ def test_emit_baseline_writes_and_returns_zero_when_all_dims_healthy(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_regression_exit_nonzero_on_pass_to_flag_regression():
+def test_regression_exit_nonzero_on_gated_deterministic_regression():
+    # a GATED (deterministic) dim regressing pass->flag fails the build
+    baseline = _score("job-1", language="pass")
+    current = _score("job-1", language="flag")
+
+    assert runner._regression_exit(baseline, current) != 0
+
+
+def test_regression_exit_zero_on_advisory_llm_dim_regression():
+    # a non-gated LLM-verdict dim (boundary) regressing is ADVISORY, exit 0 —
+    # single-pass LLM verdicts are too noisy to fail the build (audit-check 2/4).
     baseline = _score("job-1", boundary="pass")
     current = _score("job-1", boundary="flag")
 
-    assert runner._regression_exit(baseline, current) != 0
+    assert runner._regression_exit(baseline, current) == 0
 
 
 def test_regression_exit_zero_when_identical():

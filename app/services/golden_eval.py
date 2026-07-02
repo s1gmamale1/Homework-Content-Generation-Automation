@@ -617,14 +617,35 @@ async def score_packet(
     return PacketScore(job_id=entry.job_id, scores=scores)
 
 
-def diff_scores(baseline: PacketScore, current: PacketScore) -> list[str]:
+# Dimensions reliable enough to DRIVE the regression exit-code gate. The
+# 2026-07-02 paid audit-check measured single-pass LLM-verdict dims at ~40%
+# agreement with the human audit (answer_key 1/4, broken_question 1/4,
+# boundary 2/4), while the deterministic dims reproduced it perfectly
+# (language 4/4, reflection 4/4). Gating on a noisy LLM verdict would make the
+# baseline-diff flap spuriously, so only the deterministic dims gate by default;
+# the LLM dims are reported but advisory. `answer_key` rejoins the gate once
+# CQ-C's `solver_status` drives it (a conservative solver+regen, not a one-shot
+# verdict). See ROADMAP R20-llm-rubric-tuning.
+GATED_DIMENSIONS = frozenset({"language", "reflection"})
+
+
+def diff_scores(
+    baseline: PacketScore, current: PacketScore, *, gated_only: bool = False
+) -> list[str]:
     """Human-readable regressions: a dimension that was `pass` in `baseline`
     and is `flag` in `current`. A dimension missing from `current` (e.g. an
     LLM dim omitted by a `llm=False` run) is NOT a regression — there is
     nothing to compare, so it is skipped rather than treated as a flag.
-    Identical scores -> `[]`."""
+    Identical scores -> `[]`.
+
+    `gated_only=True` restricts the comparison to `GATED_DIMENSIONS` — the
+    deterministic dims that are reliable enough to fail a build. The exit-code
+    gate uses this so a noisy single-pass LLM verdict can't flap the gate; the
+    caller still reports the full (all-dimension) diff as advisory."""
     regressions: list[str] = []
     for dim, base_score in baseline.scores.items():
+        if gated_only and dim not in GATED_DIMENSIONS:
+            continue
         cur_score = current.scores.get(dim)
         if cur_score is None:
             continue

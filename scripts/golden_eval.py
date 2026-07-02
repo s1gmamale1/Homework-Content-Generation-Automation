@@ -134,15 +134,24 @@ def _emit_baseline_or_refuse(score: ge.PacketScore, path: pathlib.Path) -> int:
 
 
 def _regression_exit(baseline_score: ge.PacketScore, current_score: ge.PacketScore) -> int:
-    """Prints `ge.diff_scores(baseline_score, current_score)` and returns 1 if any
-    regression was found, else 0. Pure — no DB, no model calls."""
-    regressions = ge.diff_scores(baseline_score, current_score)
-    if regressions:
-        print("REGRESSIONS DETECTED:")
-        for r in regressions:
+    """Returns 1 iff a GATED (deterministic) dimension regressed pass->flag,
+    else 0. LLM-verdict dims are reported as ADVISORY (never fail the build) —
+    a single-pass LLM verdict is too noisy to gate on (see GATED_DIMENSIONS).
+    Pure — no DB, no model calls."""
+    gating = ge.diff_scores(baseline_score, current_score, gated_only=True)
+    advisory = [
+        r for r in ge.diff_scores(baseline_score, current_score) if r not in gating
+    ]
+    if advisory:
+        print("advisory (LLM-dim, non-gating) differences vs baseline:")
+        for r in advisory:
+            print(f"  ~ {r}")
+    if gating:
+        print("REGRESSIONS DETECTED (gated deterministic dimensions):")
+        for r in gating:
             print(f"  - {r}")
         return 1
-    print("no regressions vs baseline.")
+    print("no gated regressions vs baseline.")
     return 0
 
 
