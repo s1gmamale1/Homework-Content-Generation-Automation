@@ -37,12 +37,18 @@ class LintFinding:
 
 _LATIN = re.compile(r"[A-Za-z]")
 _CYRILLIC = re.compile(r"[Ѐ-ӿ]")
-_WORD = re.compile(r"[^\s`*_(){}\[\]<>.,:;!?\"'|]+")
+# Split on `-` and `/` too, so hyphen/slash-joined bi-script compounds that are
+# LEGITIMATE in Russian STEM text ("pH-баланс", "IT-технологии", "Fe/Cu-сplav")
+# resolve to two mono-script tokens instead of one false "mixed" word. A real
+# splice ("hisoblaniб", "atamа") carries no delimiter, so it stays one token.
+_WORD = re.compile(r"[^\s`*_(){}\[\]<>.,:;!?\"'|/\-]+")
 
 # Structural / meta template tokens that are never legitimate student content in
 # ANY subject (kept deliberately narrow to avoid L2/English false-positives).
+# `Mode:` is pinned to the difficulty-scaffolding form so a statistics answer
+# like "Mode: 7" (the statistical mode) never trips it.
 _ENGLISH_TEMPLATE = [
-    re.compile(r"(?m)^\s*#{0,6}\s*\**Mode:\s*", re.IGNORECASE),          # "Mode: Hard" label/heading
+    re.compile(r"(?mi)^\s*#{0,6}\s*\**Mode:\s*(hard|easy|medium|normal|difficult)\b"),
     re.compile(r"\bNeeds Retry\b", re.IGNORECASE),
     re.compile(r"\bred herring\b", re.IGNORECASE),
     re.compile(r"this is a direct content generation task", re.IGNORECASE),
@@ -51,21 +57,24 @@ _ENGLISH_TEMPLATE = [
 _CALQUES = [re.compile(r"\bqizil seld\b", re.IGNORECASE)]
 
 
-def _lint_language(output_md: str) -> list[LintFinding]:
+def _lint_language(output_md: str, output_language: str) -> list[LintFinding]:
     out: list[LintFinding] = []
     seen_mixed: set[str] = set()
     for w in _WORD.findall(output_md):
         if _LATIN.search(w) and _CYRILLIC.search(w) and w not in seen_mixed:
             seen_mixed.add(w)
             out.append(LintFinding("mixed_script", f"mixed Latin+Cyrillic in one word: {w!r}"))
-    for rx in _ENGLISH_TEMPLATE:
-        m = rx.search(output_md)
-        if m:
-            out.append(LintFinding("english_template", f"English template token: {m.group(0).strip()!r}"))
-    for rx in _CALQUES:
-        m = rx.search(output_md)
-        if m:
-            out.append(LintFinding("calque", f"calque phrase: {m.group(0)!r}"))
+    # English template/calque tokens are content — not artifacts — on an English
+    # (L2) lesson, where the deliverable IS English text and idioms. Skip them there.
+    if (output_language or "").lower() != "en":
+        for rx in _ENGLISH_TEMPLATE:
+            m = rx.search(output_md)
+            if m:
+                out.append(LintFinding("english_template", f"English template token: {m.group(0).strip()!r}"))
+        for rx in _CALQUES:
+            m = rx.search(output_md)
+            if m:
+                out.append(LintFinding("calque", f"calque phrase: {m.group(0)!r}"))
     return out
 
 
@@ -76,34 +85,42 @@ _PROVENANCE = re.compile(r"\b(source|inferred)\b", re.IGNORECASE)
 
 
 def _lint_misconception_tags(output_md: str) -> list[LintFinding]:
-    out: list[LintFinding] = []
-    for m in _MISCONCEPTION_LINE.finditer(output_md):
-        body = m.group("body")
-        if not _PROVENANCE.search(body):
-            snippet = body.strip()[:60]
-            out.append(LintFinding(
-                "misconception_untagged",
-                f"misconception card missing source/inferred tag: {snippet!r}",
-            ))
-    return out
+    # Aggregate into ONE finding per phase (with a count) rather than one per
+    # card — the audited prompt-contract gap (flashcards.md:32,95) is systemic, so
+    # per-card firing would be noise. This is a true positive (the tag really is
+    # absent), not a false one; it stays visible for R20/human-review.
+    untagged = sum(
+        1 for m in _MISCONCEPTION_LINE.finditer(output_md)
+        if not _PROVENANCE.search(m.group("body"))
+    )
+    if untagged:
+        return [LintFinding(
+            "misconception_untagged",
+            f"{untagged} misconception card(s) missing a source/inferred provenance tag",
+        )]
+    return []
 
 
 # --- error-detection format check (EXACTLY-ONE-broken-block) -----------------
 
 _APOS = r"['ʻʼ‘’]"
 _NOT = rf"noto{_APOS}?g{_APOS}?ri"
-# Every broken-block marker. Noun-first REQUIRES a digit (so digitless prose
-# "blok nega noto'g'ri" never matches); each form captures the id when present.
+# A block id in EITHER Uzbek order: cardinal "Blok 4" or ordinal "4-blok".
+_BID = r"(?:blo(?:k|ck)\s*(\d+)|(\d+)\s*-\s*blo(?:k|ck))"
+# Every broken-block marker. The noun/ordinal-with-NOT forms REQUIRE a digit (so
+# digitless prose "blok nega noto'g'ri" never matches); each captures the id.
 _MARKER = re.compile(
     rf"(?i)"
-    rf"blo(?:k|ck)\s*(?P<id_pre>\d+)\s+{_NOT}"        # "Blok 4 noto'g'ri"  (R1: noun-first)
-    rf"|{_NOT}\s+blo(?:k|ck)\s*(?P<id_post>\d+)?"      # "noto'g'ri blok[ 4]"
-    rf"|xato\s+blo(?:k|ck)\s*(?P<id_xato>\d+)?"        # "xato blok[ 4]"
-    rf"|this is the broken block"                      # English markers, no id
-    rf"|broken block"
+    rf"blo(?:k|ck)\s*(?P<id_pre>\d+)\s+{_NOT}"              # "Blok 4 noto'g'ri"
+    rf"|(?P<id_ord>\d+)\s*-\s*blo(?:k|ck)\s+{_NOT}"          # "4-blok noto'g'ri"
+    rf"|{_NOT}\s+blo(?:k|ck)\s*(?P<id_post>\d+)?"            # "noto'g'ri blok[ 4]"
+    rf"|{_NOT}\s+(?P<id_post_ord>\d+)\s*-\s*blo(?:k|ck)"     # "noto'g'ri 4-blok"
+    rf"|xato\s+blo(?:k|ck)\s*(?P<id_xato>\d+)?"              # "xato blok[ 4]"
+    rf"|xato\s+(?P<id_xato_ord>\d+)\s*-\s*blo(?:k|ck)"       # "xato 4-blok"
+    rf"|(?P<eng>this is the broken block|broken block)"      # English markers, no id
 )
 _REVEAL_HDR = re.compile(r"(?im)^[ \t]*#{1,6}[ \t]*(reveal|ochish)\b")
-_BLOCK_ID = re.compile(r"(?i)\bblo(?:k|ck)\s*(\d+)")
+_BLOCK_ID = re.compile(rf"(?i)\b{_BID}")
 
 
 def _line_around(text: str, pos: int) -> str:
@@ -122,10 +139,14 @@ def _lint_error_detection(output_md: str) -> list[LintFinding]:
 
     for m in _MARKER.finditer(output_md):
         gd = m.groupdict()
-        mid = gd.get("id_pre") or gd.get("id_post") or gd.get("id_xato")
-        if mid is None:  # English/markerless form — recover an id from the same line if any
+        mid = (gd.get("id_pre") or gd.get("id_ord") or gd.get("id_post")
+               or gd.get("id_post_ord") or gd.get("id_xato") or gd.get("id_xato_ord"))
+        # Line-scan recovery is ONLY for the English marker (whose id may sit on
+        # the same line). The noto'g'ri/xato prose forms must NOT borrow a nearby
+        # id — that produced spurious multiple/mismatch findings from feedback text.
+        if mid is None and gd.get("eng"):
             bm = _BLOCK_ID.search(_line_around(output_md, m.start()))
-            mid = bm.group(1) if bm else None
+            mid = (bm.group(1) or bm.group(2)) if bm else None
         if m.start() >= reveal_off:
             if reveal_id is None and mid is not None:
                 reveal_id = mid
@@ -136,7 +157,7 @@ def _lint_error_detection(output_md: str) -> list[LintFinding]:
 
     if reveal_id is None and rev is not None:  # first block id after the reveal header
         bm = _BLOCK_ID.search(output_md, reveal_off)
-        reveal_id = bm.group(1) if bm else None
+        reveal_id = (bm.group(1) or bm.group(2)) if bm else None
 
     out: list[LintFinding] = []
     if body_marker_count == 0 and reveal_id is None:
@@ -157,7 +178,7 @@ def lint_phase(phase_name: str, output_md: str, *, subject: str, output_language
     """Return advisory findings for one phase output. Never raises on bad input."""
     if phase_name == "extract" or not (output_md or "").strip():
         return []
-    findings = _lint_language(output_md)
+    findings = _lint_language(output_md, output_language)
     if phase_name == "flashcards":
         findings += _lint_misconception_tags(output_md)
     if phase_name == "practice-error-detection":
