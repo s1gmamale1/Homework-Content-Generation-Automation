@@ -147,6 +147,7 @@ async def generate(
     for field, value in (
         ("extract_transport", body.extract_transport),
         ("judge_transport", body.judge_transport),
+        ("solver_transport", body.solver_transport),
     ):
         role_err = validate_role_transport(field, value)
         if role_err is not None:
@@ -185,6 +186,7 @@ async def generate(
     for role, prov, mdl, role_tx in (
         ("extract", body.extract_provider, body.extract_model, body.extract_transport),
         ("judge", body.judge_provider, body.judge_model, body.judge_transport),
+        ("solver", body.solver_provider, body.solver_model, body.solver_transport),
     ):
         if prov is None:
             continue
@@ -253,11 +255,15 @@ async def generate(
         body.judge_provider, body.judge_model, ld.judge_provider, ld.judge_model)
     res_extract_provider, res_extract_model = resolve_role_selection(
         body.extract_provider, body.extract_model, ld.extract_provider, ld.extract_model)
+    res_solver_provider, res_solver_model = resolve_role_selection(
+        body.solver_provider, body.solver_model, ld.solver_provider, ld.solver_model)
     res_judge_transport = resolve_role_transport_default(body.judge_transport, ld.judge_transport)
     res_extract_transport = resolve_role_transport_default(body.extract_transport, ld.extract_transport)
+    res_solver_transport = resolve_role_transport_default(body.solver_transport, ld.solver_transport)
     # Defense-in-depth: resolved pairs must be manifest-valid.
     for role, prov, mdl in (("judge", res_judge_provider, res_judge_model),
-                            ("extract", res_extract_provider, res_extract_model)):
+                            ("extract", res_extract_provider, res_extract_model),
+                            ("solver", res_solver_provider, res_solver_model)):
         if not is_valid(prov, mdl):
             raise HTTPException(500, f"{role}: resolved default off-manifest ({prov!r},{mdl!r})")
     # Gate: if the global default resolved a non-api-capable role provider to an
@@ -267,6 +273,7 @@ async def generate(
     for role, prov, mdl, res_tx in (
         ("judge", res_judge_provider, res_judge_model, res_judge_transport),
         ("extract", res_extract_provider, res_extract_model, res_extract_transport),
+        ("solver", res_solver_provider, res_solver_model, res_solver_transport),
     ):
         eff_tx = resolve_role_transport(res_tx, body.transport)
         err = validate_transport(prov, mdl, eff_tx)
@@ -283,12 +290,15 @@ async def generate(
         transport=body.transport,
         extract_transport=res_extract_transport,
         judge_transport=res_judge_transport,
+        solver_transport=res_solver_transport,
         custom_prompts=custom_prompts,
         selected_phases=selected_phases,
         extract_provider=res_extract_provider,
         extract_model=res_extract_model,
         judge_provider=res_judge_provider,
         judge_model=res_judge_model,
+        solver_provider=res_solver_provider,
+        solver_model=res_solver_model,
         output_language=res_output_language,
     )
     await session.commit()  # commit + release advisory lock atomically

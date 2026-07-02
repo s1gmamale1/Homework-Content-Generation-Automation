@@ -38,12 +38,15 @@ async def create(
     transport: str = "cli",
     extract_transport: str = "inherit",
     judge_transport: str = "inherit",
+    solver_transport: str = "inherit",
     custom_prompts: Optional[dict] = None,
     selected_phases: Optional[list] = None,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
     judge_provider: Optional[str] = None,
     judge_model: Optional[str] = None,
+    solver_provider: Optional[str] = None,
+    solver_model: Optional[str] = None,
 ) -> HomeworkJob:
     kwargs: dict[str, Any] = dict(
         book_id=book_id,
@@ -54,6 +57,7 @@ async def create(
         transport=transport,
         extract_transport=extract_transport,
         judge_transport=judge_transport,
+        solver_transport=solver_transport,
     )
     if provider is not None:
         kwargs["provider"] = provider
@@ -70,6 +74,8 @@ async def create(
         ("extract_model", extract_model),
         ("judge_provider", judge_provider),
         ("judge_model", judge_model),
+        ("solver_provider", solver_provider),
+        ("solver_model", solver_model),
     ):
         if _v is not None:
             kwargs[_k] = _v
