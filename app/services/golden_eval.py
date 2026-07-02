@@ -109,13 +109,105 @@ class DimensionScore:
 
 _LANGUAGE_FLAG_CODES = {"mixed_script", "calque", "english_template"}
 
+# --- own mixed-script check (independent of content_lint) --------------------
+#
+# content_lint's mixed-script check tokenizes on a broad exclusion set and can
+# miss a splice depending on surrounding markdown/punctuation. This is a
+# narrower, purpose-built token: a MAXIMAL RUN of Latin-or-Cyrillic letters
+# only (no digits/punctuation/apostrophes in the char class at all), so it
+# naturally breaks at every non-letter boundary — exactly what catches a
+# same-word splice like "bajariши" (Latin "bajari" + Cyrillic "ши" with zero
+# separator) or "atamа" (Latin "atam" + one spliced Cyrillic "а") regardless of
+# what markdown wraps it.
+_CYR = "Ѐ-ӿ"  # full Cyrillic block (U+0400-04FF) — covers Uzbek-Cyrillic extras too
+_LAT = "A-Za-z"
+_SCRIPT_TOKEN = re.compile(rf"[{_LAT}{_CYR}]+")
+_HAS_LATIN = re.compile(rf"[{_LAT}]")
+_HAS_CYR = re.compile(rf"[{_CYR}]")
+
+
+def _mixed_script_tokens(output_md: str) -> list[str]:
+    hits: list[str] = []
+    seen: set[str] = set()
+    for m in _SCRIPT_TOKEN.finditer(output_md):
+        tok = m.group(0)
+        if tok in seen:
+            continue
+        if _HAS_LATIN.search(tok) and _HAS_CYR.search(tok):
+            seen.add(tok)
+            hits.append(tok)
+    return hits
+
+
+# --- English structural-scaffolding blacklist ---------------------------------
+#
+# Calibrated against the 5 real audited rows (tests/golden/manifest.json) —
+# content_lint's `_ENGLISH_TEMPLATE` list is CQ-B's narrow warn-only set (Mode:
+# <difficulty-value>, Needs Retry, red herring, two prompt-leak phrases) and
+# misses the boss-arena/flashcards structural scaffolding actually seen in the
+# real packets: section headers ("Scenario", "Feedback lines", "Concepts
+# tested"), a descriptive phrase ("three-part question"), and the flashcard
+# metadata keys used as literal English words (difficulty/hint) instead of
+# translated ones. Applied ONLY when `output_language != "en"` — an
+# English-class lesson legitimately contains English text.
+#
+# Phrase-blacklist: rare, distinctive English phrases that never occur in
+# genuine uz/ru prose — no header/colon context required.
+_ENGLISH_PHRASE_BLACKLIST = [
+    re.compile(r"\bScenario\b"),
+    re.compile(r"\bFeedback lines\b", re.IGNORECASE),
+    re.compile(r"\bthree-part question\b", re.IGNORECASE),
+    re.compile(r"\bConcepts tested\b", re.IGNORECASE),
+    re.compile(r"\bNeeds Retry\b", re.IGNORECASE),
+    re.compile(r"\bred herring\b", re.IGNORECASE),
+]
+
+# Header-context blacklist: the bare English word IMMEDIATELY followed by a
+# colon (with optional inner whitespace), the way a scaffolding label/header
+# reads ("**Wrong:** ...", "Why: ..."). Requiring the colon is the
+# word-boundary/header-context precision the brief asks for — it lets ordinary
+# uz/ru prose that happens to contain no English homograph pass clean (there is
+# no legitimate uz/ru sentence ending one of these exact Latin words in a colon).
+_ENGLISH_HEADER_WORDS = ("Mode", "Why", "How", "What", "Correct", "Partial", "Wrong")
+_ENGLISH_HEADER_RX = re.compile(
+    r"\b(" + "|".join(_ENGLISH_HEADER_WORDS) + r")\s*:", re.IGNORECASE
+)
+
+# Bare-standalone-word blacklist: difficulty/hint leak as literal English
+# schema-field labels even WITHOUT a colon right after them (e.g. flashcard
+# `**difficulty:** easy` is caught by the header regex above, but some packets
+# use them inline without a colon) — flagged as a standalone word either way.
+_ENGLISH_BARE_WORD_RX = re.compile(r"\b(difficulty|hint)\b", re.IGNORECASE)
+
+
+def _english_scaffold_hits(output_md: str, language: str) -> list[str]:
+    if (language or "").lower() == "en":
+        return []
+    hits: list[str] = []
+    for rx in _ENGLISH_PHRASE_BLACKLIST:
+        m = rx.search(output_md)
+        if m:
+            hits.append(m.group(0))
+    m = _ENGLISH_HEADER_RX.search(output_md)
+    if m:
+        hits.append(m.group(0).strip())
+    m = _ENGLISH_BARE_WORD_RX.search(output_md)
+    if m:
+        hits.append(m.group(0))
+    return hits
+
 
 def score_language(phases: list[PhaseView], subject: str, language: str) -> DimensionScore:
     """Flags a packet whose text mixes scripts or leaks English scaffolding tokens.
 
-    Reuses `content_lint.lint_phase` (do not reimplement the regexes here) —
-    runs it over every phase and flags on any mixed_script/calque/english_template
-    finding.
+    Three signals, ORed together:
+      1. `content_lint.lint_phase`'s mixed_script/calque/english_template
+         findings (do not reimplement those regexes here — reused as-is).
+      2. `_mixed_script_tokens` — a second, narrower same-word Latin+Cyrillic
+         splice check (belt-and-suspenders vs (1), tuned to survive markdown
+         wrapping content_lint's tokenizer can split on).
+      3. `_english_scaffold_hits` — the structural-scaffolding blacklist above,
+         gated to uz/ru (non-"en") packets only.
     """
     hits: list[str] = []
     for phase in phases:
@@ -125,9 +217,21 @@ def score_language(phases: list[PhaseView], subject: str, language: str) -> Dime
         for f in findings:
             if f.code in _LANGUAGE_FLAG_CODES:
                 hits.append(f"{phase.phase_name}:{f.code}: {f.message}")
+
+        mixed = _mixed_script_tokens(phase.output_md)
+        if mixed:
+            hits.append(f"{phase.phase_name}:mixed_script_token: {mixed[:3]!r}")
+
+        scaffold = _english_scaffold_hits(phase.output_md, language)
+        if scaffold:
+            hits.append(f"{phase.phase_name}:english_scaffold: {scaffold[:5]!r}")
+
     if hits:
         return DimensionScore("language", "flag", "; ".join(hits), "deterministic")
-    return DimensionScore("language", "pass", "no mixed-script/calque/english-template findings", "deterministic")
+    return DimensionScore(
+        "language", "pass",
+        "no mixed-script/calque/english-template/scaffolding findings", "deterministic",
+    )
 
 
 def score_error_detection_format(

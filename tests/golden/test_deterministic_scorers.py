@@ -32,6 +32,61 @@ def test_language_scorer_passes_clean_uzbek():
     assert score_language(phases, subject="matematika", language="uz").verdict == "pass"
 
 
+# --- score_language calibration against the real audited rows --------------
+# (tests/golden/manifest.json — content_lint alone reproduced only 1/5; these
+# lock in the mixed-script + English-scaffolding signals added on top of it.)
+
+
+def test_language_scorer_flags_boss_arena_scaffolding_headers():
+    # real 3ca0da6f shape: boss-arena "three-part question" scaffolding
+    md = (
+        "**Scenario**\n\nSiz oshpazsiz...\n\n"
+        "**The three-part question**\n\n"
+        "- **Why:** Nima uchun...\n- **How:** Qanday...\n- **What:** Nima...\n\n"
+        "**Feedback lines**\n\n- **Correct:** Ajoyib!\n- **Partial:** Siz...\n"
+        "- **Wrong:** Hali emas.\n"
+    )
+    phases = [_pv("boss-arena", md)]
+    s = score_language(phases, subject="matematika", language="uz")
+    assert s.verdict == "flag"
+    assert "english_scaffold" in s.detail
+
+
+def test_language_scorer_flags_cyrillic_latin_splice_and_bare_field_labels():
+    # real 263d99c5 shape: a Cyrillic-char splice inside a Latin word
+    # ("bajariши") plus flashcard metadata using bare English "difficulty"/"hint"
+    md = (
+        "**difficulty:** easy\n**hint:** Maxrajda nol turishi mumkinmi?\n\n"
+        "har bir ishchining bajariши kerak bo'lgan miqdor qanday o'zgaradi?"
+    )
+    phases = [_pv("flashcards", md)]
+    s = score_language(phases, subject="matematika", language="uz")
+    assert s.verdict == "flag"
+    assert "mixed_script_token" in s.detail or "english_scaffold" in s.detail
+
+
+def test_language_scorer_ignores_legitimate_loanword_model():
+    # "model" (an ordinary Uzbek loanword) must NOT trip a bare "mode" match —
+    # word-boundary precision, not substring matching.
+    phases = [_pv("boss-arena", "Yangi model va grafik siljish paydo bo'ldi.")]
+    assert score_language(phases, subject="matematika", language="uz").verdict == "pass"
+
+
+def test_language_scorer_flags_red_herring_and_needs_retry():
+    # real 9504ad94 shape
+    phases = [_pv("boss-arena", "Bu variant bir red herring hisoblanadi. Needs Retry.")]
+    s = score_language(phases, subject="matematika", language="uz")
+    assert s.verdict == "flag"
+
+
+def test_language_scorer_english_lesson_does_not_flag_scaffolding_words():
+    # an English-class lesson (output_language="en") legitimately contains
+    # these words as real prose/content, not leaked scaffolding — must NOT flag.
+    md = "**Scenario:** You are a chef. **Why:** because. **Hint:** think about it."
+    phases = [_pv("boss-arena", md)]
+    assert score_language(phases, subject="ingliz-tili", language="en").verdict == "pass"
+
+
 # --- score_reflection (brief Step 1) ----------------------------------------
 
 

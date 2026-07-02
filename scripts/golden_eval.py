@@ -27,9 +27,14 @@ Flags:
                            scorer-outage "pass" as ground truth.
     --audit-check          Compare the freshly-scored packet's verdicts
                            against the manifest's own `audit_verdict` (the
-                           original human audit) and print got-vs-expected
-                           per dimension. Minimal stub — Task 5 owns full
-                           acceptance semantics/exit-code policy for this mode.
+                           original human audit) and print got-vs-expected per
+                           dimension. Exits non-zero if any MEASURED dimension
+                           mismatches the audit (an LLM dim omitted under
+                           `--no-llm` is printed SKIPPED, not counted as a
+                           mismatch). Import-safe/no-LLM-required with
+                           `--no-llm --audit-check` (checks language/reflection
+                           only); the full 6-dim check makes real paid API
+                           calls and is controller-run at the gate.
 
 This script makes REAL model calls when `--no-llm` is not given (pay-per-token
 `transport=api`). Never run it in a loop or against more than one job at a
@@ -161,13 +166,29 @@ async def _run(args: argparse.Namespace) -> int:
             print("no regressions vs baseline.")
 
     if args.audit_check:
-        # Minimal stub — Task 5 owns full acceptance semantics for this mode.
+        # Full acceptance semantics (Task 5): compare every manifest dimension's
+        # audit_verdict against this run's score. A dimension OMITTED from
+        # `score.scores` (an LLM-only dim under `--no-llm`) is reported SKIPPED,
+        # not MISMATCH — it was never measured this run, so there is nothing to
+        # compare (mirrors `diff_scores`'s omitted-dim handling). Exit non-zero
+        # only when a dimension that WAS actually measured disagrees with the
+        # audit — that is the real acceptance failure this mode gates on.
         print("--- audit-check (got vs expected audit_verdict) ---")
+        mismatches = 0
         for dim, expected in entry.audit_verdict.items():
             got = score.scores.get(dim)
-            got_verdict = got.verdict if got is not None else "(omitted)"
-            match = "OK" if got_verdict == expected else "MISMATCH"
-            print(f"  {dim:16s}  expected={expected:5s}  got={got_verdict:9s}  {match}")
+            if got is None:
+                print(f"  {dim:16s}  expected={expected:5s}  got=(omitted)  SKIPPED (no-llm run)")
+                continue
+            match = "OK" if got.verdict == expected else "MISMATCH"
+            if match == "MISMATCH":
+                mismatches += 1
+            print(f"  {dim:16s}  expected={expected:5s}  got={got.verdict:9s}  {match}")
+        if mismatches:
+            print(f"--- audit-check: {mismatches} dimension(s) mismatch the manifest audit_verdict ---")
+            exit_code = 1
+        else:
+            print("--- audit-check: all measured dimensions match the manifest audit_verdict ---")
 
     return exit_code
 
@@ -178,7 +199,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-llm", action="store_true", help="deterministic-tier only (free)")
     p.add_argument("--baseline", default=None, help="baseline JSON to diff against; exits 1 on regression")
     p.add_argument("--emit-baseline", default=None, help="write the score as the new baseline JSON")
-    p.add_argument("--audit-check", action="store_true", help="compare vs manifest audit_verdict (stub)")
+    p.add_argument("--audit-check", action="store_true",
+                    help="compare vs manifest audit_verdict; exits 1 on any measured mismatch")
     p.add_argument("--provider", default="gemini", help="LLM-scorer provider (default: gemini)")
     p.add_argument("--model", default="gemini-2.5-pro", help="LLM-scorer model (default: gemini-2.5-pro)")
     return p.parse_args(argv)
