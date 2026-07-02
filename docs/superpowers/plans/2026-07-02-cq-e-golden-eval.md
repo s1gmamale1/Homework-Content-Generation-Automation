@@ -58,11 +58,13 @@
 
 | job (8) | pages | boundary | answer_key | broken_question | language | reflection | extract_fidelity |
 |---|---|---|---|---|---|---|---|
-| 3ca0da6f | 12–17 | pass | flag | flag | flag | flag | flag |
-| 8f734563 | 22–26 | pass | flag | pass | flag | flag | flag |
-| 263d99c5 | 34–38 | flag | flag | pass | flag | flag | pass |
-| 9504ad94 | 8–10 | flag | pass | pass | flag | flag | pass |
-| 1122356a | 41–43 | flag | pass | flag | flag | flag | pass |
+| 3ca0da6f | 12–17 | pass | flag | flag | flag | ⚠ verify | flag |
+| 8f734563 | 22–26 | pass | flag | pass | flag | ⚠ verify | flag |
+| 263d99c5 | 34–38 | flag | flag | pass | flag | ⚠ verify | pass |
+| 9504ad94 | 8–10 | flag | pass | pass | flag | ⚠ verify | pass |
+| 1122356a | 41–43 | flag | pass | flag | flag | ⚠ verify | pass |
+
+> **E2 — the `reflection` column is `⚠ verify`, NOT a copied hedge.** The audit says reflection fabrication is "≥2/5, likely all" — a hedge, not a per-packet fact. Before committing the manifest, **read the 5 real `reflection` phase rows** from `edu_copy` (`select output_md from phase_outputs p join homework_jobs j on j.id=p.job_id where j.id::text like '<job8>%' and p.phase_name='reflection'`) and set each `reflection` verdict from the ROW (does it actually pre-assert an outcome / fabricate performance?), not from the hedge. Record the deciding quote per packet in the manifest entry (a `reflection_evidence` field). The other five columns reconcile line-by-line with the audit taxonomy (incl. the non-obvious `3ca0da6f` answer_key=flag) — leave them.
 
 - [ ] **Step 1: Write the failing test** (`tests/golden/test_manifest.py`):
 
@@ -121,6 +123,7 @@ git commit -m "cqe: golden-set manifest (5 audit entries) + source fixtures + lo
 **Interfaces:**
 - Consumes: `content_lint.lint_phase`, `phase_outputs` rows.
 - Produces: `DimensionScore{dimension: str, verdict: Literal["flag","pass"], detail: str, mechanism: Literal["deterministic","llm"]}`; `score_language(phases, subject, language) -> DimensionScore`, `score_reflection(phases) -> DimensionScore`, `score_error_detection_format(phases, subject, language) -> DimensionScore`, and `read_signals(phases) -> dict` (folds `judge_status`, `getattr(po,"solver_status",None)`, `validation_warnings` counts). `phases` = `list[PhaseView]` where `PhaseView{phase_name, output_md, judge_status, validation_warnings, solver_status}` (a plain read-model the scorer builds from `phase_outputs` rows or from fixtures — decouples scoring from the ORM).
+- **E1 — merge rule for `score_error_detection_format`:** it has no manifest dimension of its own. `score_packet` (Task 4) folds it into **`broken_question`**: `broken_question.verdict = "flag"` if EITHER the LLM broken-question scorer flags OR the deterministic error-detection-format check flags (packet `3ca0da6f` is exactly this case — its EXACTLY-ONE-broken-block violation is deterministic). `mechanism` records `"llm"` when the LLM half fired, else `"deterministic"`; `detail` names which half flagged.
 
 - [ ] **Step 1: Write the failing test** — deterministic scorers over synthetic `PhaseView`s (no DB):
 
@@ -250,7 +253,8 @@ git commit -m "cqe: LLM-rubric scorers (boundary, answer-key, broken-question, e
 - Test: `tests/golden/test_golden_gate.py`
 
 **Interfaces:**
-- Produces: `async score_packet(entry, phases, source_text, next_lesson_title, *, provider, model, transport, llm=True) -> PacketScore` (`PacketScore{job_id, scores: dict[str,DimensionScore]}`; `llm=False` runs deterministic dims only — the free tier); `diff_scores(baseline: PacketScore, current: PacketScore) -> list[str]` (regressions = a dimension that was `pass` in baseline and is `flag` now); a `_load_phases_from_db(job_id) -> list[PhaseView]` helper (read-only `phase_repo.list_for_job`). The runner `scripts/golden_eval.py` exits non-zero if any regression is found.
+- Produces: `async score_packet(entry, phases, source_text, next_lesson_title, *, provider, model, transport, llm=True) -> PacketScore` (`PacketScore{job_id, scores: dict[str,DimensionScore]}`, keyed by the 6 manifest dims; `broken_question` composed per **E1**; `llm=False` runs deterministic dims only — the free tier); `diff_scores(baseline: PacketScore, current: PacketScore) -> list[str]` (regressions = a dimension that was `pass` in baseline and is `flag` now); a `_load_phases_from_db(job_id) -> list[PhaseView]` helper (read-only `phase_repo.list_for_job`). The runner `scripts/golden_eval.py` exits non-zero if any regression is found.
+- **E4 — `--emit-baseline` refuses a scorer-unavailable verdict.** Degrade-to-`pass` (Task 3) is correct for GATE runs (an API blip must not read as a regression), but a baseline is a committed ground truth — freezing an errored "pass" is silent corruption. `--emit-baseline` MUST fail loudly (non-zero exit, no file written) if ANY `DimensionScore.detail` contains `"unavailable"`; the operator re-runs. (Plain gate/report runs keep degrade-to-pass.)
 
 - [ ] **Step 1: Write the failing test** (`tests/golden/test_golden_gate.py`) — deterministic-tier `score_packet(llm=False)` over fixtures + `diff_scores`:
 
@@ -280,7 +284,7 @@ async def test_deterministic_score_packet_and_diff_detects_regression():
 - [ ] **Step 2: Run to verify it fails** — `uv run python -m pytest tests/golden/test_golden_gate.py -q` → FAIL.
 
 - [ ] **Step 3: Implement** `score_packet` (deterministic dims always; LLM dims when `llm=True`), `diff_scores`, `_load_phases_from_db`, and `scripts/golden_eval.py`:
-  - `scripts/golden_eval.py --job <id> [--no-llm] [--baseline tests/golden/baselines/<job8>.json]`: load phases (DB), source fixture, next-lesson title (`toc_entries.get_next_in_book`), `score_packet`, print a per-dimension report, and if a baseline is given, `diff_scores` → **exit 1 on any regression, 0 otherwise**. Prints total token cost (`pricing.cost_usd`) of the LLM dims.
+  - `scripts/golden_eval.py --job <id> [--no-llm] [--baseline <file>] [--emit-baseline <file>] [--audit-check]`: load phases (DB), source fixture, next-lesson title (`toc_entries.get_next_in_book`), `score_packet`, print a per-dimension report, and if `--baseline` is given, `diff_scores` → **exit 1 on any regression, 0 otherwise**. Prints total token cost (`pricing.cost_usd`) of the LLM dims. **`--emit-baseline` writes the score JSON but (E4) exits non-zero WITHOUT writing if any dimension detail contains `"unavailable"`.** (`--audit-check` mode added in Task 5.)
 
 - [ ] **Step 4: Run to verify it passes** — `uv run python -m pytest tests/golden/test_golden_gate.py -q` → PASS.
 
@@ -325,7 +329,7 @@ async def test_deterministic_dims_reproduce_audit_flags():
                 f"audit says {entry.audit_verdict[dim]}")
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `RUN_GOLDEN_AUDIT=1 DATABASE_URL=<edu_copy> uv run python -m pytest tests/golden/test_reproduces_audit.py -q` → FAIL until scorers are tuned to the real outputs. **Iterate** the deterministic scorers (Task 2 code) against the real packets until the `language`/`reflection` verdicts match the audit for all 5 (the audit says all 5 flag both). *If a real packet legitimately does not flag a dim the audit flagged, correct the manifest verdict + note why — the audit is the ground truth but a scorer that can't see a defect deterministically is honest signal, not a bug to force.*
+- [ ] **Step 2: Run to verify it fails** — `RUN_GOLDEN_AUDIT=1 DATABASE_URL=<edu_copy> uv run python -m pytest tests/golden/test_reproduces_audit.py -q` → FAIL until scorers are tuned to the real outputs. **Iterate** the deterministic scorers (Task 2 code) against the real packets until the `language`/`reflection` verdicts match the manifest (which, per E2, was itself set from the real rows). **E2 escape-hatch discipline:** any manifest-vs-audit correction (changing a copied-from-taxonomy verdict because the real row disagrees) is allowed ONLY with the **deciding quote from the real row pasted into the PR body** — the gate reviews every ground-truth edit. Without quoted evidence, do NOT edit the answer sheet to make a test pass; fix the scorer or report the honest mismatch.
 
 - [ ] **Step 3: LLM-tier acceptance (controller-run, paid, at the gate).** Add to `scripts/golden_eval.py` a `--audit-check` mode that scores the LLM dims over the 5 `edu_copy` packets and prints, per packet per LLM dim, `got vs audit`. The controller runs it over `transport=api` and pastes the result + token cost into the PR body. **Pass = the LLM dims reproduce the audit's boundary/answer-key/broken flags** (e.g. `1122356a` boundary=flag, `263d99c5` answer_key=flag). Bounded: ≤ 4 dims × 5 packets api calls.
 
@@ -345,10 +349,10 @@ git commit -m "cqe: acceptance — rubric reproduces audit verdicts (determinist
 **Files:**
 - Create: `tests/golden/baselines/<job8>.json` (×5)
 
-**Cost statement (state before running):** regenerate the 5 golden lessons on the fixed system = **5 jobs × 11 content phases = 55 phase generations** + judge + solver per phase + the 4 LLM-rubric dims × 5 = 20 scoring calls. Estimate at the campaign content tier (gemini-2.5-pro/flash + 3.1-pro judge/solver): **~$X/packet → ~$5X total** (the implementer computes X from `pricing.cost_usd` on a single-packet dry run first, states it, and waits for go).
+**Cost statement (E3 — compute FREE, no paid dry run):** the 5 audited packets already generated once — their real per-packet cost is in `edu_copy.agent_usages`. Estimate the freeze cost from those rows: `select provider, model_name, sum(tokens_input), sum(tokens_output) from agent_usages u join phase_outputs p on p.id=u.phase_output_id join homework_jobs j on j.id=p.job_id where j.id::text like '<job8>%' group by 1,2`, price via `pricing.cost_usd`, sum across the 5, add the 4 LLM-rubric dims × 5 = 20 scoring calls (also priced from token estimates). State the total in the PR/task before running; **do NOT spend on a dry run**. (Solver adds CQ-C's per-phase cost — include it once CQ-C is merged, read from the same table.)
 
 - [ ] **Step 1** — on the user's explicit go: launch the 5 golden lessons through the normal generation path on the fixed head (their `(book, section)` are known from the manifest), let them complete `done`.
-- [ ] **Step 2** — `uv run python -m scripts.golden_eval --job <id>` (llm on) for each, writing `--emit-baseline tests/golden/baselines/<job8>.json`.
+- [ ] **Step 2** — `uv run python -m scripts.golden_eval --job <id>` (llm on) for each, writing `--emit-baseline tests/golden/baselines/<job8>.json`. **Per E4, emission fails loudly on any `"unavailable"` dimension — re-run that packet rather than freezing a degraded score.**
 - [ ] **Step 3** — sanity: the fixed-system baselines should show the audit's flagged dims now `pass` (boundary/reflection/answer-key improved) — this is the regression-harness's own proof that the CQ-A–D fixes hold. Note any dim still flagged (honest residual).
 - [ ] **Step 4: Commit**
 
@@ -365,7 +369,7 @@ git commit -m "cqe: freeze golden baselines on the fixed system (post CQ-A/B/C/D
 2. `git fetch origin` → `git log HEAD..origin/Nggaev-v2`; rebase onto `origin/Nggaev-v2` if it moved (expect append-only `MASTER_MEMORY`/`INDEX`/ROADMAP conflicts — hand-merge, **never clobber CQ-C's closes**), re-run suite.
 3. PR **`[CQ-E] Golden-eval harness (R20)`** — gatekeeper merges, no self-merge. PR body carries the deterministic-tier results + the paid LLM audit-check output + token cost.
 4. Worklog **0113** (re-verify free) in `MASTER_MEMORY.md` + INDEX row.
-5. Close **R20** in `docs/memory/ROADMAP.md` (move to Shipped/Closed) + **CQ-E** in `docs/memory/REMEDIATION_CLUSTERS.md` (Cluster 10). Leave R21 items 2/6 to CQ-C/CQ-D.
+5. Close **R20** in `docs/memory/ROADMAP.md` (move to Shipped/Closed) + **CQ-E** in `docs/memory/REMEDIATION_CLUSTERS.md` (Cluster 10). Leave R21 items 2/6 to CQ-C/CQ-D. **E5 — file a ROADMAP follow-up** for golden-set expansion: "R20-expand — grow the golden set beyond the 5 G8-math-UZ audit lessons: ≥1 humanities, ≥1 RU/EN medium, ≥1 other grade (each needs source-page capture + generation + human audit-scoring)." (The harness is entry-count-agnostic, so this is data, not code.)
 6. `git mv` the plan to `docs/superpowers/plans/shipped/`.
 7. De-stale `docs/HOW_IT_WORKS.md` / `docs/CODE_MAP.md` (add the golden-eval harness + gate).
 
