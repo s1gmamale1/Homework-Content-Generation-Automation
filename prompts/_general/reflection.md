@@ -28,9 +28,12 @@ formula or principle (if any), and one real-world connection.
 
 ## 2. Strong & Weak Points
 
-Tied to THIS session's Boss Arena / Case-Based Preview outputs:
-- **Kuchli tomonlar:** 1–2 concepts the student's answers handled well.
-- **Zaif tomonlar:** 1–2 concepts to revisit (name them; do not invent a score).
+Structure the app fills in **after** the student's attempt — do NOT assert how the
+student performed (there is no attempt yet when this is generated):
+- **Kuchli tomonlar:** name 1–2 concepts from THIS lesson that the Case-Based Preview /
+  Boss Arena treated as core — the ones a confident student should have handled.
+- **Zaif tomonlar:** name 1–2 concepts from THIS lesson that are the most error-prone /
+  worth re-checking (name them; do not invent a score or a result).
 
 ## 3. One Thinking Question
 
@@ -49,9 +52,9 @@ Pick ONE (rotate). Prefer questions tied to THIS session's performance over gene
   weak concept or phase to return to), not just "try again".
 - Retake rule: **"Xuddi shu tushunchalar, lekin xuddi shu savollar emas"** (same
   concepts, not the same questions).
-- Pass/retake terminology: when naming a not-passed outcome, use **"Needs Retry"** /
-  **"Attempt completed, homework not passed"** — NEVER a bare **"Not Completed"** after a
-  real attempt (the student did attempt the homework). The app, not you, sets the score.
+- The student **app**, not this output, sets the score and decides pass/redo. Do NOT
+  state or imply a pass/fail verdict or any retry-status label — describe the
+  redo route conditionally ("if the app marks a redo, return to …") and stop there.
 
 ## 5. Closing Line
 
