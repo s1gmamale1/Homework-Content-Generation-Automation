@@ -51,6 +51,29 @@ async def list_for_book(session: AsyncSession, book_id: UUID) -> list[TOCEntry]:
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def get_next_in_book(
+    session: AsyncSession, book_id: UUID, order_index: int
+) -> TOCEntry | None:
+    """Return the next TEACHING lesson in reading order — the smallest order_index
+    strictly greater than `order_index` within the same book whose section_number
+    is not NULL — or None when there is no later numbered lesson. Uses `> order_index`
+    (not `+1`) so a non-contiguous index sequence still resolves the true successor,
+    and skips NULL-section end-matter rows (Упражнения/Ответы/Тестовые — 214 such
+    rows in production) so the boundary note never announces "next lesson = «Ответы»".
+    Backed by ix_toc_entries_book_id_order."""
+    stmt = (
+        select(TOCEntry)
+        .where(
+            TOCEntry.book_id == book_id,
+            TOCEntry.order_index > order_index,
+            TOCEntry.section_number.isnot(None),
+        )
+        .order_by(TOCEntry.order_index)
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalars().first()
+
+
 async def get(session: AsyncSession, toc_entry_id: UUID) -> TOCEntry | None:
     return await session.get(TOCEntry, toc_entry_id)
 

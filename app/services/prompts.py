@@ -65,6 +65,40 @@ LANGUAGE_RULES = {
     "_default": _LANG_UZBEK,
 }
 
+# Scaffolding-bridge phrasing, keyed by output_language (the medium).
+_BRIDGE_CLAUSE = {
+    "uz": 'formal Uzbek ("Siz")',
+    "en": "formal English",
+    "ru": 'formal Russian («Вы»)',
+}
+_BRIDGE_NAME = {"uz": "Uzbek", "en": "English", "ru": "Russian"}
+_L2_BASE = {"english": _LANG_ENGLISH, "russian": _LANG_RUSSIAN}
+
+
+def _l2_rule(target_lang: str, bridge_medium: str) -> str:
+    """L2 target-language rule with the scaffolding BRIDGE in `bridge_medium`.
+    target_lang in {"english","russian"}; bridge_medium in {"uz","en","ru"}.
+
+    For "uz" (or any unknown medium) returns the frozen base VERBATIM, so the
+    uz path is byte-identical to the legacy block by construction. For "en"/"ru"
+    it substitutes the bridge phrases on that frozen base — it never rebuilds the
+    text, so it cannot silently "fix" the base's authoring asymmetry (English's
+    governing line says "in Uzbek", Russian's says "in formal Uzbek")."""
+    base = _L2_BASE[target_lang]
+    if bridge_medium == "uz" or bridge_medium not in _BRIDGE_CLAUSE:
+        return base
+    bridge = _BRIDGE_CLAUSE[bridge_medium]
+    name = _BRIDGE_NAME[bridge_medium]
+    # Order matters: replace the "formal Uzbek (…)" phrase first (scaffolding line
+    # + Russian's governing line), then the bare "Uzbek (…)" (English's governing
+    # line). "native-Uzbek learners" / "the Uzbek national curriculum" don't match
+    # either pattern and are left intact.
+    out = base.replace('formal Uzbek ("Siz")', bridge).replace('Uzbek ("Siz")', bridge)
+    out = out.replace("(the UZ bridge)", f"(the {name} bridge)")
+    out = out.replace("translate idiomatically into Uzbek",
+                      f"translate idiomatically into {name}")
+    return out
+
 # --- Medium-of-instruction rules (whole-output language; decision 2026-06-29) ---
 # Distinct from LANGUAGE_RULES above, which are the L2 *target-language* rules for
 # the English/Russian CLASS subjects. MEDIUM_RULES govern the medium of instruction
@@ -101,12 +135,13 @@ MEDIUM_RULES = {
 
 
 def _resolve_language_rule(subject: str, output_language: str) -> str:
-    """L2 language-class subjects (English/Russian) keep their own L2 rule
-    regardless of the medium (decision: medium affects only other subjects).
-    Every other subject renders in the chosen medium (uz/en/ru), defaulting uz."""
+    """L2 language-class subjects (English/Russian) keep their L2 TARGET regardless
+    of medium, but their scaffolding BRIDGE follows the chosen medium
+    (l2-bridge-follows-medium). Every other subject renders in the chosen medium
+    (uz/en/ru), defaulting uz."""
     sd = subjects.REGISTRY.get(subject)
     if sd and sd.language in ("english", "russian"):
-        return LANGUAGE_RULES[sd.language]
+        return _l2_rule(sd.language, output_language)
     return MEDIUM_RULES.get(output_language, MEDIUM_RULES["uz"])
 
 # Derived from the single source of truth (app/services/subjects.py). A family of
