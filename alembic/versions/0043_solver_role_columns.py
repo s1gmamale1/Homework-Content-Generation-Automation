@@ -36,6 +36,22 @@ def upgrade() -> None:
         "UPDATE launch_defaults SET solver_provider='gemini', "
         "solver_model='gemini-3.1-pro-preview', solver_transport='inherit' "
         "WHERE solver_provider IS NULL")
+    # Backfill EVERY pre-existing homework_jobs row with a NULL solver stamp
+    # (no status filter) — mirrors 0037's judge/extract backfill. add_column
+    # above left existing rows solver_provider=NULL + solver_transport='inherit'
+    # (server_default); once the solver claim-gate (Task 8) goes live, such an
+    # api job would resolve `_provider_api_ok(NULL)` → SQL NULL → excluded →
+    # unclaimable by ANY worker. Retry/resume reuses the row WITHOUT re-stamping,
+    # so a pre-0043 pending/failed api job would strand. COALESCE only writes
+    # NULLs, so backfilling done rows is harmless.
+    op.execute(
+        """
+        UPDATE homework_jobs
+           SET solver_provider = COALESCE(solver_provider, 'gemini'),
+               solver_model    = COALESCE(solver_model,    'gemini-3.1-pro-preview')
+         WHERE solver_provider IS NULL OR solver_model IS NULL
+        """
+    )
 
 
 def downgrade() -> None:
