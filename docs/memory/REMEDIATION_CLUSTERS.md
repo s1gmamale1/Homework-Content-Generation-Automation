@@ -238,6 +238,40 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 
 ---
 
+## Cluster 10 — Content Quality (CQ) — filed 2026-07-01 from the 5-packet audit (ROADMAP R21)
+
+> **Source:** first deep content audit — 5/5 packets FLAG, judge passed all of them
+> (`judge_status=ok`). Evidence + job IDs: `docs/research/2026-07-01-content-quality-audit-g8-math.md`.
+> Sequencing: **CQ-A ‖ CQ-B first** (cheap, immediate), then **CQ-C** (the core, own plan),
+> **CQ-D** upstream hygiene, **CQ-E (R20)** last — it freezes baselines over the fixed system.
+> CQ-A and CQ-C both touch prompt-assembly (`pipeline.py`/`agent._build_master_prompt`) — **serialize A before C**. CQ-B is disjoint (new module) — safe in parallel with anything.
+
+### CQ-A — Prompt-layer fixes — **ONE implementer, ONE plan/PR, ships 3 items**
+Surface: `prompts/_general/*.md` + the prompt-assembly path (`pipeline.py` context build). Real CLI smoke mandatory (affects generation).
+1. **R21.1 lesson-boundary rule** — TOC is in the DB: inject "next lesson is _{title}_ — do NOT use its concepts, nor the converse/criteria/generalization of this lesson's" into content-phase prompts (worst offenders: case-based-preview, boss-arena). Killed 3/5 audit flags.
+2. **R21.5 reflection fix** — stop pre-asserting attempt outcomes ("Needs Retry", fabricated weaknesses); app owns pass/fail per `reflection.md`.
+3. **`l2-bridge-follows-medium`** — L2 subjects hardcode the Uzbek bridge; make `_resolve_language_rule` (`prompts.py:103-110`) honor the chosen medium.
+
+### CQ-B — Deterministic validators — **ONE implementer, ONE plan/PR, ships 2 items** (no LLM, no cost)
+Surface: one new module (e.g. `app/services/content_lint.py`) + post-phase wiring + tests. Disjoint from CQ-A/C.
+1. **R21.3 error-detection format validator** — count factually-false blocks vs the Reveal's single broken block; enforce the prompt's own EXACTLY-ONE rule (`practice-error-detection.md:50-54`).
+2. **R21.4 language lint** — mixed-script regex (Cyrillic-in-Latin word), English-template blacklist (`Mode:`, `Needs Retry`, `Scenario`…), calque list ("qizil seld"), missing `source`/`inferred` misconception tags. Warning-or-regen policy is a plan decision.
+
+### CQ-C — Answer-key solver pass — **ONE implementer, own plan (R21.2), the campaign-quality core**
+Re-solve boss-arena / memory-check / error-detection items independently; diff vs the key; regen on mismatch. The only fix for the "correct student graded wrong" class (3/5 packets). Design decisions the plan must lock: which phases, +1 LLM call cost per job, regen budget, provider. **Serialize after CQ-A** (same prompt/pipeline surface).
+
+### CQ-D — Source integrity — **ONE implementer can pair the two code items; the rest is operator/data**
+1. **R21.6 extract-example fidelity** — worked examples quoted from the textbook must match it (extract drift propagated into 2/5 packets); ties to the judge fidelity layer (`phase_judge.py`).
+2. **R10/`extract-1` glyph-loss detection** — broken-font PDFs silently poison extract; add a garbage-text detector (density check can't catch it). Pairable with (1) in one PR — both are extract-quality guards.
+3. *(operator/data, not implementer):* R19 stale textbooks (C3 sweep), stub-PDF `9e7833bc` cleanup. *(shelved: `toc-reextract-override-1` — only if verified-but-incomplete TOCs are observed.)*
+
+### CQ-E — R20 golden-eval harness — **own plan, LAST**
+Frozen `(subject, lesson)` set + rubric scoring + baseline diffs + PR gate. The 5 audited packets are the first golden entries; the audit method (read source pages → trace taught-before-asked → re-solve keys) is the rubric prototype. Do after CQ-A/B/C land so baselines freeze the *fixed* behavior.
+
+**TL;DR for pickup:** 3 parallel-safe starts — CQ-A (3 items), CQ-B (2 items), CQ-D code pair (2 items) — each a single plan/PR by a single implementer. CQ-C after A. CQ-E last.
+
+---
+
 ## Items deliberately NOT in any cluster
 
 - **R19** (stale/missing textbooks) — operator task, user sources + re-uploads PDFs; no code.
