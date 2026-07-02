@@ -89,6 +89,21 @@
 
 ---
 
+## R21 — Content-quality cluster: curriculum-boundary leakage + wrong answer keys (audit 2026-07-01)
+
+- **Issue:** first deep content audit (5 packets, Algebra+Geometry G8 UZ, both providers) → **5/5 FLAG**, all passed by the judge (`judge_status=ok`). Three systemic defect classes the judge provably cannot see: (1) **curriculum-boundary leakage** (3/5) — packets teach/test the NEXT lesson's concept (Pythagorean converse §18, parallelogram alomatlari p.11, "asimptota") because the generator reaches for the topic's natural completion at hard difficulty; (2) **wrong answer keys** (3/5) — a correct student is graded wrong (false symmetry-exclusivity; a real second sign error denied; the textbook's own 4-step list marked incorrect); (3) **broken hard questions** (2/5) — the "wrong method" coincidentally equals the right answer, or a question needs machinery taught nowhere. Plus systemic polish: English scaffolding student-visible (`Mode: Hard` violates `flashcards.md:14`), Cyrillic splices, "qizil seld" calque, reflection fabricating a "Needs Retry" outcome pre-attempt, extract mis-transcribing textbook examples. Full evidence: `docs/research/2026-07-01-content-quality-audit-g8-math.md` (job IDs + quotes). Externally cross-confirmed by an independent ChatGPT review of packet 1 (caught the error-detection EXACTLY-ONE-block violation our pass missed).
+- **Root cause:** (1) phases receive only THIS lesson's extract — nothing marks the curriculum boundary, so pretraining knowledge fills in the next lesson's concepts; (2)/(3) nothing verifies answer keys — the judge grades prompt-contract + fidelity, never solves the problems; error-detection's own "verify every non-broken block" prompt rule (`practice-error-detection.md:50-54`) is not machine-enforced; (4) language artifacts are mechanical patterns no pass checks.
+- **Deliverable (impact order):**
+  1. **Lesson-boundary rule** — the TOC is in the DB: inject "the next lesson is _{title}_; do NOT use its concepts, nor the converse/criteria/generalization of what this lesson teaches" into content-phase prompts (esp. case-based-preview, boss-arena).
+  2. **Answer-key verification pass** — an independent solver over boss-arena / memory-check / error-detection: re-solve each item, diff against the key, regen on mismatch. (The one class that graded correct students wrong.)
+  3. **Error-detection format validator** — deterministic: count factually-false blocks vs the Reveal's single broken block.
+  4. **Language lint** — mechanical: mixed-script regex (Cyrillic-in-Latin-word), English-template blacklist (`Mode:`, `Needs Retry`, `Scenario`…), calque list ("qizil seld"), missing `source`/`inferred` misconception tags.
+  5. **Reflection template fix** — stop pre-asserting attempt outcomes (app owns pass/fail per `reflection.md`).
+  6. **Extract-example fidelity** — worked examples quoted from the textbook must match it (ties to the judge's fidelity layer; extract drift propagated into 2/5 packets).
+  Items 3+4 are cheap deterministic checks (no LLM). Items 1+2 are the campaign-quality core. **Feeds R20:** these 5 audited packets + their findings are the first golden-set entries; the audit method (read source pages → trace taught-before-asked → re-solve keys) is the R20 rubric prototype.
+
+---
+
 ## Shipped / Closed
 
 > One line per shipped/closed item — full detail in the cited worklog + git. Nothing here is open.
