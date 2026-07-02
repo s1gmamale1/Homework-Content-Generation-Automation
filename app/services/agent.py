@@ -37,7 +37,7 @@ from typing import Any, Optional
 from uuid import UUID
 
 from loguru import logger
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from pypdf import PdfReader, PdfWriter
 
 from app.config import settings
@@ -1182,6 +1182,60 @@ def extract_fidelity_candidates(summary: str, book_text: str) -> list[str]:
     return cands[:_FIDELITY_MAX_CANDIDATES]
 
 
+class ExtractFidelityVerdict(BaseModel):
+    """Model verdict for the extract-fidelity check. `mismatches` is empty when
+    every suspect expression is faithfully grounded in the source."""
+    mismatches: list[str] = Field(default_factory=list)
+
+
+_VERIFY_FIDELITY_PROMPT = (
+    "You are checking a LESSON SUMMARY against the SOURCE TEXTBOOK TEXT it was "
+    "written from. Below are SUSPECT expressions found in the summary that a "
+    "quick scan could not locate in the source. For each, decide whether the "
+    "summary faithfully reflects a worked example / value from the source. "
+    "Report ONLY genuine transcription errors — a value or worked example the "
+    "summary states that CONTRADICTS the source (e.g. summary '-3/(2a)' vs "
+    "source '-3/a', or an example the source does not contain). Do NOT report a "
+    "value the source simply phrases differently, rounds, or that the summary "
+    "legitimately derived. For each real error, add one line "
+    "'summary says X; source has Y'. If all are fine, return an empty list.\n\n"
+    "SUSPECT EXPRESSIONS:\n{suspects}\n\n"
+    "===== LESSON SUMMARY =====\n{summary}\n===== END SUMMARY =====\n\n"
+    "===== SOURCE TEXTBOOK TEXT =====\n{book_text}\n===== END SOURCE ====="
+)
+
+
+async def verify_extract_fidelity(
+    *, summary: str, book_text: str, candidates: list[str],
+    provider: str, model: Optional[str], transport: str,
+    homework_job_id: Optional[UUID], phase_output_id: Optional[UUID],
+) -> list[str]:
+    """One structured gemini-flash call: which of `candidates` are real extract
+    transcription errors vs the source. Returns confirmed mismatch descriptions
+    (empty = clean). Never raises for a bad verdict — on any failure returns []
+    (fail-open: the guard must never block or corrupt a good extract)."""
+    if not candidates:
+        return []
+    prompt = _VERIFY_FIDELITY_PROMPT.format(
+        suspects="\n".join(f"- {c}" for c in candidates),
+        summary=summary, book_text=book_text,
+    )
+    try:
+        result = await run_phase(
+            provider=provider, model=model, phase_prompt=prompt,
+            phase_name="lesson.extract.verify", schema=ExtractFidelityVerdict,
+            homework_job_id=homework_job_id, phase_output_id=phase_output_id,
+            operation="lesson.extract.verify", transport=transport,
+        )
+    except Exception as exc:
+        logger.warning(f"agent.verify_extract_fidelity failed (fail-open): {exc!r}")
+        return []
+    parsed = result.parsed
+    if isinstance(parsed, ExtractFidelityVerdict):
+        return [m for m in parsed.mismatches if m.strip()]
+    return []
+
+
 def validate_extract_text(text: str) -> Optional[str]:
     """Gate A — deterministic check on the RAW local PDF text. Returns a failure
     reason string, or None if the text looks like real, readable content. A
@@ -2200,6 +2254,7 @@ async def summarize_lesson(
     homework_job_id: UUID,
     phase_output_id: UUID,
     transport: str = "cli",
+    correction_hint: str = "",
 ) -> tuple[str, int, int]:
     """Single-provider extract: inject the whole-book TEXT (no PDF attached),
     model locates the lesson by title and summarizes. Returns (text, prompt_tokens,
@@ -2215,6 +2270,12 @@ async def summarize_lesson(
         rules=_NO_PREAMBLE,
         book_text=book_text,
     )
+    if correction_hint:
+        instruction += (
+            "\n\nIMPORTANT — your previous summary mis-transcribed the source. "
+            "Correct these and re-summarize faithfully from the textbook text:\n"
+            f"{correction_hint}"
+        )
     prompt = _build_master_prompt(
         phase_prompt=instruction,
         phase_name="lesson.extract",

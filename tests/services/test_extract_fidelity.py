@@ -50,3 +50,37 @@ def test_no_candidates_when_grounded():
     book = "Natija −3/a. Ikkinchi misol 21/120 = 7/40."
     summary = "Misol: −3/a. Yana 21/120."
     assert extract_fidelity_candidates(summary, book) == []
+
+
+import pytest
+from unittest.mock import AsyncMock, patch
+from app.services import agent as agent_mod
+from app.services.agent import ExtractFidelityVerdict, verify_extract_fidelity
+
+
+@pytest.mark.asyncio
+async def test_verify_returns_mismatches_from_model():
+    fake = agent_mod.PhaseResult(
+        text="{}",
+        parsed=ExtractFidelityVerdict(mismatches=["extract says -3/(2a); source has -3/a"]),
+    )
+    with patch.object(agent_mod, "run_phase", AsyncMock(return_value=fake)) as rp:
+        out = await verify_extract_fidelity(
+            summary="… -3/(2a) …", book_text="… -3/a …",
+            candidates=["-3/(2a)"], provider="gemini", model="gemini-2.5-flash",
+            transport="api", homework_job_id=None, phase_output_id=None,
+        )
+    assert out == ["extract says -3/(2a); source has -3/a"]
+    assert rp.call_args.kwargs["schema"] is ExtractFidelityVerdict
+
+
+@pytest.mark.asyncio
+async def test_verify_clean_returns_empty():
+    fake = agent_mod.PhaseResult(text="{}", parsed=ExtractFidelityVerdict(mismatches=[]))
+    with patch.object(agent_mod, "run_phase", AsyncMock(return_value=fake)):
+        out = await verify_extract_fidelity(
+            summary="x", book_text="x", candidates=["21/100"],
+            provider="gemini", model="gemini-2.5-flash", transport="api",
+            homework_job_id=None, phase_output_id=None,
+        )
+    assert out == []
