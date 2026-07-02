@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pypdf
 
-from app.services.agent import _extract_toc_source_text
+from app.services.agent import _extract_toc_source_text, _toc_text_is_usable
 
 
 class _FakePage:
@@ -90,3 +90,17 @@ def test_toc_source_short_book_no_duplicate_pages(monkeypatch):
     monkeypatch.setattr(pypdf, "PdfReader", _ShortReader)
     text, _meta = _extract_toc_source_text(Path("dummy.pdf"))
     assert text.count("--- PDF page 3 ---") == 1
+
+
+def test_toc_text_unusable_when_garbled():
+    garbled = ("Ó÷åáíèê äëÿ 8 êëàññîâ " * 30)
+    assert _toc_text_is_usable(garbled, pages_scanned=10) is False
+
+
+def test_toc_text_usable_when_real_and_dense():
+    real = ("§1. Uchburchaklar. Perimetri va yuzasi. Parallelogramm xossalari. " * 30)
+    assert _toc_text_is_usable(real, pages_scanned=4) is True
+
+
+def test_toc_text_unusable_when_empty():
+    assert _toc_text_is_usable("", pages_scanned=10) is False

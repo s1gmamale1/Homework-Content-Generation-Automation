@@ -260,15 +260,15 @@ Surface: one new module (e.g. `app/services/content_lint.py`) + post-phase wirin
 ### CQ-C — Answer-key solver pass — **ONE implementer, own plan (R21.2), the campaign-quality core**
 Re-solve boss-arena / memory-check / error-detection items independently; diff vs the key; regen on mismatch. The only fix for the "correct student graded wrong" class (3/5 packets). Design decisions the plan must lock: which phases, +1 LLM call cost per job, regen budget, provider. **Serialize after CQ-A** (same prompt/pipeline surface).
 
-### CQ-D — Source integrity — **ONE implementer can pair the two code items; the rest is operator/data**
-1. **R21.6 extract-example fidelity** — worked examples quoted from the textbook must match it (extract drift propagated into 2/5 packets); ties to the judge fidelity layer (`phase_judge.py`).
-2. **R10/`extract-1` glyph-loss detection** — broken-font PDFs silently poison extract; add a garbage-text detector (density check can't catch it). Pairable with (1) in one PR — both are extract-quality guards.
+### CQ-D — Source integrity — **code pair ✅ SHIPPED (worklog [0111], PR cq-d-extract-guards); rest is operator/data**
+1. ~~**R21.6 extract-example fidelity**~~ ✅ **SHIPPED [0111]:** hybrid guard on the local-text extract branch — free `extract_fidelity_candidates` (fraction/equation exprs absent from source; `/`-or-`=` AND digit-or-paren so digitless invented examples surface) → gemini-flash `verify_extract_fidelity` (fail-open, **lesson-scoped source**) → regen `summarize_lesson(correction_hint=)` once on confirmed drift. The judge could never catch this (grades vs the extract, exempts worked-example arithmetic). Extract is cached cross-job → amortized.
+2. ~~**R10/`extract-1` glyph-loss detection**~~ ✅ **SHIPPED [0111]:** `_alpha_plausibility_ratio` (Latin∪Cyrillic∪Uzbek alphabet ratio, floor 0.70) in Gate A + `_toc_text_is_usable` → garbled text routes to vision. **Re-scoped by fact:** the `/Gxx` case already recovers via `_decode_glyph_text` [0035]/[0036]; the live gap was cp1251 mojibake (`f20db30c`: letter-density 0.88 passes, plausibility 0.082). Corpus sweep: 25/26 books accept, only the garbage one rejects. *(Paid vision-recovery + verify-discrimination smokes owed at the PR gate — CLI env had stale Vertex creds.)*
 3. *(operator/data, not implementer):* R19 stale textbooks (C3 sweep), stub-PDF `9e7833bc` cleanup. *(shelved: `toc-reextract-override-1` — only if verified-but-incomplete TOCs are observed.)*
 
 ### CQ-E — R20 golden-eval harness — **own plan, LAST**
 Frozen `(subject, lesson)` set + rubric scoring + baseline diffs + PR gate. The 5 audited packets are the first golden entries; the audit method (read source pages → trace taught-before-asked → re-solve keys) is the rubric prototype. Do after CQ-A/B/C land so baselines freeze the *fixed* behavior.
 
-**TL;DR for pickup:** 3 parallel-safe starts — CQ-A (3 items), CQ-B (2 items), CQ-D code pair (2 items) — each a single plan/PR by a single implementer. CQ-C after A. CQ-E last.
+**TL;DR for pickup:** CQ-D code pair ✅ SHIPPED ([0111]). Remaining parallel-safe starts — CQ-A (3 items), CQ-B (2 items) — each a single plan/PR by a single implementer. CQ-C after A. CQ-E last.
 
 ---
 

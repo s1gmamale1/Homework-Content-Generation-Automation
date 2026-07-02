@@ -37,7 +37,7 @@ from typing import Any, Optional
 from uuid import UUID
 
 from loguru import logger
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from pypdf import PdfReader, PdfWriter
 
 from app.config import settings
@@ -1103,11 +1103,145 @@ _EXTRACT_REFUSAL_MARKERS = (
 _REFUSAL_HEAD_CHARS = 240
 
 
+# Alphabets a real curriculum textbook is written in: ASCII Latin, the Cyrillic
+# block, and the Uzbek modifier letters (ʻ/ʼ and their curly-quote variants).
+# Text extracted as the WRONG bytes — cp1251 Cyrillic mis-decoded as latin1
+# (mojibake: "Ó÷åáíèê"), or a subset font whose glyph codes don't equal their
+# byte values — stays `.isalpha()` but lands mostly OUTSIDE these blocks. Real
+# books score ~1.00; the RU-mojibake book f20db30c scores 0.07 (measured). This
+# is the signal validate_extract_text's letter-DENSITY ratio cannot see (garbage
+# letters are still letters). Below _ALPHA_RATIO_MIN_SAMPLE alphabetic chars we
+# cannot judge, so we return 1.0 (plausible) — never false-fire on a tiny slice.
+_UZBEK_MODIFIER_LETTERS = frozenset("ʻʼ‘’")
+_ALPHA_RATIO_MIN_SAMPLE = 200
+
+
+def _is_expected_alpha(c: str) -> bool:
+    if ("a" <= c <= "z") or ("A" <= c <= "Z"):
+        return True
+    if 0x0400 <= ord(c) <= 0x04FF:   # Cyrillic
+        return True
+    return c in _UZBEK_MODIFIER_LETTERS
+
+
+def _alpha_plausibility_ratio(text: str) -> float:
+    """Fraction of alphabetic chars that belong to an alphabet a real textbook is
+    written in. 1.0 when there is too little text to judge. See the block comment
+    above for why this catches garbage the letter-density ratio passes."""
+    letters = [c for c in (text or "") if c.isalpha()]
+    if len(letters) < _ALPHA_RATIO_MIN_SAMPLE:
+        return 1.0
+    good = sum(1 for c in letters if _is_expected_alpha(c))
+    return good / len(letters)
+
+
+# A worked-example expression worth grounding: a run of digits/letters/parens/
+# operators that has a structural math operator ('/' or '=') AND (a digit OR a
+# parenthesis). The parenthesis arm is load-bearing: audited drift #2 is a
+# DIGITLESS invented example — (a−b)/(a+b), (a−b)²/(a+b) — which a digit-only
+# gate would never surface (and the flash verify can only catch what this
+# surfaces). Prose like 'va/yoki' has '/' but no digit and no paren → excluded,
+# so the false-positive posture (bare numbers, page ranges) is preserved.
+_FIDELITY_EXPR_RE = re.compile(r"[0-9A-Za-z()][0-9A-Za-z()/=+\-−–.·*×÷²³]{1,38}")
+_FIDELITY_MAX_CANDIDATES = 12
+
+
+def _normalize_expr(s: str) -> str:
+    out = s.lower().replace(" ", "")
+    for ch in "−–—":          # minus variants → ascii hyphen
+        out = out.replace(ch, "-")
+    for ch in "·*×":          # multiplication variants
+        out = out.replace(ch, "*")
+    out = out.replace("÷", "/")
+    return out
+
+
+def extract_math_expressions(text: str) -> set[str]:
+    """Normalized fraction/equation expressions in `text`: contain '/' or '=' AND
+    (a digit OR a parenthesis). Captures both numeric (21/100, x=5) and digitless
+    algebraic (a−b)/(a+b) worked examples; skips prose slashes (va/yoki)."""
+    found: set[str] = set()
+    for m in _FIDELITY_EXPR_RE.findall(text or ""):
+        # char class allows '.' (decimals like 3.14) so a token can trail a
+        # sentence period ("21/120.") — strip surrounding punctuation first.
+        m = m.strip(".,;:")
+        if ("/" not in m) and ("=" not in m):
+            continue
+        if any(c.isdigit() for c in m) or ("(" in m) or (")" in m):
+            found.add(_normalize_expr(m))
+    return {e for e in found if len(e) >= 3}
+
+
+def extract_fidelity_candidates(summary: str, book_text: str) -> list[str]:
+    """Worked-example expressions in the extract SUMMARY that do not appear in the
+    source BOOK_TEXT — candidate transcription drift. Free (no model call).
+    Grounds against the FULL book_text (conservative → fewer wasted verify calls).
+    An empty list means the deterministic pass found nothing to verify."""
+    norm_book = _normalize_expr(book_text or "")
+    cands = sorted(e for e in extract_math_expressions(summary) if e not in norm_book)
+    return cands[:_FIDELITY_MAX_CANDIDATES]
+
+
+class ExtractFidelityVerdict(BaseModel):
+    """Model verdict for the extract-fidelity check. `mismatches` is empty when
+    every suspect expression is faithfully grounded in the source."""
+    mismatches: list[str] = Field(default_factory=list)
+
+
+_VERIFY_FIDELITY_PROMPT = (
+    "You are checking a LESSON SUMMARY against the SOURCE TEXTBOOK TEXT it was "
+    "written from. Below are SUSPECT expressions found in the summary that a "
+    "quick scan could not locate in the source. For each, decide whether the "
+    "summary faithfully reflects a worked example / value from the source. "
+    "Report ONLY genuine transcription errors — a value or worked example the "
+    "summary states that CONTRADICTS the source (e.g. summary '-3/(2a)' vs "
+    "source '-3/a', or an example the source does not contain). Do NOT report a "
+    "value the source simply phrases differently, rounds, or that the summary "
+    "legitimately derived. For each real error, add one line "
+    "'summary says X; source has Y'. If all are fine, return an empty list.\n\n"
+    "SUSPECT EXPRESSIONS:\n{suspects}\n\n"
+    "===== LESSON SUMMARY =====\n{summary}\n===== END SUMMARY =====\n\n"
+    "===== SOURCE TEXTBOOK TEXT =====\n{book_text}\n===== END SOURCE ====="
+)
+
+
+async def verify_extract_fidelity(
+    *, summary: str, book_text: str, candidates: list[str],
+    provider: str, model: Optional[str], transport: str,
+    homework_job_id: Optional[UUID], phase_output_id: Optional[UUID],
+) -> list[str]:
+    """One structured gemini-flash call: which of `candidates` are real extract
+    transcription errors vs the source. Returns confirmed mismatch descriptions
+    (empty = clean). Never raises for a bad verdict — on any failure returns []
+    (fail-open: the guard must never block or corrupt a good extract)."""
+    if not candidates:
+        return []
+    prompt = _VERIFY_FIDELITY_PROMPT.format(
+        suspects="\n".join(f"- {c}" for c in candidates),
+        summary=summary, book_text=book_text,
+    )
+    try:
+        result = await run_phase(
+            provider=provider, model=model, phase_prompt=prompt,
+            phase_name="lesson.extract.verify", schema=ExtractFidelityVerdict,
+            homework_job_id=homework_job_id, phase_output_id=phase_output_id,
+            operation="lesson.extract.verify", transport=transport,
+        )
+    except Exception as exc:
+        logger.warning(f"agent.verify_extract_fidelity failed (fail-open): {exc!r}")
+        return []
+    parsed = result.parsed
+    if isinstance(parsed, ExtractFidelityVerdict):
+        return [m for m in parsed.mismatches if m.strip()]
+    return []
+
+
 def validate_extract_text(text: str) -> Optional[str]:
     """Gate A — deterministic check on the RAW local PDF text. Returns a failure
-    reason string, or None if the text looks like real, readable content.
-    Terminal: a failure here means the input is unreadable (scanned / broken
-    font), which no provider can fix."""
+    reason string, or None if the text looks like real, readable content. A
+    failure marks the local text unusable (scanned / broken-font / garbled); the
+    pipeline routes it to a vision extract, which fails loud only if it also
+    cannot read the pages."""
     stripped = (text or "").strip()
     if len(stripped) < settings.extract_min_text_chars:
         return f"unreadable PDF (no text layer): only {len(stripped)} chars extracted"
@@ -1123,6 +1257,9 @@ def validate_extract_text(text: str) -> Optional[str]:
     ratio = letters / visible if visible else 0.0
     if ratio < settings.extract_min_printable_ratio:
         return f"unreadable PDF (no text layer): printable-letter ratio {ratio:.2f}"
+    plaus = _alpha_plausibility_ratio(stripped)
+    if plaus < settings.extract_min_alpha_ratio:
+        return f"garbled PDF text layer: alphabet-plausibility {plaus:.2f}"
     return None
 
 
@@ -1235,6 +1372,17 @@ def extract_text_is_too_sparse(text: str, n_pages: int) -> bool:
     if n_pages <= 0:
         return False
     return len((text or "").strip()) / n_pages < settings.extract_min_chars_per_page
+
+
+def _toc_text_is_usable(toc_source_text: str, pages_scanned: int) -> bool:
+    """True when the locally-extracted TOC text is present, dense enough (not a
+    watermark-only scan), AND written in a real alphabet (not mojibake/glyph
+    garbage). Any failure → the caller vision-attaches the printed contents page."""
+    if not toc_source_text:
+        return False
+    if extract_text_is_too_sparse(toc_source_text, pages_scanned):
+        return False
+    return _alpha_plausibility_ratio(toc_source_text) >= settings.extract_min_alpha_ratio
 
 
 def _toc_pages_scanned(total_pages: int) -> int:
@@ -1378,7 +1526,7 @@ async def extract_toc(
         "explain that you cannot read the PDF."
     )
 
-    toc_text_usable = has_local_toc_text and not extract_text_is_too_sparse(
+    toc_text_usable = _toc_text_is_usable(
         toc_source_text, toc_source_meta.get("pages_scanned", 0)
     )
     window: Optional[Path] = None
@@ -2106,6 +2254,7 @@ async def summarize_lesson(
     homework_job_id: UUID,
     phase_output_id: UUID,
     transport: str = "cli",
+    correction_hint: str = "",
 ) -> tuple[str, int, int]:
     """Single-provider extract: inject the whole-book TEXT (no PDF attached),
     model locates the lesson by title and summarizes. Returns (text, prompt_tokens,
@@ -2121,6 +2270,12 @@ async def summarize_lesson(
         rules=_NO_PREAMBLE,
         book_text=book_text,
     )
+    if correction_hint:
+        instruction += (
+            "\n\nIMPORTANT — your previous summary mis-transcribed the source. "
+            "Correct these and re-summarize faithfully from the textbook text:\n"
+            f"{correction_hint}"
+        )
     prompt = _build_master_prompt(
         phase_prompt=instruction,
         phase_name="lesson.extract",
