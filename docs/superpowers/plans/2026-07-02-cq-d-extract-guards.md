@@ -613,7 +613,8 @@ async def test_regens_once_on_confirmed_drift(monkeypatch):
         mdl="gemini-2.5-flash", transport="api", section=_SECTION, job_id=None, po_id=None,
     )
     assert calls["n"] == 1                     # exactly one regen
-    assert "-3/(2a)" not in out and "-3/a" in out
+    # fixtures use U+2212 (unicode minus) — assert with it, not ASCII '-', else vacuous
+    assert "−3/(2a)" not in out and "−3/a" in out
     assert (xin, xout) == (2, 3)               # regen tokens billed
 
 
