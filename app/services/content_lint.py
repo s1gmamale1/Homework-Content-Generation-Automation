@@ -88,6 +88,69 @@ def _lint_misconception_tags(output_md: str) -> list[LintFinding]:
     return out
 
 
+# --- error-detection format check (EXACTLY-ONE-broken-block) -----------------
+
+_APOS = r"['ʻʼ‘’]"
+_NOT = rf"noto{_APOS}?g{_APOS}?ri"
+# Every broken-block marker. Noun-first REQUIRES a digit (so digitless prose
+# "blok nega noto'g'ri" never matches); each form captures the id when present.
+_MARKER = re.compile(
+    rf"(?i)"
+    rf"blo(?:k|ck)\s*(?P<id_pre>\d+)\s+{_NOT}"        # "Blok 4 noto'g'ri"  (R1: noun-first)
+    rf"|{_NOT}\s+blo(?:k|ck)\s*(?P<id_post>\d+)?"      # "noto'g'ri blok[ 4]"
+    rf"|xato\s+blo(?:k|ck)\s*(?P<id_xato>\d+)?"        # "xato blok[ 4]"
+    rf"|this is the broken block"                      # English markers, no id
+    rf"|broken block"
+)
+_REVEAL_HDR = re.compile(r"(?im)^[ \t]*#{1,6}[ \t]*(reveal|ochish)\b")
+_BLOCK_ID = re.compile(r"(?i)\bblo(?:k|ck)\s*(\d+)")
+
+
+def _line_around(text: str, pos: int) -> str:
+    start = text.rfind("\n", 0, pos) + 1
+    end = text.find("\n", pos)
+    return text[start: end if end != -1 else len(text)]
+
+
+def _lint_error_detection(output_md: str) -> list[LintFinding]:
+    rev = _REVEAL_HDR.search(output_md)
+    reveal_off = rev.start() if rev else len(output_md)
+
+    body_ids: set[str] = set()
+    body_marker_count = 0
+    reveal_id: str | None = None
+
+    for m in _MARKER.finditer(output_md):
+        gd = m.groupdict()
+        mid = gd.get("id_pre") or gd.get("id_post") or gd.get("id_xato")
+        if mid is None:  # English/markerless form — recover an id from the same line if any
+            bm = _BLOCK_ID.search(_line_around(output_md, m.start()))
+            mid = bm.group(1) if bm else None
+        if m.start() >= reveal_off:
+            if reveal_id is None and mid is not None:
+                reveal_id = mid
+            continue
+        body_marker_count += 1
+        if mid is not None:
+            body_ids.add(mid)
+
+    if reveal_id is None and rev is not None:  # first block id after the reveal header
+        bm = _BLOCK_ID.search(output_md, reveal_off)
+        reveal_id = bm.group(1) if bm else None
+
+    out: list[LintFinding] = []
+    if body_marker_count == 0 and reveal_id is None:
+        out.append(LintFinding("errdet_no_broken_marker",
+                               "no broken-block marker found (prompt requires exactly one)"))
+    elif len(body_ids) >= 2:
+        out.append(LintFinding("errdet_multiple_broken",
+                               f"multiple broken blocks marked: blocks {sorted(body_ids)}"))
+    elif body_ids and reveal_id and reveal_id not in body_ids:
+        out.append(LintFinding("errdet_reveal_mismatch",
+                               f"reveal names block {reveal_id} but body marks {sorted(body_ids)}"))
+    return out
+
+
 # --- dispatcher --------------------------------------------------------------
 
 def lint_phase(phase_name: str, output_md: str, *, subject: str, output_language: str) -> list[LintFinding]:
@@ -97,6 +160,8 @@ def lint_phase(phase_name: str, output_md: str, *, subject: str, output_language
     findings = _lint_language(output_md)
     if phase_name == "flashcards":
         findings += _lint_misconception_tags(output_md)
+    if phase_name == "practice-error-detection":
+        findings += _lint_error_detection(output_md)
     return findings[:_MAX_FINDINGS]
 
 

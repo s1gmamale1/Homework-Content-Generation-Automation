@@ -64,3 +64,34 @@ def test_misconception_tag_check_only_runs_on_flashcards():
     md = "**misconception:** untagged mistake"
     findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
     assert "misconception_untagged" not in _codes(findings)
+
+
+ED = "practice-error-detection"
+
+
+def test_clean_real_errdet_outputs_have_no_format_findings():
+    for name in ("errdet-clean-8f734563.md", "errdet-clean-3ca0da6f.md"):
+        md = (FIX / name).read_text(encoding="utf-8")
+        findings = cl.lint_phase(ED, md, subject="matematika", output_language="uz")
+        assert not [f for f in findings if f.code.startswith("errdet_")], f"false positive on {name}: {findings}"
+
+
+def test_zero_markers_flagged():
+    md = (FIX / "errdet-zero-markers.md").read_text(encoding="utf-8")
+    assert "errdet_no_broken_marker" in _codes(cl.lint_phase(ED, md, subject="matematika", output_language="uz"))
+
+
+def test_two_markers_flagged():
+    md = (FIX / "errdet-two-markers.md").read_text(encoding="utf-8")
+    assert "errdet_multiple_broken" in _codes(cl.lint_phase(ED, md, subject="matematika", output_language="uz"))
+
+
+def test_reveal_mismatch_flagged():
+    md = (FIX / "errdet-reveal-mismatch.md").read_text(encoding="utf-8")
+    assert "errdet_reveal_mismatch" in _codes(cl.lint_phase(ED, md, subject="matematika", output_language="uz"))
+
+
+def test_errdet_check_only_runs_on_that_phase():
+    md = (FIX / "errdet-zero-markers.md").read_text(encoding="utf-8")
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
+    assert not [f for f in findings if f.code.startswith("errdet_")]
