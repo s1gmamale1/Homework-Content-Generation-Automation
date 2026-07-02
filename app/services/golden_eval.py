@@ -14,8 +14,9 @@ from __future__ import annotations
 import json
 import pathlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -98,6 +99,12 @@ class DimensionScore:
     verdict: Literal["flag", "pass"]
     detail: str
     mechanism: Literal["deterministic", "llm"]
+    # Normalized token-usage dict for the ONE `agent.run_phase` call behind an
+    # LLM-rubric dimension (see `PhaseResult.usage`); empty {} for deterministic
+    # dims and for degrade-to-pass outcomes with no completed call. Threaded
+    # through so `scripts/golden_eval.py` can sum `pricing.cost_usd` per dim
+    # without re-deriving it from anywhere else.
+    usage: dict = field(default_factory=dict)
 
 
 _LANGUAGE_FLAG_CODES = {"mixed_script", "calque", "english_template"}
@@ -320,7 +327,7 @@ async def _score_via_rubric(
     parsed = result.parsed
     if parsed is None:
         return DimensionScore(dimension, "pass", "scorer-unavailable: no parsed verdict returned", "llm")
-    return DimensionScore(dimension, parsed.verdict, parsed.evidence, "llm")
+    return DimensionScore(dimension, parsed.verdict, parsed.evidence, "llm", usage=dict(result.usage or {}))
 
 
 async def score_boundary(
@@ -389,3 +396,193 @@ async def score_extract_fidelity(
     return await _score_via_rubric(
         "extract_fidelity", prompt, provider=provider, model=model, transport=transport
     )
+
+
+# --------------------------------------------------------------------------
+# score_packet — the 6-dimension composite over one job's phases
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PacketScore:
+    """One packet's verdicts, keyed by the manifest's 6 dimensions.
+
+    `scores` may have FEWER than 6 keys: when `llm=False`, `boundary`,
+    `answer_key`, and `extract_fidelity` are LLM-only dimensions with no
+    deterministic counterpart, and are OMITTED entirely rather than stamped
+    "pass" — an omitted key reads honestly as "not measured this run"; a fake
+    `pass` would let a deterministic-only run silently claim a clean bill on
+    dimensions it never actually checked. `broken_question` always has a
+    deterministic half (`score_error_detection_format`) so it is always
+    present, just `mechanism="deterministic"` when `llm=False` (see E1 below).
+    """
+
+    job_id: str
+    scores: dict[str, DimensionScore]
+
+
+def _packet_md(phases: list[PhaseView]) -> str:
+    """Concatenates every content phase's markdown into one packet blob for
+    the packet-wide LLM rubrics (answer_key / broken_question / extract_fidelity)."""
+    return "\n\n".join(f"### {p.phase_name}\n{p.output_md}" for p in phases if p.output_md)
+
+
+def _phase_md(phases: list[PhaseView], phase_name: str) -> str:
+    """Concatenates the (normally singular) phase(s) matching `phase_name`."""
+    return "\n\n".join(p.output_md for p in phases if p.phase_name == phase_name and p.output_md)
+
+
+async def score_packet(
+    entry: GoldenEntry,
+    phases: list[PhaseView],
+    source_text: str,
+    next_lesson_title: str,
+    *,
+    provider: str,
+    model: Optional[str],
+    transport: str,
+    llm: bool = True,
+) -> PacketScore:
+    """Scores one packet against all 6 CQ-E manifest dimensions.
+
+    Composition:
+      - `language`  <- `score_language` (deterministic, always).
+      - `reflection` <- `score_reflection` (deterministic, always).
+      - `broken_question` <- **E1 merge**: flags if EITHER
+        `score_error_detection_format` (deterministic, always runs) OR, when
+        `llm=True`, `score_broken_question` (LLM) flags. `mechanism="llm"`
+        whenever the LLM half fired (i.e. whenever `llm=True`, regardless of
+        which half actually flagged) else `"deterministic"`; `detail` names
+        both halves' verdicts so a reader can tell which one fired.
+      - `boundary` / `answer_key` / `extract_fidelity` <- the LLM scorers,
+        called ONLY when `llm=True`; otherwise these 3 keys are OMITTED from
+        `scores` (see `PacketScore` docstring — never faked as `pass`).
+
+    The LLM rubrics need packet-level markdown: `packet_md` is every content
+    phase's `output_md` concatenated; `boss_arena_md`/`preview_md` are pulled
+    from the `boss-arena` / `case-based-preview` phases specifically (per
+    `flows.py`'s phase names).
+    """
+    scores: dict[str, DimensionScore] = {}
+
+    scores["language"] = score_language(phases, subject=entry.subject, language=entry.language)
+    scores["reflection"] = score_reflection(phases)
+
+    det_bq = score_error_detection_format(phases, subject=entry.subject, language=entry.language)
+
+    if llm:
+        packet_md = _packet_md(phases)
+        boss_arena_md = _phase_md(phases, "boss-arena")
+        preview_md = _phase_md(phases, "case-based-preview")
+
+        llm_bq = await score_broken_question(
+            packet_md=packet_md, source_text=source_text, provider=provider, model=model,
+            transport=transport,
+        )
+        flagged = det_bq.verdict == "flag" or llm_bq.verdict == "flag"
+        scores["broken_question"] = DimensionScore(
+            "broken_question",
+            "flag" if flagged else "pass",
+            f"deterministic={det_bq.verdict} ({det_bq.detail}); llm={llm_bq.verdict} ({llm_bq.detail})",
+            "llm",
+            usage=llm_bq.usage,
+        )
+
+        signals = read_signals(phases)
+        solver_status = next((s for s in signals["solver_statuses"] if s), None)
+
+        scores["boundary"] = await score_boundary(
+            boss_arena_md=boss_arena_md, preview_md=preview_md, source_text=source_text,
+            next_lesson_title=next_lesson_title, provider=provider, model=model, transport=transport,
+        )
+        scores["answer_key"] = await score_answer_key(
+            packet_md=packet_md, source_text=source_text, solver_status=solver_status,
+            provider=provider, model=model, transport=transport,
+        )
+        scores["extract_fidelity"] = await score_extract_fidelity(
+            packet_md=packet_md, source_text=source_text, provider=provider, model=model,
+            transport=transport,
+        )
+    else:
+        # llm=False (deterministic-only / free tier): broken_question stays
+        # present (its deterministic half always runs) but reflects ONLY
+        # `score_error_detection_format`; boundary/answer_key/extract_fidelity
+        # are LLM-only and are omitted (see PacketScore docstring).
+        scores["broken_question"] = det_bq
+
+    return PacketScore(job_id=entry.job_id, scores=scores)
+
+
+def diff_scores(baseline: PacketScore, current: PacketScore) -> list[str]:
+    """Human-readable regressions: a dimension that was `pass` in `baseline`
+    and is `flag` in `current`. A dimension missing from `current` (e.g. an
+    LLM dim omitted by a `llm=False` run) is NOT a regression — there is
+    nothing to compare, so it is skipped rather than treated as a flag.
+    Identical scores -> `[]`."""
+    regressions: list[str] = []
+    for dim, base_score in baseline.scores.items():
+        cur_score = current.scores.get(dim)
+        if cur_score is None:
+            continue
+        if base_score.verdict == "pass" and cur_score.verdict == "flag":
+            regressions.append(
+                f"{dim}: pass -> flag "
+                f"(baseline: {base_score.detail!r}; current: {cur_score.detail!r})"
+            )
+    return regressions
+
+
+def packet_score_to_dict(score: PacketScore) -> dict:
+    """`PacketScore` -> a plain JSON-able dict. Paired with
+    `packet_score_from_dict` for the `--baseline`/`--emit-baseline` round trip
+    in `scripts/golden_eval.py`."""
+    return {
+        "job_id": score.job_id,
+        "scores": {
+            dim: {
+                "dimension": ds.dimension,
+                "verdict": ds.verdict,
+                "detail": ds.detail,
+                "mechanism": ds.mechanism,
+                "usage": ds.usage,
+            }
+            for dim, ds in score.scores.items()
+        },
+    }
+
+
+def packet_score_from_dict(data: dict) -> PacketScore:
+    """Inverse of `packet_score_to_dict`."""
+    scores = {
+        dim: DimensionScore(
+            dimension=d["dimension"],
+            verdict=d["verdict"],
+            detail=d["detail"],
+            mechanism=d["mechanism"],
+            usage=d.get("usage") or {},
+        )
+        for dim, d in data["scores"].items()
+    }
+    return PacketScore(job_id=data["job_id"], scores=scores)
+
+
+async def _load_phases_from_db(job_id: UUID | str) -> list[PhaseView]:
+    """Read-only load of one job's phases from `phase_outputs`, mapped to the
+    plain `PhaseView` read-model `score_packet` consumes. Imports are local so
+    importing `golden_eval` never requires DB/settings config to be importable
+    (the module is otherwise standalone/offline per the module docstring)."""
+    from app.db import SessionLocal
+    from app.repositories import phase_outputs as phase_repo
+
+    async with SessionLocal() as session:
+        rows = await phase_repo.list_for_job(session, job_id)
+        return [
+            PhaseView(
+                phase_name=row.phase_name,
+                output_md=row.output_md or "",
+                judge_status=row.judge_status,
+                validation_warnings=row.validation_warnings,
+                solver_status=getattr(row, "solver_status", None),
+            )
+            for row in rows
+        ]
