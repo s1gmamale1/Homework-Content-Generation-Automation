@@ -112,3 +112,16 @@ def resolve_judge(
     if resolved_judge == resolved_gen:
         return judge_model_for(gen_provider, gen_model)
     return (judge_provider, judge_model)
+
+
+def resolve_solver(
+    gen_provider: str,
+    gen_model: Optional[str],
+    solver_provider_ov: Optional[str],
+    solver_model_ov: Optional[str],
+) -> tuple[str, str]:
+    """Resolve the solver (provider, model): an explicit override wins unless it
+    would let the generator's own model re-solve its own key (self-grade), which is
+    swapped to a generator-aware frontier peer. Identical policy to resolve_judge —
+    a solver, like a judge, must out-reason the producer. See _self_fallback."""
+    return resolve_judge(gen_provider, gen_model, solver_provider_ov, solver_model_ov)
