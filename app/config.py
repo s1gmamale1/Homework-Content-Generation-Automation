@@ -174,6 +174,11 @@ class Settings(BaseSettings):
     # letter ratio, the PDF is treated as unreadable (scanned / broken font).
     extract_min_text_chars: int = 500
     extract_min_printable_ratio: float = 0.55
+    # Below this fraction of alphabetic chars belonging to a real alphabet
+    # (Latin/Cyrillic/Uzbek), the text layer is garbled (cp1251 mojibake or a
+    # subset font whose glyph!=byte) — route to vision. Real books measure
+    # >=0.999; the RU-mojibake book scores 0.07. 0.70 leaves a huge margin.
+    extract_min_alpha_ratio: float = 0.70
     # Gate B (summary): a real lesson summary is thousands of chars; the silent
     # refusal that motivated this was 275. Below this → reject → fail over.
     extract_min_summary_chars: int = 400

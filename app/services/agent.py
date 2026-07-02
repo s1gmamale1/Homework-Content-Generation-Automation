@@ -1103,6 +1103,38 @@ _EXTRACT_REFUSAL_MARKERS = (
 _REFUSAL_HEAD_CHARS = 240
 
 
+# Alphabets a real curriculum textbook is written in: ASCII Latin, the Cyrillic
+# block, and the Uzbek modifier letters (ʻ/ʼ and their curly-quote variants).
+# Text extracted as the WRONG bytes — cp1251 Cyrillic mis-decoded as latin1
+# (mojibake: "Ó÷åáíèê"), or a subset font whose glyph codes don't equal their
+# byte values — stays `.isalpha()` but lands mostly OUTSIDE these blocks. Real
+# books score ~1.00; the RU-mojibake book f20db30c scores 0.07 (measured). This
+# is the signal validate_extract_text's letter-DENSITY ratio cannot see (garbage
+# letters are still letters). Below _ALPHA_RATIO_MIN_SAMPLE alphabetic chars we
+# cannot judge, so we return 1.0 (plausible) — never false-fire on a tiny slice.
+_UZBEK_MODIFIER_LETTERS = frozenset("ʻʼ‘’")
+_ALPHA_RATIO_MIN_SAMPLE = 200
+
+
+def _is_expected_alpha(c: str) -> bool:
+    if ("a" <= c <= "z") or ("A" <= c <= "Z"):
+        return True
+    if 0x0400 <= ord(c) <= 0x04FF:   # Cyrillic
+        return True
+    return c in _UZBEK_MODIFIER_LETTERS
+
+
+def _alpha_plausibility_ratio(text: str) -> float:
+    """Fraction of alphabetic chars that belong to an alphabet a real textbook is
+    written in. 1.0 when there is too little text to judge. See the block comment
+    above for why this catches garbage the letter-density ratio passes."""
+    letters = [c for c in (text or "") if c.isalpha()]
+    if len(letters) < _ALPHA_RATIO_MIN_SAMPLE:
+        return 1.0
+    good = sum(1 for c in letters if _is_expected_alpha(c))
+    return good / len(letters)
+
+
 def validate_extract_text(text: str) -> Optional[str]:
     """Gate A — deterministic check on the RAW local PDF text. Returns a failure
     reason string, or None if the text looks like real, readable content.
