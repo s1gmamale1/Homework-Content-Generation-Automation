@@ -49,3 +49,17 @@ def test_gate_b_does_not_false_trigger_on_legit_uzbek():
     summary = ("# Dars\n\n" + "Tarixiy manbalarga ko'ra ba'zi ma'lumotlar mavjud emas, "
                "ammo asosiy voqealar quyidagicha. " * 40)
     assert validate_extract_summary(summary) is None
+
+
+def test_gate_a_flags_mojibake_that_passes_letter_density():
+    # 600+ chars of cp1251-as-latin1 mojibake: letter-DENSITY is high (all
+    # alphabetic) so the old gate passed it; the alphabet ratio must now reject.
+    txt = ("Ó÷åáíèê äëÿ 8 êëàññîâ øêîë îáùåãî ñðåäíåãî îáðàçîâàíèÿ. " * 20)
+    reason = validate_extract_text(txt)
+    assert reason is not None and "plausib" in reason.lower()
+
+
+def test_gate_a_passes_real_uzbek_book_text():
+    txt = ("Uchburchakning perimetri, medianasi, balandligi va bissektrisasi. "
+           "Parallelogrammning xossalari va alomatlari haqida. " * 20)
+    assert validate_extract_text(txt) is None

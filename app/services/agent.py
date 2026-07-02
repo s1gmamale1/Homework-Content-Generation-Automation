@@ -1137,9 +1137,10 @@ def _alpha_plausibility_ratio(text: str) -> float:
 
 def validate_extract_text(text: str) -> Optional[str]:
     """Gate A — deterministic check on the RAW local PDF text. Returns a failure
-    reason string, or None if the text looks like real, readable content.
-    Terminal: a failure here means the input is unreadable (scanned / broken
-    font), which no provider can fix."""
+    reason string, or None if the text looks like real, readable content. A
+    failure marks the local text unusable (scanned / broken-font / garbled); the
+    pipeline routes it to a vision extract, which fails loud only if it also
+    cannot read the pages."""
     stripped = (text or "").strip()
     if len(stripped) < settings.extract_min_text_chars:
         return f"unreadable PDF (no text layer): only {len(stripped)} chars extracted"
@@ -1155,6 +1156,9 @@ def validate_extract_text(text: str) -> Optional[str]:
     ratio = letters / visible if visible else 0.0
     if ratio < settings.extract_min_printable_ratio:
         return f"unreadable PDF (no text layer): printable-letter ratio {ratio:.2f}"
+    plaus = _alpha_plausibility_ratio(stripped)
+    if plaus < settings.extract_min_alpha_ratio:
+        return f"garbled PDF text layer: alphabet-plausibility {plaus:.2f}"
     return None
 
 
