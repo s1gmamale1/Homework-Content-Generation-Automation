@@ -10,7 +10,7 @@
 > **Standing rules for every cluster** (CLAUDE.md): TDD per task; a NEW function MUST have a
 > test that runs its REAL body (mock only the I/O boundary, never the function under test);
 > stage only the files the task lists (other sessions commit to this branch); anything that
-> touches generation needs a **real CLI smoke** at the acceptance gate; finish = worklog +
+> touches generation needs a **real generation smoke over the production transport (api/SDK today)** at the acceptance gate; finish = worklog +
 > INDEX row + plan `git mv` to `shipped/` + WISHLIST/ROADMAP closes + reference-doc de-stale;
 > rebase-check on `origin/Nggaev-v2` before PR. Each cluster's worklog ID = next free at
 > the time (verify against the live tip — parallel branches collide on IDs).
@@ -247,7 +247,7 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 > CQ-A and CQ-C both touch prompt-assembly (`pipeline.py`/`agent._build_master_prompt`) — **serialize A before C**. CQ-B is disjoint (new module) — safe in parallel with anything.
 
 ### CQ-A — Prompt-layer fixes — **ONE implementer, ONE plan/PR, ships 3 items**
-Surface: `prompts/_general/*.md` + the prompt-assembly path (`pipeline.py` context build). Real CLI smoke mandatory (affects generation).
+Surface: `prompts/_general/*.md` + the prompt-assembly path (`pipeline.py` context build). Real generation smoke mandatory (affects generation) — over the production transport (`transport=api`, Vertex SDK), not the CLI.
 1. **R21.1 lesson-boundary rule** — TOC is in the DB: inject "next lesson is _{title}_ — do NOT use its concepts, nor the converse/criteria/generalization of this lesson's" into content-phase prompts (worst offenders: case-based-preview, boss-arena). Killed 3/5 audit flags.
 2. **R21.5 reflection fix** — stop pre-asserting attempt outcomes ("Needs Retry", fabricated weaknesses); app owns pass/fail per `reflection.md`.
 3. **`l2-bridge-follows-medium`** — L2 subjects hardcode the Uzbek bridge; make `_resolve_language_rule` (`prompts.py:103-110`) honor the chosen medium.
