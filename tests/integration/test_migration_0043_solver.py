@@ -44,6 +44,25 @@ def test_0043_adds_and_drops_solver_columns():
                 "select column_default, is_nullable from information_schema.columns "
                 "where table_name='homework_jobs' and column_name='solver_transport'")
             assert "inherit" in (row["column_default"] or "") and row["is_nullable"] == "NO"
+            # CHECK constraint DEFINITIONS bite on the exact value sets (a typo'd
+            # value list would pass a mere existence check — assert the def text).
+            for name, needles in (
+                ("ck_homework_jobs_solver_transport", ("cli", "api", "inherit")),
+                ("ck_batches_solver_transport", ("cli", "api", "inherit")),
+                ("ck_phase_outputs_solver_status",
+                 ("ok", "mismatch_regen", "mismatch_shipped",
+                  "mismatch_regen_failed", "unavailable", "refused")),
+            ):
+                cdef = await conn.fetchval(
+                    "select pg_get_constraintdef(oid) from pg_constraint where conname=$1", name)
+                assert cdef is not None, f"{name} missing"
+                for needle in needles:
+                    assert needle in cdef, f"{name} def missing {needle!r}: {cdef}"
+            # R2 seed: when a launch_defaults row exists (a bare scratch DB may have
+            # none), its solver_model must be the seeded default, never something else.
+            seeded = await conn.fetchval(
+                "select solver_model from launch_defaults where solver_model is not null limit 1")
+            assert seeded in (None, "gemini-3.1-pro-preview"), seeded
         finally:
             await conn.close()
 
