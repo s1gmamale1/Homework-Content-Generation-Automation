@@ -9,7 +9,9 @@ def _fake_batch():
         id=uuid4(), book_id=uuid4(), subject="math", grade="8",
         output_language="uz", provider="gemini", model="gemini-2.5-pro",
         transport="api", extract_transport="inherit", judge_transport="inherit",
+        solver_transport="inherit",
         extract_provider=None, extract_model=None, judge_provider=None, judge_model=None,
+        solver_provider=None, solver_model=None,
         created_at=datetime(2026, 6, 30, tzinfo=timezone.utc),
         paused_at=None, paused_reason=None, session_limit_strategy="inherit",
     )
