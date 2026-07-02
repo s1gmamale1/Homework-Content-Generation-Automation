@@ -411,10 +411,14 @@ git commit -m "cqc: model_tiers.resolve_solver with self-grade guard (never solv
 
 ### Task 5: launch-time stamping of solver_* onto job/batch
 
-**Files:**
-- Modify: `app/services/agent_models.py` — if there is a role registry/validator list (e.g. a `ROLES` set or per-role `validate_role_transport` callers), add `solver`. Verify `resolve_role_transport` is generic (it is) and reused as-is.
-- Modify: the launch path that copies `judge_provider/judge_transport` from `launch_defaults` onto the new `homework_jobs`/`batches` row. **Anchor:** `grep -rn "judge_transport" app/services app/repositories app/api` to find every stamping site; add the parallel `solver_*` copy at each. (Likely `app/services/batch.py` / `app/repositories/batches.py` / the job-create path.)
-- Test: `tests/services/test_launch_stamps_solver.py` (new; DB-gated if the stamp path needs a session — else pure)
+**Files (the judge-role mirror — VERIFIED anchor map at execution tip):**
+- Modify: `app/schemas/job.py` — add `solver_transport: str = "inherit"`, `solver_provider: Optional[str] = None`, `solver_model: Optional[str] = None` to BOTH request bodies (single-job ~L37-42 and batch ~L58-65), beside `judge_*`.
+- Modify: `app/repositories/jobs.py` `create()` (L27) — add the three `solver_*` params (mirror judge L40/45/56/71) and stamp onto `HomeworkJob`.
+- Modify: `app/repositories/batches.py` `get_or_create_for_book()` (L13) — add the three `solver_*` params (mirror judge L24/27-28/50/53-54) and stamp onto the batch row.
+- Modify: `app/api/v1/jobs.py` — resolve `res_solver_provider,res_solver_model = resolve_role_selection(body.solver_provider, body.solver_model, ld.solver_provider, ld.solver_model)` + `res_solver_transport = resolve_role_transport_default(body.solver_transport, ld.solver_transport)` (mirror L253-256), pass all three into `jobs_repo.create(...)` (mirror L275-290), and add the transport/combo validation (mirror L148-149, L186-187).
+- Modify: `app/api/v1/batch.py` — same resolve (mirror L217-223), pass into `batches_repo.get_or_create_for_book(...)` (L274-278) AND the per-section `jobs_repo.create(...)` (L333-343), add to the batch response dict (L100-105) + validation (L161-162, L202-203).
+- Test: `tests/services/test_launch_stamps_solver.py` (new; DB-gated — mirror the existing judge-stamping launch test, find it via `grep -rln "judge_transport" tests`).
+- **NOTE — no `agent_models.py` change and no code default needed:** `resolve_role_transport`/`resolve_role_selection`/`resolve_role_transport_default` are already role-generic (reused as-is). `launch_defaults` is **migration-seeded** (the repo raises if the row is missing — no app-create path), and migration `0043`'s `UPDATE … WHERE solver_provider IS NULL` runs after the row-creating `0039`, so fresh installs are covered by the migration alone. The R2 "code default" is therefore dropped.
 
 **Interfaces:** ensures a launched job carries `solver_provider/model/transport` from `launch_defaults` (or `'inherit'`/NULL defaults), so Task 7's pipeline resolution reads real values.
 
@@ -422,14 +426,14 @@ git commit -m "cqc: model_tiers.resolve_solver with self-grade guard (never solv
 
 - [ ] **Step 2: Run** the new test → FAIL (job's `solver_provider` is NULL / `solver_transport` defaulted, not copied from defaults).
 
-- [ ] **Step 3: Implement** — at each site that copies `judge_*` from `launch_defaults`, add `solver_provider`, `solver_model`, `solver_transport` copies with the same null/inherit handling. Do NOT introduce a new copy mechanism; extend the existing one line-for-line. **R2 code default:** wherever the app ensures/creates the singleton `launch_defaults` row (grep the judge default), seed `solver_provider='gemini'`, `solver_model='gemini-3.1-pro-preview'`, `solver_transport='inherit'` so a fresh install matches the Task-2 migration seed (belt-and-suspenders — migration seeds an existing row, code seeds a newly-created one).
+- [ ] **Step 3: Implement** — at each anchor above, add the parallel `solver_*` handling by mirroring the judge line-for-line (same null/inherit handling, same helpers). Do NOT introduce a new copy mechanism. (No `agent_models.py` change, no code default — see the NOTE above.)
 
-- [ ] **Step 4: Run** the new test + any batch/launch tests touched → PASS.
+- [ ] **Step 4: Run** the new test + `uv run python -m pytest tests/api -q` (or the launch/batch test files touched) → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/services/agent_models.py <launch-path file(s)> tests/services/test_launch_stamps_solver.py
+git add app/schemas/job.py app/repositories/jobs.py app/repositories/batches.py app/api/v1/jobs.py app/api/v1/batch.py tests/services/test_launch_stamps_solver.py
 git commit -m "cqc: stamp solver_* from launch_defaults onto job/batch at launch (mirrors judge)"
 ```
 
