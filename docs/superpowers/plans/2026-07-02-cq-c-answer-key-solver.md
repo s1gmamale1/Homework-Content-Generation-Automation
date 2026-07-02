@@ -585,11 +585,11 @@ git commit -m "cqc: wire solver into _execute_phase — solve final output, rege
 **Why:** the solver's api-auth error re-raises (job-level failure). On the all-Vertex fleet (no `ANTHROPIC_API_KEY`), any job whose *resolved* solver is claude/api — the self-grade swap of a `gemini-3.1-pro-preview` generator, or an explicit `solver=claude/api` override — would be **claimed** by a worker that cannot serve it, then die. The judge role already solves this with a startup capability flag + a claim-gate SQL predicate; the solver must mirror it, or the plan's "never fail a job" constraint is false in the deployment we actually run.
 
 **Files:**
-- Modify: `app/services/worker.py` — `_compute_capabilities`: add a per-role solver api-readiness flag (`solver_api_ok` / `solver_fallback_api_ok`), computed exactly like the judge flags (`judge_api_ok`, `judge_fallback_api_ok`).
-- Modify: `app/repositories/jobs.py` — `claim_next_job`'s SQL predicate (~lines 299-338): AND each candidate job's **resolved** solver transport/provider against the worker's solver capability, mirroring the judge predicate line-for-line (the resolve-judge-mirroring clause). Use `resolve_solver`/`resolve_role_transport` semantics so a NULL override that resolves to claude-api is gated the same as an explicit one.
-- Test: `tests/services/test_worker_solver_capability.py` (capability computation) + extend the existing claim-gate DB test (`grep -rln "claim_next_job" tests`) with a solver case.
+- **⚠️ CORRECTION (verified at execution): NO `worker.py` change.** `worker._compute_capabilities` returns only PROVIDER-level caps `{can_claude_api, can_gemini_api}` — there are no per-role flags (`judge_api_ok` etc. do not exist). The judge role is gated ENTIRELY in the claim-gate SQL by combining those provider caps with the job's stamped columns. So the solver mirrors that: **SQL only.**
+- Modify: `app/repositories/jobs.py` `claim_next_job` — mirror the judge block (`jobs.py:330-371`) on the `solver_*` columns: add `solver_needs_api` (transport=='api' OR inherit-under-api), `job_is_self_solve` (`provider==solver_provider AND content_model_resolved==coalesce(solver_model,'')`), `self_solve_provider` (the `_PRIMARY_SELF_FALLBACK` CASE), and `solver_ok = or_(not_(solver_needs_api), and_(job_is_self_solve, _provider_api_ok(self_solve_provider)), and_(not_(job_is_self_solve), _provider_api_ok(HomeworkJob.solver_provider)))`. Add `.where(solver_ok)` to `pick_stmt` (beside `.where(judge_ok)`, ~L417), and add `solver_needs_api` to the `job_resolved_api` `or_(...)` (~L403-407) so a solver-api job is also fleet-pause-gated. Reuse the existing `_provider_api_ok`, `content_model_resolved`, `_PRIMARY_SELF_FALLBACK`.
+- Test: extend/mirror `tests/integration/test_claim_gate_self_grade.py` (the judge claim-gate DB test) with solver cases.
 
-**Interfaces:** consumes `model_tiers.resolve_solver` (Task 4), `resolve_role_transport` (existing), the `solver_*` job columns (Task 3).
+**Interfaces:** consumes the `solver_*` job columns (Task 3, stamped by Task 5); reuses the existing judge claim-gate SQL helpers. `resolve_solver`==`resolve_judge`, so the SQL self-grade CASE is identical.
 
 - [ ] **Step 1: Write the failing tests** — make them BITE (the vacuous-claim-gate trap: a predicate assertion that still passes when the guard is deleted is worthless — RED-prove it by asserting a no-`ANTHROPIC_API_KEY` worker does NOT claim a job whose solver resolves to claude-api, AND that it DOES claim one whose solver resolves to gemini-api):
 
@@ -601,17 +601,17 @@ git commit -m "cqc: wire solver into _execute_phase — solve final output, rege
 #   - prove-it-bites: temporarily neutralize the new AND clause -> job A wrongly claimed (documents the guard is load-bearing)
 ```
 
-- [ ] **Step 2: Run** the new tests → FAIL (no solver flag; predicate ignores solver).
+- [ ] **Step 2: Run** the new tests → FAIL (claim predicate ignores solver → the claude-solver job IS wrongly claimed).
 
-- [ ] **Step 3: Implement** — add the capability flag in `_compute_capabilities` and the AND clause in the claim predicate, cloning the judge's handling. Do NOT invent a new gating mechanism; extend the existing one.
+- [ ] **Step 3: Implement** — add the `solver_ok` clause + `.where(solver_ok)` + `solver_needs_api` in `job_resolved_api`, cloning the judge's handling. NO `worker.py` change. Do NOT invent a new gating mechanism.
 
-- [ ] **Step 4: Run** the new tests + the existing judge capability/claim-gate tests → PASS (solver gated, judge behavior unchanged).
+- [ ] **Step 4: Run** the new tests + the existing judge claim-gate tests (`tests/integration/test_claim_gate_self_grade.py`, `tests/integration/test_claim_order.py`, `tests/integration/test_claim_contention.py`) → PASS (solver gated, judge behavior unchanged).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/services/worker.py app/repositories/jobs.py tests/services/test_worker_solver_capability.py <claim-gate test file>
-git commit -m "cqc: worker capability + claim-gate for solver role (don't claim api-solver jobs a worker can't serve)"
+git add app/repositories/jobs.py tests/integration/test_claim_gate_self_grade.py
+git commit -m "cqc: claim-gate solver role (don't claim api-solver jobs a worker can't serve)"
 ```
 
 ---
