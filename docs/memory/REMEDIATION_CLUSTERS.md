@@ -246,11 +246,11 @@ Everything else can merge in any order (rebase-on-tip each time). If a dependenc
 > **CQ-D** upstream hygiene, **CQ-E (R20)** last — it freezes baselines over the fixed system.
 > CQ-A and CQ-C both touch prompt-assembly (`pipeline.py`/`agent._build_master_prompt`) — **serialize A before C**. CQ-B is disjoint (new module) — safe in parallel with anything.
 
-### CQ-A — Prompt-layer fixes — **ONE implementer, ONE plan/PR, ships 3 items**
-Surface: `prompts/_general/*.md` + the prompt-assembly path (`pipeline.py` context build). Real generation smoke mandatory (affects generation) — over the production transport (`transport=api`, Vertex SDK), not the CLI.
-1. **R21.1 lesson-boundary rule** — TOC is in the DB: inject "next lesson is _{title}_ — do NOT use its concepts, nor the converse/criteria/generalization of this lesson's" into content-phase prompts (worst offenders: case-based-preview, boss-arena). Killed 3/5 audit flags.
-2. **R21.5 reflection fix** — stop pre-asserting attempt outcomes ("Needs Retry", fabricated weaknesses); app owns pass/fail per `reflection.md`.
-3. **`l2-bridge-follows-medium`** — L2 subjects hardcode the Uzbek bridge; make `_resolve_language_rule` (`prompts.py:103-110`) honor the chosen medium.
+### CQ-A — Prompt-layer fixes — ✅ **SHIPPED [0109]** (`cq-a-prompt-boundary`)
+Surface: `prompts/_general/reflection.md` + the prompt-assembly path (`pipeline.py` context build) + `prompts.py`. Real api smoke on book `860e86aa` §17 Pythagoras PASSED (boss-arena no converse reach; reflection conditional; ru bridge). Suite 1275 passed. No migration.
+1. **R21.1 lesson-boundary rule** — ✅ `pipeline._inject_lesson_boundary` injects the boundary note into `lesson_context` (all content phases; extract untouched); next lesson via `toc_entries.get_next_in_book` (skips NULL-section end-matter). Chose all-content-phases over the two-worst-offenders-only variant (systemic defect; near-zero cost).
+2. **R21.5 reflection fix** — ✅ `reflection.md` §2/§4 no longer pre-assert outcomes; app owns pass/redo.
+3. **`l2-bridge-follows-medium`** — ✅ `prompts._l2_rule` makes the L2 scaffolding bridge follow the medium (uz byte-identical via frozen-literal test); `_resolve_language_rule` threads `output_language`.
 
 ### CQ-B — Deterministic validators — **ONE implementer, ONE plan/PR, ships 2 items** (no LLM, no cost)
 Surface: one new module (e.g. `app/services/content_lint.py`) + post-phase wiring + tests. Disjoint from CQ-A/C.
