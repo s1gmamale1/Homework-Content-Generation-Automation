@@ -219,8 +219,10 @@ async def _record_skip(job_id: UUID, reason: str) -> None:
         log.warning("notion: could not record skip reason for job %s", job_id, exc_info=True)
 
 
-async def archive_job(job_id: UUID) -> None:
-    """Best-effort entry point called from the pipeline after job is `done`."""
+async def archive_job(job_id: UUID, *, force: bool = False) -> None:
+    """Best-effort entry point called from the pipeline after job is `done`.
+    With `force=True` (operator re-archive), an already-archived job is NOT
+    short-circuited and its leaf pages are cleared and rewritten (replace mode)."""
     global _warned_unconfigured
     if not settings.notion_enabled:
         return
@@ -233,8 +235,10 @@ async def archive_job(job_id: UUID) -> None:
     try:
         async with SessionLocal() as session:
             job = await jobs_repo.get(session, job_id)
-            if job is None or job.notion_archived_at is not None:
-                return  # gone or already archived (idempotent on retry)
+            if job is None:
+                return  # gone
+            if job.notion_archived_at is not None and not force:
+                return  # already archived (idempotent on retry) unless forced
             book = await books_repo.get(session, job.book_id)
             section = await toc_repo.get(session, job.toc_entry_id)
             if book is None or section is None:
@@ -279,6 +283,7 @@ async def archive_job(job_id: UUID) -> None:
                 subject_page_id=subject_page_id,
                 lesson_title=lesson_title,
                 phase_md=phase_md,
+                replace=force,
             )
         except Exception as exc:  # noqa: BLE001 - push exhausted retries; record + give up
             log.warning("notion: push failed for job %s after %d attempts (non-fatal)",
