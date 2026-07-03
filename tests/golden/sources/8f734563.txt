@@ -1,0 +1,1384 @@
+4- §. AlGeBRAIK KASRlARNI QO‘ShISh VA AYIRISh
+bir xil maxrajli kasrlarni qo‘shish va ayirish qoidalarini bunday yozish mumkin:
+a b
+a +b
++ =
+;
+m m
+m
+
+a b
+a −b
+− =
+.
+m
+m m
+
+a−
+ab
+− b 2 a2−
+ab
+−b a −
+, ,
+va
+va a 2−b2b
+va
+aa
++b
++b a a
++b
++b
+aa
++b
++b
+
+1- m a s a l a .
+
+kasrlarni qo‘shing.
+
+a − b 2 a − b a − 2b a − b + 2 a − b + a − 2b 4 a − 4b 4 ( a − b )
++
++
+=
+=
+=
+.
+a +b
+a +b
+a +b
+a +b
+a +b
+a +b
+2 2
+
+2 2
+
+a a
+vava
+vab b
+a +ab+ b a +ab+ b
+
+2- m a s a l a .
+
+kasrlarning ayirmasini toping.
+
+a
+b
+a 2 −b 2 ( a + b ) ( a − b )
+−
+=
+=
+= a −b.
+a+b
+a +b a +b
+a +b
+2
+
+2
+
+har xil maxrajli kasrlarni qo‘shish yoki ayirish uchun bu kasrlarni umumiy maxrajga keltirish va bir xil maxrajli kasrlarni
+qo‘shish yoki ayirish qoidasidan foydalanish kerak.
+3- masala.
+mak,
+
+1
+a
+
+3
+
+,
+
+1
+2
+
+2a b
+
+1
+
+va
+
+3ab
+
+kasrlarni qo‘shing.
+
+2
+
+berilgan kasrlarning umumiy maxraji 6a3b2 ko‘paytma bo‘ladi. de1
+a
+
+3
+
++
+
+1
+2
+
+2a b
+
+4- masala.
+
++
+
+1
+3ab
+
+a a
+
+2
+
+=
+
+vava
+va
+
+6b
+
+2
+
+3 2
+
+6a b
+c c
+
+2 2
+
+2 2
+
+3b 3cb c 15ab
+15ab
+a
+2
+
+3b c
+
+−
+
+c
+15ab
+
+2
+
+=
+
++
+
+3ab
+3 2
+
+6a b
+
++
+
+2a
+
+2
+
+2
+
+3 2
+
+6a b
+
+=
+
+2 a + 3ab + 6b
+3 2
+
+6a b
+
+2
+
+.
+
+kasrlarning ayirmasini toping.
+5a
+
+2
+2
+
+15ab c
+
+−
+
+c
+
+2
+
+2
+
+2
+
+15ab c
+
+=
+
+5a − c
+2
+
+2
+
+15ab c
+
+.
+
+22
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+1
+
+5- m a s a l a .
+tamiz:
+
+2
+
+x −x
+
+3
+
+va
+
+kasrlarni qo‘shing.
+
+2
+
+x −1
+
+kasrlarning maxrajlarida turgan ko‘phadlarni ko‘paytuvchilarga ajrax 2 − x = x ( x −1) , x 2 −1 = ( x −1) ( x +1) .
+
+kasrlarning umumiy maxraji x(x – 1) (x + 1) ko‘paytma bo‘ladi. kasrlarni
+umumiy maxrajga keltirib, topamiz:
+1
+2
+
+x −x
+
++ 2
+
+3
+
+x −1
+
+=
+
+1
+x ( x −1)
+
+=
+
++
+
+3
+
+( x −1) ( x +1)
+
+x +1+ 3x
+
+(
+
+)
+
+2
+
+x x −1
+
+=
+
+x +1
+
+=
+
+(
+
+)
+
+2
+
+x x −1
+
+4 x +1
+
+(2 )
+
+x x −1
+
++
+
+3x
+
+(2 )
+
+x x −1
+
+=
+
+.
+
+Turli maxrajli kasrlarni qo‘shish yoki ayirishni ushbu tartibda bajarish mumkin:
+1) kasrlarning umumiy maxraji topiladi;
+2) kasrlar umumiy maxrajga keltiriladi;
+3) hosil bo‘lgan kasrlar qo‘shiladi;
+4) mumkin bo‘lsa, natija soddalashtiriladi.
+1
+
+6- m a s a l a .
+
+2
+
+a + 4a + 4
+
+−
+
+4
+4
+
+3
+
+a + 4a + 4a
+
++
+
+2
+
+4
+3
+
+a + 2a
+
+ifodaning son qiyma-
+
+2
+
+tini a = 0,5 bo‘lganda hisoblang.
+berilgan ifodani quyidagicha almashtirish mumkin:
+1
+2
+
+( a + 2)
+
+− 2
+a
+
+4
+
+( a + 4 a + 4)
+2
+
++ 2
+
+4
+
+a ( a + 2)
+
+a − 4 + 4 ( a + 2)
+
+=
+
+2
+
+=
+
+2
+
+a ( a + 2)
+2
+
+=
+
+1
+2
+
+( a + 2)
+
+4
+
+− 2
+
+a ( a + 2)
+
+2
+
+a + 4a + 4
+2
+
+a ( a + 2)
+2
+
+2
+
+=
+
+1
+a
+
+2
+
++ 2
+
+4
+
+a ( a + 2)
+
+=
+
+.
+
+demak, ifodaning izlanayotgan son qiymati:
+1
+0, 5
+
+2
+
+=
+
+1
+0, 25
+
+=
+
+100
+25
+
+= 4.
+
+23
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+Mashqlar
+Amallarni bajaring (54 – 60):
+54. 1)
+55. 1)
+4)
+
+p
+q
+
+3p
+
++
+
+2
+
+q
+
+; 			 2)
+2
+
+b
+
+3
+
+3a
+
+a
+
+b
+
+a +b
+
+− 3 ; 			 3)
+
+c
+
++
+
+a +b
+
+a + 2b 5 a − 2b
+c+d
++ 2c − d ; 			 2)
++
+;
+2
+2
+2a
+2a
+3c
+3c
+10 a − b
+a
+
+3
+
+−
+
+3a − b
+a
+
+2
+5
+
+3
+7
+
+4
+
+5
+
+7
+
+28
+
+56. 1) + ;
+2) −
+57. 1)
+
+8a
+
+m
+2
+
+3
+
+2
+
+; 		 5)
+
+3)
+
++
+
+5d
+2
+
+3)
+
+(1− b)
+
+; 			 6)
+
+5d
+
+1
+
+3a
+
++ ;
+
+5)
+
+a
+
+1
+
+2
+
+b
+
+5b
+
+; 						 4) −
+
+a +b
+2c
+
+−
+
+n+a
+a −b
+
+−
+
+2c
+
+2
+
+2
+
+(1 + b)
+
+x
+
+; 			 4)
+
+.
+
+;
+
+−
+
+2
+
+(2 − a)
+
+.
+
+2
+
+a b
+
+15a
+
+n+a
+
+2
+
+(2 + a)
+c
+
+y
+
+a b
+d
+
++ ;
+3
+
+a
+
+b
+
+4
+
+12 d
+
+; 								 6) −
+
+.
+
+1
+
+3
+
+b
+
+1
+
+2
+
+n
+
+a
+
+5
+
+a
+
+b
+
+− ; 				 2) + ; 					 3) 5 − ; 					 4) + 7 .
+2
+
+3
+
+b
+
+b
+
+2
+
+3
+
+c
+
+c
+
+58. 1) 5 − + 2 ; 						 2) + 4 − 2 ; 			
+c
+
+c
+
+d
+
+d
+
+3) d − +
+59. 1)
+2)
+60. 1)
+2)
+
+1
+
++
+
+ab
+
+1
+bc
+
+2
+
+;
+2 						 4)
+
+; 								 3)
+
+m
+n
+
+−k +
+
+a
+bc
+
+−
+
+a
+
+m2
+n2
+
+.
+
+; 									 5)
+
+bd
+
+3
+m
+
+2
+
++
+
+4
+mn
+
+;
+
+b
+b
+2
+3
+1
+1
++ ; 									 6)
+− 3.
+−
+; 							 4)
+ac cd
+mn n
+mn mk
+3c
+3
+
+4a b
+2a
+9b
+
+4
+
++
+
+−
+
+5d
+6 ab
+
+3
+
+7c
+3
+
+6a b
+
+; 				 3)
+; 				 4)
+
+2
+3y
+
+3
+
+−
+
+5
+2
+
+7x y
+
+1
+2
+
+6x y
+
+−
+
++
+
+3
+4 xy
+
+2
+
+5
+12 xy
+
++
+
+2
+
+;
+
+11
+2 2
+
+14 x y
+
+5)
+; 				 6)
+
+a
+b
+b
+c
+
+24
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+2
+
+b
+
+c
+
+c
+
+a
+
+b
+
+b
+
+c d
+
+cd
+
++ 2+ 2 ;
+
++ 2 +
+
+2
+
+;
+
+Algebraik kasrlarni qo‘shing va ayiring (61–72):
+2
+
+2
+
+4y
+
+5x
+
+2x
+x
+2a
+5a
+61. 1) 3 (a − b ) + a − b ; 									 3) 3 (a + 1) + 4 (a + 1) ;
+7x
+
+5x
+
+2) 2 (x −1) − x −1 ; 									 4) 5 ( y − 3) − 2 ( y − 3) .
+62. 1)
+
+2a
+a
+5
++ 3 ; 									 3) 3 a + 3b − 6a + 6b ;
+2x − 2 4x − 4
+
+2)
+
+3x
+x
+7
+− 3 ; 								 4) 4 x + 4 y − 8 x + 8 y .
+5b + 5 10b + 10
+
+63. 1)
+
+3
+
++
+
+2
+
+a +a
+
+y+a
+y −b
+5a
+; 									 3) 2
++
+;
+2
+ab + b
+b + ba ab + a
+
+5b
+
+2a
+
+2) ax + ay − bx + by ;
+64.   1)
+
+2)
+
+4)
+
+a −1
+
+a
++ 1 ;
+2
+1+ b
+1− b
+
+2
+2
+
+x -9
+
++
+
+3)
+
+1
+;
+x + 3 										
+
+5x − 2
+
+2x
+
+66.   1) x − 4 − 16 − x 2 ;
+
+y−a
+ab − b
+
+.
+
+2
+
+1
+
+2
+
+(a + 2)
+
+5 (a − b)
+5+ p
+
+2
+
+−
+
+7
+8 (a + b)
+
+−
+
+2x
+
+5x − 2
+
+p − 36
+
+;
+
+.
+
+p
+;
+6+ p
+
+2
+
+4) x − 4 − x 2 −16 .
+2
+
++ 6 ;
+2) 2
+n − 49 7 − n
+2a
+
+4
+
+c − 8 16c − 2c
+3) 2c + 3 −
+2
+9 − 4c
+	          								
+
+12 n − 5
+
+3
+   
+67. 1) a + 2 +
+
+a − ab
+
+−
+
+1
+
+6
+10
+;
+2) −
+
+65.   1)
+
+y −b
+2
+
+3) x ( x − 3) + x ( x + 3) ;
+
+3
+−5 ;
+x+ y x
+
+a
+
+4)
+
+2
+
+21 y + 1
+
+3
+
+;
+
+y
+
+4) 1− 9 y 2 − 3 y −1 .
+a
+
+	          							 2) (3a + 1)2
+
++
+
+4
+.
+3a + 1
+
+25
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+68. 1)
+2)
+
+y −4y +4
+4 −5x
+
+2
+
+1+ 6 x + 9 x
+7
+
+3) (a − b )
+69. 1) a +
+
+a
+a −1
+
+7
+a +b
+
+3x +1
+
+; 						 5)
+
+; 								 6)
+
+b−a
+
+2
+
+c −1
+
++
+
+2
+
+; 										 4)
+
+8
+
+16b
+
+− 2
+
+a −a
+
+a −b
+
+6x
+
+2
+
+3
+
+;
+
+4
+
+2) x 2 − y 2 − x − y − x + y ;
+71.   1)
+2)
+
+3)
+
+72. 1)
+
+a +b
+a
+
+−
+
+5b −1
+2
+
+3b − 3
+
+6a
+2
+
+9 a −1
+a +1
+3
+
+a −1
+
+a
+a −b
++
+
++
+
+−
+
+2
+
+2)
+
+a +4
+3
+
+a +8
+
+−
+
+2a
+25 −10 a + a
+1
+2
+
+x −6x + 9
+
+; 											 2) b −
+
+c
+
+3) c +1−
+
+−
+5
+
+−
+
+2
+
+70.   1)
+
+4
+− 7 ;
+2
+− 7 ; 							 4)
+y−2
+(m − n) n − m
+
+2y +8
+2
+
+−
+
+b
+2
+
+a − ab
+
+b+2
+2b + 2
+
+3a + 1
+3 − 9a
+
+−
+
++
+
+1
+2
+
+a + a +1
+
+1
+a+2
+
+;
+
+b +1
+b −1
+
+;
+
+3a −1
+6a + 2
+
+3)
+4)
+4)
+
+a
+
+b
+b−2
+
+2
+
+3
+a +3
+
+3
+
++
+
+1
+
+.
+
+2
+
+( x + 3)
+
+;       		
+
+3− a
+
+−
+
+4a − 9
+
+m
+
+;
+
+a − 25
+
+2
+
++
+
+2
+
+−
+
+10
+
+− a +1.
+
+a +1
+
+7
+
++ 2
+
+2
+
+6
+
+−
+
+a −9
+
+8
+2a + 3
+
+4
+m − 2n
+
+−
+
+;
+
+2
+
+−
+
+7
+3 − 2a
+
+m−n
+2
+
+4n − m
+
+xy
+
+x
+
+2
+
+3
+
+5) x − x + y − x 2 − y 2 ;
+; 			 6) a − 2 +
+
+; 							 3)
+
+; 									 4)
+
+3
+
+4a
+2+a
+
+a +b
+2
+
+a − ab + b
+
+2
+
+−
+
+−
+
+2
+
+m − 3m + 9
+3
+
+m − 27
+
+−
+
+a +b
+2
+
+a + 2a
+
+1
+a +b
+1
+
+m−3
+
+.
+
+;
+
+.
+
+26
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+;
+
+.
+
+

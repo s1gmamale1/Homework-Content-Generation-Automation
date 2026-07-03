@@ -1,0 +1,259 @@
+2. PARALLELOGRAMM VA UNING XOSSALARI
+1. Pàràllålîgràmm. Tekislikda ikkita parallel togri chiziqning boshqa
+ikkita parallel togri chiziq bilan kesishishidan hosil bolgan tortburchakni
+korib chiqamiz (1- rasm). Bu tortburchak maxsus nomga ega bolib, uni
+parallelogramm deb ataymiz.
+B
+
+1
+4
+
+Tarif. Qarama-qarshi tomonlari ozaro
+parallel bolgan tortburchak parallelogramm
+deb ataladi.
+
+C
+
+Agar ABCD parallelogramm bolsa, AB || DC va
+AD || BC boladi (1- rasm).
+
+1- masala. 2- rasmda HABC = HCDA. ABCD
+tortburchak parallelogramm ekanini isbotlang.
+Yechish. ABC va CDA uchburchaklarning tengligidan quyidagi kelib chiqadi: ∠ 1 = ∠3 va ∠2 = ∠4. 1 va 3 burchaklar  AB va CD parallel togri
+chiziqlar va AC kesuvchi hosil qilgan ichki almashinuvchi burchaklar bolgani
+uchun teng. Xuddi shuningdek, 2 va 4 burchaklar BC va AD parallel togri
+chiziqlar hamda AC kesuvchi hosil qilgan ichki almashinuvchi burchaklar
+bolgani uchun teng. Parallel togri chiziqlarning alomatiga kora quyidagiga
+ega bolamiz: AB || DC va BC || AD. Demak, ABCD tortburchakda qaramaqarshi tomonlar jufti-jufti bilan parallel, yani tarifga kora, ABCD  parallelogramm.
+Parallelogrammning bir tomonida yotgan nuqtadan qarama-qarshi tomonni oz ichiga olgan togri chiziqqa tushirilgan perpendikular parallelogrammning balandligi deyiladi. Parallelogrammning bir tomoniga cheksiz
+kop balandliklar otkazish mumkinligi ravshan (3- rasm), ular parallel togri
+chiziqlar orasidagi masofalar bolgani uchun ozaro teng. Parallelogrammning
+bir uchidan uning turli tomoniga bir-biridan farq qiladigan ikkita balandlik
+otkazish mumkin. Masalan, 4- rasmda BP va BF  balandliklardir.
+2. Parallelogrammning xossalari.
+D
+
+A
+
+1- teorema.
+
+(1- x o s s a . ) Parallelogrammning bir tomoniga yopishgan burchaklari yigindisi 180° ga teng.
+2
+
+B
+
+1
+A
+
+2
+
+C
+
+3
+
+3
+
+B
+
+h
+
+C
+
+h
+
+4
+
+C
+
+B
+
+F
+
+h
+
+4
+D
+
+A
+
+D
+
+A
+
+P
+
+8
+
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+D
+
+Isbot. Parallelogrammning bir tomoniga yopishgan burchaklar ichki bir
+tomonli burchaklar boladi. Shuning uchun ularning yigindisi 180° ga teng.
+Teorema isbotlandi.
+2- teorema.
+
+( 2 - x o s s a . ) Parallelogrammning
+qarama-qarshi burchaklari ozaro teng.
+
+qarama-qarshi
+
+tomonlari
+
+va
+
+Isbot. ABCD  berilgan parallelogramm bolsin, yani AB || CD va
+BC || AD. Parallelogramning AC diagonalini otkazamiz (2- rasmga q.) hamda
+ABC va CDA uchburchaklarni korib chiqamiz. Ularda AC tomon 
+umumiy, 1 va 3 burchaklar  AB va CD parallel togri chiziqlar hamda
+AC kesuvchi hosil qilgan ichki almashinuvchi burchaklar bolgani uchun
+teng, 2 va 4 burchaklar esa AD va BC parallel togri chiziqlar hamda
+AC kesuvchi hosil qilgan ichki almashinuvchi burchaklar bolgani uchun
+teng. Demak, uchburchaklar tengligining ikkinchi alomatiga kora, ABC va
+CDA uchburchaklar teng. Xususan bundan, AB = CD, AD = BC va
+∠B = ∠D hamda ∠1 + ∠4 = ∠2 + ∠3, yani ∠A = ∠C ekani kelib chiqadi.
+2- masala. Parallelogramm burchaklaridan ikkitasining yigindisi 172° ga
+teng. Uning burchaklarini toping.
+Yechish. ABCD parallelogramm berilgan bolsin. Parallelogrammning
+qoshni burchaklari yigindisi 180° ga teng bolgani uchun berilgan burchaklar qoshni burchaklar bola olmaydi, demak, ular qarama-qarshi burchaklardir. ∠A + ∠C = 172° bolsin. Parallelogrammning qarama-qarshi
+burchaklari teng bolgani uchun bu holda burchaklarning har biri
+∠A = ∠C = 172° : 2 = 86° boladi. Parallelogrammning hamma burchaklari
+yigindisi 360° ga teng, shuning uchun qolgan ikki burchagi ∠B = ∠D =
+= (360°  172°) : 2 = 94° dan boladi. Javob: 86°, 94°, 86°, 94°.
+3- teorema.
+
+( 3- x o s s a . ) Parallelogrammning diagonallari kesishadi va kesishish
+nuqtasida teng ikkiga bolinadi.
+Isbot. ABCD berilgan parallelogramm va O  AC va BD diagonallarning
+kesishish nuqtasi bolsin (5- rasm). AO = OC va DO = OB ekanini isbot
+qilamiz.
+AOD va COB uchburchaklarni korib chiqamiz. Bu uchburchaklarda
+AD = BC (parallelogrammning 2-xossasiga kora uning qarama-qarshi tomonlari teng), ∠1 = ∠2 va ∠3 = ∠4 (AD va
+B
+C
+5
+BC parallel togri chiziqlarning, mos ra2
+4
+vishda, AC va BD kesuvchilar bilan kesishishidan hosil bolgan ichki almashinuvchi
+burchaklar bolgani uchun). Demak, uchO
+burchaklar tengligining ikkinchi alomatiga
+3
+1
+kora, HAOD = HCOB. Bundan AO = ÑÎ
+D
+va DO = ÎB, yani AC va BD diagonal- A
+9
+
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+B
+
+6
+
+B
+
+C
+
+C
+
+O
+
+O
+
+O
+A
+
+a
+
+A
+
+D
+
+b
+
+d
+
+D
+
+larning har biri kesishish nuqtasi O da teng ikkiga bolinishi kelib chiqadi.
+Teorema isbotlandi.
+3- masala. 3- xossadan foydalanib parallelogramm yasang.
+1- qadam. Ikkita kesishuvchi togri chiziq otkazamiz va ularning kesishish nuqtasini O harfi bilan belgilaymiz (6- a rasm).
+2- qadam. Sirkul yordamida togri chiziqlarning birida ozaro teng OA va
+OC, ikkinchisida esa ozaro teng OB va OD kesmalarni qoyamiz (6-b rasm).
+3- qadam. A, B, C va D nuqtalarni ketma-ket tutashtirib, izlanayotgan
+ABCD parallelogrammni hosil qilamiz (6- d rasm).
+Savol, masala va topshiriqlar
+
+1. 1) Qanday tortburchakka parallelogramm deyiladi? Parallelogrammning
+bir tomoniga yopishgan burchaklari yigindisi nimaga teng?
+? 2) Parallelogrammning diagonallari haqida nima deyish mumkin?
+2. Parallelogrammning perimetri 152 cm, tomonlaridan biri ikkinchisidan
+25 cm ortiq. Parallelogramm tomonlarini toping.
+3. Parallelogramm burchaklaridan ikkitasining yigindisi: 1) 70° ga;
+2) 110° ga; 3) 170° ga teng bolsa, uning hamma burchaklarini toping.
+4. ABCD parallelogrammda: AB = 7 cm, BC = 11 cm, AC = 14 cm,
+BD = 12 cm; O  diagonallarning kesishish nuqtasi ekani malum.
+ABO va BOC uchburchaklarning perimetrlarini toping.
+5. Parallelogrammning qoshni tomonlari yigindisi 20 cm ga, ayirmasi esa
+12 cm ga teng. Shu parallelogrammning tomonlarini toping.
+6. Parallelogrammning ikki tomoni nisbati 5 : 3 ga, perimetri esa 6,4 dm ga
+teng. Parallelogramm tomonlarini toping.
+7. 7- rasmda parallelogramm ayrim elementlarining kattaligi korsatilgan.
+Yana qaysi kattaliklarni topish mumkin?
+7
+
+C
+
+B
+
+B
+α
+
+α
+
+O
+
+3
+
+4
+
+70°
+A
+
+B
+
+C
+
+C
+α
+
+3
+3
+
+50°
+a
+
+5
+
+D
+
+A
+
+D
+
+b
+
+A
+
+d
+
+10
+
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+E 2
+
+D
+
+

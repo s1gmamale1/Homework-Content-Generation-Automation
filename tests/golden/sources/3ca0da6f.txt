@@ -1,0 +1,908 @@
+d) a ⋅ (k + l + n) = ak + al + an
+tengliklarni isbotlang. bu formulalar ma’nosini oching.
+19. Ushbu tengliklarga olib keluvchi hayotiy masalalar tuzing:
+1) a − (b + c + d ) = a − b − c − d ;
+2) a − (b − c ) = a − b + c;
+3) (ab) c = a (bc );
+4) a − (b − c + d ) = a − b + c − d .
+20. (ab):c=a·(b:c) formulani isbotlang. geometrik mulohazalardan va 3rasmdagi shakldan foydalaning.
+b
+
+a
+b:c
+
+3- rasm.
+
+2- §. AlGeBRAIK KASR. KASRlARNI QISQARtIRISh
+1 - m a s a l a . katerning turg‘un suvdagi tezligi soatiga a kilometrga,
+daryo oqimining tezligi soatiga b kilometrga teng. katerning daryo oqimi bo‘yicha harakat tezligi uning daryo oqimiga qarshi harakat tezligidan
+necha marta ortiq?
+katerning daryo oqimi bo‘yicha tezligi soatiga (a + b) kilometrga
+teng; oqimga qarshi tezligi soatiga (a – b) kilometrga teng. shuning uchun
+daryo oqimi bo‘yicha harakat tezligi oqimga qarshi harakat tezligidan
+a +b
+a −b
+
+marta ortiq bo‘ladi.
+a +b
+a −b
+
+ifoda algebraik kasr deyiladi. bu kasrning surati a+b,
+
+maxraji esa a – b.
+12
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+Umuman, surat va maxraji algebraik ifodalar bo‘lgan kasr algebraik
+kasr deyiladi.
+Algebraik kasrlarga doir yana bir necha misollar keltiramiz:
+a
+b
+
+;
+
+2
+x+ y
+
+;
+
+a −b
+c
+
+;
+
+x (b + c)
+y (a − c)
+
+.
+
+Agar algebraik kasrga kiruvchi harflar o‘rniga biror sonlar qo‘yilsa,
+u holda zarur hisoblashlar bajarilgandan keyin shu algebraik kasrning son
+qiymati hosil bo‘ladi.
+a +b
+
+masalan, a =10, b = 8 bo‘lganda
+qiymati
+
+10 + 8
+
+10 − 8
+a +b
+
+a −b
+
+=
+
+18
+2
+
+a −b
+
+algebraik kasrning son
+
+= 9 ga teng bo‘ladi.
+
+algebraik kasrda a va b o‘rniga o‘zaro teng bo‘lmagan (a ≠ b) istal-
+
+gan sonlarni qo‘yish mumkin, chunki a = b bo‘lganda kasrning maxraji
+nolga aylanadi, nolga bo‘lish esa mumkin emas.
+Bundan keyin algebraik kasrga kiruvchi harflar yo‘l qo‘yiladigan (joiz)
+qiymatlarnigina, ya’ni shu kasrning maxraji nolga teng bo‘lmaydigan qiymatlarnigina qabul qiladi, deb shartlashamiz.
+masalan,
+
+a
+a (a −1)
+
+kasr uchun joiz qiymatlar a ning a = 0 va a =1 dan
+
+boshqa barcha qiymatlari bo‘ladi.
+kasrning asosiy xossasini bunday yozish mumkin:
+a
+b
+
+=
+
+ma
+mb
+
+,
+
+bu yerda b ≠ 0, m ≠ 0.
+bu xossa kasrning surat va maxraji bir xil algebraik ifodaga ko‘paytirilsa
+yoki bo‘linsa, unga teng kasr hosil bo‘lishini bildiradi, masalan:
+3 3 ⋅ 5 15 a + b ( a + b )⋅ c .
+=
+=
+,
+=
+4 4 ⋅ 5 20
+b
+bc
+
+13
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+kasrning asosiy xossasidan foydalanib, algebraik kasrni uning surat va
+maxrajiga bir vaqtda kiruvchi umumiy ko‘paytuvchiga qisqartirish mumkin, masalan:
+a (b + c)
+a (b − c)
+
+=
+
+b + c (a + b) c
+c
+= .
+,
+b − c (a + b) d
+d
+
+kasrlarni soddalashtirish uchun avval ularning surat va maxrajining
+umumiy ko‘paytuvchisini ajratib olish kerak. shunga doir misollar keltiramiz.
+2 - m a s a l a . kasrlarni qisqartiring:
+12 a 2 b
+
+1)
+
+4 ab 2
+
+2
+
+;
+
+2)
+
+m −n
+2
+
+2
+
+m + mn
+
+.
+
+1) 12a2b va 4ab2 birhadlar 4ab umumiy ko‘paytuvchiga ega. kasrning surat va maxrajini 4ab ga bo‘lamiz:
+2
+
+12 a b
+4 ab
+
+2
+
+=
+
+4 ab ⋅ 3a
+4 ab ⋅ b
+
+=
+
+3a
+b
+
+.
+
+2) m2 – n2 va m2 + mn ko‘phadlar m + n umumiy ko‘paytuvchiga
+ega, chunki m2 – n2 = (m + n)(m – n), m2 + mn = m(m + n). kasrning surat
+va maxrajini m + n ga bo‘lamiz:
+2
+
+m −n
+2
+
+2
+
+m + mn
+
+=
+
+(m + n) (m − n) m − n
+=
+.
+m (m + n)
+m
+
+kasrlarni qisqartirish uchun bu kasrlarning surat va maxrajini
+ularning umumiy ko‘paytuvchisiga bo‘lish kerak.
+a
+
+kasrning surat yoki maxrajidagi ishora qarama-qarshisiga
+Agar
+b
+o‘zgartirilsa, u holda berilgan kasrga qarama-qarshi kasr hosil bo‘lishini ta’kidlab o‘tamiz.
+−a−a −aa a aa a a −
+a aa a a
+a
+a
+=
+−
+=. − . ; – qarama-qarshi
+=− .
+=va
+− −=; −;; ;= =
+− −=.va
+b b b b b −bb−b −bbb b b b −b
+b
+−a
+b
+
+=−
+
+a
+b
+
+;
+
+a
+−b
+
+=−
+
+a
+b
+
+kasrlar. shu bilan birga
+
+.
+
+14
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+masalan,
+
+−3
+3 −a
+a
+a
+=− ;
+=−
+=
+.
+1 − a a −1
+7
+7 1− a
+
+3 - masala.
+
+3a ( y − x )
+a ( x − y)
+2
+
+kasrni qisqartiring:
+
+3a ( y − x)
+a ( x − y)
+2
+
+=
+
+− 3a ( x − y )
+a ( x − y)
+2
+
+=
+
+−3
+a
+
+=−
+
+3
+a
+
+.
+
+Mashqlar
+21. surati x va y sonlarning ko‘paytmasiga, maxraji esa ularning yig‘indisiga teng algebraik kasrni yozing.
+22. surati p va q sonlarning ayirmasiga, maxraji esa ularning ko‘paytmasiga
+teng bo‘lgan algebraik kasrni yozing.
+23. surati a va b sonlar kvadratlarining ayirmasiga, maxraji esa shu sonlar
+ayirmasining kvadratiga teng bo‘lgan algebraik kasrni yozing.
+24. surati c va d sonlar kublarining yig‘indisiga, maxraji esa shu sonlar
+ko‘paytmasining ikkilanganiga teng bo‘lgan algebraik kasrni yozing.
+25. Algebraik kasrning son qiymatini toping:
+1
+3
+1) , bunda a = 2 ;
+5
+
+a
+
+2)
+
+b +1
+, bunda b = 1, 5 ;
+b −1
+2
+
+3) a + 1 , bunda a = −3 ;
+2a
+
+26. 1) s = vt formuladan v ni;
+3) С = 2πR formuladan R ni;
+
+4)
+
+a −b
+, bunda
+a =a16=, b
+−=3 ;–3;
+bunda
+16,= b
+a + 2b
+
+5)
+
+5a + b
+
+6)
+
+−7 ab
+
+2
+
+2
+
+a − 5b
+2
+
+3b − a
+
+2) p =
+
+m
+V
+
+3
+
+, bunda
+,b b
+= 8=; 8;
+bundaaa= 2
+=2,
+, bunda
+,b b
+=−
+bundaaa= 3
+=3,
+=4 .4.
+
+formuladan V ni;
+
+4) P = 2 (a + b) formuladan a ni toping.
+
+27. har bir yuk mashinasiga a tonnadan kartoshka yuklash mumkin bo‘lsa,
+har birida p kilogrammdan kartoshka bo‘lgan n qop kartoshkani tashib
+ketish uchun nechta yuk mashinasi (x) kerak bo‘ladi? x ni n = 90, p = 50,
+a = 1,5 bo‘lganda toping.
+15
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+28. Mashina soatiga o‘rtacha c metr linoleum ishlab chiqaradi. Agar mashina kuniga n soatdan ishlasa, u a metr lino­leumni necha kunda ishlab
+chiqaradi? Izlanayotgan vaqtni t bilan belgilab, t ni c = 47, a = 11280
+va n = 16 bo‘lganda toping.
+29. Berilgan ikkita kasrning tengligini ko‘rsating:
+6
+18
+;
+1) va
+7
+21
+
+2
+2a
+;
+3) va
+3
+3a
+
+−3
+va 27 ;
+2)
+5
+−45
+
+2a
+2a b
+4) 7b va
+2 ;
+7 ab
+
+2
+
+2
+
+6) a + 3b va
+c
+
+Kasrni qisqartiring (30–45):
+30. 1)
+
+−48
+−64
+−121
+; 									 2)
+; 									 3)
+;
+−56
+−80
+55
+
+31. 1)
+
+12 a
+; 									 2) 2c ; 										 3) 7b ;
+20
+3c
+21b
+
+4)
+
+4 ab
+a
+; 									 5)
+; 									 	 6) 53x .
+2a
+8ac
+x y
+2
+
+32. 1) 3 ;
+a
+
+3)
+33. 1)
+
+a
+a
+
+  								 2)
+
+3
+
+b
+
+7
+
+5
+
+; 									
+
+6
+
+b
+;
+.
+4 									 4) 4
+b
+
+6 ab
+4a
+
+; 									 2)
+
+2
+
+4)
+
+b
+
+3a b
+9a
+
+3
+
+14c
+49c
+
+4
+
+; 												 3)
+4 2
+
+; 									 5)
+
+12 a b
+
+3 3
+
+18a b
+
+; 										 6)
+
+a b
+ab
+
+3
+
+(a + 3b) c
+c
+
+   					 	 4)
+
+2
+
+a
+
+2
+
+m−n
+m −n
+5) m + n va ( m + n) 2 ;
+
+;
+3
+
+2
+
+125ac
+
+3
+
+25a bc
+
+.
+
+4 (m+n)
+2b ( m−n)
+2 (a−b)
+;
+34. 1) 5 (m+n) ; 						 3) 8b ( m−n) ( m−n) ; 					 5)
+b−a
+
+5 ( x− y)
+7 a (a−b)
+3a (a+b)
+2) 5 (a−b) ; 						 4) 9a (a+b) (a−b) ; 					 6) 15 ( y−x) .
+
+16
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+2
+
+.
+
+28
+.
+−14
+
+(a − b) ;
+2
+
+35. 1)
+
+a −b
+
+2)
+36. 1)
+
+m+n
+
+						 3)
+
+4)
+;
+4 					
+
+(m + n)
+
+2
+
+m−n
+
+; 							 5)
+
+(n−m)2
+
+(2 x − 3 y )
+3y − 2x
+
+2
+
+6)
+
+;
+
+3m (1− x)
+
+2
+
+9 m ( x−1)
+2
+
+8a b ( a − b )
+
+;
+
+2
+
+2
+
+4 a b (b − a )
+3
+
+.
+
+3x + 3 y
+; 						 3) 2a + 2b ; 							 5) ac − bc ;
+6c
+4 a − 4b
+ac + bc
+
+2)
+37. 1)
+
+8a
+; 					 4) 12a − 3 ; 							 6) a + ab . 		
+4m − 4n
+6a + 9
+a − ab
+a
+
+2
+
+2
+
+a + ab
+pq
+
+; 						 3)
+
+3
+
+2) p 2 q − pq
+
+12 x − 30 xy
+2
+
+30 x −12 xy
+2
+
+3a + 6b
+
+;            		 2)
+
+2
+
+a +b
+
+2
+
+9c − 64
+
+100 − 49b
+2)
+7b + 10
+
+41.  1)
+
+2
+
+2
+
+d − 6d + 9
+;
+d −3
+2
+
+42.  1)
+2)
+
+; 				 4)
+
+4 y − 4 y +1
+2
+
+4 y −1
+
+		 2)
+
+2
+
+2 mn − n
+
+2 y − xy
+
+36 a + 24 ab
+2
+
+24 a + 36 ab
+2
+
+2
+
+4c − 9 x
+2c − 3 x
+
+25 − x
+2) 2 2 ; 						 4)
+5− x
+a −b
+
+40.  1)
+
+;
+
+12b − 6 a
+x − 2 xy
+
+a −b
+
+; 						 3)
+
+3a − 6b
+
+2
+
+2
+
+39.  1) a − b ; 						 3)
+
+8 − 3c
+
+; 						 5)
+
+2 m − mn
+;
+; 					 6)
+2 				 4)
+2
+
+2
+
+38.  1)
+
+7 a + 14b
+
+2
+
+;             	 3)
+
+; 						 5)
+
+; 							 6)
+
+2
+
+.
+
+3
+
+2
+
+2
+
+3m n − 3m
+
+6 a (b − a )
+2
+
+(2 )
+
+10 a ( 2 − c )
+2
+
+2
+
+25 − y
+
+b n−c n
+
+4
+
+4
+
+25 − y
+
+2
+
+;
+2
+
+b+7
+2
+
+b + 14b + 49
+2
+
+		 6)
+;
+
+3)
+
+2
+
+3
+
+4
+
+4
+
+9 − 6a + a
+3− a
+
+2
+
+3 2
+
+4
+
+2a b − a b
+
+.
+
+.
+
+;
+
+5a b + 5ab
+a −b
+
+2
+
+a − 2a b
+
+;
+
+5a c − 4
+
+b −c
+
+5y− y
+
+;             4)
+
+3
+
+3a ( a − b )
+
+2 y −10
+
+;
+2 							 5)
+
+3
+
+m − 3m n
+
+3
+
+.
+
+;                  4)
+
+1− 2 p
+1− 4 p + 4 p
+
+2
+
+.
+
+2
+
+; 				 3) 3a −26ab +23b ;
+6 a − 6b
+
+2
+
+2
+
+16 a −1
+2
+
+16 a − 8a + 1
+
+2
+
+mn + 50 n
+; 			 4) 50m + 100
+.
+2
+2
+15m −15n
+
+2— Algebra, 8- sinf uchun
+
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+17
+
+

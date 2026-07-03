@@ -1,0 +1,299 @@
+91. 1)
+
+a 2 + ab  a
+b 
+⋅
+;
+2
+2 
+
+
+a − b a + b 
+a +b
+
+2)
+
+ab − b  a
+b 
+ a+b + a−b  ;
+2
+2 ⋅
+a +b
+
+c + d
+
+3) 
+
+−
+
+2c 
+
+d−c
+
+;
+⋅
+c
+c − d  c 2 + d 2
+ 2c
+d − c  c + d
+.
+4)  c + d + c  ⋅ 2
+c + d2
+
+2
+
+ a +1
+a + 3  4a 2 − 4
+6
+
+−
++
+⋅
+92. 1) 
+;
+3
+ 2a − 1 2a 2 − 2 2a + 2 
+
+
+ 2 2
+2)  2 b + 2 + 2 a  : a − b ;
+4 ab
+ a + ab a + b b + ab 
+2
+
+2
+
+2
+
+2
+
+(
+
+)
+
+a −c a −b
+ac
+⋅ a+
+;
+3) a + b ⋅
+2
+−c
+a
+ac + c
+2
+
+
+4) c 2−ac2 ⋅ 2a−b2 : c− ac  .
+
+a −b
+
+c −a
+
+
+
+a+c 
+
+93. hajmi V bo‘lgan muz bo‘lagining massasi p kilogrammga teng. hajmi
+V1 bo‘lgan bo‘lakning massasi nimaga teng?
+94. Avtomobil soatiga v kilometr tezlik bilan harakat qilib, s kilometr yo‘l
+bosib o‘tdi. Agar mototsiklchining tezligi soatiga u kilometr bo‘lsa,
+shu vaqt ichida u qancha yo‘l bosib o‘tadi?
+95. motorli qayiqning turg‘un suvdagi tezligi soatiga v kilometr, daryo
+oqimining tezligi esa v1 kilometr. Qayiq oqim bo‘yicha harakat qilib,
+s kilometr o‘tdi. motorli qayiq oqimga qarshi shu vaqt ichida qancha
+masofani bosib o‘tadi?
+96. (Abu Rayhon beruniy masalasi.) ikki buyumdan birining 10 tasi bir
+dinor (pul birligi) va ikkinchisining 15 tasi bir dinor. bir dinorga ikkala
+buyumdan bir xil miqdorda necha donadan sotib olish mumkin?
+7- §. y =
+
+k
+
+fUNKSIYA. XOSSAlARI, GRAfIGI
+
+x
+
+1-masala. y=
+
+1
+x
+
+funksiyaning grafigini yasang.
+
+1) aniqlanish sohasi – noldan boshqa barcha haqiqiy sonlar;
+2) funksiya – toq, chunki x ≠ 0 bo‘lganda −1x = − 1x ;
+34
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+3) funksiya x > 0 oraliqda manfiy ko‘rsatkichli darajali funksiya­ning
+xossasiga ko‘ra kamayadi, chunki 1 = x−1 ;
+x
+
+4) x > 0 bo‘lganda funksiya musbat qiymatlarni qabul qiladi;
+5) grafikka tegishli bir nechta, masalan, ( 13 ; 3), ( 12 ;  2), (1; 1), (2; 12 )
+
+nuqtalarni topib, x  >  0 ning qiymatlari uchun grafikning bir qismini yasay­
+miz va so‘ngra simmetriya yor­damida x < 0 uchun qolgan qismini yasaymiz
+(4- rasm).
+
+y = 1x funksiyaning grafigi giperbola deyiladi. U tarmoq­lar deb ataluv­
+chi ikki qismdan tuzilgan. Tarmoqlardan biri birinchi cho­rak­da, ikkinchisi
+esa uchinchi chorakda joylash­gan.
+
+4- rasm.
+
+5- rasm.
+
+2 - m a s a l a . k = 2 va k = –2 bo‘lganda y = k funksiya­ning grafi­
+x
+gini yasang.
+Argumentning ayni bir xil qiymatlarida y = 2 funk­siya­ning qiy­
+x
+
+matlari y = 1x funksiya qiymatlarini 2 ga ko‘pay­ti­rish bi­­lan hosil qi­­linishini
+
+eslatamiz. Bu esa y = 2 funk­­siya­­­ning grafigi y = 1 funksiya gra­­figini
+x
+x
+abssissalar o‘qidan or­di­na­ta­lar o‘qi bo‘y­lab ikki baravar cho‘­zish bilan
+hosil qil­i­na­­di, demakdir (5- rasm).
+35
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+y = − 2x funksiyaning qiymatlari y = 2 funksiya qiymatlaridan faqat
+x
+
+ishorasi bilan farq qiladi. demak, y = − 2x funksiyaning grafigi y = 2x funksiya grafigiga abssissalar o‘qiga nisbatan simmetrik (6­ rasm).
+
+istalgan k ≠ 0 da y = kx funksiyaning grafigi ham giperbola deyiladi. giperbola ikkita tarmoqqa ega. Ular, agar k > 0 bo‘lsa, birinchi va
+uchinchi choraklarda, agar k < 0 bo‘lsa, ikkinchi va to‘rtinchi choraklarda
+yotadi.
+1
+y = kx (bunda k > 0) funksiya y = x funksiyaning barcha xossa-
+
+lariga ega, chunonchi, bu funksiya:
+1) x ≠ 0 bo‘lganda aniqlangan;
+2) noldan boshqa barcha haqiqiy qiymatlarni qabul qiladi;
+3) toq;
+4) x > 0 bo‘lganda musbat qiymatlarni va x < 0 bo‘lganda manfiy
+qiymatlarni qabul qiladi;
+5) x < 0 va x > 0 oraliqlarda kamayadi.
+
+Agar k < 0 bo‘lsa, u holda y = kx funksiya 1–3-xossalarga ega
+bo‘ladi; 4–5- xossalar esa bunday ifodalanadi:
+4′) x < 0 bo‘lganda musbat qiymatlarni va x > 0 bo‘lganda manfiy
+qiymatlarni qabul qiladi;
+5′) x < 0 va x > 0 oraliqlarda o‘sadi.
+y = kx funksiya k > 0 bo‘lganda x va y lar orasidagi teskari propor-
+
+sional bog‘lanishni ifoda qiladi, deyiladi. miqdorlar orasidagi bunday
+bog‘lanishlar ko‘pincha fizika, texnika va boshqa sohalarda uchraydi.
+masalan, v o‘zgarmas tezlik bilan aylana bo‘ylab tekis harakat qilayot2
+
+ganda jism a = vr ga teng (bu yerda r – aylana radiusi) markazga intilma
+tezlanish bilan harakatlanadi, ya’ni bu holda tezlanish aylana radiusiga
+teskari proporsional.
+36
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+3 - m a s a l a . Oy Yerdan 3,84∙108 m masofada. Oy 27,3 sut­ka davomida
+Yer atrofini bir marta aylanib chiqadi. Oyning mar­kazga intilma tezla­
+nishini hi­sob­lang.
+2
+
+a tezlanishni   a = vr formula bilan hisoblaymiz, bunda v = Ct , C = 2πr,
+t  =  27,3 ∙ 24 ∙ 3600 s, r  =  3,84 ∙ 108.
+U holda:
+a=
+
+4⋅ π 2 ⋅3,84 ⋅108
+-3
+≈ 2, 72 ⋅ 10 .
+2
+(27,3 ⋅24 ⋅3600)
+
+J a v o b : 2,72∙10−3 m/s2.
+2 − 2 funksiya grafigini yasang.
+4 - m a s a l a . y = x−
+1
+
+y = 2x funksiya grafigini (6- rasm) Ox o‘q bo‘ylab o‘ngga bir birlik
+
+2 − 2 funksiyaning
+va Oy o‘q bo‘ylab ikki birlik pastga surish bilan y = x−
+1
+grafigini hosil qilish mumkin (7-  rasm).
+
+6-rasm.
+7- rasm.
+
+Mashqlar
+2
+97. y = x funksiya grafigini yasang. x ning qanday qiy­mat­larida:
+
+1) y(x)  =  4;			
+bo‘li­shini aniqlang.
+
+2) y ( x) = − 12 ;			
+
+3) y(x)  >  4;			
+
+4) y(x)  ≤  1
+37
+
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+98. 	 Bitta koordinatalar tekisligida y = 1x va y  =  x funksiyalar grafiklarini
+yasang. x ning qanday qiymatlari­da:
+1) bu funksiyalarning grafiklari kesishishini aniqlang;
+2) birinchi funksiyaning grafigi ikkinchi funksiya grafigi­dan yuqo­rida
+(pastda) yotishini aniqlang.
+
+99. Funksiyalarning grafiklarini yasamasdan, ularning kesi­shish nuqtalarini
+toping:
+1) y = 12
+, y = 3x ;
+x
+
+2) y = − 8 , y = −2 x ;
+x
+
+3) y = 2 , y = x −1 ;
+
+4) y = 6 , y = x + 2 .
+
+x
+
+x+1
+
+100. Funksiyalarning grafiklarini yasab, ularning kesi­shish nuqta­la­rini
+taqriban toping:
+3
+3
+1) y = x , y = x + 1 ;	 2) y = − x , y = 1 − x ;
+2
+2
+1
+2
+3) y = x , y = x + 2 ;	 4) y = x , y = x + 4 x .
+
+101. Silindrda porshen ostida gaz o‘zgarmas temperaturada turibdi. Gaz­­ning
+V (litrlarda) hajmi p (atmosfera) bosimida V = 12 for­mu­la bo‘yicha
+p
+
+hisoblanadi.
+1) Bosim 4 atm; 5 atm; 10 atm bo‘lganda gaz egal­la­gan ha­j­mni
+toping; 2) qanday bosimda gaz 3 l; 5 l; 15 l hajmni egal­lashini hi­
+soblang; 3) gazning hajmi uning bosimiga bog‘liqligi grafi­gi­ni yasang.
+102. Reostatdagi I tok kuchi (amperlarda) I = UR formula bi­lan o‘lchanadi,
+bunda U – kuchlanish (voltlarda), R – qarshilik (omlarda).
+1) U  =  6 bo‘lganda I(R) bog‘lanishning grafigini yasang.
+2) Grafik bo‘yicha taqriban toping: a) R qarshilik 6, 12, 20 Ω
+bo‘lganda tok kuchini; b) tok kuchi 10, 5, 1,2 A bo‘lganda reostatning qarshiligini.
+103. Avtomobil yo‘lning radiusi 150 m bo‘lgan aylanma qismi bo‘yicha 60
+km/h tezlik bilan harakat qilmoq­da. Avtomo­bil­­ning markazga intilma
+tezlanishini toping. Agar avtomo­bil­ning tezligi avvalgicha qolib, yo‘l­
+38
+@ELEKTRON_DARSLIKBOT dan yuklab olindi.
+
+
