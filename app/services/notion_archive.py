@@ -147,13 +147,16 @@ def _push_to_notion(
     lesson_title: str,
     phase_md: dict[str, str],  # phase_name -> markdown (only present/done phases)
     find_or_create: Callable = find_or_create,  # injectable for tests
+    replace: bool = False,
 ) -> str:
     """Synchronous Notion I/O. Unconditionally creates the path:
     Subject → 'Generated Homeworks' → <lesson_title> → 'Homework', then the
     grouped page layout (`_HOMEWORK_LAYOUT`): Case-Based Preview, Flashcards
     (flashcards + memory-check inline), Gamified Practices (container of game
     sub-pages), Boss Arena, Reflection. Idempotent: a page that already has
-    content is skipped. Returns the Homework page id."""
+    content is skipped. When `replace` is True, a populated leaf page is
+    cleared (`clear_content_blocks`) and rewritten instead of skipped — used
+    by the operator force-refresh path. Returns the Homework page id."""
     container_id, _ = find_or_create(client, subject_page_id, CONTAINER_TITLE)
     lesson_id, _ = find_or_create(client, container_id, lesson_title)
     homework_id, _ = find_or_create(client, lesson_id, "Homework")
@@ -161,8 +164,11 @@ def _push_to_notion(
     def _write_leaf(parent_id: str, title: str, present: list[tuple[str, str]]) -> None:
         page_id, _ = find_or_create(client, parent_id, title)
         if client.page_has_content(page_id):
-            log.info("notion: page %s (%s) already populated — skipping", page_id, title)
-            return
+            if not replace:
+                log.info("notion: page %s (%s) already populated — skipping", page_id, title)
+                return
+            log.info("notion: page %s (%s) already populated — clearing to rewrite (force)", page_id, title)
+            client.clear_content_blocks(page_id)
         client.append_block_children(page_id, _leaf_blocks(client, present))
 
     for entry in _HOMEWORK_LAYOUT:
@@ -178,7 +184,7 @@ def _push_to_notion(
     return homework_id
 
 
-async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md) -> str:
+async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md, replace: bool = False) -> str:
     """Run the idempotent Notion push in a worker thread, retrying transient
     failures with exponential backoff. Re-raises the last exception if every
     attempt fails, so the caller can record a skip reason."""
@@ -191,6 +197,7 @@ async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md) -
                 subject_page_id=subject_page_id,
                 lesson_title=lesson_title,
                 phase_md=phase_md,
+                replace=replace,
             )
         except Exception as exc:  # noqa: BLE001 - retried, then recorded as a skip
             last_exc = exc
@@ -212,8 +219,10 @@ async def _record_skip(job_id: UUID, reason: str) -> None:
         log.warning("notion: could not record skip reason for job %s", job_id, exc_info=True)
 
 
-async def archive_job(job_id: UUID) -> None:
-    """Best-effort entry point called from the pipeline after job is `done`."""
+async def archive_job(job_id: UUID, *, force: bool = False) -> None:
+    """Best-effort entry point called from the pipeline after job is `done`.
+    With `force=True` (operator re-archive), an already-archived job is NOT
+    short-circuited and its leaf pages are cleared and rewritten (replace mode)."""
     global _warned_unconfigured
     if not settings.notion_enabled:
         return
@@ -226,8 +235,10 @@ async def archive_job(job_id: UUID) -> None:
     try:
         async with SessionLocal() as session:
             job = await jobs_repo.get(session, job_id)
-            if job is None or job.notion_archived_at is not None:
-                return  # gone or already archived (idempotent on retry)
+            if job is None:
+                return  # gone
+            if job.notion_archived_at is not None and not force:
+                return  # already archived (idempotent on retry) unless forced
             book = await books_repo.get(session, job.book_id)
             section = await toc_repo.get(session, job.toc_entry_id)
             if book is None or section is None:
@@ -272,6 +283,7 @@ async def archive_job(job_id: UUID) -> None:
                 subject_page_id=subject_page_id,
                 lesson_title=lesson_title,
                 phase_md=phase_md,
+                replace=force,
             )
         except Exception as exc:  # noqa: BLE001 - push exhausted retries; record + give up
             log.warning("notion: push failed for job %s after %d attempts (non-fatal)",

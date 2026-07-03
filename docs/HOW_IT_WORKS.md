@@ -570,15 +570,26 @@ Key endpoints:
 - `POST /jobs/{id}/retry-archive` — re-attempt the best-effort Notion archive for a `done`
   job whose push previously failed (`notion_archived_at IS NULL`). `archive_job` is idempotent
   (skips already-populated pages) and clears `notion_skip_reason` on success; 409 for a non-done
-  or already-archived job.
+  or already-archived job. **`?force=true`** (0114) overrides the already-archived 409 and
+  **refreshes stale content**: each machine leaf page (Case-Based Preview, Flashcards, Boss Arena,
+  Reflection, the game leaves) is **cleared and rewritten** (`replace` mode → `clear_content_blocks`
+  deletes the leaf's non-`child_page` blocks, then re-appends) instead of skipped. Use after a
+  regen — force-regen mints a fresh job whose auto-archive skips the still-populated page, so the
+  page keeps the old content until a force refresh. Structure, container pages, and human sub-pages
+  are preserved; a manual annotation added *as a block on a generated leaf* is replaced (block
+  provenance isn't stored — deletion happens only on this explicit operator action).
 - `POST /jobs/batch/{batch_id}/retry-archive` — the batch-level version: re-push **every**
   `done`+un-archived lesson of a batch to Notion **from the head process** (which carries
   `NOTION_SUBJECT_PAGES`). Backgrounded (`asyncio.create_task` → a sequential `_rearchive_sweep`)
-  and idempotent; returns immediately with `{queued, already_running}`. The Monitor surfaces a
-  "Notion archive · X/Y" chip and a "Re-archive (N)" button (from the `archived`/`unarchived`
-  rollup counts) whenever a batch has un-archived lessons — the fix for a worker that ran a whole
-  book without `NOTION_SUBJECT_PAGES`. (Only succeeds if the head's own mapping covers that
-  `subject|grade|language`, else it re-records the same skip reason.)
+  and idempotent; returns immediately with `{queued, already_running}`. **`?force=true`** (0114)
+  sweeps **all** `done` lessons (incl. already-archived, via `done_job_ids`) and clears+rewrites
+  their stale leaf pages — the regen-wave refresh lever. **Run it AFTER the regen wave completes:**
+  the sweep takes the latest *done* job per lesson, so a still-running replacement isn't picked up,
+  and once it later finishes its own auto-archive skips-if-populated → the page goes stale again.
+  The Monitor surfaces a "Notion archive · X/Y" chip and a "Re-archive (N)" button (from the
+  `archived`/`unarchived` rollup counts) whenever a batch has un-archived lessons — the fix for a
+  worker that ran a whole book without `NOTION_SUBJECT_PAGES`. (Only succeeds if the head's own
+  mapping covers that `subject|grade|language`, else it re-records the same skip reason.)
 - `GET /jobs/{id}/download` — download the packet as a ZIP of one markdown file per completed
   (non-extract) phase. There's also `POST /jobs/{id}/cancel` to stop a running job.
 - `GET /agent/models` / `GET /agent/stats` — the model menu, and per-provider rolling usage

@@ -175,6 +175,31 @@ async def done_unarchived_job_ids(session: AsyncSession, batch_id: UUID) -> list
     return [r.job_id for r in rows]
 
 
+async def done_job_ids(session: AsyncSession, batch_id: UUID) -> list[UUID]:
+    """Latest job per toc_entry in the batch that is `done` — including
+    already-archived jobs. The worklist for a FORCE re-archive sweep (refresh
+    stale Notion content after a regen). Stable order."""
+    latest = (
+        select(
+            HomeworkJob.id.label("job_id"),
+            HomeworkJob.status.label("status"),
+            HomeworkJob.toc_entry_id.label("toc_entry_id"),
+        )
+        .where(HomeworkJob.batch_id == batch_id)
+        .order_by(HomeworkJob.toc_entry_id, HomeworkJob.created_at.desc())
+        .distinct(HomeworkJob.toc_entry_id)
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(latest.c.job_id)
+            .where(latest.c.status == "done")
+            .order_by(latest.c.toc_entry_id)
+        )
+    ).all()
+    return [r.job_id for r in rows]
+
+
 async def list_with_rollups(session: AsyncSession) -> list[dict]:
     """Every batch (newest first) + its computed rollup + the book filename
     (for subject-variant labeling)."""

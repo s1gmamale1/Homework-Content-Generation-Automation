@@ -81,3 +81,38 @@ def test_upload_bytes_two_step(monkeypatch):
     assert upload_id == "upl_9"
     assert posts[0].endswith("/v1/file_uploads")
     assert posts[1].endswith("/v1/file_uploads/upl_9/send")
+
+
+def _wrapper_with_fake_sdk():
+    from app.services.notion.client import NotionClientWrapper
+    w = NotionClientWrapper(api_key="ntn_testtoken")
+    w.client = MagicMock()          # replace the real notion_client.Client
+    w._rate_limit = lambda: None    # no sleeping in tests
+    return w
+
+
+def test_clear_content_blocks_deletes_only_non_child_page_blocks():
+    w = _wrapper_with_fake_sdk()
+    w.get_block_children = MagicMock(return_value=[
+        {"id": "b1", "type": "paragraph"},
+        {"id": "b2", "type": "file"},
+        {"id": "b3", "type": "child_page"},   # must be preserved
+        {"id": "b4", "type": "divider"},
+    ])
+    deleted = w.clear_content_blocks("page1")
+    assert deleted == 3
+    deleted_ids = {c.kwargs["block_id"] for c in w.client.blocks.delete.call_args_list}
+    assert deleted_ids == {"b1", "b2", "b4"}   # b3 (child_page) NOT deleted
+
+
+def test_clear_content_blocks_empty_page_is_noop():
+    w = _wrapper_with_fake_sdk()
+    w.get_block_children = MagicMock(return_value=[])
+    assert w.clear_content_blocks("page1") == 0
+    w.client.blocks.delete.assert_not_called()
+
+
+def test_delete_block_calls_sdk_blocks_delete():
+    w = _wrapper_with_fake_sdk()
+    w.delete_block("bX")
+    w.client.blocks.delete.assert_called_once_with(block_id="bX")

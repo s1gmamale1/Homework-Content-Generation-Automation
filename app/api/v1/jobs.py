@@ -370,22 +370,25 @@ async def retry_job(
 @router.post("/jobs/{job_id}/retry-archive")
 async def retry_archive_job(
     job_id: UUID,
+    force: bool = False,
     session: AsyncSession = Depends(get_session),
     user: dict = Depends(get_current_user),
 ) -> JobOut:
-    """Re-attempt the best-effort Notion archive for a job whose push previously
-    failed (status=done, notion_archived_at IS NULL). `archive_job` is idempotent
-    (skips already-populated pages) and clears `notion_skip_reason` on success.
-    Refuses non-done or already-archived jobs with 409."""
+    """Re-attempt the best-effort Notion archive for a job. Normally for a job
+    whose push previously failed (status=done, notion_archived_at IS NULL);
+    `archive_job` is idempotent (skips already-populated pages) and clears
+    `notion_skip_reason` on success. With `force=true` an already-archived job is
+    re-pushed and its leaf pages are cleared and rewritten (replace mode) — use
+    after a regen to refresh stale content. Refuses non-done jobs with 409."""
     job = await jobs_repo.get(session, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
     if job.status != "done":
         raise HTTPException(
             409, f"only done jobs can be re-archived; current status={job.status!r}")
-    if job.notion_archived_at is not None:
+    if job.notion_archived_at is not None and not force:
         raise HTTPException(409, "job already archived to Notion")
-    await notion_archive.archive_job(job_id)
+    await notion_archive.archive_job(job_id, force=force)
     # archive_job commits in its OWN session; drop this session's stale copy so
     # _job_out re-reads the updated notion_skip_reason/notion_archived_at.
     session.expire_all()
