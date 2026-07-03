@@ -29,7 +29,7 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`0042_books_toc_validation`** (0028 = enum CHECK constraints,
+also runs it on deploy). Current head: **`0043_solver_role_columns`** (0028 = enum CHECK constraints,
 0029 = `phase_outputs.judge_status`, 0030 = `agent_usages.cache_creation_tokens`,
 0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton,
 0033 = `custom_prompts`/`selected_phases` JSONB on `homework_jobs`+`batches`,
@@ -40,7 +40,8 @@ also runs it on deploy). Current head: **`0042_books_toc_validation`** (0028 = e
 0039 = `content_provider`/`content_model`/`content_transport` on `launch_defaults`,
 0040 = `books.source_language` String(8) NOT NULL server_default `'uz'` + CHECK `uz|ru|en`,
 0041 = `sa_keys` table + `sa_key_assignments` table,
-0042 = `books.toc_validation`/`toc_validation_detail` — post-TOC vision-validator verdict columns).
+0042 = `books.toc_validation`/`toc_validation_detail` — post-TOC vision-validator verdict columns,
+0043 = `solver_*` role columns on `launch_defaults`/`homework_jobs`/`batches` + `phase_outputs.solver_status` + `launch_defaults` seed + `homework_jobs.solver_provider` NULL-row backfill (CQ-C/worklog 0112)).
 Full chain in §7. (Revision IDs stay ≤32 chars — `alembic_version.version_num` is VARCHAR(32).)
 
 ---
@@ -126,6 +127,7 @@ Relationship: `toc_entries` (cascade delete-orphan, ordered by `order_index`).
 | `transport` | String(16) NOT NULL, server_default `'cli'` | Phase 4 (migration 0024): `cli` (subscription CLI auth, $0 marginal) vs `api` (pay-per-token keys); validation requires api ⇒ provider ∈ {claude, gemini} + explicit model; **DB CHECK `cli\|api`** (migration 0028) |
 | `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 (migration 0025): per-role billing override, `cli \| api \| inherit`; `inherit` follows `transport` (`resolve_role_transport`); **DB CHECK `cli\|api\|inherit`** (migration 0028) |
 | `extract_provider` / `extract_model` / `judge_provider` / `judge_model` | String(32 / 128 / 32 / 128) NULL | migration 0027: per-role provider/model; stamped at launch from an explicit pick or the `launch_defaults` global default (migration 0037 backfilled existing NULLs with the seed values). **⚠️ Attribution caveat (verified 2026-07-02): for jobs created BEFORE the 0037 deploy (~2026-06-28), these columns are the backfill, NOT what ran** — e.g. ~97 done api jobs say `judge_model=gemini-2.5-flash` but actually judged on the then-env-default `gemini-3.1-pro-preview` (~2.3× judge cost). For any cost/benchmark attribution use `agent_usages.model_name` on the `judge:%`/role rows — that is ground truth; the job columns are the launch request (or backfill), never written back from runtime. |
+| `solver_transport` / `solver_provider` / `solver_model` | String(16 NOT NULL server_default `'inherit'` / 32 NULL / 128 NULL) | migration 0043 (CQ-C/worklog 0112): per-role config for the answer-key solver, mirrors the judge columns exactly (`resolve_solver`==`resolve_judge`). Stamped at launch from the explicit pick or `launch_defaults` (seed `gemini`/`gemini-3.1-pro-preview`/`inherit`); **0043 backfills existing NULL `solver_provider` rows → `gemini`** (mirrors 0037 — without it a pre-0043 pending/api job strands unclaimable under the solver claim gate). CHECK `cli\|api\|inherit`. |
 | `output_language` | String(16) NOT NULL, server_default `'uz'` | migration 0038: medium of instruction for generated content — `uz` (Uzbek), `en` (English), `ru` (Russian); **DB CHECK `uz\|en\|ru`**; resolved at launch from the per-launch override or the `launch_defaults.output_language` global default; threaded by `pipeline.run` to `get_prompt` (generator) and `phase_judge.judge` (judge) so both always use the same-language contract; extract is language-neutral (untouched). L2 language-class subjects (English/Russian class `subjects.language ∈ {english,russian}`) always use their Uzbek-bridged L2 rule regardless of this column. Default `'uz'` is byte-identical to pre-0038 behavior. |
 | `custom_prompts` | JSONB NULL | migration 0033 (PR37): `{phase: markdown}` per-phase prompt overrides replacing the built-in contract; NULL = built-in for all phases. Also seen by the judge as `contract_override`. |
 | `selected_phases` | JSONB NULL | migration 0033 (PR37): subset of content phases to run (dependency-closure-expanded at launch); NULL = full subject flow |
@@ -164,6 +166,7 @@ UUIDPK only — **no** `created_at`/`updated_at`; it has `started_at`/`completed
 | `error_message` | Text NULL | |
 | `validation_warnings` | JSONB NULL | LLM-judge warnings (migration 0017) |
 | `judge_status` | String(24) NULL | judge outcome (migration 0029): `ok` / `major_shipped` / `major_regen_failed` / `unavailable` / NULL (pre-0029 rows or extract phase) |
+| `solver_status` | String(24) NULL | answer-key solver outcome (migration 0043, CQ-C/worklog 0112): `ok` / `mismatch_regen` / `mismatch_shipped` / `mismatch_regen_failed` / `unavailable` / `refused` / NULL (non-solver phase or solver disabled). CHECK-constrained. |
 | `started_at` / `completed_at` | NULL | |
 
 **`uq_phase_output_job_order (job_id, phase_order)`** — and the reason the pipeline must use
@@ -201,6 +204,7 @@ consumption counts**, not provider quotas.
 | `output_language` | String(16) NOT NULL, server_default `'uz'` | migration 0038: medium of instruction — `uz` / `en` / `ru`; **DB CHECK `uz\|en\|ru`**; part of the batch UNIQUE key (`uq_batches_book_id_transport_output_language`) so an EN re-launch never adopts a UZ batch. `batches_repo.get_or_create_for_book`, `find_active_for_section`, and `latest_for_section` are all language-scoped. |
 | `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 launch-default labels stamped onto created jobs — **jobs carry the truth**; on re-launch these labels can go stale; **DB CHECK `cli\|api\|inherit`** (migration 0028) |
 | `extract_provider` / `extract_model` / `judge_provider` / `judge_model` | String(32 / 128 / 32 / 128) NULL | migration 0027: per-role provider/model launch labels (NULL = role default); jobs carry the truth |
+| `solver_transport` / `solver_provider` / `solver_model` | String(16 NOT NULL `'inherit'` / 32 NULL / 128 NULL) | migration 0043 (CQ-C): per-role solver launch labels (NULL = role default); jobs carry the truth |
 | `subject` / `grade` | NOT NULL / NULL | denormalized for display |
 | `provider` / `model` | NOT NULL / NULL | the launch-time pick |
 | `notion_source` | String(512) NULL | |
@@ -259,6 +263,7 @@ No UUIDPK/Timestamps mixins — intentionally minimal.
 | `id` | Integer PK | always `1` (singleton) |
 | `judge_provider` / `judge_model` | String(32/128) NOT NULL | provider·model used by the LLM judge when the job's per-job override is Auto (NULL explicit pick); seed: `gemini`/`gemini-2.5-flash` |
 | `judge_transport` | String(16) NOT NULL | `cli` \| `api` \| `inherit`; seed: `inherit` (follows the job's transport) |
+| `solver_provider` / `solver_model` / `solver_transport` | String(32 / 128 / 16) NULL | answer-key solver global default (migration 0043, CQ-C): seed `gemini` / `gemini-3.1-pro-preview` / `inherit`. **Not yet in `launch_defaults_repo._MUTABLE`** → not operator-editable via `/settings` yet (deferred, ROADMAP R21.8); the seed is the effective default. |
 | `extract_provider` / `extract_model` | String(32/128) NOT NULL | provider·model for lesson extract; seed: `gemini`/`gemini-2.5-flash` |
 | `extract_transport` | String(16) NOT NULL | `cli` \| `api` \| `inherit`; seed: `inherit` |
 | `toc_transport` | String(16) NOT NULL | transport for job-less book-upload TOC extraction: `cli` (seed, uses OAuth) or `api` (uses Vertex SDK — required on an all-Vertex head where gemini CLI OAuth is unavailable) |

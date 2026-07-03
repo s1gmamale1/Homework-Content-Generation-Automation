@@ -340,6 +340,32 @@ transient `unavailable` — is **not** retried (it won't self-heal). Infra state
 `validation_warnings` (which is reserved for genuine content defects), and `judge_status` is
 serialized on the phase API + surfaced as a distinct chip in the preview console.
 
+### Answer-key solver (CQ-C, worklog 0112)
+For the three **key-bearing** phases — `memory-check`, `practice-error-detection`, `practice-rlc`
+(`_SOLVER_PHASES`) — a third LLM role runs **after** the judge/regen block, on the *final* output:
+`solver.solve()` independently re-solves each item and flags where the generated answer key is
+wrong (the audit's "correct-student-graded-wrong" class the judge provably can't see — it grades
+contract + fidelity, never solves the problems). It's a clone of the judge (structured
+`SolveVerdict` call, degrade-never-blocks except api-auth re-raise). It is **conservative**: only a
+`high`-confidence discrepancy triggers a regenerate-once (`settings.max_solve_regens`); low/medium
+are advisory. Outcome → `phase_outputs.solver_status` (`ok`/`mismatch_regen`/`mismatch_shipped`/
+`mismatch_regen_failed`/`unavailable`/`refused`). The solver role has its own
+`solver_provider/model/transport` columns (mirroring the judge; seeded default
+`gemini-3.1-pro-preview`, ~$0.12/job) and its own `claim_next_job` gate (`solver_ok`) so an
+api-solver job is never claimed by a worker that can't serve it.
+
+> **Recall boundary (characterized, accepted).** On gemini-3.1-pro-preview the solver reliably
+> catches **objective** key errors (sign/arithmetic) with **zero false positives**, but **misses
+> conceptual truth-value and expression-equivalence errors** — a model-capability limit, not a
+> threshold artifact (evidence: `scripts/cqc_solver_characterize.py`). Of the 3 audited defects it
+> catches 1, misses 2; the missed classes are covered only by CQ-E's answer-key audit rubric.
+>
+> **⚠️ Operational footgun (gemini-only fleet): never set the CONTENT generator to
+> `gemini-3.1-pro-preview`.** The self-grade guard (`resolve_solver`==`resolve_judge`) would then
+> swap the solver *and* judge to the claude peer, and with no Anthropic keys on the fleet the
+> claim gate correctly leaves those jobs **unclaimed forever**. Keep content on the seeded
+> `2.5-pro`/`flash` and the claude path is never resolved — everything stays Vertex-native.
+
 ### (No assembly stage)
 There is **no** assembly step that stitches phases into one document. Each phase's markdown
 stands alone on its `phase_outputs` row; once every phase is done the job flips to `done`.
