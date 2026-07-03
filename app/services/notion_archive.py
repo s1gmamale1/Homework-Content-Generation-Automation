@@ -147,13 +147,16 @@ def _push_to_notion(
     lesson_title: str,
     phase_md: dict[str, str],  # phase_name -> markdown (only present/done phases)
     find_or_create: Callable = find_or_create,  # injectable for tests
+    replace: bool = False,
 ) -> str:
     """Synchronous Notion I/O. Unconditionally creates the path:
     Subject → 'Generated Homeworks' → <lesson_title> → 'Homework', then the
     grouped page layout (`_HOMEWORK_LAYOUT`): Case-Based Preview, Flashcards
     (flashcards + memory-check inline), Gamified Practices (container of game
     sub-pages), Boss Arena, Reflection. Idempotent: a page that already has
-    content is skipped. Returns the Homework page id."""
+    content is skipped. When `replace` is True, a populated leaf page is
+    cleared (`clear_content_blocks`) and rewritten instead of skipped — used
+    by the operator force-refresh path. Returns the Homework page id."""
     container_id, _ = find_or_create(client, subject_page_id, CONTAINER_TITLE)
     lesson_id, _ = find_or_create(client, container_id, lesson_title)
     homework_id, _ = find_or_create(client, lesson_id, "Homework")
@@ -161,8 +164,11 @@ def _push_to_notion(
     def _write_leaf(parent_id: str, title: str, present: list[tuple[str, str]]) -> None:
         page_id, _ = find_or_create(client, parent_id, title)
         if client.page_has_content(page_id):
-            log.info("notion: page %s (%s) already populated — skipping", page_id, title)
-            return
+            if not replace:
+                log.info("notion: page %s (%s) already populated — skipping", page_id, title)
+                return
+            log.info("notion: page %s (%s) already populated — clearing to rewrite (force)", page_id, title)
+            client.clear_content_blocks(page_id)
         client.append_block_children(page_id, _leaf_blocks(client, present))
 
     for entry in _HOMEWORK_LAYOUT:
@@ -178,7 +184,7 @@ def _push_to_notion(
     return homework_id
 
 
-async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md) -> str:
+async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md, replace: bool = False) -> str:
     """Run the idempotent Notion push in a worker thread, retrying transient
     failures with exponential backoff. Re-raises the last exception if every
     attempt fails, so the caller can record a skip reason."""
@@ -191,6 +197,7 @@ async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md) -
                 subject_page_id=subject_page_id,
                 lesson_title=lesson_title,
                 phase_md=phase_md,
+                replace=replace,
             )
         except Exception as exc:  # noqa: BLE001 - retried, then recorded as a skip
             last_exc = exc

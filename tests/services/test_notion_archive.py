@@ -163,3 +163,32 @@ def test_push_unconditional_container_path():
     assert titles[:3] == ["Generated Homeworks", "1 Sonli ifodalar", "Homework"]
     assert na_find.call_args_list[0].args[1] == "subj"                     # container under subject
     assert na_find.call_args_list[1].args[1] == "id::Generated Homeworks"  # lesson under container
+
+
+def test_push_replace_clears_then_rewrites_populated_page():
+    client = MagicMock()
+    client.page_has_content.return_value = True      # page already populated
+    client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    na_find = MagicMock(side_effect=lambda c, parent, title: (f"id::{title}", False))
+    na._push_to_notion(
+        client=client, subject_page_id="subj", lesson_title="L",
+        phase_md={"case-based-preview": "# CBP"}, find_or_create=na_find,
+        replace=True,
+    )
+    # replace=True → the stale content is cleared, then the fresh content written
+    client.clear_content_blocks.assert_called_once_with("id::Case-Based Preview")
+    client.append_block_children.assert_called_once()
+    assert client.append_block_children.call_args.args[0] == "id::Case-Based Preview"
+
+
+def test_push_replace_false_still_skips_populated_page():
+    # Control: default (replace=False) must NOT clear — pure idempotent skip.
+    client = MagicMock()
+    client.page_has_content.return_value = True
+    na_find = MagicMock(side_effect=lambda c, parent, title: (f"id::{title}", False))
+    na._push_to_notion(
+        client=client, subject_page_id="subj", lesson_title="L",
+        phase_md={"case-based-preview": "# CBP"}, find_or_create=na_find,
+    )
+    client.clear_content_blocks.assert_not_called()
+    client.append_block_children.assert_not_called()
