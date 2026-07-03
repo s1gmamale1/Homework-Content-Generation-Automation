@@ -7,6 +7,8 @@
 
 ## Open
 
+- `extract-gateb-short-lesson-fp-1`: Gate B's bare length floor (`extract_min_summary_chars=400`) false-positives on genuinely COMPACT lessons — Algebra-8 §5 (ko'paytirish/bo'lish, 3 pages, mostly exercises) legitimately summarizes to ~380-650 chars; worker runs landed 378/213 → "likely a refusal" fail ×2, while an identical in-process call produced a correct 643-char summary (2026-07-03, job 1e8fc0c2). Fix direction: refusal-SHAPE detection (lesson-term overlap / refusal-phrase check) instead of raw length, OR fold into the extract **coverage-contract** rework (structured enumerated extracts never dip under the floor). Note: cross-job extract cache missed because the extract prompt hash changed since June — cached 1,355-char §5 extract exists but is unreachable.
+
 - `queue-backpressure-paused-1`: paused batches block ALL new enqueues — `jobs_repo.queue_depth` (`app/repositories/jobs.py:663-672`) counts every eligible `pending` job with no batch-pause exclusion, so a paused batch's jobs (dormant, unclaimable by design) still fill the `queue_backpressure_limit` (50) and `/generate` 503s "queue is full". Hit live 2026-07-03: 57 paused RU-geometry jobs blocked a 1-job enqueue; workaround = cancel-then-resume the batch. Fix: `queue_depth` LEFT JOINs batches and excludes `paused_at IS NOT NULL` (mirror the claim gate's pause predicate).
 
 - `cbp-real-life-contract-1`: one-time prompt-conformance check — meeting 2026-07-02 made "every homework opens with a real-life case (storytelling OR question-first, fun-fact hooks)" a hard contract; verify case-based-preview's prompt + a sample of real outputs actually satisfy both approved shapes (see docs/meetings/2026-07-02-center6-homework-gen-extract.md #3).
