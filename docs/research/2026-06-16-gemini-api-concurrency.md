@@ -71,3 +71,30 @@ each run). Hard rule honored: never mass-generate homeworks to probe limits.
 - `stress_multimodel.py` — per-model ramp across all 4 models (thinking off; writes `multimodel.json`).
 - `fanout_analysis.py` — per-homework + N-job concurrent SDK-call fan-out from `agent_usages`.
 - `diag_claim.py` — print runtime worker `CAPABILITIES` + dry-run the claim gate per pending job.
+
+## ADDENDUM 2026-07-03 — production-model rerun: the June ceilings are OBSOLETE on the current key
+
+Reran the same probe (2 back-to-back runs, N=2..64, minimal-token, thinking off, ~$0.01 total)
+against the **October production trio** on the current Fleet-assigned SA key/project:
+
+| Model (role) | Run 1 | Run 2 (drained-budget) | Peak observed |
+|---|---|---|---|
+| `gemini-3-flash-preview` (content) | 100% to N=64 | 100% to N=64 | 2,509 rpm |
+| `gemini-2.5-flash` (judge+extract) | 100% to N=64 | 100% to N=64 | 3,400 rpm |
+| `gemini-3.1-pro-preview` (solver) | 100% to N=64 | 100% to N=64 | 1,748 rpm |
+
+- **Zero rate-limit errors anywhere** — including `2.5-flash`, which was the June study's
+  tightest bucket (429s from N≈6–8). Either this project's quotas differ from the June
+  key's, or Google raised preview-tier quotas. Both runs clean back-to-back rules out the
+  rolling-minute flakiness that plagued June.
+- **Derived ceiling: ≥64 concurrent calls per model bucket** on ONE key → ÷3 fan-out ≈
+  **≥21 concurrent homeworks**, and content/judge/solver draw from **separate per-model
+  buckets**, so a mixed-role pipeline spreads load further.
+- **Honest limits of the probe:** minimal-token calls barely touch the TPM (tokens/min)
+  dimension of quota; real homework calls hold 30–300 s and burn ~90k tokens each. No RPM
+  ceiling found ≤64; TPM under real load remains unverified → BULK should still ramp
+  gradually in its first hour and lean on the shipped reactive 429 backoff.
+- **Planning consequence:** `worker_concurrency=4` is very conservative for the bulk run;
+  ~16–20 per worker looks safe on RPM evidence, TPM-permitting. Raw: session scratchpad
+  `stress_prod/multimodel_run{1,2}.json` (probe copy of `scripts/stress_multimodel.py`
+  with the production model list).
