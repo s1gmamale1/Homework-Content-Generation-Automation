@@ -178,6 +178,12 @@ One approval gate, before any code. Verify — don't trust — the plan's claims
    workers. **kimi** reports no token counts. **gemini CLI** rejects >20MB attachments.
 10. **Two Trello cards can share one name** (per-person lists) — find ALL matches before
     commenting/updating.
+11. **Parallel subagents sharing one scratchpad WILL overwrite each other's generic
+    filenames** (`packet.txt`, `phases.txt`) — three concurrent auditors read a sibling's
+    dump mid-audit and one issued a phantom "cross-job contamination" FLAG (2026-07-03,
+    retracted). Instruct every parallel agent to key its scratch files by its subject
+    (job id, PR number); treat any "impossible" cross-entity read as a harness artifact
+    first, and verify the underlying store directly before believing it.
 
 ## 7. Content-quality gating (the second mandate)
 
