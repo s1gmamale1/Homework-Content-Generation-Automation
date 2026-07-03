@@ -7,6 +7,8 @@
 
 ## Open
 
+- `queue-backpressure-paused-1`: paused batches block ALL new enqueues — `jobs_repo.queue_depth` (`app/repositories/jobs.py:663-672`) counts every eligible `pending` job with no batch-pause exclusion, so a paused batch's jobs (dormant, unclaimable by design) still fill the `queue_backpressure_limit` (50) and `/generate` 503s "queue is full". Hit live 2026-07-03: 57 paused RU-geometry jobs blocked a 1-job enqueue; workaround = cancel-then-resume the batch. Fix: `queue_depth` LEFT JOINs batches and excludes `paused_at IS NOT NULL` (mirror the claim gate's pause predicate).
+
 - `cbp-real-life-contract-1`: one-time prompt-conformance check — meeting 2026-07-02 made "every homework opens with a real-life case (storytelling OR question-first, fun-fact hooks)" a hard contract; verify case-based-preview's prompt + a sample of real outputs actually satisfy both approved shapes (see docs/meetings/2026-07-02-center6-homework-gen-extract.md #3).
 - `homework-images-1`: **INTEGRATION, not a build** — an image-generation project already exists as a separate big project (user, 2026-07-03); the task is connecting it to this pipeline, not implementing from zero. First questions for whoever picks it up: where does it live (repo/API/service), what's its interface, and does it consume our described placeholders (`![visual: …](placeholder)`) as prompts — that's the natural seam. Then: cost/image, pipeline insertion point, Notion rendering (R9 ties in). (Meeting context: docs/meetings/2026-07-02-center6-homework-gen-extract.md #4.)
 
