@@ -16,6 +16,10 @@ over-flagging so it never false-positives a good packet):
   once the emitted format is pinned.
 - Semantic answer-key correctness is out of scope by design (no-LLM) — that is
   CQ-C (R21.2). This module only enforces mechanical/format contracts.
+- The english_template check is skipped entirely for en-medium output
+  (`output_language == "en"`) — an English packet legitimately contains English,
+  so structural leak tokens ("Mode:", "Needs Retry") also go unlinted there;
+  en-medium template leaks rely on the judge alone.
 """
 from __future__ import annotations
 
