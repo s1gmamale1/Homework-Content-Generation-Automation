@@ -40,6 +40,11 @@ Run:
 
 Exit 0 iff BOTH gated cases hold (sign-error flags AND clean key passes). The two
 informational cases are printed for the record but never gate.
+
+NONDETERMINISM CAVEAT (gate-verified 2026-07-02): the gated sign-error catch is
+probabilistic (~2/3 of runs at the merge gate; the must-PASS side has never
+false-positived). This is a one-time acceptance artifact, NOT a CI gate — before
+reading a FAIL as a regression, re-run it.
 """
 from __future__ import annotations
 

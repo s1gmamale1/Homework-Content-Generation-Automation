@@ -354,11 +354,12 @@ are advisory. Outcome → `phase_outputs.solver_status` (`ok`/`mismatch_regen`/`
 `gemini-3.1-pro-preview`, ~$0.12/job) and its own `claim_next_job` gate (`solver_ok`) so an
 api-solver job is never claimed by a worker that can't serve it.
 
-> **Recall boundary (characterized, accepted).** On gemini-3.1-pro-preview the solver reliably
-> catches **objective** key errors (sign/arithmetic) with **zero false positives**, but **misses
-> conceptual truth-value and expression-equivalence errors** — a model-capability limit, not a
-> threshold artifact (evidence: `scripts/cqc_solver_characterize.py`). Of the 3 audited defects it
-> catches 1, misses 2; the missed classes are covered only by CQ-E's answer-key audit rubric.
+> **Recall boundary (characterized, accepted).** On gemini-3.1-pro-preview the solver's catch is
+> **probabilistic, not reliable** (gate-verified over 3 independent smoke runs): **objective**
+> sign/arithmetic errors ~2/3 of runs, **expression-equivalence** errors ~1/3, **conceptual
+> truth-value** errors 0 — a model-capability limit, not a threshold artifact (evidence:
+> `scripts/cqc_solver_characterize.py`). **False positives: 0 across every run ever made.** The
+> under-caught classes are covered only by CQ-E's answer-key audit rubric.
 >
 > **⚠️ Operational footgun (gemini-only fleet): never set the CONTENT generator to
 > `gemini-3.1-pro-preview`.** The self-grade guard (`resolve_solver`==`resolve_judge`) would then
