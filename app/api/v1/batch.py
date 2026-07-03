@@ -42,16 +42,17 @@ log = logging.getLogger(__name__)
 _REARCHIVE_TASKS: dict[UUID, "asyncio.Task"] = {}
 
 
-async def _rearchive_sweep(batch_id: UUID, job_ids: list[UUID]) -> None:
+async def _rearchive_sweep(batch_id: UUID, job_ids: list[UUID], *, force: bool = False) -> None:
     """Sequentially re-run the idempotent, best-effort archive_job for each
     done-but-unarchived job in a batch, in the API process. Backgrounded; never
     raises (archive_job swallows + records skip reasons). Sequential because the
-    Notion client is globally rate-limited."""
+    Notion client is globally rate-limited. When `force`, each archive
+    clears+rewrites stale leaf pages (replace mode)."""
     from app.services import notion_archive
     try:
         for jid in job_ids:
             try:
-                await notion_archive.archive_job(jid)
+                await notion_archive.archive_job(jid, force=force)
             except Exception:  # defensive; archive_job is already best-effort
                 log.warning("[batch %s] re-archive of job %s failed (non-fatal)",
                             batch_id, jid, exc_info=True)
@@ -478,21 +479,30 @@ async def unpause_batch(batch_id: UUID, session: AsyncSession = Depends(get_sess
 
 
 @router.post("/jobs/batch/{batch_id}/retry-archive")
-async def retry_archive_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)):
+async def retry_archive_batch(batch_id: UUID, force: bool = False,
+                              session: AsyncSession = Depends(get_session)):
     """Re-push every done-but-unarchived lesson of a batch to Notion from the
-    HEAD process (which carries NOTION_SUBJECT_PAGES). Backgrounded + idempotent:
-    returns immediately with how many jobs were queued. A second call while a
-    sweep is in flight is a no-op (already_running)."""
+    HEAD process. With `force=true`, sweep ALL done lessons (incl. already
+    archived) and clear+rewrite stale leaf pages — the regen-wave refresh lever.
+    Backgrounded + idempotent; a second call while a sweep is in flight no-ops.
+
+    Operational ordering: run force re-archive AFTER a regen wave has fully
+    completed. The sweep takes the latest *done* job per lesson; if a replacement
+    job is still running it isn't picked up, and once it later finishes its
+    automatic archive skips-if-populated → the page goes stale again. Force once
+    the wave is done."""
     from app.models.batch import Batch
     batch = await session.get(Batch, batch_id)
     if batch is None:
         raise HTTPException(404, "batch not found")
     if batch_id in _REARCHIVE_TASKS:
         return {"batch_id": str(batch_id), "queued": 0, "already_running": True}
-    job_ids = await batches_repo.done_unarchived_job_ids(session, batch_id)
+    job_ids = (await batches_repo.done_job_ids(session, batch_id) if force
+               else await batches_repo.done_unarchived_job_ids(session, batch_id))
     if not job_ids:
         return {"batch_id": str(batch_id), "queued": 0, "already_running": False}
-    _REARCHIVE_TASKS[batch_id] = asyncio.create_task(_rearchive_sweep(batch_id, job_ids))
+    _REARCHIVE_TASKS[batch_id] = asyncio.create_task(
+        _rearchive_sweep(batch_id, job_ids, force=force))
     return {"batch_id": str(batch_id), "queued": len(job_ids), "already_running": False}
 
 

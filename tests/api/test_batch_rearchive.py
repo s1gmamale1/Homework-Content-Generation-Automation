@@ -71,8 +71,8 @@ async def test_retry_archive_endpoint_sweeps_unarchived(monkeypatch):
 
     called: list = []
 
-    async def _fake_archive(job_id):
-        called.append(job_id)
+    async def _fake_archive(job_id, *, force=False):
+        called.append((job_id, force))
 
     monkeypatch.setattr(notion_archive, "archive_job", _fake_archive)
 
@@ -88,7 +88,47 @@ async def test_retry_archive_endpoint_sweeps_unarchived(monkeypatch):
     task = batch_api._REARCHIVE_TASKS.get(batch.id)
     if task is not None:
         await task
-    assert called == [j2.id]   # only the unarchived done job
+    assert called == [(j2.id, False)]   # only the unarchived done job
+
+
+@pytest.mark.asyncio
+async def test_done_job_ids_includes_archived():
+    async with SessionLocal() as s:
+        batch, j1, j2 = await _seed_batch_with_two_done_jobs(s)
+        ids = await batches_repo.done_job_ids(s, batch.id)
+        assert set(ids) == {j1.id, j2.id}          # BOTH done jobs, incl. archived j1
+        # control: the unarchived-only view still excludes the archived one
+        assert await batches_repo.done_unarchived_job_ids(s, batch.id) == [j2.id]
+
+
+@pytest.mark.asyncio
+async def test_retry_archive_batch_force_sweeps_all_done(monkeypatch):
+    from httpx import AsyncClient, ASGITransport
+    from main import app
+    from app.api.v1 import batch as batch_api
+    from app.services import notion_archive
+
+    called: list = []
+
+    async def _fake_archive(job_id, *, force=False):
+        called.append((job_id, force))
+
+    monkeypatch.setattr(notion_archive, "archive_job", _fake_archive)
+
+    async with SessionLocal() as s:
+        batch, j1, j2 = await _seed_batch_with_two_done_jobs(s)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://t") as ac:
+        r = await ac.post(f"/api/v1/jobs/batch/{batch.id}/retry-archive?force=true")
+    assert r.status_code == 200
+    assert r.json()["queued"] == 2                 # both done jobs, incl. the archived one
+
+    task = batch_api._REARCHIVE_TASKS.get(batch.id)
+    if task is not None:
+        await task
+    assert {jid for jid, _ in called} == {j1.id, j2.id}
+    assert all(force is True for _, force in called)   # force threaded to every archive
 
 
 @pytest.mark.asyncio
