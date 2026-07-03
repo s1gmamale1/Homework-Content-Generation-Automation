@@ -105,6 +105,24 @@ class NotionClientWrapper:
             results.extend(res.get("results", []))
         return {"results": results}
 
+    def delete_block(self, block_id: str) -> None:
+        """Archive (soft-delete) a single block. Notion moves it to trash."""
+        self._rate_limit()
+        self.client.blocks.delete(block_id=block_id)
+
+    def clear_content_blocks(self, page_id: str) -> int:
+        """Delete every non-`child_page` block on a page — the archive's content
+        blocks (file uploads, dividers, rendered markdown). `child_page` blocks
+        (sub-pages, and the Gamified-Practices container's game leaves) are
+        preserved so page structure and any human-added sub-page survive.
+        Returns the number of blocks deleted."""
+        deleted = 0
+        for block in self.get_block_children(page_id):
+            if block.get("type") != "child_page":
+                self.delete_block(block["id"])
+                deleted += 1
+        return deleted
+
     # ─── file upload (2-step) ───
     def upload_bytes(self, data: bytes, file_name: str, content_type: str) -> str:
         auth = {"Authorization": f"Bearer {self.api_key}", "Notion-Version": _NOTION_VERSION}
