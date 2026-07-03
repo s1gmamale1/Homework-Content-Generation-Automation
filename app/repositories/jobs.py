@@ -38,12 +38,15 @@ async def create(
     transport: str = "cli",
     extract_transport: str = "inherit",
     judge_transport: str = "inherit",
+    solver_transport: str = "inherit",
     custom_prompts: Optional[dict] = None,
     selected_phases: Optional[list] = None,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
     judge_provider: Optional[str] = None,
     judge_model: Optional[str] = None,
+    solver_provider: Optional[str] = None,
+    solver_model: Optional[str] = None,
 ) -> HomeworkJob:
     kwargs: dict[str, Any] = dict(
         book_id=book_id,
@@ -54,6 +57,7 @@ async def create(
         transport=transport,
         extract_transport=extract_transport,
         judge_transport=judge_transport,
+        solver_transport=solver_transport,
     )
     if provider is not None:
         kwargs["provider"] = provider
@@ -70,6 +74,8 @@ async def create(
         ("extract_model", extract_model),
         ("judge_provider", judge_provider),
         ("judge_model", judge_model),
+        ("solver_provider", solver_provider),
+        ("solver_model", solver_model),
     ):
         if _v is not None:
             kwargs[_k] = _v
@@ -305,6 +311,11 @@ async def claim_next_job(
             Python's `resolve_judge` logic exactly.
           * extract: if the job's resolved extract transport is api, gate on
             the STAMPED job.extract_provider's credential.
+          * solver: identical rule to judge, mirrored onto the solver_*
+            columns — if the job's resolved solver transport is api, gate on
+            the STAMPED job.solver_provider, EXCEPT self-solve (content model
+            == solver model, both non-NULL) which routes to the self-fallback
+            peer's credential instead.
         Default `capabilities=None` is all-False (cli-only).
 
     Order: highest priority first, then ascending lesson order
@@ -369,6 +380,29 @@ async def claim_next_job(
     )
     extract_ok = or_(not_(extract_needs_api), _provider_api_ok(HomeworkJob.extract_provider))
 
+    # Solver role (R1 / Task 8): mirrors the judge block above onto the
+    # solver_* columns. The solver's api-auth error re-raises (job-level
+    # failure) — a job whose resolved solver is claude/api must not be
+    # claimed by a worker lacking ANTHROPIC_API_KEY (the all-Vertex fleet).
+    solver_needs_api = or_(
+        HomeworkJob.solver_transport == "api",
+        and_(HomeworkJob.solver_transport == "inherit", HomeworkJob.transport == "api"),
+    )
+    job_is_self_solve = and_(
+        HomeworkJob.provider == HomeworkJob.solver_provider,
+        content_model_resolved == func.coalesce(HomeworkJob.solver_model, ""),
+    )
+    self_solve_provider = case(
+        (and_(HomeworkJob.provider == _PRIMARY_SELF_FALLBACK[0],
+              content_model_resolved == _PRIMARY_SELF_FALLBACK[1]), "gemini"),
+        else_="claude",
+    )
+    solver_ok = or_(
+        not_(solver_needs_api),
+        and_(job_is_self_solve, _provider_api_ok(self_solve_provider)),
+        and_(not_(job_is_self_solve), _provider_api_ok(HomeworkJob.solver_provider)),
+    )
+
     # Batch-pause gate: skip jobs whose batch is paused.
     # CRITICAL: the IS NULL arm is REQUIRED — without it, `NULL NOT IN
     # (non-empty set)` evaluates to SQL NULL (excluded), so every batchless
@@ -398,6 +432,7 @@ async def claim_next_job(
         HomeworkJob.transport == "api",
         judge_needs_api,
         extract_needs_api,
+        solver_needs_api,
     )
     fleet_gate = or_(~job_resolved_api, literal(not fleet_api_paused))
 
@@ -409,6 +444,7 @@ async def claim_next_job(
         .where(content_ok)
         .where(judge_ok)
         .where(extract_ok)
+        .where(solver_ok)
         .where(not_in_paused_batch)
         .where(fleet_gate)
         .order_by(

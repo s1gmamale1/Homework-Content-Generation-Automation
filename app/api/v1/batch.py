@@ -72,10 +72,13 @@ class BatchLaunchRequest(BaseModel):
     transport: str = "cli"
     extract_transport: str = "inherit"   # per-role override; "inherit" follows `transport`
     judge_transport: str = "inherit"
+    solver_transport: str = "inherit"
     extract_provider: Optional[str] = None
     extract_model: Optional[str] = None
     judge_provider: Optional[str] = None
     judge_model: Optional[str] = None
+    solver_provider: Optional[str] = None
+    solver_model: Optional[str] = None
     output_language: str | None = None    # explicit pick; None → inherit global default
     force: bool = False
     preview: bool = False                 # compute disposition, don't mutate
@@ -99,10 +102,13 @@ def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None 
         "transport": batch.transport,
         "extract_transport": batch.extract_transport,
         "judge_transport": batch.judge_transport,
+        "solver_transport": batch.solver_transport,
         "extract_provider": batch.extract_provider,
         "extract_model": batch.extract_model,
         "judge_provider": batch.judge_provider,
         "judge_model": batch.judge_model,
+        "solver_provider": batch.solver_provider,
+        "solver_model": batch.solver_model,
         "rollup": tally,
         "lessons_covered": sum(v for k, v in tally.items() if k != "not_started"),
         "complete": (
@@ -160,6 +166,7 @@ async def launch_batch(
     for field, value in (
         ("extract_transport", body.extract_transport),
         ("judge_transport", body.judge_transport),
+        ("solver_transport", body.solver_transport),
     ):
         role_err = validate_role_transport(field, value)
         if role_err is not None:
@@ -201,6 +208,7 @@ async def launch_batch(
     for role, prov, mdl, role_tx in (
         ("extract", body.extract_provider, body.extract_model, body.extract_transport),
         ("judge", body.judge_provider, body.judge_model, body.judge_transport),
+        ("solver", body.solver_provider, body.solver_model, body.solver_transport),
     ):
         if prov is None:
             continue
@@ -219,14 +227,18 @@ async def launch_batch(
         body.judge_provider, body.judge_model, ld.judge_provider, ld.judge_model)
     res_extract_provider, res_extract_model = resolve_role_selection(
         body.extract_provider, body.extract_model, ld.extract_provider, ld.extract_model)
+    res_solver_provider, res_solver_model = resolve_role_selection(
+        body.solver_provider, body.solver_model, ld.solver_provider, ld.solver_model)
     res_judge_transport = resolve_role_transport_default(body.judge_transport, ld.judge_transport)
     res_extract_transport = resolve_role_transport_default(body.extract_transport, ld.extract_transport)
+    res_solver_transport = resolve_role_transport_default(body.solver_transport, ld.solver_transport)
     res_output_language = resolve_output_language_for_book(
         body.output_language, book.source_language, ld.output_language)
     # Defense-in-depth: the resolved pairs must be manifest-valid (the global
     # default could only be off-manifest via a buggy PUT — fail loud, not silent).
     for role, prov, mdl in (("judge", res_judge_provider, res_judge_model),
-                            ("extract", res_extract_provider, res_extract_model)):
+                            ("extract", res_extract_provider, res_extract_model),
+                            ("solver", res_solver_provider, res_solver_model)):
         if not is_valid(prov, mdl):
             raise HTTPException(500, f"{role}: resolved default off-manifest ({prov!r},{mdl!r})")
     # Gate: if the global default resolved a non-api-capable role provider to an
@@ -236,6 +248,7 @@ async def launch_batch(
     for role, prov, mdl, res_tx in (
         ("judge", res_judge_provider, res_judge_model, res_judge_transport),
         ("extract", res_extract_provider, res_extract_model, res_extract_transport),
+        ("solver", res_solver_provider, res_solver_model, res_solver_transport),
     ):
         eff_tx = resolve_role_transport(res_tx, body.transport)
         err = validate_transport(prov, mdl, eff_tx)
@@ -272,11 +285,14 @@ async def launch_batch(
         output_language=res_output_language,
         extract_transport=res_extract_transport,
         judge_transport=res_judge_transport,
+        solver_transport=res_solver_transport,
         custom_prompts=custom_prompts, selected_phases=selected_phases,
         extract_provider=res_extract_provider,
         extract_model=res_extract_model,
         judge_provider=res_judge_provider,
         judge_model=res_judge_model,
+        solver_provider=res_solver_provider,
+        solver_model=res_solver_model,
         session_limit_strategy=body.session_limit_strategy)
 
     created = adopted = skipped = resumed = 0
@@ -337,11 +353,14 @@ async def launch_batch(
                                output_language=res_output_language,
                                extract_transport=res_extract_transport,
                                judge_transport=res_judge_transport,
+                               solver_transport=res_solver_transport,
                                custom_prompts=custom_prompts, selected_phases=selected_phases,
                                extract_provider=res_extract_provider,
                                extract_model=res_extract_model,
                                judge_provider=res_judge_provider,
-                               judge_model=res_judge_model)
+                               judge_model=res_judge_model,
+                               solver_provider=res_solver_provider,
+                               solver_model=res_solver_model)
         created += 1
 
     await session.flush()

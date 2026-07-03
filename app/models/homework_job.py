@@ -44,6 +44,9 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     extract_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     judge_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     judge_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    solver_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
+    solver_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    solver_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     batch_id: Mapped[Optional[UUID]] = mapped_column(
         ForeignKey("batches.id"), nullable=True
     )
@@ -111,6 +114,10 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
         CheckConstraint(
             "judge_transport IN ('cli','api','inherit')",
             name="ck_homework_jobs_judge_transport",
+        ),
+        CheckConstraint(
+            "solver_transport IN ('cli','api','inherit')",
+            name="ck_homework_jobs_solver_transport",
         ),
         CheckConstraint(
             "output_language IN ('uz','en','ru')",

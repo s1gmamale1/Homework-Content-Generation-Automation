@@ -55,10 +55,13 @@ def _make_fake_job(output_language="uz"):
         transport="cli",
         extract_transport="inherit",
         judge_transport="inherit",
+        solver_transport="inherit",
         extract_provider=None,
         extract_model=None,
         judge_provider=None,
         judge_model=None,
+        solver_provider=None,
+        solver_model=None,
         output_language=output_language,
         phase_outputs=[],
         notion_skip_reason=None,
@@ -73,6 +76,8 @@ def _make_fake_ld(output_language="uz"):
         judge_provider="gemini", judge_model="gemini-2.5-flash",
         judge_transport="inherit", extract_provider="gemini",
         extract_model="gemini-2.5-flash", extract_transport="inherit",
+        solver_provider="gemini", solver_model="gemini-3.1-pro-preview",
+        solver_transport="inherit",
         output_language=output_language,
     )
 

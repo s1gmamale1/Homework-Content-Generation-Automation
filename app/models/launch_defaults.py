@@ -32,6 +32,9 @@ class LaunchDefaults(Base):
     content_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     content_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     content_transport: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    solver_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    solver_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    solver_transport: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     __table_args__ = (

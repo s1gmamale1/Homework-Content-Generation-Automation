@@ -257,8 +257,8 @@ Surface: one new module (e.g. `app/services/content_lint.py`) + post-phase wirin
 1. **R21.3 error-detection format validator** — count factually-false blocks vs the Reveal's single broken block; enforce the prompt's own EXACTLY-ONE rule (`practice-error-detection.md:50-54`).
 2. **R21.4 language lint** — mixed-script regex (Cyrillic-in-Latin word), English-template blacklist (`Mode:`, `Needs Retry`, `Scenario`…), calque list ("qizil seld"), missing `source`/`inferred` misconception tags. Warning-or-regen policy is a plan decision.
 
-### CQ-C — Answer-key solver pass — **ONE implementer, own plan (R21.2), the campaign-quality core**
-Re-solve boss-arena / memory-check / error-detection items independently; diff vs the key; regen on mismatch. The only fix for the "correct student graded wrong" class (3/5 packets). Design decisions the plan must lock: which phases, +1 LLM call cost per job, regen budget, provider. **Serialize after CQ-A** (same prompt/pipeline surface).
+### CQ-C — Answer-key solver pass — ✅ **SHIPPED [0112]** (`cq-c-key-solver`, R21.2)
+Independent `solver.solve()` re-solves **memory-check / practice-error-detection / practice-rlc** (boss-arena dropped at the gate — no diffable written key; → R21.9 residue), diffs the key, regens once on a HIGH-confidence mismatch. Clone of the judge (per-role `solver_*` columns + claim-gate, mig 0043, seeded `gemini-3.1-pro-preview`, ~$0.12/job). **Locked decisions:** 3 key-bearing phases; conservative high-conf-only regen → **zero false positives**; frontier solver + self-grade guard. **Characterized recall = 1 of 3** audited defects on gemini-3.1-pro (catches objective sign/arithmetic; misses conceptual + equivalence — model-capability, not design; the misses → CQ-E's rubric). Follow-ups spun to ROADMAP R21.7 (recall gap, accepted), R21.8 (solver-config editing, deferred), R21.9 (boss-arena feedback residue).
 
 ### CQ-D — Source integrity — **code pair ✅ SHIPPED (worklog [0111], PR cq-d-extract-guards); rest is operator/data**
 1. ~~**R21.6 extract-example fidelity**~~ ✅ **SHIPPED [0111]:** hybrid guard on the local-text extract branch — free `extract_fidelity_candidates` (fraction/equation exprs absent from source; `/`-or-`=` AND digit-or-paren so digitless invented examples surface) → gemini-flash `verify_extract_fidelity` (fail-open, **lesson-scoped source**) → regen `summarize_lesson(correction_hint=)` once on confirmed drift. The judge could never catch this (grades vs the extract, exempts worked-example arithmetic). Extract is cached cross-job → amortized.
@@ -268,7 +268,7 @@ Re-solve boss-arena / memory-check / error-detection items independently; diff v
 ### CQ-E — R20 golden-eval harness — **own plan, LAST**
 Frozen `(subject, lesson)` set + rubric scoring + baseline diffs + PR gate. The 5 audited packets are the first golden entries; the audit method (read source pages → trace taught-before-asked → re-solve keys) is the rubric prototype. Do after CQ-A/B/C land so baselines freeze the *fixed* behavior.
 
-**TL;DR for pickup:** CQ-D code pair ✅ SHIPPED ([0111]). Remaining parallel-safe starts — CQ-A (3 items), CQ-B (2 items) — each a single plan/PR by a single implementer. CQ-C after A. CQ-E last.
+**TL;DR for pickup:** CQ-A ✅ [0109], CQ-B ✅ [0110], CQ-D ✅ [0111], CQ-C ✅ [0112]. **Only CQ-E (R20 golden-eval) remains** — it freezes baselines over the now-fixed system AND is the primary coverage for the two answer-key defect classes the CQ-C solver misses (R21.7).
 
 ---
 

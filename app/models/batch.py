@@ -39,6 +39,9 @@ class Batch(Base, UUIDPK, Timestamps):
     extract_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     judge_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     judge_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    solver_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
+    solver_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    solver_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     notion_source: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     # Pause primitive (C5 fleet-ctrl-3 reuses this). NULL = not paused.
     paused_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
@@ -65,6 +68,10 @@ class Batch(Base, UUIDPK, Timestamps):
         CheckConstraint(
             "judge_transport IN ('cli','api','inherit')",
             name="ck_batches_judge_transport",
+        ),
+        CheckConstraint(
+            "solver_transport IN ('cli','api','inherit')",
+            name="ck_batches_solver_transport",
         ),
         CheckConstraint(
             "session_limit_strategy IN ('pause','switch','inherit')",

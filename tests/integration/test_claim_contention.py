@@ -200,6 +200,7 @@ async def test_api_jobs_gated_on_capabilities():
             # Stamp roles so the job-column gate can route (Task 2 always stamps).
             judge_provider="claude", judge_model="claude-opus-4-7",
             extract_provider="gemini", extract_model="gemini-2.5-flash",
+            solver_transport="cli",  # isolate: content/judge/extract under test, not solver
         )
         cli_job = await _seed_job(s, book, toc, transport="cli")
         await s.commit()
@@ -246,6 +247,7 @@ async def test_api_content_with_cli_roles_claimable_gemini_only():
             s, book, toc,
             provider="gemini", model="gemini-2.5-flash",
             transport="api", extract_transport="cli", judge_transport="cli",
+            solver_transport="cli",  # isolate: content/judge/extract under test, not solver
         )
         await s.commit()
         book_id, job_id = book.id, job.id
@@ -306,6 +308,7 @@ async def test_judge_pair_job_gates_on_fallback_capability():
             transport="api", extract_transport="cli", judge_transport="api",
             # Explicitly stamp the judge as the same pair → self-grade detection fires.
             judge_provider=_JUDGE_PROVIDER, judge_model=_JUDGE_MODEL,
+            solver_transport="cli",  # isolate: judge is under test, not solver
         )
         await s.commit()
         book_id, job_id = book.id, job.id
@@ -412,6 +415,7 @@ async def test_api_gemini_judge_job_claimable_by_vertex_only_worker():
             judge_provider="gemini",  # per-job override — NOT the settings default
             judge_transport="inherit",  # resolves to 'api' since transport='api'
             extract_transport="cli",
+            solver_transport="cli",  # isolate: judge is under test, not solver
         )
         await s.commit()
         book_id, job_id = book.id, job.id
