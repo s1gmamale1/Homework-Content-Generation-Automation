@@ -1191,8 +1191,11 @@ function ReadyCard({
                     >
                       <MoreHorizontal className="size-3.5" />
                     </summary>
-                    {/* Dropdown panel */}
-                    <div className="absolute left-0 top-full z-10 mt-1 w-52 rounded-xl border border-white/[0.1] bg-[#1a1630] shadow-xl">
+                    {/* Dropdown panel. Opens UPWARD: the card container is
+                        overflow-hidden (rounded corners) and this button sits at
+                        the card's bottom edge, so a top-full menu gets clipped
+                        invisible — bottom-full stays inside the card bounds. */}
+                    <div className="absolute left-0 bottom-full z-10 mb-1 w-52 rounded-xl border border-white/[0.1] bg-[#1a1630] shadow-xl">
                       <button
                         type="button"
                         className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs text-rose-300/90 hover:bg-white/[0.06] hover:text-rose-200 disabled:opacity-50"
