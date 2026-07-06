@@ -577,7 +577,12 @@ Key endpoints:
   regen — force-regen mints a fresh job whose auto-archive skips the still-populated page, so the
   page keeps the old content until a force refresh. Structure, container pages, and human sub-pages
   are preserved; a manual annotation added *as a block on a generated leaf* is replaced (block
-  provenance isn't stored — deletion happens only on this explicit operator action).
+  provenance isn't stored — deletion happens only on this explicit operator action). The force push
+  is **backgrounded** (0116): the endpoint returns an immediate `{job_id, queued, already_running}`
+  receipt (the batch-sweep shape) and the >5-min rate-limited Notion I/O runs in a head-side task
+  (`_FORCE_REARCHIVE_TASKS` in-flight guard — a double-POST no-ops), because an inline run was
+  cancelled mid-clear by a client disconnect, leaving a half-written page. The non-force path is
+  unchanged (inline, returns the refreshed `JobOut` — the FE consumes that shape).
 - `POST /jobs/batch/{batch_id}/retry-archive` — the batch-level version: re-push **every**
   `done`+un-archived lesson of a batch to Notion **from the head process** (which carries
   `NOTION_SUBJECT_PAGES`). Backgrounded (`asyncio.create_task` → a sequential `_rearchive_sweep`)
