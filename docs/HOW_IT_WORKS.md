@@ -289,21 +289,42 @@ is never yanked. (Best-effort: a sub-window restart may momentarily see its own 
 machine with two stages (a head and a parallel tail):
 
 ### Stage 1 — Head (the `extract` step)
-1. **`extract`** — read the chosen lesson and produce a flat factual summary of it
-   ("lesson_context"). This is **pinned to a cheap model** (`gemini` / `gemini-2.5-flash`)
-   regardless of which provider the user picked, because it's a high-input / low-creativity
-   task — paying premium rates here buys nothing. It has its own readability gates and fails
-   over if the pinned provider can't read the book. Two extract-quality guards run here
-   (worklog 0111): a **garbled-text detector** — an "expected-alphabet plausibility" ratio
-   (Latin∪Cyrillic∪Uzbek) that catches text which is letter-dense but written in the wrong
-   alphabet (cp1251 mojibake, broken subset fonts) that the letter-density gate passes, and
-   routes such books to the **vision** extract; and an **extract-fidelity check** — a free
-   scan for worked-example expressions (fractions/equations) that don't appear in the source,
-   which on a hit triggers one cheap gemini-flash verify (over the lesson's own pages) and, on
-   confirmed drift, regenerates the extract once with a correction hint. The judge can't catch
-   extract drift (it grades later phases against the extract, not the book), so it's guarded here.
+1. **`extract`** — read the chosen lesson and produce an **enumerated coverage contract**
+   of it ("lesson_context"): one short gist sentence, then fixed **English** section
+   headings — `## Concepts & terms`, `## Rules & theorems`, `## Formulas`,
+   `## Worked-example types`, `## Key facts` — with the bullet *items* under each heading
+   written in the lesson's own language (a heading is omitted when the lesson has none of
+   that kind). `## Worked-example types` is required whenever the lesson has any worked or
+   solved problem, so every downstream phase can see the full inventory of problem *types*
+   the lesson teaches, not just prose about it — this closed a measured gap where the old
+   free-form summary silently dropped a lesson's worked-example coverage. This step is
+   **pinned to a cheap model** (`gemini` / `gemini-2.5-flash`) regardless of which provider
+   the user picked, because it's a high-input / low-creativity task — paying premium rates
+   here buys nothing. It has its own readability gates and fails over if the pinned provider
+   can't read the book. **Gate B** (`agent.validate_extract_summary`) validates *structure*,
+   not character count: a refusal marker always fails; otherwise any output that parses into
+   at least one recognized contract section (`content_lint.contract_has_items`) passes
+   regardless of length, since a compact lesson legitimately yields a short contract. Only
+   when NO contract section parses does it fall back to a low length floor
+   (`extract_min_summary_chars`, 120) to catch near-empty or unformatted refusals. Two
+   further extract-quality guards run here (worklog 0111): a **garbled-text detector** — an
+   "expected-alphabet plausibility" ratio (Latin∪Cyrillic∪Uzbek) that catches text which is
+   letter-dense but written in the wrong alphabet (cp1251 mojibake, broken subset fonts) that
+   the letter-density gate passes, and routes such books to the **vision** extract; and an
+   **extract-fidelity check** — a free scan for worked-example expressions
+   (fractions/equations) that don't appear in the source, which on a hit triggers one cheap
+   gemini-flash verify (over the lesson's own pages) and, on confirmed drift, regenerates the
+   extract once with a correction hint. The judge can't catch extract drift (it grades later
+   phases against the extract, not the book), so it's guarded here.
    *(Also: results are cached across jobs. If the same section was already extracted, the
    prior output is reused for free — the fidelity guard runs only on first production.)*
+
+   After a job finishes, a separate **warn-only coverage check**
+   (`content_lint.lint_coverage`, wired in via `pipeline._coverage_warnings_for_job`) parses
+   the extract's contract and checks whether each item's salient vocabulary shows up
+   anywhere in the assembled packet; anything wholly absent appends a `lint:coverage_thin`
+   finding to the extract row's `validation_warnings`. This is advisory only — it never
+   fails a job or forces a regen.
 
    *(Two steps that used to live here are gone: a `classify` step that decided EASY vs HARD,
    and a `source-map` step that built a concept list for injection. Flow v2 runs one sequence
@@ -713,7 +734,7 @@ you configure to match your plan.
   (`pdfplumber`, falling back to `pypdf`). If those aren't installed, kimi reports failure
   rather than hallucinate.
 - **Extract is pinned to a cheap model because it's high-input/low-value** (whole-PDF
-  read → flat factual summary), so paying smart-tier rates buys nothing — that's the
+  read → enumerated coverage contract, not creative writing), so paying smart-tier rates buys nothing — that's the
   design reason for the gemini/`gemini-2.5-flash` extract default (the **provider/model**
   is editable at `/settings` via the `launch_defaults` DB singleton; auth follows job
   transport). Separately, **claude refuses copyrighted textbooks** — Claude Code's copyright
