@@ -48,6 +48,7 @@ from app.schemas import (
     TOCEntryExtracted,
     TOCValidation,
 )
+from app.services import content_lint
 from app.services.providers import Provider, get_provider
 from app.services.proc_tree import kill_tree
 
@@ -1264,16 +1265,23 @@ def validate_extract_text(text: str) -> Optional[str]:
 
 
 def validate_extract_summary(summary: str) -> Optional[str]:
-    """Gate B — deterministic check on a produced summary. Returns a failure
-    reason, or None if it looks like a real summary. A failure triggers
-    failover (the run_fn raises ExtractRefusal)."""
+    """Gate B — structural validity of a produced extract contract. Returns a
+    failure reason, or None if it looks like a real extract. A failure triggers
+    failover (the run_fn raises ExtractRefusal).
+
+    Refusal markers always fail. Otherwise a parseable enumerated contract is
+    valid regardless of length (a compact lesson is legitimately short — the old
+    char-floor false-failed it). Only when NO contract parses do we fall back to
+    a low length floor to reject near-empty / unformatted-refusal output."""
     stripped = (summary or "").strip()
-    if len(stripped) < settings.extract_min_summary_chars:
-        return f"summary too short ({len(stripped)} chars) — likely a refusal"
     head = stripped[:_REFUSAL_HEAD_CHARS].lower()
     for marker in _EXTRACT_REFUSAL_MARKERS:
         if marker in head:
             return f"refusal marker in summary head: {marker!r}"
+    if content_lint.contract_has_items(stripped):
+        return None
+    if len(stripped) < settings.extract_min_summary_chars:
+        return f"summary too short ({len(stripped)} chars) and no contract sections — likely a refusal"
     return None
 
 
@@ -2224,11 +2232,31 @@ async def extract_lesson_context(
 # summarize_lesson — single-provider, whole-book TEXT injected (no PDF)
 # ─────────────────────────────────────────────────────────────────────
 
+_CONTRACT_INSTRUCTIONS = """Write the summary as an ENUMERATED COVERAGE CONTRACT so that \
+every downstream generator can see the full inventory of what this lesson teaches. \
+Begin with ONE short sentence naming the lesson (the gist). Then emit ONLY these \
+section headings, using the EXACT English words below (do NOT translate the headings), \
+with the ITEMS written in the lesson's language:
+
+## Concepts & terms
+## Rules & theorems
+## Formulas
+## Worked-example types
+## Key facts
+
+Under each heading list one bullet ("- ") per item. OMIT a heading entirely if the \
+lesson has no such items (e.g. a history lesson usually has no Formulas). \
+"## Worked-example types" is REQUIRED whenever the lesson contains any worked example, \
+sample problem, or solved exercise — list the TYPE of each (what the student must be able \
+to solve), not the full worked solution. Be complete but concise: capture every distinct \
+teachable item, especially the problem/exercise types, and do not invent items absent \
+from the source."""
+
 _SUMMARIZE_LESSON_PROMPT = """You are given the full text of a textbook below. \
 Locate the lesson titled "{title}" (section {number}; it is printed around pages \
 {ps}-{pe} — treat the page numbers only as a hint, find it by its TITLE) and write \
-a concise, factual summary of THAT lesson's content for downstream homework \
-generation. Summarize only that lesson. {rules}
+a factual coverage contract of THAT lesson's content for downstream homework \
+generation. Summarize only that lesson. """ + _CONTRACT_INSTRUCTIONS + """ {rules}
 
 ===== FULL TEXTBOOK TEXT =====
 {book_text}
@@ -2238,8 +2266,8 @@ generation. Summarize only that lesson. {rules}
 _SUMMARIZE_VISION_PROMPT = """The attached PDF pages contain a textbook lesson. \
 Locate the lesson titled "{title}" (section {number}; it is printed around pages \
 {ps}-{pe} — treat the page numbers only as a hint, find it by its TITLE) and write \
-a concise, factual summary of THAT lesson's content for downstream homework \
-generation. Summarize only that lesson. {rules}"""
+a factual coverage contract of THAT lesson's content for downstream homework \
+generation. Summarize only that lesson. """ + _CONTRACT_INSTRUCTIONS + """ {rules}"""
 
 
 async def summarize_lesson(

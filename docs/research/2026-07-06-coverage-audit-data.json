@@ -1,0 +1,742 @@
+[
+  {
+    "job": "1e8fc0c2-86f0-4496-ab40-0aa86df1f832",
+    "subject": "math-algebra",
+    "sec": "§5",
+    "note": "COMPACT / Gate-B FP case",
+    "title": "Algebraik kasrlarni ko'paytirish va bo'lish",
+    "pages": "27-29",
+    "extract_chars": 440,
+    "n_items": 5,
+    "items": [
+      {
+        "label": "Algebraik kasrlarni ko'paytirish",
+        "type": "formula",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Algebraik kasrlarni bo'lish",
+        "type": "formula",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Kasrlarni ko'paytirish va bo'lishda ko'paytuvchilarga ajratish va qisqartirish",
+        "type": "procedure",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Algebraik kasrni darajaga ko'tarish",
+        "type": "formula",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Algebraik va oddiy kasrlar amallarining o'xshashligi",
+        "type": "concept",
+        "central": false,
+        "in_extract": true,
+        "in_packet": true
+      }
+    ],
+    "notes": "All core teachable items from the specified section (§5) were successfully captured by the extract and comprehensively integrated into the generated homework phases with no information loss."
+  },
+  {
+    "job": "3179e47d-5549-4036-b3b0-714ff5c1d109",
+    "subject": "math-algebra",
+    "sec": "§2",
+    "note": "dense 6pp",
+    "title": "Algebraik kasr. Kasrlarni qisqartirish",
+    "pages": "12-17",
+    "extract_chars": 693,
+    "n_items": 7,
+    "items": [
+      {
+        "label": "Algebraik kasr ta'rifi",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Algebraik kasrning son qiymatini hisoblash",
+        "type": "procedure",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Joiz (yo'l qo'yiladigan) qiymatlar",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Kasrning asosiy xossasi",
+        "type": "rule_or_theorem",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Kasrlarni qisqartirish qoidasi",
+        "type": "procedure",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Kasrni qisqartirishdan oldin ko'paytuvchilarga ajratish",
+        "type": "worked_example_type",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Kasr ishorasini qarama-qarshisiga o'zgartirish xossasi",
+        "type": "rule_or_theorem",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      }
+    ],
+    "notes": "Barcha asosiy o'quv elementlari (ta'rif, joiz qiymatlar, asosiy xossa, qisqartirish usullari va ishoralarni o'zgartirish) ham ekstraktda, ham amaliy paketda mukammal va to'liq qamrab olingan, hech qanday yo'qotish kuzatilmadi."
+  },
+  {
+    "job": "19f32884-504b-4d39-92e7-45f0a9c61ce5",
+    "subject": "geometriya-g7-11",
+    "sec": "1-mavzu",
+    "note": "theorems",
+    "title": "Ko‘pburchak ichki va tashqi burchaklarining xossasi",
+    "pages": "5-7",
+    "extract_chars": 1455,
+    "n_items": 12,
+    "items": [
+      {
+        "label": "Ko‘pburchak, uning uchlari va tomonlari",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Sodda yopiq siniq chiziq",
+        "type": "term",
+        "central": false,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Qavariq ko‘pburchak",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Noqavariq ko‘pburchak",
+        "type": "term",
+        "central": false,
+        "in_extract": false,
+        "in_packet": false
+      },
+      {
+        "label": "Ko‘pburchakning ichki burchagi",
+        "type": "term",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Qavariq n-burchak ichki burchaklarining yig‘indisi teoremasi",
+        "type": "rule_or_theorem",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Diagonallar orqali (n-2) ta uchburchakka ajratish isboti",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Muntazam ko‘pburchakning bitta ichki burchagi formulasi",
+        "type": "formula",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Ko‘pburchakning tashqi burchagi",
+        "type": "term",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Qavariq n-burchak tashqi burchaklarining yig‘indisi teoremasi",
+        "type": "rule_or_theorem",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Muntazam ko‘pburchakning bitta tashqi burchagi formulasi",
+        "type": "formula",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Ichki burchaklar yig‘indisiga ko‘ra tomonlar sonini (n) topish",
+        "type": "worked_example_type",
+        "central": false,
+        "in_extract": true,
+        "in_packet": true
+      }
+    ],
+    "notes": "Coverage is excellent; only the secondary term 'noqavariq ko‘pburchak' is lost at the extract level, while all primary concepts, formulas, and proofs are fully preserved and rigorously tested in the packet phases."
+  },
+  {
+    "job": "5df1dd08-37dd-4e77-ab46-c0f6ee1a6f33",
+    "subject": "geometriya-g7-11",
+    "sec": "5-6-mavzu",
+    "note": "multi-topic rhombus+square",
+    "title": "Romb va kvadratning xossalari",
+    "pages": "16-18",
+    "extract_chars": 666,
+    "n_items": 7,
+    "items": [
+      {
+        "label": "Romb ta'rifi",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Romb diagonallari xossalari (perpendikularlik va bissektrisa)",
+        "type": "rule_or_theorem",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Kvadrat ta'rifi",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Kvadratning barcha xossalarni o'zida jamlashi",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Rombning kvadrat bo'lish sharti (diagonallar tengligi)",
+        "type": "rule_or_theorem",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Kvadrat bo'lishi uchun diagonallarning kesishish nuqtasida bo'linishi sharti (Masala 4)",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Romb burchaklarini diagonallar xossasidan foydalanib hisoblash",
+        "type": "worked_example_type",
+        "central": false,
+        "in_extract": false,
+        "in_packet": true
+      }
+    ],
+    "notes": "Core concepts, theorems, and nuances are perfectly preserved across both the extract and the packet; only a specific worked example type is absent from the extract but successfully reintroduced in the packet's practice phases."
+  },
+  {
+    "job": "08b02e07-ba94-4299-8bba-f708ad14bfa7",
+    "subject": "kimyo-g7-11",
+    "sec": "13-§",
+    "note": "big 12pp",
+    "title": "Elementlarning davriy sistemadagi o'rni va atom tuzilishiga qarab tavsiflash. Davriy qonunning ahamiyati",
+    "pages": "51-62",
+    "extract_chars": 1452,
+    "n_items": 7,
+    "items": [
+      {
+        "label": "Element xossalarining davrlarda o'zgarishi",
+        "type": "rule_or_theorem",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Element xossalarining guruhlarda o'zgarishi",
+        "type": "rule_or_theorem",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Davriy jadvaldagi o'rniga qarab element xossalarini bashorat qilish",
+        "type": "procedure",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Davriy qonunning ilmiy ahamiyati",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "D.I. Mendeleyevning noma'lum elementlar haqidagi bashoratlari (ekabor, ekaaluminiy, ekasilitsiy)",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Modda tarkibi va valentlik orqali noma'lum elementni aniqlash",
+        "type": "worked_example_type",
+        "central": false,
+        "in_extract": false,
+        "in_packet": false
+      },
+      {
+        "label": "Izotoplar massa ulushi orqali o'rtacha nisbiy atom massasini hisoblash",
+        "type": "worked_example_type",
+        "central": false,
+        "in_extract": false,
+        "in_packet": false
+      }
+    ],
+    "notes": "The extract successfully captures all core theoretical concepts of section 13-§, but the end-of-chapter numerical worked examples (such as isotope mass calculations and equivalent mass problems) are completely lost at the extract stage."
+  },
+  {
+    "job": "04aa4527-c860-4de3-9e75-095e3c85cbbb",
+    "subject": "kimyo-g7-11",
+    "sec": "16-§",
+    "note": "compact concept",
+    "title": "Ionli bog'lanish",
+    "pages": "71-73",
+    "extract_chars": 704,
+    "n_items": 8,
+    "items": [
+      {
+        "label": "Ion",
+        "type": "term",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Ion bog'lanish",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Elektromanfiylik keskin farqi sharti",
+        "type": "rule_or_theorem",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Barqaror elektron konfiguratsiyasiga erishish",
+        "type": "procedure",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Metallar va metallmaslarning ion hosil qilish qoidasi",
+        "type": "rule_or_theorem",
+        "central": true,
+        "in_extract": false,
+        "in_packet": true
+      },
+      {
+        "label": "Ion zaryadi miqdori qoidasi",
+        "type": "rule_or_theorem",
+        "central": true,
+        "in_extract": false,
+        "in_packet": true
+      },
+      {
+        "label": "Ionli birikmalar",
+        "type": "term",
+        "central": false,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Tuzlar va ishqorlardagi ion bog'lanish",
+        "type": "key_fact",
+        "central": false,
+        "in_extract": true,
+        "in_packet": true
+      }
+    ],
+    "notes": "The extract omits explicit rules linking specific element types (metals/non-metals) to their electron transfer behavior and the exact mathematical rule determining ion charges, but the packet successfully recovers these through domain knowledge prompts."
+  },
+  {
+    "job": "6d3bf652-944c-4ab4-b787-3e4becb56472",
+    "subject": "history",
+    "sec": "18 Crusades",
+    "note": "10pp names/dates/events",
+    "title": "Salib yurishlari",
+    "pages": "106-115",
+    "extract_chars": 4613,
+    "n_items": 15,
+    "items": [
+      {
+        "label": "\"Salib yurishlari\" tushunchasi va xronologiyasi",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Yurishlarning sabablari (Yaqin Sharqdagi vaziyat)",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Papa Urban II ning Klermon nutqi (1095)",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Ishtirokchilarning turli tabaqaviy maqsadlari",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": false
+      },
+      {
+        "label": "Vizantiya imperatori Aleksey I ga vassallik qasamyodi",
+        "type": "key_fact",
+        "central": false,
+        "in_extract": false,
+        "in_packet": false
+      },
+      {
+        "label": "Birinchi salib yurishi va Quddus qirolligi",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Salibchilarning Yaqin Sharqdagi mahalliy soliq siyosati",
+        "type": "key_fact",
+        "central": false,
+        "in_extract": false,
+        "in_packet": false
+      },
+      {
+        "label": "Diniy-ritsarlik ordenlari",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Musulmon kuchlarining birlashuvi (Imomiddin va Nuriddin Zangiy)",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Ikkinchi salib yurishi",
+        "type": "key_fact",
+        "central": false,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Salohiddin Ayyubiy va Uchinchi salib yurishi",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "To'rtinchi salib yurishi va Lotin imperiyasi",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Bolalar salib yurishi (1212)",
+        "type": "key_fact",
+        "central": false,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Salib yurishlarining tugatilish sabablari",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Salib yurishlarining Yevropaga oqibatlari",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      }
+    ],
+    "notes": "Coverage is exceptionally strong for key historical events and concepts; minor secondary details (Byzantine relations, local taxes) were filtered out at the extract stage, while the specific distinct motives of different social classes were extracted but dropped during the generation of the interactive packet phases."
+  },
+  {
+    "job": "7bd23497-2d5b-4b83-adc3-4d01273ecc39",
+    "subject": "history",
+    "sec": "10 Saljuqiylar",
+    "note": "compact history",
+    "title": "Saljuqiylar davlati",
+    "pages": "62-65",
+    "extract_chars": 3110,
+    "n_items": 11,
+    "items": [
+      {
+        "label": "Saljuqiylarning kelib chiqishi va ko'chishi",
+        "type": "key_fact",
+        "central": false,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Saljuqiylar davlatining tashkil topishi (1038)",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "To'g'rulbekning xalifa tomonidan e'tirof etilishi (1055)",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Davlatning yuksalishi (Alp Arslon va Malikshoh)",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Malikshoh vafotidan so'ng davlatning parchalanishi",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Ko'niya sultonligi",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Mansikert jangi (1071)",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Turk millatining shakllanishi",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Mo'g'ullar bosqini (1243) va Usmon beyligining paydo bo'lishi",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Saljuqiylar davlat boshqaruvi (Dargoh va Devon)",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Nizomulmulk va Siyosatnoma",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      }
+    ],
+    "notes": "No central teachable items are lost; the extract effectively summarizes all critical historical events, concepts, and figures, and the packet comprehensively tests them across various interactive phases."
+  },
+  {
+    "job": "1a4f4fa2-6a50-47fd-9d76-14f0f4d27803",
+    "subject": "biology",
+    "sec": "6 Fungi",
+    "note": "classification-heavy",
+    "title": "Zamburug‘lar dunyosi",
+    "pages": "19-24",
+    "extract_chars": 2546,
+    "n_items": 17,
+    "items": [
+      {
+        "label": "Geterotrof oziqlanish",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Tuzilish jihatdan suv o'tlari va bakteriyalardan farqi",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": false
+      },
+      {
+        "label": "Mitselliy va gifa",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Tuban va yuksak zamburug'lar tuzilishi",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Achitqi zamburug'i tuzilishi va ko'payishi",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Achitqi zamburug'i metabolizmi",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Qo'ziqorin (meva tanasi) tuzilishi",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Zang zamburug'i hayotiy sikli",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Vertisill (vilt kasalligi)",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Zamburug'larning ekologik ahamiyati (parchalovchilar)",
+        "type": "key_fact",
+        "central": false,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Mikoriza (simbioz)",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Ektotrof va endotrof mikoriza farqlari",
+        "type": "key_fact",
+        "central": false,
+        "in_extract": true,
+        "in_packet": false
+      },
+      {
+        "label": "Mikorizada moddalar almashinuvi",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Lishayniklar tuzilishi (simbioz)",
+        "type": "concept",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Lishaynik shakllari",
+        "type": "concept",
+        "central": false,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Lishayniklarning bioindikatorlik xususiyati",
+        "type": "key_fact",
+        "central": true,
+        "in_extract": true,
+        "in_packet": true
+      },
+      {
+        "label": "Lishayniklarning kimyoviy tarkibi",
+        "type": "key_fact",
+        "central": false,
+        "in_extract": true,
+        "in_packet": true
+      }
+    ],
+    "notes": "The coverage is outstanding; the only minor omissions are comparative biological facts (specific structural differences from bacteria/algae) and the explicit distinction between endotrophic and ectotrophic mycorrhizae, which are lost at the packet phase despite being accurately captured in the extract."
+  }
+]

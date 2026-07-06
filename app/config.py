@@ -183,9 +183,7 @@ class Settings(BaseSettings):
     # subset font whose glyph!=byte) — route to vision. Real books measure
     # >=0.999; the RU-mojibake book scores 0.07. 0.70 leaves a huge margin.
     extract_min_alpha_ratio: float = 0.70
-    # Gate B (summary): a real lesson summary is thousands of chars; the silent
-    # refusal that motivated this was 275. Below this → reject → fail over.
-    extract_min_summary_chars: int = 400
+    extract_min_summary_chars: int = 120  # fallback floor when NO contract parses; structural parse is primary
     # TOC vision validator: runs after extract_toc, before persisting status.
     # Disabled → toc_validation DB column stays NULL (distinct from "skipped").
     toc_validation_enabled: bool = True

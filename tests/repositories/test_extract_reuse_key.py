@@ -14,7 +14,7 @@ pytestmark = pytest.mark.skipif(
     reason="needs a real Postgres; set RUN_DB_INTEGRATION=1 + DATABASE_URL",
 )
 
-_PROMPT_HASH = "builtin:extract:v2"
+_PROMPT_HASH = "builtin:extract:v3"  # bumped with the coverage-contract extract prompt
 
 
 async def _seed_book_with_lesson(s):

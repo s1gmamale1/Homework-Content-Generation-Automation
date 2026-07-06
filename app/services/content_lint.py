@@ -87,6 +87,53 @@ def _lint_ru_leak(output_md: str, output_language: str) -> list[LintFinding]:
     return out
 
 
+# Fixed English contract headers the extract prompt emits (stable across content
+# languages). Map header-variant -> canonical key by ANY-substring needle match.
+# Lenient: ##/### any level, case-insensitive, '&'/'-'/whitespace tolerated.
+# ORDERED specific-first so a broad needle can't shadow a more specific section
+# (checked top-to-bottom, first hit wins). Needles are chosen so each is a
+# substring of its real headers: "key fact" IS a substring of "key facts".
+_CONTRACT_SECTION_NEEDLES = [
+    ("worked_example_types", ("worked", "example")),  # "Worked-example types"
+    ("rules_theorems", ("rule", "theorem")),          # "Rules & theorems"
+    ("key_facts", ("key fact",)),                     # "Key facts"
+    ("concepts", ("concept", "term")),                # "Concepts & terms"
+    ("formulas", ("formula",)),                       # "Formulas"
+]
+_HEADER_RE = re.compile(r"(?m)^[ \t]*#{1,6}[ \t]*(?P<h>[^\n#].*?)[ \t]*$")
+_BULLET_RE = re.compile(r"(?m)^[ \t]*[-*][ \t]+(?P<item>\S.*?)[ \t]*$")
+
+
+def _canonical_section(header: str) -> "str | None":
+    h = header.strip().lower()
+    for key, needles in _CONTRACT_SECTION_NEEDLES:
+        if any(n in h for n in needles):
+            return key
+    return None
+
+
+def parse_extract_contract(md: str) -> "dict[str, list[str]]":
+    """Parse the enumerated extract contract into {canonical_section: [items]}.
+    Only recognized sections with >=1 bullet appear. Lenient on header level/case."""
+    text = md or ""
+    out: "dict[str, list[str]]" = {}
+    headers = list(_HEADER_RE.finditer(text))
+    for i, m in enumerate(headers):
+        key = _canonical_section(m.group("h"))
+        if not key:
+            continue
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
+        items = [b.group("item").strip() for b in _BULLET_RE.finditer(text[m.end():end])]
+        items = [it for it in items if it]
+        if items:
+            out.setdefault(key, []).extend(items)
+    return out
+
+
+def contract_has_items(md: str) -> bool:
+    """True iff the text parses to >=1 recognized contract section with an item."""
+    return bool(parse_extract_contract(md))
+
 def _lint_language(output_md: str, output_language: str) -> list[LintFinding]:
     out: list[LintFinding] = []
     seen_mixed: set[str] = set()
@@ -226,3 +273,47 @@ def lint_phase(phase_name: str, output_md: str, *, subject: str, output_language
 
 def findings_to_warnings(findings: list[LintFinding]) -> list[str]:
     return [f"lint:{f.code}: {f.message}" for f in findings]
+
+
+# --- coverage check (contract items vs assembled packet, warn-only) ----------
+
+_COVERAGE_SECTIONS = ("concepts", "rules_theorems", "worked_example_types", "key_facts")
+_APOS_CLASS = "['ʻʼ‘’`]"
+# NOTE: _APOS_CLASS is already a complete bracketed character class (for _norm's
+# re.sub below). Re-embedding it inside ANOTHER [...] class here would nest
+# brackets and break the regex (the outer class closes at the first "]", then a
+# stray literal "]+" that never matches real text) — so the apostrophe chars are
+# spelled out bare instead of splicing _APOS_CLASS in.
+_TOKEN_RE = re.compile(r"[0-9A-Za-zЀ-ӿ'ʻʼ‘’`]+")
+
+
+def _norm(s: str) -> str:
+    return re.sub(_APOS_CLASS, "'", s.lower())
+
+
+def _salient_tokens(label: str) -> "list[str]":
+    return [t for t in _TOKEN_RE.findall(_norm(label)) if len(t) >= 4]
+
+
+def lint_coverage(contract_md: str, packet_md: str) -> "list[LintFinding]":
+    """Warn-only: contract items whose salient vocabulary is WHOLLY absent from the
+    packet. Conservative (under-reports) — a nudge, never a gate. Formulas excluded
+    (symbol-heavy). One aggregated finding."""
+    contract = parse_extract_contract(contract_md)
+    if not contract:
+        return []
+    packet = _norm(packet_md or "")
+    thin: "list[str]" = []
+    for section in _COVERAGE_SECTIONS:
+        for item in contract.get(section, []):
+            toks = _salient_tokens(item)
+            if toks and not any(t in packet for t in toks):
+                thin.append(item)
+    if not thin:
+        return []
+    shown = "; ".join(t[:60] for t in thin[:6])
+    more = f" (+{len(thin) - 6} more)" if len(thin) > 6 else ""
+    return [LintFinding(
+        code="coverage_thin",
+        message=f"{len(thin)} contract item(s) appear uncovered by the packet: {shown}{more}",
+    )]

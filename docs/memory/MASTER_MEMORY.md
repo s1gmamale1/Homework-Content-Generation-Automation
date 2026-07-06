@@ -1633,3 +1633,23 @@ Gate-hardening: `PUT /settings/launch-defaults` rejects null provider/model with
 **Lane collision (GK2 P1):** shares `content_lint.py` + `tests/services/test_content_lint.py` with the `feat/extract-coverage-contract` lane; edits are append-style in different regions — whoever merges second rebases + hand-merges those two files.
 
 **Files:** `app/services/prompts.py`, `app/services/content_lint.py`, `prompts/_general/{practice-rlc,boss-arena,case-based-preview,reflection}.md`, `scripts/check_prompt_render.py` + tests (`test_round2_localization.py` new, `test_prompts_output_language.py`, `test_content_lint.py`). Docs de-staled: `HOW_IT_WORKS.md`, `CODE_MAP.md`. Plan `git mv`'d to `docs/superpowers/plans/shipped/`.
+
+---
+
+## [0119] Extract coverage-contract — enumerated contract + structural Gate B + warn-only coverage check — 2026-07-06 (feat/extract-coverage-contract)
+
+**Why (Phase-0 audit, `docs/research/2026-07-06-coverage-audit.md`):** nothing in the quality stack verified *lesson-core ⊆ packet*; every check grades the packet against the EXTRACT, so an under-summarizing extract is invisible downstream. Audit of 9 real edu_copy packets (5 subject families, 2 langs, one bounded gemini-3.1-pro judge each, ~$0.72): **91% coverage; 5/8 misses are EXTRACT-loss, 3/8 PHASE-loss.** Dominant, hand-verified: the extract systematically **drops the lesson's worked-example/problem types** (kimyo §13 lost BOTH → 71%; source `3-misol`/`4-misol` present, extract had none). And length ⊥ coverage — the FP §5 was 440c/100%.
+
+**What (6 tasks, TDD, one plan/PR):**
+1. `content_lint.parse_extract_contract` + `contract_has_items` — pure parser of the enumerated contract (fixed English headers, ordered `any()`-substring `_canonical_section`, lenient on `##/###`/case).
+2. **Gate B structural** (`agent.validate_extract_summary`): refusal-marker → fail; parseable contract → pass regardless of length; else fall back to `extract_min_summary_chars` (lowered **400→120**, now a fallback floor only). Structure-AWARE not structure-REQUIRING → no new false-fail. **Closes `extract-gateb-short-lesson-fp-1`.**
+3. Extract prompts (`_SUMMARIZE_LESSON_PROMPT` + `_SUMMARIZE_VISION_PROMPT`, shared `_CONTRACT_INSTRUCTIONS`) emit the enumerated contract with a required `## Worked-example types`; extract cache **`builtin:extract:v2`→`:v3`** (invalidates cross-job cache — each active book re-extracts once, flash-pinned, organic per-job).
+4. `content_lint.lint_coverage` — deterministic warn-only: a contract item is "thin" only when its salient tokens (≥4 chars) are WHOLLY absent from the packet (conservative/under-reports); formulas excluded; aggregated to one `lint:coverage_thin` finding.
+5. `pipeline._coverage_warnings_for_job` + a fail-open finalize hook (before `set_status "done"`) appends coverage findings to the extract row's `validation_warnings` (`guard=False` — the done row is frozen by default; idempotent append on tail-resume).
+6. De-stale HOW_IT_WORKS + CODE_MAP.
+
+**Decisions locked with user:** enumerated-markdown (not JSON/hybrid); warn-only deterministic (not gating — validate_toc/solver lesson); phase-side nudges deferred (measured first by this check); CQ-E `coverage` dimension deferred (contract parseable so CQ-E can add an offline dim). **No migration.** Composes with CQ-D fidelity guard unchanged.
+
+**Proof (acceptance, real gemini api ~$0.90 lane total, DB-free):** (a) new §13 contract's `## Worked-example types` RECOVERS the isotope→avg-atomic-mass + composition+valence→mass types the old extract dropped; (b) compact §5 contract (1233c) Gate B PASS — the FP RED case; (c) coverage check fired warn-only on the real §13 packet (2/43 thin — sane); (d) flashcards generated from the NEW contract are high-quality Uzbek and pick up the flagged items (enumeration improves downstream coverage). Full suite 1420 pass / 196 skip / **2 PRE-EXISTING failover reds** (`cli-failover-tests-red-1`, reproduced on pristine base); CQ-D fidelity 22/22 UNMODIFIED; golden free tier 45/46. Final opus whole-branch review: all 8 constraints verified, SHIP (after rebase + finish). **Cascade: this merge unblocks the CQ-E baseline-freeze** (freeze now captures post-contract behavior). Residual (accepted, plan-approved): the 120 fallback floor lets an unmarked unstructured 120–400c refusal pass Gate B (structure-first + CQ-D + judge downstream cover it).
+
+**Files:** `app/services/content_lint.py`, `app/services/agent.py`, `app/config.py`, `app/services/pipeline.py`, tests (`test_content_lint.py`, `test_agent.py`, `test_pipeline_coverage.py` new, `test_config_extract_robustness.py`, `test_extract_reuse_key.py`), docs.
