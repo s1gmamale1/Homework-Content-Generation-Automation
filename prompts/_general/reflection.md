@@ -24,20 +24,24 @@ its own `##` heading and its own content. **Omitting any section is a failed out
 What the student learned. Include the {{SUBJECT}} concept/rule/law name, the key
 formula or principle (if any), and one real-world connection.
 
-"Bugun Siz [concept] ni o'rgandingiz..."
+Phrase it in the OUTPUT LANGUAGE, e.g. Uzbek "Bugun Siz [concept] ni
+o'rgandingiz…", Russian «Сегодня Вы изучили [concept]…».
 
 ## 2. Strong & Weak Points
 
 Structure the app fills in **after** the student's attempt — do NOT assert how the
 student performed (there is no attempt yet when this is generated):
-- **Kuchli tomonlar:** name 1–2 concepts from THIS lesson that the Case-Based Preview /
+- **Strong-points heading** (Uzbek **"Kuchli tomonlar:"**, Russian **«Сильные
+  стороны:»**): name 1–2 concepts from THIS lesson that the Case-Based Preview /
   Boss Arena treated as core — the ones a confident student should have handled.
-- **Zaif tomonlar:** name 1–2 concepts from THIS lesson that are the most error-prone /
+- **Weak-points heading** (Uzbek **"Zaif tomonlar:"**, Russian **«Слабые
+  стороны:»**): name 1–2 concepts from THIS lesson that are the most error-prone /
   worth re-checking (name them; do not invent a score or a result).
 
 ## 3. One Thinking Question
 
-Pick ONE (rotate). Prefer questions tied to THIS session's performance over generic curiosity:
+Pick ONE (rotate), phrased in the OUTPUT LANGUAGE. Prefer questions tied to THIS
+session's performance over generic curiosity (examples shown in Uzbek):
 - "Bu bobda eng qiyin tushuncha nima edi?"
 - "Do'stingizga buni qanday tushuntirgan bo'lar edingiz?"
 - "Kundalik hayotda buni qayerda ko'rish mumkin?"
@@ -50,16 +54,17 @@ Pick ONE (rotate). Prefer questions tied to THIS session's performance over gene
   only state the route).
 - A concrete **next-step suggestion** — what to review or practice next (name the specific
   weak concept or phase to return to), not just "try again".
-- Retake rule: **"Xuddi shu tushunchalar, lekin xuddi shu savollar emas"** (same
-  concepts, not the same questions).
+- Retake rule, in the output language: **"Xuddi shu tushunchalar, lekin xuddi shu
+  savollar emas"** (Russian: «Те же понятия, но не те же вопросы») — same concepts,
+  not the same questions.
 - The student **app**, not this output, sets the score and decides pass/redo. Do NOT
   state or imply a pass/fail verdict or any retry-status label — describe the
   redo route conditionally ("if the app marks a redo, return to …") and stop there.
 
 ## 5. Closing Line
 
-One encouraging line, unconditional (no score branch):
-"Har bir mashq miyangizni kuchaytiradi. Ertaga davom etamiz!"
+One encouraging line, unconditional (no score branch), in the OUTPUT LANGUAGE, e.g.
+Uzbek "Har bir mashq miyangizni kuchaytiradi. Ertaga davom etamiz!"
 
 ## Rules
 

@@ -44,3 +44,11 @@ def test_cbp_names_two_approved_opening_shapes():
     assert "storytelling" in low or "story" in low
     assert "question-first" in low or "question first" in low
     assert "fun-fact" in low or "fun fact" in low
+
+
+def test_reflection_examples_are_language_relative():
+    text = _read("reflection.md")
+    low = text.lower()
+    assert "output language" in low
+    assert "Kuchli tomonlar" in text and "Zaif tomonlar" in text  # uz retained
+    assert "Сильные" in text or "Слабые" in text  # ru example offered
