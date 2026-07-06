@@ -16,6 +16,8 @@
 - **Chosen fix (both halves):** (1) Backend — make `available_languages` collision-safe by adding a `parts: [{page_id,title,has_textbook}]` list per language while **keeping** top-level `page_id` (= first part) + `has_textbook`, so every existing consumer and test keeps working and the FE can now *see* multi-part instead of a silent collapse. (2) FE — the clicked UZ page is authoritative for UZ output (never overridden by the map); cross-language switches use the map only, and only when the target language has exactly one part.
 - **Second consumer folded in (not in the WISHLIST):** `upload.tsx:126` has the identical bug. It's the same fix / same class; shipping launcher-only would knowingly leave the direct-upload path broken. Both consumers share the new helper (DRY).
 - **Multi-part cross-language decision (locked with user 2026-07-06): Disable + hint.** When the operator switches OUTPUT language to one with >1 textbook part, v1 cannot know which part corresponds → the chip is disabled with a tooltip ("N Russian parts — pick the specific part directly or upload the PDF"). Zero wrong-book risk; a part-picker is a future WISHLIST item. Same-language UZ picks and single-part cross-language switches are always resolved correctly.
+- **N2 (GK2 gate condition): chip availability derives from `parts[]`, never the top-level flag.** The backward-compat top-level `has_textbook` is pinned to the *first* part; a language whose part-1 lacks a PDF but part-2 has one would then render × while genuinely having a textbook. The pure helper (`langChipState`) therefore derives availability from the textbook-having parts (`parts.filter(has_textbook)`) — owned in the helper so it's `npx tsx`-tested, with an explicit mixed-textbook test case. (Backend already filters no-PDF parts out of `parts`, so this is belt-and-suspenders robustness, not a live-only path.)
+- **N1 (GK2 gate condition, lane-B split): honest dedup toast in `launcher.tsx` `prepare.onSuccess`.** The agreed lane split is "B adds the backend `deduplicated` flag + fixes `upload.tsx`; C (this lane) consumes the field in launcher's toast branch." So `onSuccess` branches on `data.deduplicated` → "Book already exists — reusing" instead of the phantom "Preparing…". Read it **defensively** (`undefined → falsy → today's behavior`) via a narrow inline type — no `Book`-type edit — so there is **no ordering dependency** with lane B (whichever PR merges first, nothing breaks; the toast lights up once both halves exist). Post-fix, dedup-hits stop being wrong-book artifacts but remain legitimate re-prepares, so the operator still deserves honest feedback. This puts this lane in `onSuccess` after all → the "second-to-merge rebases" rule vs lane B applies for real (both touch the same `prepare` mutation, disjoint keys: `mutationFn` + `onSuccess`).
 - **Testability:** FE has no component-test harness — pure `lib/` helpers are unit-tested via `npx tsx`. The buggy resolution + availability logic is extracted into `web/src/lib/notion-parts.ts` and unit-tested there; components become thin callers. `tsc -b` + `vite build` are the compile gate for the wiring.
 - **Rejected — change `page_id` semantics / drop it:** breaks all existing consumers and `test_notion_lang_crawl.py` assertions (`result["math-algebra"]["uz"]["page_id"] == "uz-alg"`). Additive `parts` is lower-risk and equally correct (top-level `page_id` is only *read* in the unambiguous single-part cross-language case).
 - **No migration. Notion READS only (no writes). No paid LLM calls.** Acceptance = mocked two-part fixture (backend + helper) proving part-1 click → part-1 page_id, plus `tsc`/`build` clean. Live prepare of the real G6 part-1 is the post-merge verify (user-gated, GK2 drives).
@@ -292,6 +294,25 @@ assert.deepEqual(langChipState("en", ruSingle, true), { available: false, multiP
 // map not loaded → fail-open available
 assert.deepEqual(langChipState("ru", null, false), { available: true, multiPart: false, partCount: 0 });
 
+// --- N2: availability + resolution derive from textbook-having parts, NOT the
+// top-level flag / raw part count. Part 1 has no PDF, part 2 does → the language
+// genuinely has ONE textbook → available, and resolves to part 2 (not the
+// top-level first part, which is the no-PDF one). ---
+const ruMixed: Record<string, LangAvailability> = {
+  ru: {
+    page_id: "ru-1", // top-level pinned to the first (no-PDF) part — must NOT drive the chip
+    has_textbook: false,
+    parts: [
+      { page_id: "ru-1", title: "часть 1", has_textbook: false },
+      { page_id: "ru-2", title: "часть 2", has_textbook: true },
+    ],
+  },
+};
+assert.deepEqual(langChipState("ru", ruMixed, true), { available: true, multiPart: false, partCount: 1 },
+  "chip availability must count only textbook-having parts, not the top-level flag");
+assert.equal(resolveNotionPageId("uz-x", "ru", ruMixed), "ru-2",
+  "cross-language resolves to the single TEXTBOOK-having part, not the top-level first part");
+
 console.log("notion-parts.test.ts: all assertions passed");
 ```
 
@@ -333,14 +354,19 @@ export function resolveNotionPageId(
   langMap: Record<string, LangAvailability> | null | undefined,
 ): string | null {
   if (language === "uz") return clickedPageId;
-  const parts = partsFor(langMap?.[language]);
-  return parts.length === 1 ? parts[0].page_id : null;
+  // Derive from textbook-having parts only (a no-PDF part must never be fetched
+  // and must not make the sole real part look ambiguous) — N2.
+  const withText = partsFor(langMap?.[language]).filter((p) => p.has_textbook);
+  return withText.length === 1 ? withText[0].page_id : null;
 }
 
-/** Language-chip state for the prepare flow.
+/** Language-chip state for the prepare flow. Availability is derived from the
+ *  textbook-having parts (`parts.filter(has_textbook)`), NOT the backward-compat
+ *  top-level `has_textbook` flag (which is pinned to the first part and would lie
+ *  when part 1 has no PDF but a later part does) — N2.
  *  - map not loaded → fail-open (available), so chips aren't wrongly disabled.
- *  - UZ → available iff its own textbook exists (single explicit part per pick).
- *  - other language → available iff exactly one part; >1 parts is ambiguous in
+ *  - UZ → available iff any textbook part exists (single explicit part per pick).
+ *  - other language → available iff exactly one textbook part; >1 is ambiguous in
  *    v1 → disabled with `multiPart` set (locked decision: disable + hint). */
 export function langChipState(
   language: OutputLanguage,
@@ -348,13 +374,12 @@ export function langChipState(
   mapLoaded: boolean,
 ): { available: boolean; multiPart: boolean; partCount: number } {
   if (!mapLoaded) return { available: true, multiPart: false, partCount: 0 };
+  const withText = partsFor(langMap?.[language]).filter((p) => p.has_textbook);
   if (language === "uz") {
-    const uz = langMap?.uz;
-    return { available: !!uz?.has_textbook, multiPart: false, partCount: partsFor(uz).length };
+    return { available: withText.length > 0, multiPart: false, partCount: withText.length };
   }
-  const parts = partsFor(langMap?.[language]);
-  if (parts.length === 0) return { available: false, multiPart: false, partCount: 0 };
-  if (parts.length > 1) return { available: false, multiPart: true, partCount: parts.length };
+  if (withText.length === 0) return { available: false, multiPart: false, partCount: 0 };
+  if (withText.length > 1) return { available: false, multiPart: true, partCount: withText.length };
   return { available: true, multiPart: false, partCount: 1 };
 }
 ```
@@ -443,17 +468,43 @@ Replace the per-lang chip computation (`launcher.tsx:292-302`) — the `info`/`m
 
 (Remove the now-dead `const info = subjectLangMap?.[lang];` line — `langChipState` reads the map internally. Keep the rest of the chip JSX unchanged; it already reads `available`/`selected`/`tooltip`.)
 
-- [ ] **Step 4: Typecheck + build**
+- [ ] **Step 4: Honest dedup toast in `prepare.onSuccess` (N1 — lane-B split)**
+
+Replace the `onSuccess` handler of the `prepare` mutation (`launcher.tsx:127-136`):
+
+```tsx
+    onSuccess: (data) => {
+      // Honest feedback on a dedup hit: re-preparing an existing book is
+      // legitimate (post-clobber-fix it is no longer a wrong-book artifact), but
+      // the operator should see "reusing" rather than a phantom "Preparing…".
+      // `deduplicated` is added by lane B's backend flag — read it defensively so
+      // there is NO ordering dependency (undefined → falsy → today's behavior;
+      // the branch lights up once B's flag exists).
+      const deduped = (data as { deduplicated?: boolean }).deduplicated ?? false;
+      toast.success(deduped ? "Book already exists — reusing." : "Preparing — extracting lessons…");
+      qc.invalidateQueries({ queryKey: ["books"] });
+      // Collapse + reset the form — progress now shows in the Tray below.
+      setOpen(false);
+      setGradePageId("");
+      setGradeDigits("");
+      setSubjectPageId("");
+      setPrepLang("uz");
+    },
+```
+
+(Only the first two lines of the body change — the arg becomes `(data)`, and the toast branches on `deduped`. The reset/invalidate lines are unchanged.)
+
+- [ ] **Step 5: Typecheck + build**
 
 Run: `cd /Users/macmini5/Documents/HCGA-multipart/web && npx tsc -p tsconfig.app.json --noEmit && npm run build`
 Expected: tsc clean; `vite build` writes `web/dist/` with no errors.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 cd /Users/macmini5/Documents/HCGA-multipart
 git add web/src/components/fleet/launcher.tsx
-git commit -m "nmp: launcher prepare trusts the clicked UZ part; disable multi-part cross-language"
+git commit -m "nmp: launcher prepare trusts clicked UZ part; disable multi-part cross-lang; honest dedup toast"
 ```
 
 ---
