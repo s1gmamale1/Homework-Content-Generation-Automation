@@ -99,6 +99,20 @@ def _done_phase_md(rows) -> dict[str, str]:
     }
 
 
+def _coverage_warnings_for_job(rows) -> "list[str]":
+    """Given phase rows (dicts or ORM objs with phase_name/output_md), compare the
+    extract contract against the assembled packet and return warn-only coverage
+    findings (lint:coverage_thin, may be empty). Pure; safe to call anywhere."""
+    def _f(r, k):
+        return r.get(k) if isinstance(r, dict) else getattr(r, k, None)
+    extract = next((_f(r, "output_md") for r in rows if _f(r, "phase_name") == "extract"), None)
+    if not extract:
+        return []
+    packet = "\n\n".join(
+        _f(r, "output_md") or "" for r in rows if _f(r, "phase_name") != "extract")
+    return content_lint.findings_to_warnings(content_lint.lint_coverage(extract, packet))
+
+
 def _resolve_extract(job_extract_provider, job_extract_model, ld):
     """Extract role provider/model: explicit job override, else the global
     default from the launch_defaults DB row (jobs are stamped at launch; this
@@ -384,6 +398,26 @@ async def run(job_id: UUID) -> None:
                     # the job failed. Unwind cleanly without overwriting state.
                     return
                 raise
+
+        # Post-job coverage check (warn-only): does the packet cover the extract
+        # contract? Rides the extract row's validation_warnings. Never fails a job.
+        try:
+            async with SessionLocal() as session:
+                _rows = await phase_repo.list_for_job(session, job_id)
+                _cov = _coverage_warnings_for_job(
+                    [{"phase_name": r.phase_name, "output_md": r.output_md} for r in _rows])
+                if _cov:
+                    _ex = next((r for r in _rows if r.phase_name == "extract"), None)
+                    if _ex is not None:
+                        _merged = list(_ex.validation_warnings or []) + _cov
+                        # guard=False: the extract row is already 'done' and the
+                        # default guard (WHERE status != 'done') would no-op it.
+                        await phase_repo.set_status(
+                            session, _ex.id, _ex.status, validation_warnings=_merged,
+                            guard=False)
+                        await session.commit()
+        except Exception as exc:  # noqa: BLE001 — advisory only, must never fail the job
+            logger.warning(f"coverage check skipped (fail-open): {exc!r}")
 
         # No assembly — per-phase markdown in phase_outputs is the deliverable.
         async with SessionLocal() as session:
