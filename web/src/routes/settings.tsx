@@ -140,6 +140,9 @@ export function SettingsPage() {
   const [judgeProvider, setJudgeProvider] = useState<string | null>(null);
   const [judgeModel, setJudgeModel] = useState<string | null>(null);
   const [judgeTransport, setJudgeTransport] = useState<RoleTransport>("inherit");
+  const [solverProvider, setSolverProvider] = useState<string | null>(null);
+  const [solverModel, setSolverModel] = useState<string | null>(null);
+  const [solverTransport, setSolverTransport] = useState<RoleTransport>("inherit");
   const [extractProvider, setExtractProvider] = useState<string | null>(null);
   const [extractModel, setExtractModel] = useState<string | null>(null);
   const [extractTransport, setExtractTransport] = useState<RoleTransport>("inherit");
@@ -159,6 +162,9 @@ export function SettingsPage() {
     setJudgeProvider(data.judge_provider ?? null);
     setJudgeModel(data.judge_model ?? null);
     setJudgeTransport((data.judge_transport as RoleTransport) ?? "inherit");
+    setSolverProvider(data.solver_provider ?? null);
+    setSolverModel(data.solver_model ?? null);
+    setSolverTransport((data.solver_transport as RoleTransport) ?? "inherit");
     setExtractProvider(data.extract_provider ?? null);
     setExtractModel(data.extract_model ?? null);
     setExtractTransport((data.extract_transport as RoleTransport) ?? "inherit");
@@ -173,6 +179,9 @@ export function SettingsPage() {
   const contentModelOptions = contentProvider ? (manifest?.providers?.[contentProvider] ?? []) : [];
   const judgeModelOptions = judgeProvider
     ? (manifest?.providers?.[judgeProvider] ?? [])
+    : [];
+  const solverModelOptions = solverProvider
+    ? (manifest?.providers?.[solverProvider] ?? [])
     : [];
   const extractModelOptions = extractProvider
     ? (manifest?.providers?.[extractProvider] ?? [])
@@ -209,9 +218,10 @@ export function SettingsPage() {
     setSaveError(null);
     // Global defaults must be fully concrete — the backend enforces this too,
     // but catch it early for a cleaner UX.
-    if (!contentProvider || !contentModel || !judgeProvider || !judgeModel || !extractProvider || !extractModel) {
+    if (!contentProvider || !contentModel || !judgeProvider || !judgeModel ||
+        !solverProvider || !solverModel || !extractProvider || !extractModel) {
       setSaveError(
-        "Content, Judge, and Extract provider+model must all be set — no Auto allowed for global defaults",
+        "Content, Judge, Solver, and Extract provider+model must all be set — no Auto allowed for global defaults",
       );
       return;
     }
@@ -222,6 +232,9 @@ export function SettingsPage() {
       judge_provider: judgeProvider,
       judge_model: judgeModel,
       judge_transport: judgeTransport,
+      solver_provider: solverProvider,
+      solver_model: solverModel,
+      solver_transport: solverTransport,
       extract_provider: extractProvider,
       extract_model: extractModel,
       extract_transport: extractTransport,
@@ -248,7 +261,7 @@ export function SettingsPage() {
             </h1>
             <p className="mt-2 max-w-[58ch] text-sm leading-6 text-white/55">
               Edit the global launch defaults — provider, model, and transport for
-              the Content, Judge, Extract, and TOC roles. Applied to every new batch
+              the Content, Judge, Solver, Extract, and TOC roles. Applied to every new batch
               and single-job launch unless overridden per-job.
             </p>
           </div>
@@ -269,7 +282,7 @@ export function SettingsPage() {
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold text-white">Launch defaults</h2>
             <span className="font-mono text-[0.7rem] uppercase tracking-[0.12em] text-white/40">
-              content · judge · extract · toc · language
+              content · judge · solver · extract · toc · language
             </span>
           </div>
 
@@ -325,6 +338,24 @@ export function SettingsPage() {
                 providerNames={providerNames}
                 modelOptions={judgeModelOptions}
               />
+
+              {/* Solver row — re-solves answer keys; resolves like Judge (self-grade guard). */}
+              <RoleRow
+                label="Solver"
+                provider={solverProvider}
+                model={solverModel}
+                transport={solverTransport}
+                onProvider={setSolverProvider}
+                onModel={setSolverModel}
+                onTransport={setSolverTransport}
+                providerNames={providerNames}
+                modelOptions={solverModelOptions}
+              />
+              <p className="ml-16 -mt-2 max-w-[46ch] text-[0.65rem] leading-snug text-white/40">
+                Re-solves answer keys and regenerates on a high-confidence mismatch. If the
+                solver model equals the content generator, the self-grade guard swaps it to a
+                peer model automatically.
+              </p>
 
               {/* Extract row */}
               <RoleRow

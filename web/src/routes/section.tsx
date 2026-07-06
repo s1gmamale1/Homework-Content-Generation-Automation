@@ -183,6 +183,15 @@ export function SectionPage() {
       ? "Judge is weaker than the generator — grading may be unreliable."
       : null;
 
+  // Advisory (non-blocking) note when the content model is the seeded
+  // solver/judge default — the self-grade guard would swap solver & judge to
+  // a Claude peer, which a Gemini-only fleet (no ANTHROPIC_API_KEY) can never
+  // claim, so the job silently starves.
+  const contentWarning =
+    model === "gemini-3.1-pro-preview"
+      ? "Content = gemini-3.1-pro-preview swaps solver & judge to a Claude peer; Gemini-only fleets can’t claim these jobs."
+      : null;
+
   const section = book?.toc?.find((e) => e.id === sectionId);
   const existingJobId = section?.latest_job_id ?? null;
   const existingStatus = (section?.latest_job_status ?? null) as JobStatus | null;
@@ -333,6 +342,7 @@ export function SectionPage() {
           judgeTransport={judgeTransport}
           onJudgeTransportChange={setJudgeTransport}
           judgeWarning={judgeWarning}
+          contentWarning={contentWarning}
           outputLanguage={outputLanguage}
           onOutputLanguageChange={setOutputLanguage}
           resolvedOutputLanguage={book?.source_language ?? launchDefaults?.output_language ?? null}
@@ -601,6 +611,7 @@ interface AgentPickerProps {
   judgeTransport: RoleTransport;
   onJudgeTransportChange: (next: RoleTransport) => void;
   judgeWarning: string | null;
+  contentWarning: string | null;
   outputLanguage: OutputLanguage | null;
   onOutputLanguageChange: (next: OutputLanguage | null) => void;
   resolvedOutputLanguage: OutputLanguage | null;
@@ -629,6 +640,7 @@ function AgentPicker({
   judgeTransport,
   onJudgeTransportChange,
   judgeWarning,
+  contentWarning,
   outputLanguage,
   onOutputLanguageChange,
   resolvedOutputLanguage,
@@ -709,6 +721,9 @@ function AgentPicker({
           </Select>
         </label>
       </div>
+      {contentWarning && (
+        <p className="mt-1 text-[0.7rem] leading-snug text-amber-300/90">{contentWarning}</p>
+      )}
 
       {/* CLI | API transport toggle — only for providers the backend bills via
           the pay-per-token API (claude/gemini). Hidden otherwise; transport

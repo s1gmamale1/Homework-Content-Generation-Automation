@@ -248,3 +248,80 @@ async def test_put_rejects_content_offmanifest():
             json={"content_provider": "gemini", "content_model": "not-a-model"},
         )
     assert r.status_code == 422, r.text
+
+
+# ── solver_* fields (R21.8) — mirror judge exactly ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_get_returns_seeded_solver_defaults():
+    """(solver-a) GET returns the mig-0043 solver seed."""
+    async with _client() as c:
+        r = await c.get("/api/v1/settings/launch-defaults", headers=_HDR)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["solver_provider"] == "gemini"
+    assert body["solver_model"] == "gemini-3.1-pro-preview"
+    assert body["solver_transport"] == "inherit"
+
+
+@pytest.mark.asyncio
+async def test_put_solver_override_persists():
+    """(solver-b) PUT a concrete solver override → 200, GET reflects it."""
+    from app.db import SessionLocal
+    from app.repositories import launch_defaults as launch_defaults_repo
+
+    async with _client() as c:
+        r = await c.put(
+            "/api/v1/settings/launch-defaults",
+            headers=_HDR,
+            json={"solver_provider": "claude", "solver_model": "claude-opus-4-7",
+                  "solver_transport": "api"},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["solver_provider"] == "claude"
+    assert body["solver_model"] == "claude-opus-4-7"
+    assert body["solver_transport"] == "api"
+
+    async with SessionLocal() as s:
+        await launch_defaults_repo.update(
+            s, {"solver_provider": "gemini", "solver_model": "gemini-3.1-pro-preview",
+                "solver_transport": "inherit"},
+        )
+        await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_null_solver_provider():
+    """(solver-c) PUT {"solver_provider": null} → 422 (required-concrete)."""
+    async with _client() as c:
+        r = await c.put("/api/v1/settings/launch-defaults", headers=_HDR,
+                        json={"solver_provider": None})
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_null_solver_model():
+    """(solver-d) PUT {"solver_model": null} → 422."""
+    async with _client() as c:
+        r = await c.put("/api/v1/settings/launch-defaults", headers=_HDR,
+                        json={"solver_model": None})
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_solver_offmanifest():
+    """(solver-e) PUT off-manifest solver model → 422."""
+    async with _client() as c:
+        r = await c.put("/api/v1/settings/launch-defaults", headers=_HDR,
+                        json={"solver_provider": "gemini", "solver_model": "not-a-model"})
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_bad_solver_transport():
+    """(solver-f) PUT invalid solver_transport → 422."""
+    async with _client() as c:
+        r = await c.put("/api/v1/settings/launch-defaults", headers=_HDR,
+                        json={"solver_transport": "bogus"})
+    assert r.status_code == 422, r.text

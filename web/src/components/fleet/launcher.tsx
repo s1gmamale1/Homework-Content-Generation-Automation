@@ -1108,6 +1108,12 @@ function ReadyCard({
                     </SelectContent>
                   </Select>
                 )}
+                {model === "gemini-3.1-pro-preview" && (
+                  <span className="max-w-[22rem] text-[0.62rem] leading-snug text-amber-300/85">
+                    ⚠ Solver & judge will swap to a Claude peer (self-grade guard). Gemini-only
+                    fleets can’t claim these jobs — pick a different content model.
+                  </span>
+                )}
               </div>
 
               <div className="flex flex-wrap items-center gap-2">

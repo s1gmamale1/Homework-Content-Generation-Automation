@@ -10,6 +10,7 @@ from app.models.launch_defaults import LaunchDefaults
 
 _MUTABLE = (
     "judge_provider", "judge_model", "judge_transport",
+    "solver_provider", "solver_model", "solver_transport",
     "extract_provider", "extract_model", "extract_transport",
     "toc_transport",
     "output_language",
