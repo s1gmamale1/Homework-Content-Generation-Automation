@@ -357,6 +357,7 @@ Render it beneath the content model Select (after the content-model `</Select>` 
 **Files:** `docs/memory/MASTER_MEMORY.md` (worklog 0118), `docs/memory/INDEX.md` (row), `docs/memory/ROADMAP.md` (close R21.8), `docs/HOW_IT_WORKS.md` + `docs/CODE_MAP.md` (solver now operator-editable + observable), `docs/DATABASE.md` (only if a claim about columns changed — likely no-op, note it).
 
 1. **Worklog 0118** in `MASTER_MEMORY.md` — what shipped (settings editor + badge + footgun warning), the required-concrete decision + why (claim-gate strand), the mismatch_regen=green choice, and the **deferred** per-job solver override editor.
+   - **S1 docs-conflict caution (standing):** worklogs 0117/0118/0119 (polish, this, coverage) may land in any order → expect `MASTER_MEMORY.md` / `INDEX.md` append conflicts on rebase. Hand-merge keeping BOTH blocks, and after rebase **verify the `| 011x` INDEX row order is ascending** — it has come out wrong on three consecutive merges. Do not `git add -A` the resolution; stage only these doc files.
 2. **ROADMAP.md** — close R21.8 (built); if the per-job override editor is worth tracking, add a one-line follow-up.
 3. **INDEX.md** — one worklog-0118 row.
 4. **HOW_IT_WORKS.md / CODE_MAP.md** — de-stale: solver default is now editable at `/settings`; `solver_status` renders on the phase console; note the content=gemini-3.1-pro-preview footgun warning.
@@ -370,4 +371,10 @@ cd web && npx tsc -p tsconfig.app.json --noEmit && npm run build            # FE
 cd ../HCGA-solver-fe && GIT_OPTIONAL_LOCKS=0 git fetch origin && GIT_OPTIONAL_LOCKS=0 git log HEAD..origin/Nggaev-v2 --oneline
 # if origin/Nggaev-v2 moved: rebase onto it, resolve web/src conflicts (polish-branch risk), re-run suite + tsc + build.
 ```
-Hand to GK2 for review/merge — **no self-merge**. Acceptance evidence for the gate: settings-API solver tests green (real-DB), `test_launch_stamps_defaults.py` already proves PUT-default→job-stamp path, tsc+build clean, FE in-browser behavioral check (Solver row saves; badge renders green on a mismatch_regen phase; footgun hint appears for gemini-3.1-pro-preview).
+Hand to GK2 for review/merge — **no self-merge**. Acceptance evidence for the gate: settings-API solver tests green (real-DB), `test_launch_stamps_defaults.py` already proves PUT-default→job-stamp path, tsc+build clean, FE in-browser behavioral check (Solver row saves; footgun hint appears for gemini-3.1-pro-preview).
+
+**S2 — badge acceptance uses a REAL production catch (no synthetic row):** the solver's first live catch already exists in `edu_copy` — the 2026-07-03 re-audit's **G10 `memory-check` phase carries a genuine `solver_status='mismatch_regen'`**. Open that job in the preview console; the green "answer-key fixed" chip on a real catch is the feature demonstrating itself. Find the job id with:
+```
+GIT_OPTIONAL_LOCKS=0 psql "$EDU_COPY_URL" -c "SELECT job_id, phase_name, solver_status FROM phase_outputs WHERE solver_status='mismatch_regen' LIMIT 5;"
+```
+(read-only against edu_copy — do not write). GK2 will eyeball this at the gate.
