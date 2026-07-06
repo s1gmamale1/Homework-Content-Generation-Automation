@@ -99,11 +99,13 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
 
         # Persist entries + flip status (toc_review on mismatch, toc_ready otherwise)
         async with SessionLocal() as session:
-            # Clear-before-insert so a re-extract (POST /books/{id}/toc/retry)
-            # replaces rather than appends — bulk_create is a naive append and
-            # toc_entries has no unique constraint. Safe because retry excludes
-            # `toc_ready`, so no homework_jobs.toc_entry_id FK references these
-            # rows (they were never surfaced for generation).
+            # Clear-before-insert so a re-extract replaces rather than appends
+            # (bulk_create is a naive append; toc_entries has no unique
+            # constraint). The re-extract entrypoint (POST /books/{id}/toc/retry)
+            # refuses upstream with a 409 when any homework_jobs row references
+            # this book's TOC, so this DELETE never hits the toc_entry_id FK for
+            # a book with jobs (WISHLIST toc-reextract-fk-blocked-1). A brand-new
+            # book (ingest_pdf) has no jobs yet.
             await toc_repo.delete_for_book(session, book_id)
             rows = await toc_repo.bulk_create(session, book_id, extracted.entries)
             final_status = (
