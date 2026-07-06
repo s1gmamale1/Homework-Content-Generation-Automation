@@ -120,6 +120,25 @@ export interface NotionSubject {
   has_textbook: boolean;
 }
 
+/** One textbook part under a subject/language (multi-volume subjects have >1). */
+export interface LangPart {
+  page_id: string;
+  title: string;
+  has_textbook: boolean;
+}
+
+/** Per-language availability for a subject. `page_id`/`has_textbook` are the
+ *  first part (backward-compat); `parts` lists every part (may be absent on
+ *  legacy responses). */
+export interface LangAvailability {
+  page_id: string;
+  has_textbook: boolean;
+  parts?: LangPart[];
+}
+
+/** `available-languages` response: app_subject → lang → availability. */
+export type AvailableLanguages = Record<string, Record<string, LangAvailability>>;
+
 export type JobStatus =
   | "pending"
   | "running"

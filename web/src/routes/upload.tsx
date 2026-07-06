@@ -22,8 +22,10 @@ import {
 import { api } from "@/lib/api";
 import { LANG_LABEL } from "@/lib/language";
 import { fadeUpItem, staggerContainer, tapScale } from "@/lib/motion";
+import { langChipState, resolveNotionPageId } from "@/lib/notion-parts";
 import { subjectLabel } from "@/lib/subjects";
 import {
+  type AvailableLanguages,
   type NotionGrade,
   type NotionSubject,
   type OutputLanguage,
@@ -52,7 +54,7 @@ export function UploadPage() {
   const [pendingSubjectId, setPendingSubjectId] = useState<string | null>(null);
   const [nErr, setNErr] = useState<string | null>(null);
   // Available language containers per app_subject for the picked Notion grade.
-  const [availLangs, setAvailLangs] = useState<Record<string, Record<string, { page_id: string; has_textbook: boolean }>> | null>(null);
+  const [availLangs, setAvailLangs] = useState<AvailableLanguages | null>(null);
 
   const onDrop = useCallback((accepted: File[]) => {
     if (accepted[0]) setFile(accepted[0]);
@@ -120,10 +122,18 @@ export function UploadPage() {
     setPendingSubjectId(s.page_id);
     setBusy(true);
     try {
-      // For non-uz languages, use the per-language klass page whose title is
-      // Cyrillic/English — book_from_notion maps by title against the language-
-      // specific keyword set, so a UZ Latin title won't match RU → HTTP 422.
-      const pageId = availLangs?.[s.app_subject]?.[language]?.page_id ?? s.page_id;
+      // resolveNotionPageId keeps the clicked UZ page authoritative for UZ output
+      // and translates cross-language only when a single textbook part exists
+      // (notion-multipart-subject-clobber-1). Multi-part chips are disabled below,
+      // so a null here is a defensive guard.
+      const langMap = s.app_subject ? (availLangs?.[s.app_subject] ?? null) : null;
+      const pageId = resolveNotionPageId(s.page_id, language, langMap);
+      if (pageId == null) {
+        toast.error("This language has multiple textbook parts — pick a specific part or upload the PDF directly.");
+        setBusy(false);
+        setPendingSubjectId(null);
+        return;
+      }
       const book = await api.fetchBookFromNotion(
         pageId,
         nGrade,
@@ -436,11 +446,11 @@ export function UploadPage() {
                                 {usable && (
                                   <div className="mt-2 flex flex-wrap gap-2">
                                     {(["uz", "ru", "en"] as OutputLanguage[]).map((lang) => {
-                                      const info = langMap?.[lang];
                                       const mapLoaded = availLangs != null;
-                                      const available = !mapLoaded || (info != null && info.has_textbook);
-                                      const tooltip =
-                                        !available && lang === "en"
+                                      const { available, multiPart, partCount } = langChipState(lang, langMap, mapLoaded);
+                                      const tooltip = multiPart
+                                        ? `${partCount} ${LANG_LABEL[lang]} textbook parts in Notion — pick the specific part from that language's subject list, or upload the PDF directly.`
+                                        : !available && lang === "en"
                                           ? "No English page yet — create an English page (with the textbook) in Notion, or upload the PDF directly."
                                           : !available
                                             ? `No ${LANG_LABEL[lang]} textbook available in Notion for this subject.`

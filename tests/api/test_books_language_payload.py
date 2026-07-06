@@ -106,6 +106,29 @@ class TestAvailableLanguagesEndpoint:
         assert "ru" in data["math-algebra"]
         assert data["math-algebra"]["uz"]["page_id"] == "uz-alg"
 
+    def test_available_languages_passes_parts_through(self):
+        from main import app
+        c = TestClient(app)
+        fake = {
+            "math-algebra": {
+                "uz": {
+                    "page_id": "uz-math-1",
+                    "has_textbook": True,
+                    "parts": [
+                        {"page_id": "uz-math-1", "title": "Matematika 1-qism", "has_textbook": True},
+                        {"page_id": "uz-math-2", "title": "Matematika 2-qism", "has_textbook": True},
+                    ],
+                }
+            }
+        }
+        with patch("app.api.v1.notion.NotionClientWrapper"), \
+             patch("app.api.v1.notion.notion_fetch.available_languages",
+                   return_value=fake):
+            r = c.get("/api/v1/notion/grades/g9/available-languages")
+        assert r.status_code == 200
+        parts = r.json()["math-algebra"]["uz"]["parts"]
+        assert [p["page_id"] for p in parts] == ["uz-math-1", "uz-math-2"]
+
     def test_available_languages_502_on_notion_error(self):
         from main import app
         c = TestClient(app)

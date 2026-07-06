@@ -171,12 +171,15 @@ def available_languages(client, grade_page_id: str) -> dict[str, dict[str, dict]
     """Detect which languages are available per subject under this grade page.
 
     Crawls all three containers (uz/ru/en) and returns a nested mapping:
-    ``{app_subject: {lang: {"page_id": …, "has_textbook": …}}}``.
+    ``{app_subject: {lang: {"page_id": <first part>, "has_textbook": …, "parts": [{page_id,title,has_textbook}, …]}}}``.
 
     Inclusion rule: a subject/language pair is recorded only when
     - the language's container child EXISTS under the grade page, AND
     - the subject page maps to a non-None ``app_subject``, AND
     - the subject page has at least one textbook PDF (``has_textbook=True``).
+
+    Same-subject parts (e.g. multi-volume textbooks) are preserved in ``parts``,
+    not collapsed.
 
     A language whose container is absent contributes nothing (e.g. English is
     simply absent today — UI can treat it as unavailable)."""
@@ -188,10 +191,20 @@ def available_languages(client, grade_page_id: str) -> dict[str, dict[str, dict]
                 continue
             if not entry["has_textbook"]:
                 continue
-            result.setdefault(app_subject, {})[lang] = {
+            lang_map = result.setdefault(app_subject, {})
+            # Multi-part subjects (e.g. "Matematika 1-qism"/"2-qism") share an
+            # app_subject. Accumulate every part in `parts` instead of letting the
+            # last page clobber the first — the FE resolves the correct part from
+            # this list (notion-multipart-subject-clobber-1). Top-level page_id /
+            # has_textbook are kept (page_id = the FIRST part) for backward-compat.
+            slot = lang_map.setdefault(
+                lang, {"page_id": entry["page_id"], "has_textbook": True, "parts": []}
+            )
+            slot["parts"].append({
                 "page_id": entry["page_id"],
+                "title": entry["notion_title"],
                 "has_textbook": entry["has_textbook"],
-            }
+            })
     return result
 
 

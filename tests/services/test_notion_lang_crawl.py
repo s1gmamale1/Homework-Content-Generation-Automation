@@ -316,3 +316,50 @@ class TestBiteProveRuRegex:
         math_langs = result.get("math-algebra", {})
         with pytest.raises(AssertionError):
             assert "ru" in math_langs, "ru should be absent — bite-prove working"
+
+
+# ---------------------------------------------------------------------------
+# available_languages — multi-part subject must NOT clobber (notion-multipart)
+# Two UZ pages both map to math (Matematika 1-qism / 2-qism); the per-language
+# entry must expose BOTH via `parts`, and top-level page_id = the FIRST part.
+# ---------------------------------------------------------------------------
+
+class TestAvailableLanguagesMultiPart:
+    def _make_client(self):
+        children = {
+            GRADE_ID: [{"id": UZ_CONTAINER_ID, "title": "9 - sinf"}],
+            UZ_CONTAINER_ID: [
+                {"id": "uz-math-1", "title": "Matematika 1-qism"},
+                {"id": "uz-math-2", "title": "Matematika 2-qism"},
+            ],
+        }
+        blocks = {
+            "uz-math-1": [_pdf_block("http://cdn/math-1.pdf")],
+            "uz-math-2": [_pdf_block("http://cdn/math-2.pdf")],
+        }
+        return _client(children, blocks)
+
+    def test_both_parts_present_in_parts_list(self):
+        c = self._make_client()
+        result = nf.available_languages(c, GRADE_ID)
+        (app_subject,) = list(result.keys())
+        parts = result[app_subject]["uz"]["parts"]
+        page_ids = {p["page_id"] for p in parts}
+        assert page_ids == {"uz-math-1", "uz-math-2"}, (
+            f"multi-part subject collapsed — expected both parts, got {page_ids}"
+        )
+
+    def test_part_titles_preserved(self):
+        c = self._make_client()
+        result = nf.available_languages(c, GRADE_ID)
+        (app_subject,) = list(result.keys())
+        titles = {p["title"] for p in result[app_subject]["uz"]["parts"]}
+        assert titles == {"Matematika 1-qism", "Matematika 2-qism"}
+
+    def test_top_level_page_id_is_first_part(self):
+        c = self._make_client()
+        result = nf.available_languages(c, GRADE_ID)
+        (app_subject,) = list(result.keys())
+        entry = result[app_subject]["uz"]
+        assert entry["page_id"] == "uz-math-1", "top-level page_id must be the first part (backward-compat)"
+        assert entry["has_textbook"] is True
