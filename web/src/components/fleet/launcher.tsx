@@ -49,6 +49,7 @@ import { cn } from "@/lib/utils";
 import { serveability, providerServeableAnyMode } from "@/lib/serveability";
 import { type LauncherConfig, loadLauncherConfig, saveLauncherConfig } from "@/lib/launcher-config";
 import { LANG_LABEL, langBadge } from "@/lib/language";
+import { resolveNotionPageId, langChipState } from "@/lib/notion-parts";
 
 const LBL = "text-xs font-medium uppercase tracking-[0.12em] text-white/45";
 
@@ -118,14 +119,28 @@ export function FleetLauncher({
 
   const prepare = useMutation({
     mutationFn: (v: { subjectPageId: string; grade: string; language: OutputLanguage }) => {
-      // For non-uz languages, the per-language klass page (whose title is Cyrillic/English)
-      // must be sent — NOT the UZ subject page. The UZ subject page title ("Algebra") won't
-      // match the RU keyword set ("алгебра") and causes an HTTP 422.
-      const pageId = subjectLangMap?.[v.language]?.page_id ?? v.subjectPageId;
+      // The subject picker is UZ-sourced, so `subjectPageId` is the UZ part the
+      // operator clicked. resolveNotionPageId keeps that click authoritative for
+      // UZ output and translates to another language only when a single textbook
+      // part exists (notion-multipart-subject-clobber-1). null = ambiguous/absent —
+      // the chip is disabled for that case, so this is a defensive guard.
+      const pageId = resolveNotionPageId(v.subjectPageId, v.language, subjectLangMap);
+      if (pageId == null) {
+        return Promise.reject(
+          new Error("This language has multiple textbook parts — pick a specific part or upload the PDF directly."),
+        );
+      }
       return api.fetchBookFromNotion(pageId, v.grade, v.language !== "uz" ? v.language : undefined);
     },
-    onSuccess: () => {
-      toast.success("Preparing — extracting lessons…");
+    onSuccess: (data) => {
+      // Honest feedback on a dedup hit: re-preparing an existing book is
+      // legitimate (post-clobber-fix it is no longer a wrong-book artifact), but
+      // the operator should see "reusing" rather than a phantom "Preparing…".
+      // `deduplicated` is added by another lane's backend flag — read it
+      // defensively so there is NO ordering dependency (undefined → falsy →
+      // today's behavior; the branch lights up once the flag exists).
+      const deduped = (data as { deduplicated?: boolean }).deduplicated ?? false;
+      toast.success(deduped ? "Book already exists — reusing." : "Preparing — extracting lessons…");
       qc.invalidateQueries({ queryKey: ["books"] });
       // Collapse + reset the form — progress now shows in the Tray below.
       setOpen(false);
@@ -289,13 +304,12 @@ export function FleetLauncher({
             <StepLabel n={3}>Language</StepLabel>
             <div className="flex flex-wrap gap-2">
               {(["uz", "ru", "en"] as OutputLanguage[]).map((lang) => {
-                const info = subjectLangMap?.[lang];
-                // If the map has loaded but this lang is absent, it's unavailable.
                 const mapLoaded = availLangsQ.data != null;
-                const available = !mapLoaded || (info != null && info.has_textbook);
+                const { available, multiPart, partCount } = langChipState(lang, subjectLangMap, mapLoaded);
                 const selected = prepLang === lang;
-                const tooltip =
-                  !available && lang === "en"
+                const tooltip = multiPart
+                  ? `${partCount} ${LANG_LABEL[lang]} textbook parts in Notion — pick the specific part from that language's subject list, or upload the PDF directly.`
+                  : !available && lang === "en"
                     ? "No English page yet — create an English page (with the textbook) in Notion, or upload the PDF directly."
                     : !available
                       ? `No ${LANG_LABEL[lang]} textbook available in Notion for this subject.`
