@@ -116,6 +116,25 @@ const JUDGE_STATUS_LABEL: Record<string, string> = {
   major_shipped: "major issue shipped",
 };
 
+// Solver states. mismatch_regen is a SUCCESS (the solver caught a wrong key and
+// the phase was regenerated) — render it green, not amber.
+const SOLVER_STATUS_LABEL: Record<string, string> = {
+  mismatch_regen: "answer-key fixed",
+  mismatch_shipped: "key mismatch shipped",
+  mismatch_regen_failed: "key regen failed",
+  unavailable: "solver unavailable",
+  refused: "solver declined",
+  // `ok` is the clean case — no chip (mirrors judge, which shows nothing on ok).
+};
+
+const SOLVER_STATUS_CLASS: Record<string, string> = {
+  mismatch_regen: "border-emerald-400/30 bg-emerald-400/10 text-emerald-300/90",
+  mismatch_shipped: "border-rose-400/30 bg-rose-400/10 text-rose-300/90",
+  mismatch_regen_failed: "border-rose-400/30 bg-rose-400/10 text-rose-300/90",
+  unavailable: "border-amber-400/30 bg-amber-400/10 text-amber-300/90",
+  refused: "border-amber-400/30 bg-amber-400/10 text-amber-300/90",
+};
+
 function PhasesPreview({ job }: { job: Job }) {
   const phases = job.phases
     .filter((p) => p.phase_name !== "extract" && p.status === "done" && p.output_md)
@@ -220,6 +239,14 @@ function PhasesPreview({ job }: { job: Job }) {
             {p.judge_status && JUDGE_STATUS_LABEL[p.judge_status] && (
               <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 font-mono text-[0.62rem] uppercase tracking-wider text-amber-300/90">
                 {JUDGE_STATUS_LABEL[p.judge_status]}
+              </span>
+            )}
+            {p.solver_status && SOLVER_STATUS_LABEL[p.solver_status] && (
+              <span className={cn(
+                "rounded-full border px-2 py-0.5 font-mono text-[0.62rem] uppercase tracking-wider",
+                SOLVER_STATUS_CLASS[p.solver_status] ?? "border-amber-400/30 bg-amber-400/10 text-amber-300/90",
+              )}>
+                {SOLVER_STATUS_LABEL[p.solver_status]}
               </span>
             )}
           </header>
