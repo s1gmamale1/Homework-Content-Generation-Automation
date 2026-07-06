@@ -98,23 +98,26 @@ Expected: FAIL (ImportError: cannot import name `parse_extract_contract`).
 # add to app/services/content_lint.py (after the imports / near the top-level regexes)
 
 # Fixed English contract headers the extract prompt emits (stable across content
-# languages). Map header-variant -> canonical key. Lenient: ##/### any level,
-# case-insensitive, '&'/'-'/whitespace tolerated.
-_CONTRACT_SECTIONS = {
-    "concepts": ("concept", "term"),          # "Concepts & terms"
-    "rules_theorems": ("rule", "theorem"),    # "Rules & theorems"
-    "formulas": ("formula",),
-    "worked_example_types": ("worked", "example"),  # "Worked-example types"
-    "key_facts": ("key fact", "facts"),
-}
+# languages). Map header-variant -> canonical key by ANY-substring needle match.
+# Lenient: ##/### any level, case-insensitive, '&'/'-'/whitespace tolerated.
+# ORDERED specific-first so a broad needle can't shadow a more specific section
+# (checked top-to-bottom, first hit wins). Needles are chosen so each is a
+# substring of its real headers: "key fact" IS a substring of "key facts".
+_CONTRACT_SECTION_NEEDLES = [
+    ("worked_example_types", ("worked", "example")),  # "Worked-example types"
+    ("rules_theorems", ("rule", "theorem")),          # "Rules & theorems"
+    ("key_facts", ("key fact",)),                     # "Key facts"
+    ("concepts", ("concept", "term")),                # "Concepts & terms"
+    ("formulas", ("formula",)),                       # "Formulas"
+]
 _HEADER_RE = re.compile(r"(?m)^[ \t]*#{1,6}[ \t]*(?P<h>[^\n#].*?)[ \t]*$")
 _BULLET_RE = re.compile(r"(?m)^[ \t]*[-*][ \t]+(?P<item>\S.*?)[ \t]*$")
 
 
 def _canonical_section(header: str) -> "str | None":
-    h = header.lower()
-    for key, needles in _CONTRACT_SECTIONS.items():
-        if all(n in h for n in needles) or any(n == h.strip(" :") for n in needles):
+    h = header.strip().lower()
+    for key, needles in _CONTRACT_SECTION_NEEDLES:
+        if any(n in h for n in needles):
             return key
     return None
 
@@ -578,4 +581,4 @@ Run from the main checkout (has `var/books` + `.env`); log all api costs.
 
 - Rebase-check: `git fetch origin && git log HEAD..origin/Nggaev-v2`; rebase onto `origin/Nggaev-v2` if it moved; re-run suite.
 - PR `[coverage] Extract coverage-contract (round-2)` — GK2 merges. **Cascade note in the PR body: this merge UNBLOCKS the CQ-E baseline-freeze** (freeze now captures post-contract behavior).
-- Worklog **0115** (re-verify next-free) in `docs/memory/MASTER_MEMORY.md` + INDEX row; close `extract-gateb-short-lesson-fp-1` in `docs/memory/WISHLIST.md`; `git mv` this plan → `docs/superpowers/plans/shipped/`.
+- Worklog **0119** (0115 = TOC-fix, 0116 = #82, 0117/0118 reserved for polish + solver lanes in flight; re-verify next-free at finish and expect the recurring INDEX row-order hand-fix on rebase) in `docs/memory/MASTER_MEMORY.md` + INDEX row; close `extract-gateb-short-lesson-fp-1` in `docs/memory/WISHLIST.md`; `git mv` this plan → `docs/superpowers/plans/shipped/`.
