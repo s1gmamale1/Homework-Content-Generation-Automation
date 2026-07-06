@@ -100,3 +100,23 @@ def test_hash_differs_by_language():
     subj = _uz_subject()
     assert prompts.get_prompt_hash(subj, "flashcards", "uz") != \
            prompts.get_prompt_hash(subj, "flashcards", "en")
+
+
+def test_ru_medium_appends_heading_localization_directive():
+    subj = _uz_subject()
+    body = prompts.get_prompt(subj, "case-based-preview", output_language="ru")
+    assert "in the output language" in body.lower()
+    low = body.lower()
+    assert "heading" in low and "title" in low and "subject name" in low
+
+
+def test_en_medium_appends_heading_localization_directive():
+    subj = _uz_subject()
+    body = prompts.get_prompt(subj, "boss-arena", output_language="en")
+    assert "in the output language" in body.lower()
+
+
+def test_uz_medium_has_no_heading_localization_directive():
+    subj = _uz_subject()
+    body = prompts.get_prompt(subj, "reflection", output_language="uz")
+    assert prompts._LOCALIZE_HEADINGS_CLAUSE not in body
