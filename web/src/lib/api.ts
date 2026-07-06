@@ -1,6 +1,7 @@
 import { clearToken, getToken } from "./auth";
 import type {
   AgentStats,
+  AvailableLanguages,
   BatchCancelResponse,
   BatchLaunchResponse,
   BatchLessonRow,
@@ -349,14 +350,12 @@ export const api = {
   },
 
   /** Fetch available UZ/RU/EN language containers for each subject in a grade.
-   *  Returns { [app_subject]: { [lang]: { page_id: string; has_textbook: boolean } } }. */
-  async fetchAvailableLanguages(
-    gradePageId: string,
-  ): Promise<Record<string, Record<string, { page_id: string; has_textbook: boolean }>>> {
+   *  Returns { [app_subject]: { [lang]: { page_id, has_textbook, parts? } } }. */
+  async fetchAvailableLanguages(gradePageId: string): Promise<AvailableLanguages> {
     const res = await authFetch(
       `/api/v1/notion/grades/${encodeURIComponent(gradePageId)}/available-languages`,
     );
-    return unwrap<Record<string, Record<string, { page_id: string; has_textbook: boolean }>>>(res);
+    return unwrap<AvailableLanguages>(res);
   },
 
   async listBatches(): Promise<BatchSummary[]> {
