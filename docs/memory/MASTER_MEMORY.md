@@ -1586,3 +1586,13 @@ Gate-hardening: `PUT /settings/launch-defaults` rejects null provider/model with
 **Process:** `superpowers:subagent-driven-development`, 5 tasks, controller stress-tested every commit (read diff == plan + re-ran tests). Note: Task-1's commit landed via a background continuation of an interrupted dispatch (the bg-continue-after-blocked race) — verified byte-correct before proceeding.
 
 **Files:** `app/services/notion/client.py`, `app/services/notion_archive.py`, `app/api/v1/jobs.py`, `app/api/v1/batch.py`, `app/repositories/batches.py` + their tests (`tests/services/test_notion_client.py`, `test_notion_archive.py`, `test_notion_archive_force.py`, `tests/api/test_retry_archive_endpoint.py`, `test_batch_rearchive.py`). Docs de-staled: `HOW_IT_WORKS.md`, `CODE_MAP.md`. Plan `git mv`'d to `docs/superpowers/plans/shipped/`.
+
+## [0115] toc — order_index by page_start, not LLM emission order — 2026-07-06 (Nggaev-v2, controller-direct)
+
+**What:** `toc_entries.bulk_create` assigned `order_index` from the extractor model's emission order (`order_index=idx` over the raw list). Two-column mundarija pages come back interleaved, so books landed with scrambled reading order — hit live twice: G10 algebra `7e86f398` (2-BOB rows before 1-BOB) and G5 matematika part 2 `1d524d6c`, where the scramble also **corrupted three seam `page_end`s** (a row spanning 156→89). Not cosmetic: `order_index` drives `toc_entries.get_next_in_book` — the CQ-A curriculum-boundary note — so a scrambled book pins the boundary to the wrong "next lesson".
+
+**Fix (one-liner + tests, TDD):** stable sort in `bulk_create` before index assignment — key `(page_start is None, page_start, emission_idx)`; same-page ties keep emission order, page-less entries go last. `tests/repositories/test_toc_entries_order.py` (2 tests, RED-proven against the unfixed code). Suite: 1404 passed (the 2 `test_failover_api` fails are pre-existing on clean HEAD, verified via stash).
+
+**Data remediation (already applied, SQL in-place):** G10 algebra + G5-part-2 renumbered by `page_start`; G5-part-2's 3 corrupt seam `page_end`s fixed against the real PDF (89→89, 156→160, 109→109; book is 160pp). Fleet-wide sweep: **0 non-monotonic books remain**. Commit `b187d7d`.
+
+**Context (same day, unlogged elsewhere):** G11 unified Matematika (2 parts, dual-mundarija layout — algebra mundarija p.112 + geometry mundarija p.191) defeats both the extractor and the vision validator (each roll captures one half; validator blessed a half-missing TOC = first live `toc-reextract-override-1` trigger case). Both parts' TOCs hand-curated from the real mundarijas (24+21 rows, `toc_validation_detail` stamped). Full G5–11 UZ math track now TOC-verified: **386 lessons ≈ $226** at the measured $0.585/hw.
