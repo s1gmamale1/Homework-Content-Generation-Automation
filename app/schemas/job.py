@@ -19,6 +19,7 @@ class PhaseOut(BaseModel):
     error_message: Optional[str] = None
     validation_warnings: Optional[list[str]] = None
     judge_status: Optional[str] = None    # ok | major_shipped | major_regen_failed | unavailable | refused | None
+    solver_status: Optional[str] = None   # ok | mismatch_regen | mismatch_shipped | mismatch_regen_failed | unavailable | refused | None
 
 
 class JobOut(BaseModel):
