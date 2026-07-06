@@ -379,6 +379,15 @@ are advisory. Outcome → `phase_outputs.solver_status` (`ok`/`mismatch_regen`/`
 `gemini-3.1-pro-preview`, ~$0.12/job) and its own `claim_next_job` gate (`solver_ok`) so an
 api-solver job is never claimed by a worker that can't serve it.
 
+**Operator surface (R21.8, worklog 0118).** The solver global default is editable at `/settings`
+alongside the judge/extract/content roles (required-concrete — a null provider/model is a 422,
+since a null default would strand jobs in the claim gate). `solver_status` is serialized on the
+phase API and renders as a phase-console chip — with `mismatch_regen` shown **green** ("answer-key
+fixed": the solver caught a wrong key and the phase was regenerated — a success), while
+`mismatch_shipped`/`mismatch_regen_failed` are error-colored and `unavailable`/`refused` amber. The
+content-model pickers (launcher + single-lesson) surface an inline warning when content is set to
+`gemini-3.1-pro-preview`, naming the unclaimable footgun below.
+
 > **Recall boundary (characterized, accepted).** On gemini-3.1-pro-preview the solver's catch is
 > **probabilistic, not reliable** (gate-verified over 3 independent smoke runs): **objective**
 > sign/arithmetic errors ~2/3 of runs, **expression-equivalence** errors ~1/3, **conceptual
