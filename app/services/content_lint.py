@@ -273,3 +273,47 @@ def lint_phase(phase_name: str, output_md: str, *, subject: str, output_language
 
 def findings_to_warnings(findings: list[LintFinding]) -> list[str]:
     return [f"lint:{f.code}: {f.message}" for f in findings]
+
+
+# --- coverage check (contract items vs assembled packet, warn-only) ----------
+
+_COVERAGE_SECTIONS = ("concepts", "rules_theorems", "worked_example_types", "key_facts")
+_APOS_CLASS = "['ʻʼ‘’`]"
+# NOTE: _APOS_CLASS is already a complete bracketed character class (for _norm's
+# re.sub below). Re-embedding it inside ANOTHER [...] class here would nest
+# brackets and break the regex (the outer class closes at the first "]", then a
+# stray literal "]+" that never matches real text) — so the apostrophe chars are
+# spelled out bare instead of splicing _APOS_CLASS in.
+_TOKEN_RE = re.compile(r"[0-9A-Za-zЀ-ӿ'ʻʼ‘’`]+")
+
+
+def _norm(s: str) -> str:
+    return re.sub(_APOS_CLASS, "'", s.lower())
+
+
+def _salient_tokens(label: str) -> "list[str]":
+    return [t for t in _TOKEN_RE.findall(_norm(label)) if len(t) >= 4]
+
+
+def lint_coverage(contract_md: str, packet_md: str) -> "list[LintFinding]":
+    """Warn-only: contract items whose salient vocabulary is WHOLLY absent from the
+    packet. Conservative (under-reports) — a nudge, never a gate. Formulas excluded
+    (symbol-heavy). One aggregated finding."""
+    contract = parse_extract_contract(contract_md)
+    if not contract:
+        return []
+    packet = _norm(packet_md or "")
+    thin: "list[str]" = []
+    for section in _COVERAGE_SECTIONS:
+        for item in contract.get(section, []):
+            toks = _salient_tokens(item)
+            if toks and not any(t in packet for t in toks):
+                thin.append(item)
+    if not thin:
+        return []
+    shown = "; ".join(t[:60] for t in thin[:6])
+    more = f" (+{len(thin) - 6} more)" if len(thin) > 6 else ""
+    return [LintFinding(
+        code="coverage_thin",
+        message=f"{len(thin)} contract item(s) appear uncovered by the packet: {shown}{more}",
+    )]

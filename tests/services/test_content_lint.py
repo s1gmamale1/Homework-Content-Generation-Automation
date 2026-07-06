@@ -249,3 +249,30 @@ def test_contract_has_items_false_for_prose_or_refusal():
     assert contract_has_items("Manba fayli o'qib bo'lmadi.") is False
     assert contract_has_items("") is False
     assert contract_has_items("## Concepts & terms\n\n## Formulas\n") is False  # headers, no items
+
+
+from app.services.content_lint import lint_coverage, findings_to_warnings
+
+_COV_CONTRACT = """## Worked-example types
+- Izotoplar massa ulushi orqali o'rtacha atom massasini hisoblash
+- Element tarkibi va valentlik orqali noma'lum elementni aniqlash
+## Key facts
+- Davriy qonun elementlarni tartiblaydi
+"""
+
+def test_coverage_flags_uncovered_worked_example_type():
+    packet = "Davriy qonun haqida savollar. Elementlarni tartiblang."  # no isotope/valence vocab
+    findings = lint_coverage(_COV_CONTRACT, packet)
+    assert len(findings) == 1
+    w = findings_to_warnings(findings)[0]
+    assert w.startswith("lint:coverage_thin")
+    assert "izotop" in w.lower() or "massa" in w.lower()
+
+def test_coverage_clean_when_items_present():
+    packet = ("Izotoplar massa ulushi masalasi: o'rtacha atom massasini hisoblang. "
+              "Noma'lum elementni tarkibi va valentlik orqali aniqlang. Davriy qonun.")
+    assert lint_coverage(_COV_CONTRACT, packet) == []
+
+def test_coverage_formulas_excluded_and_empty_contract_noop():
+    assert lint_coverage("## Formulas\n- a/b · c/d = ac/bd\n", "hech narsa") == []
+    assert lint_coverage("", "anything") == []
