@@ -172,3 +172,39 @@ def test_misconception_untagged_is_aggregated_to_one_finding():
                 if f.code == "misconception_untagged"]
     assert len(findings) == 1  # one aggregate finding, not one per card
     assert "2" in findings[0].message
+
+
+# --- round-2 vocab + RU-leak guards (2026-07-03 audit false-positives) ---
+
+def test_errdet_recognizes_yorliq_block_noun():
+    md = (
+        "# Xatoni top\n\n## Bloklar\n"
+        "1-yorliq: a+b\n2-yorliq: a-b (Broken)\n3-yorliq: a*b\n\n"
+        "## Oshkor qilish\n2-yorliq to'g'risi: ...\n"
+    )
+    codes = _codes(cl.lint_phase("practice-error-detection", md, subject="matematika", output_language="uz"))
+    assert "errdet_no_broken_marker" not in codes
+
+
+def test_errdet_recognizes_xato_postfix_and_paren_broken():
+    md = "# t\n\n2-blok (BU BLOK XATO)\n\n## Reveal\n2-blok\n"
+    codes = _codes(cl.lint_phase("practice-error-detection", md, subject="matematika", output_language="uz"))
+    assert "errdet_no_broken_marker" not in codes
+
+
+def test_errdet_oshkor_reveal_header_recognized_for_mismatch():
+    md = "# t\n\nBlok 2 noto'g'ri\n\n## Oshkor qilish\nBlok 3 ...\n"
+    codes = _codes(cl.lint_phase("practice-error-detection", md, subject="matematika", output_language="uz"))
+    assert "errdet_reveal_mismatch" in codes
+
+
+def test_ru_leak_flags_uzbek_template_tokens():
+    md = "## Kuchli tomonlar\n...\n**Hali emas** — ...\n"
+    codes = _codes(cl.lint_phase("practice-rlc", md, subject="matematika", output_language="ru"))
+    assert "ru_uzbek_leak" in codes
+
+
+def test_ru_leak_silent_on_uz_output():
+    md = "## Kuchli tomonlar\n**Hali emas** — ...\n"
+    codes = _codes(cl.lint_phase("practice-rlc", md, subject="matematika", output_language="uz"))
+    assert "ru_uzbek_leak" not in codes

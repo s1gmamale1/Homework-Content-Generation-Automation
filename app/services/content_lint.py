@@ -20,6 +20,11 @@ over-flagging so it never false-positives a good packet):
   (`output_language == "en"`) — an English packet legitimately contains English,
   so structural leak tokens ("Mode:", "Needs Retry") also go unlinted there;
   en-medium template leaks rely on the judge alone.
+- Error-detection marker vocab now recognizes the audited variants beyond
+  `N-blok`: label blocks (`N-yorliq`), the `(BU BLOK XATO)` / parenthesised
+  `(Broken)` markers, and the `oshkor` reveal header. A narrow `ru_uzbek_leak`
+  guard flags Uzbek template tokens ("Hali emas", "Kuchli/Zaif tomonlar") that
+  survive into RU-medium output (regression guard for the round-2 localization).
 """
 from __future__ import annotations
 
@@ -59,6 +64,27 @@ _ENGLISH_TEMPLATE = [
     re.compile(r"the brainstorming skill", re.IGNORECASE),
 ]
 _CALQUES = [re.compile(r"\bqizil seld\b", re.IGNORECASE)]
+
+# Uzbek template artifacts that must never survive into RU-medium student text
+# (regression guard for the round-2 localization fix; narrow to avoid FPs).
+_RU_UZBEK_LEAK = [
+    re.compile(r"\bHali emas\b", re.IGNORECASE),
+    re.compile(r"\bKuchli tomonlar\b", re.IGNORECASE),
+    re.compile(r"\bZaif tomonlar\b", re.IGNORECASE),
+]
+
+
+def _lint_ru_leak(output_md: str, output_language: str) -> list[LintFinding]:
+    if (output_language or "").lower() != "ru":
+        return []
+    out: list[LintFinding] = []
+    seen: set[str] = set()
+    for rx in _RU_UZBEK_LEAK:
+        m = rx.search(output_md)
+        if m and m.group(0).lower() not in seen:
+            seen.add(m.group(0).lower())
+            out.append(LintFinding("ru_uzbek_leak", f"Uzbek template token in RU output: {m.group(0)!r}"))
+    return out
 
 
 def _lint_language(output_md: str, output_language: str) -> list[LintFinding]:
@@ -109,21 +135,27 @@ def _lint_misconception_tags(output_md: str) -> list[LintFinding]:
 
 _APOS = r"['ʻʼ‘’]"
 _NOT = rf"noto{_APOS}?g{_APOS}?ri"
+# Block noun: Uzbek "blok"/"block" OR "yorliq" (label) — the audit found blocks
+# named "N-yorliq" instead of "N-blok".
+_BLK = r"(?:blo(?:k|ck)|yorli(?:q|g'|gʻ))"
 # A block id in EITHER Uzbek order: cardinal "Blok 4" or ordinal "4-blok".
-_BID = r"(?:blo(?:k|ck)\s*(\d+)|(\d+)\s*-\s*blo(?:k|ck))"
+_BID = rf"(?:{_BLK}\s*(\d+)|(\d+)\s*-\s*{_BLK})"
 # Every broken-block marker. The noun/ordinal-with-NOT forms REQUIRE a digit (so
-# digitless prose "blok nega noto'g'ri" never matches); each captures the id.
+# digitless prose never matches); each captures the id.
 _MARKER = re.compile(
     rf"(?i)"
-    rf"blo(?:k|ck)\s*(?P<id_pre>\d+)\s+{_NOT}"              # "Blok 4 noto'g'ri"
-    rf"|(?P<id_ord>\d+)\s*-\s*blo(?:k|ck)\s+{_NOT}"          # "4-blok noto'g'ri"
-    rf"|{_NOT}\s+blo(?:k|ck)\s*(?P<id_post>\d+)?"            # "noto'g'ri blok[ 4]"
-    rf"|{_NOT}\s+(?P<id_post_ord>\d+)\s*-\s*blo(?:k|ck)"     # "noto'g'ri 4-blok"
-    rf"|xato\s+blo(?:k|ck)\s*(?P<id_xato>\d+)?"              # "xato blok[ 4]"
-    rf"|xato\s+(?P<id_xato_ord>\d+)\s*-\s*blo(?:k|ck)"       # "xato 4-blok"
+    rf"{_BLK}\s*(?P<id_pre>\d+)\s+{_NOT}"                    # "Blok 4 noto'g'ri"
+    rf"|(?P<id_ord>\d+)\s*-\s*{_BLK}\s+{_NOT}"               # "4-blok noto'g'ri"
+    rf"|{_NOT}\s+{_BLK}\s*(?P<id_post>\d+)?"                 # "noto'g'ri blok[ 4]"
+    rf"|{_NOT}\s+(?P<id_post_ord>\d+)\s*-\s*{_BLK}"          # "noto'g'ri 4-blok"
+    rf"|{_BLK}\s*(?P<id_xato>\d+)?\s+xato"                   # "blok[ 4] xato" / "BU BLOK XATO"
+    rf"|(?P<id_xato_ord>\d+)\s*-\s*{_BLK}\s+xato"            # "4-blok xato"
+    rf"|xato\s+{_BLK}\s*(?P<id_xatop>\d+)?"                  # "xato blok[ 4]"
+    rf"|xato\s+(?P<id_xatop_ord>\d+)\s*-\s*{_BLK}"           # "xato 4-blok"
     rf"|(?P<eng>this is the broken block|broken block)"      # English markers, no id
+    rf"|(?P<eng2>\(\s*broken\s*\))"                          # parenthesised "(Broken)"
 )
-_REVEAL_HDR = re.compile(r"(?im)^[ \t]*#{1,6}[ \t]*(reveal|ochish)\b")
+_REVEAL_HDR = re.compile(r"(?im)^[ \t]*#{1,6}[ \t]*(reveal|ochish|oshkor)\b")
 _BLOCK_ID = re.compile(rf"(?i)\b{_BID}")
 
 
@@ -144,11 +176,12 @@ def _lint_error_detection(output_md: str) -> list[LintFinding]:
     for m in _MARKER.finditer(output_md):
         gd = m.groupdict()
         mid = (gd.get("id_pre") or gd.get("id_ord") or gd.get("id_post")
-               or gd.get("id_post_ord") or gd.get("id_xato") or gd.get("id_xato_ord"))
-        # Line-scan recovery is ONLY for the English marker (whose id may sit on
-        # the same line). The noto'g'ri/xato prose forms must NOT borrow a nearby
-        # id — that produced spurious multiple/mismatch findings from feedback text.
-        if mid is None and gd.get("eng"):
+               or gd.get("id_post_ord") or gd.get("id_xato") or gd.get("id_xato_ord")
+               or gd.get("id_xatop") or gd.get("id_xatop_ord"))
+        # Line-scan recovery is ONLY for the id-less English markers (whose id may
+        # sit on the same line). The noto'g'ri/xato prose forms must NOT borrow a
+        # nearby id — that produced spurious multiple/mismatch findings.
+        if mid is None and (gd.get("eng") or gd.get("eng2")):
             bm = _BLOCK_ID.search(_line_around(output_md, m.start()))
             mid = (bm.group(1) or bm.group(2)) if bm else None
         if m.start() >= reveal_off:
@@ -183,6 +216,7 @@ def lint_phase(phase_name: str, output_md: str, *, subject: str, output_language
     if phase_name == "extract" or not (output_md or "").strip():
         return []
     findings = _lint_language(output_md, output_language)
+    findings += _lint_ru_leak(output_md, output_language)
     if phase_name == "flashcards":
         findings += _lint_misconception_tags(output_md)
     if phase_name == "practice-error-detection":
