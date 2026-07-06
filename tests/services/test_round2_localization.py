@@ -20,3 +20,11 @@ def test_rlc_red_herring_is_language_relative():
     low = text.lower()
     assert "output language" in low
     assert "chalg" in low or "отвлека" in low  # uz "chalg'ituvchi" / ru "отвлекающий"
+
+
+def test_boss_not_yet_opener_is_language_relative():
+    text = _read("boss-arena.md")
+    low = text.lower()
+    assert "output language" in low
+    assert "Hali emas" in text  # uz example retained
+    assert 'opens with **"Hali emas"**' not in text
