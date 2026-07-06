@@ -274,6 +274,21 @@ async def latest_by_section(
     return {row.toc_entry_id: row for row in rows}
 
 
+async def list_for_book(session: AsyncSession, book_id: UUID) -> list[HomeworkJob]:
+    """Every homework job referencing a book's TOC. `book_id` is set together
+    with `toc_entry_id` at create time (see `create`), so a `book_id` filter is
+    exactly the set of jobs whose `toc_entry_id` FK would block a
+    `delete_for_book` clear-before-insert. Used by the TOC re-extract guard to
+    refuse loudly and list the blocking jobs. Index-backed by
+    `ix_homework_jobs_book_toc`."""
+    stmt = (
+        select(HomeworkJob)
+        .where(HomeworkJob.book_id == book_id)
+        .order_by(HomeworkJob.created_at)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Queue (Postgres-backed work queue using FOR UPDATE SKIP LOCKED)
 # ─────────────────────────────────────────────────────────────────────────
