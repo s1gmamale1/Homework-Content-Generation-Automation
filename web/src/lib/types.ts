@@ -140,6 +140,7 @@ export interface PhaseOut {
   error_message: string | null;
   validation_warnings: string[] | null;
   judge_status: string | null;
+  solver_status: string | null;
 }
 
 export interface Job {
@@ -458,6 +459,9 @@ export interface LaunchDefaults {
   judge_provider: string | null;
   judge_model: string | null;
   judge_transport: RoleTransport | null;
+  solver_provider: string | null;
+  solver_model: string | null;
+  solver_transport: RoleTransport | null;
   extract_provider: string | null;
   extract_model: string | null;
   extract_transport: RoleTransport | null;
