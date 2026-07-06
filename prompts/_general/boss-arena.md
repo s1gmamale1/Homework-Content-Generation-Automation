@@ -44,8 +44,10 @@ Write each question as a Markdown section with these parts:
 - **Feedback lines** — three of them:
   - **Correct** — affirms strong reasoning (names what they did well).
   - **Partial** — names which part of the chain was weak and points back to it.
-  - **Wrong** — opens with **"Hali emas"** (never "Noto'g'ri") and re-points the
-    student with a guiding question, not the answer.
+  - **Wrong** — opens with a gentle "not yet" opener in the OUTPUT LANGUAGE
+    (Uzbek «Hali emas», Russian «Пока нет», English «Not yet»); never a flat
+    "wrong" (Uzbek "Noto'g'ri", Russian «Неправильно»). Re-point the student with
+    a guiding question, not the answer.
 
 ## The Why → How → What rule (non-negotiable)
 

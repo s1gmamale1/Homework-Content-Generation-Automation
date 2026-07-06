@@ -1608,3 +1608,28 @@ Gate-hardening: `PUT /settings/launch-defaults` rejects null provider/model with
 **Proof:** RED→GREEN both fixes. queue_depth: DB-gated test (`tests/repositories/test_queue_depth_pause.py`, scratch `edu_scratch_smallfix`@127.0.0.1) — pause excludes / unpause restores / batchless always counted (a naive INNER JOIN fails it). Force: async AsyncClient tests — immediate `{queued:1}` receipt + background task awaited with `force=True` + guard released; double-POST `{queued:0, already_running:true}` with archive never called; non-force happy path (inline JobOut + `expire_all`) untouched. Full suite: 1403 passed / 196 skipped + **2 PRE-EXISTING failures** in `tests/services/test_failover_api.py` (`cli_failover_still_crosses_providers` + `api_failover_default_transport_is_cli`) — reproduced at pristine base `211058f` in a clean detached worktree, so not this branch's regression; the cli failover chain isn't crossing providers (env/DB-dependent; needs its own investigation — flagged to GK2).
 
 **Files:** `app/repositories/jobs.py` (queue_depth), `app/api/v1/jobs.py` (force backgrounding), `tests/repositories/test_queue_depth_pause.py` (new), `tests/api/test_retry_archive_endpoint.py`.
+
+---
+
+## [0117] Round-2 prompt/lint localization polish — 2026-07-06 (fix/round2-localization-polish)
+
+**What:** the non-blocking localization defects from the 2026-07-03 CQ re-audit (`docs/research/2026-07-03-cq-reaudit-g6-10.md` §"Round-2 polish list"). RU-medium output leaked Uzbek/English template strings because the shared `prompts/_general/*.md` bodies hardcode literals the model emits verbatim (they **override** the medium `{{LANGUAGE_RULES}}`), and the bilingual subject label `"Mathematics (Matematika)"` fed the "Matematika" RU title. **Load-bearing FE check:** the live packet view (`web/src/routes/preview.tsx`) renders `output_md` **verbatim** through ReactMarkdown; the structured game components (`BossFight`, etc.) are unmounted legacy — so English scaffold headers are **student-visible, not structural** → they must localize (settled item 6 without guessing).
+
+**Two user-locked decisions:** (1) **scope = systemic + flagged** — one governing `_LOCALIZE_HEADINGS_CLAUSE` appended to the **en/ru** medium rules localizes ALL scaffold headers + phase title + subject name at once (uz left byte-identical), plus reframe the ~5 prescribed literals. (2) **mechanism = inline language-relative** — reframe literals in the shared `.md` as *intent + per-language examples* (`open with a "not yet" opener in the output language — Uzbek «Hali emas», Russian «Пока нет», English «Not yet»`); no new template machinery; uz keeps «Hali emas» via the example.
+
+**How (7 code tasks, SDD, controller stress-tested every commit — read diff==plan + re-ran tests):**
+1. `prompts.py`: `_LOCALIZE_HEADINGS_CLAUSE` appended in `_resolve_language_rule` for en/ru only (uz byte-identical; frozen `test_prompts_output_language.py` stays green).
+2. `practice-rlc.md`: «Hali emas» opener + `red herring` → language-relative (uz `chalg'ituvchi ma'lumot` / ru «отвлекающий факт»).
+3. `boss-arena.md`: «Hali emas» opener → language-relative.
+4. `case-based-preview.md`: **de-assert completion** (app owns pass/redo — no decided `passed`/`Needs Retry`, mirrors CQ-A reflection fix) + names the **two approved opening shapes** (storytelling / question-first, fun-fact hook) — closes WISHLIST `cbp-real-life-contract-1`.
+5. `reflection.md`: Kuchli/Zaif headings + example strings → output-language (uz examples retained so `test_reflection_prompt.py` stays green; ru «Сильные/Слабые стороны» offered).
+6. `content_lint.py`: broken-marker vocab now recognizes `N-yorliq`, `(BU BLOK XATO)`/`(Broken)`, `oshkor` reveal header (the two audited `errdet_no_broken_marker` **false-positives**); new narrow `ru_uzbek_leak` guard flags Uzbek tokens in ru output (regression guard for THIS fix). Docstring en-gate bullet (b23b988) left verbatim.
+7. `scripts/check_prompt_render.py`: extended to uz/en/ru × 5 subjects = 165 combos, asserting no leftover `{{...}}` + the directive present for en/ru and absent for uz.
+
+**Typos out of scope (verified):** Szenariy/keys-stadi/Shubham/davmidagi/chiqanda are model-generated, absent from `prompts/` — the brief's "fix only prompt-sourced typos" makes them a no-op; only `red herring` was prompt-sourced (fixed).
+
+**Proof:** RED→GREEN each task; new suite `test_round2_localization.py` (8) + content_lint (+5, 36 total) + prompts_output_language (+3, 10 total); render sweep 165 combos OK; **full suite 1419 passed** (the 2 `test_failover_api` failures are PRE-EXISTING — reproduced on the clean base). **Paid api acceptance smoke (1 UZ + 1 RU lesson, human-read) HANDED TO GK2** — this host's `GOOGLE_APPLICATION_CREDENTIALS` points to a missing (fleet) path, no GEMINI/ANTHROPIC keys; static render proof done, behavioral proof is the gate's (CQ-C/CQ-D precedent). **Worker/head restart required** (prompts cached at startup). No migration.
+
+**Lane collision (GK2 P1):** shares `content_lint.py` + `tests/services/test_content_lint.py` with the `feat/extract-coverage-contract` lane; edits are append-style in different regions — whoever merges second rebases + hand-merges those two files.
+
+**Files:** `app/services/prompts.py`, `app/services/content_lint.py`, `prompts/_general/{practice-rlc,boss-arena,case-based-preview,reflection}.md`, `scripts/check_prompt_render.py` + tests (`test_round2_localization.py` new, `test_prompts_output_language.py`, `test_content_lint.py`). Docs de-staled: `HOW_IT_WORKS.md`, `CODE_MAP.md`. Plan `git mv`'d to `docs/superpowers/plans/shipped/`.

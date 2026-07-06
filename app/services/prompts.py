@@ -133,16 +133,38 @@ MEDIUM_RULES = {
     "ru": _MEDIUM_RUSSIAN,
 }
 
+# Appended to the language rule for non-uz media ONLY. The shared prompt bodies
+# name their sections/roles with English structural labels ("Scenario", "Role",
+# "Why/How/What", "Checkpoint", "Learning Block", "Completion status") and the
+# subject label is injected bilingually ("Mathematics (Matematika)"). Left alone,
+# the model echoes those English/Uzbek strings into ru/en output. This directive
+# tells it to localize them. uz is untouched (byte-identical to legacy).
+_LOCALIZE_HEADINGS_CLAUSE = (
+    "\nEVERY student-visible label is part of the output language: render each "
+    "section heading, the phase title, and the subject name in the output "
+    "language. Do NOT copy the parenthetical source-language subject name (e.g. "
+    "write the localized subject name, not \"Matematika\") and do NOT leave "
+    "English structural labels (Scenario, Role, Task, Why/How/What, Checkpoint, "
+    "Learning Block, Completion status, and the feedback labels "
+    "Correct/Partial/Wrong) untranslated."
+)
+
 
 def _resolve_language_rule(subject: str, output_language: str) -> str:
     """L2 language-class subjects (English/Russian) keep their L2 TARGET regardless
     of medium, but their scaffolding BRIDGE follows the chosen medium
     (l2-bridge-follows-medium). Every other subject renders in the chosen medium
-    (uz/en/ru), defaulting uz."""
+    (uz/en/ru), defaulting uz. For non-uz media a heading-localization directive is
+    appended so English structural labels + the source-language subject name are
+    localized too (uz stays byte-identical)."""
     sd = subjects.REGISTRY.get(subject)
     if sd and sd.language in ("english", "russian"):
-        return _l2_rule(sd.language, output_language)
-    return MEDIUM_RULES.get(output_language, MEDIUM_RULES["uz"])
+        rule = _l2_rule(sd.language, output_language)
+    else:
+        rule = MEDIUM_RULES.get(output_language, MEDIUM_RULES["uz"])
+    if (output_language or "").lower() in ("en", "ru"):
+        rule = rule + _LOCALIZE_HEADINGS_CLAUSE
+    return rule
 
 # Derived from the single source of truth (app/services/subjects.py). A family of
 # "default" has no FAMILY_RULES block and falls through to "_default".

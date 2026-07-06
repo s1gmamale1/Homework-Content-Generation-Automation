@@ -328,8 +328,12 @@ math/exercise lines; never gates a regen). The regen cap is configurable via
 `settings.max_judge_regens` (default 1). After the judge, each non-extract phase
 also runs a deterministic **no-LLM content lint** (`content_lint.py`, CQ-B): its
 `lint:`-prefixed findings — mixed Latin+Cyrillic words, structural English-template
-tokens (`Mode:`, `Needs Retry`), calques, untagged flashcard misconceptions, and
-error-detection EXACTLY-ONE-broken-block violations — join the same
+tokens (`Mode:`, `Needs Retry`), calques, untagged flashcard misconceptions,
+error-detection EXACTLY-ONE-broken-block violations (the broken-marker vocab
+recognizes the `N-blok`/`N-yorliq`/`(BU BLOK XATO)`/`(Broken)` forms + the
+`reveal`/`ochish`/`oshkor` reveal headers, worklog 0117), and a `ru_uzbek_leak`
+guard that flags leftover Uzbek template tokens (`Hali emas`, `Kuchli/Zaif
+tomonlar`) in RU-medium output — join the same
 `validation_warnings`, warn-only, never gating a regen (semantic answer-key
 correctness is out of scope — that is the CQ-C solver pass). The judge outcome is recorded as
 `phase_outputs.judge_status` (`ok` / `major_shipped` / `major_regen_failed` / `unavailable` /
@@ -440,6 +444,7 @@ subject. `app/services/prompts.py`'s `get_prompt(subject, phase, output_language
   - `output_language` — the **medium of instruction** operator choice (`uz` / `en` / `ru`). This is what language the homework packet is *written in*.
   - **For language-class subjects** (`subjects.language ∈ {english, russian}`): the L2 **target** stays english/russian regardless of medium, but the scaffolding **bridge follows `output_language`** (`_l2_rule(target, bridge_medium)`, `l2-bridge-follows-medium`, worklog 0109). A Russian-medium school's English class gets the CEFR-leveled English-target with a **Russian** bridge; the `uz` medium is byte-identical to the legacy Uzbek-bridge block. (Previously the bridge was hardcoded Uzbek — the old "L2 carve-out" [0099], now reversed for the bridge.)
   - **For all other subjects**: `MEDIUM_RULES[output_language]` provides the directive — formal "Siz" Uzbek (`uz`), English-medium prose (`en`), or Russian-medium Cyrillic formal "Вы" (`ru`). The default `uz` is byte-identical to the old `_LANG_UZBEK` constant.
+  - **Heading localization (en/ru only, worklog 0117):** for non-uz media `_resolve_language_rule` appends `_LOCALIZE_HEADINGS_CLAUSE` — a directive to render every section heading, the phase title, and the subject name in the output language (the shared prompt bodies use English structural labels and the subject label is injected bilingually `"Mathematics (Matematika)"`, which otherwise leaked into ru output). `uz` is untouched (byte-identical). Prescribed Uzbek literals in the prompt bodies (the «Hali emas» not-yet opener, reflection's Kuchli/Zaif headings, the `red herring` term) were also reframed inline as intent + per-language examples so the model localizes them.
   - There is no model-side language detection — the operator choice (via `output_language` on the job) selects the block at build time.
 
 **Generator + judge use the same language contract.** `pipeline.run` captures `job.output_language` once and passes it to every `get_prompt` call for content phases *and* to `phase_judge.judge(output_language=...)` → the judge's own `get_prompt`. A judge cannot grade an English-medium homework against the Uzbek contract.

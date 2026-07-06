@@ -34,7 +34,11 @@ already gives; create a plausible case only when none exists.
 Emit these sections in exactly this order:
 
 ```
-1. Case setup          — student role, narrative, clear task. The narrative states
+1. Case setup          — student role, narrative, clear task. Open with a real-life
+                         case in ONE of the two approved shapes: **storytelling**
+                         (a short concrete situation) OR **question-first** (pose
+                         the hook question up front, resolve it at the end); a
+                         fun-fact hook is encouraged. The narrative states
                          SYMPTOMS, not the diagnosis: describe what the student
                          observes (events, tensions, facts on the ground) WITHOUT
                          naming the underlying cause, concept, or method that the
@@ -47,7 +51,7 @@ Emit these sections in exactly this order:
 7. Decision Process Explanation (DPE) — after Checkpoint 3, BEFORE the final simulation
 8. Final simulation    — correct path + wrong path + why wrong fails
 9. Feedback summary
-10. Completion rules
+10. Redo route         — the conditional next-step the app applies after the attempt
 ```
 
 ## Checkpoint rules
@@ -120,7 +124,10 @@ Close with a feedback section in exactly four parts:
 1. **What the student understood** — the concept(s) they handled correctly.
 2. **What mistake appeared** — the error seen across checkpoints and the DPE (if any).
 3. **What to review** — the specific textbook point to revisit.
-4. **Completion status** — `passed` or `Needs Retry` (never a bare "Not Completed").
+4. **Completion status** — describe the redo route the student **app** applies
+   AFTER the attempt (the app owns pass/redo; there is no attempt yet at
+   generation). State it conditionally ("if the app marks a redo, return to …")
+   — never emit a decided status such as a bare pass label or "Not Completed".
 
 ## Source concept rule
 
@@ -167,4 +174,5 @@ answer, depict less instead.
 9. ✓ DPE ends with the required not-auto-passed evaluation note?
 10. ✓ Each checkpoint has 3–4 same-shape options, exactly one correct, with ≥1 distractor being the common mistake (anti-leak)?
 11. ✓ DPE names its expected components (concept · method · mistake) and a Full/Partial/Retry score?
-12. ✓ Feedback summary has all four parts and a `passed`/`Needs Retry` status (never bare "Not Completed")?
+12. ✓ Feedback summary has all four parts, and the completion part describes a
+    CONDITIONAL app-owned redo route (no decided pass/fail label)?
