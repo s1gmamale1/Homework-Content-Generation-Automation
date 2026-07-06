@@ -1,0 +1,99 @@
+{
+  "job_id": "17b8ccac-e1c5-4a93-aaac-a4ce838beb51",
+  "scores": {
+    "language": {
+      "dimension": "language",
+      "verdict": "flag",
+      "detail": "flashcards:english_scaffold: ['difficulty']; practice-rlc:english_template: English template token: 'red herring'; practice-rlc:english_scaffold: ['red herring']; practice-error-detection:english_scaffold: ['Hint']; boss-arena:english_scaffold: ['Scenario', 'Feedback lines', 'three-part question', 'Concepts tested', 'Difficulty']",
+      "mechanism": "deterministic",
+      "usage": {}
+    },
+    "reflection": {
+      "dimension": "reflection",
+      "verdict": "pass",
+      "detail": "no fabricated-performance/unconditional-outcome markers",
+      "mechanism": "deterministic",
+      "usage": {}
+    },
+    "broken_question": {
+      "dimension": "broken_question",
+      "verdict": "flag",
+      "detail": "deterministic=flag (errdet_reveal_mismatch: reveal names block 4 but body marks ['5']); llm=flag (The question 'Boss Arena \u2014 2. Qurilish loyihasidagi \"ortiqcha\" hadlar' is broken because it falls under the category: 'whose stated 'wrong method' coincidentally produces the same numeric answer as the correct method'.\n\n1.  **The Expression:** `(x^2 + 7x) / x`\n2.  **The Stated 'Wrong Method':** The scenario describes a worker who simplifies the expression by an invalid cancellation method (improperly 'erasing' an `x` from `x^2` and the `x` in the denominator) to get the result `x + 7`.\n3.  **The Correct Method:** The correct way to simplify is to factor the numerator `x(x + 7)` and then cancel the common factor `x` from the numerator and denominator, which also yields the result `x + 7`.\n\n**Conclusion:** Because the incorrect process described in the problem leads to the identical simplified expression as the correct process, a student who uses or believes in the wrong method would be marked correct for the simplification step. This setup rewards a flawed understanding of mathematical rules, which is highly problematic.)",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 22307,
+        "output_tokens": 6944,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 29251,
+        "raw": {
+          "prompt_token_count": 22307,
+          "candidates_token_count": 285,
+          "thoughts_token_count": 6659,
+          "cached_content_token_count": null,
+          "total_token_count": 29251
+        }
+      }
+    },
+    "boundary": {
+      "dimension": "boundary",
+      "verdict": "pass",
+      "detail": "The homework packet exclusively covers concepts from the source lesson: defining algebraic fractions, identifying permissible values (joiz qiymatlar), simplifying fractions by factoring the numerator and denominator (kasrlarni qisqartirish), and applying rules for changing signs in a fraction. All scenarios, from the initial case study on `(a^2 - 9)/(a^2 - 3a)` to the various 'Boss Arena' problems, focus on simplifying a single fraction or analyzing its properties. The packet does not introduce, teach, or test the concept of finding a common denominator for multiple fractions, which is the topic of the next lesson, \u00abKasrlarni umumiy maxrajga keltirish\u00bb.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 10949,
+        "output_tokens": 2412,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 13361,
+        "raw": {
+          "prompt_token_count": 10949,
+          "candidates_token_count": 173,
+          "thoughts_token_count": 2239,
+          "cached_content_token_count": null,
+          "total_token_count": 13361
+        }
+      }
+    },
+    "answer_key": {
+      "dimension": "answer_key",
+      "verdict": "pass",
+      "detail": "I have meticulously audited every key-bearing item in the packet against the provided source lesson text. This includes all checkpoints, flashcard definitions, memory check questions, interactive scenarios (RLC, Tic-Tac-Toe, Boss Arena), and error-detection exercises. In every case, the provided answer key or the logic of the exercise aligns correctly with the mathematical principles and examples outlined in the lesson text. I could not find a single instance where I could demonstrably prove that the packet's key was incorrect. While some wording, particularly on flashcard #6 regarding sign changes, could be considered slightly ambiguous, it does not lead to a factually incorrect statement and falls outside the criteria for a 'demonstrably wrong key'.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 22368,
+        "output_tokens": 10192,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 32560,
+        "raw": {
+          "prompt_token_count": 22368,
+          "candidates_token_count": 178,
+          "thoughts_token_count": 10014,
+          "cached_content_token_count": null,
+          "total_token_count": 32560
+        }
+      }
+    },
+    "extract_fidelity": {
+      "dimension": "extract_fidelity",
+      "verdict": "pass",
+      "detail": "The homework packet demonstrates perfect extract fidelity. All definitions, properties, and rules presented in the packet (e.g., in the 'extract' and 'flashcards' sections) are accurate summaries or direct restatements of the concepts from the source lesson text. The worked examples and problems in the packet (`case-based-preview`, `practice-rlc`, `boss-arena`, etc.) are new, distinct problems not copied from the source text's examples or exercises. However, they consistently and correctly apply the principles, formulas, and methods taught in the source, such as factoring, simplification, identifying permissible values, and handling sign changes. There is no evidence of transcription drift; no numbers have been changed, steps altered, or quotes misattributed.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 22292,
+        "output_tokens": 8490,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 30782,
+        "raw": {
+          "prompt_token_count": 22292,
+          "candidates_token_count": 185,
+          "thoughts_token_count": 8305,
+          "cached_content_token_count": null,
+          "total_token_count": 30782
+        }
+      }
+    }
+  }
+}

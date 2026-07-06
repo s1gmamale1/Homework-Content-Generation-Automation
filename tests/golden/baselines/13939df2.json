@@ -1,0 +1,99 @@
+{
+  "job_id": "13939df2-bb98-4ec3-8155-643f8dd2bc3a",
+  "scores": {
+    "language": {
+      "dimension": "language",
+      "verdict": "flag",
+      "detail": "flashcards:english_scaffold: ['difficulty']; practice-rlc:english_template: English template token: 'Red herring'; practice-rlc:english_scaffold: ['Red herring']; practice-error-detection:english_scaffold: ['Hint']; boss-arena:english_scaffold: ['Feedback lines', 'Concepts tested', 'Correct:', 'Difficulty']",
+      "mechanism": "deterministic",
+      "usage": {}
+    },
+    "reflection": {
+      "dimension": "reflection",
+      "verdict": "pass",
+      "detail": "no fabricated-performance/unconditional-outcome markers",
+      "mechanism": "deterministic",
+      "usage": {}
+    },
+    "broken_question": {
+      "dimension": "broken_question",
+      "verdict": "flag",
+      "detail": "deterministic=pass (no error-detection format findings); llm=flag (The 'practice-error-detection' question is self-contradictory. It presents a calculation where Step 4 incorrectly states `b\u00b2 = 169 + 25 = 194`. However, Step 5, which should logically follow, calculates the final answer based on a different, unstated intermediate value: `b = \u221a144 = 12`. The result of Step 4 (`b\u00b2 = 194`) and the premise for the calculation in Step 5 (that `b\u00b2` must be `144`) are mutually exclusive, making the problem's internal logic incoherent.)",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 18005,
+        "output_tokens": 3795,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 21800,
+        "raw": {
+          "prompt_token_count": 18005,
+          "candidates_token_count": 163,
+          "thoughts_token_count": 3632,
+          "cached_content_token_count": null,
+          "total_token_count": 21800
+        }
+      }
+    },
+    "boundary": {
+      "dimension": "boundary",
+      "verdict": "pass",
+      "detail": "The packet exclusively focuses on the Pythagorean theorem (a\u00b2 + b\u00b2 = c\u00b2) and its direct applications. All problems and checkpoints either assume a right-angled triangle to find an unknown side, or explore the properties and conditions of the theorem itself (e.g., what happens if the angle is not 90\u00b0). The packet does not teach or test the converse theorem, which is used to determine if a triangle is right-angled based on its side lengths (i.e., if a\u00b2 + b\u00b2 = c\u00b2, then the triangle is right). This concept belongs to the next lesson, \u00abPifagor teoremasiga teskari teorema\u00bb, and is not present in the audited packet.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 7228,
+        "output_tokens": 2072,
+        "cached_tokens": 6124,
+        "cache_creation_tokens": 0,
+        "total_tokens": 9300,
+        "raw": {
+          "prompt_token_count": 7228,
+          "candidates_token_count": 173,
+          "thoughts_token_count": 1899,
+          "cached_content_token_count": 6124,
+          "total_token_count": 9300
+        }
+      }
+    },
+    "answer_key": {
+      "dimension": "answer_key",
+      "verdict": "pass",
+      "detail": "I have audited all key-bearing items in the packet against the provided source lesson text. All keys appear to be correct. I have checked calculations, definitions, and logical steps in all activities (case-based-preview, flashcards, memory-check, practice activities, boss-arena). I did not find any instance where the packet's key was demonstrably wrong based on the source material.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 18165,
+        "output_tokens": 8162,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 26327,
+        "raw": {
+          "prompt_token_count": 18165,
+          "candidates_token_count": 112,
+          "thoughts_token_count": 8050,
+          "cached_content_token_count": null,
+          "total_token_count": 26327
+        }
+      }
+    },
+    "extract_fidelity": {
+      "dimension": "extract_fidelity",
+      "verdict": "flag",
+      "detail": "In the `practice-error-detection` activity, the worked example contains a logical contradiction that constitutes a severe transcription drift from mathematical coherence. Step 4 (the 'Broken' step) calculates `b\u00b2 = 169 + 25 = 194`. However, the subsequent step, Step 5 ('Natija'), claims the result is `b = \u221a144 = 12 sm`. The result in Step 5 does not mathematically follow from the calculation in Step 4 (\u221a194 \u2260 12). While the intended error for the student to find is the addition in Step 4, the example itself is broken by presenting a result that comes from an entirely different, unstated calculation (`169 - 25`). This alters the steps of the worked example in a way that is logically impossible, misrepresenting the mathematical process taught in the source lesson.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 17990,
+        "output_tokens": 3660,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 21650,
+        "raw": {
+          "prompt_token_count": 17990,
+          "candidates_token_count": 218,
+          "thoughts_token_count": 3442,
+          "cached_content_token_count": null,
+          "total_token_count": 21650
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "job_id": "00e33c06-6316-4094-83f7-1e3814fb47b1",
+  "scores": {
+    "language": {
+      "dimension": "language",
+      "verdict": "flag",
+      "detail": "flashcards:english_scaffold: ['difficulty']; practice-rlc:english_template: English template token: 'red herring'; practice-rlc:english_scaffold: ['red herring', 'Why:']; practice-error-detection:english_scaffold: ['Hint']",
+      "mechanism": "deterministic",
+      "usage": {}
+    },
+    "reflection": {
+      "dimension": "reflection",
+      "verdict": "pass",
+      "detail": "no fabricated-performance/unconditional-outcome markers",
+      "mechanism": "deterministic",
+      "usage": {}
+    },
+    "broken_question": {
+      "dimension": "broken_question",
+      "verdict": "flag",
+      "detail": "deterministic=flag (errdet_no_broken_marker: no broken-block marker found (prompt requires exactly one)); llm=flag (The question in the `practice-rlc` block is self-contradictory. The context describes a physical scenario: 'Laboratoriya xonasidagi havo hajmi (y, m\u00b3 da) ... Xonaning shift balandligi 3 metrni tashkil qiladi.' (The volume of air in a laboratory room (y, in m\u00b3) ... The ceiling height of the room is 3 meters). This establishes that the volume `y` belongs to a room with a fixed dimension (height = 3m), implying the room's volume should be a constant. However, the context then states that this same volume `y` is governed by the formula `y = 24/x`, where `x` is pressure. This presents the volume `y` as a variable. A room's volume cannot be both constant (as implied by its fixed physical dimensions) and a variable dependent on pressure. While the packet's summary dismisses the '3 meter' detail as a 'red herring', it is actually contradictory information that makes the problem's physical premise nonsensical and un-visualizable, which is highly confusing for a problem intended to model a real-world application.)",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 19409,
+        "output_tokens": 5833,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 25242,
+        "raw": {
+          "prompt_token_count": 19409,
+          "candidates_token_count": 279,
+          "thoughts_token_count": 5554,
+          "cached_content_token_count": null,
+          "total_token_count": 25242
+        }
+      }
+    },
+    "boundary": {
+      "dimension": "boundary",
+      "verdict": "pass",
+      "detail": "The homework packet exclusively teaches and tests concepts related to the y = k/x function (inverse proportionality), its graph (hyperbola), and its properties (domain, range, oddness, monotonicity, effect of the coefficient k). It does not contain any material related to arithmetic roots, radicals, or powers, which are the topics of the next lesson, \u00abNatural ko'rsatkichli darajaning arifmetik ildizi va uning xossalari\u00bb.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 9223,
+        "output_tokens": 2228,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 11451,
+        "raw": {
+          "prompt_token_count": 9223,
+          "candidates_token_count": 126,
+          "thoughts_token_count": 2102,
+          "cached_content_token_count": null,
+          "total_token_count": 11451
+        }
+      }
+    },
+    "answer_key": {
+      "dimension": "answer_key",
+      "verdict": "pass",
+      "detail": "A thorough review of all key-bearing items in the packet was conducted. Each item's key was compared against the definitions and properties of the y = k/x function as presented in the source lesson text. No demonstrable errors were found. All keys, including those for multiple-choice questions, fill-in-the-blanks, true/false statements, and matching activities, are consistent with the source material's explanation of the hyperbola's domain, range, symmetry, quadrant placement, and monotonicity properties.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 19470,
+        "output_tokens": 9486,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 28956,
+        "raw": {
+          "prompt_token_count": 19470,
+          "candidates_token_count": 137,
+          "thoughts_token_count": 9349,
+          "cached_content_token_count": null,
+          "total_token_count": 28956
+        }
+      }
+    },
+    "extract_fidelity": {
+      "dimension": "extract_fidelity",
+      "verdict": "pass",
+      "detail": "The packet accurately reflects all definitions, properties, and concepts from the source lesson text. All quoted definitions (e.g., \"giperbola\"), listed properties (e.g., domain, range, oddness, monotonicity based on 'k'), and concepts (e.g., non-intersection with axes) are faithful to the source. The worked examples and problems in the packet (e.g., `y = 24/x`, `y = 120/x`) are new applications of the source's principles rather than direct transcriptions of the source's own examples (like `Masala 2: y = 2/x` or `Mashqlar 101: V = 12/p`), and as such, do not constitute transcription drift.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 19394,
+        "output_tokens": 4333,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 23727,
+        "raw": {
+          "prompt_token_count": 19394,
+          "candidates_token_count": 197,
+          "thoughts_token_count": 4136,
+          "cached_content_token_count": null,
+          "total_token_count": 23727
+        }
+      }
+    }
+  }
+}

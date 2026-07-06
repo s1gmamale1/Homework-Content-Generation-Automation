@@ -1,0 +1,99 @@
+{
+  "job_id": "f03b0d3a-c08d-4f16-bab9-e1542aa0f4bd",
+  "scores": {
+    "language": {
+      "dimension": "language",
+      "verdict": "flag",
+      "detail": "flashcards:english_scaffold: ['difficulty']; practice-rlc:english_template: English template token: 'Red herring'; practice-rlc:english_scaffold: ['Red herring', 'Why:']; practice-error-detection:english_scaffold: ['Hint']; boss-arena:english_scaffold: ['Scenario', 'Feedback lines', 'three-part question', 'Concepts tested', 'Difficulty']",
+      "mechanism": "deterministic",
+      "usage": {}
+    },
+    "reflection": {
+      "dimension": "reflection",
+      "verdict": "pass",
+      "detail": "no fabricated-performance/unconditional-outcome markers",
+      "mechanism": "deterministic",
+      "usage": {}
+    },
+    "broken_question": {
+      "dimension": "broken_question",
+      "verdict": "flag",
+      "detail": "deterministic=pass (no error-detection format findings); llm=flag (The third part of the \"Boss Arena 3\" question is broken. The question asks: `Agar x juda katta son bo'lsa, umumiy oqim qaysi kanalning quvvatiga yaqinlashib boradi?` (If x is a very large number, which channel's power does the total flow approach?). This question has two major flaws: 1) It requires machinery not taught in the lesson. The source lesson is purely about the algebraic manipulation of fractions, but this question requires an understanding of limits or asymptotic behavior (`x -> \u221e`), a pre-calculus concept. 2) The question is unanswerable and ambiguous. As `x` gets large, both individual flows and the total flow approach zero. The total flow is the sum of the two and does not \"approach\" one or the other. A student has no valid mathematical framework from the provided lesson to answer this.)",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 19200,
+        "output_tokens": 5423,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 24623,
+        "raw": {
+          "prompt_token_count": 19200,
+          "candidates_token_count": 221,
+          "thoughts_token_count": 5202,
+          "cached_content_token_count": null,
+          "total_token_count": 24623
+        }
+      }
+    },
+    "boundary": {
+      "dimension": "boundary",
+      "verdict": "pass",
+      "detail": "The source lesson covers adding and subtracting algebraic fractions, including finding common denominators and factoring denominators. The homework packet, in both its preview and boss-arena phases, exclusively tests these concepts. It presents scenarios involving adding and subtracting fractions with both like and unlike denominators, and requires factoring to find the least common denominator (e.g., Boss Arena #4 with x\u00b2-9). The packet does not introduce, teach, or test the multiplication or division of algebraic fractions, which is the topic of the next lesson. Therefore, it remains strictly within the scope of the source lesson.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 9066,
+        "output_tokens": 1272,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 10338,
+        "raw": {
+          "prompt_token_count": 9066,
+          "candidates_token_count": 147,
+          "thoughts_token_count": 1125,
+          "cached_content_token_count": null,
+          "total_token_count": 10338
+        }
+      }
+    },
+    "answer_key": {
+      "dimension": "answer_key",
+      "verdict": "flag",
+      "detail": "The key-bearing item 'boss-arena', scenario 2, contains a demonstrable error in its construction, making its implicit key incorrect.\n\n**Item Analysis:**\nThe student is asked to calculate the difference: `(7x-4)/(x-2) - (3x-12)/(x-2)`.\n\n**My Re-solution:**\n1. Since the denominators are common, we subtract the numerators: `(7x - 4) - (3x - 12)`.\n2. Applying the subtraction to the entire second numerator gives: `7x - 4 - 3x + 12`.\n3. Combining like terms results in: `4x + 8`.\n4. The final fraction is `(4x + 8) / (x - 2)`.\n5. Factoring the numerator to check for simplification gives `4(x + 2) / (x - 2)`. This fraction cannot be reduced or simplified further.\n\n**The Error:**\nThe problem's framing and feedback imply a different outcome. The question `Yakuniy natija butun son chiqadimi...?` (Does the final result come out as an integer...?) and the 'Correct' feedback line `...va natijani qisqartirish zarurligini mukammal tushunib yozdingiz` (...and you perfectly understood the necessity of reducing the result) strongly suggest that the result should simplify to an integer. However, the correct answer to the problem as written is the non-reducible fraction `(4x+8)/(x-2)`.\n\nThis shows a contradiction: the problem's literal values lead to a result that cannot be reduced, while the problem's own scaffolding (guiding questions and feedback) incorrectly presumes that a reduction is possible and necessary. The problem is flawed and pedagogically misleading.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 19261,
+        "output_tokens": 9593,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 28854,
+        "raw": {
+          "prompt_token_count": 19261,
+          "candidates_token_count": 438,
+          "thoughts_token_count": 9155,
+          "cached_content_token_count": null,
+          "total_token_count": 28854
+        }
+      }
+    },
+    "extract_fidelity": {
+      "dimension": "extract_fidelity",
+      "verdict": "pass",
+      "detail": "The homework packet was audited for extract fidelity against the provided source lesson text. All components of the packet, including conceptual summaries, worked examples, definitions, and practice problems, were compared to the source. The packet does not contain any instances of transcription drift. It successfully extracts the core concepts, rules, and procedures from the source text (e.g., the rules for adding fractions with like and unlike denominators, the process of factoring denominators) and uses them to generate entirely new, conceptually-aligned problems and activities. No worked examples, specific numerical figures, or direct quotes from the source lesson are copied or mis-transcribed in the packet.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 19185,
+        "output_tokens": 8992,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 28177,
+        "raw": {
+          "prompt_token_count": 19185,
+          "candidates_token_count": 160,
+          "thoughts_token_count": 8832,
+          "cached_content_token_count": null,
+          "total_token_count": 28177
+        }
+      }
+    }
+  }
+}

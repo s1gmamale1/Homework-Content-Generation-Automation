@@ -6,10 +6,14 @@ _DIMS = {"boundary", "answer_key", "broken_question", "language", "reflection", 
 
 
 def test_manifest_has_five_audit_entries():
+    # Pins the frozen golden generation. Baseline-frozen 2026-07-06: job_ids
+    # advanced from the audited-defective originals (3ca0da6f/8f734563/263d99c5/
+    # 9504ad94/1122356a) to the regenerated fixed-system packets — same 5
+    # (book, lesson) coordinates, post CQ-A..E + coverage-contract.
     entries = golden_eval.load_golden_set()
     assert len(entries) == 5
     assert {e.job_id[:8] for e in entries} == {
-        "3ca0da6f", "8f734563", "263d99c5", "9504ad94", "1122356a"}
+        "17b8ccac", "f03b0d3a", "00e33c06", "031f5347", "13939df2"}
 
 
 def test_every_entry_scores_all_six_dimensions():

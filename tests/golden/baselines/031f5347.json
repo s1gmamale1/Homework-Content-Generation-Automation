@@ -1,0 +1,99 @@
+{
+  "job_id": "031f5347-2e9a-4ec8-9f16-4996505caa1d",
+  "scores": {
+    "language": {
+      "dimension": "language",
+      "verdict": "flag",
+      "detail": "flashcards:english_scaffold: ['difficulty']; practice-rlc:english_template: English template token: 'Red herring'; practice-rlc:english_scaffold: ['Red herring', 'Why:']; practice-error-detection:english_scaffold: ['Hint']; boss-arena:english_scaffold: ['Scenario', 'Feedback lines', 'three-part question', 'Concepts tested', 'Difficulty']",
+      "mechanism": "deterministic",
+      "usage": {}
+    },
+    "reflection": {
+      "dimension": "reflection",
+      "verdict": "pass",
+      "detail": "no fabricated-performance/unconditional-outcome markers",
+      "mechanism": "deterministic",
+      "usage": {}
+    },
+    "broken_question": {
+      "dimension": "broken_question",
+      "verdict": "flag",
+      "detail": "deterministic=pass (no error-detection format findings); llm=flag (The 'What' part of Boss Arena question #4 asks students to determine the relationship between two heights (BH and BK) drawn from the same vertex, given the condition that the adjacent sides are equal (i.e., the parallelogram is a rhombus). To correctly answer that the heights would be equal, a student must use a formula or technique not present in the source lesson. The two likely solution paths are: 1) Using the area formula (Area = base \u00d7 height), where if sides AD and CD are equal, then AD \u00d7 BH = CD \u00d7 BK implies BH = BK. 2) Using trigonometry (e.g., BH = AB \u00d7 sin(A) and BK = BC \u00d7 sin(C)). The source lesson teaches properties of angles, sides, and diagonals, but it does NOT teach the formula for the area of a parallelogram or any trigonometric functions. Therefore, the question is unanswerable with the provided material and requires outside knowledge.)",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 17203,
+        "output_tokens": 5565,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 22768,
+        "raw": {
+          "prompt_token_count": 17203,
+          "candidates_token_count": 225,
+          "thoughts_token_count": 5340,
+          "cached_content_token_count": null,
+          "total_token_count": 22768
+        }
+      }
+    },
+    "boundary": {
+      "dimension": "boundary",
+      "verdict": "pass",
+      "detail": "The homework packet exclusively tests concepts covered in the source lesson, namely the definition of a parallelogram and its properties (the relationship between its angles, the equality of opposite sides, and the bisection of its diagonals). All problems and questions start with the premise that the given shape is a parallelogram and then ask the student to apply these properties. The packet does not introduce or test any criteria for proving a quadrilateral is a parallelogram (e.g., if a quadrilateral's diagonals bisect each other, then it is a parallelogram). These criteria are the converse of the properties taught in the source lesson and are the explicit topic of the next lesson, \u00abParallelogrammning alomatlari\u00bb. Therefore, the packet does not leak into the scope of the next lesson.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 7474,
+        "output_tokens": 4444,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 11918,
+        "raw": {
+          "prompt_token_count": 7474,
+          "candidates_token_count": 184,
+          "thoughts_token_count": 4260,
+          "cached_content_token_count": null,
+          "total_token_count": 11918
+        }
+      }
+    },
+    "answer_key": {
+      "dimension": "answer_key",
+      "verdict": "pass",
+      "detail": "After a thorough review of every key-bearing item, no demonstrable errors were found. All provided answer keys for checkpoints, multiple-choice questions, fill-in-the-blanks, and other activities align perfectly with the definitions, theorems, and examples provided in the source lesson text. For instance, the properties of angles (Theorems 1 & 2), sides (Theorem 2), and diagonals (Theorem 3) are consistently and correctly applied across all exercises, including the 'practice-tictactoe' grid and the 'boss-arena' scenarios. The downstream flag indicating a potential error could not be substantiated.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 17264,
+        "output_tokens": 10567,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 27831,
+        "raw": {
+          "prompt_token_count": 17264,
+          "candidates_token_count": 159,
+          "thoughts_token_count": 10408,
+          "cached_content_token_count": null,
+          "total_token_count": 27831
+        }
+      }
+    },
+    "extract_fidelity": {
+      "dimension": "extract_fidelity",
+      "verdict": "pass",
+      "detail": "The packet accurately reflects the definitions, properties (theorems), and problem-solving methods presented in the source lesson text. All quoted definitions (e.g., of a parallelogram, its altitude) and paraphrased properties (sum of adjacent angles is 180\u00b0, opposite sides/angles are equal, diagonals bisect each other) are faithful to the source. The worked examples and practice problems in the packet are new scenarios that correctly apply the principles from the source, rather than being direct but altered transcriptions. For example, 'Masala 2' in the source uses an angle sum of 172\u00b0, while the packet creates new problems using angles like 70\u00b0 or 55\u00b0; this is a new application, not a transcription drift. No discrepancies were found.",
+      "mechanism": "llm",
+      "usage": {
+        "prompt_tokens": 17188,
+        "output_tokens": 5255,
+        "cached_tokens": null,
+        "cache_creation_tokens": 0,
+        "total_tokens": 22443,
+        "raw": {
+          "prompt_token_count": 17188,
+          "candidates_token_count": 190,
+          "thoughts_token_count": 5065,
+          "cached_content_token_count": null,
+          "total_token_count": 22443
+        }
+      }
+    }
+  }
+}
