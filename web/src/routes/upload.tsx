@@ -77,7 +77,9 @@ export function UploadPage() {
     setBusy(true);
     try {
       const book = await api.uploadBook(file, subject as Subject, grade || undefined, sourceLanguage);
-      toast.success("Uploaded.");
+      toast.success(
+        book.deduplicated ? "This book already exists — reusing it." : "Uploaded.",
+      );
       navigate(`/book/${book.id}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Upload failed";

@@ -587,7 +587,10 @@ Key endpoints:
 - `POST /books/{id}/toc/retry` — re-run TOC extraction for a book stuck in `failed` or
   `toc_extracting` (e.g. a transient provider/rate-limit failure). Mirrors `POST /jobs/{id}/retry`;
   there's a **Retry** button on failed/stuck books in the UI. Re-extraction is idempotent
-  (clears prior entries first).
+  (clears prior entries first). **Refuses with a 409** if any homework job references the
+  book's TOC entries — the clear-before-insert would violate the no-cascade
+  `homework_jobs.toc_entry_id` FK, so the endpoint lists the blocking jobs (ids+statuses)
+  and leaves the book untouched; delete the affected sections first, then retry.
 - `PATCH/DELETE .../toc/{entry}` — edit/fix a section's title or page range by hand (useful
   when auto-extraction is imperfect).
 - `POST /books/{book}/sections/{section}/generate` — enqueue a homework job. Has **three

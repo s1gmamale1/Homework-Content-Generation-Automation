@@ -106,6 +106,9 @@ export interface Book {
   file_size_bytes: number | null;
   created_at: string | null;
   toc: TOCEntry[] | null;
+  /** True when the upload/fetch reused an existing book (sha dedup) — no
+   *  extraction runs, so the UI must not show a "Preparing" state. */
+  deduplicated?: boolean;
 }
 
 export interface NotionGrade {

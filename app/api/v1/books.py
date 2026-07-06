@@ -84,7 +84,9 @@ async def ingest_pdf(
 
     existing = await books_repo.find_ready_by_hash(session, sha, subject)
     if existing is not None:
-        return await _book_out_with_toc(session, existing.id)
+        out = await _book_out_with_toc(session, existing.id)
+        out.deduplicated = True
+        return out
 
     # Derive grade from the filename when the caller didn't supply one — a NULL
     # grade silently defeats Notion archiving ({subject}|{grade} key). Explicit
@@ -244,6 +246,24 @@ async def retry_toc_extraction(
     pdf_path = storage.book_pdf_path(book_id)
     if not pdf_path.exists():
         raise HTTPException(409, "source PDF missing on disk — re-upload the book")
+    # Re-extraction clears the book's TOC entries (toc_extractor's
+    # clear-before-insert). homework_jobs.toc_entry_id is a NOT-NULL FK with no
+    # cascade, so any referencing job — of ANY status — would make that DELETE
+    # raise a ForeignKeyViolation, flip the book to `failed`, and leave the old
+    # TOC in place (WISHLIST toc-reextract-fk-blocked-1). Refuse LOUDLY instead:
+    # the book keeps its current status and the operator deletes the blocking
+    # jobs (delete the affected sections) before retrying.
+    blocking = await jobs_repo.list_for_book(session, book_id)
+    if blocking:
+        listed = ", ".join(f"{j.id} ({j.status})" for j in blocking[:20])
+        more = f" (+{len(blocking) - 20} more)" if len(blocking) > 20 else ""
+        raise HTTPException(
+            409,
+            f"cannot re-extract the TOC: {len(blocking)} homework job(s) "
+            "reference this book's sections and would be orphaned. Delete the "
+            "affected sections (or their jobs) first, then retry. Blocking jobs: "
+            f"{listed}{more}",
+        )
     await books_repo.set_status(session, book_id, "toc_extracting", error_message=None)
     await session.commit()
     _start_toc_extraction(book_id, pdf_path, book.subject)

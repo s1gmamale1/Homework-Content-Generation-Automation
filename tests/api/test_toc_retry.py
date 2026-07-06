@@ -30,14 +30,16 @@ def _bookout(book_id, status):
                    original_filename="alg.pdf", status=status)
 
 
-def _retry(book_id, *, book, pdf_exists=True):
+def _retry(book_id, *, book, pdf_exists=True, blocking_jobs=None):
     """Drive the endpoint with the repo/extractor/storage stubbed out. Returns
-    (response, run_spy)."""
+    (response, run_spy, set_status_spy)."""
     run_spy = AsyncMock()
     pdf_path = SimpleNamespace(exists=lambda: pdf_exists)
     with patch("app.api.v1.books.books_repo.get", AsyncMock(return_value=book)), \
          patch("app.api.v1.books.books_repo.set_status", AsyncMock()) as set_status, \
          patch("app.api.v1.books.storage.book_pdf_path", return_value=pdf_path), \
+         patch("app.api.v1.books.jobs_repo.list_for_book",
+               AsyncMock(return_value=blocking_jobs or [])), \
          patch("app.api.v1.books.toc_extractor.run", run_spy), \
          patch("app.api.v1.books._book_out_with_toc",
                AsyncMock(return_value=_bookout(book_id, "toc_extracting"))):
@@ -103,3 +105,40 @@ def test_retry_from_toc_review_allowed():
     r, run_spy, _ = _retry(bid, book=book)
     assert r.status_code == 200
     run_spy.assert_awaited_once()
+
+
+def test_retry_blocked_by_referencing_jobs_409():
+    bid = uuid4()
+    book = SimpleNamespace(id=bid, status="toc_review", subject="math-algebra")
+    jid = uuid4()
+    job = SimpleNamespace(id=jid, status="done")
+    r, run_spy, set_status = _retry(bid, book=book, blocking_jobs=[job])
+    assert r.status_code == 409
+    # the operator sees which job blocks
+    assert str(jid) in r.json()["detail"]
+    # book status is NOT flipped and no extraction fires
+    run_spy.assert_not_awaited()
+    set_status.assert_not_awaited()
+
+
+def test_retry_proceeds_when_no_referencing_jobs():
+    bid = uuid4()
+    book = SimpleNamespace(id=bid, status="failed", subject="math-algebra")
+    r, run_spy, _ = _retry(bid, book=book, blocking_jobs=[])
+    assert r.status_code == 200
+    run_spy.assert_awaited_once()
+
+
+def test_retry_409_caps_job_listing_at_20_with_total():
+    # B1: a full-TOC book carries 50-60+ jobs; the payload lists ~20 + the total,
+    # never the whole roster. RED-provable: without the [:20] cap all 25 enumerate.
+    bid = uuid4()
+    book = SimpleNamespace(id=bid, status="failed", subject="math-algebra")
+    jobs = [SimpleNamespace(id=uuid4(), status="done") for _ in range(25)]
+    r, run_spy, _ = _retry(bid, book=book, blocking_jobs=jobs)
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert "25 homework job(s)" in detail   # total count present
+    assert detail.count("(done)") == 20     # listing capped at 20
+    assert "(+5 more)" in detail            # overflow summarized
+    run_spy.assert_not_awaited()
