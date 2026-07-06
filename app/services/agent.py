@@ -48,6 +48,7 @@ from app.schemas import (
     TOCEntryExtracted,
     TOCValidation,
 )
+from app.services import content_lint
 from app.services.providers import Provider, get_provider
 from app.services.proc_tree import kill_tree
 
@@ -1264,16 +1265,23 @@ def validate_extract_text(text: str) -> Optional[str]:
 
 
 def validate_extract_summary(summary: str) -> Optional[str]:
-    """Gate B — deterministic check on a produced summary. Returns a failure
-    reason, or None if it looks like a real summary. A failure triggers
-    failover (the run_fn raises ExtractRefusal)."""
+    """Gate B — structural validity of a produced extract contract. Returns a
+    failure reason, or None if it looks like a real extract. A failure triggers
+    failover (the run_fn raises ExtractRefusal).
+
+    Refusal markers always fail. Otherwise a parseable enumerated contract is
+    valid regardless of length (a compact lesson is legitimately short — the old
+    char-floor false-failed it). Only when NO contract parses do we fall back to
+    a low length floor to reject near-empty / unformatted-refusal output."""
     stripped = (summary or "").strip()
-    if len(stripped) < settings.extract_min_summary_chars:
-        return f"summary too short ({len(stripped)} chars) — likely a refusal"
     head = stripped[:_REFUSAL_HEAD_CHARS].lower()
     for marker in _EXTRACT_REFUSAL_MARKERS:
         if marker in head:
             return f"refusal marker in summary head: {marker!r}"
+    if content_lint.contract_has_items(stripped):
+        return None
+    if len(stripped) < settings.extract_min_summary_chars:
+        return f"summary too short ({len(stripped)} chars) and no contract sections — likely a refusal"
     return None
 
 

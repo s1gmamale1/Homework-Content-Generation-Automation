@@ -652,3 +652,27 @@ async def test_spawn_does_not_retry_non_rate_limit(
     assert "401" in stderr
     assert calls["n"] == 1
     assert sleeps == []
+
+
+from app.services.agent import validate_extract_summary
+
+_COMPACT_CONTRACT = (
+    "Dars: algebraik kasrlar.\n\n"
+    "## Concepts & terms\n- Algebraik kasr\n"
+    "## Worked-example types\n- Ikki kasrni ko'paytirib qisqartirish\n"
+)  # ~110 chars — below the OLD 400 floor, structurally valid
+
+def test_gate_b_passes_compact_contract_below_old_floor():
+    # regression: this is the §5 false-positive class — must PASS now
+    assert validate_extract_summary(_COMPACT_CONTRACT) is None
+
+def test_gate_b_fails_refusal_marker_regardless_of_contract():
+    bad = "Manba fayli o'qib bo'lmadi.\n## Concepts & terms\n- x\n"
+    assert validate_extract_summary(bad) is not None
+
+def test_gate_b_fails_near_empty_no_contract():
+    assert validate_extract_summary("ok") is not None
+
+def test_gate_b_passes_unformatted_but_substantial_prose():
+    prose = "Bu dars algebraik kasrlar haqida. " * 6  # >120c, no contract headers
+    assert validate_extract_summary(prose) is None
