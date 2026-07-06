@@ -2232,11 +2232,31 @@ async def extract_lesson_context(
 # summarize_lesson — single-provider, whole-book TEXT injected (no PDF)
 # ─────────────────────────────────────────────────────────────────────
 
+_CONTRACT_INSTRUCTIONS = """Write the summary as an ENUMERATED COVERAGE CONTRACT so that \
+every downstream generator can see the full inventory of what this lesson teaches. \
+Begin with ONE short sentence naming the lesson (the gist). Then emit ONLY these \
+section headings, using the EXACT English words below (do NOT translate the headings), \
+with the ITEMS written in the lesson's language:
+
+## Concepts & terms
+## Rules & theorems
+## Formulas
+## Worked-example types
+## Key facts
+
+Under each heading list one bullet ("- ") per item. OMIT a heading entirely if the \
+lesson has no such items (e.g. a history lesson usually has no Formulas). \
+"## Worked-example types" is REQUIRED whenever the lesson contains any worked example, \
+sample problem, or solved exercise — list the TYPE of each (what the student must be able \
+to solve), not the full worked solution. Be complete but concise: capture every distinct \
+teachable item, especially the problem/exercise types, and do not invent items absent \
+from the source."""
+
 _SUMMARIZE_LESSON_PROMPT = """You are given the full text of a textbook below. \
 Locate the lesson titled "{title}" (section {number}; it is printed around pages \
 {ps}-{pe} — treat the page numbers only as a hint, find it by its TITLE) and write \
-a concise, factual summary of THAT lesson's content for downstream homework \
-generation. Summarize only that lesson. {rules}
+a factual coverage contract of THAT lesson's content for downstream homework \
+generation. Summarize only that lesson. """ + _CONTRACT_INSTRUCTIONS + """ {rules}
 
 ===== FULL TEXTBOOK TEXT =====
 {book_text}
@@ -2246,8 +2266,8 @@ generation. Summarize only that lesson. {rules}
 _SUMMARIZE_VISION_PROMPT = """The attached PDF pages contain a textbook lesson. \
 Locate the lesson titled "{title}" (section {number}; it is printed around pages \
 {ps}-{pe} — treat the page numbers only as a hint, find it by its TITLE) and write \
-a concise, factual summary of THAT lesson's content for downstream homework \
-generation. Summarize only that lesson. {rules}"""
+a factual coverage contract of THAT lesson's content for downstream homework \
+generation. Summarize only that lesson. """ + _CONTRACT_INSTRUCTIONS + """ {rules}"""
 
 
 async def summarize_lesson(

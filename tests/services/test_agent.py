@@ -676,3 +676,16 @@ def test_gate_b_fails_near_empty_no_contract():
 def test_gate_b_passes_unformatted_but_substantial_prose():
     prose = "Bu dars algebraik kasrlar haqida. " * 6  # >120c, no contract headers
     assert validate_extract_summary(prose) is None
+
+
+from app.services.agent import _SUMMARIZE_LESSON_PROMPT, _SUMMARIZE_VISION_PROMPT
+
+_REQUIRED_HEADERS = ["## Concepts", "## Rules", "## Formulas", "## Worked-example types", "## Key facts"]
+
+def test_extract_prompts_specify_the_contract_headers():
+    for p in (_SUMMARIZE_LESSON_PROMPT, _SUMMARIZE_VISION_PROMPT):
+        for h in _REQUIRED_HEADERS:
+            assert h in p, f"{h!r} missing from extract prompt"
+        assert "worked-example" in p.lower()
+        # headers stay English; items in the lesson language
+        assert "lesson's language" in p.lower() or "same language" in p.lower()
