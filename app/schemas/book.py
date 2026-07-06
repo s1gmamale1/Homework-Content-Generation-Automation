@@ -24,6 +24,10 @@ class BookOut(BaseModel):
     file_size_bytes: Optional[int] = None
     created_at: Optional[datetime] = None
     toc: Optional[list[TOCEntryOut]] = None
+    deduplicated: bool = False
+    """True only when this response reused an existing book (sha dedup hit) —
+    lets the FE show 'already exists — reusing' instead of a 'Preparing' state
+    for extraction that never runs."""
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -84,7 +84,9 @@ async def ingest_pdf(
 
     existing = await books_repo.find_ready_by_hash(session, sha, subject)
     if existing is not None:
-        return await _book_out_with_toc(session, existing.id)
+        out = await _book_out_with_toc(session, existing.id)
+        out.deduplicated = True
+        return out
 
     # Derive grade from the filename when the caller didn't supply one — a NULL
     # grade silently defeats Notion archiving ({subject}|{grade} key). Explicit

@@ -23,14 +23,19 @@ async def test_ingest_pdf_new_book_returns_plain_bookout():
 
 
 @pytest.mark.asyncio
-async def test_ingest_pdf_dedup_hit_returns_with_toc():
+async def test_ingest_pdf_dedup_hit_flags_deduplicated():
+    from app.schemas import BookOut
     session = AsyncMock()
     existing = SimpleNamespace(id=uuid4())
-    with patch.object(books_api.books_repo, "find_ready_by_hash", AsyncMock(return_value=existing)), \
-         patch.object(books_api, "_book_out_with_toc", AsyncMock(return_value="WITH_TOC")) as wt:
+    reused = BookOut(id=existing.id, subject="biology",
+                     original_filename="b.pdf", status="toc_ready")
+    with patch.object(books_api.books_repo, "find_ready_by_hash",
+                      AsyncMock(return_value=existing)), \
+         patch.object(books_api, "_book_out_with_toc",
+                      AsyncMock(return_value=reused)) as wt:
         out = await books_api.ingest_pdf(session, body=b"%PDF-1.4 x", subject="biology",
                                          grade="9", filename="b.pdf")
-    assert out == "WITH_TOC"
+    assert out.deduplicated is True
     wt.assert_awaited_once()
 
 
