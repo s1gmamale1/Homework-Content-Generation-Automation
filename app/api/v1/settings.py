@@ -15,6 +15,9 @@ class LaunchDefaultsOut(BaseModel):
     judge_provider: str | None
     judge_model: str | None
     judge_transport: str | None
+    solver_provider: str | None
+    solver_model: str | None
+    solver_transport: str | None
     extract_provider: str | None
     extract_model: str | None
     extract_transport: str | None
@@ -29,6 +32,9 @@ class LaunchDefaultsUpdate(BaseModel):
     judge_provider: str | None = None
     judge_model: str | None = None
     judge_transport: str | None = None
+    solver_provider: str | None = None
+    solver_model: str | None = None
+    solver_transport: str | None = None
     extract_provider: str | None = None
     extract_model: str | None = None
     extract_transport: str | None = None
@@ -42,7 +48,10 @@ class LaunchDefaultsUpdate(BaseModel):
 def _serialize(row) -> LaunchDefaultsOut:
     return LaunchDefaultsOut(
         judge_provider=row.judge_provider, judge_model=row.judge_model,
-        judge_transport=row.judge_transport, extract_provider=row.extract_provider,
+        judge_transport=row.judge_transport,
+        solver_provider=row.solver_provider, solver_model=row.solver_model,
+        solver_transport=row.solver_transport,
+        extract_provider=row.extract_provider,
         extract_model=row.extract_model, extract_transport=row.extract_transport,
         toc_transport=row.toc_transport, output_language=row.output_language,
         content_provider=row.content_provider, content_model=row.content_model,
@@ -65,7 +74,7 @@ async def put_launch_defaults(
     merged = {**_serialize(current).model_dump(), **fields}
     # Finding #2: judge/extract provider+model MUST be concrete — they are the
     # terminal resolver; a null here bricks all Auto-role launches.
-    for role in ("judge", "extract", "content"):
+    for role in ("judge", "solver", "extract", "content"):
         prov = merged.get(f"{role}_provider")
         mdl = merged.get(f"{role}_model")
         if prov is None or mdl is None:
@@ -76,7 +85,7 @@ async def put_launch_defaults(
             )
         if not is_valid(prov, mdl):
             raise HTTPException(422, f"{role}: off-manifest (provider, model) ({prov!r}, {mdl!r})")
-    for role in ("judge", "extract"):
+    for role in ("judge", "solver", "extract"):
         t = merged.get(f"{role}_transport")
         if t is not None and (err := validate_role_transport(f"{role}_transport", t)) is not None:
             raise HTTPException(422, err)
