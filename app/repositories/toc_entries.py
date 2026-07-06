@@ -11,8 +11,17 @@ from app.schemas import TOCEntryExtracted
 async def bulk_create(
     session: AsyncSession, book_id: UUID, entries: list[TOCEntryExtracted]
 ) -> list[TOCEntry]:
+    # The extractor LLM emits entries in whatever order it read the mundarija
+    # (two-column contents pages come back interleaved), so order_index must be
+    # derived from page_start, not emission order — order_index drives
+    # get_next_in_book (curriculum-boundary note) and the FE listing. Stable
+    # sort: same-page ties keep emission order; page-less entries go last.
+    ordered = sorted(
+        enumerate(entries),
+        key=lambda ie: (ie[1].page_start is None, ie[1].page_start or 0, ie[0]),
+    )
     rows: list[TOCEntry] = []
-    for idx, e in enumerate(entries):
+    for idx, (_, e) in enumerate(ordered):
         row = TOCEntry(
             book_id=book_id,
             chapter_number=e.chapter_number,
