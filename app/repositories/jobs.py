@@ -662,12 +662,20 @@ async def requeue_session_limited(
 
 async def queue_depth(session: AsyncSession) -> int:
     """Count of pending jobs eligible to run right now. Used by the
-    `/generate` endpoint to enforce backpressure."""
+    `/generate` endpoint to enforce backpressure.
+
+    Mirrors the claim gate's batch-pause predicate: a paused batch's pending
+    jobs are dormant (unclaimable by design) and must not fill the
+    backpressure limit — 57 paused jobs once 503'd an unrelated 1-job enqueue.
+    LEFT JOIN keeps batchless jobs counted (no Batch row → paused_at NULL),
+    matching the claim gate's batch_id-IS-NULL arm."""
     stmt = (
         select(func.count())
         .select_from(HomeworkJob)
+        .outerjoin(Batch, HomeworkJob.batch_id == Batch.id)
         .where(HomeworkJob.status == "pending")
         .where(HomeworkJob.scheduled_at <= func.now())
+        .where(Batch.paused_at.is_(None))
     )
     return int((await session.execute(stmt)).scalar_one())
 
