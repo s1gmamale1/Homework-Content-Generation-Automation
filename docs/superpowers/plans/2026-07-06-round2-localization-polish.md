@@ -20,7 +20,7 @@
 - **Fold-in `cbp-real-life-contract-1`** (WISHLIST / meeting 2026-07-02 #3): add the two approved opening shapes (storytelling OR question-first, fun-fact hook encouraged) to CBP's Case setup; verify against real outputs at acceptance.
 - **Typos out of scope:** Szenariy/keys-stadi/Shubham/davmidagi/chiqanda are **model-generated, not prompt-sourced** (verified absent from `prompts/`), so the brief's "fix only prompt-sourced typos" makes them a no-op. Only `red herring` is prompt-sourced.
 - **Verified facts:** FE renders md verbatim (no header parsing); subject labels are bilingual `"X (Uzbek)"`; existing `test_reflection_prompt.py` asserts `kuchli`/`zaif` present → the Uzbek examples must stay in the prompt; `test_prompts_output_language.py` freezes uz byte-identity + the L2 `_l2_rule` base.
-- **Lane isolation:** touches only `prompts/_general/*.md` + `app/services/prompts.py` + `app/services/content_lint.py` + tests. Does **NOT** touch `agent.py`/`pipeline.py` (the `feat/extract-coverage-contract` worktree owns the extract path). No file overlap.
+- **Lane collision (corrected per GK2):** does NOT touch `agent.py`/`pipeline.py` (the `feat/extract-coverage-contract` worktree owns the extract path), but the coverage lane homes its contract parser + `lint_coverage` in **`app/services/content_lint.py`** and extends **`tests/services/test_content_lint.py`** — so **both lanes touch both files**. Not a blocker: my edits (marker/reveal vocab, RU-leak language check) and theirs (new appended functions) live in different regions. Keep my additions **append-style** to minimize the conflict surface; **whoever merges second rebases onto `origin/Nggaev-v2` and hand-merges** those two files (plus the usual docs append-conflicts).
 - **Restart note:** workers cache prompts at startup — the PR must state a worker/head restart is required for these prompt changes to take effect live.
 
 ---
@@ -559,11 +559,11 @@ In `lint_phase`, add after the language findings (~line 185):
     findings += _lint_ru_leak(output_md, output_language)
 ```
 
-(d) Update the module docstring "Known limitations" to note the `yorliq`/`xato`/
-`(Broken)`/`oshkor` vocab is now recognized, and fold in the **CQ-B en-gate
-docstring one-liner still owed** (from `cq-cluster-r21-progress`): split-intent note
-that the `output_language=="en"` skip also drops universal artifacts (meta-preamble/
-`Needs Retry`/`Mode:`) — acceptable while warn-only + en-medium unused.
+(d) Append ONE bullet to the module docstring "Known limitations" list noting the
+`yorliq`/`xato`/`(Broken)`/`oshkor` marker vocab + the `ru_uzbek_leak` guard are now
+recognized. **Do NOT touch the existing en-gate limitation text** (content_lint.py:19-22,
+shipped standalone in `b23b988` on 2026-07-03) — that one-liner is already done; leave
+it verbatim. Keep this a pure append to minimize conflict surface with the coverage lane.
 
 - [ ] **Step 4: Run to verify pass (full lint suite — no regressions on real fixtures)**
 
