@@ -1,5 +1,7 @@
+import asyncio
 import io
 import json
+import logging
 import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -39,6 +41,8 @@ from app.services.providers import PROVIDERS
 from app.services.worker import RUNNING_JOBS
 
 router = APIRouter(tags=["jobs"])
+
+log = logging.getLogger(__name__)
 
 # Idempotency-Key → job_id cache. Bounded; oldest entries evicted when the
 # limit is hit. Each entry expires after `_IDEMPOTENCY_TTL_SECONDS`.
@@ -367,19 +371,44 @@ async def retry_job(
     return await _job_out(session, job_id)
 
 
+# In-flight force re-archives, keyed by job id — mirrors the batch sweep's
+# `_REARCHIVE_TASKS` double-click guard (batch.py). A full-packet force push is
+# >5 min of rate-limited Notion I/O; run INLINE it gets CANCELLED by a client
+# disconnect mid-clear, leaving a half-written page (hit live during the #81
+# verify). Single-process guard (head runs the archive), same caveats as batch.
+_FORCE_REARCHIVE_TASKS: dict[UUID, "asyncio.Task"] = {}
+
+
+async def _force_rearchive_one(job_id: UUID) -> None:
+    """Run the best-effort force re-archive in the background. archive_job
+    already swallows + records skip reasons; this wrapper is defensive and
+    releases the in-flight guard."""
+    try:
+        await notion_archive.archive_job(job_id, force=True)
+    except Exception:  # defensive; archive_job is already best-effort
+        log.warning("force re-archive of job %s failed (non-fatal)",
+                    job_id, exc_info=True)
+    finally:
+        _FORCE_REARCHIVE_TASKS.pop(job_id, None)
+
+
 @router.post("/jobs/{job_id}/retry-archive")
 async def retry_archive_job(
     job_id: UUID,
     force: bool = False,
     session: AsyncSession = Depends(get_session),
     user: dict = Depends(get_current_user),
-) -> JobOut:
+):
     """Re-attempt the best-effort Notion archive for a job. Normally for a job
     whose push previously failed (status=done, notion_archived_at IS NULL);
     `archive_job` is idempotent (skips already-populated pages) and clears
-    `notion_skip_reason` on success. With `force=true` an already-archived job is
-    re-pushed and its leaf pages are cleared and rewritten (replace mode) — use
-    after a regen to refresh stale content. Refuses non-done jobs with 409."""
+    `notion_skip_reason` on success — runs inline and returns the refreshed
+    JobOut. With `force=true` an already-archived job is re-pushed and its leaf
+    pages are cleared and rewritten (replace mode) — that push is **backgrounded**
+    (the batch-sweep shape: immediate `{queued, already_running}` receipt) because
+    a full packet is >5 min of Notion I/O and an inline run gets cancelled by
+    client disconnects mid-clear, leaving a half-written page. A second force
+    POST while one is in flight no-ops. Refuses non-done jobs with 409."""
     job = await jobs_repo.get(session, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
@@ -388,7 +417,15 @@ async def retry_archive_job(
             409, f"only done jobs can be re-archived; current status={job.status!r}")
     if job.notion_archived_at is not None and not force:
         raise HTTPException(409, "job already archived to Notion")
-    await notion_archive.archive_job(job_id, force=force)
+
+    if force:
+        if job_id in _FORCE_REARCHIVE_TASKS:
+            return {"job_id": str(job_id), "queued": 0, "already_running": True}
+        _FORCE_REARCHIVE_TASKS[job_id] = asyncio.create_task(
+            _force_rearchive_one(job_id))
+        return {"job_id": str(job_id), "queued": 1, "already_running": False}
+
+    await notion_archive.archive_job(job_id)
     # archive_job commits in its OWN session; drop this session's stale copy so
     # _job_out re-reads the updated notion_skip_reason/notion_archived_at.
     session.expire_all()
