@@ -87,6 +87,53 @@ def _lint_ru_leak(output_md: str, output_language: str) -> list[LintFinding]:
     return out
 
 
+# Fixed English contract headers the extract prompt emits (stable across content
+# languages). Map header-variant -> canonical key by ANY-substring needle match.
+# Lenient: ##/### any level, case-insensitive, '&'/'-'/whitespace tolerated.
+# ORDERED specific-first so a broad needle can't shadow a more specific section
+# (checked top-to-bottom, first hit wins). Needles are chosen so each is a
+# substring of its real headers: "key fact" IS a substring of "key facts".
+_CONTRACT_SECTION_NEEDLES = [
+    ("worked_example_types", ("worked", "example")),  # "Worked-example types"
+    ("rules_theorems", ("rule", "theorem")),          # "Rules & theorems"
+    ("key_facts", ("key fact",)),                     # "Key facts"
+    ("concepts", ("concept", "term")),                # "Concepts & terms"
+    ("formulas", ("formula",)),                       # "Formulas"
+]
+_HEADER_RE = re.compile(r"(?m)^[ \t]*#{1,6}[ \t]*(?P<h>[^\n#].*?)[ \t]*$")
+_BULLET_RE = re.compile(r"(?m)^[ \t]*[-*][ \t]+(?P<item>\S.*?)[ \t]*$")
+
+
+def _canonical_section(header: str) -> "str | None":
+    h = header.strip().lower()
+    for key, needles in _CONTRACT_SECTION_NEEDLES:
+        if any(n in h for n in needles):
+            return key
+    return None
+
+
+def parse_extract_contract(md: str) -> "dict[str, list[str]]":
+    """Parse the enumerated extract contract into {canonical_section: [items]}.
+    Only recognized sections with >=1 bullet appear. Lenient on header level/case."""
+    text = md or ""
+    out: "dict[str, list[str]]" = {}
+    headers = list(_HEADER_RE.finditer(text))
+    for i, m in enumerate(headers):
+        key = _canonical_section(m.group("h"))
+        if not key:
+            continue
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
+        items = [b.group("item").strip() for b in _BULLET_RE.finditer(text[m.end():end])]
+        items = [it for it in items if it]
+        if items:
+            out.setdefault(key, []).extend(items)
+    return out
+
+
+def contract_has_items(md: str) -> bool:
+    """True iff the text parses to >=1 recognized contract section with an item."""
+    return bool(parse_extract_contract(md))
+
 def _lint_language(output_md: str, output_language: str) -> list[LintFinding]:
     out: list[LintFinding] = []
     seen_mixed: set[str] = set()

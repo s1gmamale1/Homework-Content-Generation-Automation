@@ -208,3 +208,44 @@ def test_ru_leak_silent_on_uz_output():
     md = "## Kuchli tomonlar\n**Hali emas** — ...\n"
     codes = _codes(cl.lint_phase("practice-rlc", md, subject="matematika", output_language="uz"))
     assert "ru_uzbek_leak" not in codes
+
+
+from app.services.content_lint import parse_extract_contract, contract_has_items
+
+_CONTRACT = """Algebraik kasrlarni ko'paytirish va bo'lish haqidagi dars.
+
+## Concepts & terms
+- Algebraik kasr
+- Teskari kasr
+## Formulas
+- a/b · c/d = ac/bd
+## Worked-example types
+- Ikki algebraik kasrni ko'paytirib qisqartirish
+- Bo'lishni teskarisiga ko'paytirishga keltirish
+## Key facts
+- Maxraj noldan farqli bo'lishi shart
+"""
+
+def test_parse_extract_contract_sections_and_items():
+    c = parse_extract_contract(_CONTRACT)
+    assert set(c) >= {"concepts", "formulas", "worked_example_types", "key_facts"}
+    assert c["worked_example_types"] == [
+        "Ikki algebraik kasrni ko'paytirib qisqartirish",
+        "Bo'lishni teskarisiga ko'paytirishga keltirish",
+    ]
+    assert c["key_facts"] == ["Maxraj noldan farqli bo'lishi shart"]
+
+def test_parse_lenient_on_header_level_and_case():
+    md = "### concepts\n- x\n### WORKED EXAMPLE TYPES\n- y\n"
+    c = parse_extract_contract(md)
+    assert c["concepts"] == ["x"]
+    assert c["worked_example_types"] == ["y"]
+
+def test_contract_has_items_true_for_compact_contract():
+    # compact §5-style: short, but enumerated -> valid
+    assert contract_has_items(_CONTRACT) is True
+
+def test_contract_has_items_false_for_prose_or_refusal():
+    assert contract_has_items("Manba fayli o'qib bo'lmadi.") is False
+    assert contract_has_items("") is False
+    assert contract_has_items("## Concepts & terms\n\n## Formulas\n") is False  # headers, no items
