@@ -409,7 +409,10 @@ async def run(job_id: UUID) -> None:
                 if _cov:
                     _ex = next((r for r in _rows if r.phase_name == "extract"), None)
                     if _ex is not None:
-                        _merged = list(_ex.validation_warnings or []) + _cov
+                        # dedupe: a tail-resume re-runs this hook, so drop any
+                        # coverage warning already on the row (idempotent append).
+                        _prev = list(_ex.validation_warnings or [])
+                        _merged = _prev + [w for w in _cov if w not in _prev]
                         # guard=False: the extract row is already 'done' and the
                         # default guard (WHERE status != 'done') would no-op it.
                         await phase_repo.set_status(
