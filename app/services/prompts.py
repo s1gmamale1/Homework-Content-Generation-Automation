@@ -145,7 +145,8 @@ _LOCALIZE_HEADINGS_CLAUSE = (
     "language. Do NOT copy the parenthetical source-language subject name (e.g. "
     "write the localized subject name, not \"Matematika\") and do NOT leave "
     "English structural labels (Scenario, Role, Task, Why/How/What, Checkpoint, "
-    "Learning Block, Completion status) untranslated."
+    "Learning Block, Completion status, and the feedback labels "
+    "Correct/Partial/Wrong) untranslated."
 )
 
 
