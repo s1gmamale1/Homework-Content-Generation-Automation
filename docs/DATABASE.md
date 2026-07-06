@@ -2,8 +2,8 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Last updated: branch `Nggaev-v2`, head `0042_books_toc_validation`
-> (0042), 2026-07-01. When this doc and the code disagree, the code wins — fix the doc.
+> Last updated: branch `Nggaev-v2`, head `0043_solver_role_columns`
+> (0043), 2026-07-06. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
 
@@ -17,7 +17,7 @@ transactional consistency between "claim a job" and "see its data."
 | Environment | Container | Port | Database |
 |---|---|---|---|
 | Local dev | `edu-postgres` | **5433** (host has its own PG on 5432) | `edu_homework` |
-| **Production (head)** | native PG on head `192.168.1.124` | 5432 | **`edu_copy`** (current prod DB, alembic head **0042**) |
+| **Production (head)** | native PG on head `192.168.1.2` | 5432 | **`edu_copy`** (current prod DB, alembic head **0043**) |
 | Fleet test env | `fleet-pg` (throwaway) | **5436** | `edu_copy` (dev clone — historical; the prod `edu_copy` above is authoritative) |
 | Guarded integration tests | any throwaway | 5436/5437 | migrated to head first |
 
