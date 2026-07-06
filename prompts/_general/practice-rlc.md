@@ -31,7 +31,9 @@ Write the scenario as Markdown sections, in this order:
   information/readings available. Include exact numbers, units, and formulas as
   given when the {{SUBJECT}} lesson involves them. For G7+ include ONE irrelevant
   datum the student must dismiss, and note (to yourself, in the final summary)
-  that it is the red herring.
+  that it is the distracting datum (the "red herring") — when you name it in the
+  summary, name it in the OUTPUT LANGUAGE (Uzbek "chalg'ituvchi ma'lumot",
+  Russian «отвлекающий факт»), never the bare English "red herring".
 - **Prediction** — a mandatory prompt asking the student what they expect to
   find or happen *before* deciding, e.g. "Hisoblashdan oldin, natija qanday
   chiqishini kutyapsiz?"
@@ -47,8 +49,10 @@ Write the scenario as Markdown sections, in this order:
   - **Correct feedback** — senior-expert voice affirming the reasoning.
   - **Partial feedback** — for the right action with a weak link (a missed step,
     units, a skipped factor).
-  - **Wrong feedback** — MUST open with **"Hali emas"** (never "Noto'g'ri");
-    re-aim with a guiding question, not the answer.
+  - **Wrong feedback** — MUST open with a gentle "not yet" opener in the OUTPUT
+    LANGUAGE (Uzbek «Hali emas», Russian «Пока нет», English «Not yet») — never a
+    flat "wrong" (Uzbek "Noto'g'ri", Russian «Неправильно»); re-aim with a
+    guiding question, not the answer.
 - **Color the feedback by the confidence + correctness pattern** (this is steering
   the *tone*, not a points rubric): when the student was **Sure but wrong**, the
   Wrong feedback should gently name it as a confident misconception — the case
@@ -58,7 +62,8 @@ Write the scenario as Markdown sections, in this order:
   the reasoning so it sticks.
 - **Final summary** — what an expert would have done, what strong reasoning looks
   like (concept/rule/formula applied, not numbers plugged blindly), the likely
-  misses, and (G7+) which datum was the red herring and why it didn't matter.
+  misses, and (G7+) which datum was the distracting one (the "red herring", named
+  in the output language) and why it didn't matter.
 
 The summary must close the loop back to the named concept. Compact shape (Biology):
 the student, as a clinic nurse, sees a patient with bluish lips → reads it as low
