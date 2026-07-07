@@ -79,6 +79,7 @@ def _make_kwargs(
         solver_model_ov=None,
         extract_provider="gemini",
         extract_model=None,
+        solver_boss_arena_enabled=True,
     )
 
 
@@ -283,3 +284,40 @@ async def test_solver_regen_raises_non_auth_soft_degrades(monkeypatch, patch_io)
     assert patch_io.solver_status == "mismatch_regen_failed", f"got {patch_io.solver_status!r}"
     done_call = next(c for c in patch_io.set_status_calls if c[0] == "done")
     assert done_call[1]["output_md"] == "# initial output", "original output must be kept on regen failure"
+
+
+# ===========================================================================
+# Test 6: boss-arena live-read toggle (operator-editable at /settings) —
+# solver runs on boss-arena only when solver_boss_arena_enabled is True; the
+# toggle must NOT leak into other _SOLVER_PHASES members.
+# ===========================================================================
+
+async def test_boss_arena_solved_when_toggle_on(patch_io):
+    patch_io.failover_outputs = [
+        ("# initial boss", 100, 50, "claude"),
+        ("# regenned boss", 110, 55, "claude"),
+    ]
+    patch_io.solve_outputs = [_mismatch(), _agree()]
+    kw = _make_kwargs(phase_name="boss-arena")
+    await pipeline._execute_phase(**kw)
+    assert len(patch_io.solve_calls) >= 1, "boss-arena must be solved when toggle on"
+    assert patch_io.solver_status == "mismatch_regen", f"got {patch_io.solver_status!r}"
+
+
+async def test_boss_arena_skipped_when_toggle_off(patch_io):
+    patch_io.failover_outputs = [("# initial boss", 100, 50, "claude")]
+    kw = _make_kwargs(phase_name="boss-arena")
+    kw["solver_boss_arena_enabled"] = False
+    await pipeline._execute_phase(**kw)
+    assert len(patch_io.solve_calls) == 0, "boss-arena must NOT be solved when toggle off"
+    assert patch_io.solver_status is None, f"got {patch_io.solver_status!r}"
+
+
+async def test_non_boss_phase_ignores_boss_toggle(patch_io):
+    patch_io.failover_outputs = [("# initial output", 100, 50, "claude")]
+    patch_io.solve_outputs = [_agree()]
+    kw = _make_kwargs(phase_name="memory-check")
+    kw["solver_boss_arena_enabled"] = False   # off, but memory-check still solves
+    await pipeline._execute_phase(**kw)
+    assert len(patch_io.solve_calls) == 1
+    assert patch_io.solver_status == "ok"

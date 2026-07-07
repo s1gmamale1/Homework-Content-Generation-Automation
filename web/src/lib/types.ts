@@ -484,6 +484,7 @@ export interface LaunchDefaults {
   solver_provider: string | null;
   solver_model: string | null;
   solver_transport: RoleTransport | null;
+  solver_boss_arena_enabled: boolean;
   extract_provider: string | null;
   extract_model: string | null;
   extract_transport: RoleTransport | null;

@@ -143,6 +143,7 @@ export function SettingsPage() {
   const [solverProvider, setSolverProvider] = useState<string | null>(null);
   const [solverModel, setSolverModel] = useState<string | null>(null);
   const [solverTransport, setSolverTransport] = useState<RoleTransport>("inherit");
+  const [solverBossArenaEnabled, setSolverBossArenaEnabled] = useState(true);
   const [extractProvider, setExtractProvider] = useState<string | null>(null);
   const [extractModel, setExtractModel] = useState<string | null>(null);
   const [extractTransport, setExtractTransport] = useState<RoleTransport>("inherit");
@@ -165,6 +166,7 @@ export function SettingsPage() {
     setSolverProvider(data.solver_provider ?? null);
     setSolverModel(data.solver_model ?? null);
     setSolverTransport((data.solver_transport as RoleTransport) ?? "inherit");
+    setSolverBossArenaEnabled(data.solver_boss_arena_enabled ?? true);
     setExtractProvider(data.extract_provider ?? null);
     setExtractModel(data.extract_model ?? null);
     setExtractTransport((data.extract_transport as RoleTransport) ?? "inherit");
@@ -235,6 +237,7 @@ export function SettingsPage() {
       solver_provider: solverProvider,
       solver_model: solverModel,
       solver_transport: solverTransport,
+      solver_boss_arena_enabled: solverBossArenaEnabled,
       extract_provider: extractProvider,
       extract_model: extractModel,
       extract_transport: extractTransport,
@@ -356,6 +359,15 @@ export function SettingsPage() {
                 solver model equals the content generator, the self-grade guard swaps it to a
                 peer model automatically.
               </p>
+              <label className="ml-16 -mt-1 flex items-center gap-2 text-[0.7rem] text-white/60">
+                <input
+                  type="checkbox"
+                  checked={solverBossArenaEnabled}
+                  onChange={(e) => setSolverBossArenaEnabled(e.target.checked)}
+                />
+                Also solve the Boss Arena answer keys (objective questions only).
+                Turn off if it gets noisy — the three practice phases keep solving.
+              </label>
 
               {/* Extract row */}
               <RoleRow

@@ -58,3 +58,22 @@ async def test_api_auth_error_reraises(monkeypatch):
     monkeypatch.setattr("app.services.agent.run_phase", _auth)
     with pytest.raises(Exception):
         await solver.solve(**{**COMMON, "transport": "api"})
+
+
+def test_boss_arena_prompt_carries_objective_key_guidance():
+    p = solver._build_solver_prompt(
+        contract="CONTRACT", phase_output_md="OUTPUT", phase_name="boss-arena")
+    assert "objectively" in p.lower()
+    assert "open" in p.lower()
+    assert "independently SOLVES each item" in p  # generic instructions still present
+
+
+def test_non_boss_prompt_has_no_boss_addendum():
+    p = solver._build_solver_prompt(
+        contract="C", phase_output_md="O", phase_name="memory-check")
+    assert "Boss Arena phase" not in p
+
+
+def test_build_solver_prompt_phase_name_optional():
+    p = solver._build_solver_prompt(contract="C", phase_output_md="O")
+    assert "Boss Arena phase" not in p

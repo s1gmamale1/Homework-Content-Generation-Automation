@@ -32,7 +32,7 @@ _INTERNAL_PHASES = {"extract", "classify"}
 
 # CQ-C: key-bearing phases the independent answer-key solver re-checks after
 # the judge has run (so it checks the FINAL, possibly judge-regenerated output).
-_SOLVER_PHASES = ("memory-check", "practice-error-detection", "practice-rlc")
+_SOLVER_PHASES = ("memory-check", "practice-error-detection", "practice-rlc", "boss-arena")
 
 
 def _inject_grade(lesson_context: Optional[str], grade: Optional[str]) -> Optional[str]:
@@ -190,6 +190,10 @@ async def run(job_id: UUID) -> None:
             )
             solver_provider_ov = getattr(job, "solver_provider", None) or _ld.solver_provider
             solver_model_ov = getattr(job, "solver_model", None) or _ld.solver_model
+            # Live-read boss-arena kill-switch off the already-loaded singleton
+            # (operator-editable at /settings). Read once per job like the rest of
+            # _ld; threaded into _execute_phase below.
+            solver_boss_arena_enabled = _ld.solver_boss_arena_enabled
             # Per-job extract provider/model override: explicit columns win, else
             # the DB global default (via _ld). Content phases are UNAFFECTED —
             # they keep using job.provider / job.model.
@@ -316,6 +320,7 @@ async def run(job_id: UUID) -> None:
                     judge_model_ov=judge_model_ov,
                     solver_provider_ov=solver_provider_ov,
                     solver_model_ov=solver_model_ov,
+                    solver_boss_arena_enabled=solver_boss_arena_enabled,
                     extract_provider=extract_provider,
                     extract_model=extract_model,
                     session_limit_strategy=session_limit_strategy,
@@ -385,6 +390,7 @@ async def run(job_id: UUID) -> None:
                     judge_model_ov=judge_model_ov,
                     solver_provider_ov=solver_provider_ov,
                     solver_model_ov=solver_model_ov,
+                    solver_boss_arena_enabled=solver_boss_arena_enabled,
                     extract_provider=extract_provider,
                     extract_model=extract_model,
                     session_limit_strategy=session_limit_strategy,
@@ -501,6 +507,7 @@ async def _execute_one_phase(
     judge_model_ov: Optional[str] = None,
     solver_provider_ov: Optional[str] = None,
     solver_model_ov: Optional[str] = None,
+    solver_boss_arena_enabled: bool = True,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
@@ -547,6 +554,7 @@ async def _execute_one_phase(
             judge_model_ov=judge_model_ov,
             solver_provider_ov=solver_provider_ov,
             solver_model_ov=solver_model_ov,
+            solver_boss_arena_enabled=solver_boss_arena_enabled,
             extract_provider=extract_provider,
             extract_model=extract_model,
             session_limit_strategy=session_limit_strategy,
@@ -618,6 +626,7 @@ async def _run_content_phases_parallel(
     judge_model_ov: Optional[str] = None,
     solver_provider_ov: Optional[str] = None,
     solver_model_ov: Optional[str] = None,
+    solver_boss_arena_enabled: bool = True,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
@@ -681,6 +690,7 @@ async def _run_content_phases_parallel(
                             judge_model_ov=judge_model_ov,
                             solver_provider_ov=solver_provider_ov,
                             solver_model_ov=solver_model_ov,
+                            solver_boss_arena_enabled=solver_boss_arena_enabled,
                             extract_provider=extract_provider,
                             extract_model=extract_model,
                             session_limit_strategy=session_limit_strategy,
@@ -951,6 +961,7 @@ async def _execute_phase(
     judge_model_ov: Optional[str] = None,
     solver_provider_ov: Optional[str] = None,
     solver_model_ov: Optional[str] = None,
+    solver_boss_arena_enabled: bool = True,
     extract_provider: Optional[str] = None,
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
@@ -1306,7 +1317,12 @@ async def _execute_phase(
         # judge regen) then re-solve; solver_status records the outcome. Never fails
         # a job except an api auth error (like the judge). The solver-regen output is
         # adopted WITHOUT re-judging (accepted risk — the solver only fixes the key).
-        if settings.solver_enabled and phase_name in _SOLVER_PHASES:
+        _solver_on = (
+            settings.solver_enabled
+            and phase_name in _SOLVER_PHASES
+            and (phase_name != "boss-arena" or solver_boss_arena_enabled)
+        )
+        if _solver_on:
             _sp, _sm = model_tiers.resolve_solver(
                 produced_by, _gen_model_of(produced_by), solver_provider_ov, solver_model_ov,
             )

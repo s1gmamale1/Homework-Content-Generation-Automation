@@ -26,6 +26,7 @@ class LaunchDefaultsOut(BaseModel):
     content_provider: str | None
     content_model: str | None
     content_transport: str | None
+    solver_boss_arena_enabled: bool
 
 
 class LaunchDefaultsUpdate(BaseModel):
@@ -43,6 +44,7 @@ class LaunchDefaultsUpdate(BaseModel):
     content_provider: str | None = None
     content_model: str | None = None
     content_transport: str | None = None
+    solver_boss_arena_enabled: bool | None = None
 
 
 def _serialize(row) -> LaunchDefaultsOut:
@@ -55,7 +57,8 @@ def _serialize(row) -> LaunchDefaultsOut:
         extract_model=row.extract_model, extract_transport=row.extract_transport,
         toc_transport=row.toc_transport, output_language=row.output_language,
         content_provider=row.content_provider, content_model=row.content_model,
-        content_transport=row.content_transport)
+        content_transport=row.content_transport,
+        solver_boss_arena_enabled=row.solver_boss_arena_enabled)
 
 
 @router.get("/settings/launch-defaults", response_model=LaunchDefaultsOut)
@@ -69,6 +72,10 @@ async def put_launch_defaults(
     session: AsyncSession = Depends(get_session),
 ) -> LaunchDefaultsOut:
     fields = body.model_dump(exclude_unset=True)
+    # A bool toggle sent as explicit null means "no change" — drop it so the
+    # NOT NULL launch_defaults column is never written null.
+    if fields.get("solver_boss_arena_enabled", False) is None:
+        fields.pop("solver_boss_arena_enabled")
     current = await launch_defaults_repo.get(session)
     # Validate the merged (provider, model) per role + each transport.
     merged = {**_serialize(current).model_dump(), **fields}
