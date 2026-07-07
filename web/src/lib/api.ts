@@ -378,6 +378,7 @@ export const api = {
     relaunch_mode?: "resume" | "discard";
     session_limit_strategy?: SessionLimitStrategy;
     output_language?: OutputLanguage | null;
+    include_classes?: string[];
   }): Promise<BatchLaunchResponse> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -397,6 +398,7 @@ export const api = {
     judge_provider?: string | null; judge_model?: string | null;
     session_limit_strategy?: SessionLimitStrategy;
     output_language?: OutputLanguage | null;
+    include_classes?: string[];
   }): Promise<BatchPreviewResponse> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" },
