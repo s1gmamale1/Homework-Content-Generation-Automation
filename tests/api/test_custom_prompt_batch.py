@@ -24,6 +24,8 @@ def _ready_batch_patch(monkeypatch):
             self.id = i
             self.section_title = f"L{i}"
             self.order_index = i
+            self.page_start = None
+            self.page_end = None
 
     async def _fake_book(session, book_id):
         return _Book()
