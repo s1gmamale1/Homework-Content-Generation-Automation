@@ -10,7 +10,17 @@ import asyncio
 
 import pytest
 
+from app.services import agent
 from app.services.pipeline import _run_with_failover
+
+
+@pytest.fixture
+def all_clis_installed(monkeypatch):
+    """The cli chain skips fallback providers whose CLI isn't on PATH
+    (pipeline.py fleet-failover-1 skip), so cross-provider assertions are
+    host-dependent without this. Patch installed=True to test the chain
+    logic itself, not the host's PATH."""
+    monkeypatch.setattr(agent, "provider_cli_installed", lambda name: True)
 
 
 def test_api_failover_stays_on_requested_provider():
@@ -32,7 +42,7 @@ def test_api_failover_stays_on_requested_provider():
     assert calls == ["gemini", "gemini"]
 
 
-def test_cli_failover_still_crosses_providers():
+def test_cli_failover_still_crosses_providers(all_clis_installed):
     """Contrast: cli transport (default) DOES fall over to other providers,
     proving the restriction is api-only."""
     calls = []
@@ -51,7 +61,7 @@ def test_cli_failover_still_crosses_providers():
     assert {"codex", "kimi", "opencode"} & set(calls)
 
 
-def test_api_failover_default_transport_is_cli():
+def test_api_failover_default_transport_is_cli(all_clis_installed):
     """Omitting transport defaults to cli → still crosses providers."""
     calls = []
 
