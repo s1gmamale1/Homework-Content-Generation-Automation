@@ -15,14 +15,15 @@
 - **Root cause (verified against code):** `pipeline.py:443` auto-archives a regen job (`job_B`, `notion_archived_at=NULL`); `_push_to_notion` (`notion_archive.py:166`) sees the leaf page already populated (prior `job_A`'s content) → **skips** but still returns the page id → `job_B` gets `notion_archived_at` stamped (`:296`) → `archive_rollup_for_batch` (`batches.py:147`) counts it archived. Page keeps `job_A`'s stale content. Nothing records *which* job produced a page, so the archiver keeps the safe skip-default. Confirmed twice live (G7-alg 4/47).
 - **Chosen (user-approved: "Both — auto-fix + visibility"):** (1) `toc_entries.notion_archived_job_id` stamp; (2) `archive_job` auto-replaces its own older output on a regen (`stamp != this job` ⟹ `replace=True`, no operator action); (3) rollup `stale` count + Fleet «N stale» chip + a targeted "Refresh stale" button.
 - **Ownership fact that makes auto-replace safe:** every homework is filed under our own `"Generated Homeworks"` container and human-page adoption is *not* performed (`notion_archive.py:10-11` docstring) — so a populated leaf page under it is *always our own output*. The only residual risk is a human hand-editing our generated page before a regen; the user accepted this (a regen is an explicit "give me fresh content" signal).
-- **Stamp decision needs NO push-return-signature change (verified):** `archive_job` decides purely from columns it already loads — `first_archive = section.notion_homework_page_id is None` (we set that id only when we archive, so `None` ⟹ genuine first write); `auto_replace = section.notion_archived_job_id is not None and != job_id`. It stamps iff `first_archive or force or auto_replace` (all three imply the push wrote). This avoids threading `content_written` back through `_push_to_notion`/`_push_with_retry`, so their existing mocks stay valid.
+- **C1 (GK2 gate condition): auto-replace is direction-guarded.** `stamp != this job` alone is direction-blind — an OLDER job (operator retry-archive on a pre-regen job whose push had failed, or a stale resume) would clear a NEWER job's fresh page and rewrite stale content, actively causing the staleness the feature fixes. Auto-replace fires only when the archiving job is **strictly newer** than the stamped job (`job.created_at > prior_job.created_at`; one extra `jobs_repo.get` inside the already-open session). An older job hitting a newer stamp keeps today's skip and logs loudly why. A missing stamped-job row also keeps the skip (jobs are only deleted with their book, so near-impossible; the strict-stale chip + Refresh-stale button remediate if it ever happens). `force=True` stays direction-blind — that's the operator explicitly overriding.
+- **Stamp decision needs NO push-return-signature change (verified):** `archive_job` decides purely from rows it already loads in the first session block — `first_archive = section.notion_homework_page_id is None` (we set that id only when we archive, so `None` ⟹ genuine first write); `auto_replace` per the C1 rule above. It stamps iff `first_archive or force or auto_replace` (all three imply the push wrote). This avoids threading `content_written` back through `_push_to_notion`/`_push_with_retry`, so their existing mocks stay valid.
 - **Stale signal = our own stamp, not Notion `last_edited_time`** (rejected alt): comparing the stored producing-job id is deterministic, needs zero Notion API calls per rollup (last_edited would be N calls, rate-limited), and isn't fooled by unrelated edits bumping `last_edited`.
 - **Strict stale definition** (`stamp IS NOT NULL AND stamp != latest_job.id`): precisely flags confirmed own-older-output mismatches; a **NULL stamp is NOT flagged**. Consequence: pre-feature husks (archived before this migration → stamp NULL) are invisible to the chip and not auto-healed — a bounded one-time set the operator clears with the existing `force=true` sweep (`done_job_ids`, rewrites all). Rejected the "loose" definition (NULL counts as stale) because it would scream «all-N stale» on old batches at deploy and trigger mass Notion rewrites. With auto-replace shipped, strict-stale stays ~0 in healthy operation and rises only during the transient window between a regen completing and its archive, or on a regression — exactly the health signal wanted.
 - **Column is a plain nullable `UUID` (no FK):** it's a soft content-provenance stamp, not a relational-integrity requirement; a plain column avoids ON-DELETE ordering with the existing `homework_jobs.toc_entry_id` FK.
 
 ## Global Constraints (reviewer attention lens)
 
-- `_resolve_subject_page_id`, the skip-if-populated default for **stamp-NULL** pages, and "no human-page adoption" behavior must be UNCHANGED. Auto-replace fires ONLY when `notion_archived_job_id` is non-NULL and differs from the archiving job (or `force=True`).
+- `_resolve_subject_page_id`, the skip-if-populated default for **stamp-NULL** pages, and "no human-page adoption" behavior must be UNCHANGED. Auto-replace fires ONLY when `notion_archived_job_id` is non-NULL, differs from the archiving job, AND the archiving job is strictly newer than the stamped job by `created_at` (C1). `force=True` is the only direction-blind path.
 - `archive_rollup_for_batch` must keep `archived`/`unarchived` values byte-identical to today; `stale` is an ADDITIVE subset of `archived`.
 - `stale` count is strict: `notion_archived_at IS NOT NULL AND notion_archived_job_id IS NOT NULL AND notion_archived_job_id != latest_job.id`. A NULL stamp is never stale.
 - Real-DB tests: guard with `RUN_DB_INTEGRATION`, pin `127.0.0.1` (not `localhost`), never run without an explicit scratch `DATABASE_URL`.
@@ -193,10 +194,11 @@ import pytest
 import app.services.notion_archive as na
 
 
-def _job(archived=False):
+def _job(archived=False, created_at=None):
     return SimpleNamespace(
         id=uuid4(), book_id=uuid4(), toc_entry_id=uuid4(),
         subject="geometriya-g7-11", output_language="uz",
+        created_at=created_at or datetime(2026, 6, 1, tzinfo=timezone.utc),
         notion_archived_at=(datetime.now(timezone.utc) if archived else None),
     )
 
@@ -243,11 +245,12 @@ async def test_first_archive_stamps_producing_job(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_regen_auto_replaces_own_older_output_and_restamps(monkeypatch):
-    job = _job()                                             # the newer regen job
-    older = uuid4()
-    section = _section(job, page_id="hw", archived_job_id=older)  # page is OUR older output
+    job = _job(created_at=datetime(2026, 6, 1, tzinfo=timezone.utc))  # the newer regen job
+    prior = SimpleNamespace(id=uuid4(), created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    section = _section(job, page_id="hw", archived_job_id=prior.id)   # page is OUR older output
     book, phase = _wire(monkeypatch, job, section)
-    with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
+    with patch.object(na.jobs_repo, "get",
+                      AsyncMock(side_effect=lambda s, jid: job if jid == job.id else prior)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
@@ -259,6 +262,53 @@ async def test_regen_auto_replaces_own_older_output_and_restamps(monkeypatch):
         await na.archive_job(job.id)                          # NO force
     assert push.await_args.kwargs["replace"] is True          # auto-replace fired
     assert stamp.await_args.args[2] == job.id                 # re-stamped to the newer job
+
+
+@pytest.mark.asyncio
+async def test_older_job_does_not_clobber_newer_stamp(monkeypatch):
+    """C1 (GK2): an OLDER job re-archiving after a newer regen already stamped
+    the page (e.g. its original push failed, operator retries it) must NOT
+    auto-replace — that would rewrite stale content over fresh. Skip preserved,
+    stamp untouched (still points at the newer job)."""
+    old_job = _job(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    newer = SimpleNamespace(id=uuid4(), created_at=datetime(2026, 6, 1, tzinfo=timezone.utc))
+    section = _section(old_job, page_id="hw", archived_job_id=newer.id)
+    book, phase = _wire(monkeypatch, old_job, section)
+    with patch.object(na.jobs_repo, "get",
+                      AsyncMock(side_effect=lambda s, jid: old_job if jid == old_job.id else newer)), \
+         patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
+         patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \
+         patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
+         patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()), \
+         patch.object(na, "NotionClientWrapper", MagicMock()), \
+         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+        await na.archive_job(old_job.id)                      # NO force
+    assert push.await_args.kwargs["replace"] is False         # skip preserved
+    stamp.assert_not_awaited()                                # newer stamp untouched
+
+
+@pytest.mark.asyncio
+async def test_missing_stamped_job_row_keeps_skip(monkeypatch):
+    """C1 edge: stamped job row gone (only possible via book deletion) — no
+    direction evidence, keep the skip; Refresh-stale remediates."""
+    job = _job()
+    section = _section(job, page_id="hw", archived_job_id=uuid4())  # stamp → missing row
+    book, phase = _wire(monkeypatch, job, section)
+    with patch.object(na.jobs_repo, "get",
+                      AsyncMock(side_effect=lambda s, jid: job if jid == job.id else None)), \
+         patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
+         patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \
+         patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
+         patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()), \
+         patch.object(na, "NotionClientWrapper", MagicMock()), \
+         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+        await na.archive_job(job.id)
+    assert push.await_args.kwargs["replace"] is False
+    stamp.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -289,25 +339,37 @@ Expected: FAIL (`archive_job` doesn't read `notion_archived_job_id` or call `set
 
 - [ ] **Step 4: Implement stamp + auto-replace in `archive_job`**
 
-In `app/services/notion_archive.py`, in the first session block, capture the two provenance fields alongside `section_id` (currently line 263):
+In `app/services/notion_archive.py`, in the first session block, capture the provenance fields and compute the direction-guarded replace decision alongside `section_id` (currently line 263 — the session and the loaded `job` are both still live here):
 
 ```python
             section_id = section.id
-            prior_page_id = section.notion_homework_page_id
-            prior_job_id = section.notion_archived_job_id
             lesson_title = _lesson_title(section.section_number, section.section_title)
+            # A leaf page under 'Generated Homeworks' is always our own output
+            # (no human-page adoption — see module docstring), so a regen may
+            # safely clear+rewrite it. first_archive: never filed this lesson
+            # (we set the page id only when we archive). auto_replace fires only
+            # when the page holds a DIFFERENT job's content AND this job is
+            # strictly NEWER than it — an older job re-archiving (e.g. operator
+            # retry on a pre-regen job whose push failed) must never clobber a
+            # newer page with stale content. force (operator override) is the
+            # only direction-blind path.
+            first_archive = section.notion_homework_page_id is None
+            prior_job_id = section.notion_archived_job_id
+            auto_replace = False
+            if prior_job_id is not None and prior_job_id != job_id:
+                prior_job = await jobs_repo.get(session, prior_job_id)
+                if prior_job is not None and job.created_at > prior_job.created_at:
+                    auto_replace = True
+                else:
+                    log.warning(
+                        "notion: job %s is not newer than stamped job %s on section %s "
+                        "— keeping skip (no auto-replace)",
+                        job_id, prior_job_id, section_id)
 ```
 
-After the `phase_md` build / `if not phase_md` block, just before constructing the client, compute the replace decision:
+After the `phase_md` build / `if not phase_md` block, just before constructing the client:
 
 ```python
-        # A leaf page under 'Generated Homeworks' is always our own output (no
-        # human-page adoption — see module docstring), so a regen may safely
-        # clear+rewrite it. first_archive: never filed this lesson (we set the
-        # page id only when we archive). auto_replace: the page holds a DIFFERENT
-        # (older) job's content. Both write → we (re)stamp the producing job.
-        first_archive = prior_page_id is None
-        auto_replace = prior_job_id is not None and prior_job_id != job_id
         do_replace = force or auto_replace
 
         client = NotionClientWrapper(api_key=settings.notion_api_key)
