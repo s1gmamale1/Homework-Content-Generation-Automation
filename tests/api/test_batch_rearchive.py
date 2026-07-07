@@ -51,7 +51,7 @@ async def test_archive_rollup_splits_done_by_archived_state():
     async with SessionLocal() as s:
         batch, j1, j2 = await _seed_batch_with_two_done_jobs(s)
         counts = await batches_repo.archive_rollup_for_batch(s, batch.id)
-        assert counts == {"archived": 1, "unarchived": 1}
+        assert counts == {"archived": 1, "unarchived": 1, "stale": 0}
 
 
 @pytest.mark.asyncio
@@ -139,3 +139,37 @@ async def test_retry_archive_unknown_batch_404():
     async with AsyncClient(transport=transport, base_url="http://t") as ac:
         r = await ac.post(f"/api/v1/jobs/batch/{uuid4()}/retry-archive")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_rollup_counts_stale_when_page_holds_older_job():
+    async with SessionLocal() as s:
+        batch, j1, j2 = await _seed_batch_with_two_done_jobs(s)
+        # j1 is archived; stamp its lesson page with a DIFFERENT (older) job id.
+        from app.repositories import toc_entries as toc_repo
+        await toc_repo.set_notion_archived_job(s, j1.toc_entry_id, uuid4())
+        await s.commit()
+        counts = await batches_repo.archive_rollup_for_batch(s, batch.id)
+        assert counts == {"archived": 1, "unarchived": 1, "stale": 1}
+
+
+@pytest.mark.asyncio
+async def test_rollup_not_stale_when_stamp_matches_latest_job():
+    async with SessionLocal() as s:
+        batch, j1, j2 = await _seed_batch_with_two_done_jobs(s)
+        from app.repositories import toc_entries as toc_repo
+        await toc_repo.set_notion_archived_job(s, j1.toc_entry_id, j1.id)  # fresh
+        await s.commit()
+        counts = await batches_repo.archive_rollup_for_batch(s, batch.id)
+        assert counts == {"archived": 1, "unarchived": 1, "stale": 0}
+
+
+@pytest.mark.asyncio
+async def test_done_stale_job_ids_returns_only_the_stale_job():
+    async with SessionLocal() as s:
+        batch, j1, j2 = await _seed_batch_with_two_done_jobs(s)
+        from app.repositories import toc_entries as toc_repo
+        await toc_repo.set_notion_archived_job(s, j1.toc_entry_id, uuid4())  # j1 stale
+        await s.commit()
+        ids = await batches_repo.done_stale_job_ids(s, batch.id)
+        assert ids == [j1.id]
