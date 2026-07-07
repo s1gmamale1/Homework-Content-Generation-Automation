@@ -128,7 +128,9 @@ FE can show why rows were dropped. Guard: preview creates no jobs (already true)
 response type with `excluded_by_class?` + `target_count?`), `web/src/lib/api.ts` (`include_classes?`
 on launch + preview body types; preview response type), `web/src/components/fleet/launcher.tsx`.
 **Do:** (a) Per-row **class chip** in the choosing list (`launcher.tsx:~1335`) — small tag showing
-non-lesson classes (lesson = no chip or a muted dot). (b) **Class opt-in chips** near the launch
+non-lesson classes (lesson = no chip or a muted dot). The chip MUST render from the server-served
+`t.entry_class` field — do NOT re-derive the class client-side (one source of truth: the pure
+classifier; the FE only displays it). (b) **Class opt-in chips** near the launch
 control: `lesson` on by default, `header/recall/revision/test/other` off; selection drives an
 `includeClasses` state threaded into `launchBody` (non-subset path only) as `include_classes`.
 (c) The "Launch remaining N" count reflects the class filter (count rows whose `entry_class` ∈
@@ -145,12 +147,18 @@ excluded: 8 header, 3 test, 1 other") so the operator sees why. Explicit hand-pi
 G8-Geometriya (hierarchical + Javoblar), G8-Algebra (lessons-only), G7-Algebra (back-matter
 included), one G5/G6 book (ALL-CAPS single-page chapters), one RU book. Hand-label each row's true
 class (I inspect the rows — not delegated). The test runs `classify_entries` per book and asserts
-overall accuracy **≥ 90%** (floor) AND **prints both error directions separately** — real lessons
-misclassified as non-lesson (the scary one: silently drops content) vs junk misclassified as
-lesson ($ leak) — plus full per-class confusion counts, no rounding. If the real data can't clear
-90% or the lesson→junk direction is non-trivial, stop and surface the counts to the user rather
-than forcing the number. Tune the keyword tables until the gate passes; the specific
-G8-Geometriya assertion — a default batch targets ~62 mavzu rows, not 75 — is included.
+overall accuracy **≥ 90%** (floor) AND reports the two error directions **asymmetrically**:
+- **False-INCLUSION** (junk → `lesson`): may be a rate. Costs ~$0.58 + a visible junk packet.
+- **False-EXCLUSION** (`lesson` → any non-lesson): a silent coverage hole. **Every single one must
+  be enumerated BY NAME** (book, order_index, section_title) in the acceptance record, and each
+  gets EITHER a classifier fix OR an explicit accept-with-reason. The ≥90% aggregate floor is a
+  gate but **must NOT be reachable by trading away recall on real lessons** — a fixture run that
+  hits 90% while silently dropping real lessons FAILS.
+
+Print full per-class confusion counts, no rounding. If the data can't clear 90% honestly, stop and
+surface the counts to the user. Tune the keyword tables until the gate passes; the specific
+G8-Geometriya assertion — a default batch targets ~62 mavzu rows, not 75 — is included, and is
+RED-provable (a naive `targets = lessons` must fail it).
 (Visibility mitigates residual error: per-row chips + preview `excluded_by_class` let the operator
 catch a misclassified row and hand-pick it — unfiltered — before a bulk launch.)
 **Commit:** `tocf: real-fixture classifier accuracy gate + tuning`
