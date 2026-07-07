@@ -47,10 +47,41 @@ _INSTRUCTIONS = (
     "empty list."
 )
 
+_BOSS_ARENA_ADDENDUM = (
+    "## This is a Boss Arena phase — a different shape\n"
+    "Boss Arena questions are OPEN Why/How/What reasoning prompts. There is NO "
+    "marked-correct option and NO written answer-key field — do NOT expect one, "
+    "and do NOT flag a question for 'missing a key'.\n\n"
+    "Instead, check each question for an EMBEDDED, OBJECTIVELY-DECIDABLE claim — "
+    "a computable value, a mathematical truth/possibility, or a fact the lesson's "
+    "concepts settle unambiguously — that the question STATES or ASSUMES as "
+    "correct anywhere in its Scenario, its What/counterfactual, or its three "
+    "Feedback lines (Correct/Partial/Wrong). Independently derive that claim from "
+    "the lesson's concepts. Flag a discrepancy ONLY when the question asserts or "
+    "assumes an objectively WRONG answer (e.g. it treats a constructible figure "
+    "as impossible, or states a wrong numeric result): set `generated_key` to the "
+    "answer the question assumes, `solver_answer` to the correct one, and reserve "
+    "`high` for an unambiguous objective error.\n\n"
+    "If a question is genuinely OPEN — interpretive, evaluative, design/opinion, "
+    "or admitting several defensible answers — it has NO objective key: treat it "
+    "as agreeing and do NOT flag it. Never flag phrasing, difficulty, pedagogy, "
+    "hint quality, or the Why/How/What structure."
+)
 
-def _build_solver_prompt(*, contract: str, phase_output_md: str) -> str:
+# Per-phase solver-contract addenda appended to _INSTRUCTIONS for phases whose
+# shape differs from the standard marked-key phases. Absent phase → no addendum.
+_PHASE_SOLVE_ADDENDUM = {"boss-arena": _BOSS_ARENA_ADDENDUM}
+
+
+def _build_solver_prompt(
+    *, contract: str, phase_output_md: str, phase_name: Optional[str] = None
+) -> str:
+    instructions = _INSTRUCTIONS
+    addendum = _PHASE_SOLVE_ADDENDUM.get(phase_name or "")
+    if addendum:
+        instructions = f"{instructions}\n\n{addendum}"
     parts = [
-        _INSTRUCTIONS,
+        instructions,
         "\n\n## CONTRACT (the authoring instructions the output was produced from)",
         contract.strip(),
         "\n\n## OUTPUT TO CHECK (the generated phase, including its answer key)",
@@ -101,7 +132,8 @@ async def solve(
     job must fail loudly, not ship unsolved."""
     try:
         contract = contract_override or get_prompt(subject, phase_name, output_language=output_language)
-        solver_prompt = _build_solver_prompt(contract=contract, phase_output_md=phase_output_md)
+        solver_prompt = _build_solver_prompt(
+            contract=contract, phase_output_md=phase_output_md, phase_name=phase_name)
         result = await agent.run_phase(
             provider=solver_provider,
             model=solver_model,
