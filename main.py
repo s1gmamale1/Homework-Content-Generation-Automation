@@ -17,6 +17,7 @@ from app.log import configure as configure_logging
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
+from app.services import events_bus
 from app.services.prompts import load_all as load_prompts
 from app.services.worker import Worker, build_worker_from_settings
 
@@ -69,6 +70,13 @@ async def lifespan(app: FastAPI):
         await session.commit()
     log.info("Orphan sweep complete (books + phase_outputs)")
 
+    # Cross-process SSE bus (sse-multipod-1): one LISTEN connection per
+    # process routes NOTIFY events into local SSE queues. Deliberately no
+    # try/except — a process that can't LISTEN would serve frozen streams,
+    # which is the exact bug this bus fixes. The sweep above already proved
+    # the DB reachable.
+    await events_bus.start_listener()
+
     # Embedded worker. Set WORKER_CONCURRENCY=0 to disable (e.g., when
     # running standalone workers in separate pods).
     worker: Optional[Worker] = None
@@ -100,6 +108,7 @@ async def lifespan(app: FastAPI):
                 except (asyncio.CancelledError, Exception):
                     pass
             log.info("Embedded worker stopped")
+        await events_bus.stop_listener()
 
 
 app = FastAPI(

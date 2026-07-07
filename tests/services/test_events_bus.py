@@ -258,3 +258,16 @@ async def test_watchdog_reconnects_after_connection_drop(monkeypatch):
         with contextlib.suppress(asyncio.CancelledError):
             await task
         events_bus._listener_conn = None
+
+
+def test_lifespan_wires_listener_start_and_stop():
+    import inspect
+
+    import main
+
+    src = inspect.getsource(main.lifespan)
+    assert "events_bus.start_listener()" in src
+    assert "events_bus.stop_listener()" in src
+    # start must NOT be wrapped in a swallowing try — startup failure is loud.
+    before_start = src.split("events_bus.start_listener()")[0]
+    assert not before_start.rstrip().endswith("try:")
