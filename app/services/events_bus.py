@@ -1,9 +1,24 @@
+"""Cross-process SSE event bus backed by Postgres LISTEN/NOTIFY (sse-multipod-1).
+
+Delivery model: ``publish()``/``close()`` send a NOTIFY on the single
+``hw_events`` channel — never a direct local-queue put. Every process running
+``main.lifespan`` holds one LISTEN connection whose dispatcher routes payloads
+into this process's ``asyncio.Queue`` subscribers. Embedded-worker mode rides
+the exact same path as the fleet: if NOTIFY breaks, it breaks loudly
+everywhere, not just cross-process.
+
+Payloads whose encoded wire JSON exceeds ``INLINE_LIMIT_BYTES`` (NOTIFY caps
+at ~8000 bytes) collapse to a ``__refetch__`` marker; the SSE endpoints
+rebuild the data from the DB. Safe because publishers persist rows BEFORE
+publishing.
+"""
 import asyncio
 import json
 from collections import defaultdict
 from typing import Any
 
 from loguru import logger as log
+from sqlalchemy import text
 
 _subscribers: dict[str, set[asyncio.Queue]] = defaultdict(set)
 
@@ -74,12 +89,31 @@ def unsubscribe(resource_id: str, q: asyncio.Queue) -> None:
         _subscribers.pop(resource_id, None)
 
 
+async def _notify(payload: str) -> None:
+    """Send one NOTIFY via the pooled engine (works from any process).
+    pg_notify fires on commit — engine.begin() commits on exit."""
+    from app.db import engine  # late import: no engine at module import time
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("SELECT pg_notify(:ch, :payload)"),
+            {"ch": CHANNEL, "payload": payload},
+        )
+
+
 async def publish(resource_id: str, event: str, data: dict[str, Any]) -> None:
-    payload = {"event": event, "data": data}
-    for q in list(_subscribers.get(resource_id, [])):
-        await q.put(payload)
+    try:
+        await _notify(_encode(resource_id, event, data))
+    except Exception:
+        # Progress events are advisory — a publish failure must never fail
+        # the job/extract that emitted it. Loud so a dead bus is visible.
+        log.exception(
+            f"events_bus: NOTIFY failed | resource={resource_id} event={event}"
+        )
 
 
 async def close(resource_id: str) -> None:
-    for q in list(_subscribers.get(resource_id, [])):
-        await q.put(None)
+    try:
+        await _notify(_encode(resource_id, _CLOSE_EVENT, {}))
+    except Exception:
+        log.exception(f"events_bus: NOTIFY(close) failed | resource={resource_id}")

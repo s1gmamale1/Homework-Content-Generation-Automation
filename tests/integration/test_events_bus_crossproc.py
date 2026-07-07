@@ -82,3 +82,35 @@ async def test_cross_process_publish_reaches_local_subscriber():
         events_bus.unsubscribe(rid, q)
         if stop is not None:
             await stop()
+
+
+@pytest.mark.real_events_bus
+@pytest.mark.asyncio
+async def test_publish_fires_despite_unrelated_open_transaction():
+    """C1: pg_notify is transactional — fires on commit, dropped on rollback.
+    publish() must run it on its own short-lived committed connection, never
+    enlisted in an ambient caller transaction (which would delay delivery
+    until that commit, or swallow it on rollback)."""
+    from sqlalchemy import text
+
+    from app.db import SessionLocal
+    from app.services import events_bus
+
+    start = getattr(events_bus, "start_listener", None)
+    stop = getattr(events_bus, "stop_listener", None)
+    if start is not None:
+        await start()
+    rid = f"job:{uuid4()}"
+    q = events_bus.subscribe(rid)
+    try:
+        async with SessionLocal() as s:
+            await s.execute(text("SELECT 1"))   # ambient tx now OPEN, never committed
+            await events_bus.publish(rid, "phase_started", {"phase_order": 1})
+            # Delivered BEFORE the ambient tx resolves → publish did not enlist.
+            got = await asyncio.wait_for(q.get(), timeout=10)
+            assert got == {"event": "phase_started", "data": {"phase_order": 1}}
+            await s.rollback()                  # and rollback can't retract it
+    finally:
+        events_bus.unsubscribe(rid, q)
+        if stop is not None:
+            await stop()

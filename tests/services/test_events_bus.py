@@ -117,3 +117,51 @@ def test_dispatch_gives_each_subscriber_its_own_data_dict():
     finally:
         events_bus.unsubscribe("job:r2", q1)
         events_bus.unsubscribe("job:r2", q2)
+
+
+@pytest.mark.asyncio
+async def test_publish_is_notify_only(monkeypatch):
+    # NOTIFY-only invariant: publish must NOT put directly on local queues —
+    # the pod's listener routes it back. A direct put would double-deliver
+    # every event in embedded-worker mode.
+    sent: list[str] = []
+
+    async def _record(payload: str) -> None:
+        sent.append(payload)
+
+    monkeypatch.setattr(events_bus, "_notify", _record)
+    q = events_bus.subscribe("job:z")
+    try:
+        await events_bus.publish("job:z", "e", {"a": 1})
+        assert len(sent) == 1
+        assert json.loads(sent[0])["data"] == {"a": 1}
+        assert q.empty()
+    finally:
+        events_bus.unsubscribe("job:z", q)
+
+
+@pytest.mark.asyncio
+async def test_publish_and_close_deliver_through_loopback():
+    # Under the conftest loopback (_notify → _dispatch) the full
+    # publish → encode → dispatch → queue path runs in-process.
+    q = events_bus.subscribe("job:lb")
+    try:
+        await events_bus.publish("job:lb", "phase_started", {"phase_order": 3})
+        assert q.get_nowait() == {
+            "event": "phase_started", "data": {"phase_order": 3}
+        }
+        await events_bus.close("job:lb")
+        assert q.get_nowait() is None
+    finally:
+        events_bus.unsubscribe("job:lb", q)
+
+
+@pytest.mark.asyncio
+async def test_publish_swallows_notify_failure(monkeypatch):
+    # Progress events are advisory — a dead bus must never fail the job.
+    async def _boom(payload: str) -> None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(events_bus, "_notify", _boom)
+    await events_bus.publish("job:x", "e", {})   # must not raise
+    await events_bus.close("job:x")              # must not raise
