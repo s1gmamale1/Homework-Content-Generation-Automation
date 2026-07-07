@@ -25,6 +25,10 @@ def _encode(resource_id: str, event: str, data: dict[str, Any]) -> str:
         return full
     marker: dict[str, Any] = {"__refetch__": True}
     for k, v in data.items():
+        if k == "__refetch__":
+            # Never let a caller-supplied key of this name overwrite the
+            # marker sentinel — that would mask that big fields were dropped.
+            continue
         if len(json.dumps(v).encode()) <= _FIELD_LIMIT_BYTES:
             marker[k] = v
     out = json.dumps({"resource_id": resource_id, "event": event, "data": marker})
@@ -41,6 +45,8 @@ def _dispatch(payload_json: str) -> None:
     try:
         msg = json.loads(payload_json)
         resource_id, event, data = msg["resource_id"], msg["event"], msg["data"]
+        if not isinstance(data, dict):
+            raise TypeError(f"non-dict data: {type(data).__name__}")
     except (ValueError, KeyError, TypeError):
         log.error(
             f"events_bus: dropping undecodable NOTIFY payload: {payload_json[:200]!r}"
