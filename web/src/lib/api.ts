@@ -277,9 +277,10 @@ export const api = {
     return unwrap<Job>(res);
   },
 
-  async retryArchiveBatch(batchId: string): Promise<BatchRearchiveResponse> {
+  async retryArchiveBatch(batchId: string, opts?: { stale?: boolean }): Promise<BatchRearchiveResponse> {
+    const qs = opts?.stale ? "?stale=true" : "";
     const res = await authFetch(
-      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/retry-archive`,
+      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/retry-archive${qs}`,
       { method: "POST" },
     );
     return unwrap<BatchRearchiveResponse>(res);
