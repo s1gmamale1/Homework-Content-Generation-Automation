@@ -585,6 +585,10 @@ async def _execute_one_phase(
         f"output_chars={len(output_md)} tokens_in={tin} tokens_out={tout} "
         f"duration_ms={phase_ms:.0f}"
     )
+    # Refetch invariant (events_bus): the phase row (status=done + output_md)
+    # is committed inside _execute_phase above BEFORE this publish — an
+    # oversized payload's __refetch__ marker makes the SSE endpoint re-read
+    # it. Do not reorder publish before commit.
     await events_bus.publish(
         resource_id,
         "phase_completed",

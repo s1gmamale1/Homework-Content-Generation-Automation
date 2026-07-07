@@ -134,6 +134,9 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
             f"{result.status if result else 'disabled'} → status={final_status}"
         )
 
+        # Refetch invariant (events_bus): entries are committed above BEFORE
+        # these publishes — an oversized payload's __refetch__ marker makes
+        # the SSE endpoint re-read them. Do not reorder publish before commit.
         if final_status == "toc_review":
             await events_bus.publish(
                 resource_id,

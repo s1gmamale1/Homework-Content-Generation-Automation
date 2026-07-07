@@ -461,6 +461,31 @@ async def cancel_job(
     raise HTTPException(409, f"cannot cancel a job with status={job.status!r}")
 
 
+async def _refetch_job_event(job_id: UUID, event: str, marker: dict) -> dict:
+    """Rebuild an oversized bus event from the DB (NOTIFY caps at ~8KB, so
+    e.g. phase_completed's output_md travels as a __refetch__ marker). Safe
+    because the pipeline persists rows before publishing. Falls back to the
+    inline hint fields if the row isn't found."""
+    hint = {k: v for k, v in marker.items() if k != "__refetch__"}
+    async with SessionLocal() as session:
+        if event == "phase_completed":
+            job = await jobs_repo.get_with_phases(session, job_id)
+            for p in (job.phase_outputs if job else []):
+                if p.phase_order == hint.get("phase_order"):
+                    return {
+                        "phase_name": p.phase_name,
+                        "phase_order": p.phase_order,
+                        "output_md": p.output_md or "",
+                        "tokens_input": p.tokens_input,
+                        "tokens_output": p.tokens_output,
+                    }
+        elif event == "error":
+            job = await jobs_repo.get(session, job_id)
+            if job is not None and job.error_message:
+                return {**hint, "message": job.error_message}
+    return hint
+
+
 @router.get("/jobs/{job_id}/stream")
 async def stream_job(job_id: UUID, request: Request):
     resource_id = f"job:{job_id}"
@@ -541,7 +566,10 @@ async def stream_job(job_id: UUID, request: Request):
                 payload = await q.get()
                 if payload is None:
                     break
-                yield {"event": payload["event"], "data": json.dumps(payload["data"])}
+                data = payload["data"]
+                if isinstance(data, dict) and data.get("__refetch__"):
+                    data = await _refetch_job_event(job_id, payload["event"], data)
+                yield {"event": payload["event"], "data": json.dumps(data)}
                 if payload["event"] in ("job_completed", "error"):
                     break
         finally:
