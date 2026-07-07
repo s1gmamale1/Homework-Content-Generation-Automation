@@ -366,8 +366,15 @@ transient `unavailable` — is **not** retried (it won't self-heal). Infra state
 serialized on the phase API + surfaced as a distinct chip in the preview console.
 
 ### Answer-key solver (CQ-C, worklog 0112)
-For the three **key-bearing** phases — `memory-check`, `practice-error-detection`, `practice-rlc`
-(`_SOLVER_PHASES`) — a third LLM role runs **after** the judge/regen block, on the *final* output:
+For the **key-bearing** phases — `memory-check`, `practice-error-detection`, `practice-rlc`, and
+`boss-arena` (`_SOLVER_PHASES`) — a third LLM role runs **after** the judge/regen block, on the
+*final* output. **Boss-arena is gated by a live `/settings` toggle** (`launch_defaults.solver_boss_arena_enabled`,
+default on, read live per job) so an operator can disable just boss solving without an `.env` edit;
+because boss questions are open reasoning with no marked key, the solver gets a boss-aware addendum
+that checks each question's *embedded objectively-decidable claim* (e.g. the 140°-polygon case) and
+skips genuinely open questions. Note the regen path adopts a boss regen **without re-judging** — a
+larger un-re-judged surface than the other phases (accepted on the solver's zero-false-positive
+history + `high`-confidence-only gate). Recall is a probabilistic second opinion, not a guarantee.
 `solver.solve()` independently re-solves each item and flags where the generated answer key is
 wrong (the audit's "correct-student-graded-wrong" class the judge provably can't see — it grades
 contract + fidelity, never solves the problems). It's a clone of the judge (structured
