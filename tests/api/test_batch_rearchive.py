@@ -173,3 +173,36 @@ async def test_done_stale_job_ids_returns_only_the_stale_job():
         await s.commit()
         ids = await batches_repo.done_stale_job_ids(s, batch.id)
         assert ids == [j1.id]
+
+
+@pytest.mark.asyncio
+async def test_retry_archive_stale_mode_sweeps_only_stale_with_force(monkeypatch):
+    from httpx import AsyncClient, ASGITransport
+    from main import app
+    from app.services import notion_archive
+    from app.repositories import toc_entries as toc_repo
+
+    called: list = []
+
+    async def _fake_archive(job_id, *, force=False):
+        called.append((job_id, force))
+
+    monkeypatch.setattr(notion_archive, "archive_job", _fake_archive)
+
+    async with SessionLocal() as s:
+        batch, j1, j2 = await _seed_batch_with_two_done_jobs(s)
+        await toc_repo.set_notion_archived_job(s, j1.toc_entry_id, uuid4())  # j1 stale
+        await s.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://t") as ac:
+        r = await ac.post(f"/api/v1/jobs/batch/{batch.id}/retry-archive?stale=true")
+    assert r.status_code == 200
+    assert r.json()["queued"] == 1
+    # allow the backgrounded sweep to run
+    import asyncio as _a
+    for _ in range(50):
+        if called:
+            break
+        await _a.sleep(0.02)
+    assert called and called[0] == (j1.id, True)   # stale job, force=True

@@ -95,7 +95,7 @@ class BatchLaunchRequest(BaseModel):
 
 
 def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None = None,
-                    *, archived: int = 0, unarchived: int = 0) -> dict:
+                    *, archived: int = 0, unarchived: int = 0, stale: int = 0) -> dict:
     return {
         "batch_id": str(batch.id),
         "book_id": str(batch.book_id),
@@ -130,6 +130,7 @@ def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None 
         "session_limit_strategy": batch.session_limit_strategy,
         "archived": archived,
         "unarchived": unarchived,
+        "stale": stale,
     }
 
 
@@ -388,7 +389,8 @@ async def launch_batch(
     await session.commit()
 
     payload = _rollup_payload(batch, tally, book.original_filename,
-                              archived=archive["archived"], unarchived=archive["unarchived"])
+                              archived=archive["archived"], unarchived=archive["unarchived"],
+                              stale=archive["stale"])
     payload.update(jobs_created=created, jobs_adopted=adopted,
                    jobs_skipped=skipped, jobs_resumed=resumed,
                    rebill_warnings=rebill_warnings)
@@ -400,7 +402,8 @@ async def list_batches(session: AsyncSession = Depends(get_session)):
     rows = await batches_repo.list_with_rollups(session)
     return {"batches": [_rollup_payload(r["batch"], r["rollup"], r.get("original_filename"),
                                         archived=r["archive"]["archived"],
-                                        unarchived=r["archive"]["unarchived"])
+                                        unarchived=r["archive"]["unarchived"],
+                                        stale=r["archive"]["stale"])
                         for r in rows]}
 
 
@@ -414,7 +417,8 @@ async def get_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)
     archive = await batches_repo.archive_rollup_for_batch(session, batch_id)
     book = await books_repo.get(session, batch.book_id)
     return _rollup_payload(batch, tally, book.original_filename if book else None,
-                           archived=archive["archived"], unarchived=archive["unarchived"])
+                           archived=archive["archived"], unarchived=archive["unarchived"],
+                           stale=archive["stale"])
 
 
 @router.get("/jobs/batch/{batch_id}/cost")
@@ -497,12 +501,14 @@ async def unpause_batch(batch_id: UUID, session: AsyncSession = Depends(get_sess
 
 
 @router.post("/jobs/batch/{batch_id}/retry-archive")
-async def retry_archive_batch(batch_id: UUID, force: bool = False,
+async def retry_archive_batch(batch_id: UUID, force: bool = False, stale: bool = False,
                               session: AsyncSession = Depends(get_session)):
     """Re-push every done-but-unarchived lesson of a batch to Notion from the
     HEAD process. With `force=true`, sweep ALL done lessons (incl. already
     archived) and clear+rewrite stale leaf pages — the regen-wave refresh lever.
-    Backgrounded + idempotent; a second call while a sweep is in flight no-ops.
+    With `stale=true`, sweep ONLY the lessons whose page holds an older job's
+    output (targeted refresh) with force. Backgrounded + idempotent; a second
+    call while a sweep is in flight no-ops.
 
     Operational ordering: run force re-archive AFTER a regen wave has fully
     completed. The sweep takes the latest *done* job per lesson; if a replacement
@@ -515,12 +521,19 @@ async def retry_archive_batch(batch_id: UUID, force: bool = False,
         raise HTTPException(404, "batch not found")
     if batch_id in _REARCHIVE_TASKS:
         return {"batch_id": str(batch_id), "queued": 0, "already_running": True}
-    job_ids = (await batches_repo.done_job_ids(session, batch_id) if force
-               else await batches_repo.done_unarchived_job_ids(session, batch_id))
+    if stale:
+        job_ids = await batches_repo.done_stale_job_ids(session, batch_id)
+        sweep_force = True   # bypass the already-archived early-return + rewrite
+    elif force:
+        job_ids = await batches_repo.done_job_ids(session, batch_id)
+        sweep_force = True
+    else:
+        job_ids = await batches_repo.done_unarchived_job_ids(session, batch_id)
+        sweep_force = False
     if not job_ids:
         return {"batch_id": str(batch_id), "queued": 0, "already_running": False}
     _REARCHIVE_TASKS[batch_id] = asyncio.create_task(
-        _rearchive_sweep(batch_id, job_ids, force=force))
+        _rearchive_sweep(batch_id, job_ids, force=sweep_force))
     return {"batch_id": str(batch_id), "queued": len(job_ids), "already_running": False}
 
 
