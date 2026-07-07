@@ -17,6 +17,7 @@ import json
 from collections import defaultdict
 from typing import Any
 
+import asyncpg
 from loguru import logger as log
 from sqlalchemy import text
 
@@ -117,3 +118,105 @@ async def close(resource_id: str) -> None:
         await _notify(_encode(resource_id, _CLOSE_EVENT, {}))
     except Exception:
         log.exception(f"events_bus: NOTIFY(close) failed | resource={resource_id}")
+
+
+_listener_conn: "asyncpg.Connection | None" = None
+_listener_task: "asyncio.Task | None" = None
+_stopping = False
+_POLL_SECONDS = 5.0
+_BACKOFF_MAX = 30.0
+
+
+def _dsn_from(url: str) -> str:
+    """SQLAlchemy URL → raw asyncpg DSN (strip the +asyncpg driver marker)."""
+    return url.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+
+def _dsn() -> str:
+    from app.config import settings
+
+    return _dsn_from(settings.database_url)
+
+
+def _on_notify(conn, pid, channel, payload) -> None:
+    _dispatch(payload)
+
+
+async def _connect() -> "asyncpg.Connection":
+    conn = await asyncpg.connect(_dsn())
+    await conn.add_listener(CHANNEL, _on_notify)
+    return conn
+
+
+async def start_listener() -> None:
+    """Open this process's LISTEN connection and start the watchdog.
+
+    Raises on connect failure — startup must be loud: a silently dead
+    listener is exactly the frozen-"Queued"-chip bug this bus fixes.
+    """
+    global _listener_conn, _listener_task, _stopping
+    _stopping = False
+    _listener_conn = await _connect()
+    _listener_task = asyncio.create_task(_watchdog(), name="events-bus-listener")
+    log.info(f"events_bus: LISTEN {CHANNEL} up")
+
+
+async def _watchdog() -> None:
+    """Probe the LISTEN connection; reconnect with backoff, logging LOUDLY.
+
+    ``SELECT 1`` (not just ``is_closed``) forces detection of a socket that
+    died silently while idle — the listener can sit idle for hours.
+    """
+    global _listener_conn
+    while not _stopping:
+        await asyncio.sleep(_POLL_SECONDS)
+        if _stopping:
+            return
+        try:
+            conn = _listener_conn
+            if conn is None or conn.is_closed():
+                raise ConnectionError("listener connection closed")
+            await conn.fetchval("SELECT 1")
+            continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if _stopping:
+                return
+            log.error(
+                f"events_bus: LISTEN connection DOWN ({exc!r}) — live SSE is "
+                f"frozen on this pod until reconnect"
+            )
+        backoff = 1.0
+        while not _stopping:
+            try:
+                _listener_conn = await _connect()
+                log.success(f"events_bus: LISTEN {CHANNEL} reconnected")
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.error(
+                    f"events_bus: reconnect failed ({exc!r}); retrying in "
+                    f"{backoff:.0f}s"
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, _BACKOFF_MAX)
+
+
+async def stop_listener() -> None:
+    global _listener_conn, _listener_task, _stopping
+    _stopping = True
+    if _listener_task is not None:
+        _listener_task.cancel()
+        try:
+            await _listener_task
+        except asyncio.CancelledError:
+            pass
+        _listener_task = None
+    if _listener_conn is not None:
+        try:
+            if not _listener_conn.is_closed():
+                await _listener_conn.close()
+        finally:
+            _listener_conn = None

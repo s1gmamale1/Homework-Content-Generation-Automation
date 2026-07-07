@@ -1,4 +1,6 @@
 """Unit tests for the NOTIFY-backed events bus (codec + dispatch + publish)."""
+import asyncio
+import contextlib
 import json
 
 import pytest
@@ -165,3 +167,94 @@ async def test_publish_swallows_notify_failure(monkeypatch):
     monkeypatch.setattr(events_bus, "_notify", _boom)
     await events_bus.publish("job:x", "e", {})   # must not raise
     await events_bus.close("job:x")              # must not raise
+
+
+class _FakeConn:
+    def __init__(self):
+        self.closed = False
+        self.listeners: list = []
+
+    def is_closed(self):
+        return self.closed
+
+    async def add_listener(self, ch, cb):
+        self.listeners.append((ch, cb))
+
+    async def fetchval(self, sql):
+        if self.closed:
+            raise ConnectionError("dead socket")
+        return 1
+
+    async def close(self):
+        self.closed = True
+
+
+def test_dsn_from_strips_asyncpg_driver():
+    assert (
+        events_bus._dsn_from("postgresql+asyncpg://edu:edu@127.0.0.1:5433/edu_homework")
+        == "postgresql://edu:edu@127.0.0.1:5433/edu_homework"
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_listener_raises_on_connect_failure(monkeypatch):
+    # Startup failure must be VISIBLE — a silently dead listener reproduces
+    # the frozen-"Queued"-chip bug.
+    async def _refuse(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(events_bus.asyncpg, "connect", _refuse)
+    with pytest.raises(OSError):
+        await events_bus.start_listener()
+    assert events_bus._listener_task is None
+
+
+@pytest.mark.asyncio
+async def test_start_listener_listens_on_channel_and_stop_closes(monkeypatch):
+    fake = _FakeConn()
+
+    async def _connect_ok(*a, **k):
+        return fake
+
+    monkeypatch.setattr(events_bus.asyncpg, "connect", _connect_ok)
+    await events_bus.start_listener()
+    try:
+        assert fake.listeners and fake.listeners[0][0] == events_bus.CHANNEL
+        assert events_bus._listener_task is not None
+    finally:
+        await events_bus.stop_listener()
+    assert fake.closed
+    assert events_bus._listener_conn is None
+    assert events_bus._listener_task is None
+
+
+@pytest.mark.asyncio
+async def test_watchdog_reconnects_after_connection_drop(monkeypatch):
+    conns: list[_FakeConn] = []
+
+    async def _connect():
+        c = _FakeConn()
+        await c.add_listener(events_bus.CHANNEL, events_bus._on_notify)
+        conns.append(c)
+        return c
+
+    monkeypatch.setattr(events_bus, "_connect", _connect)
+    monkeypatch.setattr(events_bus, "_POLL_SECONDS", 0.01)
+    events_bus._stopping = False
+    events_bus._listener_conn = await _connect()
+    task = asyncio.create_task(events_bus._watchdog())
+    try:
+        conns[0].closed = True          # kill the first connection
+        for _ in range(200):            # wait ≤2s for the watchdog to react
+            await asyncio.sleep(0.01)
+            if len(conns) >= 2:
+                break
+        assert len(conns) >= 2, "watchdog never reconnected"
+        assert not conns[-1].is_closed()
+        assert events_bus._listener_conn is conns[-1]
+    finally:
+        events_bus._stopping = True
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        events_bus._listener_conn = None
