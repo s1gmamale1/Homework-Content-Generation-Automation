@@ -221,9 +221,18 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
   This is **selection-UX only** — the claim gate is unchanged (it already routes each job to a
   credentialed worker; this just makes that truth visible at pick time).
 - **Batches** (`batches` table + `POST /jobs/batch`): launch a whole book as one batch —
-  one job per lesson, fanned into the shared queue. Lessons that already have an active job
-  are skipped (or adopted, if they don't belong to a batch yet), so re-launching is a safe
-  "top-up." Progress rollups are computed on read, one vote per lesson. A whole batch can be
+  one job per lesson, fanned into the shared queue. **Lesson filter (worklog 0127):** when
+  no `toc_entry_ids` are given, the batch targets only rows the pure `toc_classifier` tags
+  `lesson` — chapter-header `N-§` umbrellas (which page-swallow their children → duplicate
+  packets), answer keys, tests, recalls, revisions, and misc back-matter are excluded by
+  default. `include_classes` widens the set (e.g. also launch `revision`); an explicit
+  `toc_entry_ids` pick (or the single-section `/generate`) stays **completely unfiltered**
+  (operator override). The class is computed on-the-fly at read time (no DB column), so it
+  self-heals when a TOC is edited; the launcher shows each row's class and an
+  excluded-by-class count. `preview` returns `target_count` + `excluded_by_class`. Lessons
+  that already have an active job are skipped (or adopted, if they don't belong to a batch
+  yet), so re-launching is a safe "top-up." Progress rollups are computed on read, one vote
+  per lesson. A whole batch can be
   **cancelled** (`POST /jobs/batch/{id}/cancel` → cancel *every* non-terminal job: pending +
   running, i.e. halt the batch), **resumed** (`POST /jobs/batch/{id}/resume` → re-enqueue
   failed/cancelled jobs, reusing already-`done` phases), or **manually paused / unpaused**
