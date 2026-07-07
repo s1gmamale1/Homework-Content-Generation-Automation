@@ -302,6 +302,34 @@ async def get_book_source_pdf(book_id: UUID):
     return FileResponse(path, media_type="application/pdf", filename="source.pdf")
 
 
+async def _refetch_book_event(book_id: UUID, event: str, marker: dict) -> dict:
+    """Rebuild an oversized bus event from the DB — toc_ready with 75+
+    enriched entries blows the ~8KB NOTIFY cap. Goes through the shared
+    _enriched_toc_entries helper so the refetched shape is byte-identical
+    to the inline/replay one (and composes with future changes to it)."""
+    hint = {k: v for k, v in marker.items() if k != "__refetch__"}
+    async with SessionLocal() as session:
+        # get_with_toc: _enriched_toc_entries iterates book.toc_entries (async
+        # ORM — lazy load raises MissingGreenlet)
+        book = await books_repo.get_with_toc(session, book_id)
+        if book is None:
+            return hint
+        if event in ("toc_ready", "toc_review"):
+            enriched = await _enriched_toc_entries(session, book)
+            data: dict = {"entries": [eo.model_dump(mode="json") for eo in enriched]}
+            if event == "toc_review":
+                # The live publisher's validation dict is small and usually
+                # survives inline — prefer it; fall back to the replay shape.
+                data["validation"] = hint.get("validation") or {
+                    "verdict": book.toc_validation,
+                    "detail": book.toc_validation_detail,
+                }
+            return data
+        if event == "error" and book.error_message:
+            return {**hint, "message": book.error_message}
+    return hint
+
+
 @router.get("/{book_id}/toc/stream")
 async def stream_toc(book_id: UUID, request: Request):
     resource_id = f"book:{book_id}"
@@ -359,7 +387,10 @@ async def stream_toc(book_id: UUID, request: Request):
                 payload = await q.get()
                 if payload is None:
                     break
-                yield {"event": payload["event"], "data": json.dumps(payload["data"])}
+                data = payload["data"]
+                if isinstance(data, dict) and data.get("__refetch__"):
+                    data = await _refetch_book_event(book_id, payload["event"], data)
+                yield {"event": payload["event"], "data": json.dumps(data)}
                 if payload["event"] in ("toc_ready", "toc_review", "error"):
                     break
         finally:

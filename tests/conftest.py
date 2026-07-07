@@ -15,6 +15,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 
 # Project root on sys.path so ``import app...`` resolves regardless of cwd.
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -30,3 +32,24 @@ os.environ.setdefault(
 )
 os.environ.setdefault("GEMINI_API_KEY", "test-key-not-used")
 os.environ.setdefault("AUTH_TOKEN", "")
+
+
+@pytest.fixture(autouse=True)
+def _loopback_events_bus(request, monkeypatch):
+    """Unit tests never open a DB connection (module docstring above) — but
+    the NOTIFY-backed events bus would. Route ``_notify`` (the ENCODED wire
+    payload, post-``_encode``) straight into the local dispatcher: old
+    in-process delivery semantics preserved, the real encode → wire-bytes →
+    dispatch path still exercised. ``@pytest.mark.real_events_bus`` opts out
+    (integration tests that need real pg_notify semantics); the cross-process
+    test's publisher is a subprocess outside pytest and is unaffected anyway."""
+    if request.node.get_closest_marker("real_events_bus"):
+        yield
+        return
+    from app.services import events_bus
+
+    async def _loopback(payload: str) -> None:
+        events_bus._dispatch(payload)
+
+    monkeypatch.setattr(events_bus, "_notify", _loopback)
+    yield
