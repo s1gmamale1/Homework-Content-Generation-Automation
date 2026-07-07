@@ -89,6 +89,9 @@ export interface TOCEntry {
   order_index: number;
   latest_job_id?: string | null;
   latest_job_status?: JobStatus | null;
+  /** Server-computed TOC row classification: "lesson" | "header" | "recall" |
+   *  "revision" | "test" | "other". The FE displays this — never re-derives it. */
+  entry_class: string | null;
 }
 
 export interface Book {
@@ -462,6 +465,10 @@ export interface BatchPreviewResponse {
   new: number;
   resumable: number;
   empty: number;
+  /** Count of TOC rows the launch would actually target (class-filtered). */
+  target_count?: number;
+  /** Rows excluded by class filtering, keyed by entry_class → count. */
+  excluded_by_class?: Record<string, number>;
 }
 
 /** Normal (mutating) launch response — extends BatchSummary with per-launch tallies. */

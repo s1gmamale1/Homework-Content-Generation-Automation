@@ -30,6 +30,7 @@ from app.services.agent_models import (
     validate_transport,
 )
 from app.services.flows import order_phase_selection, flow_for, selection_missing_prompts
+from app.services.toc_classifier import classify_entries, CLASSES
 
 router = APIRouter(tags=["batches"])
 
@@ -68,6 +69,10 @@ _DEFAULT_PROVIDER = "claude"
 class BatchLaunchRequest(BaseModel):
     book_id: UUID
     toc_entry_ids: Optional[list[UUID]] = None  # None = all lessons
+    # Class filter applied only when toc_entry_ids is None: None defaults to
+    # LESSON-only; an explicit list widens the set. Ignored (unfiltered) when
+    # toc_entry_ids is set — an explicit pick always wins.
+    include_classes: Optional[list[str]] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     transport: str = "cli"
@@ -147,14 +152,25 @@ async def launch_batch(
     if not lessons:
         raise HTTPException(422, "no lessons found for this book")
 
+    if body.include_classes is not None:
+        bad_classes = [c for c in body.include_classes if c not in CLASSES]
+        if bad_classes:
+            raise HTTPException(422, f"include_classes not recognized: {bad_classes}")
+
     by_id = {t.id: t for t in lessons}
+    excluded_by_class: dict[str, int] = {}
     if body.toc_entry_ids is not None:
         bad = [tid for tid in body.toc_entry_ids if tid not in by_id]
         if bad:
             raise HTTPException(422, f"toc_entry_ids not in this book: {bad}")
         targets = [by_id[tid] for tid in body.toc_entry_ids]
     else:
-        targets = lessons
+        classes = classify_entries(lessons)
+        wanted = set(body.include_classes) if body.include_classes is not None else {"lesson"}
+        targets = [t for t, c in zip(lessons, classes) if c in wanted]
+        for c in classes:
+            if c not in wanted:
+                excluded_by_class[c] = excluded_by_class.get(c, 0) + 1
 
     provider = body.provider or _DEFAULT_PROVIDER
     if not is_valid(provider, body.model):
@@ -278,7 +294,9 @@ async def launch_batch(
         return JSONResponse(
             status_code=200,
             content={"book_id": str(body.book_id), "preview": True,
-                     "new": new, "resumable": resumable, "empty": empty})
+                     "new": new, "resumable": resumable, "empty": empty,
+                     "target_count": len(targets),
+                     "excluded_by_class": excluded_by_class})
 
     batch = await batches_repo.get_or_create_for_book(
         session, book_id=body.book_id, subject=book.subject, grade=book.grade,

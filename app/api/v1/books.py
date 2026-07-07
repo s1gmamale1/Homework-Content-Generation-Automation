@@ -26,6 +26,7 @@ from app.services.agent_models import validate_output_language
 from app.services.flows import SUPPORTED_SUBJECTS
 from app.services.grade import derive_grade_from_filename
 from app.services.notion.client import NotionClientWrapper
+from app.services.toc_classifier import classify_entries
 
 
 class BookUpdateRequest(BaseModel):
@@ -477,9 +478,11 @@ async def _enriched_toc_entries(
     all-language aggregate for non-launcher callers.
     """
     latest = await jobs_repo.latest_by_section(session, book.id, output_language)
+    classes = classify_entries(book.toc_entries)
     entries: list[TOCEntryOut] = []
-    for e in book.toc_entries:
+    for i, e in enumerate(book.toc_entries):
         entry_out = TOCEntryOut.model_validate(e)
+        entry_out.entry_class = classes[i]
         job = latest.get(e.id)
         if job is not None:
             entry_out.latest_job_id = job.id

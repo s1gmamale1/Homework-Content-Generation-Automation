@@ -13,6 +13,7 @@ from app.repositories import launch_defaults as launch_defaults_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import TOCEntryOut
 from app.services import agent, events_bus
+from app.services.toc_classifier import classify_entries
 
 
 async def run(book_id: UUID, file_path: Path, subject: str) -> None:
@@ -119,6 +120,12 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
                 )
             await session.commit()
             entries_out = [TOCEntryOut.model_validate(r) for r in rows]
+            # Enrich with entry_class so the live SSE push matches the REST
+            # read path (app.api.v1.books._enriched_toc_entries) instead of
+            # emitting entry_class: null on every row.
+            classes = classify_entries(rows)
+            for eo, cls in zip(entries_out, classes):
+                eo.entry_class = cls
         log.info(
             f"[book {book_id}] entries persisted | count={len(rows)}"
         )

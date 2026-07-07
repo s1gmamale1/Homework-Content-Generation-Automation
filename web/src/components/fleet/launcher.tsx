@@ -546,6 +546,37 @@ const CARD_STATUS_META: Record<CardStatus, { label: string; cls: string }> = {
   complete: { label: "complete", cls: "bg-emerald-400/15 text-emerald-300" },
 };
 
+/** TOC row classes, in display order. Server-computed (`entry_class`) — the
+ *  FE only displays/filters on this value, never re-derives it. */
+const ALL_ENTRY_CLASSES = ["lesson", "header", "recall", "revision", "test", "other"] as const;
+
+const CLASS_META: Record<string, { label: string; chipCls: string }> = {
+  lesson: { label: "lesson", chipCls: "bg-white/[0.06] text-white/45" },
+  header: { label: "header", chipCls: "bg-slate-400/15 text-slate-300" },
+  recall: { label: "recall", chipCls: "bg-amber-400/10 text-amber-300/80" },
+  revision: { label: "revision", chipCls: "bg-amber-400/10 text-amber-300/80" },
+  test: { label: "test", chipCls: "bg-amber-400/10 text-amber-300/80" },
+  other: { label: "other", chipCls: "bg-slate-400/15 text-slate-300" },
+};
+
+/** Small muted tag showing a TOC row's server-served class. Quiet for
+ *  "lesson" (the default, expected case); a touch more distinct-but-quiet
+ *  for non-lesson classes so the operator can see why a row is excluded. */
+function ClassChip({ entryClass }: { entryClass: string | null }) {
+  const cls = entryClass ?? "lesson";
+  const m = CLASS_META[cls] ?? { label: cls, chipCls: "bg-white/[0.06] text-white/45" };
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide",
+        m.chipCls,
+      )}
+    >
+      {m.label}
+    </span>
+  );
+}
+
 function CardStatusChip({ status }: { status: CardStatus }) {
   const m = CARD_STATUS_META[status];
   return (
@@ -723,6 +754,11 @@ function ReadyCard({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // True while the preview fetch is in flight (launch button shows spinner).
   const [launching, setLaunching] = useState(false);
+  // TOC row classes the operator has opted into launching (beyond the
+  // LESSON-only default). Drives both the "remaining" count and the
+  // include_classes launch payload — never used to re-derive a row's class,
+  // only to filter on the server-served t.entry_class.
+  const [includeClasses, setIncludeClasses] = useState<Set<string>>(new Set(["lesson"]));
 
   const modelsQ = useQuery({
     queryKey: ["agent-models"],
@@ -747,9 +783,15 @@ function ReadyCard({
     queryFn: () => api.getBook(book.id, effectiveLang),
   });
   const toc = detail.data?.toc ?? [];
-  const lessons = detail.data?.toc?.length;
-  const doneCount = toc.filter((t) => t.latest_job_status === "done").length;
-  const activeCount = toc.filter(
+  // Rows the current class opt-in set would actually launch (LESSON-only by
+  // default). A row with no served entry_class (older data / null) is
+  // treated as "lesson" so pre-classification behavior doesn't regress.
+  const launchable = toc.filter((t) => includeClasses.has(t.entry_class ?? "lesson"));
+  // undefined while the TOC hasn't loaded yet (mirrors the old
+  // detail.data?.toc?.length semantics used by the "…" loading display).
+  const lessons = detail.data?.toc != null ? launchable.length : undefined;
+  const doneCount = launchable.filter((t) => t.latest_job_status === "done").length;
+  const activeCount = launchable.filter(
     (t) =>
       t.latest_job_status === "running" ||
       t.latest_job_status === "pending" ||
@@ -759,8 +801,8 @@ function ReadyCard({
   // Accurate per-book status from the book's own TOC. "generating" requires a
   // lesson actually in flight (activeCount) — NOT merely "has a job", since
   // failed/cancelled lessons are terminal and must not pulse "generating".
-  // "complete" needs EVERY lesson done; otherwise the book is launchable
-  // (nothing-yet, or partial/failed → re-launch the remaining).
+  // "complete" needs EVERY launchable lesson done; otherwise the book is
+  // launchable (nothing-yet, or partial/failed → re-launch the remaining).
   const cardStatus: CardStatus = complete
     ? "complete"
     : activeCount > 0
@@ -769,6 +811,14 @@ function ReadyCard({
   // A plain re-launch skips done + in-flight sections and creates jobs only for
   // the rest (failed / never-run / cancelled) — that's the "remaining" count.
   const remaining = Math.max(0, (lessons ?? 0) - doneCount - activeCount);
+  // Rows hidden by the current class filter, tallied by their served class —
+  // this counts served entry_class values (display only, not re-derivation).
+  const excludedByClass = toc.reduce<Record<string, number>>((acc, t) => {
+    const cls = t.entry_class ?? "lesson";
+    if (!includeClasses.has(cls)) acc[cls] = (acc[cls] ?? 0) + 1;
+    return acc;
+  }, {});
+  const excludedCount = Object.values(excludedByClass).reduce((a, b) => a + b, 0);
   const subset = choosing && selected.size > 0;
   const pct = lessons && lessons > 0 ? Math.round((doneCount / lessons) * 100) : 0;
   const [from, to] = accentOf(book.subject);
@@ -889,7 +939,7 @@ function ReadyCard({
       ? { toc_entry_ids: opts.tocIds }
       : subset
         ? { toc_entry_ids: [...selected] }
-        : {}),
+        : { include_classes: [...includeClasses] }),
     ...(opts.force ? { force: true } : {}),
     ...(opts.relaunch_mode ? { relaunch_mode: opts.relaunch_mode } : {}),
   });
@@ -1130,6 +1180,51 @@ function ReadyCard({
                 )}
               </div>
 
+              {/* Class opt-in — which TOC row classes count toward a normal
+                  launch. "lesson" is on by default; toggling others widens
+                  the launch (and the remaining/target counts) without
+                  requiring a hand-picked subset. */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className={LBL}>Include</span>
+                {ALL_ENTRY_CLASSES.map((cls) => {
+                  const on = includeClasses.has(cls);
+                  return (
+                    <button
+                      key={cls}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() =>
+                        setIncludeClasses((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(cls)) next.delete(cls);
+                          else next.add(cls);
+                          return next;
+                        })
+                      }
+                      className={cn(
+                        "rounded-md px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide transition-colors",
+                        on
+                          ? "bg-[#7c5cff]/25 text-white"
+                          : "bg-white/[0.05] text-white/40 hover:text-white/70",
+                      )}
+                    >
+                      {CLASS_META[cls]?.label ?? cls}
+                    </button>
+                  );
+                })}
+              </div>
+              {/* Excluded-by-class breakdown — the operator's audit trail for
+                  why the launch count is lower than the raw TOC length.
+                  Computed from served entry_class values only. */}
+              {excludedCount > 0 && (
+                <p className="text-[0.68rem] leading-snug text-white/35">
+                  {excludedCount} row{excludedCount === 1 ? "" : "s"} hidden —{" "}
+                  {Object.entries(excludedByClass)
+                    .map(([cls, n]) => `${n} ${CLASS_META[cls]?.label ?? cls}`)
+                    .join(" · ")}
+                </p>
+              )}
+
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
@@ -1348,6 +1443,9 @@ function ReadyCard({
                               #{t.order_index}
                             </span>
                             <span className="min-w-0 truncate">{t.section_title}</span>
+                            {t.entry_class && t.entry_class !== "lesson" && (
+                              <ClassChip entryClass={t.entry_class} />
+                            )}
                             <span className="ml-auto shrink-0 text-[10px] text-emerald-400/80">
                               done
                             </span>
@@ -1398,6 +1496,9 @@ function ReadyCard({
                             #{t.order_index}
                           </span>
                           <span className="min-w-0 truncate">{t.section_title}</span>
+                          {t.entry_class && t.entry_class !== "lesson" && (
+                            <ClassChip entryClass={t.entry_class} />
+                          )}
                           {t.latest_job_status === "failed" && (
                             <span className="ml-auto shrink-0 text-[10px] text-rose-400/80">
                               failed

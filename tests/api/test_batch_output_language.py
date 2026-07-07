@@ -35,6 +35,9 @@ _FAKE_SECTION = SimpleNamespace(
     id=SECTION_ID,
     book_id=BOOK_ID,
     title="Lesson 1",
+    section_title="Lesson 1",
+    page_start=None,
+    page_end=None,
 )
 
 _HDR = {"Authorization": "Bearer 123"}
