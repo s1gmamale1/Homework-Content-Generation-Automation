@@ -680,6 +680,18 @@ Key endpoints:
 simpler. One quirk: the browser's `EventSource` can't send auth headers, so the stream/
 download routes accept the token as a `?token=` query param instead of a `Bearer` header.
 
+**Cross-process delivery.** The event bus (`app/services/events_bus.py`) is backed by
+Postgres `LISTEN/NOTIFY` on a single `hw_events` channel, not an in-process dict — a
+publish from any process (a standalone worker pod as much as the API process itself)
+reaches every SSE subscriber regardless of which process it's connected to. Each process
+holds one dedicated LISTEN connection, opened in `main.lifespan` (raises loudly if it can't
+connect), with a 5s watchdog probe and 1→30s backoff reconnect. Payloads over 7000 encoded
+bytes collapse to a `__refetch__` marker (a few small hint fields still ride along) instead
+of overflowing NOTIFY's payload limit; the SSE endpoints rebuild the full event from the DB
+on receipt — jobs from `phase_outputs` + `job.error_message`, books via the shared
+`_enriched_toc_entries`. `close()` itself travels as a reserved `__close__` event so the
+stream ends cleanly across processes too.
+
 ### Auth
 Bearer token (`Authorization: Bearer <token>`), or `?token=` for the streaming/download
 routes. Valid tokens are a comma-separated list in the `AUTH_TOKEN` env var. **Empty
