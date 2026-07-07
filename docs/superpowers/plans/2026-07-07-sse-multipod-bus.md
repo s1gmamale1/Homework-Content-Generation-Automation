@@ -355,14 +355,18 @@ git commit -m "sse: payload codec (inline/refetch marker, byte-measured) + local
 
 The delivery flip: `publish()`/`close()` send NOTIFY via the pooled engine — no direct local-queue put. The conftest loopback keeps the existing unit suite DB-free while exercising the real encode→dispatch path.
 
+**C1 (approval condition):** pg_notify is transactional — it fires on commit of whatever transaction it runs in and is silently DROPPED on rollback. `_notify` must therefore run on its own short-lived committed connection (`engine.begin()` acquires a fresh pooled connection and commits on exit), never enlisted in an ambient caller session/transaction — a publish riding a caller's long transaction is delayed until that commit (frozen chips in a subtler costume) or vanishes on rollback. Publishers already publish post-commit, so this is belt-and-suspenders — pinned by an integration test (Step 4a below) because it's the kind of invariant that silently rots.
+
 **Files:**
 - Modify: `app/services/events_bus.py`
 - Modify: `tests/conftest.py`
+- Modify: `pyproject.toml` (register the `real_events_bus` pytest marker)
 - Modify: `tests/services/test_events_bus.py` (append tests)
+- Modify: `tests/integration/test_events_bus_crossproc.py` (append the C1 test — runs GREEN in Task 7, after the listener exists)
 
 **Interfaces:**
 - Consumes: `_encode`/`_dispatch` from Task 2.
-- Produces: `_notify(payload: str) -> None` (the seam the conftest loopback and Task 4's listener complement); `publish`/`close` now NOTIFY-only. Task 6's endpoints rely on refetch markers arriving in queues exactly as `_dispatch` shapes them.
+- Produces: `_notify(payload: str) -> None` (the seam the conftest loopback and Task 4's listener complement); `publish`/`close` now NOTIFY-only; `@pytest.mark.real_events_bus` (opts a test out of the loopback). Task 6's endpoints rely on refetch markers arriving in queues exactly as `_dispatch` shapes them.
 
 - [ ] **Step 1: Write the failing tests (append to `tests/services/test_events_bus.py`)**
 
@@ -480,21 +484,72 @@ Append at the end (add `import pytest` to the imports):
 
 ```python
 @pytest.fixture(autouse=True)
-def _loopback_events_bus(monkeypatch):
+def _loopback_events_bus(request, monkeypatch):
     """Unit tests never open a DB connection (module docstring above) — but
-    the NOTIFY-backed events bus would. Route ``_notify`` straight into the
-    local dispatcher: old in-process delivery semantics preserved, real
-    encode → dispatch path still exercised. The cross-process integration
-    test is unaffected (its publisher is a subprocess outside pytest)."""
+    the NOTIFY-backed events bus would. Route ``_notify`` (the ENCODED wire
+    payload, post-``_encode``) straight into the local dispatcher: old
+    in-process delivery semantics preserved, the real encode → wire-bytes →
+    dispatch path still exercised. ``@pytest.mark.real_events_bus`` opts out
+    (integration tests that need real pg_notify semantics); the cross-process
+    test's publisher is a subprocess outside pytest and is unaffected anyway."""
+    if request.node.get_closest_marker("real_events_bus"):
+        yield
+        return
     from app.services import events_bus
 
     async def _loopback(payload: str) -> None:
         events_bus._dispatch(payload)
 
     monkeypatch.setattr(events_bus, "_notify", _loopback)
+    yield
+```
+
+Register the marker in `pyproject.toml` under the existing `[tool.pytest.ini_options]`:
+
+```toml
+markers = [
+    "real_events_bus: opt out of the conftest _notify loopback (needs real pg_notify)",
+]
 ```
 
 Also update the conftest module docstring's claim if needed — it stays true (still no real DB), just note the bus loopback.
+
+- [ ] **Step 4a: Append the C1 transactional-isolation test to `tests/integration/test_events_bus_crossproc.py`**
+
+Proves `_notify` commits on its own connection: delivery happens while an unrelated ambient session transaction is still OPEN in the same process, and that transaction's later rollback doesn't retract the event. (Uses `start_listener` via the same `getattr` pattern; first runs GREEN in Task 7 — at Task 3 time the listener doesn't exist yet, and the canonical suite skips it.)
+
+```python
+@pytest.mark.real_events_bus
+@pytest.mark.asyncio
+async def test_publish_fires_despite_unrelated_open_transaction():
+    """C1: pg_notify is transactional — fires on commit, dropped on rollback.
+    publish() must run it on its own short-lived committed connection, never
+    enlisted in an ambient caller transaction (which would delay delivery
+    until that commit, or swallow it on rollback)."""
+    from sqlalchemy import text
+
+    from app.db import SessionLocal
+    from app.services import events_bus
+
+    start = getattr(events_bus, "start_listener", None)
+    stop = getattr(events_bus, "stop_listener", None)
+    if start is not None:
+        await start()
+    rid = f"job:{uuid4()}"
+    q = events_bus.subscribe(rid)
+    try:
+        async with SessionLocal() as s:
+            await s.execute(text("SELECT 1"))   # ambient tx now OPEN, never committed
+            await events_bus.publish(rid, "phase_started", {"phase_order": 1})
+            # Delivered BEFORE the ambient tx resolves → publish did not enlist.
+            got = await asyncio.wait_for(q.get(), timeout=10)
+            assert got == {"event": "phase_started", "data": {"phase_order": 1}}
+            await s.rollback()                  # and rollback can't retract it
+    finally:
+        events_bus.unsubscribe(rid, q)
+        if stop is not None:
+            await stop()
+```
 
 - [ ] **Step 5: Run the bus tests, then the full suite**
 
@@ -506,8 +561,8 @@ Expected: green, same count as base + new tests. If any test fails because it re
 - [ ] **Step 6: Commit**
 
 ```bash
-git add app/services/events_bus.py tests/services/test_events_bus.py tests/conftest.py
-git commit -m "sse: publish/close go NOTIFY-only via pooled engine; conftest loopback keeps unit suite DB-free"
+git add app/services/events_bus.py tests/services/test_events_bus.py tests/conftest.py pyproject.toml tests/integration/test_events_bus_crossproc.py
+git commit -m "sse: publish/close go NOTIFY-only via pooled engine (own committed tx — C1) + conftest loopback + C1 integration test"
 ```
 
 ---
@@ -1145,7 +1200,7 @@ export DATABASE_URL='postgresql+asyncpg://macmini5@127.0.0.1:5432/edu_scratch_ss
 RUN_DB_INTEGRATION=1 uv run python -m pytest tests/integration/test_events_bus_crossproc.py -v
 ```
 
-Expected: PASS — subprocess publisher → NOTIFY → this process's listener → queue: small event inline, oversized `toc_ready` as `__refetch__` marker, `close()` sentinel crossing processes. This is the plan's acceptance gate (two local processes against the scratch DB, pipeline-shaped events, oversized payload — no paid calls, no fleet dependency).
+Expected: PASS — **both** tests in the file: the cross-process test (subprocess publisher → NOTIFY → this process's listener → queue: small event inline, oversized `toc_ready` as `__refetch__` marker, `close()` sentinel crossing processes) and the C1 transactional-isolation test (delivery while an unrelated ambient transaction is open; rollback can't retract). This is the plan's acceptance gate (two local processes against the scratch DB, pipeline-shaped events, oversized payload — no paid calls, no fleet dependency).
 
 Caveats: run from the worktree with `DATABASE_URL` **exported** (worktree stale-`.env` trap — env wins over `.env` because `load_dotenv(override=False)`); assert the failure/pass is from worktree code if anything looks off (`python -c "from app.services import agent; print(agent.__file__)"`).
 
