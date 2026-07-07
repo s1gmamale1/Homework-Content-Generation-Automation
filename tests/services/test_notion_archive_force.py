@@ -37,7 +37,10 @@ async def test_archive_job_force_pushes_with_replace_on_already_archived(monkeyp
     monkeypatch.setattr(na.settings, "notion_api_key", "ntn_x")
     job = _done_archived_job()
     book = SimpleNamespace(grade="8", original_filename="8-sinf.pdf", id=job.book_id)
-    section = SimpleNamespace(id=job.toc_entry_id, section_number="1", section_title="L")
+    section = SimpleNamespace(
+        id=job.toc_entry_id, section_number="1", section_title="L",
+        notion_homework_page_id=None, notion_archived_job_id=None,
+    )
     phase = SimpleNamespace(phase_name="case-based-preview", status="done", output_md="# CBP")
 
     session = AsyncMock()
@@ -51,6 +54,7 @@ async def test_archive_job_force_pushes_with_replace_on_already_archived(monkeyp
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \
+         patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()), \
          patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()) as set_arch, \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
          patch.object(na, "_push_with_retry", AsyncMock(return_value="hw_page")) as push:

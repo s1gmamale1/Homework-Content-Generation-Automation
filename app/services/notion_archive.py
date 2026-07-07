@@ -262,6 +262,27 @@ async def archive_job(job_id: UUID, *, force: bool = False) -> None:
                 return
             section_id = section.id
             lesson_title = _lesson_title(section.section_number, section.section_title)
+            # A leaf page under 'Generated Homeworks' is always our own output
+            # (no human-page adoption — see module docstring), so a regen may
+            # safely clear+rewrite it. first_archive: never filed this lesson
+            # (we set the page id only when we archive). auto_replace fires only
+            # when the page holds a DIFFERENT job's content AND this job is
+            # strictly NEWER than it — an older job re-archiving (e.g. operator
+            # retry on a pre-regen job whose push failed) must never clobber a
+            # newer page with stale content. force (operator override) is the
+            # only direction-blind path.
+            first_archive = section.notion_homework_page_id is None
+            prior_job_id = section.notion_archived_job_id
+            auto_replace = False
+            if prior_job_id is not None and prior_job_id != job_id:
+                prior_job = await jobs_repo.get(session, prior_job_id)
+                if prior_job is not None and job.created_at > prior_job.created_at:
+                    auto_replace = True
+                else:
+                    log.warning(
+                        "notion: job %s is not newer than stamped job %s on section %s "
+                        "— keeping skip (no auto-replace)",
+                        job_id, prior_job_id, section_id)
             phase_md = {
                 p.phase_name: (p.output_md or "")
                 for p in await phase_repo.list_for_job(session, job_id)
@@ -276,6 +297,8 @@ async def archive_job(job_id: UUID, *, force: bool = False) -> None:
                 await session.commit()
             return
 
+        do_replace = force or auto_replace
+
         client = NotionClientWrapper(api_key=settings.notion_api_key)
         try:
             homework_id = await _push_with_retry(
@@ -283,7 +306,7 @@ async def archive_job(job_id: UUID, *, force: bool = False) -> None:
                 subject_page_id=subject_page_id,
                 lesson_title=lesson_title,
                 phase_md=phase_md,
-                replace=force,
+                replace=do_replace,
             )
         except Exception as exc:  # noqa: BLE001 - push exhausted retries; record + give up
             log.warning("notion: push failed for job %s after %d attempts (non-fatal)",
@@ -293,6 +316,8 @@ async def archive_job(job_id: UUID, *, force: bool = False) -> None:
 
         async with SessionLocal() as session:
             await toc_repo.set_notion_homework_page_id(session, section_id, homework_id)
+            if first_archive or do_replace:
+                await toc_repo.set_notion_archived_job(session, section_id, job_id)
             await jobs_repo.set_notion_archived(session, job_id, _utcnow())
             await session.commit()
         log.info("notion: archived job %s → Homework page %s", job_id, homework_id)

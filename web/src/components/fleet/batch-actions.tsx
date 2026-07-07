@@ -60,8 +60,22 @@ export function BatchActions({ batch }: { batch: BatchSummary }) {
     onError: (e) => toast.error(e instanceof Error ? e.message : "Action failed"),
   });
 
+  const refreshStaleMut = useMutation({
+    mutationFn: () => api.retryArchiveBatch(batch.batch_id, { stale: true }),
+    onSuccess: (res) => {
+      toast.success(
+        res.already_running
+          ? "Re-archive already running"
+          : `Refreshing ${res.queued} stale page(s) in Notion`,
+      );
+      qc.invalidateQueries({ queryKey: ["batches"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Action failed"),
+  });
+
   const canRearchive = batch.unarchived > 0;
-  if (!canPause && !isPaused && !canCancel && !canRetry && !canRearchive) return null;
+  const canRefreshStale = batch.stale > 0;
+  if (!canPause && !isPaused && !canCancel && !canRetry && !canRearchive && !canRefreshStale) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -151,6 +165,23 @@ export function BatchActions({ batch }: { batch: BatchSummary }) {
             <CloudUpload className="size-3.5" />
           )}
           Re-archive ({batch.unarchived})
+        </button>
+      )}
+
+      {canRefreshStale && (
+        <button
+          type="button"
+          className={cn(GHOST_BTN, PRESSABLE, FRAME_OFF, "h-7 px-2 text-xs text-amber-300/80 hover:text-amber-200 border-amber-500/30 hover:border-amber-400/50 disabled:opacity-50")}
+          disabled={refreshStaleMut.isPending}
+          title={`Refresh ${batch.stale} stale Notion page(s) — clears + rewrites pages whose content is from an older regen (head PC)`}
+          onClick={() => refreshStaleMut.mutate()}
+        >
+          {refreshStaleMut.isPending ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <CloudUpload className="size-3.5" />
+          )}
+          Refresh stale ({batch.stale})
         </button>
       )}
     </div>

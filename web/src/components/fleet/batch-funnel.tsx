@@ -66,6 +66,9 @@ function TransportRow({
       {batch.archived + batch.unarchived > 0 && (
         <div className="text-[0.7rem] text-white/45">
           Notion archive · {batch.archived}/{batch.archived + batch.unarchived}
+          {batch.stale > 0 && (
+            <span className="text-amber-400"> · {batch.stale} stale</span>
+          )}
         </div>
       )}
 

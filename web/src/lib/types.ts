@@ -419,6 +419,8 @@ export interface BatchSummary {
   /** Notion archive progress for the batch's done lessons (batch re-archive). */
   archived: number;
   unarchived: number;
+  /** Archived lessons whose Notion page holds an OLDER job's output (regen husks). */
+  stale: number;
 }
 
 export interface BatchLessonRow {

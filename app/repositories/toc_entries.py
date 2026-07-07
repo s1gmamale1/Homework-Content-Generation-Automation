@@ -96,6 +96,17 @@ async def set_notion_homework_page_id(
     entry.notion_homework_page_id = page_id
 
 
+async def set_notion_archived_job(
+    session: AsyncSession, toc_entry_id: UUID, job_id: UUID
+) -> None:
+    """Stamp which homework_job's content is currently on the lesson's Notion
+    page. Set only when archive_job actually writes (first archive or replace)."""
+    entry = await session.get(TOCEntry, toc_entry_id)
+    if entry is None:
+        return
+    entry.notion_archived_job_id = job_id
+
+
 async def update(
     session: AsyncSession,
     toc_entry_id: UUID,

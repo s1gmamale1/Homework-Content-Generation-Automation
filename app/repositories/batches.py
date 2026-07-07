@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.batch import Batch
 from app.models.book import Book
 from app.models.homework_job import HomeworkJob
+from app.models.toc_entry import TOCEntry
 
 
 async def get_or_create_for_book(
@@ -127,12 +128,17 @@ async def rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dict[str, i
 
 async def archive_rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dict[str, int]:
     """Among the batch's `done` lessons (latest job per toc_entry), split by
-    Notion archive state: {"archived": n, "unarchived": m}. Mirrors
-    rollup_for_batch's DISTINCT-ON latest-per-lesson so retries don't double-count."""
+    Notion archive state: {"archived": n, "unarchived": m, "stale": k}. `stale`
+    is the subset of `archived` whose Notion page still holds an OLDER job's
+    output (toc_entries.notion_archived_job_id != this latest job's id) — e.g.
+    after a regen that hasn't been re-archived yet. Mirrors rollup_for_batch's
+    DISTINCT-ON latest-per-lesson so retries don't double-count."""
     latest = (
         select(
+            HomeworkJob.id.label("job_id"),
             HomeworkJob.status.label("status"),
             HomeworkJob.notion_archived_at.label("notion_archived_at"),
+            HomeworkJob.toc_entry_id.label("toc_entry_id"),
         )
         .where(HomeworkJob.batch_id == batch_id)
         .order_by(HomeworkJob.toc_entry_id, HomeworkJob.created_at.desc())
@@ -141,12 +147,24 @@ async def archive_rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dic
     )
     rows = (
         await session.execute(
-            select(latest.c.notion_archived_at).where(latest.c.status == "done")
+            select(
+                latest.c.job_id,
+                latest.c.notion_archived_at,
+                TOCEntry.notion_archived_job_id,
+            )
+            .join(TOCEntry, TOCEntry.id == latest.c.toc_entry_id)
+            .where(latest.c.status == "done")
         )
     ).all()
-    archived = sum(1 for (ts,) in rows if ts is not None)
-    unarchived = sum(1 for (ts,) in rows if ts is None)
-    return {"archived": archived, "unarchived": unarchived}
+    archived = sum(1 for r in rows if r.notion_archived_at is not None)
+    unarchived = sum(1 for r in rows if r.notion_archived_at is None)
+    stale = sum(
+        1 for r in rows
+        if r.notion_archived_at is not None
+        and r.notion_archived_job_id is not None
+        and r.notion_archived_job_id != r.job_id
+    )
+    return {"archived": archived, "unarchived": unarchived, "stale": stale}
 
 
 async def done_unarchived_job_ids(session: AsyncSession, batch_id: UUID) -> list[UUID]:
@@ -194,6 +212,37 @@ async def done_job_ids(session: AsyncSession, batch_id: UUID) -> list[UUID]:
         await session.execute(
             select(latest.c.job_id)
             .where(latest.c.status == "done")
+            .order_by(latest.c.toc_entry_id)
+        )
+    ).all()
+    return [r.job_id for r in rows]
+
+
+async def done_stale_job_ids(session: AsyncSession, batch_id: UUID) -> list[UUID]:
+    """Latest job per toc_entry that is `done` and archived, but whose page holds
+    an OLDER job's output (toc_entries.notion_archived_job_id != this job). The
+    targeted worklist for the operator 'refresh stale' sweep — a subset of
+    done_job_ids, so a force-refresh rewrites only the husks, not all pages."""
+    latest = (
+        select(
+            HomeworkJob.id.label("job_id"),
+            HomeworkJob.status.label("status"),
+            HomeworkJob.notion_archived_at.label("notion_archived_at"),
+            HomeworkJob.toc_entry_id.label("toc_entry_id"),
+        )
+        .where(HomeworkJob.batch_id == batch_id)
+        .order_by(HomeworkJob.toc_entry_id, HomeworkJob.created_at.desc())
+        .distinct(HomeworkJob.toc_entry_id)
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(latest.c.job_id)
+            .join(TOCEntry, TOCEntry.id == latest.c.toc_entry_id)
+            .where(latest.c.status == "done")
+            .where(latest.c.notion_archived_at.is_not(None))
+            .where(TOCEntry.notion_archived_job_id.is_not(None))
+            .where(TOCEntry.notion_archived_job_id != latest.c.job_id)
             .order_by(latest.c.toc_entry_id)
         )
     ).all()

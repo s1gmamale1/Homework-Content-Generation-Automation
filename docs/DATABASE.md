@@ -2,7 +2,7 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Last updated: branch `Nggaev-v2`, head `0043_solver_role_columns`
+> Last updated: branch `Nggaev-v2`, head `0045_notion_archived_job`
 > (0043), 2026-07-06. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
@@ -29,7 +29,7 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`0043_solver_role_columns`** (0028 = enum CHECK constraints,
+also runs it on deploy). Current head: **`0045_notion_archived_job`** (0028 = enum CHECK constraints,
 0029 = `phase_outputs.judge_status`, 0030 = `agent_usages.cache_creation_tokens`,
 0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton,
 0033 = `custom_prompts`/`selected_phases` JSONB on `homework_jobs`+`batches`,
@@ -112,6 +112,7 @@ Relationship: `toc_entries` (cascade delete-orphan, ordered by `order_index`).
 | `page_start` / `page_end` | Integer NULL | |
 | `order_index` | Integer NOT NULL | display + drill-in sort key; `ix_toc_entries_book_id_order (book_id, order_index)` |
 | `notion_homework_page_id` | String(128) NULL | set when the homework was archived to Notion |
+| `notion_archived_job_id` | UUID NULL (no FK) | migration 0045 — which `homework_jobs.id` produced the content currently on the Notion page; written only when `archive_job` actually writes (first archive or replace); drives auto-replace-own-older-output + the batch `stale` rollup; NULL = never archived by us or a pre-0129 husk |
 
 ### 3.3 `homework_jobs` — one row per generation request (also the queue)
 
@@ -452,7 +453,10 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 | 39 | 0039_launch_defaults_content | `0039_launch_defaults_content` | adds `content_provider`, `content_model`, `content_transport` to `launch_defaults`; seeds `gemini`/`gemini-2.5-pro`/`inherit` (deliberately different from judge default to avoid self-grade guard on all-gemini fleet) |
 | 40 | 0040_books_source_language | `0040_books_source_language` | adds `books.source_language` String(8) NOT NULL server_default `'uz'` + DB CHECK `ck_books_source_language IN ('uz','ru','en')` |
 | 41 | 0041_sa_keys | `0041_sa_keys` | adds `sa_keys` table (UUID PK, `original_filename`, `project_id`, `client_email`, `sha256` UNIQUE, `byte_size`, `label` NULL, `created_at`) + `sa_key_assignments` table (`hostname` PK, `key_id` FK→sa_keys ondelete=RESTRICT NULL, `scrub_requested_at` NULL, `updated_at`) |
-| 42 | 0042_books_toc_validation | `0042_books_toc_validation` | adds `books.toc_validation` String(16) NULL + DB CHECK `NULL\|verified\|mismatch\|skipped` and `books.toc_validation_detail` Text NULL — vision-validator verdict + explanation columns (worklog 0108) — **HEAD** |
+| 42 | 0042_books_toc_validation | `0042_books_toc_validation` | adds `books.toc_validation` String(16) NULL + DB CHECK `NULL\|verified\|mismatch\|skipped` and `books.toc_validation_detail` Text NULL — vision-validator verdict + explanation columns (worklog 0108) |
+| 43 | 0043_solver_role_columns | `0043_solver_role_columns` | adds per-role solver columns: `homework_jobs.solver_transport`/`solver_provider`/`solver_model` + CHECK, `batches` same trio, `launch_defaults` solver trio (seed gemini/gemini-3.1-pro-preview/inherit), `phase_outputs.solver_status` (CQ-C, worklog 0112) |
+| 44 | 0044_solver_boss_toggle | `0044_solver_boss_toggle` | adds `launch_defaults.solver_boss_arena_enabled` BOOL NOT NULL server_default true — live /settings toggle for boss-arena answer-key solving (worklog 0126) |
+| 45 | 0045_notion_archived_job | `0045_notion_archived_job` | adds `toc_entries.notion_archived_job_id` UUID NULL (no FK) — producing-job stamp for the Notion archive: auto-replace-own-older-output + `stale` rollup (worklog 0129) — **HEAD** |
 
 ---
 
