@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -35,6 +35,8 @@ class LaunchDefaults(Base):
     solver_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     solver_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     solver_transport: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    solver_boss_arena_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"))
     updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     __table_args__ = (
