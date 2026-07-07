@@ -24,7 +24,7 @@ OTHER = "other"
 
 CLASSES = frozenset({LESSON, HEADER, RECALL, REVISION, TEST, OTHER})
 
-_APOSTROPHE_VARIANTS = ("ʼ", "’", "`")
+_APOSTROPHE_VARIANTS = ("ʼ", "’", "`", "‘", "ʻ")
 
 
 def _normalize(text: str) -> str:
@@ -42,12 +42,15 @@ _REVISION_KEYWORDS = (
     "bobga doir mashqlar",
     "bobni takrorlash",
     "повторение",
+    "упражнения к главе",
+    "упражнения для повторения",
 )
 
 _TEST_KEYWORDS = (
     "nazorat",
     "bilimingizni sinab",
     "sinov",
+    "тестовые задания",
 )
 
 _OTHER_KEYWORDS = (
@@ -59,6 +62,12 @@ _OTHER_KEYWORDS = (
     "atamalar",
     "lug'at",
     "mundarija",
+    "o'ylab ko'ring",
+    "qo'shimcha topshiriq",
+    "baholash dasturiga oid",
+    "mantiqiy topshiriq",
+    "исторические",
+    "межпредметные",
 )
 
 # Prefix-at-word-boundary (not whole-word): deliberately matches Uzbek
