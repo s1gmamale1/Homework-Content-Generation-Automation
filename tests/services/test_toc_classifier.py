@@ -126,6 +126,32 @@ def test_containment_not_header_with_only_one_child():
     assert result[2] == tc.LESSON
 
 
+def test_single_page_duplicate_ranges_do_not_flip_to_header():
+    # Pathological edge: several single-page rows sharing an IDENTICAL [p, p]
+    # range mutually "contain" each other under the raw page-bounds check
+    # (each is <= and >= the others). A containment HEADER candidate must
+    # span MORE THAN ONE page (a chapter umbrella always does), so none of
+    # these plain single-page lessons may flip to `header`.
+    row_a = _row("1.1-mavzu Something", section_number="1.1", page_start=5, page_end=5)
+    row_b = _row("1.2-mavzu Something else", section_number="1.2", page_start=5, page_end=5)
+    row_c = _row("1.3-mavzu Third thing", section_number="1.3", page_start=5, page_end=5)
+    result = tc.classify_entries([row_a, row_b, row_c])
+    assert result == [tc.LESSON, tc.LESSON, tc.LESSON]
+
+
+def test_normal_multipage_parent_still_becomes_header_with_guard():
+    # No-regression companion to the guard above: a genuine multi-page
+    # chapter umbrella (page_end > page_start) containing >=2 children must
+    # still classify HEADER.
+    parent = _row("1-bob. Algebra", section_number="1", page_start=1, page_end=50)
+    child_a = _row("1.1-mavzu", section_number="1.1", page_start=1, page_end=10)
+    child_b = _row("1.2-mavzu", section_number="1.2", page_start=11, page_end=20)
+    result = tc.classify_entries([parent, child_a, child_b])
+    assert result[0] == tc.HEADER
+    assert result[1] == tc.LESSON
+    assert result[2] == tc.LESSON
+
+
 def test_none_page_end_on_parent_is_not_header():
     parent = _row("1-bob. Algebra", section_number="1", page_start=1, page_end=None)
     child_a = _row("1.1-mavzu", section_number="1.1", page_start=1, page_end=10)

@@ -8,7 +8,7 @@ SQLAlchemy ``TOCEntry`` rows; tests use lightweight synthetic objects).
 
 Precedence (first match wins):
     1. Keyword match on ``section_title`` (recall / revision / test / other)
-    2. Page-containment HEADER (a row that strictly contains >=2 later rows)
+    2. Page-containment HEADER (a row that strictly contains >=2 other rows)
     3. ALL-CAPS + single-page residual -> other (a divider)
     4. Default -> lesson
 """
@@ -132,8 +132,17 @@ def classify_entries(entries) -> list[str]:
     # already got a keyword class (e.g. a "recall"/"revision"/"test" child
     # still counts as a contained child of its chapter umbrella) -- undercounting
     # by restricting to keyword-unclassified rows was the original bug.
+    # A candidate must span MORE THAN ONE page: a chapter umbrella always
+    # does. Without this, several single-page rows sharing an identical
+    # [p, p] range mutually satisfy the <=/>= containment check against each
+    # other, and a real lesson could false-flip to `header` (the worst
+    # outcome — silent exclusion from generation).
     containment_candidates = [
-        i for i in remaining_indices if rows[i].page_start is not None and rows[i].page_end is not None
+        i
+        for i in remaining_indices
+        if rows[i].page_start is not None
+        and rows[i].page_end is not None
+        and rows[i].page_end > rows[i].page_start
     ]
     for i in containment_candidates:
         row_a = rows[i]

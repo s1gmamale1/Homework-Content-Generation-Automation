@@ -34,7 +34,7 @@ _DEFAULT_LAUNCH_DEFAULTS = SimpleNamespace(
     toc_transport="cli",
 )
 
-_FAKE_ENTRY = SimpleNamespace(section_title="Lesson 1")
+_FAKE_ENTRY = SimpleNamespace(section_title="Lesson 1", page_start=None, page_end=None)
 
 
 def _fake_toc_entry_out():

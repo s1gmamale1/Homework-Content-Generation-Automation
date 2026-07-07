@@ -115,7 +115,7 @@ async def test_reextract_clears_before_insert(monkeypatch):
         return list(entries)
 
     async def fake_extract_toc(**kw):
-        return SimpleNamespace(entries=[SimpleNamespace(section_title="L1")])
+        return SimpleNamespace(entries=[SimpleNamespace(section_title="L1", page_start=None, page_end=None)])
 
     monkeypatch.setattr(toc_extractor.toc_repo, "delete_for_book", fake_delete_for_book)
     monkeypatch.setattr(toc_extractor.toc_repo, "bulk_create", fake_bulk_create)
@@ -136,7 +136,7 @@ async def test_nonzero_entries_still_marks_ready(monkeypatch):
     statuses, bulk_calls, events = _patch_common(monkeypatch)
 
     async def fake_extract_toc(**kw):
-        return SimpleNamespace(entries=[SimpleNamespace(section_title="L1")])
+        return SimpleNamespace(entries=[SimpleNamespace(section_title="L1", page_start=None, page_end=None)])
 
     monkeypatch.setattr(toc_extractor.agent, "extract_toc", fake_extract_toc)
     # bulk_create returns ORM-ish rows; TOCEntryOut.model_validate is called on them.
@@ -151,6 +151,53 @@ async def test_nonzero_entries_still_marks_ready(monkeypatch):
     assert "toc_ready" in names
     assert "failed" not in names
     assert len(bulk_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_published_entries_carry_entry_class(monkeypatch):
+    """The toc_ready SSE payload must carry a populated entry_class per row,
+    same as the REST read path (app.api.v1.books._enriched_toc_entries) — the
+    two must not drift (the live push used to emit entry_class: null)."""
+    statuses, bulk_calls, events = _patch_common(monkeypatch)
+    published: list[tuple[str, dict]] = []
+
+    async def fake_publish(rid, ev, data):
+        published.append((ev, data))
+
+    monkeypatch.setattr(toc_extractor.events_bus, "publish", fake_publish)
+
+    row_id = uuid4()
+
+    async def fake_extract_toc(**kw):
+        return SimpleNamespace(entries=[SimpleNamespace(section_title="1.1 Lesson One")])
+
+    async def fake_bulk_create(session, book_id, entries):
+        bulk_calls.append(entries)
+        # Real bulk_create returns ORM-ish TOCEntry rows; a plain lesson
+        # title with no page bounds classifies to `lesson`.
+        return [
+            SimpleNamespace(
+                id=row_id,
+                chapter_number=None,
+                chapter_title=None,
+                section_number=None,
+                section_title="1.1 Lesson One",
+                page_start=None,
+                page_end=None,
+                order_index=0,
+            )
+        ]
+
+    monkeypatch.setattr(toc_extractor.agent, "extract_toc", fake_extract_toc)
+    monkeypatch.setattr(toc_extractor.toc_repo, "bulk_create", fake_bulk_create)
+
+    await toc_extractor.run(uuid4(), Path("/nonexistent.pdf"), "math-algebra")
+
+    ready_events = [data for ev, data in published if ev == "toc_ready"]
+    assert len(ready_events) == 1
+    entries_payload = ready_events[0]["entries"]
+    assert len(entries_payload) == 1
+    assert entries_payload[0]["entry_class"] == "lesson"
 
 
 @pytest.mark.asyncio
@@ -169,7 +216,7 @@ async def test_reads_provider_model_transport_from_launch_defaults(monkeypatch):
 
     async def fake_extract_toc(**kw):
         seen.update(kw)
-        return SimpleNamespace(entries=[SimpleNamespace(section_title="L1")])
+        return SimpleNamespace(entries=[SimpleNamespace(section_title="L1", page_start=None, page_end=None)])
 
     monkeypatch.setattr(toc_extractor.agent, "extract_toc", fake_extract_toc)
     monkeypatch.setattr(
