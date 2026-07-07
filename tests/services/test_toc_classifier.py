@@ -55,7 +55,13 @@ def test_test_keywords():
 
 
 def test_test_word_boundary_prefix_match_but_not_midword():
-    rows = [_row("Testlar"), _row("Test"), _row("Kontekst")]
+    # Positive: "Testlar"/"Test" match via \btest (prefix-at-word-boundary,
+    # deliberately catches Uzbek plural/case forms). Negative: "Protest
+    # harakatlari" genuinely contains "test" MID-WORD (preceded by a word
+    # char, "pro"), so \b must reject it -- unlike the old "Kontekst"
+    # negative, which contained no "test" substring at all and passed
+    # vacuously regardless of the \b guard.
+    rows = [_row("Testlar"), _row("Test"), _row("Protest harakatlari")]
     result = tc.classify_entries(rows)
     assert result[0] == tc.TEST
     assert result[1] == tc.TEST
@@ -77,7 +83,7 @@ def test_other_keywords():
     assert tc.classify_entries(rows) == [tc.OTHER] * len(titles)
 
 
-def test_apostrophe_variants_both_map_to_other():
+def test_apostrophe_variants_all_three_map_to_other():
     rows = [_row("Lug'at"), _row("Lugʼat"), _row("Lug`at")]
     assert tc.classify_entries(rows) == [tc.OTHER, tc.OTHER, tc.OTHER]
 
@@ -91,6 +97,22 @@ def test_containment_header_with_two_children():
     assert result[0] == tc.HEADER
     assert result[1] == tc.LESSON
     assert result[2] == tc.LESSON
+
+
+def test_containment_counts_keyword_classified_children_too():
+    # Regression: a parent's contained-child count must include rows that
+    # already matched a keyword class in Pass 1 (e.g. a recall row), not
+    # only rows left unclassified after Pass 1. Otherwise a chapter with
+    # one plain lesson child + one "Eslang!" recall child undercounts to 1
+    # and is misclassified as `lesson` instead of `header`.
+    parent = _row("1-bob. Algebra", section_number="1", page_start=1, page_end=50)
+    child_a = _row("1.1-mavzu", section_number="1.1", page_start=1, page_end=10)
+    child_b = _row("Eslang! Oldingi mavzu", section_number="1.2", page_start=11, page_end=20)
+    rows = [parent, child_a, child_b]
+    result = tc.classify_entries(rows)
+    assert result[0] == tc.HEADER
+    assert result[1] == tc.LESSON
+    assert result[2] == tc.RECALL
 
 
 def test_containment_not_header_with_only_one_child():

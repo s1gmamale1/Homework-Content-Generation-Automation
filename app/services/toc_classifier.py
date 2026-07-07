@@ -61,6 +61,12 @@ _OTHER_KEYWORDS = (
     "mundarija",
 )
 
+# Prefix-at-word-boundary (not whole-word): deliberately matches Uzbek
+# plural/case forms like "Testlar"/"Testga", which are real test sections.
+# Known cross-subject edge, accepted for now (this classifier is math-scope):
+# any word STARTING with "test" also matches, e.g. biology's "Testosteron"
+# would be misclassified as `test`. Flagged for the Task-5 fixture
+# calibration to catch if such titles ever appear in practice.
 _TEST_WORD_RE = re.compile(r"\btest")
 
 
@@ -87,13 +93,14 @@ def _is_single_page(page_start, page_end) -> bool:
     return page_start is not None and page_end is not None and page_end == page_start
 
 
-def classify_entries(entries) -> list:
+def classify_entries(entries) -> list[str]:
     """Classify a sequence of duck-typed TOC rows.
 
     Returns a list of class strings aligned to ``entries`` in INPUT order.
-    Containment (HEADER) detection needs sibling comparison, so this sorts a
-    working copy by page range internally, but always returns results indexed
-    back to the original input order.
+    Containment (HEADER) detection does a pairwise scan over the original
+    row indices (each candidate row against every other row) rather than
+    sorting by page range; the input is never reordered, so results are
+    already aligned to the original input order.
     """
     rows = list(entries)
     n = len(rows)
@@ -109,15 +116,20 @@ def classify_entries(entries) -> list:
         else:
             remaining_indices.append(i)
 
-    # Pass 2: page-containment HEADER, only among rows not already classified
-    # by keyword and that carry usable page bounds.
+    # Pass 2: page-containment HEADER. A row is only ELIGIBLE to BE a header
+    # if it wasn't itself keyword-classified in Pass 1 (keyword precedence
+    # holds) and carries usable page bounds. But the CHILDREN counted toward
+    # the >=2 threshold are drawn from ALL other rows, including ones that
+    # already got a keyword class (e.g. a "recall"/"revision"/"test" child
+    # still counts as a contained child of its chapter umbrella) -- undercounting
+    # by restricting to keyword-unclassified rows was the original bug.
     containment_candidates = [
         i for i in remaining_indices if rows[i].page_start is not None and rows[i].page_end is not None
     ]
     for i in containment_candidates:
         row_a = rows[i]
         contained_count = 0
-        for j in remaining_indices:
+        for j in range(n):
             if j == i:
                 continue
             row_b = rows[j]
