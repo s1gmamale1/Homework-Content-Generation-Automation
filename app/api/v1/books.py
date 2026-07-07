@@ -309,7 +309,9 @@ async def _refetch_book_event(book_id: UUID, event: str, marker: dict) -> dict:
     to the inline/replay one (and composes with future changes to it)."""
     hint = {k: v for k, v in marker.items() if k != "__refetch__"}
     async with SessionLocal() as session:
-        book = await books_repo.get(session, book_id)
+        # get_with_toc: _enriched_toc_entries iterates book.toc_entries (async
+        # ORM — lazy load raises MissingGreenlet)
+        book = await books_repo.get_with_toc(session, book_id)
         if book is None:
             return hint
         if event in ("toc_ready", "toc_review"):

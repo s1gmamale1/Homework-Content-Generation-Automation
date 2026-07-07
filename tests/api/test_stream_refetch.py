@@ -84,12 +84,17 @@ async def test_refetch_book_event_rebuilds_toc_ready_via_enriched_helper():
     entry = MagicMock()
     entry.model_dump.return_value = {"section_title": "L1", "order_index": 0}
     with patch.object(books_mod, "SessionLocal", lambda: _FakeSession()), \
-         patch.object(books_mod.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(books_mod.books_repo, "get_with_toc",
+                      AsyncMock(return_value=book)) as get_with_toc, \
          patch.object(books_mod, "_enriched_toc_entries",
                       AsyncMock(return_value=[entry])) as enriched:
         data = await books_mod._refetch_book_event(
             bid, "toc_ready", {"__refetch__": True}
         )
+    # MUST fetch via get_with_toc (selectinload) — a plain books_repo.get has no
+    # toc_entries relationship loaded and MissingGreenlet's on the lazy access
+    # inside _enriched_toc_entries under the async ORM.
+    get_with_toc.assert_awaited_once()
     enriched.assert_awaited_once()   # MUST go through the shared helper
     assert data == {"entries": [{"section_title": "L1", "order_index": 0}]}
 
@@ -102,7 +107,7 @@ async def test_refetch_book_event_toc_review_keeps_inline_validation():
     entry.model_dump.return_value = {"section_title": "L1", "order_index": 0}
     inline_validation = {"verdict": "warn", "issues": ["dup pages"]}
     with patch.object(books_mod, "SessionLocal", lambda: _FakeSession()), \
-         patch.object(books_mod.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(books_mod.books_repo, "get_with_toc", AsyncMock(return_value=book)), \
          patch.object(books_mod, "_enriched_toc_entries", AsyncMock(return_value=[entry])):
         data = await books_mod._refetch_book_event(
             bid, "toc_review", {"__refetch__": True, "validation": inline_validation}
