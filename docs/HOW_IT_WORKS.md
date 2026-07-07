@@ -627,9 +627,13 @@ Key endpoints:
   or already-archived job. **`?force=true`** (0114) overrides the already-archived 409 and
   **refreshes stale content**: each machine leaf page (Case-Based Preview, Flashcards, Boss Arena,
   Reflection, the game leaves) is **cleared and rewritten** (`replace` mode → `clear_content_blocks`
-  deletes the leaf's non-`child_page` blocks, then re-appends) instead of skipped. Use after a
-  regen — force-regen mints a fresh job whose auto-archive skips the still-populated page, so the
-  page keeps the old content until a force refresh. Structure, container pages, and human sub-pages
+  deletes the leaf's non-`child_page` blocks, then re-appends) instead of skipped. Since 0129 the
+  automatic archive **self-heals the regen case**: `archive_job` stamps the producing job on the
+  lesson (`toc_entries.notion_archived_job_id`) whenever it writes, and auto-replaces its OWN older
+  output when a strictly newer job (by `created_at`) archives over it — direction-guarded, so an
+  older job re-archiving (e.g. a retried pre-regen push) never clobbers a newer page; a stamp-NULL
+  populated page (pre-0129 husk, or anything we can't prove we produced) keeps the safe skip.
+  `force=true` remains the only direction-blind override. Structure, container pages, and human sub-pages
   are preserved; a manual annotation added *as a block on a generated leaf* is replaced (block
   provenance isn't stored — deletion happens only on this explicit operator action). The force push
   is **backgrounded** (0116): the endpoint returns an immediate `{job_id, queued, already_running}`
@@ -642,11 +646,16 @@ Key endpoints:
   `NOTION_SUBJECT_PAGES`). Backgrounded (`asyncio.create_task` → a sequential `_rearchive_sweep`)
   and idempotent; returns immediately with `{queued, already_running}`. **`?force=true`** (0114)
   sweeps **all** `done` lessons (incl. already-archived, via `done_job_ids`) and clears+rewrites
-  their stale leaf pages — the regen-wave refresh lever. **Run it AFTER the regen wave completes:**
-  the sweep takes the latest *done* job per lesson, so a still-running replacement isn't picked up,
-  and once it later finishes its own auto-archive skips-if-populated → the page goes stale again.
-  The Monitor surfaces a "Notion archive · X/Y" chip and a "Re-archive (N)" button (from the
-  `archived`/`unarchived` rollup counts) whenever a batch has un-archived lessons — the fix for a
+  their stale leaf pages — the blanket refresh lever (also the one-time remediation for pre-0129
+  stamp-NULL husks). **`?stale=true`** (0129) is the targeted version: sweeps only the lessons
+  whose page provably holds an OLDER job's output (`done_stale_job_ids` — latest done job per
+  lesson ≠ the stamped `toc_entries.notion_archived_job_id`), with force. Run sweeps AFTER a regen
+  wave completes: a still-running replacement isn't picked up — though since 0129 a late-finishing
+  newer job's own auto-archive replaces the stale page itself, so the manual lever is now backstop,
+  not the primary path. The archive rollup splits `{archived, unarchived, stale}` (stale = strict
+  stamp-mismatch subset of archived; NULL stamps never count). The Monitor surfaces a
+  "Notion archive · X/Y" chip with an amber "· N stale" suffix, a "Re-archive (N)" button for
+  un-archived lessons, and a "Refresh stale (N)" button for the targeted sweep — the fix for a
   worker that ran a whole book without `NOTION_SUBJECT_PAGES`. (Only succeeds if the head's own
   mapping covers that `subject|grade|language`, else it re-records the same skip reason.)
 - `GET /jobs/{id}/download` — download the packet as a ZIP of one markdown file per completed
