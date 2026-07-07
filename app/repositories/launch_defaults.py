@@ -15,6 +15,7 @@ _MUTABLE = (
     "toc_transport",
     "output_language",
     "content_provider", "content_model", "content_transport",
+    "solver_boss_arena_enabled",
 )
 
 
