@@ -2,6 +2,7 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import ForeignKey, Index, Integer, String, Text
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, Timestamps, UUIDPK
@@ -25,6 +26,11 @@ class TOCEntry(Base, UUIDPK, Timestamps):
     page_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
     notion_homework_page_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # The homework_jobs.id whose content is currently on the Notion page. Set by
+    # notion_archive.archive_job when it writes (first archive or replace); used
+    # to auto-replace our own older output after a regen and to compute the
+    # batch "stale" rollup. NULL = never archived by us, or a pre-stamp husk.
+    notion_archived_job_id: Mapped[Optional[UUID]] = mapped_column(PgUUID(as_uuid=True), nullable=True)
 
     book: Mapped["Book"] = relationship(back_populates="toc_entries")
 
