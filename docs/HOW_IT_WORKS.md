@@ -224,8 +224,10 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
   one job per lesson, fanned into the shared queue. **Lesson filter (worklog 0127):** when
   no `toc_entry_ids` are given, the batch targets only rows the pure `toc_classifier` tags
   `lesson` — chapter-header `N-§` umbrellas (which page-swallow their children → duplicate
-  packets), answer keys, tests, recalls, revisions, and misc back-matter are excluded by
-  default. `include_classes` widens the set (e.g. also launch `revision`); an explicit
+  packets), answer keys, tests, recalls, revisions, **practice sessions (0130: labs,
+  practicals, standalone problem-solving rows — incl. bare «Masalalar yechish» on math
+  books, an intended flip)**, and misc back-matter are excluded by
+  default. `include_classes` widens the set (e.g. also launch `revision` or `practice`); an explicit
   `toc_entry_ids` pick (or the single-section `/generate`) stays **completely unfiltered**
   (operator override). The class is computed on-the-fly at read time (no DB column), so it
   self-heals when a TOC is edited; the launcher shows each row's class and an
