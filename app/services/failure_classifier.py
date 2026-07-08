@@ -31,7 +31,9 @@ _TRANSIENT = (
     "timed out",
     "timeout",
     "overloaded",
+    "502",  # Bad Gateway — transient upstream/proxy blip (same family as 503)
     "503",
+    "504",  # Gateway Timeout — transient upstream, retryable like 502/503
     "try again",
 )
 _WALL = (

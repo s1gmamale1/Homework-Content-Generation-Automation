@@ -7,6 +7,15 @@ def test_transient_server_shed():
     assert fc.classify("gemini CLI exited rc=1 :: socket connection closed unexpectedly") == "transient"
 
 
+def test_gateway_errors_are_transient():
+    # 502/503/504 are the same family of transient upstream-gateway blips —
+    # all must retry, not fail the job on 1 hard-retry (real: an api reflection
+    # job died on a 502 Bad Gateway from the gemini endpoint).
+    assert fc.classify("gemini api call failed rc=1: 502 Bad Gateway") == "transient"
+    assert fc.classify("gemini api call failed rc=1: 503 Service Unavailable") == "transient"
+    assert fc.classify("gemini api call failed rc=1: 504 Gateway Timeout") == "transient"
+
+
 def test_not_your_usage_limit_is_transient_not_wall():
     # 'not your usage limit' contains the 'usage limit' wall substring — transient must win.
     assert fc.classify("Rate limited (not your usage limit)") == "transient"
