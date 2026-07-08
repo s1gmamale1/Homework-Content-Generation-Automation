@@ -22,7 +22,7 @@ class TOCEntryOut(BaseModel):
     # Populated by /api/v1/books/{id} so the TOC list shows a per-row indicator.
     latest_job_id: Optional[UUID] = None
     latest_job_status: Optional[str] = None
-    # Row class (lesson/header/recall/revision/test/other), computed on-the-fly
+    # Row class (lesson/header/recall/practice/revision/test/other), computed on-the-fly
     # by app.services.toc_classifier at read time — no DB column, so it
     # self-heals on TOC edits. Populated by _enriched_toc_entries.
     entry_class: Optional[str] = None
