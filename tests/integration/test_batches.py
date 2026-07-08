@@ -177,6 +177,37 @@ async def test_adopt_orphan_job():
 
 
 @pytest.mark.asyncio
+async def test_resume_adopts_batch_id():
+    # A FAILED job with NULL batch_id (e.g. a pre-existing job from an earlier
+    # era / single /generate) is not 'active', so a batch launch RESUMES it via
+    # reset_for_retry — which must stamp the new batch so the resumed job shows
+    # in the Monitor rollup instead of running invisibly (live: G6 math Part 2).
+    from app.db import SessionLocal
+    from app.models.homework_job import HomeworkJob
+    from app.repositories import jobs as jobs_repo
+    book_id, toc_ids = await _seed_book("r", n=5)
+    try:
+        async with SessionLocal() as s:
+            j = await jobs_repo.create(s, book_id=book_id, toc_entry_id=toc_ids[0],
+                                       subject="math-algebra", output_language="uz")
+            j.status = "failed"
+            j.batch_id = None
+            await s.commit()
+            resumed_id = j.id
+        async with _client() as c:
+            r = await c.post("/api/v1/jobs/batch", headers=_HDR, json={"book_id": str(book_id)})
+            assert r.status_code == 201, r.text
+            assert r.json()["jobs_resumed"] >= 1
+            bid = r.json()["batch_id"]
+        async with SessionLocal() as s:
+            resumed = await s.get(HomeworkJob, resumed_id)
+            assert resumed.status == "pending", "resumed job is re-queued"
+            assert str(resumed.batch_id) == bid, "resumed job must adopt the batch (was NULL)"
+    finally:
+        await _cleanup(book_id)
+
+
+@pytest.mark.asyncio
 async def test_concurrent_launch_one_batch():
     from app.db import SessionLocal
     from app.models.batch import Batch

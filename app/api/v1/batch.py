@@ -361,7 +361,7 @@ async def launch_batch(
             output_language=res_output_language)
         if (latest is not None and latest.status in ("failed", "cancelled")
                 and body.relaunch_mode != "discard"):
-            await jobs_repo.reset_for_retry(session, latest.id)   # reuses done phases
+            await jobs_repo.reset_for_retry(session, latest.id, batch_id=batch.id)   # reuses done phases + adopts batch
             resumed += 1
             continue
         # brand-new section, OR discard mode → fresh job (discard leaves the old

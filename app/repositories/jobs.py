@@ -219,7 +219,7 @@ async def set_notion_skip_reason(
 
 
 async def reset_for_retry(
-    session: AsyncSession, job_id: UUID
+    session: AsyncSession, job_id: UUID, batch_id: Optional[UUID] = None
 ) -> Optional[HomeworkJob]:
     """Reset a failed job back to 'pending' so the worker can re-claim it.
 
@@ -228,6 +228,13 @@ async def reset_for_retry(
     fresh attempt rather than counting it against `queue_max_attempts`. The
     pipeline is idempotent against existing phase rows (`phase_repo.create_or_reset`
     handles the upsert), so no phase-output cleanup is needed here.
+
+    ``batch_id``: when a batch launch RESUMES a prior failed/cancelled job into
+    a batch, stamp that batch so the resumed job is counted in the batch rollup
+    (Monitor) and reachable by batch-level controls. Without this, a resumed job
+    keeps its old (often NULL) batch_id and runs invisibly to the batch — the
+    only-stamp-if-provided guard keeps non-batch resumes (single /generate)
+    untouched.
 
     Returns the updated row, or None if the job no longer exists.
     """
@@ -240,6 +247,8 @@ async def reset_for_retry(
     job.started_at = None
     job.completed_at = None
     job.attempts = 0
+    if batch_id is not None:
+        job.batch_id = batch_id
     return job
 
 
