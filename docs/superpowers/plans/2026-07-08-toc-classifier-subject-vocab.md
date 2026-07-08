@@ -16,6 +16,7 @@
 
 - **New `practice` class** (user-locked 2026-07-08): lab/practical/problem-solving rows get their own class + FE chip so operators can deliberately re-include them (`include_classes`). Server-side `batch.py` validation follows `CLASSES` automatically; FE needs its two mirrored constants updated (`launcher.tsx:551` `ALL_ENTRY_CLASSES`, `:554` `CLASS_META`) — an unknown class renders via fallback but can never be checkbox-included, so the mirror update is load-bearing.
 - **`masalalar yechish` must be whole-title-anchored, NOT substring** (verified against the shipped fixture): g8alg "Kvadrat tenglamalar yordamida masalalar yechish" and g8geo "…masalalar yechishning koordinatalar usuli" are TRUE LESSONS that contain the phrase. Physics's 11 non-lesson rows are bare whole-title «Masalalar yechish». Same reason `amaliy mashg'ulot` stays exact (g8geo lesson "Amaliy mashq va tatbiq" must not match).
+- **C1 (GK2 fold-in, blocking): bare «Masalalar yechish» is reclassified lesson→practice on MATH books too, not just physics — intended, and a behavior change from today.** Real §-numbered bare rows exist in G9-Geometriya (`1bc43831` order_index 22/25/32 = §23/26/33, printed-mundarija-verified) and G11 Matematika (P1 `9bc1ad5e` #6 §15-17, #11 §33-36; P2 `bd7b2d6b` #2 §52-56). A standalone problem-solving section is practice, not a new-concept lesson; LESSON-only launches will skip them (G9-geo default launch targets ~52 rows instead of 55 — the 3 move to the opt-in `practice` class). The fixture pins these real rows with a deliberate `practice` label (targeted decision-pin subsets, Task 2) so the flip is a decision, not an accident. **Operator note for the worklog: flag this so the row-count drop isn't read as a regression.**
 - **The wishlist over-counted the misses.** Ran the shipped classifier over all 293 stored rows: «…bobni takrorlash uchun test topshiriqlari» (×5), «Umumlashtiruvchi takrorlash», «Ilovalar», «…javoblari» are ALREADY caught by existing keywords. True misses: physics ×23, biology ×7, english ×12, geografiya ×2, kimyo/history 0. Keywords added are only the ones with verified misses (+ RU parity for lab/practice, unambiguous).
 - **English culture/life-skills pages are keyword-undetectable in STORED rows** ("Scotland", "British TV Around the World", "ICT Literacy: …", "Social Responsibility: …", "Emotional Skills: …" — the printed TOC's "Life Skills"/"Culture" prefixes were dropped at extraction). No deterministic rule → label them `other` in the fixture and add them to the `accepted_false_inclusions` allowlist (junk→lesson direction: visible in packet list, operator deselects). The wishlist's `life skills`/`culture` keywords are dropped — they can't match anything stored.
 - **Homoglyph fold** (wishlist item 2): fold Cyrillic lookalikes (а е о с р х у і ѕ ј → Latin) inside `_normalize`, applied to BOTH titles and keyword tables at import (symmetric fold keeps RU keywords matching RU titles). Note: the geografiya homoglyph claim did NOT reproduce in current stored rows (0 mixed-script titles across all 6 G8 books) — this is cheap defensive hardening against future extractions, not a live bug fix.
@@ -31,6 +32,7 @@ Post-change classifier over the 293 stored rows must newly exclude exactly:
 - **english** (`d463c690`): revision #3,10,17 («Review N (Units …)»); other #18,19,20,21 (Extra Activities / Vocabulary List / Grammar Reference and Practice / List of Irregular Verbs). #2,6,9,13,16 stay predicted-lesson (allowlisted).
 - **geografiya** (`f249da59`): practice #36,58 («Amaliy mashg'ulot», dars-numbered!).
 - **kimyo/history**: no change (all lesson except history has none non-lesson).
+- **C1 math flip (intended behavior change)**: G9-Geometriya (`1bc43831`) #22,25,32 (§23/26/33) and G11 Matematika P1 (`9bc1ad5e`) #6,#11 / P2 (`bd7b2d6b`) #2 — bare «Masalalar yechish» rows flip lesson→**practice** (excluded from default LESSON-only launch, re-includable via the practice checkbox). Suffix-form math lessons («…yordamida masalalar yechish» etc.) must NOT flip anywhere.
 
 Everything already-excluded stays excluded; ZERO true-lesson rows flip (gate (a) of the accuracy test).
 
@@ -344,6 +346,22 @@ BOOKS = [
     ("g8hist", "5e295cbc-c2a9-4552-924d-d1a3a5ee28bb", "G8 Tarix (uz)"),
 ]
 
+# C1 (GK2 fold-in): targeted decision-pin SUBSETS — only the bare
+# «Masalalar yechish» rows from real MATH books, deliberately labeled
+# `practice` so the lesson→practice flip on math is a pinned decision,
+# not an accident. NOT full books (row lists are partial by design).
+SUBSET_BOOKS = [
+    ("g9geo_my", "1bc43831-12a6-48c8-bd8d-8290d64ff000",
+     "G9 Geometriya (uz) — TARGETED SUBSET: bare «Masalalar yechish» decision pin (C1)",
+     (22, 25, 32), "practice"),
+    ("g11mat_my_p1", "9bc1ad5e-b7c9-4eb4-896b-081329bd5287",
+     "G11 Matematika P1 (uz) — TARGETED SUBSET: bare «Masalalar yechish» decision pin (C1)",
+     (6, 11), "practice"),
+    ("g11mat_my_p2", "bd7b2d6b-87bf-42f8-8be6-5b628c90c190",
+     "G11 Matematika P2 (uz) — TARGETED SUBSET: bare «Masalalar yechish» decision pin (C1)",
+     (2,), "practice"),
+]
+
 # Hand labels (2026-07-08, verified against printed TOCs + stored rows).
 # key -> {order_index: true_class}; every other row is "lesson".
 OVERRIDES = {
@@ -439,10 +457,24 @@ def main():
             r["true_class"] = overrides.get(r["order_index"], "lesson")
         data["books"].append({"key": key, "label": label, "rows": rows})
 
+    for key, book_id, label, indices, true_class in SUBSET_BOOKS:
+        assert key not in existing_keys, f"duplicate book key {key}"
+        rows = [r for r in fetch_rows(book_id) if r["order_index"] in indices]
+        assert len(rows) == len(indices), f"{key}: expected {indices}, got {[r['order_index'] for r in rows]}"
+        for r in rows:
+            # These MUST all be bare whole-title «Masalalar yechish» rows —
+            # guard against TOC re-extraction having shifted order_index.
+            assert r["section_title"].strip().lower().startswith("masalalar yechish"), (
+                f"{key} #{r['order_index']}: unexpected title {r['section_title']!r}"
+            )
+            r["true_class"] = true_class
+        data["books"].append({"key": key, "label": label, "rows": rows})
+
     data["_meta"]["accepted_false_inclusions"].extend(NEW_ALLOWLIST)
     data["_meta"]["source"] += (
-        "; extended 2026-07-08 with 6 G8 non-math books (edu_copy real toc_entries, "
-        "hand-labeled — toc-classifier-subject-vocab-1)"
+        "; extended 2026-07-08 with 6 G8 non-math books + 3 targeted math subsets "
+        "pinning bare-«Masalalar yechish»→practice on G9-geo/G11 (C1) "
+        "(edu_copy real toc_entries, hand-labeled — toc-classifier-subject-vocab-1)"
     )
     FIXTURE.write_text(
         json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
@@ -454,14 +486,14 @@ def main():
 main()
 ```
 
-Expected stdout: `books=11 total rows=545`
+Expected stdout: `books=14 total rows=551`
 
-- [ ] **Step 2: Eyeball the diff** — `git diff --stat tests/services/fixtures/toc_classifier_labels.json` shows only additions; spot-check that `g8phys` #4 is `practice`, `g8eng` #6 (`Scotland`) is `other`, `g8kim`/`g8hist` rows are all `lesson`.
+- [ ] **Step 2: Eyeball the diff** — `git diff --stat tests/services/fixtures/toc_classifier_labels.json` shows only additions; spot-check that `g8phys` #4 is `practice`, `g8eng` #6 (`Scotland`) is `other`, `g8kim`/`g8hist` rows are all `lesson`, and the three C1 subset books (`g9geo_my`, `g11mat_my_p1`, `g11mat_my_p2`) carry exactly 3+2+1 bare «Masalalar yechish» rows labeled `practice`.
 
 - [ ] **Step 3: Run the accuracy gate**
 
 Run: `uv run python -m pytest tests/services/test_toc_classifier_accuracy.py -q -s`
-Expected: PASS. Printed accuracy = 539/545 ≈ 0.989 (6 accepted false-inclusions: g7alg#0 + 5×g8eng). ZERO false-exclusions. g8geo (geometriya) count assertion unaffected.
+Expected: PASS. Printed accuracy = 545/551 ≈ 0.989 (6 accepted false-inclusions: g7alg#0 + 5×g8eng). ZERO false-exclusions — in particular the 6 C1 math subset rows predict `practice` and are labeled `practice`, so they pass exact-match, not via any allowlist. g8geo (geometriya) count assertion unaffected.
 
 - [ ] **Step 4: Update the accuracy test docstring** — in `tests/services/test_toc_classifier_accuracy.py`, replace:
 
@@ -480,11 +512,13 @@ with:
 ```python
 """Accuracy gate against hand-labeled real-data TOC rows.
 
-Loads tests/services/fixtures/toc_classifier_labels.json (545 rows: 5 real
+Loads tests/services/fixtures/toc_classifier_labels.json (551 rows: 5 real
 Uzbek/Russian math textbooks + the 6 generatable G8 non-math books —
-physics/biology/english/geografiya/kimyo/history) and asserts the
-classifier's predictions against the hand-labeled ground truth. See the
-fixture's ``_meta`` for the documented, accepted false-inclusion allowlist.
+physics/biology/english/geografiya/kimyo/history — + 3 targeted math
+subsets pinning bare-«Masalalar yechish»→practice on G9-geo/G11) and
+asserts the classifier's predictions against the hand-labeled ground
+truth. See the fixture's ``_meta`` for the documented, accepted
+false-inclusion allowlist.
 """
 ```
 
@@ -569,9 +603,9 @@ git commit -m "tocvocab: FE mirror + schema comment for practice class"
 ### Task 4: Finish (controller-driven)
 
 - [ ] Full suite: `uv run python -m pytest tests/ -q` — green (modulo pre-existing known reds, verify they match `cli-failover-tests-red-1` only... note: 0124 fixed those; expect ZERO reds).
-- [ ] **Live read-only proof** (controller runs from worktree): re-run the classifier over the 6 stored G8 books (same harness as exploration) and confirm the "Verification targets" table above exactly — newly excluded rows match, zero lesson flips on kimyo/history/math books.
-- [ ] Worklog **0130** in `docs/memory/MASTER_MEMORY.md` + row in `docs/memory/INDEX.md`.
-- [ ] Close `toc-classifier-subject-vocab-1` in `docs/memory/WISHLIST.md` (note the over-count correction + dropped `life skills`/`culture` keywords + english allowlist).
+- [ ] **Live read-only proof** (controller runs from worktree): re-run the classifier over the 6 stored G8 books PLUS G9-geo (`1bc43831`) and G11 P1/P2 (`9bc1ad5e`/`bd7b2d6b`) and confirm the "Verification targets" table above exactly — newly excluded rows match, the ONLY math flips are the 6 pinned bare-«Masalalar yechish» rows, no suffix-form math lesson flips.
+- [ ] Worklog **0130** in `docs/memory/MASTER_MEMORY.md` + row in `docs/memory/INDEX.md` — **must flag the C1 operator note**: G9-Geometriya default LESSON-only launch drops ~55→~52 rows (3 problem-solving sections now opt-in `practice`) — intended, not a regression; same for G11 (2+1 rows) and physics-family books.
+- [ ] Close `toc-classifier-subject-vocab-1` in `docs/memory/WISHLIST.md` (note the over-count correction + dropped `life skills`/`culture` keywords + english allowlist + C1 math flip).
 - [ ] De-stale live-system docs: `docs/CODE_MAP.md` + `docs/HOW_IT_WORKS.md` wherever the class list (6 classes) or "math-calibrated" wording appears (grep `toc_classifier` / `entry_class` / class lists).
 - [ ] `git mv docs/superpowers/plans/2026-07-08-toc-classifier-subject-vocab.md docs/superpowers/plans/shipped/`
 - [ ] Rebase-check: `git fetch origin && git log HEAD..origin/Nggaev-v2` — rebase + re-run suite if base moved.
