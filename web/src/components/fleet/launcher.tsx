@@ -548,12 +548,13 @@ const CARD_STATUS_META: Record<CardStatus, { label: string; cls: string }> = {
 
 /** TOC row classes, in display order. Server-computed (`entry_class`) — the
  *  FE only displays/filters on this value, never re-derives it. */
-const ALL_ENTRY_CLASSES = ["lesson", "header", "recall", "revision", "test", "other"] as const;
+const ALL_ENTRY_CLASSES = ["lesson", "header", "recall", "practice", "revision", "test", "other"] as const;
 
 const CLASS_META: Record<string, { label: string; chipCls: string }> = {
   lesson: { label: "lesson", chipCls: "bg-white/[0.06] text-white/45" },
   header: { label: "header", chipCls: "bg-slate-400/15 text-slate-300" },
   recall: { label: "recall", chipCls: "bg-amber-400/10 text-amber-300/80" },
+  practice: { label: "practice", chipCls: "bg-amber-400/10 text-amber-300/80" },
   revision: { label: "revision", chipCls: "bg-amber-400/10 text-amber-300/80" },
   test: { label: "test", chipCls: "bg-amber-400/10 text-amber-300/80" },
   other: { label: "other", chipCls: "bg-slate-400/15 text-slate-300" },

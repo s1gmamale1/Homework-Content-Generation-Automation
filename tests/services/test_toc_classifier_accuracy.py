@@ -1,9 +1,12 @@
 """Accuracy gate against hand-labeled real-data TOC rows.
 
-Loads tests/services/fixtures/toc_classifier_labels.json (252 rows, 5 real
-Uzbek/Russian math textbooks) and asserts the classifier's predictions
-against the hand-labeled ground truth. See the fixture's ``_meta`` for the
-documented, accepted false-inclusion allowlist.
+Loads tests/services/fixtures/toc_classifier_labels.json (551 rows: 5 real
+Uzbek/Russian math textbooks + the 6 generatable G8 non-math books —
+physics/biology/english/geografiya/kimyo/history — + 3 targeted math
+subsets pinning bare-«Masalalar yechish»→practice on G9-geo/G11) and
+asserts the classifier's predictions against the hand-labeled ground
+truth. See the fixture's ``_meta`` for the documented, accepted
+false-inclusion allowlist.
 """
 
 import json
