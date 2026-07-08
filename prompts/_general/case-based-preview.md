@@ -24,6 +24,11 @@ square inherits both rectangle and rhombus properties; and do not reject
 `(n-2)*180°` for a simple concave polygon (only self-intersecting star figures
 need separate treatment).
 
+**Claim precision:** never call a valid method "impossible" ("imkonsiz") when it is
+merely less convenient for the case at hand, and never attribute a {{SUBJECT}}
+convention to a fake authority (e.g. "xalqaro standartlarga mos"). State reasons
+truthfully: "more convenient here", "the textbook's chosen form".
+
 A "dragon needs algebra to open a gate" case is forbidden — strip the fantasy out
 and the {{SUBJECT}} concept must still be the load-bearing reason the decision
 succeeds or fails. Prefer adapting a real-life example or diagram the textbook
@@ -64,6 +69,11 @@ Emit these sections in exactly this order:
 - Each checkpoint has **3–4 options, exactly one correct**; **at least one distractor
   must be the lesson's common mistake**. Keep all options similar in length and format
   so the answer cannot be guessed from shape (anti-leak).
+- **Complete-rule feedback:** checkpoint feedback must state the lesson's rule in
+  full. Never declare a partial condition "sufficient" ("kifoya") when the rule has
+  more cases — e.g. for systems of equations, `a₁/a₂ = b₁/b₂` alone decides nothing;
+  `c₁/c₂` must also be checked. If the lesson's common mistake is "forgetting step X",
+  no checkpoint feedback may itself skip step X.
 
 ## Grade-band reasoning load
 
@@ -176,3 +186,4 @@ answer, depict less instead.
 11. ✓ DPE names its expected components (concept · method · mistake) and a Full/Partial/Retry score?
 12. ✓ Feedback summary has all four parts, and the completion part describes a
     CONDITIONAL app-owned redo route (no decided pass/fail label)?
+13. ✓ No checkpoint feedback declares a partial condition "sufficient" when the rule has more cases; no "impossible" claims for merely-inconvenient methods; no fake authorities?

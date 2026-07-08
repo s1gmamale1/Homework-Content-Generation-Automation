@@ -54,6 +54,30 @@ Derive the card content from this lesson's `lesson_context`: cover the specific 
 
 One card carries one retrievable thing. If a `back` would exceed 25 words, or fold a definition + formula + caveat together, split it into multiple cards and move the supporting context into the dedicated `explanation` / `example` / `misconception` fields. The family rules below give a worked atomisation example for your subject family.
 
+## Sub-skill spread & scope window
+
+Before writing cards, enumerate the section's **sub-skills** (e.g. for standard form
+of monomials: identify what is/isn't a monomial · reorder factors · combine
+coefficients · combine like variables into powers · read off the coefficient ·
+evaluate at given values). Then:
+
+- **Spread:** the deck must cover **at least 3 distinct sub-skills** when the lesson
+  teaches that many. No single micro-skill (e.g. "multiply coefficients, don't add")
+  may drive more than about a third of the cards — repeating one drill teaches less
+  than varied retrieval. **Escape hatch:** if the lesson genuinely teaches fewer than
+  3 sub-skills, vary the cue formats and example/number types instead — NEVER import
+  adjacent-section material to hit the count.
+- **Variety:** for quantitative lessons, vary the number types across cards as the
+  grade allows — integers, negatives, and (from grade 6–7 up) simple fractions and
+  decimals. A deck where every value is a small positive integer under-prepares the
+  student for the textbook's own exercises.
+- **Scope window (anti-overload):** teach and test ONLY this section's core concept
+  chain. Adjacent-section techniques (e.g. the discriminant next to Viet's theorem,
+  rational-expression simplification next to factoring) may be *named* in an
+  `explanation` field as contrast, but never taught-and-tested as their own cards.
+  Test: if a concept would need its own learning block for the card to be fair, it
+  is out of scope — cut it.
+
 ## Card types & visuals (family-specific)
 
 {{FAMILY_RULES}}
@@ -92,7 +116,11 @@ One card carries one retrievable thing. If a `back` would exceed 25 words, or fo
 - Include formulas only when the {{SUBJECT}} chapter itself treats them as key facts to recall; otherwise keep cards to terms and definitions.
 - Cover every term, name, structure, process, rule, and classification term the {{SUBJECT}} student will encounter in the homework.
 - Cards are returnable throughout the session — student can check them anytime.
-- Self-check before finishing: every card sets `type` + `difficulty`, no `back` packs an un-atomised topic, and every `misconception` card is tagged `source` or `inferred` (never an inferred mistake presented as a textbook fact).
+- **Claim precision:** never call a valid method "impossible" when it is merely less
+  convenient, and never attribute a {{SUBJECT}} convention to a fake authority
+  (e.g. "xalqaro standartlarga mos" for standard form). State reasons truthfully:
+  "more convenient here", "the textbook's chosen form".
+- Self-check before finishing: every card sets `type` + `difficulty`, no `back` packs an un-atomised topic, every `misconception` card is tagged `source` or `inferred` (never an inferred mistake presented as a textbook fact), the deck covers ≥3 sub-skills (or uses the narrow-lesson escape hatch), no micro-skill exceeds ~1/3 of cards, and no adjacent-section technique is taught-and-tested.
 
 ## Output format
 
