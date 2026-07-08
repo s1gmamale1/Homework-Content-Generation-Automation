@@ -16,11 +16,12 @@ def _row(title, section_number="1", page_start=None, page_end=None):
     return Row(section_number=section_number, section_title=title, page_start=page_start, page_end=page_end)
 
 
-def test_classes_constant_contains_all_six():
+def test_classes_constant_contains_all_seven():
     assert tc.CLASSES == {
         tc.LESSON,
         tc.HEADER,
         tc.RECALL,
+        tc.PRACTICE,
         tc.REVISION,
         tc.TEST,
         tc.OTHER,
@@ -198,3 +199,90 @@ def test_duck_typed_simplenamespace_rows_work():
 def test_none_section_number_does_not_crash():
     rows = [_row("Nazorat ishi", section_number=None)]
     assert tc.classify_entries(rows) == [tc.TEST]
+
+
+def test_classes_constant_contains_practice():
+    assert tc.PRACTICE == "practice"
+    assert tc.PRACTICE in tc.CLASSES
+    assert len(tc.CLASSES) == 7
+
+
+def test_practice_keywords():
+    titles = [
+        "Laboratoriya ishi. Elektr zanjirini yigʻish",  # physics prefix form
+        "1-laboratoriya mashg'uloti.",  # biology numbered form (trailing dot)
+        "Amaliy mashg'ulot",  # geografiya bare form
+        "Amaliy mashg'ulot. Reostat yordamida tok kuchini rostlash",  # physics
+        "Лабораторная работа",  # RU parity
+        "Практическая работа",  # RU parity
+    ]
+    rows = [_row(t) for t in titles]
+    assert tc.classify_entries(rows) == [tc.PRACTICE] * 6
+
+
+def test_masalalar_yechish_whole_title_only():
+    # Bare whole-title "Masalalar yechish" is a problem-solving session
+    # (practice) — on physics AND math books alike (C1 decision). The SAME
+    # phrase inside a longer title is a real math lesson (g8alg/g8geo
+    # fixture rows) and must NOT be excluded.
+    rows = [
+        _row("Masalalar yechish"),
+        _row("Masalalar yechish."),  # trailing punctuation tolerated
+        _row("Решение задач"),
+        _row("Kvadrat tenglamalar yordamida masalalar yechish"),
+        _row("To'g'ri chiziq tenglamasi. Geometrik masalalar yechishning koordinatalar usuli"),
+    ]
+    result = tc.classify_entries(rows)
+    assert result[:3] == [tc.PRACTICE] * 3
+    assert result[3] == tc.LESSON
+    assert result[4] == tc.LESSON
+
+
+def test_amaliy_mashq_lesson_not_practice():
+    # g8geo true-lesson title: "mashq" != "mashg'ulot" — must stay lesson.
+    rows = [_row("Amaliy mashq va tatbiq")]
+    assert tc.classify_entries(rows) == [tc.LESSON]
+
+
+def test_muhim_xulosalar_revision():
+    rows = [_row("I bob yuzasidan muhim xulosalar")]
+    assert tc.classify_entries(rows) == [tc.REVISION]
+
+
+def test_english_review_anchored():
+    # "Review N" rows (Cambridge Prepare) are revision; "review" mid-title
+    # must not match (anchored at title start).
+    rows = [
+        _row("Review 3 (Units 9–12)"),
+        _row("Peer review in science"),
+    ]
+    result = tc.classify_entries(rows)
+    assert result[0] == tc.REVISION
+    assert result[1] == tc.LESSON
+
+
+def test_english_backmatter_other():
+    titles = [
+        "Extra Activities",
+        "Vocabulary List",
+        "Grammar Reference and Practice",
+        "List of Irregular Verbs",
+        "Darslikdan foydalanish qoidalari",
+    ]
+    rows = [_row(t) for t in titles]
+    assert tc.classify_entries(rows) == [tc.OTHER] * 5
+
+
+def test_homoglyph_fold_latin_word_with_cyrillic_letters():
+    # A Latin keyword still matches when OCR/extraction swapped in Cyrillic
+    # lookalike letters (а=a, о=o, е=e).
+    poisoned = "Lаborаtoriya ishi. Tajriba"  # Cyrillic а twice
+    rows = [_row(poisoned)]
+    assert tc.classify_entries(rows) == [tc.PRACTICE]
+
+
+def test_homoglyph_fold_keeps_russian_keywords_matching():
+    # The fold is applied to keyword tables too — pure-Cyrillic RU keywords
+    # must keep matching pure-Cyrillic RU titles.
+    rows = [_row("Повторение курса алгебры"), _row("Ответы")]
+    assert tc.classify_entries(rows) == [tc.REVISION, tc.OTHER]
