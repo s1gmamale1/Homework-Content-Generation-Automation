@@ -87,6 +87,10 @@ def _capability_blob(env: dict) -> dict:
     return {
         "cli": {name: agent.provider_cli_installed(name) for name in providers.PROVIDERS},
         "api": {"claude": api["claude"], "gemini": api["gemini"]},
+        # Code vintage (fleet-worker-version-gate-1): read at call time (not
+        # captured at def time) so tests can patch the module globals.
+        "code_version": code_version.CODE_VERSION,
+        "git_sha": code_version.GIT_SHA,
     }
 
 
@@ -123,9 +127,13 @@ def _rebind_capabilities() -> None:
 
 
 def _worker_id() -> str:
-    """Stable identity for `claimed_by`. Hostname:pid is enough to attribute
-    a stuck job to a specific process in logs / Kubernetes pod listings."""
-    return f"{socket.gethostname()}:{os.getpid()}"
+    """Stable identity for `claimed_by` + workers.pc_id. hostname:pid attributes
+    a job to a process; the @sha suffix (fleet-worker-version-gate-1) attributes
+    it to a code vintage — the post-hoc answer worklog 0125 lacked. Fits
+    String(128): hostname<=63 + pid + 8-char sha."""
+    base = f"{socket.gethostname()}:{os.getpid()}"
+    sha = code_version.GIT_SHA
+    return f"{base}@{sha}" if sha else base
 
 
 def _warn_if_gemini_selected_type() -> None:

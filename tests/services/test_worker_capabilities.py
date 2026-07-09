@@ -18,16 +18,19 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def test_capability_blob_top_level_keys():
-    """_capability_blob must return a dict with exactly 'cli' and 'api' keys.
+    """_capability_blob must return a dict with exactly 'cli', 'api',
+    'code_version', and 'git_sha' keys (the latter two added for
+    fleet-worker-version-gate-1 vintage visibility).
 
-    BITE: removing either key from the return dict breaks this assertion.
+    BITE: removing any key from the return dict breaks this assertion.
     """
     from app.services.worker import _capability_blob
 
     blob = _capability_blob({})
     assert isinstance(blob, dict), "_capability_blob must return a dict"
-    assert set(blob.keys()) == {"cli", "api"}, (
-        f"blob must have exactly 'cli' and 'api' keys; got {set(blob.keys())}"
+    assert set(blob.keys()) == {"cli", "api", "code_version", "git_sha"}, (
+        f"blob must have exactly 'cli', 'api', 'code_version', 'git_sha' keys; "
+        f"got {set(blob.keys())}"
     )
 
 
