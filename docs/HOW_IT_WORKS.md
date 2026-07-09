@@ -220,7 +220,23 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
   zero online workers ⇒ nothing greyed + a "no workers online" banner (launches still queue).
   This is **selection-UX only** — the claim gate is unchanged (it already routes each job to a
   credentialed worker; this just makes that truth visible at pick time).
-- **Batches** (`batches` table + `POST /jobs/batch`): launch a whole book as one batch —
+- **Worker version gate** (worklog 0133, mig 0046 — the Oliver fix from worklog 0125): every
+  process derives a monotonic **code version** at import (`app/services/code_version.py`:
+  `git rev-list --count HEAD` on the linear branch, + short sha; `WORKER_CODE_VERSION` env
+  override; a shallow clone or missing git yields *no* version, loudly). `main.lifespan`
+  stamps that version into `budget_state.min_worker_version` **raise-only** — so restarting
+  any box on newer code fences the whole fleet's stale workers, and a stale box's restart
+  is a no-op. A worker below the floor (or with no detectable version — fail-closed)
+  **claims nothing**: `_claim_one` returns early before `claim_next_job`, logging a
+  throttled ERROR (grep token: `version gate: STALE`). The vintage is visible everywhere:
+  the heartbeat blob carries `code_version`/`git_sha`, `claimed_by` becomes
+  `hostname:pid@sha`, `GET /workers` returns `version_floor`, and the fleet page shows a
+  red **STALE** chip per outdated worker. `PUT /workers/version-floor {"value": N|null}`
+  is the operator escape hatch (unconditional — may lower or clear, e.g. after a head
+  with unpushed local commits over-stamps). Enforcement is claim-time-only: a worker
+  mid-job when the floor rises finishes that job on old code. Workers running **pre-gate**
+  code are not enforced (their old `_claim_one` has no gate) but render STALE on the
+  fleet page — the gate protects every *future* staleness once a box has pulled it once.
   one job per lesson, fanned into the shared queue. **Lesson filter (worklog 0127):** when
   no `toc_entry_ids` are given, the batch targets only rows the pure `toc_classifier` tags
   `lesson` — chapter-header `N-§` umbrellas (which page-swallow their children → duplicate

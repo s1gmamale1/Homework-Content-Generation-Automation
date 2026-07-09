@@ -380,12 +380,20 @@ export type JobStreamEvent =
   | { event: "job_completed"; data: { job_id: string; download_url: string } }
   | { event: "error"; data: { phase_name?: string; message: string } };
 
+export interface WorkerCapabilities {
+  cli?: Record<string, boolean>;
+  api?: Record<string, boolean>;
+  code_version?: number | null;
+  git_sha?: string | null;
+}
+
 export interface Worker {
   pc_id: string;
   last_heartbeat: string | null;
   status: string;
   notes: string | null;
   online: boolean;
+  capabilities?: WorkerCapabilities | null;
 }
 
 export interface WorkerStatusResponse {

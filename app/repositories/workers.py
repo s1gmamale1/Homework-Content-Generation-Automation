@@ -170,6 +170,7 @@ async def list_with_liveness(session: AsyncSession, *, stale_after_seconds: int)
             "last_heartbeat": w.last_heartbeat,
             "status": w.status,
             "notes": w.notes,
+            "capabilities": w.capabilities,
             "online": is_online(
                 w.last_heartbeat, now=db_now, stale_after_seconds=stale_after_seconds
             ),
