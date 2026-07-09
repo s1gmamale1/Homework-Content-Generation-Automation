@@ -48,9 +48,14 @@ from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import sa_keys as sa_keys_repo
 from app.repositories import workers as workers_repo
-from app.services import agent, pipeline, providers, sa_key_apply
+from app.services import agent, code_version, pipeline, providers, sa_key_apply
 from app.services.errors import SessionLimitPause
 from app.services.storage import sa_key_active_path
+
+# Throttle window for the version-gate STALE log — the poll loop runs every
+# few seconds; unthrottled this would flood the log for a stale worker that
+# never restarts.
+_STALE_LOG_INTERVAL_SECONDS = 300.0
 
 
 # Maps job_id -> the in-flight _execute_job task, so a same-process cancel
@@ -207,13 +212,15 @@ class Worker:
         self._last_sweep_at = 0.0
         self._last_budget_check_at = 0.0
         self._cooldown_until: datetime | None = None
+        self._stale_gate_logged_at: float | None = None
 
     async def run(self) -> None:
         """Main loop. Runs until `stop()`."""
         logger.info(
             f"worker {self.id} starting | concurrency={self.concurrency} "
             f"poll={self.poll_interval}s timeout={self.job_timeout}s "
-            f"max_attempts={self.max_attempts}"
+            f"max_attempts={self.max_attempts} "
+            f"code_version={code_version.CODE_VERSION} sha={code_version.GIT_SHA}"
         )
         # Fail-fast capability check (Phase 4.1 §4): enumerate the per-side api
         # capabilities. A missing side doesn't block all api jobs anymore —
@@ -328,6 +335,27 @@ class Worker:
                     t.cancel()
             raise
 
+    def _log_stale_gate(self, floor: int | None) -> None:
+        """Throttled ERROR for the version gate — loud on first block, then at
+        most every _STALE_LOG_INTERVAL_SECONDS (the poll loop runs every few
+        seconds; unthrottled this would flood the log). Grep token:
+        'version gate: STALE'."""
+        import time
+
+        now = time.monotonic()
+        if (
+            self._stale_gate_logged_at is not None
+            and now - self._stale_gate_logged_at < _STALE_LOG_INTERVAL_SECONDS
+        ):
+            return
+        self._stale_gate_logged_at = now
+        logger.error(
+            f"worker {self.id} version gate: STALE worker — "
+            f"code_version={code_version.CODE_VERSION} < floor={floor} "
+            f"(sha={code_version.GIT_SHA}); claiming NOTHING until this box "
+            f"pulls + restarts"
+        )
+
     def _in_cooldown(self) -> bool:
         """True when this worker is session-limited and should not claim jobs.
 
@@ -366,6 +394,15 @@ class Worker:
                     # no api-spending job may be claimed (cli jobs are unaffected).
                     budget_state = await budget_repo.get_state(session)
                     fleet_api_paused = budget_state.api_paused_at is not None
+
+                    # Version gate (fleet-worker-version-gate-1): a worker below
+                    # the fleet deploy floor claims NOTHING. Fleet-global, so a
+                    # pure-Python check here beats a SQL predicate. Fail-closed:
+                    # unknown version + floor set -> blocked.
+                    floor = budget_state.min_worker_version
+                    if code_version.is_stale(code_version.CODE_VERSION, floor):
+                        self._log_stale_gate(floor)
+                        return None
 
                     job = await jobs_repo.claim_next_job(
                         session,
