@@ -130,7 +130,7 @@ def _worker_id() -> str:
     """Stable identity for `claimed_by` + workers.pc_id. hostname:pid attributes
     a job to a process; the @sha suffix (fleet-worker-version-gate-1) attributes
     it to a code vintage — the post-hoc answer worklog 0125 lacked. Fits
-    String(128): hostname<=63 + pid + 8-char sha."""
+    String(128): hostname<=63 + pid + short sha (7 chars, grows on collision)."""
     base = f"{socket.gethostname()}:{os.getpid()}"
     sha = code_version.GIT_SHA
     return f"{base}@{sha}" if sha else base

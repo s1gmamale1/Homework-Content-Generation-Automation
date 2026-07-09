@@ -480,7 +480,7 @@ export const api = {
     return unwrap<WorkerStatusResponse>(res);
   },
 
-  /** Set (or clear) the fleet-wide worker version floor — raise-only enforced server-side. */
+  /** Unconditional set (may LOWER) or clear of the fleet version floor — the operator escape hatch; the lifespan auto-stamp is the raise-only path. */
   async setVersionFloor(value: number | null): Promise<{ version_floor: number | null }> {
     const res = await authFetch("/api/v1/workers/version-floor", {
       method: "PUT",
