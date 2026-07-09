@@ -15,6 +15,7 @@
 - **Enforcement = hard gate + loud + visible** (locked). Gate is a pure-Python early-return in `_claim_one` before `claim_next_job` — the floor is global, so pushing it into the SQL claim predicate buys nothing and costs testability. Throttled `logger.error` with grep token `version gate: STALE` (mirrors the `events_bus: LISTEN connection DOWN` diagnostic convention). Rejected: advisory-only (the silent-quality-leak failure mode survives).
 - **Load-bearing verified facts:** `_claim_one` reads `budget_repo.get_state` inside the claim tx (`app/services/worker.py:366`); `budget_state` is a CHECK(id=1) singleton seeded by mig 0032; the heartbeat publishes `CAPABILITY_BLOB` on **every** full beat (`worker.py:656` `_drain_check_and_beat`); `_worker_id()` (`worker.py:120`) feeds both `homework_jobs.claimed_by` (String(128)) and `workers.pc_id` (String(128)), and nothing parses either; `/workers` (`app/api/v1/workers.py:12`) returns `list_with_liveness` rows which today do NOT include `capabilities`; FE `Worker` type at `web/src/lib/types.ts:383`; migration slot **0046** is free; worklog slot **0131**.
 - **Unknown version is stale:** a worker that can't read git (`CODE_VERSION=None`) is blocked whenever a floor is set, with a loud startup error and the `WORKER_CODE_VERSION=<int>` env override as the non-git-deployment escape. All current fleet boxes are git clones, so this bites only on genuinely broken setups.
+- **Shallow-clone hazard (gate condition, 2026-07-09):** `git rev-list --count HEAD` on a shallow clone returns the truncated depth, not the true count — a shallow-cloned worker would read as ancient and idle permanently with a misleading STALE that no pull fixes. `detect()` therefore checks `git rev-parse --is-shallow-repository`; on `true` it does NOT report the bogus count — it returns `(None, sha)` with an explicit error naming the fix (`git fetch --unshallow`). The deploy note gains a fleet pre-flight: verify each host's clone is full before the rollout restart.
 
 ## Global Constraints
 
@@ -104,9 +105,31 @@ def test_detect_git_unavailable_returns_none_pair():
     assert sha is None
 
 
+def test_detect_shallow_clone_refuses_bogus_count():
+    """A shallow clone's rev-list count is the truncated depth, not the true
+    count — detect() must return None (fail-closed, loud) instead of reporting
+    an ancient-looking version that no pull would ever fix.
+
+    RED-proof: without the is-shallow check, this returns (1, sha)."""
+    def fake_git(*args):
+        if args[0] == "rev-parse" and args[1] == "--short":
+            return "abc1234"
+        if args == ("rev-parse", "--is-shallow-repository"):
+            return "true"
+        if args[0] == "rev-list":
+            return "1"  # the bogus truncated depth
+        return None
+    with patch.object(code_version, "_git", side_effect=fake_git):
+        version, sha = code_version.detect({})
+    assert version is None
+    assert sha == "abc1234"
+
+
 def test_detect_real_git_in_this_repo():
-    """Integration: this test runs inside the repo checkout, so real git must
-    yield a positive count and a hex short sha."""
+    """Integration: this test runs inside the repo checkout (full clone or
+    linked worktree), so real git must yield a positive count and a hex short
+    sha. REQUIRES A FULL CLONE — a shallow CI checkout would (correctly)
+    yield version=None and fail this test's environment assumption."""
     version, sha = code_version.detect({})
     assert isinstance(version, int) and version > 100
     assert isinstance(sha, str) and 6 <= len(sha) <= 12
@@ -180,6 +203,19 @@ def detect(env: Optional[dict] = None) -> tuple[Optional[int], Optional[str]]:
             logger.error(
                 f"WORKER_CODE_VERSION={override!r} is not an integer — ignoring override"
             )
+    # Shallow-clone guard (gate condition): a shallow clone's rev-list count
+    # is the truncated fetch depth, not the true commit count — reporting it
+    # would make this box look ancient and idle it permanently with a STALE
+    # that no pull fixes. Refuse the bogus number, name the actual fix.
+    if _git("rev-parse", "--is-shallow-repository") == "true":
+        logger.error(
+            "code_version: this checkout is a SHALLOW clone — rev-list count "
+            "would be the truncated depth, not the real version. Run "
+            "`git fetch --unshallow` (or set WORKER_CODE_VERSION=<int>). "
+            "Until then this process is BLOCKED from claiming whenever a "
+            "version floor is set"
+        )
+        return None, sha
     count = _git("rev-list", "--count", "HEAD")
     if count is None:
         logger.error(
@@ -208,7 +244,7 @@ CODE_VERSION, GIT_SHA = detect()
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run python -m pytest tests/services/test_code_version.py -v`
-Expected: 8 passed
+Expected: 9 passed
 
 - [ ] **Step 5: Commit**
 
@@ -970,7 +1006,7 @@ Record every command + observed output in the worklog entry.
 
 - [ ] **Step 3: Rebase check** — `git fetch origin && git log HEAD..origin/Nggaev-v2 --oneline`; if the base moved, rebase onto `origin/Nggaev-v2` and re-run the full suite.
 
-- [ ] **Step 4: Docs de-stale + worklog 0131 + INDEX row + WISHLIST close + `git mv` plan to `shipped/`.** Worklog must include the DEPLOY NOTE: *the gate only bites once ONE box (normally the head) runs post-merge code and stamps the floor; the currently-owed fleet pull (#84+#88+#90+#91) plus this change is the rollout — after it, any box that misses a future pull idles loudly instead of silently serving stale output. Diagnostic: grep worker log for `version gate: STALE`; fleet page shows the red STALE chip. Escape hatch: `PUT /api/v1/workers/version-floor {"value": null}`.*
+- [ ] **Step 4: Docs de-stale + worklog 0131 + INDEX row + WISHLIST close + `git mv` plan to `shipped/`.** Worklog must include the DEPLOY NOTE: *the gate only bites once ONE box (normally the head) runs post-merge code and stamps the floor; the currently-owed fleet pull (#84+#88+#90+#91) plus this change is the rollout — after it, any box that misses a future pull idles loudly instead of silently serving stale output. **Fleet pre-flight before the rollout restart:** on each host verify the clone is FULL — `git rev-parse --is-shallow-repository` must print `false`; if `true`, run `git fetch --unshallow` first (a shallow clone reads as versionless and idles once a floor exists). Diagnostic: grep worker log for `version gate: STALE`; fleet page shows the red STALE chip. Escape hatch: `PUT /api/v1/workers/version-floor {"value": null}`.*
 
 - [ ] **Step 5: Commit finish bookkeeping; verify the finish commit CONTENTS with `git show --stat` (the git-add-atomic-failure trap). Then push and open the PR to GK2 — no self-merge.**
 
