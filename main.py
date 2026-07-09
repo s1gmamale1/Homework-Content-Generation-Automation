@@ -1,4 +1,5 @@
 import asyncio
+import socket
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,8 +16,10 @@ from app.config import settings
 from app.db import SessionLocal
 from app.log import configure as configure_logging
 from app.repositories import books as books_repo
+from app.repositories import budget as budget_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
+from app.services import code_version
 from app.services import events_bus
 from app.services.prompts import load_all as load_prompts
 from app.services.worker import Worker, build_worker_from_settings
@@ -69,6 +72,34 @@ async def lifespan(app: FastAPI):
             )
         await session.commit()
     log.info("Orphan sweep complete (books + phase_outputs)")
+
+    # Fleet version floor auto-stamp (fleet-worker-version-gate-1): raise-only —
+    # any process starting on newer code fences out every stale worker; a
+    # stale-process restart is a no-op. PUT /workers/version-floor is the
+    # operator escape hatch (lower/clear).
+    if code_version.CODE_VERSION is not None:
+        async with SessionLocal() as session:
+            raised = await budget_repo.raise_version_floor(
+                session,
+                version=code_version.CODE_VERSION,
+                stamped_by=f"{socket.gethostname()}@{code_version.GIT_SHA or 'unknown'}",
+            )
+            await session.commit()
+        if raised:
+            log.info(
+                f"Startup: version floor raised to {code_version.CODE_VERSION} "
+                f"(sha={code_version.GIT_SHA})"
+            )
+        else:
+            log.info(
+                f"Startup: version floor unchanged (own version "
+                f"{code_version.CODE_VERSION} <= current floor)"
+            )
+    else:
+        log.warning(
+            "Startup: code version undetectable — version floor NOT stamped; "
+            "this process is BLOCKED from claiming if a floor is set"
+        )
 
     # Cross-process SSE bus (sse-multipod-1): one LISTEN connection per
     # process routes NOTIFY events into local SSE queues. Deliberately no
