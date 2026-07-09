@@ -451,7 +451,13 @@ export const api = {
     return unwrap<BatchPauseResponse>(res);
   },
 
-  async listWorkers(): Promise<{ workers: Worker[]; total: number; online: number; stale_after_seconds: number }> {
+  async listWorkers(): Promise<{
+    workers: Worker[];
+    total: number;
+    online: number;
+    stale_after_seconds: number;
+    version_floor: number | null;
+  }> {
     const res = await authFetch("/api/v1/workers");
     return unwrap(res);
   },
@@ -472,6 +478,16 @@ export const api = {
       { method: "POST" },
     );
     return unwrap<WorkerStatusResponse>(res);
+  },
+
+  /** Set (or clear) the fleet-wide worker version floor — raise-only enforced server-side. */
+  async setVersionFloor(value: number | null): Promise<{ version_floor: number | null }> {
+    const res = await authFetch("/api/v1/workers/version-floor", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    return unwrap<{ version_floor: number | null }>(res);
   },
 
   jobDownloadUrl(jobId: string): string {

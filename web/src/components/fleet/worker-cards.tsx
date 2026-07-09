@@ -21,7 +21,7 @@ function ago(iso: string | null): string {
 export function WorkerCards({
   data,
 }: {
-  data?: { workers: Worker[]; online: number; total: number };
+  data?: { workers: Worker[]; online: number; total: number; version_floor?: number | null };
 }) {
   const qc = useQueryClient();
 
@@ -48,8 +48,15 @@ export function WorkerCards({
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-sm font-semibold tracking-tight text-white">Workers</h2>
         {data && (
-          <span className="font-mono text-[0.72rem] text-white/45">
-            online {data.online} / {data.total}
+          <span className="flex items-baseline gap-2">
+            <span className="font-mono text-[0.72rem] text-white/45">
+              online {data.online} / {data.total}
+            </span>
+            {data.version_floor != null && (
+              <span className="font-mono text-[0.72rem] text-white/45">
+                floor v{data.version_floor}
+              </span>
+            )}
           </span>
         )}
       </div>
@@ -65,6 +72,11 @@ export function WorkerCards({
             const pendingDrain = drainMut.isPending && drainMut.variables === w.pc_id;
             const pendingUndrain = undrainMut.isPending && undrainMut.variables === w.pc_id;
             const isPending = pendingDrain || pendingUndrain;
+
+            const ver = w.capabilities?.code_version ?? null;
+            const sha = w.capabilities?.git_sha ?? null;
+            const floor = data?.version_floor ?? null;
+            const isStale = floor != null && (ver == null || ver < floor);
 
             return (
               <div
@@ -85,6 +97,20 @@ export function WorkerCards({
                 <span className="font-mono text-[0.75rem] font-medium text-white">
                   {w.pc_id}
                 </span>
+
+                {/* Vintage: code version + git sha */}
+                {(ver != null || sha) && (
+                  <span className="font-mono text-[0.68rem] text-white/40">
+                    {ver != null ? `v${ver}` : "v?"}{sha ? ` @${sha}` : ""}
+                  </span>
+                )}
+
+                {/* STALE chip — worker's code_version is below the fleet floor */}
+                {isStale && (
+                  <span className="rounded-md border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 font-mono text-[0.65rem] font-semibold text-red-300">
+                    STALE{ver != null && floor != null ? ` ${ver} < ${floor}` : ""}
+                  </span>
+                )}
 
                 {/* Status / draining tag */}
                 {isDraining ? (
