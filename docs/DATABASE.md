@@ -2,8 +2,8 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Last updated: branch `Nggaev-v2`, head `0045_notion_archived_job`
-> (0043), 2026-07-06. When this doc and the code disagree, the code wins — fix the doc.
+> Last updated: branch `Nggaev-v2`, head `0046_worker_version_floor`
+> (0046), 2026-07-09. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
 
@@ -29,7 +29,7 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`0045_notion_archived_job`** (0028 = enum CHECK constraints,
+also runs it on deploy). Current head: **`0046_worker_version_floor`** (0028 = enum CHECK constraints,
 0029 = `phase_outputs.judge_status`, 0030 = `agent_usages.cache_creation_tokens`,
 0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton,
 0033 = `custom_prompts`/`selected_phases` JSONB on `homework_jobs`+`batches`,
@@ -41,7 +41,10 @@ also runs it on deploy). Current head: **`0045_notion_archived_job`** (0028 = en
 0040 = `books.source_language` String(8) NOT NULL server_default `'uz'` + CHECK `uz|ru|en`,
 0041 = `sa_keys` table + `sa_key_assignments` table,
 0042 = `books.toc_validation`/`toc_validation_detail` — post-TOC vision-validator verdict columns,
-0043 = `solver_*` role columns on `launch_defaults`/`homework_jobs`/`batches` + `phase_outputs.solver_status` + `launch_defaults` seed + `homework_jobs.solver_provider` NULL-row backfill (CQ-C/worklog 0112)).
+0043 = `solver_*` role columns on `launch_defaults`/`homework_jobs`/`batches` + `phase_outputs.solver_status` + `launch_defaults` seed + `homework_jobs.solver_provider` NULL-row backfill (CQ-C/worklog 0112),
+0044 = `launch_defaults.solver_boss_arena_enabled` Boolean NOT NULL default true (worklog 0126),
+0045 = `toc_entries.notion_archived_job_id` UUID NULL (worklog 0129),
+0046 = `budget_state` worker-version-floor columns `min_worker_version`/`min_worker_version_stamped_by`/`min_worker_version_stamped_at` (fleet-worker-version-gate, worklog 0133)).
 Full chain in §7. (Revision IDs stay ≤32 chars — `alembic_version.version_num` is VARCHAR(32).)
 
 ---
@@ -241,7 +244,7 @@ drives `aggregate_fleet_capability` (the launcher's fleet-serveability view) —
 workers ⇒ fail-open `{"online": false}` so the launcher shows a "no workers" banner instead of
 greying everything.
 
-### 3.8 `budget_state` — fleet-level API pause singleton (C4)
+### 3.8 `budget_state` — fleet-level API pause + version-floor singleton (C4; mig 0046)
 
 Exactly **one row** (`id=1`) enforced by `CHECK(id = 1)`, seeded by migration 0032.
 No UUIDPK/Timestamps mixins — intentionally minimal.
@@ -251,6 +254,9 @@ No UUIDPK/Timestamps mixins — intentionally minimal.
 | `id` | Integer PK | always `1` (singleton) |
 | `api_paused_at` | DateTime NULL | set by the budget monitor when the fleet-daily api spend cap is exceeded; `claim_next_job` checks this and skips all api-transport jobs while non-NULL |
 | `api_paused_reason` | String(64) NULL | e.g. `"fleet-daily-cap"` |
+| `min_worker_version` | Integer NULL | **fleet worker version floor** (mig 0046, worklog 0133): a worker whose `code_version` (git commit-count, `app/services/code_version.py`) is below this claims NOTHING (fail-closed: an undetectable version is also blocked). NULL = gate off. Auto-stamped **raise-only** by `main.lifespan` at every process startup (`budget_repo.raise_version_floor`); `PUT /workers/version-floor` is the unconditional operator escape hatch (may lower/clear) |
+| `min_worker_version_stamped_by` | String(128) NULL | `hostname@sha` for the lifespan auto-stamp; `"operator"` for the escape hatch |
+| `min_worker_version_stamped_at` | DateTime NULL | when the floor last changed |
 
 `budget_repo.get_state(session)` returns the singleton row; raises `RuntimeError` if the row is missing (indicates a broken migration state — run `alembic upgrade head`). The budget monitor clears the fleet pause if spend drops back below cap (e.g. after UTC midnight resets the 24h window). The singleton's pause state is distinct from per-batch `batches.paused_at` — an operator can check both via `GET /jobs/batch/{id}/cost` (returns `fleet_api_paused_at`/`fleet_api_paused_reason` alongside the per-batch fields).
 
@@ -456,7 +462,8 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 | 42 | 0042_books_toc_validation | `0042_books_toc_validation` | adds `books.toc_validation` String(16) NULL + DB CHECK `NULL\|verified\|mismatch\|skipped` and `books.toc_validation_detail` Text NULL — vision-validator verdict + explanation columns (worklog 0108) |
 | 43 | 0043_solver_role_columns | `0043_solver_role_columns` | adds per-role solver columns: `homework_jobs.solver_transport`/`solver_provider`/`solver_model` + CHECK, `batches` same trio, `launch_defaults` solver trio (seed gemini/gemini-3.1-pro-preview/inherit), `phase_outputs.solver_status` (CQ-C, worklog 0112) |
 | 44 | 0044_solver_boss_toggle | `0044_solver_boss_toggle` | adds `launch_defaults.solver_boss_arena_enabled` BOOL NOT NULL server_default true — live /settings toggle for boss-arena answer-key solving (worklog 0126) |
-| 45 | 0045_notion_archived_job | `0045_notion_archived_job` | adds `toc_entries.notion_archived_job_id` UUID NULL (no FK) — producing-job stamp for the Notion archive: auto-replace-own-older-output + `stale` rollup (worklog 0129) — **HEAD** |
+| 45 | 0045_notion_archived_job | `0045_notion_archived_job` | adds `toc_entries.notion_archived_job_id` UUID NULL (no FK) — producing-job stamp for the Notion archive: auto-replace-own-older-output + `stale` rollup (worklog 0129) |
+| 46 | 0046_worker_version_floor | `0046_worker_version_floor` | adds `budget_state.min_worker_version` Integer NULL + `min_worker_version_stamped_by` String(128) NULL + `min_worker_version_stamped_at` DateTime(tz) NULL — the fleet worker version floor (fleet-worker-version-gate, worklog 0133) — **HEAD** |
 
 ---
 
