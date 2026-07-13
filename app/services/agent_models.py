@@ -14,12 +14,18 @@ MODEL_MANIFEST: dict[str, list[str]] = {
     "kimi": [
         "kimi-code/kimi-for-coding",
     ],
+    # Codex-CLI models. Source of truth = the codex CLI's own model list
+    # (~/.codex/models_cache.json, visibility="list") for client 0.144.0.
+    # gpt-5.5 stays first = the CLI's configured default (config.toml model=).
+    # codex is CLI-only (not in API_PROVIDERS) — these run over transport=cli.
     "codex": [
         "gpt-5.5",
-        "gpt-5.2",
-        "gpt-5",
-        "gpt-5-mini",
-        "gpt-5-nano",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex-spark",
     ],
     "gemini": [
         "gemini-3.1-pro-preview",

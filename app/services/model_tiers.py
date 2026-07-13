@@ -21,21 +21,23 @@ _MODEL_TIER: dict[str, int] = {
     # Tier 1 — Frontier
     "claude-opus-4-7": 1,
     "gpt-5.5": 1,
+    "gpt-5.6-sol": 1,
     "gemini-3.1-pro-preview": 1,
     # Tier 2 — Strong
     "claude-sonnet-4-6": 2,
-    "gpt-5.2": 2,
-    "gpt-5": 2,
+    "gpt-5.6-terra": 2,
+    "gpt-5.4": 2,
     "gemini-3-flash-preview": 2,
     "gemini-2.5-pro": 2,
     # Tier 3 — Mid
     "claude-haiku-4-5-20251001": 3,
-    "gpt-5-mini": 3,
+    "gpt-5.6-luna": 3,
     "gemini-3.1-flash-lite-preview": 3,
     "gemini-2.5-flash": 3,
     "kimi-code/kimi-for-coding": 3,
     # Tier 4 — Light
-    "gpt-5-nano": 4,
+    "gpt-5.4-mini": 4,
+    "gpt-5.3-codex-spark": 4,
     "gemini-2.5-flash-lite": 4,
     "opencode/deepseek-v4-flash-free": 4,
     "opencode/nemotron-3-super-free": 4,

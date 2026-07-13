@@ -42,7 +42,7 @@ def test_judge_model_for_returns_primary_peer_for_ordinary_generator():
     # gemini with None model resolves to gemini-3.1-pro-preview — not primary peer
     assert mt.judge_model_for("gemini", None) == ("claude", "claude-opus-4-7")
     # codex generator — also not the primary peer
-    assert mt.judge_model_for("codex", "gpt-5-nano") == ("claude", "claude-opus-4-7")
+    assert mt.judge_model_for("codex", "gpt-5.4-mini") == ("claude", "claude-opus-4-7")
 
 
 def test_judge_never_grades_itself_when_generator_is_primary_peer():
