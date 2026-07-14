@@ -33,6 +33,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import {
+  PROVIDER_DEFAULT,
+  fromSelectValue,
+  resolveLaunchModel,
+  toSelectValue,
+} from "@/lib/launch-model";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
 import { accentOf, subjectLabel, subjectLabelWithVariant } from "@/lib/subjects";
 import type {
@@ -861,15 +867,10 @@ function ReadyCard({
   const modelOptions = modelsQ.data?.providers?.[provider] ?? [];
   useEffect(() => {
     if (!modelsQ.data) return; // wait for modelOptions — else a restored api model gets nulled + re-seeded to the wrong one
-    if (transport === "api") {
-      // Seed the first concrete model if none chosen / stale for this provider.
-      if (!model || !modelOptions.includes(model)) {
-        setModel(modelOptions[0] ?? null);
-      }
-    } else {
-      // cli uses provider default — don't pin a model.
-      setModel(null);
-    }
+    // api needs a concrete model; cli KEEPS an explicit pick (it becomes --model)
+    // and only drops one that belongs to a different provider. See launch-model.ts.
+    const next = resolveLaunchModel(transport, model, modelOptions);
+    if (next !== model) setModel(next);
     // modelOptions identity changes only when the manifest/provider changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transport, provider, modelsQ.data]);
@@ -932,7 +933,10 @@ function ReadyCard({
     judge_provider: null,
     judge_model: null,
     session_limit_strategy: sessionLimitStrategy,
-    ...(transport === "api" ? { model } : {}),
+    // Always send the model — cli honours an explicit pick (--model) and treats
+    // null as "provider default". Omitting it on cli made the content model
+    // unreachable there (the /settings pick was silently dropped).
+    model,
     // Only send output_language when explicitly chosen — null/omitted means
     // the backend inherits the global default (same inherit convention as role transports).
     ...(outputLanguage != null ? { output_language: outputLanguage } : {}),
@@ -1158,21 +1162,27 @@ function ReadyCard({
                     </span>
                   )}
                 </div>
-                {/* API forces an explicit model (no "provider default"). */}
-                {transport === "api" && (
-                  <Select value={model ?? ""} onValueChange={(v) => setModel(v)}>
-                    <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[11rem]")}>
-                      <SelectValue placeholder="Pick a model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {modelOptions.map((m) => (
-                        <SelectItem key={m} value={m}>
-                          {m}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
+                {/* Both transports pick a model. api forces a concrete one (the
+                    backend 400s on null); cli additionally offers "Provider
+                    default" = no --model flag, letting the CLI use its own. */}
+                <Select
+                  value={toSelectValue(model)}
+                  onValueChange={(v) => setModel(fromSelectValue(v))}
+                >
+                  <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[11rem]")}>
+                    <SelectValue placeholder="Pick a model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {transport === "cli" && (
+                      <SelectItem value={PROVIDER_DEFAULT}>Provider default</SelectItem>
+                    )}
+                    {modelOptions.map((m) => (
+                      <SelectItem key={m} value={m}>
+                        {m}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 {model === "gemini-3.1-pro-preview" && (
                   <span className="max-w-[22rem] text-[0.62rem] leading-snug text-amber-300/85">
                     ⚠ Solver & judge will swap to a Claude peer (self-grade guard). Gemini-only
