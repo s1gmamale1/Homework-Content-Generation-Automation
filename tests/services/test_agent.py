@@ -434,6 +434,97 @@ async def test_spawn_api_cli_only_provider_still_uses_cli(monkeypatch):
                            prompt="p", attachments=[], transport="api")
 
 
+@pytest.mark.asyncio
+async def test_spawn_api_dispatch_reads_api_providers_membership(monkeypatch):
+    """openai-api task 3: agent.py:505 must read membership from
+    ``agent_models.API_PROVIDERS`` (not a hardcoded ("gemini", "claude")
+    tuple), so a later manifest addition (task 2 adds "openai") routes to
+    the SDK with no further agent.py change. Proven here by patching
+    API_PROVIDERS ahead of task 2 and asserting dispatch follows it."""
+    from app.services import agent, agent_models, api_transport
+
+    monkeypatch.setattr(
+        agent_models, "API_PROVIDERS", frozenset({"claude", "gemini", "openai"})
+    )
+
+    seen: dict[str, object] = {}
+
+    async def fake_generate(**kw):
+        seen.update(kw)
+        return (0, "OPENAI_SENTINEL", {"raw": {}}, "")
+
+    monkeypatch.setattr(api_transport, "generate", fake_generate)
+
+    rc, text, usage, err = await agent._spawn(
+        provider=agent.get_provider("openai"), model="gpt-x",
+        prompt="p", attachments=[], transport="api")
+
+    assert text == "OPENAI_SENTINEL"
+    assert seen["provider"] == "openai" and seen["model"] == "gpt-x"
+
+
+@pytest.mark.asyncio
+async def test_spawn_api_dispatch_codex_kimi_still_use_cli_with_openai_in_set(
+    monkeypatch,
+):
+    """codex/kimi are NOT in API_PROVIDERS even after it grows to include
+    openai — they must still fall through to the CLI path, never the SDK."""
+    from app.services import agent, agent_models, api_transport
+
+    monkeypatch.setattr(
+        agent_models, "API_PROVIDERS", frozenset({"claude", "gemini", "openai"})
+    )
+
+    async def boom(**kw):
+        raise AssertionError("codex/kimi must not use the SDK path")
+
+    monkeypatch.setattr(api_transport, "generate", boom)
+    monkeypatch.setattr(
+        agent, "_resolve_binary",
+        lambda prov: (_ for _ in ()).throw(RuntimeError("reached-cli")),
+    )
+
+    for name in ("codex", "kimi"):
+        with pytest.raises(RuntimeError, match="reached-cli"):
+            await agent._spawn(
+                provider=agent.get_provider(name), model=None,
+                prompt="p", attachments=[], transport="api",
+            )
+
+
+@pytest.mark.asyncio
+async def test_run_phase_openai_api_prompt_composes_no_suffix(monkeypatch):
+    """openai's format_attachments/prompt_suffix return "" (like claude/gemini,
+    per Provider.base defaults) so run_phase's prompt composition — which
+    calls them BEFORE transport dispatch — neither raises nor appends any
+    provider visual-policy suffix for an api openai call."""
+    captured: dict[str, object] = {}
+
+    async def fake_spawn(*, provider, model, prompt, attachments, transport):
+        captured["prompt"] = prompt
+        captured["provider_name"] = provider.name
+        return 0, "ok body", {
+            "prompt_tokens": 1, "output_tokens": 1,
+            "cached_tokens": 0, "total_tokens": 2, "raw": {},
+        }, ""
+
+    async def fake_record_usage(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent_module, "_spawn", fake_spawn)
+    monkeypatch.setattr(agent_module, "_record_usage", fake_record_usage)
+
+    result = await run_phase(
+        provider="openai", model="gpt-x", phase_prompt="p",
+        phase_name="test", homework_job_id=None, phase_output_id=None,
+        transport="api",
+    )
+
+    assert captured["provider_name"] == "openai"
+    assert "Visual policy" not in captured["prompt"]
+    assert result.text == "ok body"
+
+
 # ── api-error-capture-1 ────────────────────────────────────────────────
 
 

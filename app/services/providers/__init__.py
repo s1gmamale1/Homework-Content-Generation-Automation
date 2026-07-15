@@ -20,6 +20,7 @@ from .codex import Codex
 from .gemini import Gemini
 from .kimi import Kimi
 from .opencode import OpenCode
+from .openai_api import OpenAiApi
 
 
 CLAUDE = Claude()
@@ -27,9 +28,10 @@ KIMI = Kimi()
 CODEX = Codex()
 GEMINI = Gemini()
 OPENCODE = OpenCode()
+OPENAI = OpenAiApi()
 
 PROVIDERS: dict[str, Provider] = {
-    p.name: p for p in (CLAUDE, KIMI, CODEX, GEMINI, OPENCODE)
+    p.name: p for p in (CLAUDE, KIMI, CODEX, GEMINI, OPENCODE, OPENAI)
 }
 
 
@@ -52,11 +54,13 @@ __all__ = [
     "Codex",
     "Gemini",
     "OpenCode",
+    "OpenAiApi",
     "CLAUDE",
     "KIMI",
     "CODEX",
     "GEMINI",
     "OPENCODE",
+    "OPENAI",
     "PROVIDERS",
     "get_provider",
 ]

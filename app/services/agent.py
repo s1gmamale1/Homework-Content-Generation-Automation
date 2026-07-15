@@ -48,7 +48,7 @@ from app.schemas import (
     TOCEntryExtracted,
     TOCValidation,
 )
-from app.services import content_lint
+from app.services import agent_models, content_lint
 from app.services.providers import Provider, get_provider
 from app.services.proc_tree import kill_tree
 
@@ -286,6 +286,12 @@ def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> d
     env = dict(base_env)
     env.pop("GEMINI_API_KEY", None)
     env.pop("ANTHROPIC_API_KEY", None)
+    # Defensive hygiene, not a verified mis-billing fix: codex-CLI's own auth
+    # flip is CODEX_API_KEY, not this var (WISHLIST tracks scrubbing that one
+    # separately). Scrubbed here anyway, same class as the two pops above, so
+    # a worker's .env carrying OPENAI_API_KEY (for the api-only openai
+    # provider) never leaks into any cli spawn's environment.
+    env.pop("OPENAI_API_KEY", None)
     env.pop("GOOGLE_GENAI_USE_GCA", None)
     # Also scrub the Vertex selector: gemini-cli 0.46.0 getAuthTypeFromEnv
     # checks GCA first, then GOOGLE_GENAI_USE_VERTEXAI, then GEMINI_API_KEY —
@@ -499,10 +505,14 @@ async def _spawn_once(
     failure cause (``ModelNotFoundError``, auth errors, etc.) instead of a
     parsed-stdout decoy.
     """
-    # transport=api for gemini/claude -> direct SDK call, not the CLI. Kept BEFORE
+    # transport=api for any API_PROVIDERS member -> direct SDK call, not the
+    # CLI. Membership reads app.services.agent_models.API_PROVIDERS (the
+    # single source of truth also used by validate_transport/is_valid) so
+    # adding a new api-only provider there (e.g. openai) is a one-place
+    # change — no second hardcoded list to keep in sync here. Kept BEFORE
     # _resolve_binary so a pure-API worker needs no CLI on PATH; kept INSIDE
     # _semaphore() so direct-API fan-out is bounded exactly like CLI subprocesses.
-    if transport == "api" and provider.name in ("gemini", "claude"):
+    if transport == "api" and provider.name in agent_models.API_PROVIDERS:
         from app.services import api_transport
         async with _semaphore():
             return await api_transport.generate(

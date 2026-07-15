@@ -34,8 +34,11 @@ def test_capability_blob_top_level_keys():
     )
 
 
-def test_capability_blob_cli_has_all_five_providers():
-    """_capability_blob['cli'] must contain exactly the 5 registered provider names.
+def test_capability_blob_cli_has_all_registered_providers():
+    """_capability_blob['cli'] must contain exactly the registered provider
+    names (self-adapting: compares against providers.PROVIDERS.keys() rather
+    than a hardcoded count/list, so it stays correct as providers are added —
+    e.g. openai-api task 3 grew the registry from 5 to 6 entries).
 
     BITE: removing a provider from the cli sub-dict breaks this assertion.
     BITE: adding an extra key (e.g. from a wrong source) also breaks it.
@@ -170,15 +173,23 @@ def test_cli_flag_true_when_which_finds_binary(monkeypatch):
 
     BITE: always returning False for cli flags breaks this assertion.
     We monkeypatch shutil.which at the boundary — not the function under test.
+
+    openai-api task 3: skip providers with an empty ``binary_names`` (openai
+    is api-only — there is no CLI, so ``any(shutil.which(n) for n in ())`` is
+    structurally always False regardless of what shutil.which returns; this
+    is not a bug in the capability computation).
     """
     import shutil
     from app.services.worker import _capability_blob
+    from app.services import providers
 
     # Make shutil.which always return a fake path (simulates all CLIs installed)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
 
     blob = _capability_blob({})
     for name, installed in blob["cli"].items():
+        if not providers.PROVIDERS[name].binary_names:
+            continue
         assert installed is True, (
             f"cli[{name!r}] must be True when shutil.which returns a path; got {installed}"
         )

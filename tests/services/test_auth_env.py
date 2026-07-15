@@ -60,6 +60,19 @@ def test_kimi_cli_scrubs_both_keys_preserves_path():
     assert result["PYTHONIOENCODING"] == "utf-8"
 
 
+def test_codex_cli_scrubs_openai_key():
+    """openai-api task 3: OPENAI_API_KEY must be scrubbed from the cli
+    baseline (same defensive class as the GEMINI/ANTHROPIC scrubs), even
+    though codex's own CLI auth flip is CODEX_API_KEY, not this var."""
+    env = _base_env()
+    env["OPENAI_API_KEY"] = "sk-x"
+    result = agent._auth_env("codex", "cli", env)
+    assert "OPENAI_API_KEY" not in result
+    assert "GEMINI_API_KEY" not in result
+    assert "ANTHROPIC_API_KEY" not in result
+    assert result["PYTHONIOENCODING"] == "utf-8"
+
+
 def test_claude_api_missing_key_raises():
     env = _base_env()
     del env["ANTHROPIC_API_KEY"]
