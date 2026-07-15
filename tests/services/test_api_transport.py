@@ -253,6 +253,120 @@ async def test_generate_claude_still_rejects_attachments(tmp_path):
         )
 
 
+# ---- openai fakes ----
+class _OMessage:
+    def __init__(self, content): self.content = content
+
+class _OChoice:
+    def __init__(self, content, finish_reason):
+        self.message = _OMessage(content)
+        self.finish_reason = finish_reason
+
+class _OPromptDetails:
+    def __init__(self, cached_tokens=None): self.cached_tokens = cached_tokens
+
+class _OUsage:
+    def __init__(self, prompt_tokens=None, completion_tokens=None, total_tokens=None,
+                 prompt_tokens_details=None):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
+        self.prompt_tokens_details = prompt_tokens_details
+
+class _OResp:
+    def __init__(self, choices, usage): self.choices = choices; self.usage = usage
+
+class _OCompletions:
+    last = None
+    def __init__(self, resp=None, exc=None): self._resp, self._exc = resp, exc
+    async def create(self, **kw):
+        _OCompletions.last = kw
+        if self._exc: raise self._exc
+        return self._resp
+
+class _OChat:
+    def __init__(self, completions): self.completions = completions
+
+class _OClient:
+    def __init__(self, resp=None, exc=None): self.chat = _OChat(_OCompletions(resp, exc))
+
+
+@pytest.mark.asyncio
+async def test_openai_success_usage(monkeypatch):
+    u = _OUsage(prompt_tokens=100, completion_tokens=50, total_tokens=160,
+                prompt_tokens_details=_OPromptDetails(cached_tokens=10))
+    resp = _OResp([_OChoice("hi", "stop")], u)
+    monkeypatch.setattr(api_transport, "_openai_client", lambda: _OClient(resp=resp))
+    rc, text, usage, err = await api_transport.generate(
+        provider="openai", model="gpt-5", prompt="x", attachments=[])
+    assert (rc, text) == (0, "hi")
+    assert usage["prompt_tokens"] == 100
+    assert usage["output_tokens"] == 50
+    assert usage["cached_tokens"] == 10
+    assert usage["total_tokens"] == 160
+
+
+@pytest.mark.asyncio
+async def test_openai_cached_tokens_absent_defaults_zero(monkeypatch):
+    u = _OUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150,
+                prompt_tokens_details=None)
+    resp = _OResp([_OChoice("hi", "stop")], u)
+    monkeypatch.setattr(api_transport, "_openai_client", lambda: _OClient(resp=resp))
+    rc, text, usage, err = await api_transport.generate(
+        provider="openai", model="gpt-5", prompt="x", attachments=[])
+    assert usage["cached_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_openai_truncation_is_loud(monkeypatch):
+    resp = _OResp([_OChoice("partial...", "length")], None)
+    monkeypatch.setattr(api_transport, "_openai_client", lambda: _OClient(resp=resp))
+    rc, text, usage, err = await api_transport.generate(
+        provider="openai", model="m", prompt="x", attachments=[])
+    assert rc == 1 and text == "" and "truncated" in err
+
+
+@pytest.mark.asyncio
+async def test_openai_cap_passed(monkeypatch):
+    resp = _OResp([_OChoice("ok", "stop")], None)
+    monkeypatch.setattr(api_transport, "_openai_client", lambda: _OClient(resp=resp))
+    monkeypatch.setattr(settings, "api_max_output_tokens", 12345)
+    await api_transport.generate(provider="openai", model="m", prompt="x", attachments=[])
+    assert _OCompletions.last["max_completion_tokens"] == 12345
+
+
+def test_openai_client_requires_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(RuntimeError):
+        api_transport._openai_client()
+
+
+def test_openai_client_base_url_passthrough(monkeypatch):
+    import openai
+    seen = {}
+    monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kw: seen.update(kw) or "client")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://custom.example/v1")
+    api_transport._openai_client()
+    assert seen == {"api_key": "k", "base_url": "https://custom.example/v1"}
+    seen.clear()
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    api_transport._openai_client()
+    assert seen == {"api_key": "k"}
+
+
+@pytest.mark.asyncio
+async def test_generate_openai_still_rejects_attachments(tmp_path):
+    """openai + any attachments -> NotImplementedError (contract PIN; already green
+    via the generic guard at api_transport.py:37-40, not new RED)."""
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"%PDF-1.4 x")
+    with pytest.raises(NotImplementedError):
+        await api_transport.generate(
+            provider="openai", model="gpt-5", prompt="hi", attachments=[f]
+        )
+
+
 def test_mime_for_suffix():
     """_mime_for maps file extensions to MIME types correctly."""
     _mime_for = api_transport._mime_for

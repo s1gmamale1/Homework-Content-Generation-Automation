@@ -40,6 +40,8 @@ async def generate(
         )
     if provider == "claude":
         return await _claude(model, prompt)
+    if provider == "openai":
+        return await _openai(model, prompt)
     raise ValueError(f"api transport not supported for provider {provider!r}")
 
 
@@ -177,4 +179,67 @@ async def _claude(model: str, prompt: str) -> tuple[int, str, dict, str]:
         return 1, "", usage, f"output truncated at max_tokens={settings.api_max_output_tokens}"
     if not text:
         return 0, "", usage, str(getattr(msg, "stop_reason", ""))
+    return 0, text, usage, ""
+
+
+# ---------------------------------------------------------------- openai
+def _openai_client():
+    from openai import AsyncOpenAI
+
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        raise RuntimeError("openai api: OPENAI_API_KEY unset")
+    base_url = os.environ.get("OPENAI_BASE_URL")
+    if base_url:
+        return AsyncOpenAI(api_key=key, base_url=base_url)
+    return AsyncOpenAI(api_key=key)
+
+
+def _openai_usage(u) -> dict:
+    if u is None:
+        return dict(_EMPTY_USAGE)
+    prompt = getattr(u, "prompt_tokens", None)
+    completion = getattr(u, "completion_tokens", None)
+    total = getattr(u, "total_tokens", None)
+    details = getattr(u, "prompt_tokens_details", None)
+    cached = getattr(details, "cached_tokens", None) if details is not None else None
+    return {
+        "prompt_tokens": prompt,
+        "output_tokens": completion,
+        "cached_tokens": cached if cached is not None else 0,
+        "cache_creation_tokens": 0,
+        "total_tokens": total,
+        "raw": {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+            "cached_tokens": cached,
+        },
+    }
+
+
+async def _openai(model: str, prompt: str) -> tuple[int, str, dict, str]:
+    client = _openai_client()
+    try:
+        resp = await client.chat.completions.create(
+            model=model,
+            max_completion_tokens=settings.api_max_output_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        return 1, "", dict(_EMPTY_USAGE), str(exc)
+    usage = _openai_usage(getattr(resp, "usage", None))
+    choices = getattr(resp, "choices", None) or []
+    choice = choices[0] if choices else None
+    finish_reason = getattr(choice, "finish_reason", None)
+    text = getattr(getattr(choice, "message", None), "content", None) or ""
+    if finish_reason == "length":
+        return (
+            1,
+            "",
+            usage,
+            f"output truncated at max_completion_tokens={settings.api_max_output_tokens}",
+        )
+    if not text:
+        return 0, "", usage, str(finish_reason or "")
     return 0, text, usage, ""
