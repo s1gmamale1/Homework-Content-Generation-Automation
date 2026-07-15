@@ -10,9 +10,10 @@ from app.models.base import Base, Timestamps, UUIDPK
 
 
 class Batch(Base, UUIDPK, Timestamps):
-    """One row per textbook generation batch. UNIQUE(book_id, transport) -> one
-    batch per (book, transport); a different-transport re-launch forks a new
-    batch, same-transport reuses it. That makes find-or-create race-safe
+    """One row per textbook generation batch. UNIQUE(book_id, transport,
+    output_language) -> one batch per (book, transport, output_language); a
+    different-transport or different-output-language re-launch forks a new
+    batch, same triple reuses it. That makes find-or-create race-safe
     (ON CONFLICT) and adoption unambiguous. No status counters: the rollup is
     computed on read (DISTINCT ON over the batch's jobs). provider/model are the
     launch-default label only - per-job provider/model are authoritative."""
