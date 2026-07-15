@@ -21,12 +21,16 @@ is a config change later, not a code change.
   membership in `agent_models.API_PROVIDERS` (single source of truth). `openai` still needs a
   registry Provider stub (name resolution happens before `_spawn`); its `build_argv` raises
   `RuntimeError("openai is api-only")` — unreachable behind validation, loud if reached.
-- **Mis-billing guard (critical):** the codex CLI honors `OPENAI_API_KEY` — a lingering env
-  key would silently flip codex-CLI spawns from subscription OAuth to API billing. Scrub
-  `OPENAI_API_KEY` in `_auth_env`'s **cli baseline** (same class as the existing
-  GEMINI/ANTHROPIC scrubs). The SDK path reads `os.environ` in-process (never a child env),
-  so no api-branch injection is needed — the loud missing-key raise lives in the client
-  builder, mirroring `_claude_client`.
+- **Key scrub (defense-in-depth, rationale corrected by fresh-Fable review):** scrub
+  `OPENAI_API_KEY` in `_auth_env`'s **cli baseline** (same class as the GEMINI/ANTHROPIC
+  scrubs). NOTE: the repo's own records (WISHLIST.md:149 + phase4 spec:176) say codex-CLI
+  auth flips via `CODEX_API_KEY`, NOT `OPENAI_API_KEY` — so this is defensive hygiene, not
+  a verified mis-billing fix; do not claim otherwise. (`CODEX_API_KEY` scrubbing is the
+  pre-existing WISHLIST item, out of scope here.) The SDK path reads `os.environ` in-process
+  (never a child env), so no api-branch injection — the loud missing-key raise lives in the
+  client builder, mirroring `_claude_client`. `_auth_env("openai", "api")` raising
+  `AuthEnvError` today is CORRECT and stays: the api dispatch short-circuits at `agent.py:505`
+  before the `child_env` build (`:530`), so it's unreachable for openai — don't "fix" it.
 - **Cached-token semantics:** OpenAI's `prompt_tokens` INCLUDES `prompt_tokens_details.cached_tokens`
   (same family as gemini, disjoint from claude) → add `"openai"` to
   `pricing._PROMPT_INCLUDES_CACHED`. Reasoning tokens bill as output (already inside
@@ -58,13 +62,19 @@ confirms the key works. **Blocked until the operator puts `OPENAI_API_KEY` in th
 - `generate(provider="openai", ...)` returns `(rc=0, text, usage, err="")`; usage keys
   normalized `prompt_tokens/output_tokens/cached_tokens/total_tokens` with cached mapped from
   `prompt_tokens_details.cached_tokens` (absent → 0).
-- attachments → `NotImplementedError` (text-only, same contract as claude).
+- attachments → `NotImplementedError` — contract PIN, not RED (the generic guard at
+  `api_transport.py:37-40` already fires before the provider branch).
 - no `OPENAI_API_KEY` → `RuntimeError` naming the var (loud, never "").
 - `OPENAI_BASE_URL` set → client constructed with that base_url; unset → default.
+- **output-cap parity with `_claude` (review fix #5):** request carries
+  `max_completion_tokens = settings.api_max_output_tokens`; `finish_reason == "length"` →
+  loud error, never silent truncation (mirror `test_claude_truncation_is_loud`/`test_claude_cap_passed`,
+  `api_transport.py:164-177`).
 
 **Code** (`app/services/api_transport.py`): `_openai_client()` (lazy import, key-raise,
 base_url passthrough), `_openai_usage(u)`, `async def _openai(model, prompt)` via
-`client.chat.completions.create`; dispatch branch in `generate`. `uv add openai`.
+`client.chat.completions.create` with the output cap + length-stop raise; dispatch branch
+in `generate`. `uv add openai`.
 Commit: `feat(api): openai SDK branch in api_transport (openai-api task 1)`
 
 ### Task 2 — agent_models + tiers: manifest, API_PROVIDERS, api-only rule (RED → GREEN)
@@ -76,17 +86,33 @@ Commit: `feat(api): openai SDK branch in api_transport (openai-api task 1)`
 - `default_model("openai")` = first manifest entry; completeness test forces a tier per model.
 - `_resolve_model("openai", None) is None` (no-leak invariant extends — add to the existing test).
 
-**Code**: `MODEL_MANIFEST["openai"] = [<Task-0 ids, flagship first>]`; `API_PROVIDERS` += openai;
-new `API_ONLY_PROVIDERS` + `validate_transport` cli-rejection; `model_tiers._MODEL_TIER` entries
-(tiering by OpenAI's published capability ladder); `agent._PROVIDER_DEFAULT_MODEL["openai"] = None`.
-Commit: `feat(models): openai provider — manifest, api-only transport rule, tiers (task 2)`
+**Code**: `MODEL_MANIFEST["openai"] = [<Task-0 ids, flagship first>]` — **verify no id collides
+with a codex manifest entry** (`_MODEL_TIER` is keyed by bare model name; a collision silently
+shares a tier — review fix #7); `API_PROVIDERS` += openai; new `API_ONLY_PROVIDERS` +
+`validate_transport` cli-rejection; `model_tiers._MODEL_TIER` entries (tiering by OpenAI's
+published capability ladder); `agent._PROVIDER_DEFAULT_MODEL["openai"] = None`.
+
+**Also in this task — close the two validation holes the review found (fixes #3, #6):**
+- **settings.py inverse guard (RED test in `tests/api/test_settings_launch_defaults.py`):**
+  today `settings.py:103/:114` only reject api-with-non-api-provider; an operator could save
+  `content_provider=openai, content_transport=cli` (or a role resolving to cli) and BRICK every
+  subsequent Auto launch (400 at `jobs.py:283`/`batch.py:272`). Reject api-only providers with a
+  cli/inherit-resolving transport at defaults save — same error contract as the launch routes.
+- **extract-role rejection for api-only providers (RED test):** the vision fallbacks force
+  `transport="cli"` (`pipeline.py:1103-1107`, `agent.py:1562`, `:1786`) — structurally impossible
+  for openai (`binary_names=()` → `FileNotFoundError("install one of []")`). Reject openai as
+  `extract_provider` at launch + settings with an error naming the vision-fallback reason.
+  Extract default stays gemini; content/judge/solver roles remain fully open.
+Commit: `feat(models): openai provider — manifest, api-only transport rule, tiers, guards (task 2)`
 
 ### Task 3 — provider stub + dispatch generalization + auth scrub (RED → GREEN)
 
 **Tests first** (`tests/services/test_agent.py` + `test_providers.py`):
 - `_auth_env("codex", "cli", {"OPENAI_API_KEY": "sk-x"})` — **RED:** key must be scrubbed
-  (today it leaks through). Also scrubbed for every other cli spawn.
-- registry resolves `"openai"`; its `build_argv` raises RuntimeError.
+  (verified: today it leaks through — `agent.py:287-288` pops only GEMINI/ANTHROPIC).
+- registry resolves `"openai"`; its `build_argv` raises RuntimeError (tested DIRECTLY on the
+  stub — on a real cli path the earlier `_resolve_binary` `FileNotFoundError` at `agent.py:256-259`
+  fires first since `binary_names=()`; don't claim the RuntimeError is the runtime backstop).
 - `_spawn` api dispatch uses `API_PROVIDERS` membership (test via monkeypatched
   `api_transport.generate` seeing provider="openai"; codex/kimi still fall through to CLI).
 
@@ -100,14 +126,21 @@ Commit: `feat(agent): openai provider stub, API_PROVIDERS dispatch, cli key scru
 
 ### Task 4 — worker capabilities + claim gate (RED → GREEN, scratch DB)
 
-**Tests first** (`tests/repositories/test_claim_gate.py` pattern, scratch `edu_scratch_oai`):
+**Tests first** (pattern: `tests/integration/test_claim_gate_self_grade.py` — the plan's earlier
+`tests/repositories/test_claim_gate.py` reference was stale; scratch `edu_scratch_oai`):
 - `_api_capable`: openai = `bool(OPENAI_API_KEY)`; `_capability_blob["api"]["openai"]` present.
 - **RED (bites-proof):** pending `provider=openai, transport=api` job + worker WITHOUT
   `can_openai_api` → `claim_next_job` returns None; WITH → claims.
-- resolved-role: api-judge=openai job gated the same way (predicate `:367` branch).
+- resolved-role: api-judge=openai job gated the same way (`_provider_api_ok` at
+  `repositories/jobs.py:367` is shared by judge/extract/solver — one branch covers all three).
+- **Update the three shape-pinning tests IN THIS TASK (review fix #1)** — they assert the exact
+  capability dict/blob shapes and go red the moment `can_openai_api` exists:
+  `tests/services/test_auth_env.py:150`, `:296-310` ("adding any extra key breaks this
+  assertion" is their stated purpose), `tests/services/test_worker_capabilities.py:56-66`.
+  Without these updates this task's own green-suite commit bar is unachievable.
 
 **Code**: `worker._api_capable` + `_compute_capabilities` (`can_openai_api`) + `_capability_blob`;
-`jobs.py:356` + `:367` openai branches.
+`repositories/jobs.py:356` + `:367` openai branches.
 Commit: `feat(worker): openai api capability + claim-gate branches (task 4)`
 
 ### Task 5 — pricing + judge auth signals (RED → GREEN)
@@ -116,22 +149,36 @@ Commit: `feat(worker): openai api capability + claim-gate branches (task 4)`
 - openai row: `cost = (prompt−cached)·in + cached·cache_read + output·out` (prompt-includes-cached
   semantics — RED with a naive disjoint formula).
 - unpriced openai model → $0 + one log line (existing behavior).
-- `_AUTH_SIGNALS` matches OpenAI's 401 shapes (`invalid_api_key`, `Incorrect API key provided`);
-  deliberately no bare `"401"` (same rationale as the existing no-bare-`"403"`).
+- auth-signal coverage: contract PIN, likely not RED — `_AUTH_SIGNALS` already carries `"401"`
+  (`phase_judge.py:143`) and OpenAI SDK errors stringify as `"Error code: 401 - …"`. Prove with
+  the RAW SDK message shapes; add `invalid_api_key` marker for the unwrapped form.
+- `_openai_client` raises an `agent.AuthEnvError`-compatible error on missing key so
+  `phase_judge._is_auth_error` isinstance/signal classification works for judge AND solver
+  (solver imports the same helper, `solver.py:21`).
 
 **Code**: `PRICE_MAP` openai entries (rates verified from platform.openai.com/docs/pricing at
 impl, source-commented like the gemini block); `_PROMPT_INCLUDES_CACHED` += `"openai"`;
-`phase_judge._AUTH_SIGNALS` += openai markers.
+`phase_judge._AUTH_SIGNALS` += openai markers; `config.py` gains `agent_limit_openai_1h/24h/7d`
+fields (else `/usage` getattr-defaults openai to unmetered, `api/v1/jobs.py:649-652`).
 Commit: `feat(pricing): openai price map + cached-inclusive semantics; judge auth signals (task 5)`
 
 ### Task 6 — FE: api-only provider UX
 
 **Code** (`web/src/`): models endpoint already serves the manifest generically — verify
 `api_supported` includes openai (it derives from `API_PROVIDERS`); add `api_only` map to the
-response if absent. Launcher + section: when `api_only[provider]`, pin transport=api and hide
-the cli option (inverse of the existing `!apiSupported → pin cli` effect at `launcher.tsx:839`);
-`RoleAgentControls` same. Pure test for the pin rule if extracted (follow `launch-model.ts`
-pattern); else covered by tsc + build. `scripts/probe_openai_models.py` committed here too.
+response. Launcher + section: when `api_only[provider]`, pin transport=api and hide the cli
+option (inverse of the existing `!apiSupported → pin cli` effect at `launcher.tsx:839`);
+`RoleAgentControls` same.
+**Critical (review fix #2): the fleet-downgrade effects fight the pin.** `launcher.tsx:849-851`,
+`section.tsx:159-161`, `RoleAgentControls.tsx:173-177` all `setTransport("cli")`/disable when
+`!fleet.api[provider]` — and `fleet.api["openai"]` stays falsy until every worker is updated AND
+keyed (old worker blobs lack the key; `repositories/workers.py:147-152` unions present keys only).
+Unguarded, that's an effect ping-pong (cli↔api) or a cli-openai POST that 400s. The downgrade
+branch must SKIP api_only providers and disable the launch button with a "fleet has no openai
+key" hint instead. Extract the pin/downgrade rule into a pure `lib/` module with an npx-tsx test
+(the `launch-model.ts` pattern) — this interaction is too subtle for tsc-only coverage.
+Cosmetic: add openai to `usage.tsx:24` PROVIDER_ORDER + accent map.
+`scripts/probe_openai_models.py` committed here too.
 Run: `npx tsx` pure tests + `npx tsc -p tsconfig.app.json --noEmit` + `npm run build`.
 Commit: `feat(fe): api-only provider pin (openai) (task 6)`
 
@@ -150,10 +197,22 @@ Commit: `feat(fe): api-only provider pin (openai) (task 6)`
 ## Flagged for the gate
 
 1. `openai` is the first **api-only** provider — a new validation class; cli stays structurally
-   impossible for it (validated at launch + settings, loud stub behind that).
-2. `OPENAI_API_KEY` scrub added to the cli baseline — changes every cli spawn's env (defensive;
-   RED-tested; the codex-CLI subscription→API mis-billing guard).
+   impossible for it (validated at launch AND settings-save AND extract-role, loud stub behind).
+2. `OPENAI_API_KEY` scrub added to the cli baseline — changes every cli spawn's env. Defensive
+   hygiene only: the repo's records say codex ignores this var (`CODEX_API_KEY` is the codex
+   flip, pre-existing WISHLIST item, out of scope).
 3. Manifest ids + prices enter the repo only after the live probe + official price page — no
-   trained-knowledge numbers.
+   trained-knowledge numbers; verify no codex↔openai bare-model-id collision (shared tier table).
 4. SA-key-style distribution does NOT cover OpenAI keys (that system is GCP-specific) — fleet
    workers needing openai get the key via their `.env`, like `ANTHROPIC_API_KEY` today.
+5. openai is REJECTED as extract provider (vision fallbacks force cli — structurally impossible;
+   the first api provider with no cli lane). Content/judge/solver fully supported.
+6. Until the fleet is updated + keyed, `fleet.api["openai"]` is false → FE disables openai
+   launches with a hint (never silently downgrades to cli).
+
+## Review record
+
+Fresh-Fable adversarial review 2026-07-15 (two-pass, ~48 tool reads): verdict
+**APPROVE-WITH-FIXES**; all 7 fixes folded into the tasks above (settings-save guard,
+shape-pinning test updates, FE downgrade/pin conflict, output-cap parity, corrected codex
+rationale, extract-role rejection, anchor/label corrections).
