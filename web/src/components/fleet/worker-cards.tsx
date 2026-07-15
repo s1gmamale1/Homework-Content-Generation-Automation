@@ -2,21 +2,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { Worker } from "@/lib/types";
 import { api } from "@/lib/api";
+import { ONLINE_GREEN, ago } from "@/lib/host-liveness";
 import { CARD, GHOST_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
-
-const ONLINE_GREEN = "oklch(0.78 0.10 145)";
-
-function ago(iso: string | null): string {
-  if (!iso) return "—";
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "—";
-  const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (secs < 60) return "just now";
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  return `${Math.floor(secs / 86400)}d ago`;
-}
 
 export function WorkerCards({
   data,

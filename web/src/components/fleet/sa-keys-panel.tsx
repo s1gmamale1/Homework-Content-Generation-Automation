@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { ONLINE_GREEN, ago, hostLiveness } from "@/lib/host-liveness";
 import { keyLabel } from "@/lib/sa-key-label";
 import { CARD, GHOST_BTN, GLASS_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
@@ -64,9 +65,10 @@ export function SaKeysPanel() {
 
   const keys = keysQ.data?.keys ?? [];
   const assignments = asgQ.data?.assignments ?? [];
-  const hosts = Array.from(
-    new Set((workersQ.data?.workers ?? []).map((w) => w.pc_id.split(":")[0])),
-  ).sort();
+  // One entry per host with liveness (online if any restart-row is fresh), so
+  // you can see which hosts are up before assigning a key to them.
+  const hosts = hostLiveness(workersQ.data?.workers ?? []);
+  const onlineCount = hosts.filter((h) => h.online).length;
   const asgFor = (h: string) => assignments.find((a) => a.hostname === h) ?? null;
 
   return (
@@ -160,34 +162,57 @@ export function SaKeysPanel() {
           <div className="space-y-2">
             <p className="text-[0.72rem] font-medium text-white/50 uppercase tracking-wider">
               Host assignments
+              <span className="ml-2 font-mono lowercase text-white/40">
+                {onlineCount}/{hosts.length} online
+              </span>
             </p>
             <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
               <table className="w-full text-[0.75rem]">
                 <thead>
                   <tr className="border-b border-white/[0.06] text-left">
                     <th className="px-3 py-2 font-medium text-white/45">Host</th>
+                    <th className="px-3 py-2 font-medium text-white/45">Status</th>
                     <th className="px-3 py-2 font-medium text-white/45">Assigned key</th>
                     <th className="px-3 py-2 font-medium text-white/45">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {hosts.map((h) => {
-                    const a = asgFor(h);
+                    const a = asgFor(h.host);
                     const isPendingAssign =
                       assign.isPending &&
-                      (assign.variables as { host: string } | undefined)?.host === h;
+                      (assign.variables as { host: string } | undefined)?.host ===
+                        h.host;
                     const isPendingUnassign =
-                      unassign.isPending && unassign.variables === h;
+                      unassign.isPending && unassign.variables === h.host;
                     const isPendingScrub =
-                      scrub.isPending && scrub.variables === h;
+                      scrub.isPending && scrub.variables === h.host;
 
                     return (
                       <tr
-                        key={h}
-                        className="border-b border-white/[0.04] last:border-0"
+                        key={h.host}
+                        className={cn(
+                          "border-b border-white/[0.04] last:border-0",
+                          !h.online && "opacity-50",
+                        )}
                       >
                         <td className="px-3 py-2">
-                          <span className="font-mono text-white">{h}</span>
+                          <span className="font-mono text-white">{h.host}</span>
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className="flex items-center gap-1.5">
+                            <span
+                              aria-hidden
+                              className={cn(
+                                "size-2 shrink-0 rounded-full",
+                                !h.online && "bg-white/25",
+                              )}
+                              style={h.online ? { background: ONLINE_GREEN } : undefined}
+                            />
+                            <span className={h.online ? "text-white/70" : "text-white/40"}>
+                              {h.online ? "online" : ago(h.lastHeartbeat)}
+                            </span>
+                          </span>
                         </td>
                         <td className="px-3 py-2 text-white/60">
                           {a?.scrub
@@ -209,7 +234,7 @@ export function SaKeysPanel() {
                               disabled={isPendingAssign}
                               onChange={(e) => {
                                 if (e.target.value) {
-                                  assign.mutate({ host: h, key: e.target.value });
+                                  assign.mutate({ host: h.host, key: e.target.value });
                                 }
                               }}
                             >
@@ -235,7 +260,7 @@ export function SaKeysPanel() {
                                 "h-6 px-1.5 text-[0.68rem] disabled:opacity-40",
                               )}
                               disabled={isPendingUnassign || !a?.key_id}
-                              onClick={() => unassign.mutate(h)}
+                              onClick={() => unassign.mutate(h.host)}
                             >
                               {isPendingUnassign ? "…" : "Unassign"}
                             </button>
@@ -245,7 +270,7 @@ export function SaKeysPanel() {
                                 "h-6 px-1.5 text-[0.68rem] text-amber-300/70 hover:text-amber-200 disabled:opacity-40",
                               )}
                               disabled={isPendingScrub}
-                              onClick={() => scrub.mutate(h)}
+                              onClick={() => scrub.mutate(h.host)}
                             >
                               {isPendingScrub ? "…" : "Scrub"}
                             </button>
