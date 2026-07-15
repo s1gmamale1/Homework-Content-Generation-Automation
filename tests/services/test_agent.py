@@ -27,6 +27,7 @@ test DB fixture lands in ``tests/conftest.py`` we can swap to a
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -87,6 +88,67 @@ def test_provider_default_model_table_keys() -> None:
     assert set(_PROVIDER_DEFAULT_MODEL.keys()) == {
         "claude", "kimi", "codex", "gemini", "opencode", "clodex",
     }
+
+
+def test_clodex_accounting_uses_served_model_and_keeps_requested_for_audit() -> None:
+    raw = {"requested_model": "gpt-5.6-luna", "served_model": "gpt-5.6-terra"}
+    assert agent_module._accounting_model_name(
+        "clodex", "gpt-5.6-luna", raw
+    ) == "gpt-5.6-terra"
+
+
+def test_accounting_model_falls_back_to_requested_and_ignores_other_providers() -> None:
+    assert agent_module._accounting_model_name(
+        "clodex", "gpt-5.6-luna", {"served_model": ""}
+    ) == "gpt-5.6-luna"
+    assert agent_module._accounting_model_name(
+        "gemini", "gemini-2.5-flash", {"served_model": "different"}
+    ) == "gemini-2.5-flash"
+
+
+@pytest.mark.asyncio
+async def test_record_usage_persists_clodex_served_model(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def commit(self):
+            return None
+
+    async def fake_create(_session, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(agent_module, "SessionLocal", FakeSession)
+    monkeypatch.setattr(agent_module.usage_repo, "create", fake_create)
+
+    await agent_module._record_usage(
+        operation="test",
+        provider="clodex",
+        model_name="gpt-5.6-luna",
+        usage={
+            "prompt_tokens": 13,
+            "output_tokens": 8,
+            "cached_tokens": 0,
+            "total_tokens": 21,
+            "raw": {
+                "requested_model": "gpt-5.6-luna",
+                "served_model": "gpt-5.6-terra",
+            },
+        },
+        duration_s=0.1,
+        started_at=datetime.now(timezone.utc),
+        success=True,
+        auth_mode="api",
+    )
+
+    assert captured["model_name"] == "gpt-5.6-terra"
+    assert captured["raw_envelope"]["requested_model"] == "gpt-5.6-luna"
+    assert captured["raw_envelope"]["served_model"] == "gpt-5.6-terra"
 
 
 # ─────────────────────────────────────────────────────────────────────

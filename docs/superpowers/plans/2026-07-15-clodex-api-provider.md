@@ -59,9 +59,13 @@ the existing CLI/subscription provider.
 - Treat Clodex prompt tokens as inclusive of cached tokens, matching OpenAI-compatible
   usage semantics.
 - Add source-commented rates from Clodex's public pricing payload and tests for the
-  normalized cost formula. Do not infer an unsupported interpretation of floor pricing.
+  normalized cost formula. For floor-priced models, conservatively use the larger of
+  the fixed and floor rates; an unknown served Clodex alias must also use a nonzero
+  fallback so budget guards fail safe rather than silently bypassing paid usage.
 - Add Clodex rolling-limit settings and auth-error signals.
-- Record the requested and served model when the endpoint returns both.
+- Record the requested and served model when the endpoint returns both, and attribute
+  the ledger row to the served model so downstream pricing and budget guards use the
+  tier Clodex reports actually serving.
 
 ### 5. Frontend API-only behavior
 
@@ -90,5 +94,6 @@ the existing CLI/subscription provider.
 3. CLI and extract-role combinations fail validation before scheduling.
 4. Unkeyed workers cannot claim Clodex work; keyed workers can.
 5. The UI cannot enter an API-only/CLI effect loop or submit a Clodex CLI job.
-6. Usage tokens, requested/served model metadata, and supported pricing are retained.
+6. Usage tokens and requested/served model metadata are retained; the ledger uses the
+   served model, and every selectable or unknown served Clodex model prices nonzero.
 7. Tests and the bounded live smoke pass from the feature worktree.

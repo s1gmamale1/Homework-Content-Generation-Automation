@@ -83,10 +83,17 @@ def test_clodex_cached_is_subset_of_prompt_and_output_uses_ratio():
     assert pricing.cost_usd("clodex", "gpt-5.6-luna", usage) == pytest.approx(expected)
 
 
-def test_clodex_floor_priced_models_are_not_underreported_as_linear():
+def test_clodex_floor_priced_models_use_conservative_nonzero_rates():
     usage = {"prompt_tokens": 1_000_000, "output_tokens": 1_000_000}
-    assert pricing.cost_usd("clodex", "gpt-5.5", usage) == 0.0
-    assert pricing.cost_usd("clodex", "codex-auto-review", usage) == 0.0
+    # Public payload: gpt-5.5 floor/fixed=max(0.125, 0.08), completion ratio 6.
+    assert pricing.cost_usd("clodex", "gpt-5.5", usage) == pytest.approx(0.875)
+    # auto-review floor/fixed=max(0.07, 0.0525), completion ratio 1.
+    assert pricing.cost_usd("clodex", "codex-auto-review", usage) == pytest.approx(0.14)
+
+
+def test_unknown_clodex_served_model_uses_conservative_fallback_not_zero():
+    usage = {"prompt_tokens": 1_000_000, "output_tokens": 1_000_000}
+    assert pricing.cost_usd("clodex", "future-remap", usage) > 0
 
 
 # ── cache-write (pricing-1b) ──────────────────────────────────────────────────

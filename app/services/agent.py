@@ -642,6 +642,23 @@ def _spawn_failure_message(provider: str, transport: str, rc: int, stderr: str, 
     return f"{provider} {word} call failed rc={rc}: {_failure_preview(stderr, text)}"
 
 
+def _accounting_model_name(
+    provider: str, requested_model: Optional[str], raw: dict[str, Any]
+) -> str:
+    """Model id used by the cost ledger.
+
+    Clodex can serve a different tier than the requested alias. Attribute the
+    token row to the provider-reported model so pricing and budget guards use
+    the served tier; ``raw`` retains both ids for audit. Other providers keep
+    their existing requested/default behavior.
+    """
+    if provider == "clodex":
+        served = raw.get("served_model")
+        if isinstance(served, str) and served.strip():
+            return served
+    return requested_model or "<default>"
+
+
 async def _record_usage(
     *,
     operation: str,
@@ -663,6 +680,9 @@ async def _record_usage(
     raw = dict(usage.get("raw") or {})
     if extra_envelope:
         raw.update(extra_envelope)
+    if provider == "clodex" and model_name:
+        raw.setdefault("requested_model", model_name)
+    accounting_model = _accounting_model_name(provider, model_name, raw)
 
     try:
         async with SessionLocal() as session:
@@ -670,7 +690,7 @@ async def _record_usage(
                 session,
                 operation=operation,
                 provider=provider,
-                model_name=model_name or "<default>",
+                model_name=accounting_model,
                 auth_mode=auth_mode,
                 book_id=book_id,
                 homework_job_id=homework_job_id,
