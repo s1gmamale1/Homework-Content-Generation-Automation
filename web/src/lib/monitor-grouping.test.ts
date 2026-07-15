@@ -19,7 +19,7 @@ assert.strictEqual(f.canCancel, true);
 assert.strictEqual(f.canRetry, true);
 assert.strictEqual(f.isPaused, false);
 
-const p = batchActionFlags({ rollup: { not_started: 5 }, paused_at: "2026-06-29T00:00:00Z" } as any);
+const p = batchActionFlags({ rollup: { pending: 5 }, paused_at: "2026-06-29T00:00:00Z" } as any);
 assert.strictEqual(p.isPaused, true);
 assert.strictEqual(p.canRetry, false);
 assert.strictEqual(p.canPause, false);
