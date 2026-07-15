@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { keyLabel } from "@/lib/sa-key-label";
 import { CARD, GHOST_BTN, GLASS_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
@@ -128,10 +129,10 @@ export function SaKeysPanel() {
                 >
                   <span className="flex-1 min-w-0">
                     <code className="font-mono text-[0.75rem] text-white">
-                      {k.project_id}
+                      {keyLabel(k.original_filename, k.project_id)}
                     </code>
                     <span className="ml-2 text-[0.7rem] text-white/45 truncate">
-                      {k.client_email}
+                      {k.project_id} · {k.client_email}
                     </span>
                   </span>
                   <span className="font-mono text-[0.62rem] text-white/35 shrink-0">
@@ -191,8 +192,13 @@ export function SaKeysPanel() {
                         <td className="px-3 py-2 text-white/60">
                           {a?.scrub
                             ? "(scrubbed)"
-                            : a?.project_id
-                              ? a.project_id
+                            : a?.key_id
+                              ? (() => {
+                                  const k = keys.find((kk) => kk.id === a.key_id);
+                                  return k
+                                    ? keyLabel(k.original_filename, k.project_id)
+                                    : (a.project_id ?? "—");
+                                })()
                               : "—"}
                         </td>
                         <td className="px-3 py-2">
@@ -207,10 +213,19 @@ export function SaKeysPanel() {
                                 }
                               }}
                             >
-                              <option value="">Assign key…</option>
+                              {/* Native <select> popup is OS-rendered on a white
+                                  background — options need an explicit dark bg +
+                                  light text or they're white-on-white/invisible. */}
+                              <option value="" className="bg-neutral-900 text-white">
+                                Assign key…
+                              </option>
                               {keys.map((k) => (
-                                <option key={k.id} value={k.id}>
-                                  {k.project_id}
+                                <option
+                                  key={k.id}
+                                  value={k.id}
+                                  className="bg-neutral-900 text-white"
+                                >
+                                  {keyLabel(k.original_filename, k.project_id)}
                                 </option>
                               ))}
                             </select>
