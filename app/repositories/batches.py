@@ -261,12 +261,19 @@ async def list_with_rollups(session: AsyncSession) -> list[dict]:
 
 
 async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
-    """One row per lesson in the batch's BOOK (full TOC), LEFT-joined to the
-    latest job per toc_entry within this batch. Launched lessons carry their
-    job's status/fields; un-launched lessons come back with job_id/status None.
-    Ordered by order_index. Companion to rollup_for_batch's whole-book tally:
-    this returns the rows, that returns the per-status counts (incl. not_started)."""
+    """One row per TOC entry in the batch's BOOK (full TOC), LEFT-joined to
+    the latest job per toc_entry within this batch. Launched lessons carry
+    their job's status/fields; un-launched entries come back with
+    job_id/status/attempts/current_phase/error_message all None. Every row
+    also carries `toc_class` — the pure classifier's tag
+    (app.services.toc_classifier.classify_entries), run once over the
+    fetched rows — so the FE can render un-launched/excluded rows with their
+    class chip instead of a bare "not started". Ordered by order_index.
+    rollup_for_batch is launched-only (its denominator is the launch scope,
+    not this whole-book row count); toc_total_for_batch is the whole-book
+    display context."""
     from app.models.toc_entry import TOCEntry
+    from app.services.toc_classifier import classify_entries
 
     book_id = (
         await session.execute(select(Batch.book_id).where(Batch.id == batch_id))
@@ -294,13 +301,18 @@ async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
             latest.c.current_phase, latest.c.error_message,
             TOCEntry.id.label("toc_entry_id"),
             TOCEntry.section_title, TOCEntry.order_index,
+            TOCEntry.page_start, TOCEntry.page_end,
         )
         .select_from(TOCEntry)
         .outerjoin(latest, latest.c.toc_entry_id == TOCEntry.id)
         .where(TOCEntry.book_id == book_id)
         .order_by(TOCEntry.order_index)
     )
-    rows = await session.execute(stmt)
+    rows = (await session.execute(stmt)).all()
+    # classify_entries duck-types .section_title/.page_start/.page_end off
+    # each Row (present via the select above) and returns classes aligned to
+    # input order — rows are never reordered, so a straight zip lines up.
+    toc_classes = classify_entries(rows)
     return [
         {
             "job_id": str(r.job_id) if r.job_id is not None else None,
@@ -311,8 +323,9 @@ async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
             "attempts": r.attempts,
             "current_phase": r.current_phase,
             "error_message": r.error_message,
+            "toc_class": toc_class,
         }
-        for r in rows
+        for r, toc_class in zip(rows, toc_classes)
     ]
 
 
