@@ -218,6 +218,8 @@ async def test_batch_explicit_output_language_en_threaded():
                          AsyncMock(return_value={"pending": 1})),
             patch.object(batch_mod.batches_repo, "archive_rollup_for_batch",
                          AsyncMock(return_value={"archived": 0, "unarchived": 0, "stale": 0})),
+            patch.object(batch_mod.batches_repo, "toc_total_for_batch",
+                         AsyncMock(return_value=1)),
         ):
             async with _client() as c:
                 resp = await c.post(
@@ -308,6 +310,8 @@ async def test_batch_inherits_global_default_output_language():
                          AsyncMock(return_value={"pending": 1})),
             patch.object(batch_mod.batches_repo, "archive_rollup_for_batch",
                          AsyncMock(return_value={"archived": 0, "unarchived": 0, "stale": 0})),
+            patch.object(batch_mod.batches_repo, "toc_total_for_batch",
+                         AsyncMock(return_value=1)),
         ):
             async with _client() as c:
                 resp = await c.post(

@@ -186,6 +186,8 @@ async def test_batch_force_with_prior_api_job_warns():
             patch.object(batch_mod.batches_repo, "rollup_for_batch", AsyncMock(return_value={"done": 1})),
             patch.object(batch_mod.batches_repo, "archive_rollup_for_batch",
                          AsyncMock(return_value={"archived": 0, "unarchived": 0, "stale": 0})),
+            patch.object(batch_mod.batches_repo, "toc_total_for_batch",
+                         AsyncMock(return_value=1)),
             # section_prior_api_cost returns ($1.23, had_done=True) → should warn
             patch.object(batch_mod.cost_repo, "section_prior_api_cost",
                          AsyncMock(return_value=(1.23, True))),
@@ -232,6 +234,8 @@ async def test_batch_force_never_generated_no_warning():
             patch.object(batch_mod.batches_repo, "rollup_for_batch", AsyncMock(return_value={})),
             patch.object(batch_mod.batches_repo, "archive_rollup_for_batch",
                          AsyncMock(return_value={"archived": 0, "unarchived": 0, "stale": 0})),
+            patch.object(batch_mod.batches_repo, "toc_total_for_batch",
+                         AsyncMock(return_value=1)),
             # No prior job at all: (0.0, False)
             patch.object(batch_mod.cost_repo, "section_prior_api_cost",
                          AsyncMock(return_value=(0.0, False))),
@@ -286,6 +290,8 @@ async def test_batch_force_cli_only_prior_no_warning():
             patch.object(batch_mod.batches_repo, "rollup_for_batch", AsyncMock(return_value={})),
             patch.object(batch_mod.batches_repo, "archive_rollup_for_batch",
                          AsyncMock(return_value={"archived": 0, "unarchived": 0, "stale": 0})),
+            patch.object(batch_mod.batches_repo, "toc_total_for_batch",
+                         AsyncMock(return_value=1)),
             # FAITHFUL mock: cli done job found (had_done=True) but zero api-auth usages
             # → (0.0, True).  Suppression is via cost > 0, not had_done.
             patch.object(batch_mod.cost_repo, "section_prior_api_cost",
@@ -343,6 +349,8 @@ async def test_batch_no_force_unaffected():
             patch.object(batch_mod.batches_repo, "rollup_for_batch", AsyncMock(return_value={"done": 1})),
             patch.object(batch_mod.batches_repo, "archive_rollup_for_batch",
                          AsyncMock(return_value={"archived": 0, "unarchived": 0, "stale": 0})),
+            patch.object(batch_mod.batches_repo, "toc_total_for_batch",
+                         AsyncMock(return_value=1)),
             patch.object(batch_mod.cost_repo, "section_prior_api_cost", mock_prior),
         ):
             async with _client() as c:
@@ -396,6 +404,8 @@ async def test_batch_no_force_brand_new_section_no_warning():
             patch.object(batch_mod.batches_repo, "rollup_for_batch", AsyncMock(return_value={})),
             patch.object(batch_mod.batches_repo, "archive_rollup_for_batch",
                          AsyncMock(return_value={"archived": 0, "unarchived": 0, "stale": 0})),
+            patch.object(batch_mod.batches_repo, "toc_total_for_batch",
+                         AsyncMock(return_value=1)),
             patch.object(batch_mod.cost_repo, "section_prior_api_cost", mock_prior),
         ):
             async with _client() as c:

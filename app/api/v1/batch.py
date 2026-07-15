@@ -95,7 +95,8 @@ class BatchLaunchRequest(BaseModel):
 
 
 def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None = None,
-                    *, archived: int = 0, unarchived: int = 0, stale: int = 0) -> dict:
+                    *, toc_total: int = 0, archived: int = 0, unarchived: int = 0,
+                    stale: int = 0) -> dict:
     return {
         "batch_id": str(batch.id),
         "book_id": str(batch.book_id),
@@ -116,13 +117,9 @@ def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None 
         "solver_provider": batch.solver_provider,
         "solver_model": batch.solver_model,
         "rollup": tally,
-        "lessons_covered": sum(v for k, v in tally.items() if k != "not_started"),
-        "complete": (
-            sum(tally.values()) > 0
-            and tally.get("not_started", 0) == 0
-            and (tally.get("pending", 0) + tally.get("running", 0)
-                 + tally.get("cancelling", 0)) == 0
-        ),
+        "lessons_covered": sum(tally.values()),
+        "complete": sum(tally.values()) > 0 and tally.get("done", 0) == sum(tally.values()),
+        "toc_total": toc_total,
         "created_at": batch.created_at.isoformat(),
         # Cost-safety fields (C4): None when the batch is not paused.
         "paused_at": batch.paused_at.isoformat() if batch.paused_at else None,
@@ -386,9 +383,10 @@ async def launch_batch(
     await session.flush()
     tally = await batches_repo.rollup_for_batch(session, batch.id)
     archive = await batches_repo.archive_rollup_for_batch(session, batch.id)
+    toc_total = await batches_repo.toc_total_for_batch(session, batch.id)
     await session.commit()
 
-    payload = _rollup_payload(batch, tally, book.original_filename,
+    payload = _rollup_payload(batch, tally, book.original_filename, toc_total=toc_total,
                               archived=archive["archived"], unarchived=archive["unarchived"],
                               stale=archive["stale"])
     payload.update(jobs_created=created, jobs_adopted=adopted,
@@ -401,6 +399,7 @@ async def launch_batch(
 async def list_batches(session: AsyncSession = Depends(get_session)):
     rows = await batches_repo.list_with_rollups(session)
     return {"batches": [_rollup_payload(r["batch"], r["rollup"], r.get("original_filename"),
+                                        toc_total=r["toc_total"],
                                         archived=r["archive"]["archived"],
                                         unarchived=r["archive"]["unarchived"],
                                         stale=r["archive"]["stale"])
@@ -415,8 +414,10 @@ async def get_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)
         raise HTTPException(404, "batch not found")
     tally = await batches_repo.rollup_for_batch(session, batch_id)
     archive = await batches_repo.archive_rollup_for_batch(session, batch_id)
+    toc_total = await batches_repo.toc_total_for_batch(session, batch_id)
     book = await books_repo.get(session, batch.book_id)
     return _rollup_payload(batch, tally, book.original_filename if book else None,
+                           toc_total=toc_total,
                            archived=archive["archived"], unarchived=archive["unarchived"],
                            stale=archive["stale"])
 
