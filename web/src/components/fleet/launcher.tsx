@@ -53,6 +53,7 @@ import type {
 import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { serveability, providerServeableAnyMode } from "@/lib/serveability";
+import { normalizeProviderTransport } from "@/lib/transport-policy";
 import { type LauncherConfig, loadLauncherConfig, saveLauncherConfig } from "@/lib/launcher-config";
 import { LANG_LABEL, langBadge } from "@/lib/language";
 import { resolveNotionPageId, langChipState } from "@/lib/notion-parts";
@@ -834,6 +835,7 @@ function ReadyCard({
   // claude/gemini do; the toggle is hidden for the rest and transport pins cli.
   const fleet = modelsQ.data?.fleet;
   const apiSupported = modelsQ.data?.api_supported?.[provider] ?? false;
+  const apiOnly = modelsQ.data?.api_only?.[provider] ?? false;
   const apiFleetCheck = serveability(fleet, provider, "api");
 
   // Reset transport to cli whenever the provider can't do api (keeps an
@@ -842,25 +844,26 @@ function ReadyCard({
   // "provider default" — fine for cli, but api forces an explicit model below.
   useEffect(() => {
     if (!modelsQ.data) return; // don't sanitize against an unloaded manifest — would demote a restored api pick
-    if (!apiSupported && transport === "api") {
-      setTransport("cli");
-      return;
-    }
-    if (fleet?.online && transport === "api" && !serveability(fleet, provider, "api").ok) {
-      setTransport("cli");
-    }
-  }, [apiSupported, transport, fleet, provider, modelsQ.data]);
+    const next = normalizeProviderTransport({
+      transport,
+      apiSupported,
+      apiOnly,
+      apiFleetOk: !fleet?.online || apiFleetCheck.ok,
+    });
+    if (next !== transport) setTransport(next);
+  }, [apiSupported, apiOnly, apiFleetCheck.ok, transport, fleet?.online, modelsQ.data]);
 
   // Provider reset guard: if the current provider becomes unservable (fleet
   // online + no CLI or API path), nudge to the first servable provider.
   useEffect(() => {
     if (!fleet?.online) return;
+    if (apiOnly) return;
     if (providerServeableAnyMode(fleet, provider)) return;
     const firstServable = Object.keys(modelsQ.data?.providers ?? {}).find((p) =>
       providerServeableAnyMode(fleet, p),
     );
     if (firstServable) setProvider(firstServable);
-  }, [fleet, provider, modelsQ.data]);
+  }, [fleet, provider, apiOnly, modelsQ.data]);
 
   // On api, force a concrete model: "provider default" isn't allowed (billing
   // needs an explicit model). Seed/clear the model as transport/provider change.
@@ -910,6 +913,7 @@ function ReadyCard({
   const alreadyBatched = batchedTransports.has(transport);
   // On api we must have an explicit model selected.
   const missingApiModel = transport === "api" && !model;
+  const apiOnlyFleetBlocked = apiOnly && fleet?.online && !apiFleetCheck.ok;
 
   // Current batch for this transport — used for cancel-all / resume buttons.
   const currentBatch = bookBatches.find((b) => b.transport === transport) ?? null;
@@ -1087,7 +1091,8 @@ function ReadyCard({
                   </SelectTrigger>
                   <SelectContent>
                     {(providers.length > 0 ? providers : ["claude"]).map((p) => {
-                      const serveable = providerServeableAnyMode(fleet, p);
+                      const candidateApiOnly = modelsQ.data?.api_only?.[p] ?? false;
+                      const serveable = candidateApiOnly || providerServeableAnyMode(fleet, p);
                       return (
                         <SelectItem key={p} value={p} disabled={!serveable}>
                           {serveable ? p : `${p} — no worker runs it`}
@@ -1104,6 +1109,7 @@ function ReadyCard({
                     onChange={setTransport}
                     apiDisabled={!apiFleetCheck.ok}
                     apiDisabledReason={!apiFleetCheck.ok ? apiFleetCheck.reason : null}
+                    apiOnly={apiOnly}
                   />
                 )}
                 {/* Session-limit strategy — what to do when a Claude session limit hits. */}
@@ -1325,7 +1331,7 @@ function ReadyCard({
                       <button
                         type="button"
                         className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs text-rose-300/90 hover:bg-white/[0.06] hover:text-rose-200 disabled:opacity-50"
-                        disabled={launch.isPending || missingApiModel}
+                        disabled={launch.isPending || missingApiModel || apiOnlyFleetBlocked}
                         title={
                           missingApiModel
                             ? "Pick a model to launch on API"
@@ -1362,11 +1368,14 @@ function ReadyCard({
                     launching ||
                     (choosing && selected.size === 0) ||
                     missingApiModel ||
+                    apiOnlyFleetBlocked ||
                     (!choosing && lessons != null && remaining === 0)
                   }
                   title={
                     missingApiModel
                       ? "Pick a model to launch on API"
+                      : apiOnlyFleetBlocked
+                        ? apiFleetCheck.reason ?? "No keyed Clodex worker is online"
                       : complete
                         ? "All lessons done — use ⋯ Re-run all to regenerate"
                         : !choosing && remaining === 0
@@ -1463,7 +1472,7 @@ function ReadyCard({
                             <button
                               type="button"
                               className="inline-flex shrink-0 items-center gap-1 rounded-md border border-white/[0.1] px-1.5 py-0.5 text-[10px] text-white/60 transition-colors hover:bg-white/[0.06] hover:text-white disabled:opacity-40"
-                              disabled={launch.isPending || missingApiModel}
+                              disabled={launch.isPending || missingApiModel || apiOnlyFleetBlocked}
                               title={
                                 missingApiModel
                                   ? "Pick a model to launch on API"
@@ -1556,16 +1565,18 @@ function TransportToggle({
   onChange,
   apiDisabled,
   apiDisabledReason,
+  apiOnly,
 }: {
   value: Transport;
   onChange: (next: Transport) => void;
   apiDisabled?: boolean;
   apiDisabledReason?: string | null;
+  apiOnly?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-1">
       <div className="inline-flex h-9 rounded-xl border border-white/[0.1] bg-white/[0.04] p-0.5">
-        {ALL_TRANSPORTS.map((t) => (
+        {ALL_TRANSPORTS.filter((t) => !apiOnly || t === "api").map((t) => (
           <button
             key={t}
             type="button"

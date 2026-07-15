@@ -18,7 +18,7 @@ The flow is a single fixed sequence of **11 phases** per subject (no easy/hard b
 
 ## Why it's interesting
 
-- **Two-path generation.** `transport=cli` (default): every model call shells out to one of five provider CLIs — `claude`, `gemini`, `codex`, `kimi`, `opencode` — through a single router (`app/services/agent.py`); each CLI uses its own login, no API key required. `transport=api` (claude+gemini only): model calls go directly to the provider SDKs (`google-genai` / `anthropic`) via `app/services/api_transport.py`, using worker-env credentials. The provider is chosen per job.
+- **Two-path generation.** `transport=cli` (default): calls use the five provider CLIs — `claude`, `gemini`, `codex`, `kimi`, `opencode`. `transport=api`: calls use Gemini, Anthropic, or the OpenAI-compatible Clodex endpoint through `app/services/api_transport.py`. Clodex is API-only and uses its own worker credential.
 - **Per-phase failover + LLM judge.** If a phase fails on its provider, it fails over down a configured provider order (`failover_provider_order`, default `codex → gemini → kimi → opencode`; claude is reserved out for the user's Claude Max allocation). `transport=api` jobs retry on the requested provider only (no cross-provider legs). Underneath failover, every spawn also self-throttles: a transient 429 / `RESOURCE_EXHAUSTED` rate-limit is retried in place with exponential backoff (`RATE_LIMIT_*`) before it ever counts as a phase failure. Every produced phase is then graded by an LLM judge (default `claude-opus-4-7`) that cites violations of the prompt contract **and fact-checks the output against the source lesson** (the injected `LESSON CONTEXT`), severity-gates regeneration, re-checks the regenerated output, and records the outcome in a queryable `phase_outputs.judge_status` (`ok` / `major_shipped` / `major_regen_failed` / `unavailable`).
 - **DAG-parallel pipeline.** Phases run concurrently once their declared dependencies (`flows.PHASE_DEPS`) are satisfied — roughly a 2× wall-clock win over sequential.
 - **Postgres-backed job queue** using `SELECT … FOR UPDATE SKIP LOCKED`. Workers run embedded in the API process or standalone via `python -m app.services.worker`. Restart-safe via a heartbeat + lease-reclaim; the startup reclaim is **peer-aware** (a head restart won't yank a live peer's heartbeated job). Jobs are cancellable (the provider CLI's whole process tree is reaped); batches can be **paused/resumed** (`POST /jobs/batch/{id}/pause|unpause`) and individual workers **drained** (`POST /workers/{pc_id}/drain`).
@@ -50,7 +50,7 @@ The flow is a single fixed sequence of **11 phases** per subject (no easy/hard b
                                           │
                        every model call → transport=cli: a provider CLI subprocess
                                           (claude · gemini · codex · kimi · opencode)
-                                          transport=api: claude/gemini SDK (api_transport.py)
+                                          transport=api: claude/gemini/clodex (api_transport.py)
 ```
 
 The pipeline lives entirely server-side; the SPA streams progress via SSE and renders each phase's markdown.
@@ -66,7 +66,7 @@ docker compose up --build
 
 Open `http://localhost:8000`. Compose runs Postgres + migrations + API + embedded worker.
 
-> **Provider CLIs:** generation drives the `claude` / `gemini` / `codex` / `kimi` / `opencode` CLIs. They must be installed on `PATH` and logged in (each manages its own auth; the default `cli` transport needs **no API key**. The opt-in `api` transport (claude+gemini, per-job toggle) bills real keys supplied via worker env — see docs/runbooks/phase4-transport-operator-acceptance.md). `gemini` must be available for TOC/lesson extraction. See **[docs/DEPLOY.md](./docs/DEPLOY.md)** for getting the CLIs into the runtime.
+> **Providers:** the CLI lane drives `claude` / `gemini` / `codex` / `kimi` / `opencode`, which must be on `PATH` and logged in. The API lane also supports API-only `clodex`; configure `CLODEX_API_KEY` (and only override `CLODEX_BASE_URL` for testing/staging). `gemini` remains required for TOC/lesson extraction. See **[docs/DEPLOY.md](./docs/DEPLOY.md)**.
 
 For development without Docker: `uv sync` → `uv run alembic upgrade head` → `uv run uvicorn main:app --reload`. Local dev uses Postgres on port **5433**.
 
@@ -138,7 +138,7 @@ All settings via env vars; defaults in [`app/config.py`](./app/config.py). Essen
 | `JOB_TIMEOUT_SECONDS` | Hard ceiling per pipeline run (default 1800) |
 | `QUEUE_BACKPRESSURE_LIMIT` | `503` when `pending` depth exceeds; `0` disables |
 | `NOTION_API_KEY` / `NOTION_*` | Optional: Notion archive + Fetch-From-Notion |
-| `ANTHROPIC_API_KEY` + (`GEMINI_API_KEY` **or** `GOOGLE_APPLICATION_CREDENTIALS`+`GOOGLE_CLOUD_PROJECT`) | Only for `transport=api` jobs (Phase 4 toggle); works from `.env` (loaded at startup, exported env wins) — see `.env.example` "TRANSPORT=API". **Primary path for a fleet is the Fleet → Keys UI** (upload a Vertex SA key on the head, assign by hostname; workers boot keyless and pick it up live) — these env vars remain a fallback/legacy option. |
+| `ANTHROPIC_API_KEY`; `GEMINI_API_KEY` or Vertex credentials; `CLODEX_API_KEY` | Provider-specific credentials for `transport=api`. Clodex defaults to `https://clodex.xyz/v1` and never reads `OPENAI_API_KEY`. |
 
 > `GEMINI_MODEL` is **vestigial** (leftover from the removed SDK era) — nothing reads it. `GEMINI_API_KEY` is no longer vestigial: since Phase 4 it selects API-key auth for `transport=api` gemini jobs.
 

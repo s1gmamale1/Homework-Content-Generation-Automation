@@ -73,6 +73,29 @@ def test_gemini_cached_never_negative_input():
     assert cost == pytest.approx(500 * 0.03 / 1_000_000)
 
 
+def test_clodex_cached_is_subset_of_prompt_and_output_uses_ratio():
+    usage = {
+        "prompt_tokens": 1_000_000,
+        "output_tokens": 250_000,
+        "cached_tokens": 400_000,
+    }
+    expected = 0.6 * 0.063 + 0.25 * 0.504 + 0.4 * 0.063
+    assert pricing.cost_usd("clodex", "gpt-5.6-luna", usage) == pytest.approx(expected)
+
+
+def test_clodex_floor_priced_models_use_conservative_nonzero_rates():
+    usage = {"prompt_tokens": 1_000_000, "output_tokens": 1_000_000}
+    # Public payload: gpt-5.5 floor/fixed=max(0.125, 0.08), completion ratio 6.
+    assert pricing.cost_usd("clodex", "gpt-5.5", usage) == pytest.approx(0.875)
+    # auto-review floor/fixed=max(0.07, 0.0525), completion ratio 1.
+    assert pricing.cost_usd("clodex", "codex-auto-review", usage) == pytest.approx(0.14)
+
+
+def test_unknown_clodex_served_model_uses_conservative_fallback_not_zero():
+    usage = {"prompt_tokens": 1_000_000, "output_tokens": 1_000_000}
+    assert pricing.cost_usd("clodex", "future-remap", usage) > 0
+
+
 # ── cache-write (pricing-1b) ──────────────────────────────────────────────────
 
 def test_gemini_cache_write_semantics_unchanged():

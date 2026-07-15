@@ -20,6 +20,7 @@ from .codex import Codex
 from .gemini import Gemini
 from .kimi import Kimi
 from .opencode import OpenCode
+from .clodex import Clodex
 
 
 CLAUDE = Claude()
@@ -27,9 +28,10 @@ KIMI = Kimi()
 CODEX = Codex()
 GEMINI = Gemini()
 OPENCODE = OpenCode()
+CLODEX = Clodex()
 
 PROVIDERS: dict[str, Provider] = {
-    p.name: p for p in (CLAUDE, KIMI, CODEX, GEMINI, OPENCODE)
+    p.name: p for p in (CLAUDE, KIMI, CODEX, GEMINI, OPENCODE, CLODEX)
 }
 
 
@@ -52,11 +54,13 @@ __all__ = [
     "Codex",
     "Gemini",
     "OpenCode",
+    "Clodex",
     "CLAUDE",
     "KIMI",
     "CODEX",
     "GEMINI",
     "OPENCODE",
+    "CLODEX",
     "PROVIDERS",
     "get_provider",
 ]

@@ -63,7 +63,7 @@ export const SUBJECTS: Subject[] = [
 
 export type BookStatus = "uploading" | "toc_extracting" | "toc_ready" | "toc_review" | "failed";
 
-/** Generation transport: "cli" (local subprocess, default) vs "api" (pay-per-token SDK; claude/gemini only). */
+/** Generation transport: "cli" (local subprocess) vs "api" (pay-per-token SDK). */
 export type Transport = "cli" | "api";
 
 /** Output language for generated content. */
@@ -203,8 +203,10 @@ export interface FleetCapability {
 
 export interface ProviderModelManifest {
   providers: Record<string, string[]>;
-  /** Which providers can run on the pay-per-token API transport (claude/gemini). */
+  /** Which providers can run on the pay-per-token API transport. */
   api_supported: Record<string, boolean>;
+  /** Providers that have no CLI lane and must stay pinned to API. */
+  api_only: Record<string, boolean>;
   /** provider -> model -> tier int. */
   tiers?: Record<string, Record<string, number>>;
   /** Live fleet capability snapshot; absent when the endpoint hasn't loaded yet. */

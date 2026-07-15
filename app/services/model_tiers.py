@@ -26,6 +26,7 @@ _MODEL_TIER: dict[str, int] = {
     # Tier 2 — Strong
     "claude-sonnet-4-6": 2,
     "gpt-5.6-terra": 2,
+    "codex-auto-review": 2,
     "gpt-5.4": 2,
     "gemini-3-flash-preview": 2,
     "gemini-2.5-pro": 2,

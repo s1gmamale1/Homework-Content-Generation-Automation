@@ -48,7 +48,8 @@ from app.schemas import (
     TOCEntryExtracted,
     TOCValidation,
 )
-from app.services import content_lint
+from app.services import agent_models, content_lint
+from app.services.errors import AuthEnvError
 from app.services.providers import Provider, get_provider
 from app.services.proc_tree import kill_tree
 
@@ -103,6 +104,7 @@ _PROVIDER_DEFAULT_MODEL: dict[str, Optional[str]] = {
     # others it carries a non-None default (a free zen model). This does NOT
     # violate the no-leak invariant: kimi/codex/gemini stay None.
     "opencode": "opencode/deepseek-v4-flash-free",
+    "clodex": None,
 }
 
 
@@ -271,13 +273,6 @@ def provider_cli_installed(provider_name: str) -> bool:
     return any(shutil.which(n) for n in provider.binary_names)
 
 
-class AuthEnvError(RuntimeError):
-    """A spawn's credentials could not be assembled for the requested
-    transport (missing/empty key, no Vertex SA, api-unsupported provider).
-    Typed so auth classification is isinstance-based, never substring luck
-    (spec 4.1 §5a) — a judge hitting this on an api job must fail LOUDLY."""
-
-
 def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> dict[str, str]:
     """Per-call auth shaping (spec §4). cli is the unconditional baseline for
     EVERY spawn; api is the only deviation. Scrub both provider keys first, then
@@ -286,6 +281,13 @@ def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> d
     env = dict(base_env)
     env.pop("GEMINI_API_KEY", None)
     env.pop("ANTHROPIC_API_KEY", None)
+    # Defensive hygiene, not a verified mis-billing fix: codex-CLI's own auth
+    # flip is CODEX_API_KEY, not this var (WISHLIST tracks scrubbing that one
+    # separately). Scrubbed here anyway, same class as the two pops above, so
+    # API credentials never leak into a CLI subprocess.
+    env.pop("OPENAI_API_KEY", None)
+    env.pop("CLODEX_API_KEY", None)
+    env.pop("CLODEX_BASE_URL", None)
     env.pop("GOOGLE_GENAI_USE_GCA", None)
     # Also scrub the Vertex selector: gemini-cli 0.46.0 getAuthTypeFromEnv
     # checks GCA first, then GOOGLE_GENAI_USE_VERTEXAI, then GEMINI_API_KEY —
@@ -499,10 +501,14 @@ async def _spawn_once(
     failure cause (``ModelNotFoundError``, auth errors, etc.) instead of a
     parsed-stdout decoy.
     """
-    # transport=api for gemini/claude -> direct SDK call, not the CLI. Kept BEFORE
+    # transport=api for any API_PROVIDERS member -> direct SDK call, not the
+    # CLI. Membership reads app.services.agent_models.API_PROVIDERS (the
+    # single source of truth also used by validate_transport/is_valid) so
+    # adding a new api-only provider there (e.g. clodex) is a one-place
+    # change — no second hardcoded list to keep in sync here. Kept BEFORE
     # _resolve_binary so a pure-API worker needs no CLI on PATH; kept INSIDE
     # _semaphore() so direct-API fan-out is bounded exactly like CLI subprocesses.
-    if transport == "api" and provider.name in ("gemini", "claude"):
+    if transport == "api" and provider.name in agent_models.API_PROVIDERS:
         from app.services import api_transport
         async with _semaphore():
             return await api_transport.generate(
@@ -636,6 +642,23 @@ def _spawn_failure_message(provider: str, transport: str, rc: int, stderr: str, 
     return f"{provider} {word} call failed rc={rc}: {_failure_preview(stderr, text)}"
 
 
+def _accounting_model_name(
+    provider: str, requested_model: Optional[str], raw: dict[str, Any]
+) -> str:
+    """Model id used by the cost ledger.
+
+    Clodex can serve a different tier than the requested alias. Attribute the
+    token row to the provider-reported model so pricing and budget guards use
+    the served tier; ``raw`` retains both ids for audit. Other providers keep
+    their existing requested/default behavior.
+    """
+    if provider == "clodex":
+        served = raw.get("served_model")
+        if isinstance(served, str) and served.strip():
+            return served
+    return requested_model or "<default>"
+
+
 async def _record_usage(
     *,
     operation: str,
@@ -657,6 +680,9 @@ async def _record_usage(
     raw = dict(usage.get("raw") or {})
     if extra_envelope:
         raw.update(extra_envelope)
+    if provider == "clodex" and model_name:
+        raw.setdefault("requested_model", model_name)
+    accounting_model = _accounting_model_name(provider, model_name, raw)
 
     try:
         async with SessionLocal() as session:
@@ -664,7 +690,7 @@ async def _record_usage(
                 session,
                 operation=operation,
                 provider=provider,
-                model_name=model_name or "<default>",
+                model_name=accounting_model,
                 auth_mode=auth_mode,
                 book_id=book_id,
                 homework_job_id=homework_job_id,

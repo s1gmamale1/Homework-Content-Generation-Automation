@@ -60,6 +60,21 @@ def test_kimi_cli_scrubs_both_keys_preserves_path():
     assert result["PYTHONIOENCODING"] == "utf-8"
 
 
+def test_codex_cli_scrubs_api_keys():
+    """Unrelated API credentials must never reach a CLI child process."""
+    env = _base_env()
+    env["OPENAI_API_KEY"] = "sk-x"
+    env["CLODEX_API_KEY"] = "clodex-x"
+    env["CLODEX_BASE_URL"] = "https://clodex.xyz/v1"
+    result = agent._auth_env("codex", "cli", env)
+    assert "OPENAI_API_KEY" not in result
+    assert "CLODEX_API_KEY" not in result
+    assert "CLODEX_BASE_URL" not in result
+    assert "GEMINI_API_KEY" not in result
+    assert "ANTHROPIC_API_KEY" not in result
+    assert result["PYTHONIOENCODING"] == "utf-8"
+
+
 def test_claude_api_missing_key_raises():
     env = _base_env()
     del env["ANTHROPIC_API_KEY"]
@@ -147,7 +162,8 @@ def test_compute_capabilities_anthropic_only_env():
     caps = worker._compute_capabilities({"ANTHROPIC_API_KEY": "a"})
     assert caps["can_claude_api"] is True
     assert caps["can_gemini_api"] is False
-    assert set(caps.keys()) == {"can_claude_api", "can_gemini_api"}
+    assert caps["can_clodex_api"] is False
+    assert set(caps.keys()) == {"can_claude_api", "can_gemini_api", "can_clodex_api"}
 
 
 def test_compute_capabilities_gemini_vertex_only_env():
@@ -295,8 +311,8 @@ def test_gemini_api_vertex_branch_defaults_location_global():
     assert result["GOOGLE_CLOUD_LOCATION"] == "global"
 
 
-def test_compute_capabilities_credential_shape_is_exactly_two_keys():
-    """Task 4: _compute_capabilities returns ONLY can_claude_api + can_gemini_api.
+def test_compute_capabilities_credential_shape_is_exactly_three_keys():
+    """Capability computation returns only the three API credential flags.
     Per-role keys (judge_api_ok, judge_fallback_api_ok, extract_api_ok, judge_pair,
     settings_judge_provider, settings_extract_provider) are gone — the claim gate
     now reads these from stamped job columns, not the worker capabilities dict.
@@ -305,7 +321,9 @@ def test_compute_capabilities_credential_shape_is_exactly_two_keys():
     """
     from app.services import worker
 
-    caps = worker._compute_capabilities({"ANTHROPIC_API_KEY": "a", "GEMINI_API_KEY": "g"})
-    assert set(caps.keys()) == {"can_claude_api", "can_gemini_api"}, (
-        f"_compute_capabilities must return exactly 2 keys; got {set(caps.keys())}"
+    caps = worker._compute_capabilities({
+        "ANTHROPIC_API_KEY": "a", "GEMINI_API_KEY": "g", "CLODEX_API_KEY": "c",
+    })
+    assert set(caps.keys()) == {"can_claude_api", "can_gemini_api", "can_clodex_api"}, (
+        f"_compute_capabilities must return exactly 3 keys; got {set(caps.keys())}"
     )

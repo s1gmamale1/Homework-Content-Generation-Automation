@@ -60,6 +60,8 @@ export function RoleAgentControls({
   const fleet = manifest?.fleet;
   const providerNames = manifest ? Object.keys(manifest.providers) : [];
   const modelOptions = provider ? (manifest?.providers?.[provider] ?? []) : [];
+  const apiOnly = provider ? (manifest?.api_only?.[provider] ?? false) : false;
+  const isExtract = label.toLowerCase() === "extract";
 
   // Fleet reason for the currently-effective transport (only when a concrete provider is set).
   // resolveRoleTransport resolves "inherit" to the job transport.
@@ -87,6 +89,11 @@ export function RoleAgentControls({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transport, provider, manifest]);
 
+  useEffect(() => {
+    if (provider && apiOnly && transport !== "api") onTransport("api");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, apiOnly, transport]);
+
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-2">
@@ -113,10 +120,12 @@ export function RoleAgentControls({
           <SelectContent>
             <SelectItem value={AUTO}>Auto</SelectItem>
             {providerNames.map((p) => {
-              const serveable = providerServeableAnyMode(fleet, p);
+              const candidateApiOnly = manifest?.api_only?.[p] ?? false;
+              const unsupportedRole = isExtract && candidateApiOnly;
+              const serveable = candidateApiOnly || providerServeableAnyMode(fleet, p);
               return (
-                <SelectItem key={p} value={p} disabled={!serveable}>
-                  {serveable ? p : `${p} — no worker runs it`}
+                <SelectItem key={p} value={p} disabled={!serveable || unsupportedRole}>
+                  {unsupportedRole ? `${p} — no vision CLI` : serveable ? p : `${p} — no worker runs it`}
                 </SelectItem>
               );
             })}
@@ -169,7 +178,9 @@ export function RoleAgentControls({
               // Only gate when a concrete provider is selected (skip for Auto).
               let disabled = false;
               if (provider) {
-                if (o.value === "api") {
+                if (apiOnly) {
+                  disabled = o.value !== "api" || !serveability(fleet, provider, "api").ok;
+                } else if (o.value === "api") {
                   disabled = !serveability(fleet, provider, "api").ok;
                 } else if (o.value === "inherit") {
                   // inherit resolves to the job transport; disable if that
@@ -180,7 +191,7 @@ export function RoleAgentControls({
                     resolveRoleTransport("inherit", jobTransport),
                   ).ok;
                 }
-                // "cli" is never disabled by the fleet gate
+                // API-only providers keep CLI/inherit disabled.
               }
               return (
                 <SelectItem key={o.value} value={o.value} disabled={disabled}>

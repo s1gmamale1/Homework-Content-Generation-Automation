@@ -27,6 +27,7 @@ test DB fixture lands in ``tests/conftest.py`` we can swap to a
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -65,6 +66,10 @@ def test_resolve_model_codex_default_is_none() -> None:
     assert _resolve_model("codex", None) is None
 
 
+def test_resolve_model_clodex_default_is_none() -> None:
+    assert _resolve_model("clodex", None) is None
+
+
 def test_resolve_model_claude_default_is_pinned() -> None:
     assert _resolve_model("claude", None) == "claude-sonnet-4-6"
 
@@ -81,8 +86,69 @@ def test_provider_default_model_table_keys() -> None:
     """The dict must register exactly the supported providers; an accidental
     rename / drop would break ``run_phase`` silently."""
     assert set(_PROVIDER_DEFAULT_MODEL.keys()) == {
-        "claude", "kimi", "codex", "gemini", "opencode",
+        "claude", "kimi", "codex", "gemini", "opencode", "clodex",
     }
+
+
+def test_clodex_accounting_uses_served_model_and_keeps_requested_for_audit() -> None:
+    raw = {"requested_model": "gpt-5.6-luna", "served_model": "gpt-5.6-terra"}
+    assert agent_module._accounting_model_name(
+        "clodex", "gpt-5.6-luna", raw
+    ) == "gpt-5.6-terra"
+
+
+def test_accounting_model_falls_back_to_requested_and_ignores_other_providers() -> None:
+    assert agent_module._accounting_model_name(
+        "clodex", "gpt-5.6-luna", {"served_model": ""}
+    ) == "gpt-5.6-luna"
+    assert agent_module._accounting_model_name(
+        "gemini", "gemini-2.5-flash", {"served_model": "different"}
+    ) == "gemini-2.5-flash"
+
+
+@pytest.mark.asyncio
+async def test_record_usage_persists_clodex_served_model(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def commit(self):
+            return None
+
+    async def fake_create(_session, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(agent_module, "SessionLocal", FakeSession)
+    monkeypatch.setattr(agent_module.usage_repo, "create", fake_create)
+
+    await agent_module._record_usage(
+        operation="test",
+        provider="clodex",
+        model_name="gpt-5.6-luna",
+        usage={
+            "prompt_tokens": 13,
+            "output_tokens": 8,
+            "cached_tokens": 0,
+            "total_tokens": 21,
+            "raw": {
+                "requested_model": "gpt-5.6-luna",
+                "served_model": "gpt-5.6-terra",
+            },
+        },
+        duration_s=0.1,
+        started_at=datetime.now(timezone.utc),
+        success=True,
+        auth_mode="api",
+    )
+
+    assert captured["model_name"] == "gpt-5.6-terra"
+    assert captured["raw_envelope"]["requested_model"] == "gpt-5.6-luna"
+    assert captured["raw_envelope"]["served_model"] == "gpt-5.6-terra"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -432,6 +498,95 @@ async def test_spawn_api_cli_only_provider_still_uses_cli(monkeypatch):
     with pytest.raises(RuntimeError, match="reached-cli"):
         await agent._spawn(provider=agent.get_provider("kimi"), model=None,
                            prompt="p", attachments=[], transport="api")
+
+
+@pytest.mark.asyncio
+async def test_spawn_api_dispatch_reads_api_providers_membership(monkeypatch):
+    """API dispatch must read membership from
+    ``agent_models.API_PROVIDERS`` (not a hardcoded ("gemini", "claude")
+    tuple), so Clodex routes to the SDK with no second hardcoded list."""
+    from app.services import agent, agent_models, api_transport
+
+    monkeypatch.setattr(
+        agent_models, "API_PROVIDERS", frozenset({"claude", "gemini", "clodex"})
+    )
+
+    seen: dict[str, object] = {}
+
+    async def fake_generate(**kw):
+        seen.update(kw)
+        return (0, "CLODEX_SENTINEL", {"raw": {}}, "")
+
+    monkeypatch.setattr(api_transport, "generate", fake_generate)
+
+    rc, text, usage, err = await agent._spawn(
+        provider=agent.get_provider("clodex"), model="gpt-5.6-luna",
+        prompt="p", attachments=[], transport="api")
+
+    assert text == "CLODEX_SENTINEL"
+    assert seen["provider"] == "clodex" and seen["model"] == "gpt-5.6-luna"
+
+
+@pytest.mark.asyncio
+async def test_spawn_api_dispatch_codex_kimi_still_use_cli_with_clodex_in_set(
+    monkeypatch,
+):
+    """codex/kimi are NOT in API_PROVIDERS even after it grows to include
+    clodex — they must still fall through to the CLI path, never the SDK."""
+    from app.services import agent, agent_models, api_transport
+
+    monkeypatch.setattr(
+        agent_models, "API_PROVIDERS", frozenset({"claude", "gemini", "clodex"})
+    )
+
+    async def boom(**kw):
+        raise AssertionError("codex/kimi must not use the SDK path")
+
+    monkeypatch.setattr(api_transport, "generate", boom)
+    monkeypatch.setattr(
+        agent, "_resolve_binary",
+        lambda prov: (_ for _ in ()).throw(RuntimeError("reached-cli")),
+    )
+
+    for name in ("codex", "kimi"):
+        with pytest.raises(RuntimeError, match="reached-cli"):
+            await agent._spawn(
+                provider=agent.get_provider(name), model=None,
+                prompt="p", attachments=[], transport="api",
+            )
+
+
+@pytest.mark.asyncio
+async def test_run_phase_clodex_api_prompt_composes_no_suffix(monkeypatch):
+    """Clodex format_attachments/prompt_suffix return "" (like claude/gemini,
+    per Provider.base defaults) so run_phase's prompt composition — which
+    calls them BEFORE transport dispatch — neither raises nor appends any
+    provider visual-policy suffix for an API call."""
+    captured: dict[str, object] = {}
+
+    async def fake_spawn(*, provider, model, prompt, attachments, transport):
+        captured["prompt"] = prompt
+        captured["provider_name"] = provider.name
+        return 0, "ok body", {
+            "prompt_tokens": 1, "output_tokens": 1,
+            "cached_tokens": 0, "total_tokens": 2, "raw": {},
+        }, ""
+
+    async def fake_record_usage(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent_module, "_spawn", fake_spawn)
+    monkeypatch.setattr(agent_module, "_record_usage", fake_record_usage)
+
+    result = await run_phase(
+        provider="clodex", model="gpt-5.6-luna", phase_prompt="p",
+        phase_name="test", homework_job_id=None, phase_output_id=None,
+        transport="api",
+    )
+
+    assert captured["provider_name"] == "clodex"
+    assert "Visual policy" not in captured["prompt"]
+    assert result.text == "ok body"
 
 
 # ── api-error-capture-1 ────────────────────────────────────────────────

@@ -6,7 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.repositories import launch_defaults as launch_defaults_repo
-from app.services.agent_models import api_supported, is_valid, validate_output_language, validate_role_transport
+from app.services.agent_models import (
+    is_valid,
+    resolve_role_transport,
+    validate_output_language,
+    validate_role_provider,
+    validate_role_transport,
+    validate_transport,
+)
 
 router = APIRouter(tags=["settings"])
 
@@ -92,6 +99,8 @@ async def put_launch_defaults(
             )
         if not is_valid(prov, mdl):
             raise HTTPException(422, f"{role}: off-manifest (provider, model) ({prov!r}, {mdl!r})")
+        if role_err := validate_role_provider(role, prov):
+            raise HTTPException(422, role_err)
     for role in ("judge", "solver", "extract"):
         t = merged.get(f"{role}_transport")
         if t is not None and (err := validate_role_transport(f"{role}_transport", t)) is not None:
@@ -99,20 +108,29 @@ async def put_launch_defaults(
     toc = merged.get("toc_transport")
     if toc is not None and toc not in ("cli", "api"):
         raise HTTPException(422, "toc_transport must be 'cli' or 'api'")
-    # Finding #5: toc_transport=api requires an api-capable extract provider.
-    if toc == "api" and not api_supported(merged.get("extract_provider") or ""):
-        raise HTTPException(
-            422,
-            "toc_transport=api requires an api-capable extract_provider (claude/gemini)",
-        )
+    extract_err = validate_transport(
+        merged["extract_provider"], merged["extract_model"], toc or "cli"
+    )
+    if extract_err:
+        raise HTTPException(422, f"toc_transport: {extract_err}")
     # output_language: the column is NOT NULL — the terminal value must be concrete.
     if err := validate_output_language(merged.get("output_language"), allow_none=False):
         raise HTTPException(422, err)
     ct = merged.get("content_transport")
     if ct is not None and ct not in ("cli", "api"):
         raise HTTPException(422, "content_transport must be 'cli' or 'api'")
-    if ct == "api" and not api_supported(merged.get("content_provider") or ""):
-        raise HTTPException(422, "content_transport=api requires an api-capable content_provider (claude/gemini)")
+    content_err = validate_transport(
+        merged["content_provider"], merged["content_model"], ct or "cli"
+    )
+    if content_err:
+        raise HTTPException(422, f"content_transport: {content_err}")
+    for role in ("judge", "solver", "extract"):
+        effective = resolve_role_transport(merged[f"{role}_transport"], ct or "cli")
+        role_err = validate_transport(
+            merged[f"{role}_provider"], merged[f"{role}_model"], effective
+        )
+        if role_err:
+            raise HTTPException(422, f"{role}_transport: {role_err}")
     out = _serialize(await launch_defaults_repo.update(session, fields))
     await session.commit()  # get_session yields without committing; persist the write
     return out

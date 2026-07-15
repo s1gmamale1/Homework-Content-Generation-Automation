@@ -34,8 +34,10 @@ def test_capability_blob_top_level_keys():
     )
 
 
-def test_capability_blob_cli_has_all_five_providers():
-    """_capability_blob['cli'] must contain exactly the 5 registered provider names.
+def test_capability_blob_cli_has_all_registered_providers():
+    """_capability_blob['cli'] must contain exactly the registered provider
+    names (self-adapting: compares against providers.PROVIDERS.keys() rather
+    than a hardcoded count/list, so it stays correct as providers are added).
 
     BITE: removing a provider from the cli sub-dict breaks this assertion.
     BITE: adding an extra key (e.g. from a wrong source) also breaks it.
@@ -52,8 +54,8 @@ def test_capability_blob_cli_has_all_five_providers():
     )
 
 
-def test_capability_blob_api_has_claude_and_gemini():
-    """_capability_blob['api'] must contain exactly 'claude' and 'gemini' keys.
+def test_capability_blob_api_has_all_api_providers():
+    """The API capability map contains exactly the API provider ids.
 
     BITE: renaming or removing either key breaks this assertion.
     """
@@ -62,9 +64,17 @@ def test_capability_blob_api_has_claude_and_gemini():
     blob = _capability_blob({})
     api = blob["api"]
     assert isinstance(api, dict), "blob['api'] must be a dict"
-    assert set(api.keys()) == {"claude", "gemini"}, (
-        f"blob['api'] must have exactly 'claude' and 'gemini' keys; got {set(api.keys())}"
+    assert set(api.keys()) == {"claude", "gemini", "clodex"}, (
+        f"unexpected blob['api'] keys: {set(api.keys())}"
     )
+
+
+def test_api_clodex_follows_its_dedicated_key():
+    from app.services.worker import _capability_blob
+
+    assert _capability_blob({})["api"]["clodex"] is False
+    assert _capability_blob({"OPENAI_API_KEY": "wrong-trust-domain"})["api"]["clodex"] is False
+    assert _capability_blob({"CLODEX_API_KEY": "c"})["api"]["clodex"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -170,15 +180,23 @@ def test_cli_flag_true_when_which_finds_binary(monkeypatch):
 
     BITE: always returning False for cli flags breaks this assertion.
     We monkeypatch shutil.which at the boundary — not the function under test.
+
+    Skip providers with an empty ``binary_names`` (Clodex
+    is api-only — there is no CLI, so ``any(shutil.which(n) for n in ())`` is
+    structurally always False regardless of what shutil.which returns; this
+    is not a bug in the capability computation).
     """
     import shutil
     from app.services.worker import _capability_blob
+    from app.services import providers
 
     # Make shutil.which always return a fake path (simulates all CLIs installed)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
 
     blob = _capability_blob({})
     for name, installed in blob["cli"].items():
+        if not providers.PROVIDERS[name].binary_names:
+            continue
         assert installed is True, (
             f"cli[{name!r}] must be True when shutil.which returns a path; got {installed}"
         )
@@ -234,7 +252,7 @@ def test_cli_flag_mixed_per_provider(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_api_capable_and_compute_capabilities_agree():
-    """_api_capable must agree with _compute_capabilities on can_claude_api + can_gemini_api.
+    """_api_capable must agree with _compute_capabilities for every provider.
 
     This is the drift-prevention test: if the two diverge, one of them is wrong.
     BITE: implementing _api_capable differently from _compute_capabilities breaks this.
@@ -258,6 +276,7 @@ def test_api_capable_and_compute_capabilities_agree():
         assert api["gemini"] == caps["can_gemini_api"], (
             f"_api_capable['gemini'] != _compute_capabilities['can_gemini_api'] for env={env}"
         )
+        assert api["clodex"] == caps["can_clodex_api"]
 
 
 # ---------------------------------------------------------------------------

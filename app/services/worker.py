@@ -74,19 +74,24 @@ def _api_capable(env: dict) -> dict[str, bool]:
             env.get("GEMINI_API_KEY")
             or (env.get("GOOGLE_APPLICATION_CREDENTIALS") and env.get("GOOGLE_CLOUD_PROJECT"))
         ),
+        "clodex": bool(env.get("CLODEX_API_KEY")),
     }
 
 
 def _capability_blob(env: dict) -> dict:
     """Published worker capability blob — provider × transport view.
-    Shape: {"cli": {name: bool ...}, "api": {"claude": bool, "gemini": bool}}.
+    Shape: {"cli": {name: bool ...}, "api": {provider: bool ...}}.
     The cli flags follow shutil.which (via agent.provider_cli_installed); the api
     flags use the same acceptance rules as _compute_capabilities via _api_capable.
     Computed once at module load (CAPABILITY_BLOB) and published on each heartbeat."""
     api = _api_capable(env)
     return {
         "cli": {name: agent.provider_cli_installed(name) for name in providers.PROVIDERS},
-        "api": {"claude": api["claude"], "gemini": api["gemini"]},
+        "api": {
+            "claude": api["claude"],
+            "gemini": api["gemini"],
+            "clodex": api["clodex"],
+        },
         # Code vintage (fleet-worker-version-gate-1): read at call time (not
         # captured at def time) so tests can patch the module globals.
         "code_version": code_version.CODE_VERSION,
@@ -99,7 +104,11 @@ def _compute_capabilities(env) -> dict:
     stamped provider x transport against these; no model/provider value lives on
     the worker anymore (those moved to the launch_defaults DB row)."""
     cap = _api_capable(env)
-    return {"can_claude_api": cap["claude"], "can_gemini_api": cap["gemini"]}
+    return {
+        "can_claude_api": cap["claude"],
+        "can_gemini_api": cap["gemini"],
+        "can_clodex_api": cap["clodex"],
+    }
 
 
 # Computed once at module load (the locked fail-fast mechanism).
@@ -233,13 +242,15 @@ class Worker:
         # Fail-fast capability check (Phase 4.1 §4): enumerate the per-side api
         # capabilities. A missing side doesn't block all api jobs anymore —
         # only the jobs whose resolved role transports need that side.
-        if not (CAPABILITIES["can_claude_api"] and CAPABILITIES["can_gemini_api"]):
+        if not all(CAPABILITIES.values()):
             logger.warning(
                 f"api capability: claude={CAPABILITIES['can_claude_api']} "
-                f"gemini={CAPABILITIES['can_gemini_api']} — api jobs needing "
+                f"gemini={CAPABILITIES['can_gemini_api']} "
+                f"clodex={CAPABILITIES['can_clodex_api']} — api jobs needing "
                 "the missing side won't be claimed (claude side: "
                 "ANTHROPIC_API_KEY; gemini side: GEMINI_API_KEY or Vertex "
-                "GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT)"
+                "GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT; "
+                "clodex side: CLODEX_API_KEY)"
             )
         _warn_if_gemini_selected_type()
         _warn_if_gemini_reads_local_env()

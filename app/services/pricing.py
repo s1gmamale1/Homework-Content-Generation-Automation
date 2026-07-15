@@ -49,11 +49,28 @@ PRICE_MAP: dict[tuple[str, str], dict[str, float]] = {
     ("gemini", "gemini-3.1-pro-preview"): {"input": 2.0, "output": 12.0, "cache_read": 0.20},
     ("gemini", "gemini-3-flash-preview"): {"input": 0.50, "output": 3.0, "cache_read": 0.05},
     ("gemini", "gemini-3.1-flash-lite-preview"): {"input": 0.25, "output": 1.50, "cache_read": 0.025},
+
+    # ─── Clodex (public /api/pricing payload, 2026-07-15) ───────────────
+    # usage_fixed_price is the $/M input rate and completion_ratio multiplies
+    # output. For entries with usage_floor_price, use max(fixed, floor) as a
+    # conservative budget rate: the public payload does not document enough to
+    # reproduce the provider's exact floor calculation, but paid usage must
+    # never become $0 and bypass the app's spend caps.
+    ("clodex", "gpt-5.6-luna"): {"input": 0.063, "output": 0.504, "cache_read": 0.063},
+    ("clodex", "gpt-5.6-terra"): {"input": 0.070, "output": 0.560, "cache_read": 0.070},
+    ("clodex", "gpt-5.6-sol"): {"input": 0.084, "output": 0.672, "cache_read": 0.084},
+    ("clodex", "gpt-5.5"): {"input": 0.125, "output": 0.750, "cache_read": 0.125},
+    ("clodex", "codex-auto-review"): {"input": 0.070, "output": 0.070, "cache_read": 0.070},
 }
+
+# Clodex may report a served alias different from the requested model. If a
+# future alias is not yet in PRICE_MAP, budget accounting uses the highest
+# currently published Clodex rates instead of the generic unpriced=$0 behavior.
+_CLODEX_UNKNOWN_RATES = {"input": 0.125, "output": 0.750, "cache_read": 0.125}
 
 # Providers whose reported prompt count INCLUDES the cached span (see the
 # per-provider semantics comment in cost_usd).
-_PROMPT_INCLUDES_CACHED: frozenset[str] = frozenset({"gemini"})
+_PROMPT_INCLUDES_CACHED: frozenset[str] = frozenset({"gemini", "clodex"})
 
 # Cache-write (pricing-1b, Task 2): Anthropic bills cache WRITES at 1.25× input
 # (cache_creation_input_tokens). As of this task, agent_usages.cache_creation_tokens
@@ -72,6 +89,15 @@ def cost_usd(provider: str, model: Optional[str], usage: dict[str, Any]) -> floa
     # model=None defense: resolve to the provider default before lookup.
     resolved = model or agent_models.default_model(provider)
     rates = PRICE_MAP.get((provider, resolved)) if resolved is not None else None
+    if rates is None and provider == "clodex":
+        rates = _CLODEX_UNKNOWN_RATES
+        key = (provider, resolved)
+        if key not in _LOGGED_MISSING:
+            _LOGGED_MISSING.add(key)
+            logger.warning(
+                f"pricing: unknown Clodex model {resolved!r} — using "
+                "conservative fallback rates"
+            )
     if rates is None:
         key = (provider, resolved)
         if key not in _LOGGED_MISSING:
@@ -86,7 +112,7 @@ def cost_usd(provider: str, model: Optional[str], usage: dict[str, Any]) -> floa
     # Cached-token semantics differ PER PROVIDER (both verified 2026-06-11):
     #   claude: prompt_tokens mirrors Anthropic input_tokens — the UNCACHED
     #           count, DISJOINT from cached_tokens. Bill prompt as-is.
-    #   gemini: promptTokenCount INCLUDES cachedContentTokenCount — billable
+    #   gemini/clodex: prompt count INCLUDES cached tokens — billable
     #           input is prompt - cached, else the cached span double-bills
     #           (input rate + cache-read rate).
     if provider in _PROMPT_INCLUDES_CACHED:

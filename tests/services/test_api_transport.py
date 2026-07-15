@@ -253,6 +253,132 @@ async def test_generate_claude_still_rejects_attachments(tmp_path):
         )
 
 
+# ---- Clodex (OpenAI-compatible) fakes ----
+class _OMessage:
+    def __init__(self, content): self.content = content
+
+class _OChoice:
+    def __init__(self, content, finish_reason):
+        self.message = _OMessage(content)
+        self.finish_reason = finish_reason
+
+class _OPromptDetails:
+    def __init__(self, cached_tokens=None): self.cached_tokens = cached_tokens
+
+class _OCompletionDetails:
+    def __init__(self, reasoning_tokens=None): self.reasoning_tokens = reasoning_tokens
+
+class _OUsage:
+    def __init__(self, prompt_tokens=None, completion_tokens=None, total_tokens=None,
+                 prompt_tokens_details=None, completion_tokens_details=None):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
+        self.prompt_tokens_details = prompt_tokens_details
+        self.completion_tokens_details = completion_tokens_details
+
+class _OResp:
+    def __init__(self, choices, usage, model="gpt-5.6-terra"):
+        self.choices = choices
+        self.usage = usage
+        self.model = model
+
+class _OCompletions:
+    last = None
+    def __init__(self, resp=None, exc=None): self._resp, self._exc = resp, exc
+    async def create(self, **kw):
+        _OCompletions.last = kw
+        if self._exc: raise self._exc
+        return self._resp
+
+class _OChat:
+    def __init__(self, completions): self.completions = completions
+
+class _OClient:
+    def __init__(self, resp=None, exc=None): self.chat = _OChat(_OCompletions(resp, exc))
+
+
+@pytest.mark.asyncio
+async def test_clodex_success_usage_and_served_model(monkeypatch):
+    u = _OUsage(prompt_tokens=100, completion_tokens=50, total_tokens=160,
+                prompt_tokens_details=_OPromptDetails(cached_tokens=10),
+                completion_tokens_details=_OCompletionDetails(reasoning_tokens=12))
+    resp = _OResp([_OChoice("hi", "stop")], u)
+    monkeypatch.setattr(api_transport, "_clodex_client", lambda: _OClient(resp=resp))
+    rc, text, usage, err = await api_transport.generate(
+        provider="clodex", model="gpt-5.6-luna", prompt="x", attachments=[])
+    assert (rc, text) == (0, "hi")
+    assert usage["prompt_tokens"] == 100
+    assert usage["output_tokens"] == 50
+    assert usage["cached_tokens"] == 10
+    assert usage["total_tokens"] == 160
+    assert usage["raw"]["reasoning_tokens"] == 12
+    assert usage["raw"]["requested_model"] == "gpt-5.6-luna"
+    assert usage["raw"]["served_model"] == "gpt-5.6-terra"
+
+
+@pytest.mark.asyncio
+async def test_clodex_cached_tokens_absent_defaults_zero(monkeypatch):
+    u = _OUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150,
+                prompt_tokens_details=None)
+    resp = _OResp([_OChoice("hi", "stop")], u)
+    monkeypatch.setattr(api_transport, "_clodex_client", lambda: _OClient(resp=resp))
+    rc, text, usage, err = await api_transport.generate(
+        provider="clodex", model="gpt-5.6-sol", prompt="x", attachments=[])
+    assert usage["cached_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_clodex_truncation_is_loud(monkeypatch):
+    resp = _OResp([_OChoice("partial...", "length")], None)
+    monkeypatch.setattr(api_transport, "_clodex_client", lambda: _OClient(resp=resp))
+    rc, text, usage, err = await api_transport.generate(
+        provider="clodex", model="m", prompt="x", attachments=[])
+    assert rc == 1 and text == "" and "truncated" in err
+
+
+@pytest.mark.asyncio
+async def test_clodex_cap_passed(monkeypatch):
+    resp = _OResp([_OChoice("ok", "stop")], None)
+    monkeypatch.setattr(api_transport, "_clodex_client", lambda: _OClient(resp=resp))
+    monkeypatch.setattr(settings, "api_max_output_tokens", 12345)
+    await api_transport.generate(provider="clodex", model="m", prompt="x", attachments=[])
+    assert _OCompletions.last["max_completion_tokens"] == 12345
+
+
+def test_clodex_client_requires_its_own_key(monkeypatch):
+    monkeypatch.delenv("CLODEX_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-forwarded")
+    with pytest.raises(api_transport.AuthEnvError, match="CLODEX_API_KEY"):
+        api_transport._clodex_client()
+
+
+def test_clodex_client_base_url_default_and_override(monkeypatch):
+    import openai
+    seen = {}
+    monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kw: seen.update(kw) or "client")
+    monkeypatch.setenv("CLODEX_API_KEY", "k")
+    monkeypatch.setenv("CLODEX_BASE_URL", "https://custom.example/v1")
+    api_transport._clodex_client()
+    assert seen == {"api_key": "k", "base_url": "https://custom.example/v1"}
+    seen.clear()
+    monkeypatch.delenv("CLODEX_BASE_URL", raising=False)
+    api_transport._clodex_client()
+    assert seen == {"api_key": "k", "base_url": "https://clodex.xyz/v1"}
+
+
+@pytest.mark.asyncio
+async def test_generate_clodex_rejects_attachments(tmp_path):
+    """Clodex + any attachments -> NotImplementedError (contract PIN; already green
+    via the generic guard at api_transport.py:37-40, not new RED)."""
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"%PDF-1.4 x")
+    with pytest.raises(NotImplementedError):
+        await api_transport.generate(
+            provider="clodex", model="gpt-5.6-sol", prompt="hi", attachments=[f]
+        )
+
+
 def test_mime_for_suffix():
     """_mime_for maps file extensions to MIME types correctly."""
     _mime_for = api_transport._mime_for

@@ -26,6 +26,7 @@ from app.schemas import GenerateRequest, JobOut, PhaseOut
 from app.services import events_bus, notion_archive, pricing
 from app.services.agent_models import (
     MODEL_MANIFEST,
+    API_ONLY_PROVIDERS,
     api_supported,
     is_valid,
     resolve_output_language_for_book,
@@ -34,6 +35,7 @@ from app.services.agent_models import (
     resolve_role_transport_default,
     validate_output_language,
     validate_role_transport,
+    validate_role_provider,
     validate_transport,
 )
 from app.services.flows import order_phase_selection, flow_for, selection_missing_prompts
@@ -196,6 +198,8 @@ async def generate(
             continue
         if not is_valid(prov, mdl):
             raise HTTPException(400, f"{role}: unknown (provider, model) ({prov!r}, {mdl!r})")
+        if role_err := validate_role_provider(role, prov):
+            raise HTTPException(400, role_err)
         eff_tx = resolve_role_transport(role_tx, body.transport)
         err = validate_transport(prov, mdl, eff_tx)
         if err is not None:
@@ -270,6 +274,8 @@ async def generate(
                             ("solver", res_solver_provider, res_solver_model)):
         if not is_valid(prov, mdl):
             raise HTTPException(500, f"{role}: resolved default off-manifest ({prov!r},{mdl!r})")
+        if role_err := validate_role_provider(role, prov):
+            raise HTTPException(400, f"{role} global default: {role_err}")
     # Gate: if the global default resolved a non-api-capable role provider to an
     # api effective transport, fail loud at launch rather than silently strand the
     # job unclaimable. cli-resolving transports always return None from
@@ -625,6 +631,7 @@ async def list_agent_models(session: AsyncSession = Depends(get_session)):
     return {
         "providers": MODEL_MANIFEST,
         "api_supported": {p: api_supported(p) for p in MODEL_MANIFEST},
+        "api_only": {p: p in API_ONLY_PROVIDERS for p in MODEL_MANIFEST},
         "tiers": tiers,
         "fleet": await workers_repo.aggregate_fleet_capability(
             session, stale_after_seconds=settings.worker_registry_stale_seconds

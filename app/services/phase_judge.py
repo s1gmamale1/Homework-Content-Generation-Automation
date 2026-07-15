@@ -142,6 +142,7 @@ def _serialize_failures(failures: list[Failure]) -> list[str]:
 _AUTH_SIGNALS = (
     "401",
     "invalid api key",
+    "invalid_api_key",
     "unauthorized",
     "permission_denied",
     "permission denied",
