@@ -43,6 +43,15 @@ MODEL_MANIFEST: dict[str, list[str]] = {
         "opencode/mimo-v2.5-free",
         "opencode/big-pickle",
     ],
+    # Clodex OpenAI-compatible text models. Live /v1/models probe 2026-07-15.
+    # gpt-image-2 is intentionally excluded from this text-agent manifest.
+    "clodex": [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "codex-auto-review",
+    ],
 }
 
 
@@ -64,8 +73,9 @@ def default_model(provider: str) -> str | None:
 
 # ─── Transport (cli vs api) ──────────────────────────────────────────────────
 # Which providers support the API (pay-per-token SDK) transport. CLI is always
-# supported; api is gated to claude/gemini for now — codex is deferred (fleet-api-5).
-API_PROVIDERS: frozenset[str] = frozenset({"claude", "gemini"})  # spec §1
+# supported except for explicitly API-only providers.
+API_PROVIDERS: frozenset[str] = frozenset({"claude", "gemini", "clodex"})
+API_ONLY_PROVIDERS: frozenset[str] = frozenset({"clodex"})
 
 
 def api_supported(provider: str) -> bool:
@@ -76,6 +86,8 @@ def validate_transport(provider: str, model: str | None, transport: str) -> str 
     """Return an error string if (provider, model, transport) is invalid, else None."""
     if transport not in ("cli", "api"):
         return f"unknown transport {transport!r} (expected 'cli' | 'api')"
+    if transport == "cli" and provider in API_ONLY_PROVIDERS:
+        return f"provider {provider!r} is api-only (transport=cli is unsupported)"
     if transport == "api":
         if not api_supported(provider):
             return f"transport=api unsupported for provider {provider!r} (only {sorted(API_PROVIDERS)})"
@@ -84,6 +96,16 @@ def validate_transport(provider: str, model: str | None, transport: str) -> str 
                 "transport=api requires an explicit model (no provider-default) — "
                 "it would diverge between OAuth and API-key auth"
             )
+    return None
+
+
+def validate_role_provider(role: str, provider: str) -> str | None:
+    """Reject provider/role combinations the pipeline cannot execute safely."""
+    if role == "extract" and provider in API_ONLY_PROVIDERS:
+        return (
+            f"extract provider {provider!r} is unsupported: extraction vision "
+            "fallbacks currently require a CLI-capable provider"
+        )
     return None
 
 

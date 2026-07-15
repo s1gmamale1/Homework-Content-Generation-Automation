@@ -236,6 +236,10 @@ class Settings(BaseSettings):
     agent_limit_gemini_24h: int = 1500
     agent_limit_gemini_7d: int = 10000
 
+    agent_limit_clodex_1h: int = 60
+    agent_limit_clodex_24h: int = 500
+    agent_limit_clodex_7d: int = 2500
+
     # ─── Budget monitor (kill-switch) ─────────────────────────────────────
     # Per-batch api spend cap (USD). 0 = disabled (no per-batch pause).
     cost_cap_batch_usd: float = 0.0

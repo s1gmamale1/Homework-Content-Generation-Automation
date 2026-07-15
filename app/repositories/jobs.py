@@ -355,6 +355,7 @@ async def claim_next_job(
         HomeworkJob.transport == "cli",
         and_(HomeworkJob.provider == "claude", literal(bool(caps.get("can_claude_api")))),
         and_(HomeworkJob.provider == "gemini", literal(bool(caps.get("can_gemini_api")))),
+        and_(HomeworkJob.provider == "clodex", literal(bool(caps.get("can_clodex_api")))),
     )
     judge_needs_api = or_(
         HomeworkJob.judge_transport == "api",
@@ -366,6 +367,7 @@ async def claim_next_job(
         return or_(
             and_(resolved == "claude", literal(bool(caps.get("can_claude_api")))),
             and_(resolved == "gemini", literal(bool(caps.get("can_gemini_api")))),
+            and_(resolved == "clodex", literal(bool(caps.get("can_clodex_api")))),
         )
 
     # Resolve content model EXACTLY as Python's resolve_judge does

@@ -33,16 +33,20 @@ It spawns that program as a **child process**, pipes the prompt into its standar
 reads the answer back from standard output, and parses it. Each of the five CLIs must be
 installed and logged-in on the machine's `PATH`.
 
-**`transport=api` (claude+gemini only):** instead of shelling out to the CLI, the app calls
-the provider SDKs directly — `google-genai` for gemini, `anthropic` for claude — via a
+**`transport=api`:** instead of shelling out to the CLI, the app calls
+provider APIs directly — `google-genai` for gemini, `anthropic` for claude, and
+the `openai` compatibility SDK for Clodex — via a
 single new module `app/services/api_transport.py`. This path returns the same
 `(rc, text, usage, stderr)` 4-tuple as the CLI path and is dispatched from `agent._spawn`
 (early, before the binary-lookup, but still inside the concurrency semaphore). Credentials
-(`GEMINI_API_KEY` / Vertex SA for gemini; `ANTHROPIC_API_KEY` for claude) come from the
+(`GEMINI_API_KEY` / Vertex SA for gemini; `ANTHROPIC_API_KEY` for claude;
+`CLODEX_API_KEY` for Clodex) come from the
 worker's process env. `transport=api` was added because the CLI-with-key path bills materially more tokens
 and runs slower for equal-quality output (a measured benchmark, not a code constant —
 the gemini CLI is a multi-turn agent whose output/thinking inflation, plus an agent
-system-prompt input tax, dominate; harness: `scripts/api_vs_cli_compare.py`). **gemini
+system-prompt input tax, dominate; harness: `scripts/api_vs_cli_compare.py`). Clodex is
+API-only, text-only, defaults to `https://clodex.xyz/v1`, and never reads
+`OPENAI_API_KEY`. **gemini
 accepts PDF/image attachments** over Vertex (multimodal — scanned-book vision via api,
 `api-vision-1`); **claude stays text-only** (attachments raise a loud `NotImplementedError`).
 The **extract role** is pinned to its

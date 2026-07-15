@@ -26,6 +26,7 @@ import {
 import { RoleAgentControls } from "@/components/fleet/RoleAgentControls";
 import { api } from "@/lib/api";
 import { serveability, providerServeableAnyMode } from "@/lib/serveability";
+import { normalizeProviderTransport } from "@/lib/transport-policy";
 import { safeUUID } from "@/lib/uuid";
 import { subjectLabel, CONTENT_PHASES } from "@/lib/subjects";
 import type {
@@ -149,28 +150,29 @@ export function SectionPage() {
   // api, drop back to cli so we never send an invalid transport.
   const fleet = manifest?.fleet;
   const apiSupported = manifest?.api_supported?.[provider] ?? false;
+  const apiOnly = manifest?.api_only?.[provider] ?? false;
+  const apiFleetCheck = serveability(fleet, provider, "api");
   useEffect(() => {
-    if (!apiSupported && transport === "api") {
-      setTransport("cli");
-      return;
-    }
-    // Fleet reset: if the fleet is online but can't serve api for this provider,
-    // reset to cli so we don't submit a known-unservable combo.
-    if (fleet?.online && transport === "api" && !serveability(fleet, provider, "api").ok) {
-      setTransport("cli");
-    }
-  }, [apiSupported, transport, fleet, provider]);
+    const next = normalizeProviderTransport({
+      transport,
+      apiSupported,
+      apiOnly,
+      apiFleetOk: !fleet?.online || apiFleetCheck.ok,
+    });
+    if (next !== transport) setTransport(next);
+  }, [apiSupported, apiOnly, apiFleetCheck.ok, transport, fleet?.online]);
 
   // Provider reset guard: if the current provider becomes unservable (fleet
   // online + no CLI or API path), nudge to the first servable provider.
   useEffect(() => {
     if (!fleet?.online || !manifest) return;
+    if (apiOnly) return;
     if (providerServeableAnyMode(fleet, provider)) return;
     const firstServable = Object.keys(manifest.providers).find((p) =>
       providerServeableAnyMode(fleet, p),
     );
     if (firstServable) setProvider(firstServable);
-  }, [fleet, provider, manifest]);
+  }, [fleet, provider, apiOnly, manifest]);
 
   // Advisory (non-blocking) note when the judge model is weaker (higher tier
   // number) than the generator. Lower tier int = stronger.
@@ -371,6 +373,7 @@ export function SectionPage() {
           manifestLoading={manifestLoading}
           blocked={
             (transport === "api" && !model) ||
+            (apiOnly && !!fleet?.online && !apiFleetCheck.ok) ||
             noPhasePicked ||
             missingPromptKeys.length > 0
           }
@@ -651,6 +654,7 @@ function AgentPicker({
   const modelDisabled = !manifest || modelOptions.length === 0;
   // Fleet gate for the API transport button (anded with apiSupported above).
   const apiFleetCheck = serveability(fleet, provider, "api");
+  const apiOnly = manifest?.api_only?.[provider] ?? false;
 
   return (
     <section className={CARD}>
@@ -688,7 +692,8 @@ function AgentPicker({
             </SelectTrigger>
             <SelectContent>
               {providerNames.map((name) => {
-                const serveable = providerServeableAnyMode(fleet, name);
+                const candidateApiOnly = manifest?.api_only?.[name] ?? false;
+                const serveable = candidateApiOnly || providerServeableAnyMode(fleet, name);
                 return (
                   <SelectItem key={name} value={name} disabled={!serveable}>
                     {serveable ? name : `${name} — no worker runs it`}
@@ -736,7 +741,7 @@ function AgentPicker({
             Transport
           </span>
           <div className="inline-flex w-fit rounded-xl border border-white/[0.1] bg-white/[0.04] p-1">
-            {(["api", "cli"] as Transport[]).map((t) => {
+            {(["api", "cli"] as Transport[]).filter((t) => !apiOnly || t === "api").map((t) => {
               const isApiDisabled = t === "api" && !apiFleetCheck.ok;
               return (
                 <button

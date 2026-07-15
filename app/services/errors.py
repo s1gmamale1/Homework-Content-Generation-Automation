@@ -9,6 +9,10 @@ from __future__ import annotations
 from datetime import datetime
 
 
+class AuthEnvError(RuntimeError):
+    """The requested API transport lacks its provider credential."""
+
+
 class SessionLimitPause(Exception):
     """Raised by _run_with_failover when ``session_limit_strategy='pause'`` and
     a session-limit error is detected on the requested provider.

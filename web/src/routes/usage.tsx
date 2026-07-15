@@ -20,8 +20,9 @@ const PROVIDER_LABELS: Record<string, string> = {
   kimi: "Kimi",
   codex: "Codex",
   opencode: "Opencode",
+  clodex: "Clodex",
 };
-const PROVIDER_ORDER = ["claude", "gemini", "kimi", "codex", "opencode"];
+const PROVIDER_ORDER = ["claude", "gemini", "clodex", "kimi", "codex", "opencode"];
 const WINDOW_LABELS: Record<string, string> = {
   "1h": "Last hour",
   "24h": "Last 24h",
@@ -35,6 +36,7 @@ const ACCENTS: Record<string, [string, string]> = {
   kimi: ["#c18cff", "#8268ff"],
   codex: ["#57e4a5", "#3bd6d0"],
   opencode: ["#f6d365", "#fda085"],
+  clodex: ["#79d7ff", "#a276ff"],
 };
 function accentOf(id: string): [string, string] {
   return ACCENTS[id] ?? ["#8aa0c6", "#5f6f93"];

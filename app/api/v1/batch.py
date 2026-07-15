@@ -26,6 +26,7 @@ from app.services.agent_models import (
     resolve_role_transport_default,
     validate_output_language,
     validate_role_transport,
+    validate_role_provider,
     validate_session_limit_strategy,
     validate_transport,
 )
@@ -229,6 +230,8 @@ async def launch_batch(
             continue
         if not is_valid(prov, mdl):
             raise HTTPException(400, f"{role}: unknown (provider, model) ({prov!r}, {mdl!r})")
+        if role_err := validate_role_provider(role, prov):
+            raise HTTPException(400, role_err)
         eff_tx = resolve_role_transport(role_tx, body.transport)
         err = validate_transport(prov, mdl, eff_tx)
         if err is not None:
@@ -256,6 +259,8 @@ async def launch_batch(
                             ("solver", res_solver_provider, res_solver_model)):
         if not is_valid(prov, mdl):
             raise HTTPException(500, f"{role}: resolved default off-manifest ({prov!r},{mdl!r})")
+        if role_err := validate_role_provider(role, prov):
+            raise HTTPException(400, f"{role} global default: {role_err}")
     # Gate: if the global default resolved a non-api-capable role provider to an
     # api effective transport, fail loud at launch rather than silently strand the
     # job unclaimable. cli-resolving transports always return None from

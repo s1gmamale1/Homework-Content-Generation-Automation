@@ -65,6 +65,10 @@ def test_resolve_model_codex_default_is_none() -> None:
     assert _resolve_model("codex", None) is None
 
 
+def test_resolve_model_clodex_default_is_none() -> None:
+    assert _resolve_model("clodex", None) is None
+
+
 def test_resolve_model_claude_default_is_pinned() -> None:
     assert _resolve_model("claude", None) == "claude-sonnet-4-6"
 
@@ -81,7 +85,7 @@ def test_provider_default_model_table_keys() -> None:
     """The dict must register exactly the supported providers; an accidental
     rename / drop would break ``run_phase`` silently."""
     assert set(_PROVIDER_DEFAULT_MODEL.keys()) == {
-        "claude", "kimi", "codex", "gemini", "opencode",
+        "claude", "kimi", "codex", "gemini", "opencode", "clodex",
     }
 
 
@@ -436,43 +440,41 @@ async def test_spawn_api_cli_only_provider_still_uses_cli(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_spawn_api_dispatch_reads_api_providers_membership(monkeypatch):
-    """openai-api task 3: agent.py:505 must read membership from
+    """API dispatch must read membership from
     ``agent_models.API_PROVIDERS`` (not a hardcoded ("gemini", "claude")
-    tuple), so a later manifest addition (task 2 adds "openai") routes to
-    the SDK with no further agent.py change. Proven here by patching
-    API_PROVIDERS ahead of task 2 and asserting dispatch follows it."""
+    tuple), so Clodex routes to the SDK with no second hardcoded list."""
     from app.services import agent, agent_models, api_transport
 
     monkeypatch.setattr(
-        agent_models, "API_PROVIDERS", frozenset({"claude", "gemini", "openai"})
+        agent_models, "API_PROVIDERS", frozenset({"claude", "gemini", "clodex"})
     )
 
     seen: dict[str, object] = {}
 
     async def fake_generate(**kw):
         seen.update(kw)
-        return (0, "OPENAI_SENTINEL", {"raw": {}}, "")
+        return (0, "CLODEX_SENTINEL", {"raw": {}}, "")
 
     monkeypatch.setattr(api_transport, "generate", fake_generate)
 
     rc, text, usage, err = await agent._spawn(
-        provider=agent.get_provider("openai"), model="gpt-x",
+        provider=agent.get_provider("clodex"), model="gpt-5.6-luna",
         prompt="p", attachments=[], transport="api")
 
-    assert text == "OPENAI_SENTINEL"
-    assert seen["provider"] == "openai" and seen["model"] == "gpt-x"
+    assert text == "CLODEX_SENTINEL"
+    assert seen["provider"] == "clodex" and seen["model"] == "gpt-5.6-luna"
 
 
 @pytest.mark.asyncio
-async def test_spawn_api_dispatch_codex_kimi_still_use_cli_with_openai_in_set(
+async def test_spawn_api_dispatch_codex_kimi_still_use_cli_with_clodex_in_set(
     monkeypatch,
 ):
     """codex/kimi are NOT in API_PROVIDERS even after it grows to include
-    openai — they must still fall through to the CLI path, never the SDK."""
+    clodex — they must still fall through to the CLI path, never the SDK."""
     from app.services import agent, agent_models, api_transport
 
     monkeypatch.setattr(
-        agent_models, "API_PROVIDERS", frozenset({"claude", "gemini", "openai"})
+        agent_models, "API_PROVIDERS", frozenset({"claude", "gemini", "clodex"})
     )
 
     async def boom(**kw):
@@ -493,11 +495,11 @@ async def test_spawn_api_dispatch_codex_kimi_still_use_cli_with_openai_in_set(
 
 
 @pytest.mark.asyncio
-async def test_run_phase_openai_api_prompt_composes_no_suffix(monkeypatch):
-    """openai's format_attachments/prompt_suffix return "" (like claude/gemini,
+async def test_run_phase_clodex_api_prompt_composes_no_suffix(monkeypatch):
+    """Clodex format_attachments/prompt_suffix return "" (like claude/gemini,
     per Provider.base defaults) so run_phase's prompt composition — which
     calls them BEFORE transport dispatch — neither raises nor appends any
-    provider visual-policy suffix for an api openai call."""
+    provider visual-policy suffix for an API call."""
     captured: dict[str, object] = {}
 
     async def fake_spawn(*, provider, model, prompt, attachments, transport):
@@ -515,12 +517,12 @@ async def test_run_phase_openai_api_prompt_composes_no_suffix(monkeypatch):
     monkeypatch.setattr(agent_module, "_record_usage", fake_record_usage)
 
     result = await run_phase(
-        provider="openai", model="gpt-x", phase_prompt="p",
+        provider="clodex", model="gpt-5.6-luna", phase_prompt="p",
         phase_name="test", homework_job_id=None, phase_output_id=None,
         transport="api",
     )
 
-    assert captured["provider_name"] == "openai"
+    assert captured["provider_name"] == "clodex"
     assert "Visual policy" not in captured["prompt"]
     assert result.text == "ok body"
 

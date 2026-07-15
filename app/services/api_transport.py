@@ -2,7 +2,7 @@
 
 Returns the SAME 4-tuple as agent._spawn — (rc, text, usage, stderr) — so the CLI
 and api paths are interchangeable at the _spawn chokepoint. cli transport never
-calls this. gemini -> google-genai, claude -> anthropic.
+calls this. gemini -> google-genai, claude -> anthropic, clodex -> openai SDK.
 Text + gemini multimodal (PDF/image attachments via Vertex); claude stays text-only.
 Spec: docs/superpowers/specs/2026-06-16-sdk-api-transport-design.md
 """
@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 from app.config import settings
+from app.services.errors import AuthEnvError
 
 _EMPTY_USAGE = {
     "prompt_tokens": None,
@@ -40,8 +41,8 @@ async def generate(
         )
     if provider == "claude":
         return await _claude(model, prompt)
-    if provider == "openai":
-        return await _openai(model, prompt)
+    if provider == "clodex":
+        return await _clodex(model, prompt)
     raise ValueError(f"api transport not supported for provider {provider!r}")
 
 
@@ -182,27 +183,41 @@ async def _claude(model: str, prompt: str) -> tuple[int, str, dict, str]:
     return 0, text, usage, ""
 
 
-# ---------------------------------------------------------------- openai
-def _openai_client():
+# ---------------------------------------------------------------- clodex
+_CLODEX_BASE_URL = "https://clodex.xyz/v1"
+
+
+def _clodex_client():
     from openai import AsyncOpenAI
 
-    key = os.environ.get("OPENAI_API_KEY")
+    key = os.environ.get("CLODEX_API_KEY")
     if not key:
-        raise RuntimeError("openai api: OPENAI_API_KEY unset")
-    base_url = os.environ.get("OPENAI_BASE_URL")
-    if base_url:
-        return AsyncOpenAI(api_key=key, base_url=base_url)
-    return AsyncOpenAI(api_key=key)
+        raise AuthEnvError("clodex api: CLODEX_API_KEY unset")
+    base_url = os.environ.get("CLODEX_BASE_URL") or _CLODEX_BASE_URL
+    return AsyncOpenAI(api_key=key, base_url=base_url)
 
 
-def _openai_usage(u) -> dict:
+def _clodex_usage(u, *, requested_model: str, served_model: str | None) -> dict:
     if u is None:
-        return dict(_EMPTY_USAGE)
+        usage = dict(_EMPTY_USAGE)
+        usage["raw"] = {
+            "requested_model": requested_model,
+            "served_model": served_model,
+        }
+        return usage
     prompt = getattr(u, "prompt_tokens", None)
     completion = getattr(u, "completion_tokens", None)
     total = getattr(u, "total_tokens", None)
-    details = getattr(u, "prompt_tokens_details", None)
-    cached = getattr(details, "cached_tokens", None) if details is not None else None
+    prompt_details = getattr(u, "prompt_tokens_details", None)
+    cached = (
+        getattr(prompt_details, "cached_tokens", None)
+        if prompt_details is not None else None
+    )
+    completion_details = getattr(u, "completion_tokens_details", None)
+    reasoning = (
+        getattr(completion_details, "reasoning_tokens", None)
+        if completion_details is not None else None
+    )
     return {
         "prompt_tokens": prompt,
         "output_tokens": completion,
@@ -214,12 +229,15 @@ def _openai_usage(u) -> dict:
             "completion_tokens": completion,
             "total_tokens": total,
             "cached_tokens": cached,
+            "reasoning_tokens": reasoning,
+            "requested_model": requested_model,
+            "served_model": served_model,
         },
     }
 
 
-async def _openai(model: str, prompt: str) -> tuple[int, str, dict, str]:
-    client = _openai_client()
+async def _clodex(model: str, prompt: str) -> tuple[int, str, dict, str]:
+    client = _clodex_client()
     try:
         resp = await client.chat.completions.create(
             model=model,
@@ -228,7 +246,11 @@ async def _openai(model: str, prompt: str) -> tuple[int, str, dict, str]:
         )
     except Exception as exc:  # noqa: BLE001
         return 1, "", dict(_EMPTY_USAGE), str(exc)
-    usage = _openai_usage(getattr(resp, "usage", None))
+    usage = _clodex_usage(
+        getattr(resp, "usage", None),
+        requested_model=model,
+        served_model=getattr(resp, "model", None),
+    )
     choices = getattr(resp, "choices", None) or []
     choice = choices[0] if choices else None
     finish_reason = getattr(choice, "finish_reason", None)

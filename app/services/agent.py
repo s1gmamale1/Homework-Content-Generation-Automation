@@ -49,6 +49,7 @@ from app.schemas import (
     TOCValidation,
 )
 from app.services import agent_models, content_lint
+from app.services.errors import AuthEnvError
 from app.services.providers import Provider, get_provider
 from app.services.proc_tree import kill_tree
 
@@ -103,6 +104,7 @@ _PROVIDER_DEFAULT_MODEL: dict[str, Optional[str]] = {
     # others it carries a non-None default (a free zen model). This does NOT
     # violate the no-leak invariant: kimi/codex/gemini stay None.
     "opencode": "opencode/deepseek-v4-flash-free",
+    "clodex": None,
 }
 
 
@@ -271,13 +273,6 @@ def provider_cli_installed(provider_name: str) -> bool:
     return any(shutil.which(n) for n in provider.binary_names)
 
 
-class AuthEnvError(RuntimeError):
-    """A spawn's credentials could not be assembled for the requested
-    transport (missing/empty key, no Vertex SA, api-unsupported provider).
-    Typed so auth classification is isinstance-based, never substring luck
-    (spec 4.1 §5a) — a judge hitting this on an api job must fail LOUDLY."""
-
-
 def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> dict[str, str]:
     """Per-call auth shaping (spec §4). cli is the unconditional baseline for
     EVERY spawn; api is the only deviation. Scrub both provider keys first, then
@@ -289,9 +284,10 @@ def _auth_env(provider_name: str, transport: str, base_env: dict[str, str]) -> d
     # Defensive hygiene, not a verified mis-billing fix: codex-CLI's own auth
     # flip is CODEX_API_KEY, not this var (WISHLIST tracks scrubbing that one
     # separately). Scrubbed here anyway, same class as the two pops above, so
-    # a worker's .env carrying OPENAI_API_KEY (for the api-only openai
-    # provider) never leaks into any cli spawn's environment.
+    # API credentials never leak into a CLI subprocess.
     env.pop("OPENAI_API_KEY", None)
+    env.pop("CLODEX_API_KEY", None)
+    env.pop("CLODEX_BASE_URL", None)
     env.pop("GOOGLE_GENAI_USE_GCA", None)
     # Also scrub the Vertex selector: gemini-cli 0.46.0 getAuthTypeFromEnv
     # checks GCA first, then GOOGLE_GENAI_USE_VERTEXAI, then GEMINI_API_KEY —
@@ -508,7 +504,7 @@ async def _spawn_once(
     # transport=api for any API_PROVIDERS member -> direct SDK call, not the
     # CLI. Membership reads app.services.agent_models.API_PROVIDERS (the
     # single source of truth also used by validate_transport/is_valid) so
-    # adding a new api-only provider there (e.g. openai) is a one-place
+    # adding a new api-only provider there (e.g. clodex) is a one-place
     # change — no second hardcoded list to keep in sync here. Kept BEFORE
     # _resolve_binary so a pure-API worker needs no CLI on PATH; kept INSIDE
     # _semaphore() so direct-API fan-out is bounded exactly like CLI subprocesses.

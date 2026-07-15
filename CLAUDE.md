@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FastAPI + React app that turns a textbook PDF into a multi-phase homework packet (preview, flashcards, memory sprint, mini-games, boss-fight quiz, reading, reflection). Background workers run a DAG-parallel pipeline that drives **CLI subprocesses** of one of five LLM providers — `claude`, `kimi`, `codex`, `gemini`, `opencode` — chosen per job by the user.
 
-Everything LLM-facing goes through `app/services/agent.py`. For `transport=cli` it drives the provider **CLIs** (the CLI router — the five CLIs must be installed on `PATH`); for `transport=api` it calls the provider **SDKs** directly via `app/services/api_transport.py` (gemini `google-genai`, claude `anthropic`). Each job (and batch) carries a **`transport`** enum — `cli` (default enum value: each CLI's own subscription/OAuth login, $0 marginal) or `api` (pay-per-token, claude+gemini only) — see "Transport toggle" below.
+Everything LLM-facing goes through `app/services/agent.py`. `transport=cli` drives the five provider CLIs on `PATH`; `transport=api` calls Gemini, Anthropic, or Clodex through `app/services/api_transport.py`. Clodex is API-only, uses `CLODEX_API_KEY`, defaults to `https://clodex.xyz/v1`, and never reads `OPENAI_API_KEY`.
 
 > **⚠️ Standing decision (2026-07-01): the cli transport is RETIRED from operational use but stays in the code.** All real generation (the Oct/Mar campaign, launches, smokes, acceptance gates) runs `transport=api` (gemini over Vertex SA keys / claude over `ANTHROPIC_API_KEY`). Do NOT plan, verify, or benchmark against the cli path as if it were production; do not "fix" cli-only issues unless asked. The cli code path is kept working (it's the schema default and a fallback), so don't delete or break it either — tests covering it stay. When docs/prompts/plans say "CLI call/smoke", read that as legacy wording for "real model call" — run it over api.
 
@@ -78,7 +78,7 @@ Local dev uses port **5433** for Postgres, not 5432, because the Windows host ty
 
 ### MODEL_MANIFEST (`app/services/agent_models.py`)
 
-The single source of truth for which `(provider, model)` pairs the API and frontend will accept. The `/api/v1/agent/models` endpoint serves it (plus an `api_supported` map); `is_valid()` enforces it on `POST /generate`. Also home to `API_PROVIDERS` (frozenset `{claude, gemini}`), `api_supported()`, and `validate_transport()` — the shared validator both `/generate` and `/jobs/batch` call (`transport=api` requires an api-supported provider AND an explicit manifest model; `model=None` would let the CLI pick a default that differs between auth modes). Update here when adding/removing models or api providers.
+The single source of truth for accepted `(provider, model)` pairs. `/api/v1/agent/models` serves it with `api_supported` and `api_only`. `API_PROVIDERS` is `{claude, gemini, clodex}` and `API_ONLY_PROVIDERS` is `{clodex}`; API calls require an explicit model, and Clodex+CLI is invalid.
 
 ### Transport toggle (`transport`: `cli` | `api` — Phase 4, worklog 0053)
 
@@ -144,7 +144,7 @@ Token-based via `Authorization: Bearer <token>` (REST) or `?token=<>` query para
 
 ## Things not to do
 
-- Don't use a provider SDK on the `transport=cli` path — cli goes through the CLI router only. SDK calls are confined to `transport=api` (`app/services/api_transport.py`: gemini `google-genai`, claude `anthropic`). Don't add a third provider's SDK without extending that module **and** `agent_models.API_PROVIDERS`/`api_supported`.
+- Don't use a provider SDK on the `transport=cli` path. SDK calls are confined to `transport=api` in `app/services/api_transport.py` (Gemini, Anthropic, and Clodex's OpenAI-compatible API).
 - Don't hardcode model names in `pipeline.py` — they belong in `agent_models.MODEL_MANIFEST` (frontend manifest) or `_PROVIDER_DEFAULT_MODEL` (server-side fallback).
 - Don't bypass `phase_repo.create_or_reset` with raw `phase_repo.create` for retried jobs — you'll trip `uq_phase_output_job_order`.
 - Don't add per-call provider/model overrides anywhere except where they already exist (extract pin via `settings.extract_*`); keeping job-level provider stable across the rest of the pipeline is what makes `agent_usages` and the UI badge mean something.
