@@ -129,8 +129,9 @@ async def test_rollup_is_per_lesson_latest():
 @pytest.mark.asyncio
 async def test_list_jobs_includes_unlaunched_lessons():
     """list_jobs returns one row per book lesson (full TOC), launched lessons
-    carry status, un-launched lessons come back with job_id/status None — and
-    rollup_for_batch is whole-book (launched statuses + a not_started count)."""
+    carry status, un-launched lessons come back with job_id/status None — while
+    rollup_for_batch tallies the LAUNCHED lessons only (BE-03: the denominator
+    is the launch scope, not the whole book)."""
     from app.db import SessionLocal
     from app.models.batch import Batch
     from app.models.book import Book
@@ -168,13 +169,89 @@ async def test_list_jobs_includes_unlaunched_lessons():
         assert third["job_id"] is None
         assert third["status"] is None
         assert third["section_title"] == "L2"
-        # Rollup is whole-book: 2 launched (pending) + 1 not_started = 3 total.
+        # Rollup is launched-only: 2 launched (pending), no not_started key.
         assert tally.get("pending") == 2, f"expected 2 launched pending, got {tally}"
-        assert tally.get("not_started") == 1, f"expected 1 not_started, got {tally}"
-        assert sum(tally.values()) == 3, f"denominator must be whole book (3), got {tally}"
+        assert "not_started" not in tally
+        assert sum(tally.values()) == 2, f"denominator must be launch scope (2), got {tally}"
     finally:
         async with SessionLocal() as s:
             await s.execute(delete(HomeworkJob).where(HomeworkJob.book_id == book_id))
+            await s.execute(delete(Batch).where(Batch.book_id == book_id))
+            await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
+            await s.execute(delete(Book).where(Book.id == book_id))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_rollup_partial_launch_has_no_not_started():
+    """rollup_for_batch tallies the batch's LAUNCHED lessons only — a partial
+    (lesson-only) launch must be able to read as complete (BE-03): 3 toc rows,
+    2 launched (one done, one running) -> tally sums to 2, never 3."""
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    from app.models.book import Book
+    from app.models.toc_entry import TOCEntry
+    from app.models.homework_job import HomeworkJob
+    from app.repositories import batches as batches_repo
+    from app.repositories import jobs as jobs_repo
+
+    async with SessionLocal() as s:
+        book, tocs = await _seed_book_with_lessons(s, n=3)
+        batch = await batches_repo.get_or_create_for_book(
+            s, book_id=book.id, subject="math-algebra", grade=None,
+            provider="claude", model=None, transport="cli", output_language="uz")
+        # Launch ONLY lessons 0 and 1; lesson 2 stays un-launched.
+        j0 = await jobs_repo.create(s, book_id=book.id, toc_entry_id=tocs[0].id,
+                                    subject="math-algebra", batch_id=batch.id,
+                                    output_language="uz")
+        j1 = await jobs_repo.create(s, book_id=book.id, toc_entry_id=tocs[1].id,
+                                    subject="math-algebra", batch_id=batch.id,
+                                    output_language="uz")
+        await s.commit()
+        book_id, batch_id, j0_id, j1_id = book.id, batch.id, j0.id, j1.id
+    try:
+        async with SessionLocal() as s:
+            j0_row = await s.get(HomeworkJob, j0_id)
+            j0_row.status = "done"
+            j1_row = await s.get(HomeworkJob, j1_id)
+            j1_row.status = "running"
+            await s.commit()
+        async with SessionLocal() as s:
+            tally = await batches_repo.rollup_for_batch(s, batch_id)
+        assert tally == {"done": 1, "running": 1}
+        assert "not_started" not in tally
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(HomeworkJob).where(HomeworkJob.book_id == book_id))
+            await s.execute(delete(Batch).where(Batch.book_id == book_id))
+            await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
+            await s.execute(delete(Book).where(Book.id == book_id))
+            await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_toc_total_for_batch_counts_whole_book():
+    """toc_total_for_batch is display-only whole-book context, separate from
+    the rollup's launched-lesson denominator."""
+    from app.db import SessionLocal
+    from app.models.batch import Batch
+    from app.models.book import Book
+    from app.models.toc_entry import TOCEntry
+    from app.repositories import batches as batches_repo
+
+    async with SessionLocal() as s:
+        book, tocs = await _seed_book_with_lessons(s, n=3)
+        batch = await batches_repo.get_or_create_for_book(
+            s, book_id=book.id, subject="math-algebra", grade=None,
+            provider="claude", model=None, transport="cli", output_language="uz")
+        await s.commit()
+        book_id, batch_id = book.id, batch.id
+    try:
+        async with SessionLocal() as s:
+            total = await batches_repo.toc_total_for_batch(s, batch_id)
+        assert total == 3
+    finally:
+        async with SessionLocal() as s:
             await s.execute(delete(Batch).where(Batch.book_id == book_id))
             await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
             await s.execute(delete(Book).where(Book.id == book_id))
