@@ -63,6 +63,13 @@ function TransportRow({
 
       <RollupBar rollup={batch.rollup} covered={batch.lessons_covered} />
 
+      {batch.toc_total - batch.lessons_covered > 0 && (
+        <div className="text-[0.72rem] text-white/45">
+          {batch.lessons_covered} launched · {batch.toc_total - batch.lessons_covered} book
+          rows not in launch
+        </div>
+      )}
+
       {batch.archived + batch.unarchived > 0 && (
         <div className="text-[0.7rem] text-white/45">
           Notion archive · {batch.archived}/{batch.archived + batch.unarchived}

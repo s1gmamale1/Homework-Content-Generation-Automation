@@ -114,7 +114,7 @@ export function BatchLessonList({
               </span>
             ) : (
               <span className="shrink-0 rounded-full bg-white/[0.06] px-2 py-0.5 text-[0.7rem] text-white/50">
-                not started
+                {row.toc_class}
               </span>
             )}
 

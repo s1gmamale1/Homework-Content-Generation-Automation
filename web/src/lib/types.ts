@@ -401,7 +401,7 @@ export interface WorkerStatusResponse {
   status: string;
 }
 
-export type BatchRollup = Partial<Record<JobStatus | "not_started", number>>;
+export type BatchRollup = Partial<Record<JobStatus, number>>;
 
 export interface BatchSummary {
   batch_id: string;
@@ -417,6 +417,8 @@ export interface BatchSummary {
   judge_transport: RoleTransport;
   rollup: BatchRollup;
   lessons_covered: number;
+  /** Whole-book TOC row count (display-only; not the rollup denominator). */
+  toc_total: number;
   complete: boolean;
   created_at: string;
   // Cost-safety fields (C4): null when the batch is not paused by the budget monitor.
@@ -441,6 +443,8 @@ export interface BatchLessonRow {
   attempts: number | null;
   current_phase: string | null;
   error_message: string | null;
+  /** Classifier tag: "lesson" | "header" | "test" | "revision" | "practice" | "other". */
+  toc_class: string;
 }
 
 /** Response from POST /jobs/batch/{id}/cancel */

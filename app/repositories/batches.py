@@ -89,14 +89,9 @@ async def get_or_create_for_book(
 
 
 async def rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dict[str, int]:
-    """Per-lesson-latest status tally for a batch over the WHOLE book: one row
-    per launched toc_entry (its newest job) GROUP BY status — DISTINCT ON, so
-    retries/top-ups can't inflate the count — PLUS a synthetic ``not_started``
-    count for the book's lessons that have no job in this batch yet. The
-    denominator (sum of values) is therefore the book's full lesson count, so a
-    partial launch reads as e.g. 5/47, not 5/5."""
-    from app.models.toc_entry import TOCEntry
-
+    """Tally over the batch's launched lessons only (DISTINCT ON latest job per
+    toc_entry); the denominator is the launch scope derived from member jobs —
+    rest-of-book is ``toc_total_for_batch``."""
     latest = (
         select(HomeworkJob.status)
         .where(HomeworkJob.batch_id == batch_id)
@@ -107,23 +102,18 @@ async def rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dict[str, i
     rows = await session.execute(
         select(latest.c.status, func.count()).group_by(latest.c.status)
     )
-    tally = {status: count for status, count in rows.all()}
+    return {status: count for status, count in rows.all()}
 
-    book_id = (
-        await session.execute(select(Batch.book_id).where(Batch.id == batch_id))
-    ).scalar_one_or_none()
-    if book_id is not None:
-        total = (
-            await session.execute(
-                select(func.count())
-                .select_from(TOCEntry)
-                .where(TOCEntry.book_id == book_id)
-            )
-        ).scalar_one()
-        not_started = total - sum(tally.values())
-        if not_started > 0:
-            tally["not_started"] = not_started
-    return tally
+
+async def toc_total_for_batch(session: AsyncSession, batch_id: UUID) -> int:
+    """Whole-book TOC row count for this batch's book — display-only context
+    (the rollup denominator is the launched-lesson count, never this)."""
+    from app.models.toc_entry import TOCEntry
+    return (await session.execute(
+        select(func.count()).select_from(TOCEntry)
+        .join(Batch, Batch.book_id == TOCEntry.book_id)
+        .where(Batch.id == batch_id)
+    )).scalar_one()
 
 
 async def archive_rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dict[str, int]:
@@ -263,18 +253,27 @@ async def list_with_rollups(session: AsyncSession) -> list[dict]:
     for b, original_filename in rows:
         tally = await rollup_for_batch(session, b.id)
         archive = await archive_rollup_for_batch(session, b.id)
+        toc_total = await toc_total_for_batch(session, b.id)
         out.append({"batch": b, "rollup": tally, "archive": archive,
+                    "toc_total": toc_total,
                     "original_filename": original_filename})
     return out
 
 
 async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
-    """One row per lesson in the batch's BOOK (full TOC), LEFT-joined to the
-    latest job per toc_entry within this batch. Launched lessons carry their
-    job's status/fields; un-launched lessons come back with job_id/status None.
-    Ordered by order_index. Companion to rollup_for_batch's whole-book tally:
-    this returns the rows, that returns the per-status counts (incl. not_started)."""
+    """One row per TOC entry in the batch's BOOK (full TOC), LEFT-joined to
+    the latest job per toc_entry within this batch. Launched lessons carry
+    their job's status/fields; un-launched entries come back with
+    job_id/status/attempts/current_phase/error_message all None. Every row
+    also carries `toc_class` — the pure classifier's tag
+    (app.services.toc_classifier.classify_entries), run once over the
+    fetched rows — so the FE can render un-launched/excluded rows with their
+    class chip instead of a bare "not started". Ordered by order_index.
+    rollup_for_batch is launched-only (its denominator is the launch scope,
+    not this whole-book row count); toc_total_for_batch is the whole-book
+    display context."""
     from app.models.toc_entry import TOCEntry
+    from app.services.toc_classifier import classify_entries
 
     book_id = (
         await session.execute(select(Batch.book_id).where(Batch.id == batch_id))
@@ -302,13 +301,18 @@ async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
             latest.c.current_phase, latest.c.error_message,
             TOCEntry.id.label("toc_entry_id"),
             TOCEntry.section_title, TOCEntry.order_index,
+            TOCEntry.page_start, TOCEntry.page_end,
         )
         .select_from(TOCEntry)
         .outerjoin(latest, latest.c.toc_entry_id == TOCEntry.id)
         .where(TOCEntry.book_id == book_id)
         .order_by(TOCEntry.order_index)
     )
-    rows = await session.execute(stmt)
+    rows = (await session.execute(stmt)).all()
+    # classify_entries duck-types .section_title/.page_start/.page_end off
+    # each Row (present via the select above) and returns classes aligned to
+    # input order — rows are never reordered, so a straight zip lines up.
+    toc_classes = classify_entries(rows)
     return [
         {
             "job_id": str(r.job_id) if r.job_id is not None else None,
@@ -319,8 +323,9 @@ async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
             "attempts": r.attempts,
             "current_phase": r.current_phase,
             "error_message": r.error_message,
+            "toc_class": toc_class,
         }
-        for r in rows
+        for r, toc_class in zip(rows, toc_classes)
     ]
 
 
