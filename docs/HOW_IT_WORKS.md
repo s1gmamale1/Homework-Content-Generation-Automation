@@ -259,10 +259,22 @@ LOCKED` already guarantees two workers can never claim the same job, so scaling 
   active; clobber-proof against the C4 budget monitor which only touches reason `"batch-cap"`).
   A re-launch over a batch with partially-done lessons offers `relaunch_mode` **resume**
   (default — keep saved phases) vs **discard** (regenerate from scratch); the preview is strict
-  zero-write. The `/monitor` rollup is whole-book (PR37): launched-lesson statuses plus a
-  synthetic `not_started` count for the book's un-launched lessons, so a batch reads "complete"
-  only when every lesson is done and none are un-launched. The monitor groups a book's
-  per-transport batches into one card.
+  zero-write. **The `/monitor` rollup is launched-lessons-only (BE-03, worklog 0139,
+  superseding PR37's whole-book rollup):** the denominator is derived from the batch's
+  own member jobs (`SELECT DISTINCT ON (toc_entry_id) … FROM homework_jobs WHERE batch_id = …`
+  — the launch scope IS whatever jobs were actually stamped with this batch, no separate
+  targets table), not the book's full TOC row count. There is no more synthetic
+  `not_started` key — `rollup` only ever holds real job statuses over the launched set.
+  The whole book's TOC row count is still exposed, but as a separate, display-only
+  `toc_total` field (never folded into the denominator); the FE shows un-launched book
+  rows with their `toc_class` chip (lesson/header/test/revision/practice/other, from the
+  same pure classifier as the launch filter) and a "N book rows not in launch" line under
+  the rollup bar, instead of counting them as `not_started`. **`complete` now means every
+  launched lesson is `done`** (`sum(rollup.values()) > 0 and rollup["done"] == sum(...)`)
+  — a **semantic tightening**: a launched lesson that ended `failed` or `cancelled` now
+  blocks `complete` too (previously only in-flight `pending`/`running`/`cancelling`
+  blocked it); resume is the intended way out of a halted batch. The monitor groups a
+  book's per-transport batches into one card.
 - **Budget monitor** (C4 cost-safety): a `worker._budget_monitor` loop runs inside every
   worker process (period: `COST_CHECK_INTERVAL_SECONDS`, default 60s). It reads the
   cost ledger (`app/repositories/cost.py`) — `batch_api_cost_usd` (sums `agent_usages`
