@@ -700,8 +700,10 @@ Key endpoints:
   page id + grade + language, optional `block_id`) and ingest it like an upload, TOC
   extraction included (BE-19, worklog 0141). Every PDF reachable from the subject page is
   enumerated as a candidate — direct blocks, PDFs nested inside toggle/column containers
-  (bounded depth), and PDFs on one level of `child_page`s (multi-part textbooks that live as
-  separate child pages, e.g. "Matematika 1-qism"/"2-qism") — each candidate carries a rank
+  (bounded depth), and PDFs on one level of **part-titled** `child_page`s (titles matching
+  qism/часть/part/bo'lim/kitob or a textbook marker — multi-part textbooks that live as
+  separate child pages, e.g. "Matematika 1-qism"/"2-qism"; homework-archive child pages are
+  never scanned, which keeps the per-grade crawl at seconds, not minutes) — each candidate carries a rank
   (textbook beats neutral beats workbook; bot/source handles like `@elektron_darslikbot` are
   stripped before ranking so they can't spoof a "darslik" match) and a `block_id`. With no
   `block_id`, exactly one candidate in the best-rank tier auto-downloads; more than one raises
