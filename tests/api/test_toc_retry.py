@@ -133,6 +133,12 @@ def test_retry_blocked_by_referencing_jobs_409():
     assert detail["error"] == "toc_retry_blocked_by_jobs"
     assert detail["count"] == 1
     assert detail["jobs"] == [{"id": str(jid), "status": "done"}]
+    # Human "message" field (Task 3 review rider), matching the
+    # ambiguous_textbook {error, message, ...} convention.
+    assert detail["message"] == (
+        "1 homework job(s) reference this book's sections — "
+        "delete the affected sections first"
+    )
     # book status is NOT flipped, nothing cleared, no extraction fires
     run_spy.assert_not_awaited()
     set_status.assert_not_awaited()
@@ -160,5 +166,10 @@ def test_retry_409_caps_job_listing_at_20_with_total():
     assert detail["count"] == 25            # total count present, uncapped
     assert len(detail["jobs"]) == 20         # listing capped at 20
     assert all(j["status"] == "done" for j in detail["jobs"])
+    # message uses the UNCAPPED total (25), not the capped listing length (20).
+    assert detail["message"] == (
+        "25 homework job(s) reference this book's sections — "
+        "delete the affected sections first"
+    )
     run_spy.assert_not_awaited()
     clear_spy.assert_not_awaited()

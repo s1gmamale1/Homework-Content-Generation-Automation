@@ -85,6 +85,20 @@ async def get(session: AsyncSession, book_id: UUID) -> Optional[Book]:
     return await session.get(Book, book_id)
 
 
+async def get_many(session: AsyncSession, book_ids: list[UUID]) -> dict[UUID, Book]:
+    """Batch fetch: `id -> Book` for the given ids, ONE query for the whole
+    list (GK2 batch-load expectation — backs the Notion availability
+    enrichment route, which resolves however many distinct linked books a
+    crawl surfaces without a per-candidate/per-part query). Empty input
+    short-circuits without touching the session, so an unlinked-everything
+    crawl response never opens a query at all."""
+    if not book_ids:
+        return {}
+    stmt = select(Book).where(Book.id.in_(book_ids))
+    rows = (await session.execute(stmt)).scalars().all()
+    return {b.id: b for b in rows}
+
+
 async def get_with_toc(session: AsyncSession, book_id: UUID) -> Optional[Book]:
     stmt = select(Book).where(Book.id == book_id).options(selectinload(Book.toc_entries))
     return (await session.execute(stmt)).scalar_one_or_none()

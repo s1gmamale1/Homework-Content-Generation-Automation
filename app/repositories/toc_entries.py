@@ -1,7 +1,7 @@
 from uuid import UUID
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import TOCEntry
@@ -58,6 +58,24 @@ async def list_for_book(session: AsyncSession, book_id: UUID) -> list[TOCEntry]:
         .order_by(TOCEntry.order_index)
     )
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def count_by_book_ids(session: AsyncSession, book_ids: list[UUID]) -> dict[UUID, int]:
+    """Grouped `COUNT(*)` of toc_entries per book, ONE query for the whole
+    list (GK2 batch-load expectation — backs the Notion availability
+    enrichment route's `toc_total`, alongside `books_repo.get_many` and
+    `jobs_repo.count_by_book_ids`). A book with zero entries is simply absent
+    from the returned mapping — callers default-0 on lookup. Empty input
+    short-circuits without touching the session."""
+    if not book_ids:
+        return {}
+    stmt = (
+        select(TOCEntry.book_id, func.count())
+        .where(TOCEntry.book_id.in_(book_ids))
+        .group_by(TOCEntry.book_id)
+    )
+    rows = (await session.execute(stmt)).all()
+    return {book_id: count for book_id, count in rows}
 
 
 async def get_next_in_book(

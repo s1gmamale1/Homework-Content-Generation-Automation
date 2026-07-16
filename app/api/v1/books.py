@@ -191,7 +191,7 @@ class FromNotionRequest(BaseModel):
     # Explicit textbook-candidate selector (BE-19 task 3). Omitted (None) ->
     # download_textbook auto-selects when the page's best-rank tier has exactly
     # one candidate, and 422s (AmbiguousTextbook) when it doesn't — e.g. a
-    # multi-part textbook. The FE learns to send this in task 6.
+    # multi-part textbook. The FE learns to send this in task 5.
     block_id: str | None = None
 
     @field_validator("grade")
@@ -293,7 +293,7 @@ async def book_from_notion(
             f"bounded page windows)",
         )
     except notion_fetch.AmbiguousTextbook as exc:
-        # Structured detail (review fix, task 3) — the FE (Task 6) consumes
+        # Structured detail (review fix, task 3) — the FE (Task 5) consumes
         # this as JSON, not prose: {"error": "ambiguous_textbook", "message":
         # <short human text>, "candidates": [{"block_id","filename","rank"}, ...]}.
         raise HTTPException(
@@ -455,13 +455,22 @@ async def retry_toc_extraction(
     # jobs (delete the affected sections) before retrying.
     blocking = await jobs_repo.list_for_book(session, book_id)
     if blocking:
-        # Structured detail, not prose — the FE (Task 6) must never parse this
+        # Structured detail, not prose — the FE (Task 5) must never parse this
         # as a string. Listing is capped at 20 (a full-TOC book can carry
         # 50-60+ jobs); `count` stays the uncapped total.
         raise HTTPException(
             409,
             {
                 "error": "toc_retry_blocked_by_jobs",
+                # Human message (Task 3 review rider) — matches the
+                # ambiguous_textbook {error, message, ...} convention so every
+                # structured-detail 409 in this router carries a human line
+                # alongside the machine-readable fields. Uses the UNCAPPED
+                # `count`, not the capped `jobs` listing length.
+                "message": (
+                    f"{len(blocking)} homework job(s) reference this book's "
+                    "sections — delete the affected sections first"
+                ),
                 "count": len(blocking),
                 "jobs": [{"id": str(j.id), "status": j.status} for j in blocking[:20]],
             },
