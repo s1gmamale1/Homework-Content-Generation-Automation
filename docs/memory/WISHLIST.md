@@ -7,6 +7,7 @@
 
 ## Open
 
+- `fe-biome-clean-1`: **web/ biome check is repo-wide dirty (formatter diagnostics)** — `package.json` declares `lint: biome check .` but no gate runs it and the drift predates BE-19 (flagged hunks include untouched #86 code); do one dedicated `biome format --write` sweep commit (no logic changes) + decide whether to add lint to the FE verification convention (PR #96 gate note, 2026-07-16).
 - `rollup-payload-toc-total-required-1`: **make `_rollup_payload`'s `toc_total` a required kwarg** — the `= 0` default (batch.py) lets a future call site silently render `toc_total: 0`; three pre-existing test files (`test_batch_payload_variant`, `test_rollup_archive_counts`, `test_books_language_payload`) rely on the default and need touching in the same pass (BE-03 final-review ticket, worklog 0139).
 - `toc-class-union-type-1`: **narrow FE `toc_class: string` to the closed union** `"lesson"|"header"|"test"|"revision"|"practice"|"other"` in `web/src/lib/types.ts` (doc-comment already names it; nothing branches on it yet) (BE-03 ticket, worklog 0139).
 - `batch-chip-label-prettify-1`: **prettify raw classifier chip labels** in `batch-lesson-list.tsx` — un-launched rows render the raw class (e.g. "other") verbatim; map to friendlier operator copy / title-case (BE-03 ticket, worklog 0139).
