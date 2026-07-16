@@ -553,48 +553,56 @@ async def _spawn_once(
     if transport == "api" and provider.name in agent_models.API_PROVIDERS:
         from app.services import api_transport, credential_id, credential_limiter
 
-        slot: Any = credential_limiter.BYPASS
-        credential = credential_id.credential_for(provider.name, os.environ)
-        if credential is not None:
-            # Unknown-provider guard (BE-16 task 5, deferred Important from
-            # task 4's review): `resolve_limit`'s provider -> settings-attr
-            # lookup silently falls back to 0 (== bypass) for a provider
-            # name it doesn't recognize. This branch already only runs for
-            # `provider.name in agent_models.API_PROVIDERS` (the `if`
-            # above), and `credential_for` only ever returns non-None for
-            # {gemini, claude, clodex} — assert that exact set here too so
-            # any future drift between API_PROVIDERS and credential_for/
-            # resolve_limit's known providers fails LOUD, never silently.
-            assert provider.name in agent_models.API_PROVIDERS, (
-                f"credential limiter: provider {provider.name!r} must not "
-                "reach resolve_limit outside {gemini, claude, clodex}"
-            )
-            try:
-                async with SessionLocal() as session:
-                    limit = await credential_limiter.resolve_limit(
-                        session, provider.name, credential
-                    )
-                slot = await credential_limiter.acquire(
-                    credential, limit,
-                    wait_budget_s=settings.credential_slot_wait_seconds,
-                )
-            except Exception as exc:  # noqa: BLE001 — DB outage degrades, never blocks
-                _log_credential_bypass(exc)
-                slot = credential_limiter.BYPASS
-
-            if slot is None:
-                # Budget exhausted, no slot ever freed up. Shaped exactly
-                # like a provider 429 (`_is_rate_limited` matches "429") so
-                # `_spawn`'s existing backoff/retry loop handles fleet
-                # saturation the same way it handles a real rate limit.
-                return (
-                    1, "", {},
-                    "429 fleet credential slot wait exhausted "
-                    f"(credential={credential}, "
-                    f"budget={settings.credential_slot_wait_seconds}s)",
-                )
-
+        # The local process-wide semaphore is entered FIRST, before any
+        # fleet-wide credential-slot chain (review fix, task-5 CRITICAL
+        # finding): a won fleet slot must never be held while this call
+        # queues for a local slot — that would let a caller hog a scarce
+        # fleet-wide credential slot for the entire local queueing wait.
+        # Entering the semaphore first also means at most
+        # `agent_max_concurrency` callers per process ever poll `acquire`
+        # concurrently, matching the CLI-subprocess branch below.
         async with _semaphore():
+            slot: Any = credential_limiter.BYPASS
+            credential = credential_id.credential_for(provider.name, os.environ)
+            if credential is not None:
+                # Unknown-provider guard (BE-16 task 5, deferred Important from
+                # task 4's review): `resolve_limit`'s provider -> settings-attr
+                # lookup silently falls back to 0 (== bypass) for a provider
+                # name it doesn't recognize. This branch already only runs for
+                # `provider.name in agent_models.API_PROVIDERS` (the `if`
+                # above), and `credential_for` only ever returns non-None for
+                # {gemini, claude, clodex} — assert that exact set here too so
+                # any future drift between API_PROVIDERS and credential_for/
+                # resolve_limit's known providers fails LOUD, never silently.
+                assert provider.name in agent_models.API_PROVIDERS, (
+                    f"credential limiter: provider {provider.name!r} must not "
+                    "reach resolve_limit outside {gemini, claude, clodex}"
+                )
+                try:
+                    async with SessionLocal() as session:
+                        limit = await credential_limiter.resolve_limit(
+                            session, provider.name, credential
+                        )
+                    slot = await credential_limiter.acquire(
+                        credential, limit,
+                        wait_budget_s=settings.credential_slot_wait_seconds,
+                    )
+                except Exception as exc:  # noqa: BLE001 — DB outage degrades, never blocks
+                    _log_credential_bypass(exc)
+                    slot = credential_limiter.BYPASS
+
+                if slot is None:
+                    # Budget exhausted, no slot ever freed up. Shaped exactly
+                    # like a provider 429 (`_is_rate_limited` matches "429") so
+                    # `_spawn`'s existing backoff/retry loop handles fleet
+                    # saturation the same way it handles a real rate limit.
+                    return (
+                        1, "", {},
+                        "429 fleet credential slot wait exhausted "
+                        f"(credential={credential}, "
+                        f"budget={settings.credential_slot_wait_seconds}s)",
+                    )
+
             try:
                 return await api_transport.generate(
                     provider=provider.name, model=model, prompt=prompt,

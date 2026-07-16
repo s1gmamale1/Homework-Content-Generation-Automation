@@ -8,10 +8,18 @@ Everything here is mocked at the module-function level — `credential_id`,
 Postgres or a real subprocess/SDK. `SessionLocal` is stubbed with a trivial
 async context manager since `credential_limiter.resolve_limit` (itself
 mocked here) is the only thing that would use the session.
+
+Review fix (task-5 CRITICAL finding): the entire limiter chain — credential
+lookup, `resolve_limit`, `acquire`, `generate`, and the shielded release
+`finally` — must run INSIDE `async with _semaphore():`, with the local
+semaphore entered FIRST. Two tests below (`test_semaphore_entered_before_
+acquire_and_released_before_exit` and `test_real_semaphore_blocks_limiter_
+acquire_until_local_slot_free`) prove that ordering directly.
 """
 from __future__ import annotations
 
 import asyncio
+from time import perf_counter
 from typing import Any
 
 import pytest
@@ -56,6 +64,118 @@ def _patch_resolve(monkeypatch, limit: int = 8):
         return limit
 
     monkeypatch.setattr(credential_limiter, "resolve_limit", fake_resolve)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Review fix (task-5 CRITICAL finding): the local `_semaphore()` must be
+# entered BEFORE the fleet-credential-limiter chain (credential_for /
+# resolve_limit / acquire), and the shielded release must complete BEFORE
+# the semaphore is exited — otherwise a won fleet slot can be held while
+# this call queues for a local slot, and the local concurrency cap no
+# longer bounds how many callers poll `acquire` at once.
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_semaphore_entered_before_acquire_and_released_before_exit(monkeypatch):
+    """Probe semaphore + fake limiter recording timestamps: prove
+    sem-enter -> acquire -> generate -> release -> sem-exit, in that order."""
+    events: list[tuple[str, float]] = []
+
+    class _ProbeSemaphore:
+        async def __aenter__(self):
+            events.append(("sem_enter", perf_counter()))
+            return self
+
+        async def __aexit__(self, *exc_info):
+            events.append(("sem_exit", perf_counter()))
+            return False
+
+    monkeypatch.setattr(agent_module, "_semaphore", lambda: _ProbeSemaphore())
+    monkeypatch.setattr(credential_id, "credential_for", lambda *a, **k: "claude:abc")
+    _patch_resolve(monkeypatch)
+
+    async def fake_acquire(credential, limit, *, wait_budget_s, pc_id=None):
+        events.append(("acquire", perf_counter()))
+        return "slot-1"
+
+    async def fake_release(slot_id):
+        events.append(("release", perf_counter()))
+
+    monkeypatch.setattr(credential_limiter, "acquire", fake_acquire)
+    monkeypatch.setattr(credential_limiter, "release", fake_release)
+
+    async def fake_generate(**kwargs):
+        events.append(("generate", perf_counter()))
+        return (0, "ok", {"raw": {}}, "")
+
+    monkeypatch.setattr(api_transport_module, "generate", fake_generate)
+
+    rc, text, _usage, _stderr = await agent_module._spawn_once(
+        provider=_StubProvider("claude"), model="claude-x", prompt="hi",
+        attachments=[], transport="api",
+    )
+    assert (rc, text) == (0, "ok")
+
+    labels = [label for label, _ts in events]
+    assert labels == ["sem_enter", "acquire", "generate", "release", "sem_exit"]
+
+    by_label = dict(events)
+    # The load-bearing ordering property (timestamps, not just label order):
+    # semaphore-enter strictly precedes the limiter acquire, and the
+    # (shielded) release strictly precedes semaphore-exit.
+    assert by_label["sem_enter"] <= by_label["acquire"]
+    assert by_label["acquire"] <= by_label["generate"]
+    assert by_label["generate"] <= by_label["release"]
+    assert by_label["release"] <= by_label["sem_exit"]
+
+
+@pytest.mark.asyncio
+async def test_real_semaphore_blocks_limiter_acquire_until_local_slot_free(monkeypatch):
+    """With a real (size-1) local semaphore held by someone else, the
+    fleet-credential-limiter chain must never even be polled — proving the
+    local slot gates entry to `acquire`, not the other way around. This is
+    the concrete regression the review flagged: before the fix, `acquire`
+    ran BEFORE `_semaphore()`, so a caller could win a scarce fleet-wide
+    credential slot and then sit holding it while queueing locally."""
+    sem = asyncio.Semaphore(1)
+    monkeypatch.setattr(agent_module, "_semaphore", lambda: sem)
+    monkeypatch.setattr(credential_id, "credential_for", lambda *a, **k: "claude:abc")
+    _patch_resolve(monkeypatch)
+
+    acquire_called = asyncio.Event()
+
+    async def fake_acquire(credential, limit, *, wait_budget_s, pc_id=None):
+        acquire_called.set()
+        return "slot-1"
+
+    async def fake_release(slot_id):
+        pass
+
+    monkeypatch.setattr(credential_limiter, "acquire", fake_acquire)
+    monkeypatch.setattr(credential_limiter, "release", fake_release)
+
+    async def fake_generate(**kwargs):
+        return (0, "ok", {"raw": {}}, "")
+
+    monkeypatch.setattr(api_transport_module, "generate", fake_generate)
+
+    await sem.acquire()  # occupy the only local slot ourselves
+    task = asyncio.create_task(
+        agent_module._spawn_once(
+            provider=_StubProvider("claude"), model="m", prompt="x",
+            attachments=[], transport="api",
+        )
+    )
+    await asyncio.sleep(0.05)
+    assert acquire_called.is_set() is False, (
+        "limiter acquire must not run before the local semaphore is free"
+    )
+
+    sem.release()
+    rc, text, _usage, _stderr = await task
+    assert (rc, text) == (0, "ok")
+    assert acquire_called.is_set() is True
 
 
 # ─────────────────────────────────────────────────────────────────────
