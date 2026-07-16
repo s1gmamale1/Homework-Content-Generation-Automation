@@ -697,7 +697,37 @@ Key endpoints:
 - `GET /agent/models` / `GET /agent/stats` — the model menu, and per-provider rolling usage
   stats for the `/usage` dashboard.
 - `POST /books/from-notion` — fetch a subject's textbook straight from Notion (by subject
-  page id + grade) and ingest it like an upload, TOC extraction included.
+  page id + grade + language, optional `block_id`) and ingest it like an upload, TOC
+  extraction included (BE-19, worklog 0141). Every PDF reachable from the subject page is
+  enumerated as a candidate — direct blocks, PDFs nested inside toggle/column containers
+  (bounded depth), and PDFs on one level of **part-titled** `child_page`s (titles matching
+  qism/часть/part/bo'lim/kitob or a textbook marker — multi-part textbooks that live as
+  separate child pages, e.g. "Matematika 1-qism"/"2-qism"; homework-archive child pages are
+  never scanned, which keeps the per-grade crawl at seconds, not minutes) — each candidate carries a rank
+  (textbook beats neutral beats workbook; bot/source handles like `@elektron_darslikbot` are
+  stripped before ranking so they can't spoof a "darslik" match) and a `block_id`. With no
+  `block_id`, exactly one candidate in the best-rank tier auto-downloads; more than one raises
+  a structured 422 (`{"error": "ambiguous_textbook", "message", "candidates":
+  [{"block_id","filename","rank"}]}`) so the caller can re-POST with an explicit pick; a
+  `block_id` that doesn't match any candidate 422s with a distinct "stale selector" message
+  (not the generic empty-page one); zero candidates 422s as "no attached textbook". `grade`
+  must be omitted (filename-derived default) or one of `"1"`–`"11"`; an explicit grade also
+  triggers an ancestry check — the subject page's parent chain must walk subject page →
+  language container → grade page → `settings.notion_lessons_root` (≤4 hops), and the grade
+  page must have exactly one container matching the requested language, else 422. A missing
+  Notion page anywhere in the flow → 404; any other Notion API error → 502 (one shared
+  mapper covers both the ancestry walk and the download step). After download, a pure
+  script-sniffer (`app/services/pdf_lang.py`) samples the PDF's text and blocks a confident
+  wrong-script match (`ru` expects Cyrillic; `uz`/`en` expect Latin) with a 422 naming the
+  filename + detected script — catching e.g. an Uzbek-Latin PDF attached under a Russian
+  subject page. Language-family subjects whose *content* language is fixed regardless of
+  container (`russian`→cyrillic, `english`→latin, `ona-tili`→latin — see
+  `_LANGUAGE_SUBJECT_CONTENT_SCRIPT` in `books.py`) get an advisory warning instead of a hard
+  block when the detected script matches their own content language (e.g. "Rus tili" fetched
+  under the `uz` container is legitimately Cyrillic); every other mismatch, including one that
+  also contradicts the subject's own content script, stays a hard 422. A scanned/no-text-layer
+  PDF can't be checked at all and proceeds with a `warnings: [...]` entry in the response
+  instead of blocking.
 - `POST /jobs/batch` — fleet launch: fan out one job per lesson of a `toc_ready` book
   (skipping/adopting lessons that already have jobs; `relaunch_mode` resume|discard for a
   re-launch over partially-done lessons; same `custom_prompts`/`selected_phases` + pick-phases-400
@@ -715,9 +745,13 @@ Key endpoints:
 - `GET /notion/grades` / `GET /notion/grades/{id}/subjects` — the Notion pickers that feed
   the from-notion flow and the fleet launcher.
 - `GET /notion/grades/{id}/available-languages` — returns per-subject, per-language availability
-  (`{app_subject: {lang: {page_id, has_textbook, parts:[{page_id,title,has_textbook}]}}}` — `parts`
-  preserves every same-subject textbook part; top-level keys = first part, backward-compat); used by the Fleet launcher's prepare-from-Notion
-  language picker to show UZ/RU/EN chips and disable EN when no Notion page exists.
+  (`{app_subject: {lang: {page_id, has_textbook, parts:[{page_id,title,has_textbook,candidates}]}}}`
+  — `parts` preserves every same-subject textbook part; top-level keys = first part,
+  backward-compat; each part's `candidates` (BE-19, worklog 0141) is the same enumerated PDF
+  list `textbook_candidates()` returns, so the Fleet launcher's picker can offer a `block_id`
+  choice on either a same-page multi-PDF part or a multi-part subject) used by the Fleet
+  launcher's prepare-from-Notion language picker to show UZ/RU/EN chips and disable EN when no
+  Notion page exists.
 
 **Why SSE and not WebSockets?** Progress is one-directional (server → browser) and SSE is
 simpler. One quirk: the browser's `EventSource` can't send auth headers, so the stream/

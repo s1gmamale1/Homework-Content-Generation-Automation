@@ -28,6 +28,12 @@ class BookOut(BaseModel):
     """True only when this response reused an existing book (sha dedup hit) —
     lets the FE show 'already exists — reusing' instead of a 'Preparing' state
     for extraction that never runs."""
+    warnings: Optional[list[str]] = None
+    """Non-fatal advisories about this book (BE-19 task 5: the PDF-script
+    language guard sets this to a one-item list when the requested language
+    couldn't be confidently checked against the PDF's text, e.g. a scanned
+    book). None when there is nothing to warn about — a confident script
+    match never populates this."""
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -7,7 +7,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from notion_client.errors import APIResponseError
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -21,7 +22,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import BookOut, TOCEntryOut
-from app.services import events_bus, notion_fetch, storage, toc_extractor
+from app.services import events_bus, notion_fetch, pdf_lang, storage, subjects, toc_extractor
 from app.services.agent_models import validate_output_language
 from app.services.flows import SUPPORTED_SUBJECTS
 from app.services.grade import derive_grade_from_filename
@@ -147,15 +148,66 @@ async def upload_book(
     )
 
 
+# BE-19 task 4: the Uzbek curriculum runs grades 1-11 — an explicit grade
+# outside that range (or a non-numeric string like "banana") is now rejected
+# at the Pydantic layer instead of silently flowing through to ingest_pdf.
+_VALID_GRADES = {str(g) for g in range(1, 12)}
+
+
 class FromNotionRequest(BaseModel):
-    subject_page_id: str
+    subject_page_id: str = Field(min_length=1)
     grade: str | None = None
     language: str = "uz"
+    # Explicit textbook-candidate selector (BE-19 task 3). Omitted (None) ->
+    # download_textbook auto-selects when the page's best-rank tier has exactly
+    # one candidate, and 422s (AmbiguousTextbook) when it doesn't — e.g. a
+    # multi-part textbook. The FE learns to send this in task 6.
+    block_id: str | None = None
+
+    @field_validator("grade")
+    @classmethod
+    def _validate_grade(cls, v: str | None) -> str | None:
+        # `grade` stays legal when OMITTED (None) — ingest_pdf already derives
+        # it from the filename in that case (pre-existing, unchanged behavior).
+        # Only an EXPLICIT value is validated, so "" and "banana" and "12" (out
+        # of the 1-11 curriculum range) are rejected here instead of silently
+        # ingesting under a bogus/foreign grade.
+        if v is not None and v not in _VALID_GRADES:
+            raise ValueError(f"grade must be one of 1-11, got {v!r}")
+        return v
 
 
 def _notion_subject_title(client: NotionClientWrapper, subject_page_id: str) -> str:
     """Subject page title via the rate-limited wrapper (patched in tests)."""
     return client.get_page_title(subject_page_id)
+
+
+def _notion_api_error_response(exc: APIResponseError, page_id: str) -> HTTPException:
+    """Map a raw `notion_client` `APIResponseError` to a controlled response —
+    404 when Notion reports the page itself is gone (deleted/unshared), 502 for
+    any other Notion-side error. Shared by every step that talks to Notion in
+    `book_from_notion` (title fetch, ancestry walk, download) so the 404/502
+    mapping can't drift between call sites (review fix, task 4 residual-500)."""
+    if exc.status == 404:
+        return HTTPException(404, f"Notion page not found: {page_id!r} ({exc})")
+    return HTTPException(502, f"Notion API error ({exc.status}): {exc}")
+
+
+# Foreign-language subjects whose textbook's dominant script is fixed by the
+# SUBJECT itself (the language it teaches), independent of which language
+# container it's fetched under — the script guard downgrades to warn-only when
+# a mismatch is consistent with this content script (BE-19 task 5 review
+# fixes 1+2). All entries are `family="languages"` in subjects.REGISTRY (a
+# test enforces this). Deliberately NOT in the map: `adabiyot`,
+# `oqish-savodxonligi`, `alifbe` — literacy subjects taught in the medium of
+# instruction, so their content script follows the container (uz edition =
+# Latin, ru edition "Литература"/"Чтение"/"Букварь" = Cyrillic) and never
+# legitimately diverges from the container expectation.
+_LANGUAGE_SUBJECT_CONTENT_SCRIPT: dict[str, str] = {
+    "russian": "cyrillic",   # Rus tili — teaches Russian, Cyrillic content
+    "english": "latin",      # English — Latin content even under the ru container
+    "ona-tili": "latin",     # Uzbek taught in RU-medium schools ("Узб. яз")
+}
 
 
 @router.post("/from-notion", status_code=201)
@@ -170,7 +222,26 @@ async def book_from_notion(
     if not settings.notion_api_key:
         raise HTTPException(503, "Notion not configured")
     client = NotionClientWrapper(api_key=settings.notion_api_key)
-    title = await asyncio.to_thread(_notion_subject_title, client, req.subject_page_id)
+    try:
+        title = await asyncio.to_thread(_notion_subject_title, client, req.subject_page_id)
+        # Ancestry runs UNCONDITIONALLY, even when `grade` is omitted — a
+        # direct API caller could otherwise ingest ANY foreign/out-of-root
+        # page just by not passing `grade` (the ancestry walk used to be
+        # skipped entirely in that case, a merge-gate-blocking bypass).
+        # `grade=None` still keeps its pre-existing legal, filename-derived-
+        # default INGEST behavior (see FromNotionRequest._validate_grade) —
+        # only the WALK always runs now; `verify_page_ancestry` downgrades
+        # its grade-number check to structural-only when `grade` is None
+        # (see its docstring).
+        await asyncio.to_thread(
+            notion_fetch.verify_page_ancestry, client, req.subject_page_id,
+            grade=req.grade, language=req.language,
+            lessons_root=settings.notion_lessons_root,
+        )
+    except notion_fetch.PageOutsideRoot as exc:
+        raise HTTPException(422, str(exc))
+    except APIResponseError as exc:
+        raise _notion_api_error_response(exc, req.subject_page_id)
     subject = notion_fetch._map_subject_for_language(title, req.language)
     if subject is None:
         raise HTTPException(
@@ -182,7 +253,7 @@ async def book_from_notion(
         )
     try:
         body, filename = await asyncio.to_thread(
-            notion_fetch.download_textbook, client, req.subject_page_id)
+            notion_fetch.download_textbook, client, req.subject_page_id, block_id=req.block_id)
     except notion_fetch.TextbookTooLarge as exc:
         raise HTTPException(
             422,
@@ -191,11 +262,86 @@ async def book_from_notion(
             f"ingest/RAM guard, not a model limit — large books extract fine via "
             f"bounded page windows)",
         )
+    except notion_fetch.AmbiguousTextbook as exc:
+        # Structured detail (review fix, task 3) — the FE (Task 6) consumes
+        # this as JSON, not prose: {"error": "ambiguous_textbook", "message":
+        # <short human text>, "candidates": [{"block_id","filename","rank"}, ...]}.
+        raise HTTPException(
+            422,
+            {
+                "error": "ambiguous_textbook",
+                "message": (
+                    f"{len(exc.candidates)} equally-ranked textbook candidates on "
+                    "this subject page — pass `block_id` to pick one"
+                ),
+                "candidates": [
+                    {"block_id": c["block_id"], "filename": c["filename"], "rank": c["rank"]}
+                    for c in exc.candidates
+                ],
+            },
+        )
+    except notion_fetch.StaleSelector as exc:
+        # Distinct from the generic empty-page message below (review fix, task
+        # 2) — names the offending block_id so an operator can tell "your
+        # selector is stale" apart from "this page truly has nothing attached".
+        # Caught BEFORE the plain NoTextbook handler since StaleSelector is a
+        # subclass of it.
+        raise HTTPException(422, str(exc))
     except notion_fetch.NoTextbook:
         raise HTTPException(422, "this subject has no attached textbook")
-    return await ingest_pdf(
+    except APIResponseError as exc:
+        # Residual-500 fix (task 4 review): the page can vanish (deleted /
+        # unshared) AFTER ancestry passed but before/during the download call —
+        # without this, that race escaped as a bare 500 instead of the
+        # controlled 404/502 the earlier Notion calls already get.
+        raise _notion_api_error_response(exc, req.subject_page_id)
+
+    # BE-19 task 5: language guard. A live-confirmed case has an Uzbek
+    # (Latin) PDF attached to the Russian "Математика" part page in Notion —
+    # naive ingestion would silently generate a whole book of wrong-language
+    # homework. Deterministic, script-only check: `ru` expects Cyrillic;
+    # everything else (`uz`, `en`) expects Latin. Hard-block only on a
+    # CONFIDENT mismatch; an indeterminate sample (scanned PDF, no
+    # extractable text) proceeds but is surfaced as a response warning
+    # instead of silently passing through unchecked.
+    detected_script = await asyncio.to_thread(pdf_lang.detect_pdf_script, body)
+    expected_script = "cyrillic" if req.language == "ru" else "latin"
+    warnings: list[str] | None = None
+    if detected_script == "unknown":
+        warnings = ["language check skipped: no extractable text (scanned PDF?)"]
+    elif detected_script != expected_script:
+        # Review fixes (task 5, both directions): a foreign-language subject's
+        # textbook is dominated by the language it TEACHES, not by the
+        # container it was fetched under — "Rus tili" under the uz container
+        # is legitimately Cyrillic-heavy; "Английский язык" / "Узб. яз" under
+        # the ru container are legitimately Latin-heavy. Hard-blocking those
+        # is a false positive (doctrine: hard gates only for wrongness), so a
+        # mismatch CONSISTENT with the subject's own content script (see
+        # _LANGUAGE_SUBJECT_CONTENT_SCRIPT) downgrades to an advisory; any
+        # other mismatch — including one that also contradicts the subject's
+        # content script — stays a hard 422.
+        if _LANGUAGE_SUBJECT_CONTENT_SCRIPT.get(subject) == detected_script:
+            label = subjects.REGISTRY[subject].label
+            warnings = [
+                f"language check advisory: '{label}' textbooks are expected "
+                f"to be {detected_script}-heavy; detected {detected_script}-"
+                f"script for language={req.language!r}"
+            ]
+        else:
+            raise HTTPException(
+                422,
+                f"language mismatch: '{filename}' looks {detected_script}-script but "
+                f"language={req.language!r} expects {expected_script}-script — pass "
+                f"the correct `language`, or upload the PDF directly if this Notion "
+                f"page has the wrong file attached",
+            )
+
+    out = await ingest_pdf(
         session, body=body, subject=subject, grade=req.grade, filename=filename,
         source_language=req.language)
+    if warnings:
+        out.warnings = warnings
+    return out
 
 
 @router.get("")

@@ -30,8 +30,12 @@ def _client(children_by_parent: dict, blocks_by_page: dict | None = None):
 
 
 def _pdf_block(url: str = "http://cdn.example.com/file.pdf") -> dict:
-    """A file-type PDF block accepted by _first_pdf_block."""
-    return {"type": "file", "file": {"name": "textbook.pdf", "file": {"url": url}}}
+    """A file-type PDF block accepted by _first_pdf_block / textbook_candidates.
+
+    Real Notion blocks always carry an ``id`` (textbook_candidates now uses it
+    for each candidate's ``block_id``) — derive a stable one from the url so
+    fixtures stay self-contained without a shared counter."""
+    return {"id": f"blk-{url}", "type": "file", "file": {"name": "textbook.pdf", "file": {"url": url}}}
 
 
 # ---------------------------------------------------------------------------

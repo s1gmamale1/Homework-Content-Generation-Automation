@@ -3,8 +3,14 @@
  * Run: cd web && npx tsx src/lib/notion-parts.test.ts
  */
 import assert from "node:assert/strict";
-import type { LangAvailability } from "./types";
-import { partsFor, resolveNotionPageId, langChipState } from "./notion-parts";
+import type { LangAvailability, LangPart, NotionCandidate } from "./types";
+import {
+  partsFor,
+  resolveNotionPageId,
+  langChipState,
+  partForResolution,
+  resolveCandidate,
+} from "./notion-parts";
 
 const uzMulti: Record<string, LangAvailability> = {
   uz: {
@@ -77,5 +83,138 @@ assert.deepEqual(langChipState("ru", ruMixed, true), { available: true, multiPar
   "chip availability must count only textbook-having parts, not the top-level flag");
 assert.equal(resolveNotionPageId("uz-x", "ru", ruMixed), "ru-2",
   "cross-language resolves to the single TEXTBOOK-having part, not the top-level first part");
+
+// --- resolveCandidate: single best-tier candidate auto-resolves, block_id ALWAYS present ---
+const singleTextbook: NotionCandidate[] = [
+  { page_id: "pg-1", block_id: "blk-1", filename: "Textbook.pdf", rank: 0 },
+];
+assert.deepEqual(
+  resolveCandidate({ page_id: "pg-1", title: "Part 1", has_textbook: true, candidates: singleTextbook }),
+  { status: "resolved", page_id: "pg-1", block_id: "blk-1" },
+  "single best-tier candidate auto-resolves and always carries block_id",
+);
+
+// --- resolveCandidate: textbook (rank 0) + workbook (rank 2) is NOT ambiguous — auto-pick rank 0 ---
+const textbookPlusWorkbook: NotionCandidate[] = [
+  { page_id: "pg-1", block_id: "blk-tb", filename: "Textbook.pdf", rank: 0 },
+  { page_id: "pg-1", block_id: "blk-wb", filename: "Workbook.pdf", rank: 2 },
+];
+assert.deepEqual(
+  resolveCandidate({ page_id: "pg-1", title: "Part 1", has_textbook: true, candidates: textbookPlusWorkbook }),
+  { status: "resolved", page_id: "pg-1", block_id: "blk-tb" },
+  "rank-0 textbook + rank-2 workbook auto-picks the rank-0 textbook, not ambiguous",
+);
+
+// --- resolveCandidate: two candidates tied in the best (lowest) rank tier → ambiguous ---
+const tiedBestTier: NotionCandidate[] = [
+  { page_id: "pg-1", block_id: "blk-a", filename: "Matematika-A.pdf", rank: 0 },
+  { page_id: "pg-1", block_id: "blk-b", filename: "Matematika-B.pdf", rank: 0 },
+];
+assert.deepEqual(
+  resolveCandidate({ page_id: "pg-1", title: "Part 1", has_textbook: true, candidates: tiedBestTier }),
+  { status: "ambiguous", candidates: tiedBestTier },
+  "two candidates tied in the best rank tier must be exposed for an explicit pick",
+);
+
+// --- resolveCandidate: a neutral (rank 1) tie is ambiguous too, even though rank 0 is absent ---
+const tiedNeutralTier: NotionCandidate[] = [
+  { page_id: "pg-1", block_id: "blk-c", filename: "Doc-C.pdf", rank: 1 },
+  { page_id: "pg-1", block_id: "blk-d", filename: "Doc-D.pdf", rank: 1 },
+];
+assert.deepEqual(
+  resolveCandidate({ page_id: "pg-1", title: "Part 1", has_textbook: true, candidates: tiedNeutralTier }),
+  { status: "ambiguous", candidates: tiedNeutralTier },
+);
+
+// --- resolveCandidate: child-page candidate resolves to the OWNING PART's
+// page_id (not the child page's) + the candidate's block_id. A child page's
+// direct parent is the SUBJECT page, not the language container, so
+// verify_page_ancestry's hop-1 check fails if the child id is ever submitted
+// as subject_page_id — block_id alone selects the file across the flattened
+// candidate list (BE-19 final-review critical fix). ---
+const childPageCandidate: NotionCandidate[] = [
+  { page_id: "child-page-99", block_id: "blk-child", filename: "Nested.pdf", rank: 0 },
+];
+assert.deepEqual(
+  resolveCandidate({ page_id: "parent-page-1", title: "Part 1", has_textbook: true, candidates: childPageCandidate }),
+  { status: "resolved", page_id: "parent-page-1", block_id: "blk-child" },
+  "a child-page candidate resolves to the OWNING PART's page_id, not the child page_id",
+);
+
+// --- resolveCandidate: legacy shape (no candidates key) falls back to the part's own
+// page_id with an empty block_id, so pre-crawl-refresh data still works ---
+assert.deepEqual(
+  resolveCandidate({ page_id: "pg-legacy", title: "Part 1", has_textbook: true }),
+  { status: "resolved", page_id: "pg-legacy", block_id: "" },
+);
+assert.deepEqual(
+  resolveCandidate({ page_id: "pg-legacy", title: "Part 1", has_textbook: false }),
+  { status: "none" },
+);
+
+// --- resolveCandidate: no part at all → none ---
+assert.deepEqual(resolveCandidate(null), { status: "none" });
+assert.deepEqual(resolveCandidate(undefined), { status: "none" });
+
+// --- partForResolution: uz is clicked-page-authoritative — finds the matching part
+// by page_id in the uz parts list so its candidates can be inspected ---
+const uzPartsMap: Record<string, LangAvailability> = {
+  uz: {
+    page_id: "uz-math-1",
+    has_textbook: true,
+    parts: [
+      {
+        page_id: "uz-math-1",
+        title: "Matematika 1-qism",
+        has_textbook: true,
+        candidates: [{ page_id: "uz-math-1", block_id: "blk-uz-1", filename: "Mat1.pdf", rank: 0 }],
+      },
+      {
+        page_id: "uz-math-2",
+        title: "Matematika 2-qism",
+        has_textbook: true,
+        candidates: [{ page_id: "uz-math-2", block_id: "blk-uz-2", filename: "Mat2.pdf", rank: 0 }],
+      },
+    ],
+  },
+};
+assert.deepEqual(
+  partForResolution("uz-math-2", "uz", uzPartsMap),
+  uzPartsMap.uz.parts![1],
+  "uz resolution finds the CLICKED page's part (not necessarily the first)",
+);
+// uz map not loaded yet → defensive synthesized bare part, not a crash
+assert.deepEqual(partForResolution("uz-x", "uz", null), {
+  page_id: "uz-x",
+  title: "",
+  has_textbook: true,
+});
+
+// --- partForResolution: cross-language single textbook-having part resolves to it ---
+const crossLangSingle: Record<string, LangAvailability> = {
+  ru: {
+    page_id: "ru-a",
+    has_textbook: true,
+    parts: [
+      {
+        page_id: "ru-a",
+        title: "Алгебра",
+        has_textbook: true,
+        candidates: [{ page_id: "ru-a", block_id: "blk-ru-a", filename: "Algebra.pdf", rank: 0 }],
+      },
+    ],
+  },
+};
+assert.deepEqual(partForResolution("uz-a", "ru", crossLangSingle), crossLangSingle.ru.parts![0]);
+
+// --- partForResolution: cross-language multi-part is ambiguous at the PART level → null
+// (the pre-existing #86 rule; candidate-level resolution never even runs) ---
+assert.equal(partForResolution("uz-1", "ru", ruMulti), null);
+
+// --- End-to-end: resolveCandidate(partForResolution(...)) chains cleanly ---
+assert.deepEqual(
+  resolveCandidate(partForResolution("uz-math-1", "uz", uzPartsMap)),
+  { status: "resolved", page_id: "uz-math-1", block_id: "blk-uz-1" },
+);
 
 console.log("notion-parts.test.ts: all assertions passed");

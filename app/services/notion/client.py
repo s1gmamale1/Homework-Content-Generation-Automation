@@ -79,6 +79,17 @@ class NotionClientWrapper:
         parts = title_prop.get("title", [])
         return "".join(p.get("plain_text", "") for p in parts).strip() or ""
 
+    def get_page_parent(self, page_id: str) -> Optional[str]:
+        """The page's parent page id, or ``None`` when the parent isn't itself
+        a page (workspace root or a database row) — signals chain-end to an
+        ancestry walk (see `notion_fetch.verify_page_ancestry`, BE-19 task 4)."""
+        self._rate_limit()
+        page = self.client.pages.retrieve(page_id)
+        parent = page.get("parent") or {}
+        if parent.get("type") == "page_id":
+            return parent.get("page_id")
+        return None
+
     def page_has_content(self, page_id: str) -> bool:
         """True if the page already has any non-child_page block (idempotency guard)."""
         for block in self.get_block_children(page_id):

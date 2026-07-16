@@ -116,3 +116,30 @@ def test_delete_block_calls_sdk_blocks_delete():
     w = _wrapper_with_fake_sdk()
     w.delete_block("bX")
     w.client.blocks.delete.assert_called_once_with(block_id="bX")
+
+
+# ─── get_page_parent (BE-19 task 4: ancestry-walk support) ──────────────────
+
+
+def test_get_page_parent_returns_parent_page_id():
+    w, sdk = _wrapper()
+    sdk.pages.retrieve.return_value = {
+        "id": "child_1",
+        "parent": {"type": "page_id", "page_id": "parent_1"},
+    }
+    assert w.get_page_parent("child_1") == "parent_1"
+    sdk.pages.retrieve.assert_called_once_with("child_1")
+
+
+def test_get_page_parent_workspace_root_returns_none():
+    # A page directly under the workspace (no page ancestor) is chain-end.
+    w, sdk = _wrapper()
+    sdk.pages.retrieve.return_value = {"id": "top", "parent": {"type": "workspace", "workspace": True}}
+    assert w.get_page_parent("top") is None
+
+
+def test_get_page_parent_database_parent_returns_none():
+    # A page living in a database (not another page) is also chain-end.
+    w, sdk = _wrapper()
+    sdk.pages.retrieve.return_value = {"id": "row", "parent": {"type": "database_id", "database_id": "db1"}}
+    assert w.get_page_parent("row") is None

@@ -30,9 +30,15 @@ import type {
 
 class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** The raw `detail` value from the response body when it parsed as JSON —
+   *  either a plain string (stale-selector / no-textbook / language-mismatch)
+   *  or a structured object (e.g. `ambiguous_textbook`'s
+   *  `{error, message, candidates}`). Undefined when the body wasn't JSON. */
+  detail?: unknown;
+  constructor(status: number, message: string, detail?: unknown) {
     super(message);
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -57,10 +63,38 @@ async function authFetch(url: string, init: RequestInit = {}): Promise<Response>
   return res;
 }
 
+/**
+ * FastAPI 422/4xx bodies are `{"detail": ...}`, but `detail` is MIXED-SHAPE
+ * on some endpoints (BE-19): a plain string for stale-selector / no-textbook
+ * / language-mismatch, but a DICT for `ambiguous_textbook`
+ * (`{error, message, candidates}`). Extract a human-readable message either
+ * way, while keeping the full parsed `detail` on the error for callers that
+ * need the structured payload (e.g. the candidate list).
+ */
+function extractErrorMessage(text: string, fallback: string): { message: string; detail?: unknown } {
+  if (!text) return { message: fallback };
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    if (parsed && typeof parsed === "object" && "detail" in parsed) {
+      const detail = parsed.detail;
+      if (typeof detail === "string") return { message: detail, detail };
+      if (detail && typeof detail === "object" && "message" in detail) {
+        const msg = (detail as { message?: unknown }).message;
+        return { message: typeof msg === "string" ? msg : text, detail };
+      }
+      return { message: text, detail };
+    }
+  } catch {
+    // Not JSON — fall through to the raw text.
+  }
+  return { message: text };
+}
+
 async function unwrap<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new ApiError(res.status, text || res.statusText);
+    const { message, detail } = extractErrorMessage(text, res.statusText);
+    throw new ApiError(res.status, message, detail);
   }
   return (await res.json()) as T;
 }
@@ -337,7 +371,15 @@ export const api = {
     return unwrap<NotionSubject[]>(res);
   },
 
-  async fetchBookFromNotion(subjectPageId: string, grade: string, language?: OutputLanguage): Promise<Book> {
+  /** `blockId` is sent whenever the caller has one — even when the part's
+   *  candidate resolution was unambiguous — so a Notion-side reorder between
+   *  crawl and prepare can't silently swap the fetched file (BE-19 task 6). */
+  async fetchBookFromNotion(
+    subjectPageId: string,
+    grade: string,
+    language?: OutputLanguage,
+    blockId?: string,
+  ): Promise<Book> {
     const res = await authFetch("/api/v1/books/from-notion", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -345,6 +387,7 @@ export const api = {
         subject_page_id: subjectPageId,
         grade,
         ...(language ? { language } : {}),
+        ...(blockId ? { block_id: blockId } : {}),
       }),
     });
     return unwrap<Book>(res);
