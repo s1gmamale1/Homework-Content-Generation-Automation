@@ -9,9 +9,10 @@ below; identity model = mapping table, verified against code).
 ## Approach & key decisions
 
 - **Identity: `book_notion_sources` mapping table** (NOT a column on books):
-  `(book_id FK CASCADE, notion_page_id TEXT norm, notion_block_id TEXT norm, linked_at,
-  UNIQUE(notion_page_id, notion_block_id))` — ids normalized via hyphen-strip+lower (the
-  api-vs-config mismatch class from PR #97's gate). Rationale: two candidate PDFs can live on ONE
+  `(book_id FK CASCADE, notion_page_id TEXT norm NOT NULL, notion_block_id TEXT norm NOT NULL,
+  linked_at, UNIQUE(notion_page_id, notion_block_id))` — block id is always known post-download
+  resolution, so NOT NULL — ids normalized via hyphen-strip+lower (the
+  api-vs-config mismatch class from PR #96's gate). Rationale: two candidate PDFs can live on ONE
   part page (live G11-UZ Algebra), and SHA-dedup means one book is reachable from several Notion
   locations — page-id-only cannot represent either. **Upsert on EVERY `/from-notion` success,
   including dedup hits** (`ON CONFLICT (page, block) DO UPDATE SET book_id, linked_at`).
@@ -47,29 +48,35 @@ below; identity model = mapping table, verified against code).
 ## Tasks (TDD, commit per task)
 
 1. **Migration + models + repo** — `book_notion_sources` table + `books.toc_ready_at`;
-   `notion_sources_repo.upsert_link / links_for_pages(page_ids)`; stamp `toc_ready_at` in the
+   `notion_sources_repo.upsert_link / links_for_sources([(page_id, block_id), …])` — page+block
+   exact, never page-level (two candidates on one page must resolve to different books); stamp `toc_ready_at` in the
    extraction-success path (find where status flips to `toc_ready` — `toc_extractor` — and set it
-   there; clear on redo). Scratch-DB tests: upsert idempotence, uniqueness, cascade on book
-   delete, toc_ready_at stamped/cleared.
+   there; clear on redo). Scratch-DB tests: upsert idempotence, uniqueness, **deleted book cascades link** (FK CASCADE — not a
+   dangling-link case), toc_ready_at stamped/cleared.
 2. **`/from-notion` upserts the mapping** — on fresh ingest AND dedup hit, using the RESOLVED
-   candidate (subject page id + block id actually downloaded; `download_textbook` must surface
-   which candidate it picked — extend its return or a small out-param). Route tests incl. dedup
-   path.
+   candidate (owning part page id + block id actually downloaded; `download_textbook` returns a
+   small `DownloadedTextbook` result object — bytes, filename, source page/block — NOT a longer
+   positional tuple). **Transactional linking:** pass the resolved source identity INTO
+   `ingest_pdf` so book creation + link land in ONE commit (today ingest commits internally — a
+   route-level link failure after it would strand an extracting-but-unlinked book); dedup hits
+   upsert+commit BEFORE returning. Route tests incl. dedup path + link-in-same-commit.
 3. **`/toc/retry` extension** — allow `toc_ready`; structured 409 (`toc_retry_blocked_by_jobs`
-   + count + jobs≤20); clear `toc_validation*` + `toc_ready_at` on accept. RED the prose-409
-   shape away; keep #87's refuse-only semantics byte-intact otherwise.
+   + count + jobs≤20); lifecycle split (gatekeeper correction): **`/toc/retry` clears
+   `toc_validation*` + `toc_ready_at` after its guards pass**; **`POST /toc/accept` PRESERVES the
+   validation audit fields and STAMPS `toc_ready_at`**. RED the prose-409 shape away; keep #87's
+   refuse-only semantics byte-intact otherwise.
 4. **Availability enrichment** — notion.py joins the mapping table + books for per-part
    `book_status/toc_total/toc_ready_at/redo_blocked_by_jobs`; response back-compat (keys added,
-   none changed). Tests: prepared/unprepared/mid-extract/review/failed parts, and a part whose
-   book was deleted (dangling link → treated unprepared).
+   none changed). Tests: prepared/unprepared/mid-extract/review/failed parts, and a source row whose book was deleted (FK cascade removed the link → part shows unprepared).
 5. **FE dialog state machine** — chips (6 states), PREPARED panel with Use-existing (no
    mutation) / Redo (confirm + destructive style + blocked-reason from structured 409), poll or
    SSE for PREPARING→ready transitions while the dialog is open; upload.tsx + launcher.tsx via a
    SHARED component (the BE-19 copy-paste drift lesson — do not duplicate). tsx tests for the
    pure state mapping; tsc + build.
-6. **Backfill script + docs + finish** — `scripts/backfill_notion_sources.py` (read-only
-   downloads, unique-SHA match, ambiguous→skip+report); run it live once as acceptance (report
-   linked/skipped counts); docs (HOW_IT_WORKS prepare flow, DATABASE.md new table, CLAUDE.md
+6. **Backfill script + docs + finish** — `scripts/backfill_notion_sources.py` — Notion access read-only,
+   but it WRITES mapping rows: **dry-run by default, explicit `--apply`**; candidates discovered
+   from the configured Notion tree (not "currently-mapped"); unique-SHA match, ambiguous→skip+
+   report; acceptance = one live dry-run (report would-link/skip counts) + `--apply` with user go; docs (HOW_IT_WORKS prepare flow, DATABASE.md new table, CLAUDE.md
    key-tables line); worklog 0144 + INDEX; wishlist: close nothing, this is new surface. Full
    suite + FE gates + rebase check + PR → gate.
 
