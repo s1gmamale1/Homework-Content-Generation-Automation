@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import delete as sa_delete, func, select
+from sqlalchemy import delete as sa_delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,9 +67,57 @@ async def list_keys(session: AsyncSession) -> list[dict]:
             "byte_size": r.byte_size,
             "created_at": r.created_at,
             "worker_count": int(counts.get(r.id, 0)),
+            "max_concurrent_calls": r.max_concurrent_calls,
         }
         for r in rows
     ]
+
+
+async def set_max_concurrent_calls(
+    session: AsyncSession, key_id: UUID, value: int | None
+) -> int:
+    """Project-wide atomic override write (codex #2, BE-16 task 6):
+    ``project_id`` has no unique constraint on ``sa_keys`` — two rows can
+    legitimately share one GCP project — so this updates EVERY row sharing
+    the target row's project_id in ONE UPDATE statement, never just the
+    named row alone (which could leave two keys for the same project
+    disagreeing on their effective limit).
+
+    Returns the number of rows updated. ``0`` means ``key_id`` doesn't
+    exist (the subquery WHERE clause matches nothing) — the API layer
+    turns that into a 404. The DB-level CHECK constraint
+    (``ck_sa_keys_max_concurrent_calls_min``) is the last line of defense;
+    the API's pydantic ``Field(ge=1)`` should already have rejected
+    sub-1 non-null values before this is ever called.
+    """
+    result = await session.execute(
+        text(
+            "UPDATE sa_keys SET max_concurrent_calls = :value "
+            "WHERE project_id = (SELECT project_id FROM sa_keys WHERE id = :key_id)"
+        ),
+        {"value": value, "key_id": key_id},
+    )
+    return result.rowcount or 0
+
+
+async def slots_in_use_by_credential(
+    session: AsyncSession, ttl_seconds: int
+) -> dict[str, int]:
+    """One grouped count over ``credential_slots`` for in-flight visibility
+    (BE-16 task 6). Only rows fresher than ``ttl_seconds`` count as
+    "in use" — the caller passes ``credential_limiter.STALE_TTL_SECONDS``
+    so this never re-derives the staleness window."""
+    rows = (
+        await session.execute(
+            text(
+                "SELECT credential, count(*) AS n FROM credential_slots "
+                "WHERE acquired_at > now() - make_interval(secs => :ttl) "
+                "GROUP BY credential"
+            ),
+            {"ttl": ttl_seconds},
+        )
+    ).all()
+    return {r.credential: int(r.n) for r in rows}
 
 
 async def delete(session: AsyncSession, key_id: UUID) -> str:

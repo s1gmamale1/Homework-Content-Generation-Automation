@@ -29,6 +29,17 @@ def _fp(provider: str, key: str) -> str:
     return f"{provider}:{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
 
 
+def gemini_project_credential(project_id: str) -> str:
+    """The one canonical `gemini:{project_id}` credential string for a
+    Vertex-SA-backed gemini credential. ``credential_for``'s own Vertex-pair
+    branch (below) and the sa-keys API's per-project slots_in_use/
+    effective_limit lookups (Task 6) both MUST build this string through
+    here — never a second inline f-string — or the two sites can drift out
+    of sync and the API would report visibility for a credential the
+    limiter never actually keys slots under."""
+    return f"gemini:{project_id}"
+
+
 def credential_for(provider: str, env: Mapping[str, str]) -> str | None:
     """Return a stable, non-reversible fingerprint identifying the
     credential ``provider`` would actually bill against, given ``env``, or
@@ -49,7 +60,7 @@ def credential_for(provider: str, env: Mapping[str, str]) -> str | None:
             return _fp("gemini", key)
         proj = env.get("GOOGLE_CLOUD_PROJECT")
         if env.get("GOOGLE_APPLICATION_CREDENTIALS") and proj:
-            return f"gemini:{proj}"
+            return gemini_project_credential(proj)
         return None
 
     env_var = _KEY_ENV_VAR.get(provider)

@@ -39,6 +39,22 @@ def test_gemini_vertex_pair_when_no_key():
     assert credential_id.credential_for("gemini", env) == "gemini:my-gcp-project"
 
 
+def test_gemini_project_credential_matches_vertex_pair_form():
+    """Task 6: the sa-keys API builds the same `gemini:{project_id}` string
+    for its slots_in_use/effective_limit lookups via this shared helper —
+    it must be byte-identical to what credential_for's own Vertex-pair
+    branch produces, or the two sites would silently drift apart."""
+    assert credential_id.gemini_project_credential("my-gcp-project") == "gemini:my-gcp-project"
+    env = {
+        "GOOGLE_APPLICATION_CREDENTIALS": "/path/to/sa.json",
+        "GOOGLE_CLOUD_PROJECT": "my-gcp-project",
+    }
+    assert (
+        credential_id.credential_for("gemini", env)
+        == credential_id.gemini_project_credential("my-gcp-project")
+    )
+
+
 def test_gemini_key_wins_over_vertex_pair_branch_order_parity():
     """Mirrors api_transport._gemini_client (api_transport.py:63-69): the
     client checks GEMINI_API_KEY first and only falls to the Vertex pair

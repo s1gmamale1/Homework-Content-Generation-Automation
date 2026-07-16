@@ -4,13 +4,13 @@ import hashlib
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user_strict
 from app.db import get_session
 from app.repositories import sa_keys as repo
-from app.services import storage
+from app.services import credential_id, credential_limiter, storage
 from app.services.sa_key_validate import InvalidServiceAccountKey, parse_and_validate_sa_key
 
 router = APIRouter(prefix="/sa-keys", tags=["sa-keys"])
@@ -22,6 +22,7 @@ def _meta(row) -> dict:
         "client_email": row.client_email, "original_filename": row.original_filename,
         "label": row.label, "byte_size": row.byte_size, "worker_count": 0,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+        "max_concurrent_calls": row.max_concurrent_calls,
     }
 
 
@@ -50,9 +51,22 @@ async def upload_sa_key(
 @router.get("")
 async def list_sa_keys(session: AsyncSession = Depends(get_session)) -> dict:
     keys = await repo.list_keys(session)
+    # One grouped query over credential_slots for all rows (not per-row) —
+    # STALE_TTL_SECONDS comes from credential_limiter so this never
+    # re-derives the staleness window (task 6 brief).
+    slots = await repo.slots_in_use_by_credential(
+        session, credential_limiter.STALE_TTL_SECONDS
+    )
     for k in keys:
         k["id"] = str(k["id"])
         k["created_at"] = k["created_at"].isoformat() if k["created_at"] else None
+        # SA keys are gemini Vertex-SA credentials by construction — the
+        # same string credential_for's own Vertex-pair branch builds (M6).
+        credential = credential_id.gemini_project_credential(k["project_id"])
+        k["slots_in_use"] = slots.get(credential, 0)
+        k["effective_limit"] = await credential_limiter.resolve_limit(
+            session, "gemini", credential
+        )
     return {"keys": keys}
 
 
@@ -66,6 +80,37 @@ async def delete_sa_key(key_id: UUID, session: AsyncSession = Depends(get_sessio
     await session.commit()
     storage.sa_key_path(key_id).unlink(missing_ok=True)
     return {"deleted": str(key_id)}
+
+
+class PatchMaxConcurrentRequest(BaseModel):
+    # `ge=1` mirrors the DB CHECK (`ck_sa_keys_max_concurrent_calls_min`);
+    # None (no override) is exempt from the numeric constraint in pydantic
+    # v2 for an `int | None` field — only an explicit non-null value is
+    # range-checked. FastAPI turns the resulting ValidationError into a 422.
+    max_concurrent_calls: int | None = Field(default=None, ge=1)
+
+
+@router.patch("/{key_id}")
+async def patch_sa_key(
+    key_id: UUID,
+    req: PatchMaxConcurrentRequest,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    # PROJECT-WIDE ATOMIC PATCH (codex #2): one UPDATE touches every sa_keys
+    # row sharing key_id's project_id. rowcount==0 can only mean key_id
+    # doesn't exist (a row always matches its own project_id), so that's
+    # the 404 signal — no separate existence SELECT needed.
+    rows_updated = await repo.set_max_concurrent_calls(
+        session, key_id, req.max_concurrent_calls
+    )
+    if rows_updated == 0:
+        raise HTTPException(404, "no such key")
+    await session.commit()
+    # Fresh `get()` — this session has not loaded `key_id` via the ORM yet
+    # this request, so this issues a real SELECT rather than returning a
+    # stale identity-mapped object left over from before the raw-SQL UPDATE.
+    row = await repo.get(session, key_id)
+    return {**_meta(row), "rows_updated": rows_updated}
 
 
 @router.get("/{key_id}/download")
