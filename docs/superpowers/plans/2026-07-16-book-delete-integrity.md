@@ -16,8 +16,25 @@ from under a running worker (live DB has a book with active jobs right now).
   — BE-12 (composite-FK integrity) will revisit the FK topology wholesale; don't pre-empt it with
   a second FK philosophy, and zero-migration ships faster.
 - **Active jobs → 409, refuse-loud (locked with user 2026-07-16):** any job in
-  `pending/running/cancelling` blocks deletion; the 409 names the count and points at Cancel-all.
-  `done/failed/cancelled` never block. Matches the #87 refuse-only-409 precedent.
+  `pending/running/cancelling` blocks deletion; the 409 names the count and says
+  "cancel the active job(s) or their batch first" (gate fix: `batch_id` is nullable — single
+  `/generate` jobs have no batch, so the message must not assume one). `done/failed/cancelled`
+  never block. Matches the #87 refuse-only-409 precedent.
+- **Ingest-in-flight → 409 too (gate fix #1):** a book in `uploading`/`toc_extracting` has NO
+  jobs, yet `_TOC_TASKS` (books.py:49) is actively reading its PDF and `toc_extractor.run` will
+  later insert TOC rows for it — deleting then crashes the extractor and/or yanks the PDF
+  mid-read. Guard: status in (`uploading`, `toc_extracting`) → 409 "book is still being
+  ingested". Escape for a genuinely wedged book: extraction is time-bounded (model timeouts,
+  CQ-D) — status inevitably flips to `failed`/`toc_review`, which delete accepts.
+- **Concurrency: book-scoped advisory lock, shared for launches / exclusive for delete (gate
+  fix #2).** The launch routes read the book unlocked and create batches/jobs much later
+  (batch.py:140, jobs.py:133) — a launch racing the delete between guard-count and the deletes
+  re-creates the FK 500 or deletes a running job. Fix extends the house idiom (jobs.py:115
+  already uses per-section advisory locks): both launch paths take
+  `pg_advisory_xact_lock_shared(hashtext('book:'||<id>))` at entry; delete takes the EXCLUSIVE
+  form. Launches never serialize each other; delete excludes all launches and vice versa.
+  Proven by a real-Postgres concurrent launch-vs-delete test: exactly one controlled outcome
+  (409/404/204 orderings), never an FK error or a deleted running job.
 - **On-disk cleanup: post-commit, best-effort, loud.** After the DB commit succeeds,
   `shutil.rmtree(storage.book_dir(book_id), ignore_errors=False)` in a try/except — failure logs
   ERROR (`book delete: dir cleanup FAILED …`) and still returns 204 (rows are gone; an orphan dir
@@ -30,7 +47,8 @@ from under a running worker (live DB has a book with active jobs right now).
   (`models/batch.py:23`); `storage.book_dir` exists (`storage.py:17`); FE delete already
   `window.confirm`s (`library.tsx:333-337`). No collision: no open lane owns books.py/books repo.
 - Branch `feat/book-delete-integrity`, worktree `../HCGA-book-delete`. Migration: **none**.
-  Worklog **0144** (0142 = BE-16, 0143 = #97; re-verify tail at finish). Scratch
+  Worklog **0145** (gate fix #3: 0144 is reserved by the approved prepare-status plan; re-verify
+  tail at finish). Scratch
   `edu_scratch_bookdel` (create as `-U macmini5 -O edu`; pin 127.0.0.1). Suite baseline: re-run
   in worktree (last clean: 1720/237). No model calls anywhere — acceptance is the real-DB
   integration tests + a route-level end-to-end (create→delete→verify DB+disk), $0.
@@ -50,19 +68,41 @@ from under a running worker (live DB has a book with active jobs right now).
 docstring to name the full order and the retained tables.
 Commit: `fix(books): delete batches inside the book-delete transaction (BE-02 task 1)`
 
-### Task 2 — route: 409 active-jobs guard (RED → GREEN)
+### Task 2 — route: 409 guards — active jobs AND ingest-in-flight (RED → GREEN)
 
 **Tests first** (extend the existing books API test file; follow its conventions):
 - **RED:** book with a `running` job → `DELETE /books/{id}` returns 409, detail contains the
   active count and the word "cancel"; DB rows untouched.
 - `pending` and `cancelling` also block; a book with only `done`+`failed`+`cancelled` jobs
   deletes 204.
+- **RED (gate fix #1):** book with status `uploading` → 409 "still being ingested";
+  same for `toc_extracting`; `failed` and `toc_review` books delete fine (the wedged-book escape).
 - 404 for a missing book unchanged.
-**Code** (`app/api/v1/books.py`): count active jobs before calling the repo; 409 with
-`f"book has {n} active job(s) (pending/running) — cancel the batch first, then delete"`.
-Commit: `feat(books): refuse deletion while jobs are active — 409 (BE-02 task 2)`
+**Code** (`app/api/v1/books.py`): status guard first, then count active jobs; 409 message
+`f"book has {n} active job(s) (pending/running/cancelling) — cancel the active job(s) or their
+batch first, then delete"` (batch_id is nullable — never assume a batch exists).
+Commit: `feat(books): refuse deletion while ingesting or jobs active — 409 (BE-02 task 2)`
 
-### Task 3 — post-commit file cleanup + FE confirm copy (RED → GREEN)
+### Task 3 — book-scoped advisory locks: launches shared, delete exclusive (RED → GREEN, scratch DB)
+
+**Tests first** (`tests/integration/test_book_delete_race.py`, new, RUN_DB_INTEGRATION,
+real Postgres, two independent sessions/connections — same separate-connection discipline as the
+credential-limiter race tests):
+- **RED (the race):** open tx A holding the shared book lock (simulating a launch mid-request,
+  after its guard read, before job creation) → a concurrent `DELETE` route call must BLOCK until
+  A commits, then proceed against the final state (404/409/204 — assert it is exactly one of the
+  controlled outcomes and the DB never raises `IntegrityError`). Today (no locks) the delete
+  interleaves → assert the FK-500/deleted-running-job failure reproduces.
+- Two concurrent LAUNCHES take the shared lock simultaneously (no serialization between them).
+**Code:** tiny helper (e.g. `app/repositories/books.py::lock_book_shared/lock_book_exclusive`
+issuing `pg_advisory_xact_lock_shared/pg_advisory_xact_lock` on `hashtext('book:'||<uuid>)`);
+call the SHARED form at entry of BOTH launch paths (`app/api/v1/batch.py` ~:140 region,
+`app/api/v1/jobs.py` ~:133 region — inside their transactions, before the book read); the
+EXCLUSIVE form at the top of the delete route's transaction. House idiom precedent:
+`jobs.py:115`'s per-section advisory lock.
+Commit: `feat(books): book-scoped advisory locks — launch/delete race closed (BE-02 task 3)`
+
+### Task 4 — post-commit file cleanup + FE confirm copy (RED → GREEN)
 
 **Tests first** (same API test file):
 - **RED:** delete a book whose `storage.book_dir` exists (create it with a fake `source.pdf` in
@@ -73,18 +113,20 @@ Commit: `feat(books): refuse deletion while jobs are active — 409 (BE-02 task 
 **Code** (`app/api/v1/books.py`): post-commit rmtree per the decision above.
 **FE** (`web/src/routes/library.tsx`): extend the existing confirm text to say the PDF and all
 generated content are deleted permanently. `npx tsc --noEmit` + `npm run build`.
-Commit: `feat(books): remove the book's on-disk dir after delete; confirm copy (BE-02 task 3)`
+Commit: `feat(books): remove the book's on-disk dir after delete; confirm copy (BE-02 task 4)`
 
-### Task 4 — docs + finish
+### Task 5 — docs + finish
 
 - Docs de-stale: `docs/HOW_IT_WORKS.md` (delete flow: order, guard, cleanup, retained tables),
   `docs/DATABASE.md` (books row: what deletion removes/retains), CLAUDE.md only if its books
   bullet mentions deletion (check).
-- **Annotate root `Wishlist.md`:** mark BE-02 addressed (commit ref) — and add the same one-line
-  closure notes to BE-03/06/08/09/16 while in there (the file currently carries zero closure
-  annotations; flagged 2026-07-16).
-- Worklog **0144** + INDEX row (re-verify tail). Full suite; FE gates; `git fetch` + rebase check;
-  push; PR → **GK2 gates + merges**; plan → `shipped/`.
+- **Annotate root `Wishlist.md` — in the MAIN CHECKOUT only, never staged** (gate minor: the
+  file is untracked and absent from worktrees; the annotation is an out-of-band operator-file
+  edit, excluded from the feature commits — same handling as BE-16's closure): mark BE-02
+  addressed (commit ref) + add the missing closure notes to BE-03/06/08/09/16.
+- Worklog **0145** + INDEX row (0144 = prepare-status lane; re-verify tail at finish). Full
+  suite; FE gates; `git fetch` + rebase check; push; PR → **GK2 gates + merges**; plan →
+  `shipped/`.
 
 ## Flagged for the gate
 
