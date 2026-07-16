@@ -63,6 +63,8 @@ import {
   resolveCandidate,
   resolveNotionPageId,
 } from "@/lib/notion-parts";
+import { hasMidFlightBook, partPrepareStatus } from "@/lib/prepare-status";
+import { PrepareStatusPanel } from "@/components/notion/prepare-status-panel";
 
 const LBL = "text-xs font-medium uppercase tracking-[0.12em] text-white/45";
 
@@ -101,10 +103,16 @@ export function FleetLauncher({
   });
   // Available languages per subject for the selected grade. Only fetched when
   // a grade is chosen; used to enable/disable UZ/RU/EN chips in the Prepare form.
+  // Also carries the per-part system state (task 4) the PREPARED/PREPARING/
+  // NEEDS REVIEW/FAILED chips read — poll it while the dialog is open AND a
+  // linked part is still mid-flight, same enabled-gated pattern as
+  // BatchLessonList, so reopening the dialog reflects reality instead of a
+  // stale one-shot fetch.
   const availLangsQ = useQuery({
     queryKey: ["notion-avail-langs", gradePageId],
     queryFn: () => api.fetchAvailableLanguages(gradePageId),
     enabled: !!gradePageId,
+    refetchInterval: (query) => (open && hasMidFlightBook(query.state.data)) ? 4000 : false,
   });
 
   const pickedSubject = subjectsQ.data?.find((s) => s.page_id === subjectPageId);
@@ -122,6 +130,11 @@ export function FleetLauncher({
   const resolvedPart = subjectPageId ? partForResolution(subjectPageId, prepLang, subjectLangMap) : null;
   const candidateResolution = resolveCandidate(resolvedPart);
   const needsCandidatePick = candidateResolution.status === "ambiguous" && !selectedCandidate;
+  // System-aware chip state (task 5) for the currently-selected language's
+  // resolved part — PrepareStatusPanel renders nothing for the un-prepared
+  // states (no_textbook/textbook_ready), so this is purely additive: the
+  // existing UZ/RU/EN buttons + candidate picker below are unchanged.
+  const preparePartStatus = partPrepareStatus(resolvedPart);
 
   // Reset prepLang to uz whenever subject changes (so stale selection from
   // a prior subject doesn't carry over as a disabled language).
@@ -408,6 +421,10 @@ export function FleetLauncher({
                 </span>
               )}
             </div>
+            {/* System-aware chip (task 5): the selected language's resolved
+                part may already be PREPARED/PREPARING/NEEDS REVIEW/FAILED —
+                this renders nothing for an unprepared (textbook-ready) part. */}
+            <PrepareStatusPanel status={preparePartStatus} />
           </div>
         )}
 

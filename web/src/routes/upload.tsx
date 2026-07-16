@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowRight,
@@ -11,6 +12,7 @@ import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { PrepareStatusPanel } from "@/components/notion/prepare-status-panel";
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import {
   Select,
@@ -28,9 +30,9 @@ import {
   resolveCandidate,
   resolveNotionPageId,
 } from "@/lib/notion-parts";
+import { hasMidFlightBook, partPrepareStatus } from "@/lib/prepare-status";
 import { subjectLabel } from "@/lib/subjects";
 import {
-  type AvailableLanguages,
   type NotionCandidate,
   type NotionGrade,
   type NotionSubject,
@@ -70,15 +72,29 @@ export function UploadPage() {
   const [busy, setBusy] = useState(false);
 
   const [nGrade, setNGrade] = useState("");
+  const [nGradePageId, setNGradePageId] = useState("");
   const [grades, setGrades] = useState<NotionGrade[] | null>(null);
   const [subjects, setSubjects] = useState<NotionSubject[] | null>(null);
   const [pendingSubjectId, setPendingSubjectId] = useState<string | null>(null);
   const [nErr, setNErr] = useState<string | null>(null);
-  // Available language containers per app_subject for the picked Notion grade.
-  const [availLangs, setAvailLangs] = useState<AvailableLanguages | null>(null);
   // Set when the resolved part has >1 candidate file in its best rank tier —
   // the fetch is held until the operator picks one.
   const [candidatePick, setCandidatePick] = useState<CandidatePick | null>(null);
+
+  // Available language containers per app_subject for the picked Notion grade —
+  // also carries each part's system state (task 4: prepared/preparing/needs
+  // review/failed) that drives the PREPARED/… chips below. Polled while a
+  // Notion grade is picked AND a linked part is still mid-flight, so leaving
+  // and reopening this page (or just waiting) reflects reality instead of a
+  // stale one-shot fetch — same enabled-gated pattern as BatchLessonList.
+  const availLangsQ = useQuery({
+    queryKey: ["notion-avail-langs", nGradePageId],
+    queryFn: () => api.fetchAvailableLanguages(nGradePageId),
+    enabled: source === "notion" && !!nGradePageId,
+    refetchInterval: (query) =>
+      source === "notion" && hasMidFlightBook(query.state.data) ? 4000 : false,
+  });
+  const availLangs = availLangsQ.data ?? null;
 
   const onDrop = useCallback((accepted: File[]) => {
     if (accepted[0]) setFile(accepted[0]);
@@ -125,19 +141,15 @@ export function UploadPage() {
 
   async function pickGrade(gradePageId: string, gradeTitle: string) {
     setNGrade(gradeTitle.replace(/\D/g, ""));
+    setNGradePageId(gradePageId);
     setSubjects(null);
     setPendingSubjectId(null);
-    setAvailLangs(null);
     setCandidatePick(null);
     setNErr(null);
     try {
-      // Fetch subjects and available-languages in parallel.
-      const [subs, langs] = await Promise.all([
-        api.listNotionSubjects(gradePageId),
-        api.fetchAvailableLanguages(gradePageId).catch(() => null),
-      ]);
-      setSubjects(subs);
-      setAvailLangs(langs);
+      // Available-languages is fetched by availLangsQ (react-query, keyed on
+      // nGradePageId above) — only the subject list is imperative here.
+      setSubjects(await api.listNotionSubjects(gradePageId));
     } catch (e) {
       setNErr(e instanceof Error ? e.message : "Could not load subjects");
     }
@@ -528,6 +540,32 @@ export function UploadPage() {
                                           {lang.toUpperCase()}
                                           {!available && <span className="text-[0.6rem]">✕</span>}
                                         </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                {/* System-aware chips (task 5): a language above may resolve
+                                    to a part already PREPARED/PREPARING/NEEDS REVIEW/FAILED —
+                                    renders nothing for an unprepared (textbook-ready) part, so
+                                    the button row above is unchanged for that (common) case. */}
+                                {usable && (
+                                  <div className="mt-2 flex flex-col gap-2">
+                                    {(["uz", "ru", "en"] as OutputLanguage[]).map((lang) => {
+                                      const part = partForResolution(s.page_id, lang, langMap);
+                                      const status = partPrepareStatus(part);
+                                      if (
+                                        status.panel.kind === "no_textbook" ||
+                                        status.panel.kind === "textbook_ready"
+                                      ) {
+                                        return null;
+                                      }
+                                      return (
+                                        <div key={lang} className="flex items-start gap-2">
+                                          <span className="mt-0.5 font-mono text-[0.6rem] uppercase tracking-wide text-white/40">
+                                            {lang}
+                                          </span>
+                                          <PrepareStatusPanel status={status} />
+                                        </div>
                                       );
                                     })}
                                   </div>
