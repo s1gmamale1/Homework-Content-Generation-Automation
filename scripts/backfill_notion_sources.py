@@ -21,10 +21,20 @@ hundreds of MB across the whole Notion workspace. Use --grade N to bound a
 run to one grade at a time (recommended for the first few runs).
 
 DATABASE_URL is read directly from the environment and MUST be set
-explicitly — this script refuses to start otherwise. It never falls back to
-`.env`/config defaults, so an operator always points it at the intended
-database on purpose (see `_require_database_url` below, checked before any
-other import that could trigger `config.py`'s `load_dotenv`).
+explicitly — this script refuses to start otherwise (one clear error line,
+exit 2, no traceback). It never falls back to `.env`/config defaults, so an
+operator always points it at the intended database on purpose. To make that
+hold, **this module imports NOTHING from `app.*` at module level**: every
+`app` import happens lazily inside `run()`, strictly AFTER the DATABASE_URL
+check — `app.config`'s import-time `load_dotenv` (which walks UP parent
+directories via `find_dotenv`) can otherwise either inject an outer `.env`'s
+DATABASE_URL silently or crash with a raw pydantic traceback when no `.env`
+is reachable at all.
+
+The target DB must already carry migration 0048 (`book_notion_sources`).
+A cheap preflight verifies the table exists BEFORE any Notion work — an
+un-migrated target fails in one line up front, not with an asyncpg
+UndefinedTableError after hundreds of MB of downloads.
 
 Run (dry-run, one grade):
   DATABASE_URL=postgresql+asyncpg://edu:edu@localhost:5433/edu_homework \\
@@ -39,53 +49,75 @@ expect a long run and a large download; scope with --grade whenever possible.
 """
 from __future__ import annotations
 
+import argparse
+import asyncio
+import hashlib
 import os
 import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
+from uuid import UUID
 
-# Checked BEFORE any other import (including our own modules below, several
-# of which transitively import `app.config` — whose module-level
-# `load_dotenv(override=False)` would populate `DATABASE_URL` from `.env` if
-# it wasn't already in the environment, silently defeating this guard). This
-# capture happens against the raw environment, so a missing DATABASE_URL is
-# caught here or not at all.
-_DATABASE_URL = os.environ.get("DATABASE_URL")
+# ─── preflights (unit-tested; each failure = one clear line + exit 2) ───
 
 
-def _require_database_url() -> str:
-    if not _DATABASE_URL:
-        print(
-            "ERROR: DATABASE_URL is not set. Refusing to start — this script "
-            "WRITES book_notion_sources rows (with --apply), so it never "
-            "falls back to .env/config defaults; point it at the intended "
-            "database explicitly, e.g.\n"
-            "  DATABASE_URL=postgresql+asyncpg://edu:edu@localhost:5433/edu_homework "
-            "uv run python -m scripts.backfill_notion_sources --grade 9",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-    return _DATABASE_URL
+class PreflightError(Exception):
+    """A refuse-to-start condition. `main` prints `ERROR: <message>` to
+    stderr and exits 2 — the operator never sees a traceback for these."""
 
 
-import argparse  # noqa: E402
-import asyncio  # noqa: E402
-import hashlib  # noqa: E402
-from dataclasses import dataclass  # noqa: E402
-from uuid import UUID  # noqa: E402
-
-import httpx  # noqa: E402
-from sqlalchemy import select  # noqa: E402
-from sqlalchemy.ext.asyncio import (  # noqa: E402
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
+DATABASE_URL_ERROR = (
+    "DATABASE_URL must be set explicitly — refusing to guess the target DB. "
+    "Example: DATABASE_URL=postgresql+asyncpg://edu:edu@localhost:5433/edu_homework "
+    "uv run python -m scripts.backfill_notion_sources --grade 9"
 )
 
-from app.config import settings  # noqa: E402
-from app.models import Book  # noqa: E402
-from app.repositories import notion_sources as notion_sources_repo  # noqa: E402
-from app.services import notion_fetch  # noqa: E402
-from app.services.notion.client import NotionClientWrapper  # noqa: E402
-from app.services.notion_fetch import _grade_number_from_title  # noqa: E402
+NOTION_KEY_ERROR = (
+    "NOTION_API_KEY is not configured — set it in the environment (or .env) "
+    "before running the backfill."
+)
+
+MIGRATION_ERROR = (
+    "book_notion_sources missing — apply migration 0048 "
+    "(alembic upgrade head) on the target DB first"
+)
+
+
+def preflight_database_url(environ: Mapping[str, str]) -> str:
+    """The explicit DATABASE_URL, or `PreflightError`. Called against the RAW
+    process environment BEFORE any `app.*` import (see module docstring —
+    `app.config`'s load_dotenv must never get the chance to fill this in)."""
+    url = environ.get("DATABASE_URL")
+    if not url:
+        raise PreflightError(DATABASE_URL_ERROR)
+    return url
+
+
+def preflight_notion_api_key(value: str | None) -> str:
+    """The configured NOTION_API_KEY, or `PreflightError`. Unlike
+    DATABASE_URL this MAY come from `.env` (read-only Notion access is not
+    the footgun the write-target DB is) — this check only guarantees a
+    missing key is one clear line, not a traceback."""
+    if not value:
+        raise PreflightError(NOTION_KEY_ERROR)
+    return value
+
+
+async def assert_book_notion_sources_exists(session) -> None:
+    """Raise `PreflightError` when the target DB was never migrated to 0048.
+
+    `to_regclass` resolves a table name to its regclass (search_path-aware)
+    or NULL — it never raises for a missing table, so this stays a trivial
+    SELECT rather than a try/except around UndefinedTableError. Runs BEFORE
+    any Notion crawl/download so an un-migrated target costs one query, not
+    hundreds of MB."""
+    from sqlalchemy import text  # deferred with the rest of the heavy imports
+
+    exists = (
+        await session.execute(text("SELECT to_regclass('book_notion_sources')"))
+    ).scalar()
+    if exists is None:
+        raise PreflightError(MIGRATION_ERROR)
 
 
 # ─── pure matching decision (TDD'd in tests/test_backfill_notion_sources.py) ───
@@ -157,13 +189,14 @@ class Candidate:
     filename: str
 
 
-def _collect_candidates(
-    client: NotionClientWrapper, lessons_root: str, grade_filter: str | None,
-) -> list[Candidate]:
+def _collect_candidates(client, lessons_root: str, grade_filter: str | None) -> list[Candidate]:
     """Crawl grades -> available_languages -> every part's textbook
     candidates, exactly like the live `/notion/*` routes. `grade_filter`
     (e.g. "9") restricts to one grade — recommended, see the module
     docstring's download-cost note."""
+    from app.services import notion_fetch
+    from app.services.notion_fetch import _grade_number_from_title
+
     out: list[Candidate] = []
     for grade in notion_fetch.list_grades(client, lessons_root):
         grade_number = _grade_number_from_title(grade["title"])
@@ -182,16 +215,22 @@ def _collect_candidates(
     return out
 
 
-def _download_and_hash(client: NotionClientWrapper, candidate: Candidate) -> str:
+def _download_and_hash(client, candidate: Candidate) -> str:
     """Downloads the candidate's PDF via the same resolved-candidate path
     `download_textbook` uses (size-cap enforced there), returns its sha256."""
+    from app.services import notion_fetch
+
     downloaded = notion_fetch.download_textbook(
         client, candidate.part_page_id, block_id=candidate.block_id,
     )
     return hashlib.sha256(downloaded.body).hexdigest()
 
 
-async def _load_existing_books(session: AsyncSession) -> list[ExistingBook]:
+async def _load_existing_books(session) -> list[ExistingBook]:
+    from sqlalchemy import select
+
+    from app.models import Book
+
     rows = (await session.execute(
         select(Book.id, Book.subject, Book.content_sha256)
     )).all()
@@ -199,68 +238,86 @@ async def _load_existing_books(session: AsyncSession) -> list[ExistingBook]:
             for r in rows]
 
 
-async def run(*, grade: str | None, apply: bool) -> int:
-    database_url = _require_database_url()
-    if not settings.notion_api_key:
-        print("ERROR: NOTION_API_KEY is not configured.", file=sys.stderr)
-        return 1
+async def run(*, database_url: str, grade: str | None, apply: bool) -> int:
+    # Heavy/app imports live HERE, after main()'s DATABASE_URL preflight:
+    # importing app.config any earlier either injects an outer .env's
+    # DATABASE_URL (silently defeating the explicit-target rule) or crashes
+    # with a raw pydantic traceback when no .env is reachable at all.
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from app.config import settings
+    from app.repositories import notion_sources as notion_sources_repo
+    from app.services.notion.client import NotionClientWrapper
+
+    preflight_notion_api_key(settings.notion_api_key)
 
     engine = create_async_engine(database_url, future=True)
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-    client = NotionClientWrapper(api_key=settings.notion_api_key)
+    try:
+        # Migration preflight FIRST — before the Notion client is even built,
+        # and long before any PDF download, so an un-migrated target DB fails
+        # in one line up front.
+        async with session_factory() as session:
+            await assert_book_notion_sources_exists(session)
 
-    print(f"crawling Notion tree{f' (grade {grade})' if grade else ' (FULL TREE)'}…")
-    candidates = await asyncio.to_thread(
-        _collect_candidates, client, settings.notion_lessons_root, grade,
-    )
-    print(f"{len(candidates)} textbook candidate(s) found; downloading + hashing each…")
+        try:
+            client = NotionClientWrapper(api_key=settings.notion_api_key)
+        except ValueError as exc:  # malformed key — same clean treatment as missing
+            raise PreflightError(str(exc)) from exc
 
-    async with session_factory() as session:
-        existing_books = await _load_existing_books(session)
-        pairs = [(c.page_id, c.block_id) for c in candidates]
-        links = await notion_sources_repo.links_for_sources(session, pairs)
+        print(f"crawling Notion tree{f' (grade {grade})' if grade else ' (FULL TREE)'}…")
+        candidates = await asyncio.to_thread(
+            _collect_candidates, client, settings.notion_lessons_root, grade,
+        )
+        print(f"{len(candidates)} textbook candidate(s) found; downloading + hashing each…")
 
-        counts = {"would_link": 0, "already_linked": 0, "no_match": 0, "ambiguous": 0}
-        rows: list[tuple[Candidate, LinkDecision]] = []
-        for c in candidates:
-            try:
-                sha = await asyncio.to_thread(_download_and_hash, client, c)
-            except Exception as exc:  # noqa: BLE001 - report and keep going
-                print(f"  DOWNLOAD FAILED  {c.app_subject}/{c.lang} {c.filename!r}: {exc}")
-                continue
-            key = (
-                notion_sources_repo.normalize_notion_id(c.page_id),
-                notion_sources_repo.normalize_notion_id(c.block_id),
-            )
-            decision = decide_link(
-                candidate_sha256=sha, candidate_subject=c.app_subject,
-                existing_books=existing_books, linked_book_id=links.get(key),
-            )
-            counts[decision.action] += 1
-            rows.append((c, decision))
-            tag = decision.action.upper().replace("_", " ")
-            print(f"  {tag:<14} {c.app_subject}/{c.lang} {c.filename!r} — {decision.reason}")
+        async with session_factory() as session:
+            existing_books = await _load_existing_books(session)
+            pairs = [(c.page_id, c.block_id) for c in candidates]
+            links = await notion_sources_repo.links_for_sources(session, pairs)
 
-        if apply:
-            applied = 0
-            for c, decision in rows:
-                if decision.action != "would_link":
+            counts = {"would_link": 0, "already_linked": 0, "no_match": 0, "ambiguous": 0}
+            rows: list[tuple[Candidate, LinkDecision]] = []
+            for c in candidates:
+                try:
+                    sha = await asyncio.to_thread(_download_and_hash, client, c)
+                except Exception as exc:  # noqa: BLE001 - report and keep going
+                    print(f"  DOWNLOAD FAILED  {c.app_subject}/{c.lang} {c.filename!r}: {exc}")
                     continue
-                await notion_sources_repo.upsert_link(
-                    session, book_id=decision.book_id,
-                    notion_page_id=c.page_id, notion_block_id=c.block_id,
+                key = (
+                    notion_sources_repo.normalize_notion_id(c.page_id),
+                    notion_sources_repo.normalize_notion_id(c.block_id),
                 )
-                applied += 1
-            await session.commit()
-            print(f"\napplied {applied} link(s).")
-        else:
-            print(f"\nDRY RUN — would link {counts['would_link']}. Pass --apply to write.")
+                decision = decide_link(
+                    candidate_sha256=sha, candidate_subject=c.app_subject,
+                    existing_books=existing_books, linked_book_id=links.get(key),
+                )
+                counts[decision.action] += 1
+                rows.append((c, decision))
+                tag = decision.action.upper().replace("_", " ")
+                print(f"  {tag:<14} {c.app_subject}/{c.lang} {c.filename!r} — {decision.reason}")
 
-    print(
-        f"\nsummary: would_link={counts['would_link']} already_linked={counts['already_linked']} "
-        f"no_match={counts['no_match']} ambiguous={counts['ambiguous']}"
-    )
-    await engine.dispose()
+            if apply:
+                applied = 0
+                for c, decision in rows:
+                    if decision.action != "would_link":
+                        continue
+                    await notion_sources_repo.upsert_link(
+                        session, book_id=decision.book_id,
+                        notion_page_id=c.page_id, notion_block_id=c.block_id,
+                    )
+                    applied += 1
+                await session.commit()
+                print(f"\napplied {applied} link(s).")
+            else:
+                print(f"\nDRY RUN — would link {counts['would_link']}. Pass --apply to write.")
+
+        print(
+            f"\nsummary: would_link={counts['would_link']} already_linked={counts['already_linked']} "
+            f"no_match={counts['no_match']} ambiguous={counts['ambiguous']}"
+        )
+    finally:
+        await engine.dispose()
     return 0
 
 
@@ -271,7 +328,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "candidates against existing books (content_sha256 + subject). "
             "Dry-run by default. WARNING: even in dry-run, this DOWNLOADS "
             "every matched candidate's PDF (hundreds of MB for a full-tree "
-            "run) to hash it — pass --grade to scope a run to one grade."
+            "run) to hash it — pass --grade to scope a run to one grade. "
+            "Requires an explicit DATABASE_URL env var (never .env-defaults) "
+            "and a target DB already migrated to 0048."
         ),
     )
     parser.add_argument(
@@ -289,7 +348,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    return asyncio.run(run(grade=args.grade, apply=args.apply))
+    try:
+        database_url = preflight_database_url(os.environ)
+        return asyncio.run(run(database_url=database_url, grade=args.grade, apply=args.apply))
+    except PreflightError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

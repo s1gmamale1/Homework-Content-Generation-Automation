@@ -1,11 +1,25 @@
 """Unit tests for `scripts.backfill_notion_sources`'s pure matching decision
-(worklog 0144 task 6). No DB, no Notion, no network — `decide_link` takes
-plain values and returns a decision + human reason; the script wraps it with
-the download/hash/DB-write glue that these tests don't need to exercise."""
+and preflight/refusal logic (worklog 0144 task 6 + acceptance fixes). No DB,
+no Notion, no network — `decide_link` and the preflight helpers take plain
+values; the script wraps them with the download/hash/DB-write glue that
+these tests don't need to exercise."""
 
+import asyncio
 from uuid import UUID, uuid4
 
-from scripts.backfill_notion_sources import ExistingBook, decide_link
+import pytest
+
+from scripts.backfill_notion_sources import (
+    DATABASE_URL_ERROR,
+    MIGRATION_ERROR,
+    NOTION_KEY_ERROR,
+    ExistingBook,
+    PreflightError,
+    assert_book_notion_sources_exists,
+    decide_link,
+    preflight_database_url,
+    preflight_notion_api_key,
+)
 
 SUBJECT = "matematika"
 SHA = "a" * 64
@@ -87,3 +101,70 @@ def test_already_linked_when_link_matches_the_resolved_book():
     )
     assert d.action == "already_linked"
     assert d.book_id == BOOK_1
+
+
+# ─── preflight/refusal logic (acceptance fixes) ───
+# The operator-facing behavior these back: a missing DATABASE_URL / missing
+# NOTION_API_KEY / un-migrated target DB must each produce ONE clear error
+# line + exit code 2 — never a raw traceback (and, for the migration check,
+# never AFTER PDFs have already been downloaded).
+
+
+def test_preflight_database_url_missing_raises_clear_error():
+    with pytest.raises(PreflightError) as exc:
+        preflight_database_url({})
+    assert str(exc.value) == DATABASE_URL_ERROR
+    assert "must be set explicitly" in str(exc.value)
+
+
+def test_preflight_database_url_empty_string_is_missing():
+    with pytest.raises(PreflightError):
+        preflight_database_url({"DATABASE_URL": ""})
+
+
+def test_preflight_database_url_present_returns_it():
+    url = "postgresql+asyncpg://edu:edu@localhost:5433/edu_homework"
+    assert preflight_database_url({"DATABASE_URL": url}) == url
+
+
+def test_preflight_notion_api_key_missing_raises_clear_error():
+    with pytest.raises(PreflightError) as exc:
+        preflight_notion_api_key("")
+    assert str(exc.value) == NOTION_KEY_ERROR
+
+
+def test_preflight_notion_api_key_present_returns_it():
+    assert preflight_notion_api_key("ntn_abc") == "ntn_abc"
+
+
+class _StubResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar(self):
+        return self._value
+
+
+class _StubSession:
+    """Fake AsyncSession: `execute` resolves to a stub whose .scalar() is the
+    to_regclass('book_notion_sources') answer — the table's regclass when it
+    exists, None when the target DB was never migrated to 0048."""
+
+    def __init__(self, regclass_value):
+        self._regclass_value = regclass_value
+
+    async def execute(self, *_args, **_kwargs):
+        return _StubResult(self._regclass_value)
+
+
+def test_migration_preflight_raises_when_table_absent():
+    with pytest.raises(PreflightError) as exc:
+        asyncio.run(assert_book_notion_sources_exists(_StubSession(None)))
+    assert str(exc.value) == MIGRATION_ERROR
+    assert "migration 0048" in str(exc.value)
+    assert "alembic upgrade head" in str(exc.value)
+
+
+def test_migration_preflight_passes_when_table_exists():
+    # Must simply not raise.
+    asyncio.run(assert_book_notion_sources_exists(_StubSession("book_notion_sources")))
