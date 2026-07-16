@@ -131,6 +131,16 @@ async def assert_book_notion_sources_exists(session) -> None:
 
 # ─── pure matching decision (TDD'd in tests/test_backfill_notion_sources.py) ───
 
+# Every action `decide_link` can return, in report order. run()'s counts dict
+# is built from this tuple, so a new action that isn't added here fails the
+# pinning unit test instead of KeyError-ing mid-run after the downloads.
+ACTIONS = ("would_link", "would_repoint", "already_linked", "no_match", "ambiguous")
+
+# The two actions --apply actually writes (both via upsert_link — a re-point
+# IS the upsert's documented ON CONFLICT DO UPDATE move).
+WRITE_ACTIONS = frozenset({"would_link", "would_repoint"})
+
+
 @dataclass(frozen=True)
 class ExistingBook:
     """One `books` row, trimmed to the columns the match needs."""
@@ -142,7 +152,7 @@ class ExistingBook:
 
 @dataclass(frozen=True)
 class LinkDecision:
-    action: str  # "would_link" | "already_linked" | "no_match" | "ambiguous"
+    action: str  # one of ACTIONS
     book_id: UUID | None
     reason: str
 
@@ -160,8 +170,11 @@ def decide_link(
     `linked_book_id` is whatever this candidate's own (page, block) is
     CURRENTLY linked to (looked up by the caller via
     `notion_sources_repo.links_for_sources`, batched for the whole run) —
-    `None` if unlinked. It only changes the verdict between `would_link` and
-    `already_linked`; it plays no role in finding the match itself.
+    `None` if unlinked. It selects between the three linked-side verdicts —
+    `would_link` (fresh), `already_linked` (no-op), and `would_repoint` (the
+    link currently points at a DIFFERENT book and --apply would MOVE it; the
+    reason names both books so the dry-run report makes every move visible
+    before anything writes) — but plays no role in finding the match itself.
     """
     matches = [
         b for b in existing_books
@@ -180,9 +193,31 @@ def decide_link(
         return LinkDecision(
             "already_linked", matched.book_id, f"already linked to book {matched.book_id}",
         )
+    if linked_book_id is not None:
+        return LinkDecision(
+            "would_repoint", matched.book_id,
+            f"was book {linked_book_id} -> now book {matched.book_id}",
+        )
     return LinkDecision(
         "would_link", matched.book_id, f"unique match -> book {matched.book_id}",
     )
+
+
+# ─── report formatting (pure — one line each so the tests pin exact output) ───
+
+def format_summary(counts: Mapping[str, int]) -> str:
+    return "summary: " + " ".join(f"{a}={counts[a]}" for a in ACTIONS)
+
+
+def format_dry_run(counts: Mapping[str, int]) -> str:
+    return (
+        f"DRY RUN — would link {counts['would_link']}, "
+        f"would re-point {counts['would_repoint']}. Pass --apply to write."
+    )
+
+
+def format_applied(applied: int, repointed: int) -> str:
+    return f"applied {applied} link(s), of which {repointed} re-pointed."
 
 
 # ─── script glue (download, hash, DB I/O — not unit tested; see module docstring) ───
@@ -285,7 +320,7 @@ async def run(*, database_url: str, grade: str | None, apply: bool) -> int:
             pairs = [(c.page_id, c.block_id) for c in candidates]
             links = await notion_sources_repo.links_for_sources(session, pairs)
 
-            counts = {"would_link": 0, "already_linked": 0, "no_match": 0, "ambiguous": 0}
+            counts = {action: 0 for action in ACTIONS}
             rows: list[tuple[Candidate, LinkDecision]] = []
             for c in candidates:
                 try:
@@ -307,24 +342,23 @@ async def run(*, database_url: str, grade: str | None, apply: bool) -> int:
                 print(f"  {tag:<14} {c.app_subject}/{c.lang} {c.filename!r} — {decision.reason}")
 
             if apply:
-                applied = 0
+                applied = repointed = 0
                 for c, decision in rows:
-                    if decision.action != "would_link":
+                    if decision.action not in WRITE_ACTIONS:
                         continue
                     await notion_sources_repo.upsert_link(
                         session, book_id=decision.book_id,
                         notion_page_id=c.page_id, notion_block_id=c.block_id,
                     )
                     applied += 1
+                    if decision.action == "would_repoint":
+                        repointed += 1
                 await session.commit()
-                print(f"\napplied {applied} link(s).")
+                print("\n" + format_applied(applied, repointed))
             else:
-                print(f"\nDRY RUN — would link {counts['would_link']}. Pass --apply to write.")
+                print("\n" + format_dry_run(counts))
 
-        print(
-            f"\nsummary: would_link={counts['would_link']} already_linked={counts['already_linked']} "
-            f"no_match={counts['no_match']} ambiguous={counts['ambiguous']}"
-        )
+        print("\n" + format_summary(counts))
     finally:
         await engine.dispose()
     return 0
