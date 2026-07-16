@@ -22,6 +22,7 @@ from app.config import settings
 from app.db import get_session, SessionLocal
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
+from app.repositories import notion_sources as notion_sources_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import BookOut, TOCEntryOut
 from app.services import events_bus, notion_fetch, pdf_lang, storage, subjects, toc_extractor
@@ -67,10 +68,22 @@ async def ingest_pdf(
     grade: str | None,
     filename: str,
     source_language: str = "uz",
+    notion_source: tuple[str, str] | None = None,
 ) -> BookOut:
     """Shared book-creation path for both upload and Notion-fetch. Mirrors the
     original inline upload logic EXACTLY, including its two return shapes:
-    dedup hit -> _book_out_with_toc; new book -> plain BookOut."""
+    dedup hit -> _book_out_with_toc; new book -> plain BookOut.
+
+    `notion_source` (`(notion_page_id, notion_block_id)`) is the RESOLVED
+    Notion candidate's own identity — given only by the `/from-notion` route,
+    never by the plain upload route (worklog 0144 task 2). When given, the
+    (page, block) -> book link is upserted via `notion_sources_repo.upsert_link`
+    BEFORE `session.commit()` on both paths: a fresh ingest so the link lands
+    in the SAME commit as book creation (a route-level failure after a
+    separate commit would otherwise strand an extracting-but-unlinked book),
+    and a dedup hit so a re-prepare re-points an existing link at the deduped
+    book before returning. `None` (the default) is a no-op — zero behavior
+    change for plain uploads."""
     if subject not in SUPPORTED_SUBJECTS:
         raise HTTPException(400, f"unknown subject; allowed: {SUPPORTED_SUBJECTS}")
 
@@ -88,6 +101,12 @@ async def ingest_pdf(
 
     existing = await books_repo.find_ready_by_hash(session, sha, subject)
     if existing is not None:
+        if notion_source is not None:
+            await notion_sources_repo.upsert_link(
+                session, book_id=existing.id,
+                notion_page_id=notion_source[0], notion_block_id=notion_source[1],
+            )
+            await session.commit()
         out = await _book_out_with_toc(session, existing.id)
         out.deduplicated = True
         return out
@@ -112,6 +131,15 @@ async def ingest_pdf(
         status="uploading",
         source_language=source_language,
     )
+    if notion_source is not None:
+        # Same transaction/commit as the book insert above (`create` only
+        # flushes) — a raise here propagates WITHOUT committing, so a real
+        # session's rollback-on-close discards the flushed-but-uncommitted
+        # book row too (see tests/integration/test_ingest_pdf_notion_source.py).
+        await notion_sources_repo.upsert_link(
+            session, book_id=book.id,
+            notion_page_id=notion_source[0], notion_block_id=notion_source[1],
+        )
     await session.commit()
 
     # Persist the PDF to a deterministic on-disk location so every downstream
@@ -254,7 +282,7 @@ async def book_from_notion(
             f"language container.",
         )
     try:
-        body, filename = await asyncio.to_thread(
+        downloaded = await asyncio.to_thread(
             notion_fetch.download_textbook, client, req.subject_page_id, block_id=req.block_id)
     except notion_fetch.TextbookTooLarge as exc:
         raise HTTPException(
@@ -306,7 +334,7 @@ async def book_from_notion(
     # CONFIDENT mismatch; an indeterminate sample (scanned PDF, no
     # extractable text) proceeds but is surfaced as a response warning
     # instead of silently passing through unchecked.
-    detected_script = await asyncio.to_thread(pdf_lang.detect_pdf_script, body)
+    detected_script = await asyncio.to_thread(pdf_lang.detect_pdf_script, downloaded.body)
     expected_script = "cyrillic" if req.language == "ru" else "latin"
     warnings: list[str] | None = None
     if detected_script == "unknown":
@@ -332,15 +360,16 @@ async def book_from_notion(
         else:
             raise HTTPException(
                 422,
-                f"language mismatch: '{filename}' looks {detected_script}-script but "
+                f"language mismatch: '{downloaded.filename}' looks {detected_script}-script but "
                 f"language={req.language!r} expects {expected_script}-script — pass "
                 f"the correct `language`, or upload the PDF directly if this Notion "
                 f"page has the wrong file attached",
             )
 
     out = await ingest_pdf(
-        session, body=body, subject=subject, grade=req.grade, filename=filename,
-        source_language=req.language)
+        session, body=downloaded.body, subject=subject, grade=req.grade,
+        filename=downloaded.filename, source_language=req.language,
+        notion_source=(downloaded.source_page_id, downloaded.source_block_id))
     if warnings:
         out.warnings = warnings
     return out

@@ -216,7 +216,9 @@ def test_list_subjects_no_sinf_child_returns_empty():
     assert nf.list_subjects(c, "g1") == []
 
 
-from app.services.notion_fetch import download_textbook, TextbookTooLarge, NoTextbook, AmbiguousTextbook
+from app.services.notion_fetch import (
+    download_textbook, DownloadedTextbook, TextbookTooLarge, NoTextbook, AmbiguousTextbook,
+)
 
 
 def test_download_rejects_when_no_pdf_block():
@@ -270,9 +272,9 @@ def test_download_accepts_above_old_20mb_cap(monkeypatch):
         def read(self): return b"%PDF-1.4 small body"
 
     monkeypatch.setattr("app.services.notion_fetch.httpx.Client", _stub_http(_Stream()))
-    body, filename = download_textbook(c, "sub")
-    assert body == b"%PDF-1.4 small body"
-    assert filename == "textbook.pdf"
+    result = download_textbook(c, "sub")
+    assert result.body == b"%PDF-1.4 small body"
+    assert result.filename == "textbook.pdf"
 
 
 def test_download_returns_bytes_via_streaming_get(monkeypatch):
@@ -287,9 +289,16 @@ def test_download_returns_bytes_via_streaming_get(monkeypatch):
         def read(self): return b"%PDF-1.4 "
 
     monkeypatch.setattr("app.services.notion_fetch.httpx.Client", _stub_http(_Stream()))
-    body, filename = download_textbook(c, "sub")
-    assert body == b"%PDF-1.4 "
-    assert filename == "tb.pdf"
+    result = download_textbook(c, "sub")
+    assert result.body == b"%PDF-1.4 "
+    assert result.filename == "tb.pdf"
+    # download_textbook returns a DownloadedTextbook (bytes, filename, source
+    # page_id, source block_id) — NOT a bare tuple — so the route/ingest_pdf
+    # can thread the RESOLVED candidate's own identity into the notion-sources
+    # link (worklog 0144 task 2).
+    assert isinstance(result, DownloadedTextbook)
+    assert result.source_page_id == "sub"
+    assert result.source_block_id == "b1"
 
 
 # ---------------------------------------------------------------------------
@@ -319,8 +328,8 @@ def test_download_single_textbook_with_workbook_also_attached_needs_no_selector(
         {"id": "wb", "type": "file", "file": {"name": "ish_daftari.pdf", "file": {"url": "u-wb"}}},
         {"id": "tb", "type": "file", "file": {"name": "8-sinf_texnologiya_darslik.pdf", "file": {"url": "u-tb"}}},
     ]})
-    body, filename = download_textbook(c, "sub")
-    assert filename == "8-sinf_texnologiya_darslik.pdf"
+    result = download_textbook(c, "sub")
+    assert result.filename == "8-sinf_texnologiya_darslik.pdf"
 
 
 def test_download_multipart_same_rank_page_without_block_id_raises_ambiguous(monkeypatch):
@@ -344,9 +353,11 @@ def test_download_explicit_block_id_downloads_exact_candidate(monkeypatch):
         {"id": "p1", "type": "file", "file": {"name": "algebra 1-qism.pdf", "file": {"url": "u1"}}},
         {"id": "p2", "type": "file", "file": {"name": "algebra 2-qism.pdf", "file": {"url": "u2"}}},
     ]})
-    body, filename = download_textbook(c, "sub", block_id="p2")
-    assert filename == "algebra 2-qism.pdf"
-    assert body == b"%PDF-1.4 part2"
+    result = download_textbook(c, "sub", block_id="p2")
+    assert result.filename == "algebra 2-qism.pdf"
+    assert result.body == b"%PDF-1.4 part2"
+    assert result.source_page_id == "sub"
+    assert result.source_block_id == "p2"
 
 
 def test_download_explicit_block_id_reaches_a_child_page_candidate(monkeypatch):
@@ -358,8 +369,15 @@ def test_download_explicit_block_id_reaches_a_child_page_candidate(monkeypatch):
         "parent": [{"id": "cp1", "type": "child_page", "child_page": {"title": "1-qism"}}],
         "cp1": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "u1"}}}],
     })
-    body, filename = download_textbook(c, "parent", block_id="b1")
-    assert body == b"%PDF-1.4 childpart"
+    result = download_textbook(c, "parent", block_id="b1")
+    assert result.body == b"%PDF-1.4 childpart"
+    # Binding identity decision (worklog 0144 task 2): for a child-page-hosted
+    # PDF, the stored source page id must be the CHILD page's own id ("cp1"),
+    # not the submitted parent/subject page id ("parent") — Task 4's
+    # availability enrichment queries links_for_sources with each candidate's
+    # OWN (page_id, block_id) as the crawl reports them.
+    assert result.source_page_id == "cp1"
+    assert result.source_block_id == "b1"
 
 
 def test_download_explicit_block_id_not_among_candidates_422s_as_notextbook(monkeypatch):
