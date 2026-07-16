@@ -709,6 +709,71 @@ def test_bypass_log_throttled_to_once_per_60s(monkeypatch):
 
 
 # ─────────────────────────────────────────────────────────────────────
+# drift guard (final-review fix): an API_PROVIDERS entry with no matching
+# credential_max_concurrent_<name> settings field must fail LOUD, not
+# silently let resolve_limit's getattr(..., 0) default BYPASS the limiter.
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_drift_guard_bites_for_provider_missing_settings_field(monkeypatch):
+    """Simulates the exact drift the guard exists for: a provider added to
+    API_PROVIDERS + credential_for, but with no
+    `credential_max_concurrent_<name>` settings field. Before the fix, the
+    guard's assert predicate (`provider.name in agent_models.API_PROVIDERS`)
+    was tautological — already implied by the `if` gating this whole
+    branch — so it never fired, and the call would proceed into
+    `resolve_limit`, whose `getattr(..., 0)` default silently returns 0
+    (BYPASS), silently disabling the limiter for this provider forever.
+    After the fix, this must raise AssertionError naming the missing
+    settings field BEFORE `resolve_limit` is ever called."""
+    monkeypatch.setattr(
+        agent_module.agent_models, "API_PROVIDERS",
+        frozenset({"claude", "gemini", "clodex", "fakeprov"}),
+    )
+    monkeypatch.setattr(
+        credential_id, "credential_for",
+        lambda provider, env: "fakeprov:abc" if provider == "fakeprov" else None,
+    )
+
+    resolve_called = False
+
+    async def fake_resolve(session, provider, credential):
+        nonlocal resolve_called
+        resolve_called = True
+        return 8
+
+    monkeypatch.setattr(credential_limiter, "resolve_limit", fake_resolve)
+
+    acquire_called = False
+
+    async def fake_acquire(credential, limit, *, wait_budget_s, pc_id=None):
+        nonlocal acquire_called
+        acquire_called = True
+        return "slot-1"
+
+    monkeypatch.setattr(credential_limiter, "acquire", fake_acquire)
+
+    async def fake_release(slot_id):  # pragma: no cover — must never run
+        pass
+
+    monkeypatch.setattr(credential_limiter, "release", fake_release)
+
+    async def fake_generate(**kwargs):  # pragma: no cover — must never run
+        return (0, "should not run", {}, "")
+
+    monkeypatch.setattr(api_transport_module, "generate", fake_generate)
+
+    with pytest.raises(AssertionError, match="credential_max_concurrent_fakeprov"):
+        await agent_module._spawn_once(
+            provider=_StubProvider("fakeprov"), model="m", prompt="x",
+            attachments=[], transport="api",
+        )
+    assert resolve_called is False
+    assert acquire_called is False
+
+
+# ─────────────────────────────────────────────────────────────────────
 # cli transport never touches the limiter
 # ─────────────────────────────────────────────────────────────────────
 

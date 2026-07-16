@@ -566,17 +566,26 @@ async def _spawn_once(
             credential = credential_id.credential_for(provider.name, os.environ)
             if credential is not None:
                 # Unknown-provider guard (BE-16 task 5, deferred Important from
-                # task 4's review): `resolve_limit`'s provider -> settings-attr
-                # lookup silently falls back to 0 (== bypass) for a provider
-                # name it doesn't recognize. This branch already only runs for
-                # `provider.name in agent_models.API_PROVIDERS` (the `if`
-                # above), and `credential_for` only ever returns non-None for
-                # {gemini, claude, clodex} — assert that exact set here too so
-                # any future drift between API_PROVIDERS and credential_for/
-                # resolve_limit's known providers fails LOUD, never silently.
-                assert provider.name in agent_models.API_PROVIDERS, (
-                    f"credential limiter: provider {provider.name!r} must not "
-                    "reach resolve_limit outside {gemini, claude, clodex}"
+                # task 4's review; made to actually bite by the final-review
+                # fix). `resolve_limit`'s provider -> settings-attr lookup
+                # (`getattr(settings, f"credential_max_concurrent_{provider}",
+                # 0)`) silently falls back to 0 (== BYPASS, limiter OFF) for a
+                # provider name it doesn't recognize. Asserting
+                # `provider.name in agent_models.API_PROVIDERS` here was
+                # TAUTOLOGICAL — this branch already only runs when that
+                # exact condition holds (the `if` above), so it could never
+                # fire. The real drift this must catch: a provider added to
+                # `API_PROVIDERS` + wired into `credential_for` but with no
+                # matching `credential_max_concurrent_<name>` settings field
+                # ever added to `Settings` — assert the settings field
+                # actually exists so that drift fails LOUD here, never
+                # silently degrades into a BYPASS.
+                assert hasattr(settings, f"credential_max_concurrent_{provider.name}"), (
+                    f"credential limiter: provider {provider.name!r} is in "
+                    "API_PROVIDERS and has a credential, but Settings has no "
+                    f"credential_max_concurrent_{provider.name} field — "
+                    "resolve_limit's getattr(..., 0) default would silently "
+                    "return 0 and BYPASS the limiter for this provider"
                 )
                 try:
                     async with SessionLocal() as session:
