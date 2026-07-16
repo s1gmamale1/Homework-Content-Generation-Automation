@@ -164,6 +164,25 @@ class Settings(BaseSettings):
     rate_limit_base_delay_seconds: float = 2.0
     rate_limit_max_delay_seconds: float = 30.0
 
+    # ─── Fleet-wide per-credential api concurrency limiter (BE-16 task 4) ──
+    # Provider env defaults consulted by credential_limiter.resolve_limit
+    # when no per-key `sa_keys.max_concurrent_calls` override applies (no
+    # matching project, or the matching row(s) are all NULL). ge=0 so an
+    # operator can explicitly set 0 to fully bypass the cap for a provider
+    # (acquire() treats <=0 as its BYPASS sentinel — task 3) without a
+    # negative value ever silently doing something undefined (codex-review #8).
+    credential_max_concurrent_gemini: int = Field(default=8, ge=0)
+    credential_max_concurrent_claude: int = Field(default=8, ge=0)
+    credential_max_concurrent_clodex: int = Field(default=8, ge=0)
+    # Dedicated slot-wait budget for task 5's wire-point (acquire()'s
+    # wait_budget_s). Deliberately far below per_attempt_timeout_seconds
+    # (600s): the pipeline's own outer `wait_for` sits at ~that same 600s
+    # and would cancel the acquire() wait before the 429-shaped
+    # degrade-to-backoff path (consumed by `_spawn`'s existing rate-limit
+    # retry loop) ever got a chance to fire. 120s keeps that path reachable
+    # (codex-review #1).
+    credential_slot_wait_seconds: int = Field(default=120, ge=1)
+
     # ─── Extract robustness (local-text + gates) ──────────────────────────
     # Whole-book local text is injected into the extract prompt; if the book's
     # text exceeds this it terminal-fails here by design (large-book generation

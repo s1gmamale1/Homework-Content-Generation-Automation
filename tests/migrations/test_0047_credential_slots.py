@@ -17,9 +17,11 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import uuid
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.skipif(
@@ -121,3 +123,51 @@ async def test_0047_credential_slots_table_and_sa_keys_column():
         await engine.dispose()
         # Restore the shared scratch DB to head for any subsequent test in this run.
         _run_alembic(["upgrade", "head"])
+
+
+@pytest.mark.asyncio
+async def test_0047_max_concurrent_calls_check_constraint_bites():
+    """Task 4 amendment: `ck_sa_keys_max_concurrent_calls_min` rejects 0 (and
+    by the same `>= 1` clause, any negative value), while NULL (no override)
+    and a real positive value both insert cleanly."""
+    engine = create_async_engine(_DB_URL)
+    tag = uuid.uuid4().hex[:12]
+
+    def _insert_sql(mcc_literal: str) -> str:
+        return (
+            "INSERT INTO sa_keys "
+            "(id, original_filename, project_id, client_email, sha256, byte_size, "
+            "created_at, max_concurrent_calls) "
+            "VALUES (gen_random_uuid(), 'k.json', 'proj-check', "
+            "'sa@x.iam.gserviceaccount.com', :sha, 100, now(), " + mcc_literal + ")"
+        )
+
+    try:
+        _run_alembic(["upgrade", "head"])
+
+        # NULL override: no cap set — must insert cleanly.
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(_insert_sql("NULL")), {"sha": f"check-null-{tag}"}
+            )
+
+        # A real positive override — must insert cleanly.
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(_insert_sql(":mcc")), {"sha": f"check-five-{tag}", "mcc": 5}
+            )
+
+        # Zero is never a valid override (acquire() treats <=0 as "no cap",
+        # the opposite of an admin's intent) — the CHECK must bite.
+        with pytest.raises(IntegrityError):
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(_insert_sql(":mcc")), {"sha": f"check-zero-{tag}", "mcc": 0}
+                )
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM sa_keys WHERE sha256 LIKE :pat"),
+                {"pat": f"check-%-{tag}"},
+            )
+        await engine.dispose()

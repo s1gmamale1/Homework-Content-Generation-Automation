@@ -40,6 +40,7 @@ from typing import Optional, Union
 from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import SessionLocal
@@ -60,9 +61,14 @@ BYPASS = object()
 # operator debugging (review M7). Computed once at import time.
 PC_ID: str = f"{socket.gethostname()}:{os.getpid()}"
 
-# Base poll interval; jitter avoids a thundering herd of waiters all
-# re-checking in lockstep.
-_POLL_INTERVAL_S = 1.0
+# Poll backoff: exponential decay 1s -> 5s (doubling each miss, capped),
+# plus jitter so a thundering herd of waiters doesn't all re-check in
+# lockstep (codex-review #6 — a saturated credential can have dozens of
+# waiters; a fixed 1s poll is needlessly chatty once a waiter has already
+# missed a few times).
+_POLL_INTERVAL_MIN_S = 1.0
+_POLL_INTERVAL_MAX_S = 5.0
+_POLL_BACKOFF_FACTOR = 2.0
 _POLL_JITTER_S = 0.5
 
 SlotId = Union[UUID, object]
@@ -83,13 +89,16 @@ async def acquire(
     - a slot id (pass to ``release``) once a slot is available.
     - ``None`` if ``wait_budget_s`` is exhausted without ever getting one.
 
-    Polls once per short-lived session/transaction; sleeps ``1s`` (+ jitter)
-    between polls, never holding a connection across the sleep.
+    Polls once per short-lived session/transaction; sleeps between polls
+    with exponential backoff (``1s`` -> ``5s``, doubling each miss, + jitter,
+    clipped to the remaining budget), never holding a connection across the
+    sleep.
     """
     if not limit or limit <= 0:
         return BYPASS
 
     deadline = time.monotonic() + wait_budget_s
+    poll_interval = _POLL_INTERVAL_MIN_S
     while True:
         async with SessionLocal() as session:
             async with session.begin():
@@ -122,8 +131,9 @@ async def acquire(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return None
-        sleep_for = min(_POLL_INTERVAL_S + random.uniform(0, _POLL_JITTER_S), remaining)
+        sleep_for = min(poll_interval + random.uniform(0, _POLL_JITTER_S), remaining)
         await asyncio.sleep(max(0.0, sleep_for))
+        poll_interval = min(poll_interval * _POLL_BACKOFF_FACTOR, _POLL_INTERVAL_MAX_S)
 
 
 async def release(slot_id: Optional[SlotId]) -> None:
@@ -166,3 +176,77 @@ async def sweep() -> int:
     except Exception:
         logger.exception("credential_limiter.sweep failed")
         return 0
+
+
+# ─── Limit resolution (BE-16 task 4) ───────────────────────────────────────
+# Per-credential cache: credential -> (limit, expires_at_monotonic). Module-
+# level and exposed directly (not hidden behind a class) so tests can both
+# inspect and reset it deterministically via ``clear_limit_cache``.
+_LIMIT_CACHE: dict[str, tuple[int, float]] = {}
+_LIMIT_CACHE_TTL_SECONDS: float = 60.0
+
+# gemini is the only provider whose credential can carry a per-key override:
+# `sa_keys.max_concurrent_calls` is a GCP-service-account-key concept, and
+# only Vertex-SA-form gemini credentials (`gemini:{project}`, see
+# credential_id.credential_for) are project-shaped. claude/clodex — and
+# gemini's own API-key fingerprint form (`gemini:{sha256[:16]}`, which never
+# matches a real `project_id`) — always resolve straight to the provider env
+# default with no DB round-trip.
+_GEMINI_PREFIX = "gemini:"
+
+
+def clear_limit_cache() -> None:
+    """Test helper: wipe the module-level ``resolve_limit`` cache."""
+    _LIMIT_CACHE.clear()
+
+
+async def resolve_limit(session: AsyncSession, provider: str, credential: str) -> int:
+    """Resolve the effective per-credential api concurrency cap.
+
+    A `gemini:{project}` credential resolves
+    ``SELECT MIN(max_concurrent_calls) FROM sa_keys WHERE project_id = :p AND
+    max_concurrent_calls IS NOT NULL`` — `sa_keys.project_id` has no unique
+    constraint (only `sha256` does), so two SA-key rows can legitimately name
+    the same GCP project; MIN is the deterministic, conservative pick
+    (codex-review #2). No matching non-null override (including no matching
+    row at all, which is what always happens for a gemini API-key
+    fingerprint credential) falls back to
+    ``settings.credential_max_concurrent_<provider>``.
+
+    Cached per credential for ``_LIMIT_CACHE_TTL_SECONDS`` (~60s). A DB error
+    is **never cached** (review M3) — it returns the provider default for
+    this call only, so the next call retries against the DB instead of
+    sticking to a stale fail-open value for the rest of the TTL window.
+    """
+    now = time.monotonic()
+    cached = _LIMIT_CACHE.get(credential)
+    if cached is not None and cached[1] > now:
+        return cached[0]
+
+    default = getattr(settings, f"credential_max_concurrent_{provider}", 0)
+
+    project = (
+        credential[len(_GEMINI_PREFIX):]
+        if provider == "gemini" and credential.startswith(_GEMINI_PREFIX)
+        else None
+    )
+    if project is None:
+        _LIMIT_CACHE[credential] = (default, now + _LIMIT_CACHE_TTL_SECONDS)
+        return default
+
+    try:
+        result = await session.execute(
+            text(
+                "SELECT MIN(max_concurrent_calls) FROM sa_keys "
+                "WHERE project_id = :project AND max_concurrent_calls IS NOT NULL"
+            ),
+            {"project": project},
+        )
+        override = result.scalar_one_or_none()
+    except Exception:
+        logger.exception("credential_limiter.resolve_limit failed for %s", credential)
+        return default  # NOT cached — see docstring
+
+    limit = default if override is None else override
+    _LIMIT_CACHE[credential] = (limit, now + _LIMIT_CACHE_TTL_SECONDS)
+    return limit
