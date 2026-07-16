@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.notion_fetch import _map_subject, _first_pdf_block, _url_from_block, _pdf_rank, _fold
+from app.services.notion_fetch import _map_subject, _select_candidate, _url_from_block, _pdf_rank, _fold
 
 
 def test_map_subject_the_seven():
@@ -28,37 +28,39 @@ def test_map_subject_messy_and_unsupported():
     assert _map_subject("Sinf rahbari soati") is None
 
 
-def test_first_pdf_block_prefers_textbook_over_workbook():
-    blocks = [
-        {"type": "paragraph"},
-        {"type": "file", "file": {"name": "ish_daftari.pdf", "file": {"url": "u-wb"}}},
-        {"type": "pdf", "pdf": {"file": {"url": "u-tb"}}},
+# ---------------------------------------------------------------------------
+# _select_candidate — resolves which candidate `download_textbook` fetches,
+# given the page's already-enumerated `textbook_candidates(...)` list. This
+# replaces the old `_first_pdf_block` (deleted BE-19 task 3 — it operated on
+# raw blocks directly and silently broke rank ties by page order; the
+# candidate-based selector below REJECTS ties via `AmbiguousTextbook` instead).
+# ---------------------------------------------------------------------------
+
+
+def _cand(block_id: str, filename: str, rank: int, page_id: str = "p1") -> dict:
+    return {"page_id": page_id, "block_id": block_id, "filename": filename,
+            "rank": rank, "url": f"u-{block_id}"}
+
+
+def test_select_candidate_prefers_best_rank_tier():
+    candidates = [
+        _cand("wb", "ish_daftari.pdf", 2),
+        _cand("tb", "8-sinf_algebra_darslik.pdf", 0),
     ]
-    b = _first_pdf_block(blocks)
-    assert b is blocks[2]
+    assert _select_candidate(candidates)["block_id"] == "tb"
 
 
-def test_first_pdf_block_prefers_darslik_by_name():
-    blocks = [
-        {"type": "file", "file": {"name": "ish_daftari.pdf", "file": {"url": "u-wb"}}},
-        {"type": "file", "file": {"name": "8-sinf_algebra_darslik.pdf", "file": {"url": "u-tb"}}},
+def test_select_candidate_prefers_best_rank_tier_regardless_of_order():
+    candidates = [
+        _cand("tb", "8-sinf_algebra_darslik.pdf", 0),
+        _cand("wb", "ish_daftari.pdf", 2),
     ]
-    assert _first_pdf_block(blocks) is blocks[1]
+    assert _select_candidate(candidates)["block_id"] == "tb"
 
 
-def test_first_pdf_block_falls_back_to_workbook_when_only_one():
-    blocks = [
-        {"type": "file", "file": {"name": "ish_daftari.pdf", "file": {"url": "u-wb"}}},
-    ]
-    assert _first_pdf_block(blocks) is blocks[0]
-
-
-def test_first_pdf_block_textbook_beats_workbook_regardless_of_order():
-    blocks = [
-        {"type": "file", "file": {"name": "8-sinf_algebra_darslik.pdf", "file": {"url": "u-tb"}}},
-        {"type": "file", "file": {"name": "ish_daftari.pdf", "file": {"url": "u-wb"}}},
-    ]
-    assert _first_pdf_block(blocks) is blocks[0]
+def test_select_candidate_single_candidate_returned_even_if_workbook_rank():
+    candidates = [_cand("wb", "ish_daftari.pdf", 2)]
+    assert _select_candidate(candidates)["block_id"] == "wb"
 
 
 def test_pdf_rank_bot_handle_with_darslik_is_not_textbook():
@@ -97,54 +99,40 @@ def test_pdf_rank_bot_handle_suffixed_textbook_still_textbook():
     assert _pdf_rank(name) == 0
 
 
-def test_first_pdf_block_workbook_bot_handle_not_confused_regardless_of_order():
-    # Exercises the same fold path the production caller uses (_pdf_name ->
-    # _fold -> _pdf_rank), not just direct _pdf_rank calls.
-    workbook_block = {
-        "type": "file",
-        "file": {"name": "mashq daftari (@elektron_darslikbot).pdf", "file": {"url": "u-wb"}},
-    }
-    textbook_block = {
-        "type": "file",
-        "file": {"name": "8-sinf_algebra_darslik.pdf", "file": {"url": "u-tb"}},
-    }
-    assert _first_pdf_block([workbook_block, textbook_block]) is textbook_block
-    assert _first_pdf_block([textbook_block, workbook_block]) is textbook_block
-
-
-def test_first_pdf_block_ru_workbook_vs_textbook_via_fold_path():
+def test_fold_lowercases_cyrillic_for_rank():
     # Capitalized Cyrillic input confirms _fold's .lower() case-folds Cyrillic
-    # the same way it lower-cases Latin, so the RU markers match post-fold.
-    textbook_block = {
-        "type": "file",
-        "file": {"name": "Учебник 5-класс.pdf", "file": {"url": "u-tb"}},
-    }
-    workbook_block = {
-        "type": "file",
-        "file": {"name": "Рабочая тетрадь 5-класс.pdf", "file": {"url": "u-wb"}},
-    }
-    assert _first_pdf_block([workbook_block, textbook_block]) is textbook_block
-    assert _first_pdf_block([textbook_block, workbook_block]) is textbook_block
+    # the same way it lower-cases Latin, so the RU markers match post-fold —
+    # this is what lets textbook_candidates rank a Cyrillic-titled PDF right.
+    assert _pdf_rank(_fold("Учебник 5-класс.pdf")) == 0
+    assert _pdf_rank(_fold("Рабочая тетрадь 5-класс.pdf")) == 2
 
 
-def test_first_pdf_block_ties_break_by_page_order():
-    blocks = [
-        {"type": "pdf", "pdf": {"file": {"url": "u-first"}}},
-        {"type": "pdf", "pdf": {"file": {"url": "u-second"}}},
+def test_select_candidate_ties_in_best_tier_raise_ambiguous():
+    # The key behavior change (BE-19 task 3): the old _first_pdf_block silently
+    # broke same-rank ties by page order (block-id-blind picking "part 1" for a
+    # multi-part textbook). The candidate-based selector now REFUSES instead.
+    candidates = [
+        _cand("first", "9-sinf algebra 1-qism.pdf", 0),
+        _cand("second", "9-sinf algebra 2-qism.pdf", 0),
     ]
-    assert _first_pdf_block(blocks) is blocks[0]
+    with pytest.raises(nf.AmbiguousTextbook) as exc_info:
+        _select_candidate(candidates)
+    assert exc_info.value.candidates == candidates
 
 
-def test_first_pdf_block_none_when_absent():
-    assert _first_pdf_block([{"type": "paragraph"}, {"type": "image"}]) is None
-
-
-def test_first_pdf_block_skips_non_pdf_file():
-    blocks = [
-        {"type": "file", "file": {"name": "cover.png", "file": {"url": "u-img"}}},
-        {"type": "pdf", "pdf": {"file": {"url": "u-tb"}}},
+def test_select_candidate_explicit_block_id_returns_exact_match():
+    # An explicit block_id wins even over rank — the caller has already decided.
+    candidates = [
+        _cand("tb", "darslik.pdf", 0),
+        _cand("wb", "ish_daftari.pdf", 2),
     ]
-    assert _first_pdf_block(blocks) is blocks[1]
+    assert _select_candidate(candidates, block_id="wb")["block_id"] == "wb"
+
+
+def test_select_candidate_explicit_block_id_not_among_candidates_raises():
+    candidates = [_cand("tb", "darslik.pdf", 0)]
+    with pytest.raises(nf.NoTextbook):
+        _select_candidate(candidates, block_id="does-not-exist")
 
 
 def test_url_from_block_shapes():
@@ -205,7 +193,7 @@ def test_list_subjects_no_sinf_child_returns_empty():
     assert nf.list_subjects(c, "g1") == []
 
 
-from app.services.notion_fetch import download_textbook, TextbookTooLarge, NoTextbook
+from app.services.notion_fetch import download_textbook, TextbookTooLarge, NoTextbook, AmbiguousTextbook
 
 
 def test_download_rejects_when_no_pdf_block():
@@ -229,7 +217,7 @@ def test_download_rejects_oversize_via_content_length(monkeypatch):
     # Oversize is relative to the upload cap (settings.max_file_mb), not a
     # hardcoded 20 MB.
     from app.config import settings
-    c = _client({}, blocks_by_page={"sub": [{"type": "pdf", "pdf": {"file": {"url": "http://x/b.pdf"}}}]})
+    c = _client({}, blocks_by_page={"sub": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "http://x/b.pdf"}}}]})
     oversize = (settings.max_file_mb + 5) * 1024 * 1024
 
     class _Stream:
@@ -249,7 +237,7 @@ def test_download_accepts_above_old_20mb_cap(monkeypatch):
     # so they can't drift. A 30 MB book (rejected under the old cap) now passes.
     from app.config import settings
     assert settings.max_file_mb >= 50
-    c = _client({}, blocks_by_page={"sub": [{"type": "pdf", "pdf": {"file": {"url": "http://x/b.pdf"}}}]})
+    c = _client({}, blocks_by_page={"sub": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "http://x/b.pdf"}}}]})
 
     class _Stream:
         headers = {"Content-Length": str(30 * 1024 * 1024)}
@@ -266,7 +254,7 @@ def test_download_accepts_above_old_20mb_cap(monkeypatch):
 
 def test_download_returns_bytes_via_streaming_get(monkeypatch):
     c = _client({}, blocks_by_page={
-        "sub": [{"type": "file", "file": {"name": "tb.pdf", "file": {"url": "http://x/b.pdf"}}}]})
+        "sub": [{"id": "b1", "type": "file", "file": {"name": "tb.pdf", "file": {"url": "http://x/b.pdf"}}}]})
 
     class _Stream:
         headers = {"Content-Length": "9"}
@@ -279,6 +267,85 @@ def test_download_returns_bytes_via_streaming_get(monkeypatch):
     body, filename = download_textbook(c, "sub")
     assert body == b"%PDF-1.4 "
     assert filename == "tb.pdf"
+
+
+# ---------------------------------------------------------------------------
+# download_textbook selection semantics (BE-19 task 3): candidate-based, with
+# an explicit block_id selector, and ambiguity REJECTED instead of a silent
+# first-pick.
+# ---------------------------------------------------------------------------
+
+
+def _stub_download(monkeypatch, body: bytes = b"%PDF-1.4 x"):
+    class _Stream:
+        headers = {"Content-Length": str(len(body))}
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def raise_for_status(self): pass
+        def read(self): return body
+    monkeypatch.setattr("app.services.notion_fetch.httpx.Client", _stub_http(_Stream()))
+
+
+def test_download_single_textbook_with_workbook_also_attached_needs_no_selector(monkeypatch):
+    # G1-UZ Texnologiya real shape: one textbook + one workbook attached to the
+    # SAME page, different rank tiers -> no ambiguity, no block_id needed. This
+    # is the most common real page shape and must keep working without a
+    # selector after ambiguity-rejection ships.
+    _stub_download(monkeypatch)
+    c = _client({}, blocks_by_page={"sub": [
+        {"id": "wb", "type": "file", "file": {"name": "ish_daftari.pdf", "file": {"url": "u-wb"}}},
+        {"id": "tb", "type": "file", "file": {"name": "8-sinf_texnologiya_darslik.pdf", "file": {"url": "u-tb"}}},
+    ]})
+    body, filename = download_textbook(c, "sub")
+    assert filename == "8-sinf_texnologiya_darslik.pdf"
+
+
+def test_download_multipart_same_rank_page_without_block_id_raises_ambiguous(monkeypatch):
+    # CRITICAL back-compat change: G11-UZ Algebra style page with TWO same-rank
+    # parts. Before this task this silently downloaded "part 1"; now it must
+    # 422 (AmbiguousTextbook) until the caller passes block_id.
+    _stub_download(monkeypatch)
+    c = _client({}, blocks_by_page={"sub": [
+        {"id": "p1", "type": "file", "file": {"name": "algebra 1-qism.pdf", "file": {"url": "u1"}}},
+        {"id": "p2", "type": "file", "file": {"name": "algebra 2-qism.pdf", "file": {"url": "u2"}}},
+    ]})
+    with pytest.raises(AmbiguousTextbook) as exc_info:
+        download_textbook(c, "sub")
+    block_ids = {c["block_id"] for c in exc_info.value.candidates}
+    assert block_ids == {"p1", "p2"}
+
+
+def test_download_explicit_block_id_downloads_exact_candidate(monkeypatch):
+    _stub_download(monkeypatch, body=b"%PDF-1.4 part2")
+    c = _client({}, blocks_by_page={"sub": [
+        {"id": "p1", "type": "file", "file": {"name": "algebra 1-qism.pdf", "file": {"url": "u1"}}},
+        {"id": "p2", "type": "file", "file": {"name": "algebra 2-qism.pdf", "file": {"url": "u2"}}},
+    ]})
+    body, filename = download_textbook(c, "sub", block_id="p2")
+    assert filename == "algebra 2-qism.pdf"
+    assert body == b"%PDF-1.4 part2"
+
+
+def test_download_explicit_block_id_reaches_a_child_page_candidate(monkeypatch):
+    # block_id selection must work for a candidate living on a child_page, not
+    # just direct blocks (textbook_candidates records the CHILD page_id there,
+    # but the block_id is still enough to select it from the parent's call).
+    _stub_download(monkeypatch, body=b"%PDF-1.4 childpart")
+    c = _client({}, blocks_by_page={
+        "parent": [{"id": "cp1", "type": "child_page", "child_page": {"title": "1-qism"}}],
+        "cp1": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "u1"}}}],
+    })
+    body, filename = download_textbook(c, "parent", block_id="b1")
+    assert body == b"%PDF-1.4 childpart"
+
+
+def test_download_explicit_block_id_not_among_candidates_422s_as_notextbook(monkeypatch):
+    _stub_download(monkeypatch)
+    c = _client({}, blocks_by_page={"sub": [
+        {"id": "tb", "type": "file", "file": {"name": "darslik.pdf", "file": {"url": "u-tb"}}},
+    ]})
+    with pytest.raises(NoTextbook):
+        download_textbook(c, "sub", block_id="does-not-exist")
 
 
 # ---------------------------------------------------------------------------

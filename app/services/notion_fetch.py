@@ -64,12 +64,6 @@ _WORKBOOK_MARKERS = ("ish daftari", "ishchi daftar", "workbook", "daftar", "ра
 _HANDLE_RE = re.compile(r"\(?@[a-z0-9_]+\)?")
 
 
-def _pdf_name(block: dict) -> str:
-    """Folded, lower-cased filename of a pdf/file block (``""`` when unnamed)."""
-    payload = block.get(block.get("type"), {})
-    return _fold(payload.get("name") or "")
-
-
 def _pdf_rank(name: str) -> int:
     """Selection rank for a PDF filename — LOWER is preferred. A `darslik`
     (textbook) beats a neutral PDF beats an `ish daftari` (workbook), so a
@@ -87,27 +81,6 @@ def _pdf_rank(name: str) -> int:
     return 1
 
 
-def _first_pdf_block(blocks: list[dict]) -> dict | None:
-    """Best textbook PDF block, else None. Prefers a `darslik` over an `ish
-    daftari` when a subject page attaches both; ties broken by page order. A
-    `pdf` block is inherently a PDF; a `file` block needs a `.pdf` filename (a
-    page may also attach a cover image / .docx, which must NOT be the textbook)."""
-    candidates: list[tuple[int, int, dict]] = []
-    for i, b in enumerate(blocks):
-        t = b.get("type")
-        if not _url_from_block(b):
-            continue
-        if t == "pdf":
-            candidates.append((_pdf_rank(_pdf_name(b)), i, b))
-        elif t == "file":
-            name = (b.get("file", {}).get("name") or "").lower()
-            if name.endswith(".pdf"):
-                candidates.append((_pdf_rank(_pdf_name(b)), i, b))
-    if not candidates:
-        return None
-    return min(candidates, key=lambda c: (c[0], c[1]))[2]
-
-
 def _url_from_block(block: dict) -> str | None:
     """Resolve a file/pdf block's URL (Notion-hosted signed OR external)."""
     payload = block.get(block.get("type"), {})
@@ -115,9 +88,9 @@ def _url_from_block(block: dict) -> str | None:
 
 
 def _is_pdf_block(block: dict) -> bool:
-    """True if `block` is a pdf/file block that resolves to a PDF (same
-    criteria as `_first_pdf_block`): a `pdf` block is inherently a PDF; a
-    `file` block needs a `.pdf` filename (covers/attachments must NOT count)."""
+    """True if `block` is a pdf/file block that resolves to a PDF: a `pdf`
+    block is inherently a PDF; a `file` block needs a `.pdf` filename
+    (covers/attachments must NOT count)."""
     if not _url_from_block(block):
         return False
     t = block.get("type")
@@ -156,6 +129,12 @@ def _walk_for_candidates(client, container_id: str, page_id: str,
         t = block.get("type")
         if _is_pdf_block(block):
             payload = block.get(t, {})
+            # `filename` stays RAW (for display/return to the caller); it's
+            # folded ONLY for `_pdf_rank` below (rank matching needs lower-case,
+            # apostrophe-stripped text). Not reusing `_pdf_name` here because that
+            # helper takes a whole block, and this loop already has the payload
+            # unpacked — folding the local `filename` inline avoids a second
+            # block.get(block.get("type"), {}) lookup for the same value.
             filename = payload.get("name") or ""
             candidates.append({
                 "page_id": page_id,
@@ -287,7 +266,21 @@ def available_languages(client, grade_page_id: str) -> dict[str, dict[str, dict]
 
 
 class NoTextbook(Exception):
-    """Subject page has no downloadable PDF block."""
+    """Subject page has no downloadable PDF block (zero candidates at all), OR
+    an explicit `block_id` selector wasn't among the page's candidates — either
+    way there's nothing valid to fetch for the given inputs."""
+
+
+class AmbiguousTextbook(Exception):
+    """The page has more than one candidate in the best-rank tier and no
+    `block_id` was given to disambiguate (e.g. a multi-part textbook like
+    G11-UZ Algebra's two same-rank parts). Carries the tied candidate list —
+    each `{page_id, block_id, filename, rank, url}` — so a caller (the route)
+    can present the options instead of silently picking one."""
+
+    def __init__(self, candidates: list[dict]):
+        self.candidates = candidates
+        super().__init__(f"{len(candidates)} equally-ranked textbook candidates — block_id required")
 
 
 class TextbookTooLarge(Exception):
@@ -297,9 +290,45 @@ class TextbookTooLarge(Exception):
     pypdf text, so there's no reason to cap fetch below upload."""
 
 
-def download_textbook(client, subject_page_id: str) -> tuple[bytes, str]:
-    """Resolve the subject page's first PDF block, reject files larger than the
-    upload cap (settings.max_file_mb), return (bytes, filename).
+def _select_candidate(candidates: list[dict], block_id: str | None = None) -> dict:
+    """Resolve which candidate `download_textbook` fetches. `candidates` is
+    the page's full `textbook_candidates(...)` list — callers must check for
+    `[]` themselves (that's the `NoTextbook` "nothing attached" case, distinct
+    from the cases here).
+
+    - `block_id` given: return the matching candidate exactly, whatever its
+      rank (an explicit choice overrides auto-ranking) — this also reaches a
+      candidate hosted on a child_page, since `textbook_candidates` already
+      flattened those into the same list. Raises `NoTextbook` when `block_id`
+      isn't among `candidates` (a stale/invalid selector must not silently
+      fall back to auto-selection).
+    - `block_id` omitted: restrict to the BEST-rank tier (mirrors the old
+      `_first_pdf_block` min-rank behavior — rank 0 `darslik` beats rank 1
+      neutral beats rank 2 `ish daftari`). Exactly one candidate in that tier
+      downloads outright. MORE than one raises `AmbiguousTextbook` instead of
+      silently picking page order like the old code did (the approved
+      behavior change for multi-part pages — BE-19 task 3)."""
+    if block_id is not None:
+        match = next((c for c in candidates if c["block_id"] == block_id), None)
+        if match is None:
+            raise NoTextbook(f"block_id {block_id!r} not among this page's textbook candidates")
+        return match
+    best_rank = min(c["rank"] for c in candidates)
+    tier = [c for c in candidates if c["rank"] == best_rank]
+    if len(tier) > 1:
+        raise AmbiguousTextbook(tier)
+    return tier[0]
+
+
+def download_textbook(client, subject_page_id: str, block_id: str | None = None) -> tuple[bytes, str]:
+    """Resolve the subject page's textbook PDF (via `textbook_candidates` +
+    `_select_candidate`), reject files larger than the upload cap
+    (settings.max_file_mb), return (bytes, filename).
+
+    `block_id` selects a specific candidate explicitly (required to resolve an
+    ambiguous multi-part page — see `_select_candidate`); omitted, the single
+    best-rank-tier candidate is used, or `AmbiguousTextbook`/`NoTextbook` is
+    raised.
 
     Notion attachment URLs are S3 links presigned for GET only -- a HEAD request
     against them 403s (the signature covers the GET method, not HEAD). So we open
@@ -308,12 +337,12 @@ def download_textbook(client, subject_page_id: str) -> tuple[bytes, str]:
     rare case where the header is absent.
     """
     max_bytes = settings.max_file_mb * 1024 * 1024
-    block = _first_pdf_block(client.get_block_children(subject_page_id))
-    if block is None:
+    candidates = textbook_candidates(client, subject_page_id)
+    if not candidates:
         raise NoTextbook(subject_page_id)
-    url = _url_from_block(block)
-    payload = block.get(block.get("type"), {})
-    filename = (payload.get("name") or "textbook.pdf").strip() or "textbook.pdf"
+    candidate = _select_candidate(candidates, block_id=block_id)
+    url = candidate["url"]
+    filename = (candidate["filename"] or "textbook.pdf").strip() or "textbook.pdf"
     with httpx.Client(timeout=60.0) as http:
         with http.stream("GET", url, follow_redirects=True) as resp:
             resp.raise_for_status()

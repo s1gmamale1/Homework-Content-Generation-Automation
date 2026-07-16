@@ -151,6 +151,11 @@ class FromNotionRequest(BaseModel):
     subject_page_id: str
     grade: str | None = None
     language: str = "uz"
+    # Explicit textbook-candidate selector (BE-19 task 3). Omitted (None) ->
+    # download_textbook auto-selects when the page's best-rank tier has exactly
+    # one candidate, and 422s (AmbiguousTextbook) when it doesn't — e.g. a
+    # multi-part textbook. The FE learns to send this in task 6.
+    block_id: str | None = None
 
 
 def _notion_subject_title(client: NotionClientWrapper, subject_page_id: str) -> str:
@@ -182,7 +187,7 @@ async def book_from_notion(
         )
     try:
         body, filename = await asyncio.to_thread(
-            notion_fetch.download_textbook, client, req.subject_page_id)
+            notion_fetch.download_textbook, client, req.subject_page_id, block_id=req.block_id)
     except notion_fetch.TextbookTooLarge as exc:
         raise HTTPException(
             422,
@@ -190,6 +195,15 @@ async def book_from_notion(
             f"ingest cap; raise MAX_FILE_MB on the head to ingest it (the cap is an "
             f"ingest/RAM guard, not a model limit — large books extract fine via "
             f"bounded page windows)",
+        )
+    except notion_fetch.AmbiguousTextbook as exc:
+        options = "; ".join(
+            f"{c['filename']!r} (block_id={c['block_id']})" for c in exc.candidates
+        )
+        raise HTTPException(
+            422,
+            f"multiple equally-ranked textbook candidates on this subject page — "
+            f"pass `block_id` to pick one: {options}",
         )
     except notion_fetch.NoTextbook:
         raise HTTPException(422, "this subject has no attached textbook")

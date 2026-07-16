@@ -71,3 +71,48 @@ def test_from_notion_happy_path_calls_ingest():
     assert r.status_code == 201
     ing.assert_awaited_once()
     assert ing.await_args.kwargs["subject"] == "math-algebra"
+
+
+def test_from_notion_threads_block_id_to_download_textbook():
+    fake = BookOut(id=uuid4(), subject="math-algebra",
+                   original_filename="alg.pdf", status="uploading")
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(b"%PDF-1.4 x", "alg.pdf")) as dl, \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)):
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9", "block_id": "p2"})
+    assert r.status_code == 201
+    dl.assert_called_once()
+    assert dl.call_args.kwargs.get("block_id") == "p2" or dl.call_args.args[-1] == "p2"
+
+
+def test_from_notion_without_block_id_defaults_to_none():
+    fake = BookOut(id=uuid4(), subject="math-algebra",
+                   original_filename="alg.pdf", status="uploading")
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(b"%PDF-1.4 x", "alg.pdf")) as dl, \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)):
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9"})
+    assert r.status_code == 201
+    assert dl.call_args.kwargs.get("block_id") is None
+
+
+def test_from_notion_ambiguous_textbook_422_lists_candidates():
+    candidates = [
+        {"page_id": "alg", "block_id": "p1", "filename": "algebra 1-qism.pdf", "rank": 0, "url": "u1"},
+        {"page_id": "alg", "block_id": "p2", "filename": "algebra 2-qism.pdf", "rank": 0, "url": "u2"},
+    ]
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               side_effect=nf.AmbiguousTextbook(candidates)):
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9"})
+    assert r.status_code == 422
+    assert "algebra 1-qism.pdf" in r.text and "p1" in r.text
+    assert "algebra 2-qism.pdf" in r.text and "p2" in r.text
