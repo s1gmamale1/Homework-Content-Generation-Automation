@@ -28,12 +28,15 @@ it's been expired — proven for real, and necessary, in
 ``tests/integration/test_book_delete_race.py``). These tests pass plain
 ``SimpleNamespace`` stand-ins through a mocked repo layer, which
 ``AsyncSession.expire()`` rejects outright (``UnmappedInstanceError`` — the
-object was never loaded via this session). Made tolerant here too.
+object was never loaded via this session). Made tolerant to exactly that
+error here too (any other exception from ``expire()`` is a real bug and
+must still surface).
 """
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.exc import UnmappedInstanceError
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +51,7 @@ def _noop_book_locks(monkeypatch):
     def _expire_tolerant(self, instance, *args, **kwargs):
         try:
             return real_expire(self, instance, *args, **kwargs)
-        except Exception:
+        except UnmappedInstanceError:
             return None
 
     monkeypatch.setattr(AsyncSession, "expire", _expire_tolerant)

@@ -377,9 +377,18 @@ def _tmp_var_dir(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_toc_retry_activator_wins_status_extracting_pdf_and_task_retained(_tmp_var_dir):
+    """Drives the REAL `retry_toc_extraction` route as the activator (not a
+    manual `set_status` stand-in — that only proves the write shape, not that
+    the route itself holds the lock across its guard-checks-then-write). To
+    keep the lock held open while the competing delete blocks, gate the
+    route's own `jobs_repo.list_for_book` call (the last read before its write
+    + commit) behind an `asyncio.Event` — same "hold it open, prove the loser
+    blocks, then release" discipline as every other race in this file, just
+    triggered from inside the real call instead of a hand-rolled stand-in."""
     import app.api.v1.books as books_mod
     from app.db import SessionLocal
     from app.repositories import books as books_repo
+    from app.repositories import jobs as jobs_repo
     from app.services import storage
 
     async with SessionLocal() as s:
@@ -391,44 +400,66 @@ async def test_toc_retry_activator_wins_status_extracting_pdf_and_task_retained(
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_path.write_bytes(b"%PDF-1.4 fake")
 
-    spawned: list = []
+    spawn_calls: list = []
 
-    async def _inert_run(bid, path, subject):
-        spawned.append(bid)
+    def _record_start_toc_extraction(bid, path, subject):
+        # Replaces the real fire-and-forget `asyncio.create_task` with a
+        # synchronous recorder: proves the spawn call actually happened,
+        # deterministically, with no dependency on scheduler timing.
+        spawn_calls.append((bid, path, subject))
+
+    lock_taken = asyncio.Event()
+    resume_write = asyncio.Event()
+    real_list_for_book = jobs_repo.list_for_book
+
+    async def _gated_list_for_book(session, bid):
+        # Fires after the route's lock-acquire + expire/re-fetch + status
+        # guard, right before its write — the shared lock is held and
+        # un-committed for as long as this coroutine is paused here.
+        lock_taken.set()
+        await resume_write.wait()
+        return await real_list_for_book(session, bid)
 
     try:
-        async with SessionLocal() as sH:
-            # Simulate an in-flight TOC retry: past its guard read, about to
-            # flip status, holding the shared lock across the un-committed write.
-            await books_repo.lock_book_shared(sH, book_id)
-            await books_repo.set_status(sH, book_id, "toc_extracting", error_message=None)
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr(books_mod, "_start_toc_extraction", _record_start_toc_extraction)
+            mp.setattr(books_mod.jobs_repo, "list_for_book", _gated_list_for_book)
 
-            async with SessionLocal() as sB:
-                from app.api.v1.books import delete_book
+            async with SessionLocal() as sH:
+                retry_task = asyncio.create_task(
+                    books_mod.retry_toc_extraction(book_id, sH, _USER))
+                await asyncio.wait_for(lock_taken.wait(), timeout=5)
 
-                delete_task = asyncio.create_task(delete_book(book_id, sB))
-                await asyncio.sleep(0.3)
-                assert not delete_task.done(), (
-                    "delete must BLOCK while the TOC-retry activator holds the shared lock")
+                async with SessionLocal() as sB:
+                    from app.api.v1.books import delete_book
 
-                await sH.commit()
+                    delete_task = asyncio.create_task(delete_book(book_id, sB))
+                    await asyncio.sleep(0.3)
+                    assert not delete_task.done(), (
+                        "delete must BLOCK while the TOC-retry activator holds "
+                        "the shared lock")
 
-                with pytest.raises(HTTPException) as exc_info:
-                    await delete_task
-                # ingest-in-flight guard (Task 2), same 409 family as the
-                # active-jobs guard — book is now 'toc_extracting'.
-                assert exc_info.value.status_code == 409
+                    resume_write.set()  # let the real route finish its write + commit
+                    book_out = await asyncio.wait_for(retry_task, timeout=5)
+                    assert book_out.status == "toc_extracting", (
+                        "the route call itself must succeed (200) and report "
+                        "the flipped status")
 
-        # GATE DETAIL: status is toc_extracting, PDF retained on disk.
+                    with pytest.raises(HTTPException) as exc_info:
+                        await delete_task
+                    # ingest-in-flight guard (Task 2), same 409 family as the
+                    # active-jobs guard — book is now 'toc_extracting'.
+                    assert exc_info.value.status_code == 409
+
+        # GATE DETAIL: status is toc_extracting, PDF retained on disk, and the
+        # real route actually spawned the extraction task (positive proof).
         async with SessionLocal() as s:
             fresh = await books_repo.get(s, book_id)
             assert fresh is not None
             assert fresh.status == "toc_extracting"
         assert pdf_path.exists(), "the source PDF must still be on disk"
-        # (the task itself wasn't spawned by this harness — it manually
-        # performed the equivalent write the real route makes right after its
-        # own lock+re-read; the reverse test below drives the REAL route and
-        # asserts on the spawn directly.)
+        assert len(spawn_calls) == 1 and spawn_calls[0][0] == book_id, (
+            "the real route must have spawned the TOC extraction task")
     finally:
         await _cleanup(book_id)
 
@@ -536,35 +567,63 @@ async def test_batch_resume_delete_wins_resume_404s_no_resurrection():
 
 @pytest.mark.asyncio
 async def test_two_concurrent_generates_on_same_book_do_not_serialize():
-    """Real proof (not just the raw-lock timing test in Part A) that the
+    """Real-route proof (not just the raw-lock timing test in Part A) that the
     shared lock taken by /generate doesn't serialize two activators on the
-    SAME book — two different sections, launched concurrently, both complete
-    promptly rather than one waiting out the other."""
+    SAME book.
+
+    A bare wall-clock bound (`finished_at - t0 < 2.0s`) is non-diagnostic: it
+    would pass even if `/generate` silently took an EXCLUSIVE lock, since two
+    fast calls both land inside any generous bound whether or not they
+    actually serialize behind each other. Replaced with the same
+    barrier-overlap discipline as the raw-lock Part A test
+    (`test_two_shared_holders_do_not_serialize`), just with one side driving
+    the REAL route instead of both sides being raw lock calls: hold a shared
+    lock open (uncommitted, indefinitely, via an `asyncio.Event` barrier) to
+    stand in for one in-flight `/generate` transaction — same idiom as the
+    "simulate an in-flight activator" holds in Parts B-D — then drive `/generate`
+    for a DIFFERENT section through its own independent session and prove it
+    actually COMPLETES. That's only possible if the route's own shared-lock
+    acquisition does NOT block behind the held-open shared lock.
+    """
     from app.api.v1.jobs import generate
     from app.db import SessionLocal
+    from app.repositories import books as books_repo
     from app.schemas import GenerateRequest
 
     async with SessionLocal() as s:
         book, tocs = await _seed_book(s, n_lessons=2)
         await s.commit()
-        book_id, toc_a, toc_b = book.id, tocs[0].id, tocs[1].id
+        book_id, toc_b = book.id, tocs[1].id
+
+    release_holder = asyncio.Event()
+
+    async def _hold_shared_open():
+        async with SessionLocal() as s:
+            await books_repo.lock_book_shared(s, book_id)
+            await release_holder.wait()
+            await s.commit()
 
     try:
-        t0 = time.monotonic()
-        finished_at: dict[str, float] = {}
+        holder = asyncio.create_task(_hold_shared_open())
+        await asyncio.sleep(0.1)  # let the holder actually acquire first
 
-        async def _generate_one(name: str, toc_id):
-            async with SessionLocal() as s:
-                resp = Response()
-                await generate(book_id, toc_id, resp, GenerateRequest(transport="cli"),
-                                None, s, _USER)
-                finished_at[name] = time.monotonic()
+        async with SessionLocal() as sB:
+            resp = Response()
+            job_out = await asyncio.wait_for(
+                generate(book_id, toc_b, resp, GenerateRequest(transport="cli"),
+                         None, sB, _USER),
+                timeout=3,
+            )
+            assert job_out.id is not None, (
+                "/generate must COMPLETE for a different section while another "
+                "shared holder keeps its lock open on the same book")
 
-        await asyncio.gather(_generate_one("a", toc_a), _generate_one("b", toc_b))
-
-        # Neither call waited on the other's lock — both land promptly.
-        assert finished_at["a"] - t0 < 2.0, finished_at
-        assert finished_at["b"] - t0 < 2.0, finished_at
+        assert not holder.done(), (
+            "the held-open shared lock must still be live — proves the "
+            "/generate call above genuinely overlapped it, not that the "
+            "holder had already released by the time /generate ran")
+        release_holder.set()
+        await asyncio.wait_for(holder, timeout=5)
     finally:
         await _cleanup(book_id)
 
