@@ -30,11 +30,17 @@ from under a running worker (live DB has a book with active jobs right now).
   fix #2).** The launch routes read the book unlocked and create batches/jobs much later
   (batch.py:140, jobs.py:133) — a launch racing the delete between guard-count and the deletes
   re-creates the FK 500 or deletes a running job. Fix extends the house idiom (jobs.py:115
-  already uses per-section advisory locks): both launch paths take
-  `pg_advisory_xact_lock_shared(hashtext('book:'||<id>))` at entry; delete takes the EXCLUSIVE
-  form. Launches never serialize each other; delete excludes all launches and vice versa.
-  Proven by a real-Postgres concurrent launch-vs-delete test: exactly one controlled outcome
-  (409/404/204 orderings), never an FK error or a deleted running job.
+  already uses per-section advisory locks): **every path that ACTIVATES work for a book takes
+  the SHARED lock** `pg_advisory_xact_lock_shared(hashtext('book:'||<id>))` at entry — the two
+  launch paths (batch.py:140, jobs.py:133) AND the three activation paths the second gate pass
+  caught (single-job retry `jobs.py:342`, batch resume `batch.py:476`, TOC retry `books.py:375`,
+  which flips a deletable `failed` book to `toc_extracting` and spawns `_TOC_TASKS`); each
+  RE-READS its target's state AFTER acquiring the lock (a stale pre-lock read of a row the
+  delete just removed must 404/409, never proceed). Delete takes the EXCLUSIVE form. Activators
+  never serialize each other; delete excludes all of them and vice versa. Proven by a
+  real-Postgres race test with an OUTCOME-CONDITIONAL oracle — activator wins → delete 409s and
+  the work survives; delete wins → the activator 404/409s and creates nothing; 204 only with no
+  competitor — never an FK error or a deleted running job in any interleaving.
 - **On-disk cleanup: post-commit, best-effort, loud.** After the DB commit succeeds,
   `shutil.rmtree(storage.book_dir(book_id), ignore_errors=False)` in a try/except — failure logs
   ERROR (`book delete: dir cleanup FAILED …`) and still returns 204 (rows are gone; an orphan dir
@@ -88,19 +94,30 @@ Commit: `feat(books): refuse deletion while ingesting or jobs active — 409 (BE
 **Tests first** (`tests/integration/test_book_delete_race.py`, new, RUN_DB_INTEGRATION,
 real Postgres, two independent sessions/connections — same separate-connection discipline as the
 credential-limiter race tests):
-- **RED (the race):** open tx A holding the shared book lock (simulating a launch mid-request,
-  after its guard read, before job creation) → a concurrent `DELETE` route call must BLOCK until
-  A commits, then proceed against the final state (404/409/204 — assert it is exactly one of the
-  controlled outcomes and the DB never raises `IntegrityError`). Today (no locks) the delete
-  interleaves → assert the FK-500/deleted-running-job failure reproduces.
-- Two concurrent LAUNCHES take the shared lock simultaneously (no serialization between them).
+- **RED (the race):** open tx A holding the shared book lock (simulating an activator
+  mid-request, after its guard read, before its write) → a concurrent `DELETE` route call must
+  BLOCK until A commits. Today (no locks) the delete interleaves → assert the
+  FK-500/deleted-running-job failure reproduces.
+- **Outcome-conditional oracle (gate fix, second pass):** run the race both ways and assert PER
+  WINNER — (a) activator commits first → delete returns 409 AND the activated work survives
+  (job row present, status pending/running); (b) delete commits first → the activator returns a
+  controlled 404/409 AND `homework_jobs`/`batches` gained ZERO rows for the book; (c) plain
+  delete with no competitor → 204. A bare "any of 404/409/204" assertion is BANNED — it would
+  pass while deleting a just-created active job.
+- Two concurrent ACTIVATORS take the shared lock simultaneously (no serialization between them).
+- Per-path coverage: each of the five activation paths (both launches, single-job retry, batch
+  resume, TOC retry) acquires the shared lock and RE-READS its target after acquisition —
+  e.g. retry of a job whose book was just deleted → 404, no resurrection. Note: retry/resume
+  know job/batch ids, not book ids — derive book_id from the row FIRST, then lock, then re-read
+  the row (it may have vanished while waiting).
 **Code:** tiny helper (e.g. `app/repositories/books.py::lock_book_shared/lock_book_exclusive`
 issuing `pg_advisory_xact_lock_shared/pg_advisory_xact_lock` on `hashtext('book:'||<uuid>)`);
-call the SHARED form at entry of BOTH launch paths (`app/api/v1/batch.py` ~:140 region,
-`app/api/v1/jobs.py` ~:133 region — inside their transactions, before the book read); the
+call the SHARED form at entry of ALL FIVE activation paths — `app/api/v1/batch.py` launch (~:140) and
+resume (`:476`), `app/api/v1/jobs.py` generate (~:133) and retry (`:342`), `app/api/v1/books.py`
+TOC retry (`:375`) — inside their transactions, before the state read they act on; the
 EXCLUSIVE form at the top of the delete route's transaction. House idiom precedent:
 `jobs.py:115`'s per-section advisory lock.
-Commit: `feat(books): book-scoped advisory locks — launch/delete race closed (BE-02 task 3)`
+Commit: `feat(books): book-scoped advisory locks — activation/delete races closed (BE-02 task 3)`
 
 ### Task 4 — post-commit file cleanup + FE confirm copy (RED → GREEN)
 
