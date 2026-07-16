@@ -7,8 +7,7 @@ same-page PDFs silently reduced to the first (`_first_pdf_block`), workbook can 
 (bot-handle contains "darslik"; RU markers unknown), prepare accepts any page/grade ("banana",
 foreign pages, wrong grade), missing pages → HTTP 500, and a **confirmed wrong-language attachment**
 (G6-RU Математика Часть-1 holds the UZ file) that naive recursion would ingest as Russian.
-Subsumes BE-08/BE-09 and closes wishlist items `notion-pdf-rank-markers-1`,
-`notion-nested-part-pages-1`, `notion-crosslang-part-picker-1`.
+Subsumes BE-08/BE-09 and closes wishlist items `notion-pdf-rank-markers-1` and `notion-nested-part-pages-1` (`notion-crosslang-part-picker-1` stays OPEN — cross-language part correspondence not built; see WISHLIST annotation).
 
 ## Approach & key decisions (all three locked with user 2026-07-16)
 
