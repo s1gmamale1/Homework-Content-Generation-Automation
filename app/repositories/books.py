@@ -120,12 +120,11 @@ async def set_status(
 
 async def set_toc_ready_at(session: AsyncSession, book_id: UUID) -> None:
     """Stamp `toc_ready_at=now()` on the extractor success path (toc_extractor.run,
-    final_status == "toc_ready"). Used by the system-aware "Prepare a subject"
-    dialog (task 2) to distinguish an already-extracted book from a stale one.
-
-    NOTE: the /toc/accept promotion path (toc_review -> toc_ready) does NOT call
-    this yet — clearing/stamping across that lifecycle is Task 3's work
-    (prepare-status-redo)."""
+    final_status == "toc_ready") AND on the /toc/accept promotion path
+    (toc_review -> toc_ready, Task 3). Used by the system-aware "Prepare a
+    subject" dialog (task 2) to distinguish an already-extracted book from a
+    stale one. The mirror-image clear (`clear_toc_validation_and_ready`) runs
+    on /toc/retry after its guards pass."""
     book = await session.get(Book, book_id)
     if book is None:
         return
@@ -140,6 +139,22 @@ async def set_toc_validation(
         return
     book.toc_validation = verdict
     book.toc_validation_detail = detail
+
+
+async def clear_toc_validation_and_ready(session: AsyncSession, book_id: UUID) -> None:
+    """Wipe the prior extraction's audit trail (`toc_validation` +
+    `toc_validation_detail`) and the `toc_ready_at` stamp ahead of a re-extraction.
+    Called by POST /toc/retry (Task 3, prepare-status-redo) AFTER all its guards
+    pass — a redo replaces the old verdict rather than carrying it forward
+    stale. The mirror-image stamp (`set_toc_ready_at`) is written by the
+    extractor's success path and by POST /toc/accept; this is the only place
+    that clears it."""
+    book = await session.get(Book, book_id)
+    if book is None:
+        return
+    book.toc_validation = None
+    book.toc_validation_detail = None
+    book.toc_ready_at = None
 
 
 async def list_running_for_sweep(session: AsyncSession) -> list[Book]:

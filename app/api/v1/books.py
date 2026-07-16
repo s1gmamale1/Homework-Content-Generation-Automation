@@ -409,17 +409,21 @@ async def retry_toc_extraction(
     session: AsyncSession = Depends(get_session),
     user: dict = Depends(get_current_user),
 ) -> BookOut:
-    """Re-run TOC extraction for a book stuck in `failed` or `toc_extracting`.
-    Mirrors POST /jobs/{id}/retry for the book-preparation step. The extractor's
-    clear-before-insert makes the re-run idempotent (replaces prior entries)."""
+    """Re-run TOC extraction for a book stuck in `failed` or `toc_extracting`,
+    still under review (`toc_review`), or already accepted (`toc_ready` — a
+    deliberate redo, e.g. the source PDF was replaced). Mirrors POST
+    /jobs/{id}/retry for the book-preparation step. The extractor's
+    clear-before-insert makes the re-run idempotent (replaces prior entries);
+    the prior validation verdict and ready stamp are cleared here too (after
+    all guards pass) so a redo never carries a stale audit trail forward."""
     book = await books_repo.get(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
-    # Book-scoped SHARED advisory lock (BE-02 task 3) — the book_id IS the
-    # target here, so lock right after the 404 fetch and then RE-FETCH: a
-    # concurrent DELETE holding the EXCLUSIVE form blocks us here until it
-    # commits/rolls back, and the re-fetch below sees current state (never a
-    # stale pre-lock book object).
+    # Book-scoped SHARED advisory lock (BE-02 task 3, merged #100) — the
+    # book_id IS the target here, so lock right after the 404 fetch and then
+    # RE-FETCH: a concurrent DELETE holding the EXCLUSIVE form blocks us here
+    # until it commits/rolls back, and the re-fetch below sees current state
+    # (never a stale pre-lock book object).
     await books_repo.lock_book_shared(session, book_id)
     # `Session.get()` short-circuits via the identity map — expire the
     # pre-lock `book` object first so this re-fetch actually re-queries
@@ -430,11 +434,14 @@ async def retry_toc_extraction(
     book = await books_repo.get(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
-    if book.status not in ("failed", "toc_extracting", "toc_review"):
+    # Allowlist gains `toc_ready` (worklog 0144 task 3) — a deliberate redo of
+    # an already-accepted book; the guard runs against the RE-FETCHED status.
+    if book.status not in ("failed", "toc_extracting", "toc_review", "toc_ready"):
         raise HTTPException(
             409,
             f"cannot retry TOC extraction from status '{book.status}' "
-            "(only `failed`, a stuck `toc_extracting`, or `toc_review`)",
+            "(only `failed`, a stuck `toc_extracting`, `toc_review`, or an "
+            "already-ready `toc_ready` book)",
         )
     pdf_path = storage.book_pdf_path(book_id)
     if not pdf_path.exists():
@@ -448,16 +455,19 @@ async def retry_toc_extraction(
     # jobs (delete the affected sections) before retrying.
     blocking = await jobs_repo.list_for_book(session, book_id)
     if blocking:
-        listed = ", ".join(f"{j.id} ({j.status})" for j in blocking[:20])
-        more = f" (+{len(blocking) - 20} more)" if len(blocking) > 20 else ""
+        # Structured detail, not prose — the FE (Task 6) must never parse this
+        # as a string. Listing is capped at 20 (a full-TOC book can carry
+        # 50-60+ jobs); `count` stays the uncapped total.
         raise HTTPException(
             409,
-            f"cannot re-extract the TOC: {len(blocking)} homework job(s) "
-            "reference this book's sections and would be orphaned. Delete the "
-            "affected sections (or their jobs) first, then retry. Blocking jobs: "
-            f"{listed}{more}",
+            {
+                "error": "toc_retry_blocked_by_jobs",
+                "count": len(blocking),
+                "jobs": [{"id": str(j.id), "status": j.status} for j in blocking[:20]],
+            },
         )
     await books_repo.set_status(session, book_id, "toc_extracting", error_message=None)
+    await books_repo.clear_toc_validation_and_ready(session, book_id)
     await session.commit()
     _start_toc_extraction(book_id, pdf_path, book.subject)
     return await _book_out_with_toc(session, book_id)
@@ -470,7 +480,10 @@ async def accept_toc(
     user: dict = Depends(get_current_user),
 ) -> BookOut:
     """Accept the TOC entries for a `toc_review` book, promoting it to `toc_ready`.
-    The toc_validation / toc_validation_detail columns are preserved as an audit trail.
+    The toc_validation / toc_validation_detail columns are preserved as an audit
+    trail (only /toc/retry clears them). Stamps `toc_ready_at` (Task 3
+    lifecycle split) so the system-aware "Prepare a subject" dialog can tell
+    this book apart from a stale/never-extracted one.
     """
     # Shared book lock BEFORE the first read (post-#100 follow-up): an
     # unlocked mutate racing DELETE /books/{id} hit StaleDataError -> 500;
@@ -483,6 +496,7 @@ async def accept_toc(
     if book.status != "toc_review":
         raise HTTPException(409, "can only accept a book in toc_review")
     await books_repo.set_status(session, book_id, "toc_ready")
+    await books_repo.set_toc_ready_at(session, book_id)
     await session.commit()
     return await _book_out_with_toc(session, book_id)
 

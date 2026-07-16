@@ -5,10 +5,13 @@ Coverage:
   - accept on a `toc_ready` book → 409
   - accept on a missing book → 404
   - BookOut serialises toc_validation / toc_validation_detail fields
+  - accept STAMPS toc_ready_at (Task 3 lifecycle split) and leaves the
+    validation audit trail (toc_validation / toc_validation_detail) untouched
+    — only /toc/retry clears those
 """
 import pytest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -39,20 +42,23 @@ def _bookout(book_id, status, *, toc_validation=None, toc_validation_detail=None
 
 
 def _accept(book_id, *, book):
-    """Drive the accept endpoint with repos/helper stubbed out."""
+    """Drive the accept endpoint with repos/helper stubbed out. Returns
+    (response, set_status_mock, set_toc_ready_at_mock)."""
     set_status_mock = AsyncMock()
+    set_ready_at_mock = AsyncMock()
     with patch("app.api.v1.books.books_repo.get", AsyncMock(return_value=book)), \
          patch("app.api.v1.books.books_repo.set_status", set_status_mock), \
+         patch("app.api.v1.books.books_repo.set_toc_ready_at", set_ready_at_mock), \
          patch("app.api.v1.books._book_out_with_toc",
                AsyncMock(return_value=_bookout(book_id, "toc_ready"))):
         r = client.post(f"/api/v1/books/{book_id}/toc/accept")
-    return r, set_status_mock
+    return r, set_status_mock, set_ready_at_mock
 
 
 def test_accept_toc_review_book_returns_200_and_toc_ready():
     bid = uuid4()
     book = SimpleNamespace(id=bid, status="toc_review", subject="math-algebra")
-    r, set_status_mock = _accept(bid, book=book)
+    r, set_status_mock, set_ready_at_mock = _accept(bid, book=book)
     assert r.status_code == 200
     assert r.json()["status"] == "toc_ready"
     # set_status must have been called with "toc_ready"
@@ -60,19 +66,53 @@ def test_accept_toc_review_book_returns_200_and_toc_ready():
     assert set_status_mock.await_args.args[2] == "toc_ready"
 
 
+def test_accept_stamps_toc_ready_at():
+    # Task 3 lifecycle split: accept is the ONLY place that stamps toc_ready_at
+    # on the toc_review -> toc_ready promotion (retry clears it instead).
+    bid = uuid4()
+    book = SimpleNamespace(id=bid, status="toc_review", subject="math-algebra")
+    r, _, set_ready_at_mock = _accept(bid, book=book)
+    assert r.status_code == 200
+    set_ready_at_mock.assert_awaited_once_with(ANY, bid)
+
+
 def test_accept_toc_ready_book_returns_409():
     bid = uuid4()
     book = SimpleNamespace(id=bid, status="toc_ready", subject="math-algebra")
-    r, set_status_mock = _accept(bid, book=book)
+    r, set_status_mock, set_ready_at_mock = _accept(bid, book=book)
     assert r.status_code == 409
     set_status_mock.assert_not_awaited()
+    set_ready_at_mock.assert_not_awaited()
 
 
 def test_accept_missing_book_returns_404():
     bid = uuid4()
-    r, set_status_mock = _accept(bid, book=None)
+    r, set_status_mock, set_ready_at_mock = _accept(bid, book=None)
     assert r.status_code == 404
     set_status_mock.assert_not_awaited()
+    set_ready_at_mock.assert_not_awaited()
+
+
+def test_accept_does_not_touch_toc_validation_fields():
+    # Assertion-style: accept must NOT call the clear-helper (that's retry's
+    # job) — the validation audit trail (toc_validation / toc_validation_detail)
+    # survives accept unchanged.
+    bid = uuid4()
+    book = SimpleNamespace(id=bid, status="toc_review", subject="math-algebra")
+    with patch("app.api.v1.books.books_repo.get", AsyncMock(return_value=book)), \
+         patch("app.api.v1.books.books_repo.set_status", AsyncMock()), \
+         patch("app.api.v1.books.books_repo.set_toc_ready_at", AsyncMock()), \
+         patch("app.api.v1.books.books_repo.clear_toc_validation_and_ready",
+               AsyncMock()) as clear_spy, \
+         patch("app.api.v1.books._book_out_with_toc",
+               AsyncMock(return_value=_bookout(
+                   bid, "toc_ready", toc_validation="verified",
+                   toc_validation_detail="12/12 chapters matched"))):
+        r = client.post(f"/api/v1/books/{bid}/toc/accept")
+    assert r.status_code == 200
+    assert r.json()["toc_validation"] == "verified"
+    assert r.json()["toc_validation_detail"] == "12/12 chapters matched"
+    clear_spy.assert_not_awaited()
 
 
 def test_bookout_serializes_validation_fields():
