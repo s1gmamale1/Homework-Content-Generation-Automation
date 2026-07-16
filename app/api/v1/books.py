@@ -573,6 +573,28 @@ async def delete_book(
     book_id: UUID,
     session: AsyncSession = Depends(get_session),
 ) -> None:
+    # Fetch first — a missing book must 404 regardless of status/jobs below,
+    # never get masked by the guards that follow (BE-02 task 2).
+    book = await books_repo.get(session, book_id)
+    if book is None:
+        raise HTTPException(404, "book not found")
+    # uploading/toc_extracting: the live _TOC_TASKS extractor is still reading
+    # the on-disk PDF for this book — deleting out from under it would race
+    # the extractor's own file access. failed/toc_review/toc_ready proceed
+    # (the wedged-book escape hatch).
+    if book.status in ("uploading", "toc_extracting"):
+        raise HTTPException(
+            409,
+            f"cannot delete: book is still being ingested (status "
+            f"'{book.status}') — wait for it to finish or fail, then delete",
+        )
+    active = await jobs_repo.count_active_for_book(session, book_id)
+    if active:
+        raise HTTPException(
+            409,
+            f"book has {active} active job(s) (pending/running/cancelling) — "
+            "cancel the active job(s) or their batch first, then delete",
+        )
     deleted = await books_repo.delete(session, book_id)
     if not deleted:
         raise HTTPException(404, "book not found")
