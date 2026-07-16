@@ -27,8 +27,19 @@ def write_active_key(key_bytes: bytes, dest: Path) -> None:
 
 
 def set_credentials_env(env: MutableMapping, creds_path: str, project_id: str) -> None:
+    """Point ``env`` at the Vertex service-account pair.
+
+    Also pops any leftover ``GEMINI_API_KEY`` — an explicit SA-key
+    assignment WINS over a stale env-file key (BE-16 task 5, codex-review
+    #7 — behavior change, flagged for gate). Without this, a host that once
+    had ``GEMINI_API_KEY`` set would keep billing/fingerprinting off that
+    old key (``_gemini_client``/``credential_id.credential_for`` both check
+    ``GEMINI_API_KEY`` FIRST), silently ignoring this assignment — billing,
+    limiter identity, and the operator panel would then all disagree.
+    """
     env["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
     env["GOOGLE_CLOUD_PROJECT"] = project_id
+    env.pop("GEMINI_API_KEY", None)
 
 
 def clear_credentials_env(env: MutableMapping) -> None:

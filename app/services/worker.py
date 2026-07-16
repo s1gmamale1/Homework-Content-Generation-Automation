@@ -48,7 +48,14 @@ from app.repositories import cost as cost_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import sa_keys as sa_keys_repo
 from app.repositories import workers as workers_repo
-from app.services import agent, code_version, pipeline, providers, sa_key_apply
+from app.services import (
+    agent,
+    code_version,
+    credential_limiter,
+    pipeline,
+    providers,
+    sa_key_apply,
+)
 from app.services.errors import SessionLimitPause
 from app.services.storage import sa_key_active_path
 
@@ -277,6 +284,7 @@ class Worker:
                 now = asyncio.get_event_loop().time()
                 if now - self._last_sweep_at > self.sweep_interval:
                     await self._sweep_stuck_jobs()
+                    await self._sweep_credential_slots()
                     self._last_sweep_at = now
                 if now - self._last_budget_check_at > settings.cost_check_interval_seconds:
                     await self._budget_monitor()
@@ -696,6 +704,21 @@ class Worker:
                 )
         except Exception:
             logger.exception(f"worker {self.id} stuck-job sweep failed")
+
+    async def _sweep_credential_slots(self) -> None:
+        """Delete stale `credential_slots` rows (crashed holders that never
+        released) — its OWN step, OWN try/except (BE-16 task 5): a
+        limiter-table hiccup must NEVER be able to abort the job-reclaim
+        sweep in `_sweep_stuck_jobs`, so this deliberately does not share
+        that method's single `session.begin()` transaction.
+        `credential_limiter.sweep()` already swallows its own DB errors and
+        returns 0; this try/except is defense-in-depth for anything else."""
+        try:
+            n = await credential_limiter.sweep()
+            if n > 0:
+                logger.info(f"worker {self.id} swept {n} stale credential slot(s)")
+        except Exception:
+            logger.exception(f"worker {self.id} credential-slot sweep failed")
 
     async def _drain_check_and_beat(self, session) -> bool:
         """Read own status; if "draining" call stop() and return False (no beat).

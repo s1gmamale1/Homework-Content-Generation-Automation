@@ -63,6 +63,16 @@ export function SaKeysPanel() {
     },
   });
 
+  const updateLimit = useMutation({
+    mutationFn: ({ id, value }: { id: string; value: number | null }) =>
+      api.setSaKeyMaxConcurrentCalls(id, value),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sa-keys"] });
+      toast.success("Concurrency limit updated");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const keys = keysQ.data?.keys ?? [];
   const assignments = asgQ.data?.assignments ?? [];
   // One entry per host with liveness (online if any restart-row is fresh), so
@@ -140,6 +150,33 @@ export function SaKeysPanel() {
                   <span className="font-mono text-[0.62rem] text-white/35 shrink-0">
                     {k.worker_count} worker{k.worker_count !== 1 ? "s" : ""}
                   </span>
+                  <span className="font-mono text-[0.62rem] text-white/35 shrink-0">
+                    in-flight {k.slots_in_use}/{k.effective_limit}
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    title="Per-project api concurrency override (empty = provider default)"
+                    className="w-14 shrink-0 rounded-lg border border-white/[0.1] bg-white/[0.05] px-1.5 py-1 text-center font-mono text-[0.72rem] text-white/80 focus:outline-none focus:ring-1 focus:ring-white/20"
+                    defaultValue={k.max_concurrent_calls ?? ""}
+                    placeholder={String(k.effective_limit)}
+                    disabled={
+                      updateLimit.isPending &&
+                      (updateLimit.variables as { id: string } | undefined)?.id === k.id
+                    }
+                    onBlur={(e) => {
+                      const raw = e.target.value.trim();
+                      const next = raw === "" ? null : Number(raw);
+                      if (next === (k.max_concurrent_calls ?? null)) return; // unchanged
+                      if (next !== null && (!Number.isInteger(next) || next < 1)) {
+                        toast.error("Concurrency limit must be a whole number ≥ 1");
+                        e.target.value = String(k.max_concurrent_calls ?? "");
+                        return;
+                      }
+                      updateLimit.mutate({ id: k.id, value: next });
+                    }}
+                  />
                   <button
                     className={cn(
                       GHOST_BTN,

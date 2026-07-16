@@ -545,6 +545,16 @@ export interface SaKey {
   byte_size: number;
   created_at: string | null;
   worker_count: number;
+  /** Operator override for the fleet-wide per-credential api concurrency
+   *  cap (BE-16). `null` = no override, falls back to the provider default.
+   *  Project-wide: every sa_keys row sharing this key's project_id carries
+   *  the same value (see PATCH /sa-keys/{key_id}). */
+  max_concurrent_calls: number | null;
+  /** Live in-flight slot count for this key's project credential. */
+  slots_in_use: number;
+  /** Resolved cap currently enforced for this key's project credential
+   *  (the override above, or the provider default when none is set). */
+  effective_limit: number;
 }
 
 /** Per-worker SA key assignment state served by GET /api/v1/sa-keys/assignments. */

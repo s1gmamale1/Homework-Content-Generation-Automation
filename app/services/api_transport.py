@@ -122,14 +122,28 @@ def _location_for(model: str) -> str:
 
 def _gemini_client(model: str):
     from google import genai
+    from google.genai import types
+
+    # HttpOptions.timeout is MILLISECONDS — verified against the installed
+    # google-genai SDK: `types.HttpOptions.model_fields["timeout"]` is
+    # `int | None`, described "Timeout for the request in milliseconds"
+    # (BE-16 task 5, codex-review #3). settings.per_attempt_timeout_seconds
+    # is SECONDS, so convert.
+    http_options = types.HttpOptions(
+        timeout=int(settings.per_attempt_timeout_seconds * 1000)
+    )
 
     key = os.environ.get("GEMINI_API_KEY")
     if key:
-        return genai.Client(api_key=key)
+        return genai.Client(api_key=key, http_options=http_options)
     proj = os.environ.get("GOOGLE_CLOUD_PROJECT")
     if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") and proj:
+        # Merge of #97 (per-model location routing) + BE-16 task 5 (SDK
+        # timeout): route the location AND carry the http_options timeout.
         loc = _location_for(model)
-        return genai.Client(vertexai=True, project=proj, location=loc)
+        return genai.Client(
+            vertexai=True, project=proj, location=loc, http_options=http_options
+        )
     raise RuntimeError(
         "gemini api: no GEMINI_API_KEY and no Vertex SA "
         "(GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT)"
@@ -198,7 +212,10 @@ def _claude_client():
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         raise RuntimeError("claude api: ANTHROPIC_API_KEY unset")
-    return AsyncAnthropic(api_key=key)
+    # anthropic SDK's `timeout` kwarg is SECONDS (float) — verified against
+    # the installed package's constructor signature — passed straight
+    # through, no conversion (BE-16 task 5, codex-review #3).
+    return AsyncAnthropic(api_key=key, timeout=settings.per_attempt_timeout_seconds)
 
 
 def _claude_usage(u) -> dict:
@@ -257,7 +274,12 @@ def _clodex_client():
     if not key:
         raise AuthEnvError("clodex api: CLODEX_API_KEY unset")
     base_url = os.environ.get("CLODEX_BASE_URL") or _CLODEX_BASE_URL
-    return AsyncOpenAI(api_key=key, base_url=base_url)
+    # openai SDK's `timeout` kwarg is SECONDS (float) — verified against the
+    # installed package's constructor signature — passed straight through,
+    # no conversion (BE-16 task 5, codex-review #3).
+    return AsyncOpenAI(
+        api_key=key, base_url=base_url, timeout=settings.per_attempt_timeout_seconds
+    )
 
 
 def _clodex_usage(u, *, requested_model: str, served_model: str | None) -> dict:

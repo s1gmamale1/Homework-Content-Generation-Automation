@@ -99,14 +99,18 @@ def test_gemini_client_credentials(monkeypatch):
     monkeypatch.setattr(genai, "Client", lambda **kw: seen.update(kw) or "client")
     monkeypatch.delenv("GEMINI_MODEL_LOCATIONS", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "k")
-    api_transport._gemini_client("m"); assert seen == {"api_key": "k"}
+    api_transport._gemini_client("m")
+    # per-key asserts (BE-16): http_options timeout kwarg is also present now
+    assert seen["api_key"] == "k"
     seen.clear()
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/sa.json")
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "p")
     monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
     api_transport._gemini_client("m")
-    assert seen == {"vertexai": True, "project": "p", "location": "global"}
+    assert seen["vertexai"] is True
+    assert seen["project"] == "p"
+    assert seen["location"] == "global"
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     with pytest.raises(RuntimeError):
@@ -163,7 +167,11 @@ def test_gemini_client_vertex_uses_location_router(monkeypatch):
     monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
     monkeypatch.delenv("GEMINI_MODEL_LOCATIONS", raising=False)
     api_transport._gemini_client("gemini-2.5-flash")
-    assert seen == {"vertexai": True, "project": "p", "location": "us-central1"}
+    # per-key asserts: BE-16 adds an http_options timeout kwarg alongside
+    # the router's location — the LOCATION assertions stay strict.
+    assert seen["vertexai"] is True
+    assert seen["project"] == "p"
+    assert seen["location"] == "us-central1"
 
 
 def test_gemini_client_api_key_branch_ignores_location_map(monkeypatch):
@@ -173,7 +181,25 @@ def test_gemini_client_api_key_branch_ignores_location_map(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     monkeypatch.setenv("GEMINI_MODEL_LOCATIONS", '{"gemini-2.5-flash":"europe-west4"}')
     api_transport._gemini_client("gemini-2.5-flash")
-    assert seen == {"api_key": "k"}        # no location kw at all — map ignored entirely
+    assert seen["api_key"] == "k"
+    assert "location" not in seen          # no location kw at all — map ignored entirely
+
+
+def test_gemini_client_timeout_kwarg(monkeypatch):
+    """genai.Client always gets an http_options carrying the per-attempt
+    timeout in MILLISECONDS (BE-16 task 5, codex-review #3) — the installed
+    google-genai SDK's ``types.HttpOptions.timeout`` field is documented
+    "Timeout for the request in milliseconds", verified against the
+    installed package (see task-5 report)."""
+    import google.genai as genai
+    from google.genai import types
+    seen = {}
+    monkeypatch.setattr(genai, "Client", lambda **kw: seen.update(kw) or "client")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    api_transport._gemini_client("gemini-2.5-flash")
+    http_options = seen["http_options"]
+    assert isinstance(http_options, types.HttpOptions)
+    assert http_options.timeout == settings.per_attempt_timeout_seconds * 1000
 
 
 # ---- claude fakes ----
@@ -233,6 +259,20 @@ def test_claude_client_requires_key(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(RuntimeError):
         api_transport._claude_client()
+
+
+def test_claude_client_timeout_kwarg(monkeypatch):
+    """AsyncAnthropic's ``timeout`` kwarg is SECONDS (float) — verified
+    against the installed anthropic SDK's constructor signature — so this
+    passes ``per_attempt_timeout_seconds`` straight through, no conversion
+    (BE-16 task 5, codex-review #3)."""
+    import anthropic
+    seen = {}
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda **kw: seen.update(kw) or "client")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    api_transport._claude_client()
+    assert seen["api_key"] == "k"
+    assert seen["timeout"] == settings.per_attempt_timeout_seconds
 
 
 @pytest.mark.asyncio
@@ -425,11 +465,25 @@ def test_clodex_client_base_url_default_and_override(monkeypatch):
     monkeypatch.setenv("CLODEX_API_KEY", "k")
     monkeypatch.setenv("CLODEX_BASE_URL", "https://custom.example/v1")
     api_transport._clodex_client()
-    assert seen == {"api_key": "k", "base_url": "https://custom.example/v1"}
+    assert seen["api_key"] == "k"
+    assert seen["base_url"] == "https://custom.example/v1"
     seen.clear()
     monkeypatch.delenv("CLODEX_BASE_URL", raising=False)
     api_transport._clodex_client()
-    assert seen == {"api_key": "k", "base_url": "https://clodex.xyz/v1"}
+    assert seen["api_key"] == "k"
+    assert seen["base_url"] == "https://clodex.xyz/v1"
+
+
+def test_clodex_client_timeout_kwarg(monkeypatch):
+    """AsyncOpenAI's ``timeout`` kwarg is SECONDS (float) — verified against
+    the installed openai SDK's constructor signature — passed straight
+    through, no conversion (BE-16 task 5, codex-review #3)."""
+    import openai
+    seen = {}
+    monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kw: seen.update(kw) or "client")
+    monkeypatch.setenv("CLODEX_API_KEY", "k")
+    api_transport._clodex_client()
+    assert seen["timeout"] == settings.per_attempt_timeout_seconds
 
 
 @pytest.mark.asyncio

@@ -567,6 +567,19 @@ export const api = {
     if (!res.ok) throw new Error((await res.json()).detail ?? "delete failed");
   },
 
+  /** Set (or clear, with `null`) the per-key concurrency override. Project-
+   *  wide: the backend updates every sa_keys row sharing this key's
+   *  project_id in one atomic statement. */
+  async setSaKeyMaxConcurrentCalls(id: string, maxConcurrentCalls: number | null): Promise<SaKey> {
+    const res = await authFetch(`/api/v1/sa-keys/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ max_concurrent_calls: maxConcurrentCalls }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail ?? "update failed");
+    return res.json() as Promise<SaKey>;
+  },
+
   async listSaKeyAssignments(): Promise<{ assignments: SaKeyAssignment[] }> {
     const res = await authFetch("/api/v1/sa-keys/assignments");
     return unwrap<{ assignments: SaKeyAssignment[] }>(res);
