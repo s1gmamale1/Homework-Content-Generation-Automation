@@ -1,6 +1,7 @@
 from typing import Optional
 from uuid import UUID
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -120,12 +121,18 @@ async def update(
 async def delete(session: AsyncSession, book_id: UUID) -> bool:
     """Remove a book and everything that depends on it.
 
-    `toc_entries` cascade automatically (FK ondelete=CASCADE), but
-    `homework_jobs.book_id` has no cascade, so we delete jobs explicitly
-    first. `phase_outputs` cascade off jobs. `gemini_usages` keep their rows
-    with FKs nulled (ondelete=SET NULL) for billing audit retention.
+    Order: `homework_jobs` (and their `phase_outputs`, which cascade off
+    jobs via FK ondelete=CASCADE) are deleted first, then `batches`, then the
+    `book` itself — `toc_entries` cascade automatically off the book (FK
+    ondelete=CASCADE). Neither `homework_jobs.book_id` nor `batches.book_id`
+    has an ondelete rule, so both must be deleted explicitly before the book,
+    or the book DELETE raises IntegrityError on the FK (BE-02 task 1 — the
+    audit's reproduced 500 was `batches` being forgotten here). `agent_usages`
+    rows are the one exception: their book/job/phase FKs are ondelete=SET
+    NULL, so those rows deliberately survive with their FKs nulled, for
+    billing/audit retention.
     """
-    from app.models import HomeworkJob
+    from app.models import Batch, HomeworkJob
 
     # Delete jobs first (and their phase_outputs cascade); ORM-level delete
     # so cascade rules on relationships fire correctly.
@@ -134,6 +141,10 @@ async def delete(session: AsyncSession, book_id: UUID) -> bool:
     ).scalars().all()
     for job in job_rows:
         await session.delete(job)
+
+    # Batches have no ondelete on book_id — delete them before the book, or
+    # the book DELETE below raises IntegrityError on batches_book_id_fkey.
+    await session.execute(sa_delete(Batch).where(Batch.book_id == book_id))
 
     book = await session.get(Book, book_id)
     if book is None:
