@@ -36,7 +36,7 @@ Subsumes BE-08/BE-09 and closes wishlist items `notion-pdf-rank-markers-1`,
   `upload.tsx` + `launcher.tsx`. Existing tests: `tests/services/test_notion_fetch.py`,
   `tests/api/test_from_notion.py`, `tests/api/test_book_from_notion_language.py`.
 - No migration. Worklog **0141**. Branch `feat/notion-fetch-correctness`, worktree
-  `../HCGA-notion-fetch`. Suite baseline: 1547 passed / 217 skipped. FE tests are tsx+node:assert
+  `../HCGA-notion-fetch`. Suite baseline: RE-BASELINE in the worktree before Task 1 (gatekeeper's clean run: 1572 passed / 217 skipped; the plan's earlier 1547 figure was stale). FE tests are tsx+node:assert
   (NOT vitest). All Notion access in tests is mocked; acceptance uses live READ-ONLY calls only.
 
 ## Tasks
@@ -104,13 +104,13 @@ container → 422; duplicate matching language containers on the grade page → 
 happy path (chain page→language container→grade page→lessons root) → 201.
 
 **Code**: new `verify_page_ancestry(client, page_id, *, grade, language, lessons_root) -> None`
-in `notion_fetch.py` (parent-chain walk ≤4 hops via the client wrapper — extend
-`NotionClientWrapper` with `get_page_parent` if absent; duplicate-container detection reuses the
+in `notion_fetch.py` (parent-chain walk ≤4 hops via the client wrapper at
+`app/services/notion/client.py` — add `get_page_parent` (absent today); duplicate-container detection reuses the
 container regex from `_subjects_under`); route validates grade ∈ {"1".."11"} and non-blank page id
 via Pydantic (`pattern`/validator), wraps title+fetch in try → 404/502.
 
 Commit: `feat(notion): prepare validates ancestry/grade; controlled 404/502 (BE-19 task 4)`
-Stage: `app/services/notion_fetch.py app/services/notion_client.py app/api/v1/books.py tests/api/test_from_notion.py`
+Stage: `app/services/notion_fetch.py app/services/notion/client.py app/api/v1/books.py tests/api/test_from_notion.py tests/services/test_notion_client.py`
 
 ### Task 5 — language script guard (RED → GREEN)
 
@@ -149,7 +149,7 @@ Stage: the touched web/src files only.
 - **Acceptance (read-only, $0, live Notion):** run `available_languages`/`textbook_candidates`
   against the REAL workspace for the audit's confirmed shapes — G1-UZ Matematika (expect 4
   child-page candidates), G11-UZ Algebra (2 same-page candidates), G6-RU Математика (child parts
-  enumerated) — and run `detect_pdf_script` on the two read-only-downloaded G6 PDFs (expect Part-1
+  enumerated) — and run `detect_pdf_script` on the two read-only-downloaded G6 PDFs (bytes kept in the session scratchpad, NEVER under `var/books/` — no half-ingested rows on the head) (expect Part-1
   → latin → would-block for `ru`; Part-2 → cyrillic → pass). NO prepare/ingest against prod, NO
   writes, NO generation. Paste outputs in the PR.
 - Docs de-stale: `docs/HOW_IT_WORKS.md` (fetch flow, candidates, validation, guard),
