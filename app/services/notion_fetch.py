@@ -264,6 +264,94 @@ def available_languages(client, grade_page_id: str) -> dict[str, dict[str, dict]
     return result
 
 
+# Grade-page title convention: "N-sinf" or "N - sinf" (leading grade number,
+# optional whitespace, hyphen, "sinf") — the SAME shape as the uz language
+# container (`_LANG_CONTAINER_RE["uz"]` == `_SINF_RE`), because in practice a
+# grade page and its uz container are both named "<grade>-sinf"-style; only
+# their POSITION in the walk (grade page is two hops up, not one) tells them
+# apart. Anchored at the start so trailing text ("9-sinf (yangi)") is fine.
+_GRADE_TITLE_RE = re.compile(r"^\s*(\d{1,2})\s*-\s*sinf\b", re.IGNORECASE)
+
+_MAX_ANCESTRY_HOPS = 4
+
+
+def _grade_number_from_title(title: str) -> str | None:
+    m = _GRADE_TITLE_RE.match(title or "")
+    return m.group(1) if m else None
+
+
+class PageOutsideRoot(Exception):
+    """The submitted subject page's parent chain doesn't reach the requested
+    grade page (under the requested language container) within
+    `settings.notion_lessons_root` — wrong grade, wrong language container,
+    a foreign/detached page, or an ambiguous chain (two containers on the
+    grade page matching the same language). Raised by `verify_page_ancestry`;
+    the route maps it to a 422 naming what failed."""
+
+
+def verify_page_ancestry(client, page_id: str, *, grade: str, language: str,
+                          lessons_root: str) -> None:
+    """Walk `page_id`'s parent chain (subject page -> language container ->
+    grade page -> lessons root, <= `_MAX_ANCESTRY_HOPS` hops) confirming it
+    actually lives under the requested grade/language in `lessons_root`.
+    Raises `PageOutsideRoot` naming what failed; returns None (silently) when
+    the chain checks out. Pure/mockable — only calls `client.get_page_parent`,
+    `client.get_page_title`, `client.get_child_pages`."""
+    container_re = _LANG_CONTAINER_RE.get(language)
+    if container_re is None:
+        raise PageOutsideRoot(f"unsupported language {language!r}")
+
+    # Hop 1: the page's parent must be the requested language's container.
+    container_id = client.get_page_parent(page_id)
+    if container_id is None:
+        raise PageOutsideRoot(
+            f"page {page_id!r} not under grade {grade} / {language} container "
+            f"(no parent page — it's a top-level page or lives in a database)"
+        )
+    container_title = client.get_page_title(container_id)
+    if not container_re.search(container_title):
+        raise PageOutsideRoot(
+            f"page {page_id!r} not under grade {grade} / {language} container "
+            f"(parent {container_id!r} titled {container_title!r} doesn't match "
+            f"the {language} container pattern)"
+        )
+
+    # Hop 2: the container's parent must be the requested grade's page.
+    grade_page_id = client.get_page_parent(container_id)
+    if grade_page_id is None:
+        raise PageOutsideRoot(
+            f"page {page_id!r} not under grade {grade} / {language} "
+            f"(container {container_id!r} has no parent page)"
+        )
+    grade_title = client.get_page_title(grade_page_id)
+    if _grade_number_from_title(grade_title) != grade:
+        raise PageOutsideRoot(
+            f"page {page_id!r} not under grade {grade} / {language} "
+            f"(grade page {grade_page_id!r} titled {grade_title!r} is not grade {grade})"
+        )
+
+    # Hop 3: the grade page's parent must be the configured lessons root.
+    root_id = client.get_page_parent(grade_page_id)
+    if root_id != lessons_root:
+        raise PageOutsideRoot(
+            f"page {page_id!r} not under grade {grade} / {language} "
+            f"(grade page's parent {root_id!r} is not the lessons root {lessons_root!r})"
+        )
+
+    # Ambiguity guard: the grade page must have exactly ONE child matching this
+    # language's container pattern. Two same-language containers mean we can't
+    # be sure which one is canonical, even though this page's own parent
+    # happened to resolve to one of them.
+    siblings = client.get_child_pages(grade_page_id)
+    matches = [s for s in siblings if container_re.search(s.get("title", ""))]
+    if len(matches) > 1:
+        ids = ", ".join(s["id"] for s in matches)
+        raise PageOutsideRoot(
+            f"grade {grade} page {grade_page_id!r} has {len(matches)} duplicate "
+            f"{language} containers ({ids}) — ambiguous, fix the Notion tree"
+        )
+
+
 class NoTextbook(Exception):
     """Subject page has no downloadable PDF block (zero candidates at all), OR
     an explicit `block_id` selector wasn't among the page's candidates — either

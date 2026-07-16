@@ -10,6 +10,13 @@ Verifies that:
 
 Bite-proof: if ingest_pdf is hardcoded to source_language="uz", the ru/en kwarg
 assertions will fail — the tests are not vacuous.
+
+BE-19 task 4 note: three tests below that post with an explicit `grade` now
+also patch `notion_fetch.verify_page_ancestry` as a no-op — the route runs the
+new ancestry walk before subject mapping, and this file's mocked
+`NotionClientWrapper` instance carries no parent-chain data, so the walk would
+otherwise TypeError on a bare MagicMock. Adaptation is scoped to adding that
+one patch per affected test; no assertions changed.
 """
 
 import pytest
@@ -41,6 +48,7 @@ def test_from_notion_ru_language_passes_source_language_ru():
                    original_filename="alg_ru.pdf", status="uploading")
     with patch("app.api.v1.books.NotionClientWrapper"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Алгебра"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(b"%PDF-1.4 x", "alg_ru.pdf")), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
@@ -61,6 +69,7 @@ def test_from_notion_ru_language_passes_source_language_ru():
 def test_from_notion_ru_unrecognised_title_returns_422():
     """A title that the Russian mapper doesn't know -> 422 with an actionable message."""
     with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books._notion_subject_title",
                return_value="Несуществующий предмет"):  # not in any ru keyword set
         r = client.post("/api/v1/books/from-notion",
@@ -79,6 +88,7 @@ def test_from_notion_default_language_is_uz():
                    original_filename="alg.pdf", status="uploading")
     with patch("app.api.v1.books.NotionClientWrapper"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(b"%PDF-1.4 x", "alg.pdf")), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:

@@ -7,7 +7,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from notion_client.errors import APIResponseError
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -147,8 +148,14 @@ async def upload_book(
     )
 
 
+# BE-19 task 4: the Uzbek curriculum runs grades 1-11 — an explicit grade
+# outside that range (or a non-numeric string like "banana") is now rejected
+# at the Pydantic layer instead of silently flowing through to ingest_pdf.
+_VALID_GRADES = {str(g) for g in range(1, 12)}
+
+
 class FromNotionRequest(BaseModel):
-    subject_page_id: str
+    subject_page_id: str = Field(min_length=1)
     grade: str | None = None
     language: str = "uz"
     # Explicit textbook-candidate selector (BE-19 task 3). Omitted (None) ->
@@ -156,6 +163,18 @@ class FromNotionRequest(BaseModel):
     # one candidate, and 422s (AmbiguousTextbook) when it doesn't — e.g. a
     # multi-part textbook. The FE learns to send this in task 6.
     block_id: str | None = None
+
+    @field_validator("grade")
+    @classmethod
+    def _validate_grade(cls, v: str | None) -> str | None:
+        # `grade` stays legal when OMITTED (None) — ingest_pdf already derives
+        # it from the filename in that case (pre-existing, unchanged behavior).
+        # Only an EXPLICIT value is validated, so "" and "banana" and "12" (out
+        # of the 1-11 curriculum range) are rejected here instead of silently
+        # ingesting under a bogus/foreign grade.
+        if v is not None and v not in _VALID_GRADES:
+            raise ValueError(f"grade must be one of 1-11, got {v!r}")
+        return v
 
 
 def _notion_subject_title(client: NotionClientWrapper, subject_page_id: str) -> str:
@@ -175,7 +194,24 @@ async def book_from_notion(
     if not settings.notion_api_key:
         raise HTTPException(503, "Notion not configured")
     client = NotionClientWrapper(api_key=settings.notion_api_key)
-    title = await asyncio.to_thread(_notion_subject_title, client, req.subject_page_id)
+    try:
+        title = await asyncio.to_thread(_notion_subject_title, client, req.subject_page_id)
+        # Ancestry is only checkable against an explicit grade (there's no
+        # "requested grade" to validate the chain against otherwise) — grade
+        # omitted keeps its pre-existing legal, filename-derived-default path
+        # untouched (see FromNotionRequest._validate_grade).
+        if req.grade is not None:
+            await asyncio.to_thread(
+                notion_fetch.verify_page_ancestry, client, req.subject_page_id,
+                grade=req.grade, language=req.language,
+                lessons_root=settings.notion_lessons_root,
+            )
+    except notion_fetch.PageOutsideRoot as exc:
+        raise HTTPException(422, str(exc))
+    except APIResponseError as exc:
+        if exc.status == 404:
+            raise HTTPException(404, f"Notion page not found: {req.subject_page_id!r} ({exc})")
+        raise HTTPException(502, f"Notion API error ({exc.status}): {exc}")
     subject = notion_fetch._map_subject_for_language(title, req.language)
     if subject is None:
         raise HTTPException(
