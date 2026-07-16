@@ -22,6 +22,7 @@ class SAKey(Base):
     sha256: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
     label: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    max_concurrent_calls: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
