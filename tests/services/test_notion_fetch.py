@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.notion_fetch import _map_subject, _first_pdf_block, _url_from_block
+from app.services.notion_fetch import _map_subject, _first_pdf_block, _url_from_block, _pdf_rank, _fold
 
 
 def test_map_subject_the_seven():
@@ -59,6 +59,72 @@ def test_first_pdf_block_textbook_beats_workbook_regardless_of_order():
         {"type": "file", "file": {"name": "ish_daftari.pdf", "file": {"url": "u-wb"}}},
     ]
     assert _first_pdf_block(blocks) is blocks[0]
+
+
+def test_pdf_rank_bot_handle_with_darslik_is_not_textbook():
+    # Live bug (gatekeeper-verified): the Telegram bot handle
+    # "@elektron_darslikbot" contains "darslik", so a workbook filename that
+    # merely names its download source via that handle used to be misread as
+    # a textbook (rank 0). The handle must be stripped before marker matching.
+    name = _fold("mashq daftari (@elektron_darslikbot).pdf")
+    assert _pdf_rank(name) == 2
+
+
+def test_pdf_rank_plain_darslik_still_textbook():
+    assert _pdf_rank(_fold("6_sinf_matematika_darslik_2024.pdf")) == 0
+
+
+def test_pdf_rank_plain_workbook_unchanged():
+    assert _pdf_rank(_fold("ish daftari.pdf")) == 2
+
+
+def test_pdf_rank_ru_textbook_marker():
+    assert _pdf_rank(_fold("учебник 5-класс.pdf")) == 0
+
+
+def test_pdf_rank_ru_workbook_marker_full_phrase():
+    assert _pdf_rank(_fold("рабочая тетрадь 5-класс.pdf")) == 2
+
+
+def test_pdf_rank_ru_workbook_marker_bare_tetrad():
+    assert _pdf_rank(_fold("тетрадь.pdf")) == 2
+
+
+def test_pdf_rank_bot_handle_suffixed_textbook_still_textbook():
+    # The handle-strip must not eat the genuine "darslik" marker that precedes
+    # a trailing source handle on an actual textbook filename.
+    name = _fold("8-sinf algebra darslik (@elektron_darslikbot).pdf")
+    assert _pdf_rank(name) == 0
+
+
+def test_first_pdf_block_workbook_bot_handle_not_confused_regardless_of_order():
+    # Exercises the same fold path the production caller uses (_pdf_name ->
+    # _fold -> _pdf_rank), not just direct _pdf_rank calls.
+    workbook_block = {
+        "type": "file",
+        "file": {"name": "mashq daftari (@elektron_darslikbot).pdf", "file": {"url": "u-wb"}},
+    }
+    textbook_block = {
+        "type": "file",
+        "file": {"name": "8-sinf_algebra_darslik.pdf", "file": {"url": "u-tb"}},
+    }
+    assert _first_pdf_block([workbook_block, textbook_block]) is textbook_block
+    assert _first_pdf_block([textbook_block, workbook_block]) is textbook_block
+
+
+def test_first_pdf_block_ru_workbook_vs_textbook_via_fold_path():
+    # Capitalized Cyrillic input confirms _fold's .lower() case-folds Cyrillic
+    # the same way it lower-cases Latin, so the RU markers match post-fold.
+    textbook_block = {
+        "type": "file",
+        "file": {"name": "Учебник 5-класс.pdf", "file": {"url": "u-tb"}},
+    }
+    workbook_block = {
+        "type": "file",
+        "file": {"name": "Рабочая тетрадь 5-класс.pdf", "file": {"url": "u-wb"}},
+    }
+    assert _first_pdf_block([workbook_block, textbook_block]) is textbook_block
+    assert _first_pdf_block([textbook_block, workbook_block]) is textbook_block
 
 
 def test_first_pdf_block_ties_break_by_page_order():

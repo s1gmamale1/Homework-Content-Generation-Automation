@@ -53,8 +53,15 @@ def _map_subject(title: str) -> str | None:
     return _map_subject_for_language(title, "uz")
 
 
-_TEXTBOOK_MARKERS = ("darslik", "textbook")
-_WORKBOOK_MARKERS = ("ish daftari", "ishchi daftar", "workbook", "daftar")
+_TEXTBOOK_MARKERS = ("darslik", "textbook", "учебник")
+_WORKBOOK_MARKERS = ("ish daftari", "ishchi daftar", "workbook", "daftar", "рабочая тетрадь", "тетрадь")
+
+# Bot/source handles (e.g. "(@elektron_darslikbot)") named in a filename to
+# credit the download source. Must be stripped BEFORE marker matching: the
+# handle "@elektron_darslikbot" itself contains "darslik", which used to make
+# any workbook that named it (e.g. "mashq daftari (@elektron_darslikbot).pdf")
+# misrank as a textbook (fetch-2 regression).
+_HANDLE_RE = re.compile(r"\(?@[a-z0-9_]+\)?")
 
 
 def _pdf_name(block: dict) -> str:
@@ -66,11 +73,17 @@ def _pdf_name(block: dict) -> str:
 def _pdf_rank(name: str) -> int:
     """Selection rank for a PDF filename — LOWER is preferred. A `darslik`
     (textbook) beats a neutral PDF beats an `ish daftari` (workbook), so a
-    workbook listed first no longer becomes the batch's 'textbook' (fetch-2)."""
-    if any(m in name for m in _TEXTBOOK_MARKERS):
-        return 0
-    if any(m in name for m in _WORKBOOK_MARKERS):
+    workbook listed first no longer becomes the batch's 'textbook' (fetch-2).
+
+    ``name`` is expected already `_fold`-ed. Bot/source handles are stripped
+    first, and workbook markers are checked BEFORE textbook markers, so a
+    workbook name that happens to retain a residual textbook-marker fragment
+    (e.g. from a bot handle) still ranks as a workbook."""
+    stripped = _HANDLE_RE.sub("", name)
+    if any(m in stripped for m in _WORKBOOK_MARKERS):
         return 2
+    if any(m in stripped for m in _TEXTBOOK_MARKERS):
+        return 0
     return 1
 
 
