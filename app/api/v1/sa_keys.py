@@ -110,6 +110,17 @@ async def patch_sa_key(
     # this request, so this issues a real SELECT rather than returning a
     # stale identity-mapped object left over from before the raw-SQL UPDATE.
     row = await repo.get(session, key_id)
+    # Evict this project's cached resolve_limit entry (review fix, task 6):
+    # without this, GET /sa-keys AND credential_limiter.acquire() would both
+    # keep serving the pre-PATCH limit for up to _LIMIT_CACHE_TTL_SECONDS
+    # (~60s) in THIS process. Scoped eviction — gemini_project_credential is
+    # the one canonical builder for this string (credential_id.py), same as
+    # list_sa_keys above. Other fleet workers hold their own process-local
+    # cache and still lag up to ~60s until it naturally expires — a known,
+    # accepted Task 4 trade-off, not fixed here.
+    credential_limiter.evict_limit_cache(
+        credential_id.gemini_project_credential(row.project_id)
+    )
     return {**_meta(row), "rows_updated": rows_updated}
 
 
@@ -129,8 +140,13 @@ async def download_sa_key(
 
 
 # ---------------------------------------------------------------------------
-# Assignment routes  (literal "/assignments" prefix — declared before any
-# {key_id} wildcard so FastAPI resolves "assignments" as a literal, not a UUID)
+# Assignment routes  (literal "/assignments" prefix). Starlette/FastAPI
+# matches routes by method+path pattern independently, not by declaration
+# order relative to OTHER methods — these GET/PUT/DELETE "/assignments..."
+# literals work fine even though they're declared after the GET/PATCH/DELETE
+# "/{key_id}" routes above, because none of those share a method+path with
+# an "/assignments" route. (Route order only matters between two routes of
+# the SAME method whose paths could both match the same request.)
 # ---------------------------------------------------------------------------
 
 class AssignRequest(BaseModel):

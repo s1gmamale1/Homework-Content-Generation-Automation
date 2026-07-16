@@ -200,6 +200,24 @@ def clear_limit_cache() -> None:
     _LIMIT_CACHE.clear()
 
 
+def evict_limit_cache(credential: str) -> None:
+    """Drop one credential's cached ``resolve_limit`` entry.
+
+    Called by the sa-keys PATCH route (task 6 review fix) right after it
+    commits a ``max_concurrent_calls`` override, so the next `resolve_limit`
+    call for this credential re-reads the DB instead of serving the stale
+    value for up to ``_LIMIT_CACHE_TTL_SECONDS``. Scoped (not a wholesale
+    ``clear_limit_cache``) so an override on one project doesn't cost every
+    other in-flight credential's cache. A no-op if the credential was never
+    cached (`dict.pop` with a default).
+
+    This is per-process: other fleet workers hold their own cache and keep
+    serving the old limit for up to ~60s until it naturally expires (Task 4
+    trade-off — see module docstring's `_LIMIT_CACHE_TTL_SECONDS`).
+    """
+    _LIMIT_CACHE.pop(credential, None)
+
+
 async def resolve_limit(session: AsyncSession, provider: str, credential: str) -> int:
     """Resolve the effective per-credential api concurrency cap.
 

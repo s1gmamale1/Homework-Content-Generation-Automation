@@ -167,11 +167,11 @@ async def test_list_serves_slots_in_use_and_effective_limit(monkeypatch, tmp_pat
             assert row["slots_in_use"] == 2
             assert row["effective_limit"] == 8  # no override -> provider default
 
-            # Setting an override changes the effective_limit too — clear
-            # the ~60s resolve_limit cache, or the read below would return
-            # the stale pre-override value for the rest of the TTL window.
+            # Setting an override changes the effective_limit too. PATCH
+            # itself must evict the ~60s resolve_limit cache (review fix,
+            # task 6) — no manual clear here; if production didn't evict,
+            # this read would return the stale pre-override value.
             await c.patch(f"/api/v1/sa-keys/{kid}", json={"max_concurrent_calls": 3})
-            credential_limiter.clear_limit_cache()
             listed = (await c.get("/api/v1/sa-keys")).json()["keys"]
             row = next(k for k in listed if k["id"] == kid)
             assert row["effective_limit"] == 3
