@@ -11,12 +11,13 @@ Verifies that:
 Bite-proof: if ingest_pdf is hardcoded to source_language="uz", the ru/en kwarg
 assertions will fail — the tests are not vacuous.
 
-BE-19 task 4 note: three tests below that post with an explicit `grade` now
-also patch `notion_fetch.verify_page_ancestry` as a no-op — the route runs the
-new ancestry walk before subject mapping, and this file's mocked
-`NotionClientWrapper` instance carries no parent-chain data, so the walk would
-otherwise TypeError on a bare MagicMock. Adaptation is scoped to adding that
-one patch per affected test; no assertions changed.
+BE-19 task 4 note: tests below that hit the `/from-notion` route (whether or
+not they pass an explicit `grade`) patch `notion_fetch.verify_page_ancestry`
+as a no-op — the route runs the ancestry walk before subject mapping
+UNCONDITIONALLY (BE-19 merge-gate fix 3: grade=None no longer skips it), and
+this file's mocked `NotionClientWrapper` instance carries no parent-chain
+data, so the walk would otherwise TypeError on a bare MagicMock. Adaptation is
+scoped to adding that one patch per affected test; no assertions changed.
 
 BE-19 task 5 additions (bottom of file): the PDF script guard. A live-
 confirmed case has an Uzbek (Latin) PDF attached to the Russian "Математика"
@@ -27,8 +28,10 @@ These tests patch `app.api.v1.books.pdf_lang.detect_pdf_script` directly
 write extractable text without reportlab, which isn't in this env; the pure
 classifier itself is covered against real/faked pypdf readers in
 tests/services/test_pdf_lang.py) to drive the route's block/warn/pass
-branches. `grade` is omitted throughout so the ancestry walk (Task 4) never
-engages — these tests are entirely about the language guard.
+branches. `grade` is omitted throughout (these tests are entirely about the
+language guard, not ancestry) — but the ancestry walk still runs (see the
+task 4 note above), so each one also patches `verify_page_ancestry` as a
+no-op.
 """
 
 import pytest
@@ -246,6 +249,7 @@ def _patch_detect(script: str):
 
 def test_from_notion_ru_language_latin_pdf_blocks_422():
     with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Алгебра"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(_FAKE_PDF_BYTES, "algebra_uz.pdf")), \
@@ -263,6 +267,7 @@ def test_from_notion_ru_language_latin_pdf_blocks_422():
 
 def test_from_notion_uz_language_cyrillic_pdf_blocks_422():
     with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(_FAKE_PDF_BYTES, "algebra_ru.pdf")), \
@@ -285,6 +290,7 @@ def test_from_notion_uz_language_cyrillic_pdf_blocks_422():
 
 def test_from_notion_en_language_cyrillic_pdf_blocks_422():
     with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Biology"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(_FAKE_PDF_BYTES, "biology_ru.pdf")), \
@@ -305,6 +311,7 @@ def test_from_notion_unknown_script_proceeds_with_warning():
                    original_filename="algebra_scan.pdf", status="uploading")
     with patch("app.api.v1.books.NotionClientWrapper"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(_FAKE_PDF_BYTES, "algebra_scan.pdf")), \
          _patch_detect("unknown"), \
@@ -325,6 +332,7 @@ def test_from_notion_matching_script_no_warning():
                    original_filename="algebra.pdf", status="uploading")
     with patch("app.api.v1.books.NotionClientWrapper"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(_FAKE_PDF_BYTES, "algebra.pdf")), \
          _patch_detect("latin"), \
@@ -354,6 +362,7 @@ def test_from_notion_russian_subject_cyrillic_pdf_warns_not_blocks():
                    original_filename="rus_tili.pdf", status="uploading")
     with patch("app.api.v1.books.NotionClientWrapper"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Rus tili"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(_FAKE_PDF_BYTES, "rus_tili.pdf")), \
          _patch_detect("cyrillic"), \
@@ -376,6 +385,7 @@ def test_from_notion_non_russian_subject_cyrillic_pdf_still_blocks_422():
     not a blanket downgrade of the guard."""
     with patch("app.api.v1.books.NotionClientWrapper"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(_FAKE_PDF_BYTES, "algebra_ru.pdf")), \
          _patch_detect("cyrillic"), \
@@ -410,6 +420,7 @@ def test_from_notion_english_subject_under_ru_latin_pdf_warns_not_blocks():
     with patch("app.api.v1.books.NotionClientWrapper"), \
          patch("app.api.v1.books._notion_subject_title",
                return_value="Английский язык"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(_FAKE_PDF_BYTES, "english_g5.pdf")), \
          _patch_detect("latin"), \
@@ -433,6 +444,7 @@ def test_from_notion_ona_tili_under_ru_latin_pdf_warns_not_blocks():
     with patch("app.api.v1.books.NotionClientWrapper"), \
          patch("app.api.v1.books._notion_subject_title",
                return_value="Узб. язык"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(_FAKE_PDF_BYTES, "uzb_yaz.pdf")), \
          _patch_detect("latin"), \
@@ -455,6 +467,7 @@ def test_from_notion_russian_under_ru_latin_pdf_still_blocks_422():
     with patch("app.api.v1.books.NotionClientWrapper"), \
          patch("app.api.v1.books._notion_subject_title",
                return_value="Русский язык"), \
+         patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
                return_value=(_FAKE_PDF_BYTES, "rus_latin.pdf")), \
          _patch_detect("latin"), \

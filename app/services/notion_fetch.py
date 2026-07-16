@@ -328,14 +328,44 @@ class PageOutsideRoot(Exception):
     the route maps it to a 422 naming what failed."""
 
 
-def verify_page_ancestry(client, page_id: str, *, grade: str, language: str,
+def _norm_id(s: str | None) -> str | None:
+    """Normalize a Notion page id for equality comparisons: lowercase, strip
+    hyphens; `None` passes through unchanged.
+
+    Live-confirmed gap: the Notion API returns HYPHENATED UUIDs
+    (`2c199838-1c76-8063-bc43-c84d59c0abf3`) while
+    `settings.notion_lessons_root` is configured UNHYPHENATED
+    (`2c1998381c768063bc43c84d59c0abf3`) — comparing them raw ALWAYS fails
+    live, 422ing every validated prepare. `verify_page_ancestry` applies this
+    to every id-equality check it makes (not only the config-vs-API root
+    check): the other checks in this function are API-id-to-API-id and would
+    already agree without normalizing, but normalizing uniformly here is
+    cheaper to reason about than tracking which comparisons are "safe" raw
+    and which aren't."""
+    if s is None:
+        return None
+    return s.lower().replace("-", "")
+
+
+def verify_page_ancestry(client, page_id: str, *, grade: str | None, language: str,
                           lessons_root: str) -> None:
     """Walk `page_id`'s parent chain (subject page -> language container ->
     grade page -> lessons root, a fixed 3-hop sequence) confirming it
     actually lives under the requested grade/language in `lessons_root`.
     Raises `PageOutsideRoot` naming what failed; returns None (silently) when
     the chain checks out. Pure/mockable — only calls `client.get_page_parent`,
-    `client.get_page_title`, `client.get_child_pages`.
+    `client.get_page_title`, `client.get_child_pages`. All id-equality checks
+    go through `_norm_id` (see its docstring for why).
+
+    `grade=None` is legal (the route's grade-omitted, filename-derived-default
+    path still requires SOME ancestry proof — omitting grade must not be a
+    way to bypass validation entirely). With `grade=None`, hop 2 downgrades
+    from "titled exactly this grade" to a STRUCTURAL check only — the parent
+    must still be SOME grade-titled page (`_grade_number_from_title(...) is
+    not None`) — while hop 1, hop 3, and the duplicate-container guard below
+    are enforced exactly as with an explicit grade. This still blocks a
+    foreign/out-of-root page; it just can't pin the specific grade number
+    when the caller didn't ask for one.
 
     Callers MUST pass the SUBJECT page id here — candidates hosted on a
     child_page are selected via `block_id` (see `download_textbook` /
@@ -362,7 +392,8 @@ def verify_page_ancestry(client, page_id: str, *, grade: str, language: str,
             f"the {language} container pattern)"
         )
 
-    # Hop 2: the container's parent must be the requested grade's page.
+    # Hop 2: the container's parent must be a grade-titled page — and, when
+    # `grade` was given explicitly, THIS grade's page specifically.
     grade_page_id = client.get_page_parent(container_id)
     if grade_page_id is None:
         raise PageOutsideRoot(
@@ -370,7 +401,14 @@ def verify_page_ancestry(client, page_id: str, *, grade: str, language: str,
             f"(container {container_id!r} has no parent page)"
         )
     grade_title = client.get_page_title(grade_page_id)
-    if _grade_number_from_title(grade_title) != grade:
+    grade_number = _grade_number_from_title(grade_title)
+    if grade_number is None:
+        raise PageOutsideRoot(
+            f"page {page_id!r} not under grade {grade} / {language} "
+            f"(grade page {grade_page_id!r} titled {grade_title!r} doesn't look "
+            f"like a grade page)"
+        )
+    if grade is not None and grade_number != grade:
         raise PageOutsideRoot(
             f"page {page_id!r} not under grade {grade} / {language} "
             f"(grade page {grade_page_id!r} titled {grade_title!r} is not grade {grade})"
@@ -378,7 +416,7 @@ def verify_page_ancestry(client, page_id: str, *, grade: str, language: str,
 
     # Hop 3: the grade page's parent must be the configured lessons root.
     root_id = client.get_page_parent(grade_page_id)
-    if root_id != lessons_root:
+    if _norm_id(root_id) != _norm_id(lessons_root):
         raise PageOutsideRoot(
             f"page {page_id!r} not under grade {grade} / {language} "
             f"(grade page's parent {root_id!r} is not the lessons root {lessons_root!r})"

@@ -590,3 +590,94 @@ def test_available_languages_has_textbook_true_when_only_in_child_pages():
     part = uz_entry["parts"][0]
     assert part["page_id"] == "math"
     assert part["candidates"][0]["page_id"] == "cpb1"
+
+
+# ---------------------------------------------------------------------------
+# _norm_id + verify_page_ancestry — id normalization (BE-19 merge-gate fix 1)
+# and the grade-omitted structural-only path (BE-19 merge-gate fix 3).
+#
+# Live-confirmed gap: the Notion API returns HYPHENATED UUIDs
+# (`2c199838-1c76-8063-bc43-c84d59c0abf3`) while `settings.notion_lessons_root`
+# is configured UNHYPHENATED (`2c1998381c768063bc43c84d59c0abf3`) — hop 3's
+# raw `!=` comparison therefore ALWAYS fails live, 422ing every validated
+# prepare. These are unit tests directly against `verify_page_ancestry`
+# (rather than the FastAPI route) so the id-equality logic is pinned in
+# isolation from routing/HTTP concerns.
+# ---------------------------------------------------------------------------
+
+from app.services.notion_fetch import _norm_id, verify_page_ancestry, PageOutsideRoot
+
+_UNHYPHENATED_ROOT = "2c1998381c768063bc43c84d59c0abf3"
+_HYPHENATED_ROOT = "2c199838-1c76-8063-bc43-c84d59c0abf3"
+
+
+def test_norm_id_lowercases_strips_hyphens_and_passes_through_none():
+    assert _norm_id(_HYPHENATED_ROOT) == _UNHYPHENATED_ROOT
+    assert _norm_id(_UNHYPHENATED_ROOT.upper()) == _UNHYPHENATED_ROOT
+    assert _norm_id(None) is None
+
+
+def _ancestry_client(root_id: str):
+    """Minimal fake client for verify_page_ancestry's happy-path shape:
+    alg -> uz_cont ("9 - sinf") -> g9 ("9 Grade") -> root_id."""
+    c = MagicMock()
+    parents = {"alg": "uz_cont", "uz_cont": "g9", "g9": root_id}
+    titles = {"uz_cont": "9 - sinf", "g9": "9 Grade"}
+    c.get_page_parent.side_effect = lambda pid: parents.get(pid)
+    c.get_page_title.side_effect = lambda pid: titles.get(pid, "")
+    c.get_child_pages.side_effect = lambda pid: (
+        [{"id": "uz_cont", "title": "9 - sinf"}] if pid == "g9" else []
+    )
+    return c
+
+
+def test_verify_page_ancestry_hyphenated_client_root_vs_unhyphenated_config_root_passes():
+    # RED today: raw `root_id != lessons_root` fails this exact live shape.
+    client = _ancestry_client(root_id=_HYPHENATED_ROOT)
+    verify_page_ancestry(client, "alg", grade="9", language="uz",
+                         lessons_root=_UNHYPHENATED_ROOT)  # must not raise
+
+
+def test_verify_page_ancestry_unhyphenated_client_root_vs_hyphenated_config_root_passes():
+    # The reverse direction of the same normalization.
+    client = _ancestry_client(root_id=_UNHYPHENATED_ROOT)
+    verify_page_ancestry(client, "alg", grade="9", language="uz",
+                         lessons_root=_HYPHENATED_ROOT)  # must not raise
+
+
+def test_verify_page_ancestry_genuinely_different_root_still_raises():
+    client = _ancestry_client(root_id="some-other-root-entirely")
+    with pytest.raises(PageOutsideRoot):
+        verify_page_ancestry(client, "alg", grade="9", language="uz",
+                             lessons_root=_UNHYPHENATED_ROOT)
+
+
+def test_verify_page_ancestry_grade_none_valid_chain_passes():
+    # BE-19 merge-gate fix 3: grade=None must still walk the chain (not
+    # bypass it) -- a genuinely valid chain still passes.
+    client = _ancestry_client(root_id=_UNHYPHENATED_ROOT)
+    verify_page_ancestry(client, "alg", grade=None, language="uz",
+                         lessons_root=_UNHYPHENATED_ROOT)  # must not raise
+
+
+def test_verify_page_ancestry_grade_none_foreign_root_still_raises():
+    # RED today (pre-fix 3): the route skipped the walk entirely when grade
+    # was omitted, so a foreign/out-of-root page slipped through (201).
+    client = _ancestry_client(root_id="some-foreign-root")
+    with pytest.raises(PageOutsideRoot):
+        verify_page_ancestry(client, "alg", grade=None, language="uz",
+                             lessons_root=_UNHYPHENATED_ROOT)
+
+
+def test_verify_page_ancestry_grade_none_non_grade_parent_still_raises():
+    # grade=None only downgrades the grade-NUMBER equality — hop 2's
+    # structural check (is this even a grade-titled page?) still applies.
+    client = MagicMock()
+    parents = {"alg": "uz_cont", "uz_cont": "not_a_grade_page"}
+    titles = {"uz_cont": "9 - sinf", "not_a_grade_page": "Random Notes"}
+    client.get_page_parent.side_effect = lambda pid: parents.get(pid)
+    client.get_page_title.side_effect = lambda pid: titles.get(pid, "")
+    client.get_child_pages.side_effect = lambda pid: []
+    with pytest.raises(PageOutsideRoot):
+        verify_page_ancestry(client, "alg", grade=None, language="uz",
+                             lessons_root=_UNHYPHENATED_ROOT)

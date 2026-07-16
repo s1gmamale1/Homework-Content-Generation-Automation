@@ -27,6 +27,15 @@ _CYRILLIC_RANGES = ((0x0400, 0x04FF), (0x0500, 0x052F))
 # (a footnote, a stray brand name) shouldn't flip a Latin-script book.
 _CYRILLIC_RATIO_THRESHOLD = 0.3
 
+# Minimum alphabetic-character sample before we trust a script classification
+# at all. A real text-layer page carries hundreds to thousands of letters; a
+# handful (e.g. a single stray Latin letter picked up from a scanned RU book's
+# noisy OCR/text layer) is noise, not signal, and used to be enough to flip a
+# legitimate book to a confident "latin"/"cyrillic" verdict and hard-422 it.
+# Below this floor we report "unknown" instead, which the route treats as a
+# warn-only pass rather than a block.
+_MIN_ALPHA_EVIDENCE = 200
+
 
 def _is_cyrillic_char(ch: str) -> bool:
     cp = ord(ch)
@@ -38,9 +47,11 @@ def detect_pdf_script(pdf_bytes: bytes, sample_pages: int = 5) -> str:
     dominant script.
 
     Returns exactly one of "cyrillic" | "latin" | "unknown":
-    - "unknown": encrypted/corrupt PDFs, or no alphabetic text could be
+    - "unknown": encrypted/corrupt PDFs, no alphabetic text could be
       extracted from any sampled page (e.g. a scanned book with no OCR
-      layer). This function never raises.
+      layer), or fewer than `_MIN_ALPHA_EVIDENCE` alphabetic characters were
+      sampled in total (too little evidence to trust a verdict). This
+      function never raises.
     - "cyrillic": Cyrillic characters are >= 30% of the sampled alphabetic
       characters.
     - "latin": otherwise (alphabetic text was found, but not Cyrillic-heavy).
@@ -69,7 +80,7 @@ def detect_pdf_script(pdf_bytes: bytes, sample_pages: int = 5) -> str:
                 if _is_cyrillic_char(ch):
                     cyrillic_count += 1
 
-    if alpha_count == 0:
+    if alpha_count < _MIN_ALPHA_EVIDENCE:
         return "unknown"
     if cyrillic_count / alpha_count >= _CYRILLIC_RATIO_THRESHOLD:
         return "cyrillic"

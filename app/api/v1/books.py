@@ -224,16 +224,20 @@ async def book_from_notion(
     client = NotionClientWrapper(api_key=settings.notion_api_key)
     try:
         title = await asyncio.to_thread(_notion_subject_title, client, req.subject_page_id)
-        # Ancestry is only checkable against an explicit grade (there's no
-        # "requested grade" to validate the chain against otherwise) — grade
-        # omitted keeps its pre-existing legal, filename-derived-default path
-        # untouched (see FromNotionRequest._validate_grade).
-        if req.grade is not None:
-            await asyncio.to_thread(
-                notion_fetch.verify_page_ancestry, client, req.subject_page_id,
-                grade=req.grade, language=req.language,
-                lessons_root=settings.notion_lessons_root,
-            )
+        # Ancestry runs UNCONDITIONALLY, even when `grade` is omitted — a
+        # direct API caller could otherwise ingest ANY foreign/out-of-root
+        # page just by not passing `grade` (the ancestry walk used to be
+        # skipped entirely in that case, a merge-gate-blocking bypass).
+        # `grade=None` still keeps its pre-existing legal, filename-derived-
+        # default INGEST behavior (see FromNotionRequest._validate_grade) —
+        # only the WALK always runs now; `verify_page_ancestry` downgrades
+        # its grade-number check to structural-only when `grade` is None
+        # (see its docstring).
+        await asyncio.to_thread(
+            notion_fetch.verify_page_ancestry, client, req.subject_page_id,
+            grade=req.grade, language=req.language,
+            lessons_root=settings.notion_lessons_root,
+        )
     except notion_fetch.PageOutsideRoot as exc:
         raise HTTPException(422, str(exc))
     except APIResponseError as exc:

@@ -203,8 +203,13 @@ def test_from_notion_invalid_grade_string_422(bad_grade):
 
 def test_from_notion_grade_none_stays_legal():
     # Explicit values are validated; omitting grade entirely (None) keeps its
-    # pre-existing legal, filename-derived-default behavior (BE-19 task 4 scope
-    # is validating explicit grade strings, not making grade mandatory).
+    # pre-existing legal, filename-derived-default INGEST behavior (BE-19 task
+    # 4 scope is validating explicit grade strings, not making grade
+    # mandatory). BE-19 merge-gate fix 3: the ancestry WALK itself now always
+    # runs (grade=None only downgrades its grade-NUMBER check, structurally —
+    # see verify_page_ancestry) so a direct API caller can't bypass validation
+    # entirely by omitting grade; this test now asserts the walk IS invoked
+    # (with grade=None threaded through), not skipped.
     fake = BookOut(id=uuid4(), subject="math-algebra",
                    original_filename="alg.pdf", status="uploading")
     with patch("app.api.v1.books.NotionClientWrapper"), \
@@ -215,8 +220,8 @@ def test_from_notion_grade_none_stays_legal():
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)):
         r = client.post("/api/v1/books/from-notion", json={"subject_page_id": "alg"})
     assert r.status_code == 201
-    # No grade given -> nothing to check ancestry against; the walk is skipped.
-    ancestry.assert_not_called()
+    ancestry.assert_called_once()
+    assert ancestry.call_args.kwargs.get("grade") is None
 
 
 def test_from_notion_empty_subject_page_id_422():
@@ -469,6 +474,52 @@ def test_from_notion_ancestry_duplicate_containers_422_names_both():
     assert r.status_code == 422
     assert "uz_cont_a" in r.text and "uz_cont_b" in r.text
     dl.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# BE-19 merge-gate fix 3: grade-omitted ancestry bypass. Pre-fix, the route
+# skipped `verify_page_ancestry` entirely whenever `grade` was omitted,
+# letting a direct API caller (no grade in the payload) ingest ANY foreign
+# page. These exercise the REAL `verify_page_ancestry` (not patched) so the
+# whole route-to-function contract is pinned, not just one function's unit
+# behavior.
+# ---------------------------------------------------------------------------
+
+def test_from_notion_grade_none_foreign_root_422():
+    # RED pre-fix: grade omitted -> ancestry walk was skipped -> 201 even
+    # though this chain's root is NOT settings.notion_lessons_root.
+    inst = MagicMock()
+    parents = {"alg": "uz_cont", "uz_cont": "g9", "g9": "some-foreign-root"}
+    titles = {"uz_cont": "9 - sinf", "g9": "9 Grade"}
+    inst.get_page_parent.side_effect = lambda pid: parents.get(pid)
+    inst.get_page_title.side_effect = lambda pid: titles.get(pid, "")
+    inst.get_child_pages.side_effect = lambda pid: (
+        [{"id": "uz_cont", "title": "9 - sinf"}] if pid == "g9" else []
+    )
+    with patch("app.api.v1.books.NotionClientWrapper", return_value=inst), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook") as dl:
+        r = client.post("/api/v1/books/from-notion", json={"subject_page_id": "alg"})
+    assert r.status_code == 422
+    assert "some-foreign-root" in r.text
+    dl.assert_not_called()  # fail fast: no wasted download
+
+
+def test_from_notion_grade_none_valid_chain_201():
+    # grade omitted, but the chain genuinely resolves under the configured
+    # lessons root -> still 201 (grade=None must not become a hard block on
+    # legitimate requests, only a bypass-closer for foreign ones).
+    fake = BookOut(id=uuid4(), subject="math-algebra",
+                   original_filename="alg.pdf", status="uploading")
+    inst = _ancestry_ok_client()
+    with patch("app.api.v1.books.NotionClientWrapper", return_value=inst), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(b"%PDF-1.4 x", "alg.pdf")), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
+        r = client.post("/api/v1/books/from-notion", json={"subject_page_id": "alg"})
+    assert r.status_code == 201
+    ing.assert_awaited_once()
 
 
 def test_from_notion_download_404_page_gone_mid_request():
