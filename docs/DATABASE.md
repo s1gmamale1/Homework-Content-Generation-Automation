@@ -103,6 +103,26 @@ The PDF itself lives **on disk**, not in the DB: `var/books/<book_id>/source.pdf
 (deterministic path; never delete after TOC extraction — every phase re-reads it).
 Relationship: `toc_entries` (cascade delete-orphan, ordered by `order_index`).
 
+**Deletion semantics (`DELETE /books/{id}`, BE-02, worklog 0145):** `books_repo.delete`
+removes, in one transaction, `homework_jobs` for the book (ORM-level `session.delete` so
+`phase_outputs` cascade off the FK), then `batches` for the book (`batches.book_id` has no
+`ondelete` rule — must be deleted explicitly or the book row's own DELETE raises
+`IntegrityError` on `batches_book_id_fkey`, the original audit-reported 500), then the `books`
+row itself (`toc_entries` cascade automatically via FK `ondelete=CASCADE`). `agent_usages`
+is the one deliberate survivor: its `book_id`/`homework_job_id`/`phase_output_id` FKs are all
+`ondelete=SET NULL`, so usage/billing rows outlive the book they were billed against. The route
+guards the delete with a book-scoped **EXCLUSIVE** Postgres advisory lock
+(`pg_advisory_xact_lock(hashtext("book:<id>"))`, taken before the 404 fetch) that contends with
+the **SHARED** form every activation path (`/generate`, job retry, batch launch, batch resume,
+TOC retry) takes before its own guard read — this serializes a delete against any in-flight
+activation of the same book instead of letting them interleave. A 409 also blocks deletion
+outright while the book is still `uploading`/`toc_extracting` (the TOC extractor is reading the
+on-disk PDF) or has any `pending`/`running`/`cancelling` job. On-disk cleanup
+(`shutil.rmtree(storage.book_dir(book_id))`) happens strictly **after** commit, best-effort —
+failures are logged, never surfaced as an error response (the DB rows are already gone by
+then). Deletion of a fully-generated book's `phase_outputs` is irreversible from the DB's
+perspective; a pushed Notion archive (if any) is the only surviving copy of the content.
+
 ### 3.2 `toc_entries` — one row per chapter section (a "lesson")
 
 | Column | Type | Notes |

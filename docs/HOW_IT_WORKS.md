@@ -660,9 +660,34 @@ Key endpoints:
   (clears prior entries first). **Refuses with a 409** if any homework job references the
   book's TOC entries — the clear-before-insert would violate the no-cascade
   `homework_jobs.toc_entry_id` FK, so the endpoint lists the blocking jobs (ids+statuses)
-  and leaves the book untouched; delete the affected sections first, then retry.
+  and leaves the book untouched; delete the affected sections first, then retry. Since BE-02
+  (worklog 0145) this and every other **activation path** (`/generate`, job retry, batch
+  launch, batch resume) take the book-scoped SHARED advisory lock below before their guard
+  read, and re-fetch (after `session.expire()`) rather than trust a pre-lock object.
 - `PATCH/DELETE .../toc/{entry}` — edit/fix a section's title or page range by hand (useful
   when auto-extraction is imperfect).
+- `DELETE /books/{id}` — permanently remove a book: its `homework_jobs` (and their
+  `phase_outputs`, FK-cascade), `batches`, then the book row itself (`toc_entries` FK-cascade
+  off the book). `agent_usages` rows are the deliberate exception — their book/job/phase FKs
+  are `ondelete=SET NULL`, so usage/billing history survives with those FKs nulled; a Notion
+  archive of the content (if one was pushed) is also unaffected and becomes the surviving copy
+  of a fully-generated book's deliverable (deletion of the DB rows is otherwise irreversible —
+  flagged at the BE-02 gate). **Guards, in order** (worklog 0145): (1) an EXCLUSIVE book-scoped
+  Postgres advisory lock (`pg_advisory_xact_lock(hashtext("book:<id>"))`, same key namespace as
+  the SHARED form every activation path takes — see above) is acquired first, before the 404
+  fetch, so this transaction's reads+deletes can never interleave with a concurrent activator's
+  guard-read-then-write; (2) 404 if the book doesn't exist; (3) 409 while `status` is
+  `uploading`/`toc_extracting` ("still being ingested" — the live TOC extractor is still
+  reading the on-disk PDF); (4) 409 while any job for the book is `pending`/`running`/
+  `cancelling` (`jobs_repo.count_active_for_book`) — cancel the batch/job first. The delete
+  itself (jobs → batches → book, transaction-committed) and the guards above run with **no
+  assumption that the book belongs to a batch** — a book generated via bare `/generate` with
+  no batch row is handled identically. **On-disk cleanup happens strictly after commit**:
+  `shutil.rmtree(storage.book_dir(book_id))`, best-effort — a missing dir is a silent no-op, any
+  other failure is logged (`logger.error`) but never turns an already-committed delete into an
+  error response, leaving an orphaned dir with only an ERROR log (accepted; no sweeper). The FE
+  confirm dialog (`web/src/routes/library.tsx`) now states plainly that the PDF and all
+  generated content are permanently removed and this cannot be undone.
 - `POST /books/{book}/sections/{section}/generate` — enqueue a homework job. Has **three
   layers of idempotency** so a double-click or network retry can't create duplicate jobs:
   an `Idempotency-Key` header cache, a natural-key check (reuse the existing active job for
