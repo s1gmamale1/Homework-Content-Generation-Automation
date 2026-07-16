@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Book
+from app.models.base import _utcnow
 
 
 async def lock_book_shared(session: AsyncSession, book_id: UUID) -> None:
@@ -115,6 +116,20 @@ async def set_status(
     # retry path relies on this), and a status that isn't `failed` should never
     # carry a leftover message.
     book.error_message = error_message
+
+
+async def set_toc_ready_at(session: AsyncSession, book_id: UUID) -> None:
+    """Stamp `toc_ready_at=now()` on the extractor success path (toc_extractor.run,
+    final_status == "toc_ready"). Used by the system-aware "Prepare a subject"
+    dialog (task 2) to distinguish an already-extracted book from a stale one.
+
+    NOTE: the /toc/accept promotion path (toc_review -> toc_ready) does NOT call
+    this yet — clearing/stamping across that lifecycle is Task 3's work
+    (prepare-status-redo)."""
+    book = await session.get(Book, book_id)
+    if book is None:
+        return
+    book.toc_ready_at = _utcnow()
 
 
 async def set_toc_validation(

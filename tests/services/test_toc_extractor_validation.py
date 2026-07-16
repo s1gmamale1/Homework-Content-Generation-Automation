@@ -57,6 +57,9 @@ def _patch_common(monkeypatch):
     async def fake_set_toc_validation(session, book_id, verdict, detail):
         toc_validations.append((verdict, detail))
 
+    async def fake_set_toc_ready_at(session, book_id):
+        pass
+
     async def fake_bulk_create(session, book_id, entries):
         bulk_calls.append(list(entries))
         return list(entries)
@@ -76,6 +79,7 @@ def _patch_common(monkeypatch):
     monkeypatch.setattr(toc_extractor, "SessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(toc_extractor.books_repo, "set_status", fake_set_status)
     monkeypatch.setattr(toc_extractor.books_repo, "set_toc_validation", fake_set_toc_validation)
+    monkeypatch.setattr(toc_extractor.books_repo, "set_toc_ready_at", fake_set_toc_ready_at)
     monkeypatch.setattr(toc_extractor.toc_repo, "bulk_create", fake_bulk_create)
     monkeypatch.setattr(toc_extractor.toc_repo, "delete_for_book", fake_delete_for_book)
     monkeypatch.setattr(toc_extractor.events_bus, "publish", fake_publish)

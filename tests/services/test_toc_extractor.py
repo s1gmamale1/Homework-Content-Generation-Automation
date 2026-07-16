@@ -63,9 +63,13 @@ def _patch_common(monkeypatch, launch_defaults=None):
     async def fake_set_toc_validation(session, book_id, verdict, detail):
         pass
 
+    async def fake_set_toc_ready_at(session, book_id):
+        pass
+
     monkeypatch.setattr(toc_extractor, "SessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(toc_extractor.books_repo, "set_status", fake_set_status)
     monkeypatch.setattr(toc_extractor.books_repo, "set_toc_validation", fake_set_toc_validation)
+    monkeypatch.setattr(toc_extractor.books_repo, "set_toc_ready_at", fake_set_toc_ready_at)
     monkeypatch.setattr(toc_extractor.toc_repo, "bulk_create", fake_bulk_create)
     monkeypatch.setattr(toc_extractor.toc_repo, "delete_for_book", fake_delete_for_book)
     monkeypatch.setattr(toc_extractor.events_bus, "publish", fake_publish)
@@ -235,3 +239,68 @@ async def test_reads_provider_model_transport_from_launch_defaults(monkeypatch):
     assert seen.get("transport") == "api", (
         "transport must come from launch_defaults.toc_transport"
     )
+
+
+@pytest.mark.asyncio
+async def test_nonzero_entries_stamps_toc_ready_at(monkeypatch):
+    """The extractor success path (toc_ready, not toc_review) must stamp
+    books.toc_ready_at — the system-aware 'Prepare a subject' dialog (task 2)
+    needs this timestamp to tell an already-ingested book apart from a stale
+    one. Task 3 handles clearing it on /toc/retry; this only covers the STAMP
+    side (worklog 0144 task 1)."""
+    statuses, bulk_calls, events = _patch_common(monkeypatch)
+    stamped_book_ids: list = []
+
+    async def fake_set_toc_ready_at(session, book_id):
+        stamped_book_ids.append(book_id)
+
+    monkeypatch.setattr(toc_extractor.books_repo, "set_toc_ready_at", fake_set_toc_ready_at)
+
+    async def fake_extract_toc(**kw):
+        return SimpleNamespace(entries=[SimpleNamespace(section_title="L1", page_start=None, page_end=None)])
+
+    monkeypatch.setattr(toc_extractor.agent, "extract_toc", fake_extract_toc)
+    monkeypatch.setattr(
+        toc_extractor.TOCEntryOut, "model_validate",
+        classmethod(lambda cls, r: SimpleNamespace(model_dump=lambda mode=None: {})),
+    )
+
+    book_id = uuid4()
+    await toc_extractor.run(book_id, Path("/nonexistent.pdf"), "math-algebra")
+
+    assert stamped_book_ids == [book_id], "toc_ready path must stamp toc_ready_at exactly once"
+
+
+@pytest.mark.asyncio
+async def test_toc_review_path_does_not_stamp_toc_ready_at(monkeypatch):
+    """A mismatch verdict routes to toc_review, not toc_ready — the stamp must
+    NOT fire until the operator (or auto-accept) actually promotes the book."""
+    statuses, bulk_calls, events = _patch_common(monkeypatch)
+    stamped_book_ids: list = []
+
+    async def fake_set_toc_ready_at(session, book_id):
+        stamped_book_ids.append(book_id)
+
+    async def fake_validate_toc(**kw):
+        return toc_extractor.agent.TOCValidationResult(
+            status="mismatch", confidence=None, issues=["boom"], detail="mismatch detail"
+        )
+
+    monkeypatch.setattr(toc_extractor.books_repo, "set_toc_ready_at", fake_set_toc_ready_at)
+    monkeypatch.setattr(toc_extractor.agent, "validate_toc", fake_validate_toc)
+    monkeypatch.setattr(toc_extractor.settings, "toc_validation_enabled", True)
+
+    async def fake_extract_toc(**kw):
+        return SimpleNamespace(entries=[SimpleNamespace(section_title="L1", page_start=None, page_end=None)])
+
+    monkeypatch.setattr(toc_extractor.agent, "extract_toc", fake_extract_toc)
+    monkeypatch.setattr(
+        toc_extractor.TOCEntryOut, "model_validate",
+        classmethod(lambda cls, r: SimpleNamespace(model_dump=lambda mode=None: {})),
+    )
+
+    await toc_extractor.run(uuid4(), Path("/nonexistent.pdf"), "math-algebra")
+
+    names = [s for s, _ in statuses]
+    assert "toc_review" in names
+    assert stamped_book_ids == [], "toc_review path must NOT stamp toc_ready_at"

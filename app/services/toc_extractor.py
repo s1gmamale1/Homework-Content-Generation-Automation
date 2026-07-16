@@ -114,6 +114,8 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
                 else "toc_ready"
             )
             await books_repo.set_status(session, book_id, final_status)
+            if final_status == "toc_ready":
+                await books_repo.set_toc_ready_at(session, book_id)
             if result is not None:
                 await books_repo.set_toc_validation(
                     session, book_id, result.status, result.detail or None
