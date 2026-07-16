@@ -1,5 +1,6 @@
 """api_transport — SDK generation for transport=api. SDK clients are stubbed via
 the _gemini_client/_claude_client factory seams; no network."""
+import logging
 from pathlib import Path
 
 import pytest
@@ -45,7 +46,7 @@ async def test_gemini_success_usage(monkeypatch):
     um = _UM(prompt_token_count=100, candidates_token_count=50, thoughts_token_count=20,
              cached_content_token_count=10, total_token_count=170)
     resp = _GResp([_Part("hello")], _FR("STOP"), um)
-    monkeypatch.setattr(api_transport, "_gemini_client", lambda: _GClient(resp=resp))
+    monkeypatch.setattr(api_transport, "_gemini_client", lambda model: _GClient(resp=resp))
     rc, text, usage, err = await api_transport.generate(
         provider="gemini", model="gemini-2.5-flash", prompt="x", attachments=[])
     assert (rc, text) == (0, "hello")
@@ -58,7 +59,7 @@ async def test_gemini_success_usage(monkeypatch):
 @pytest.mark.asyncio
 async def test_gemini_truncation_is_loud(monkeypatch):
     resp = _GResp([_Part("partial")], _FR("MAX_TOKENS"), None)
-    monkeypatch.setattr(api_transport, "_gemini_client", lambda: _GClient(resp=resp))
+    monkeypatch.setattr(api_transport, "_gemini_client", lambda model: _GClient(resp=resp))
     rc, text, usage, err = await api_transport.generate(
         provider="gemini", model="m", prompt="x", attachments=[])
     assert rc == 1 and text == "" and "truncated" in err
@@ -67,7 +68,7 @@ async def test_gemini_truncation_is_loud(monkeypatch):
 @pytest.mark.asyncio
 async def test_gemini_blocked_empty_is_retryable(monkeypatch):
     resp = _GResp(parts=[], finish=_FR("SAFETY"), um=None)   # no usable text
-    monkeypatch.setattr(api_transport, "_gemini_client", lambda: _GClient(resp=resp))
+    monkeypatch.setattr(api_transport, "_gemini_client", lambda model: _GClient(resp=resp))
     rc, text, usage, err = await api_transport.generate(
         provider="gemini", model="m", prompt="x", attachments=[])
     assert rc == 0 and text == ""                            # -> run_phase empty-body retry
@@ -76,7 +77,7 @@ async def test_gemini_blocked_empty_is_retryable(monkeypatch):
 @pytest.mark.asyncio
 async def test_gemini_sdk_exception_maps_to_rc1(monkeypatch):
     monkeypatch.setattr(api_transport, "_gemini_client",
-                        lambda: _GClient(exc=RuntimeError("permission_denied: nope")))
+                        lambda model: _GClient(exc=RuntimeError("permission_denied: nope")))
     rc, text, usage, err = await api_transport.generate(
         provider="gemini", model="m", prompt="x", attachments=[])
     assert rc == 1 and text == "" and "permission_denied" in err
@@ -86,7 +87,7 @@ async def test_gemini_sdk_exception_maps_to_rc1(monkeypatch):
 @pytest.mark.asyncio
 async def test_gemini_missing_usage_no_crash(monkeypatch):
     resp = _GResp([_Part("hi")], _FR("STOP"), um=None)       # usage_metadata None
-    monkeypatch.setattr(api_transport, "_gemini_client", lambda: _GClient(resp=resp))
+    monkeypatch.setattr(api_transport, "_gemini_client", lambda model: _GClient(resp=resp))
     rc, text, usage, err = await api_transport.generate(
         provider="gemini", model="m", prompt="x", attachments=[])
     assert rc == 0 and usage["total_tokens"] is None
@@ -96,19 +97,83 @@ def test_gemini_client_credentials(monkeypatch):
     import google.genai as genai
     seen = {}
     monkeypatch.setattr(genai, "Client", lambda **kw: seen.update(kw) or "client")
+    monkeypatch.delenv("GEMINI_MODEL_LOCATIONS", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "k")
-    api_transport._gemini_client(); assert seen == {"api_key": "k"}
+    api_transport._gemini_client("m"); assert seen == {"api_key": "k"}
     seen.clear()
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/sa.json")
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "p")
     monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
-    api_transport._gemini_client()
+    api_transport._gemini_client("m")
     assert seen == {"vertexai": True, "project": "p", "location": "global"}
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     with pytest.raises(RuntimeError):
-        api_transport._gemini_client()
+        api_transport._gemini_client("m")
+
+
+# ---- Vertex per-model location router (Task 1) ----
+# Verified live 2026-07-16: gemini-2.5-flash 429s (quota exhausted) on the
+# Vertex `global` endpoint across all pool projects, but serves fine on
+# regional endpoints (us-central1/europe-west4). gemini-3-flash-preview and
+# gemini-3.1-pro-preview are the inverse — global-only, 404 on regional
+# endpoints. These tests pin the router that picks the right endpoint per
+# model, with an env escape hatch for ops without a redeploy.
+
+def test_location_for_default_map(monkeypatch):
+    monkeypatch.delenv("GEMINI_MODEL_LOCATIONS", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+    assert api_transport._location_for("gemini-2.5-flash") == "us-central1"
+    assert api_transport._location_for("gemini-3-flash-preview") == "global"
+
+
+def test_location_for_env_default_applies_only_to_unmapped_models(monkeypatch):
+    monkeypatch.delenv("GEMINI_MODEL_LOCATIONS", raising=False)
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "europe-west4")
+    assert api_transport._location_for("gemini-3-flash-preview") == "europe-west4"
+    assert api_transport._location_for("gemini-2.5-flash") == "us-central1"   # still mapped
+
+
+def test_location_for_env_json_overrides_default_map(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL_LOCATIONS", '{"gemini-2.5-flash":"europe-west4"}')
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+    assert api_transport._location_for("gemini-2.5-flash") == "europe-west4"
+    # merge semantics: an override for one model doesn't blank the default
+    # map for models the env JSON doesn't mention.
+    assert api_transport._location_for("gemini-3-flash-preview") == "global"
+
+
+def test_location_for_malformed_json_falls_back_and_logs(monkeypatch, caplog):
+    monkeypatch.setenv("GEMINI_MODEL_LOCATIONS", "{not valid json")
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+    with caplog.at_level(logging.ERROR):
+        result = api_transport._location_for("gemini-2.5-flash")
+    assert result == "us-central1"        # falls back to the built-in default map
+    assert any("GEMINI_MODEL_LOCATIONS" in r.message for r in caplog.records)
+
+
+def test_gemini_client_vertex_uses_location_router(monkeypatch):
+    import google.genai as genai
+    seen = {}
+    monkeypatch.setattr(genai, "Client", lambda **kw: seen.update(kw) or "client")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/sa.json")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "p")
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL_LOCATIONS", raising=False)
+    api_transport._gemini_client("gemini-2.5-flash")
+    assert seen == {"vertexai": True, "project": "p", "location": "us-central1"}
+
+
+def test_gemini_client_api_key_branch_ignores_location_map(monkeypatch):
+    import google.genai as genai
+    seen = {}
+    monkeypatch.setattr(genai, "Client", lambda **kw: seen.update(kw) or "client")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setenv("GEMINI_MODEL_LOCATIONS", '{"gemini-2.5-flash":"europe-west4"}')
+    api_transport._gemini_client("gemini-2.5-flash")
+    assert seen == {"api_key": "k"}        # no location kw at all — map ignored entirely
 
 
 # ---- claude fakes ----
@@ -209,7 +274,7 @@ async def test_generate_gemini_accepts_attachments(monkeypatch, tmp_path):
     pdf.write_bytes(b"%PDF-1.4 x")
 
     cap = _CapturingClient()
-    monkeypatch.setattr(api_transport, "_gemini_client", lambda: cap)
+    monkeypatch.setattr(api_transport, "_gemini_client", lambda model: cap)
 
     rc, text, _usage, err = await api_transport.generate(
         provider="gemini", model="gemini-2.5-flash", prompt="hi", attachments=[pdf]
@@ -231,7 +296,7 @@ async def test_generate_gemini_accepts_attachments(monkeypatch, tmp_path):
 async def test_generate_gemini_no_attachments_unchanged(monkeypatch):
     """Gemini + no attachments → bare string `contents`, same as before."""
     cap = _CapturingClient()
-    monkeypatch.setattr(api_transport, "_gemini_client", lambda: cap)
+    monkeypatch.setattr(api_transport, "_gemini_client", lambda model: cap)
 
     rc, text, _usage, err = await api_transport.generate(
         provider="gemini", model="gemini-2.5-flash", prompt="hi", attachments=[]
@@ -389,3 +454,30 @@ def test_mime_for_suffix():
     assert _mime_for(Path("x.unknown")) == "application/pdf"   # default
     assert _mime_for(Path("WINDOW.PDF")) == "application/pdf"  # case-insensitive
     assert _mime_for(Path("scan.JPG")) == "image/jpeg"
+
+
+def test_location_for_invalid_entry_values_dropped(monkeypatch, caplog):
+    """Per-entry validation (PR #97 gate): null / empty-string / number / nested-
+    object VALUES (and non-string keys) must be dropped with an error log —
+    never flow into genai.Client(location=...). Valid entries in the SAME JSON
+    still apply (partial acceptance, not all-or-nothing)."""
+    import logging
+    from app.services.api_transport import _location_for
+
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+    monkeypatch.setenv(
+        "GEMINI_MODEL_LOCATIONS",
+        '{"gemini-2.5-flash": null, "gemini-3-flash-preview": "", '
+        '"gemini-2.5-pro": 5, "gemini-3.1-pro-preview": {"nested": 1}, '
+        '"gemini-2.5-flash-lite": "europe-west4"}',
+    )
+    with caplog.at_level(logging.ERROR):
+        # invalid override for 2.5-flash is DROPPED -> built-in default applies
+        assert _location_for("gemini-2.5-flash") == "us-central1"
+        # invalid entries for unmapped models fall through to "global"
+        assert _location_for("gemini-3-flash-preview") == "global"
+        assert _location_for("gemini-2.5-pro") == "global"
+        assert _location_for("gemini-3.1-pro-preview") == "global"
+        # the one VALID entry in the same JSON still applies
+        assert _location_for("gemini-2.5-flash-lite") == "europe-west4"
+    assert any("GEMINI_MODEL_LOCATIONS" in r.message for r in caplog.records)

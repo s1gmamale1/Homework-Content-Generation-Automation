@@ -8,11 +8,15 @@ Spec: docs/superpowers/specs/2026-06-16-sdk-api-transport-design.md
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 from pathlib import Path
 
 from app.config import settings
 from app.services.errors import AuthEnvError
+
+logger = logging.getLogger(__name__)
 
 _EMPTY_USAGE = {
     "prompt_tokens": None,
@@ -57,7 +61,66 @@ def _mime_for(path: Path) -> str:
     return "application/pdf"  # the only current case (window subsets are PDFs)
 
 
-def _gemini_client():
+# Verified live 2026-07-16: gemini-2.5-flash 429s (quota exhausted) on the
+# Vertex `global` endpoint across every pool project, but serves fine on
+# regional endpoints (us-central1/europe-west4). gemini-3-flash-preview and
+# gemini-3.1-pro-preview are the inverse — global-only, 404 on regional
+# endpoints. This is the built-in fallback map; ops can override/extend it
+# per-model via the GEMINI_MODEL_LOCATIONS env var without a redeploy.
+_DEFAULT_MODEL_LOCATIONS = {"gemini-2.5-flash": "us-central1"}
+
+
+def _location_for(model: str) -> str:
+    """Resolve the Vertex location for `model`.
+
+    Precedence: a model key in the env `GEMINI_MODEL_LOCATIONS` (JSON object)
+    -> a model key in the built-in `_DEFAULT_MODEL_LOCATIONS` -> env
+    `GOOGLE_CLOUD_LOCATION` -> `"global"`.
+
+    The env JSON is MERGED over the built-in default map, not swapped in
+    wholesale: an override for one model doesn't blank the default for a
+    model the env JSON doesn't mention. Models absent from both maps fall
+    through to `GOOGLE_CLOUD_LOCATION`/`"global"` as before this router
+    existed. Malformed or non-object JSON in `GEMINI_MODEL_LOCATIONS` logs
+    an error and falls back to the built-in default map only — this never
+    raises, since a bad env value must not take down generation.
+    """
+    overrides: dict = {}
+    raw = os.environ.get("GEMINI_MODEL_LOCATIONS")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            logger.error(
+                "GEMINI_MODEL_LOCATIONS is not valid JSON (%r); "
+                "falling back to built-in defaults", raw,
+            )
+        else:
+            if isinstance(parsed, dict):
+                # Per-entry validation (PR #97 gate): only str->non-empty-str
+                # entries may reach genai.Client(location=...). null/number/
+                # empty/nested values are dropped LOUDLY, and a bad entry does
+                # not discard the valid ones next to it.
+                for k, v in parsed.items():
+                    if isinstance(k, str) and isinstance(v, str) and v.strip():
+                        overrides[k] = v.strip()
+                    else:
+                        logger.error(
+                            "GEMINI_MODEL_LOCATIONS entry %r: %r is not a "
+                            "non-empty string location; entry ignored", k, v,
+                        )
+            else:
+                logger.error(
+                    "GEMINI_MODEL_LOCATIONS must be a JSON object, got %s; "
+                    "falling back to built-in defaults", type(parsed).__name__,
+                )
+    merged = {**_DEFAULT_MODEL_LOCATIONS, **overrides}
+    if model in merged:
+        return merged[model]
+    return os.environ.get("GOOGLE_CLOUD_LOCATION") or "global"
+
+
+def _gemini_client(model: str):
     from google import genai
 
     key = os.environ.get("GEMINI_API_KEY")
@@ -65,7 +128,7 @@ def _gemini_client():
         return genai.Client(api_key=key)
     proj = os.environ.get("GOOGLE_CLOUD_PROJECT")
     if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") and proj:
-        loc = os.environ.get("GOOGLE_CLOUD_LOCATION") or "global"
+        loc = _location_for(model)
         return genai.Client(vertexai=True, project=proj, location=loc)
     raise RuntimeError(
         "gemini api: no GEMINI_API_KEY and no Vertex SA "
@@ -98,7 +161,7 @@ def _gemini_usage(um) -> dict:
 async def _gemini(
     model: str, prompt: str, attachments: "list[Path] | tuple" = ()
 ) -> tuple[int, str, dict, str]:
-    client = _gemini_client()
+    client = _gemini_client(model)
     contents: "str | list" = prompt
     if attachments:
         from google.genai import types  # lazy: only when needed
