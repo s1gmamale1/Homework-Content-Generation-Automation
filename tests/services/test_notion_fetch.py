@@ -186,9 +186,9 @@ def test_list_subjects_sinf_only_with_flags():
             ],
         },
         blocks_by_page={
-            "alg": [{"type": "pdf", "pdf": {"file": {"url": "u"}}}],
-            "geo": [{"type": "file", "file": {"name": "x.pdf", "file": {"url": "u"}}}],
-            "pe": [{"type": "paragraph"}],
+            "alg": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "u"}}}],
+            "geo": [{"id": "b2", "type": "file", "file": {"name": "x.pdf", "file": {"url": "u"}}}],
+            "pe": [{"id": "b3", "type": "paragraph"}],
         },
     )
     subs = nf.list_subjects(c, "g9")
@@ -279,3 +279,168 @@ def test_download_returns_bytes_via_streaming_get(monkeypatch):
     body, filename = download_textbook(c, "sub")
     assert body == b"%PDF-1.4 "
     assert filename == "tb.pdf"
+
+
+# ---------------------------------------------------------------------------
+# textbook_candidates — enumerate every PDF reachable from a page: direct
+# blocks, containers (toggle/column_list/column, depth-bound), and one level
+# of child_page (BE-19 task 2).
+# ---------------------------------------------------------------------------
+
+
+def test_textbook_candidates_two_direct_pdfs_both_found():
+    c = _client({}, blocks_by_page={
+        "page1": [
+            {"id": "b1", "type": "pdf", "pdf": {"file": {"url": "u1"}}},
+            {"id": "b2", "type": "file", "file": {"name": "tb.pdf", "file": {"url": "u2"}}},
+        ],
+    })
+    cands = nf.textbook_candidates(c, "page1")
+    assert len(cands) == 2
+    assert {cd["block_id"] for cd in cands} == {"b1", "b2"}
+    assert all(cd["page_id"] == "page1" for cd in cands)
+    # block order preserved
+    assert [cd["block_id"] for cd in cands] == ["b1", "b2"]
+
+
+def test_textbook_candidates_pdf_inside_toggle_is_found():
+    c = _client({}, blocks_by_page={
+        "page1": [{"id": "tg1", "type": "toggle", "toggle": {}}],
+        "tg1": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "u1"}}}],
+    })
+    cands = nf.textbook_candidates(c, "page1")
+    assert len(cands) == 1
+    assert cands[0]["block_id"] == "b1"
+    # the toggle isn't a page: the candidate's page_id is the PARENT page
+    assert cands[0]["page_id"] == "page1"
+
+
+def test_textbook_candidates_pdf_inside_nested_column_is_found():
+    c = _client({}, blocks_by_page={
+        "page1": [{"id": "cl1", "type": "column_list", "column_list": {}}],
+        "cl1": [{"id": "col1", "type": "column", "column": {}}],
+        "col1": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "u1"}}}],
+    })
+    cands = nf.textbook_candidates(c, "page1")
+    assert len(cands) == 1
+    assert cands[0]["block_id"] == "b1"
+    assert cands[0]["page_id"] == "page1"
+
+
+def test_textbook_candidates_child_pages_carry_child_page_id():
+    c = _client({}, blocks_by_page={
+        "parent": [
+            {"id": "cp1", "type": "child_page", "child_page": {"title": "1-qism"}},
+            {"id": "cp2", "type": "child_page", "child_page": {"title": "2-qism"}},
+        ],
+        "cp1": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "u1"}}}],
+        "cp2": [{"id": "b2", "type": "pdf", "pdf": {"file": {"url": "u2"}}}],
+    })
+    cands = nf.textbook_candidates(c, "parent")
+    assert len(cands) == 2
+    by_block = {cd["block_id"]: cd for cd in cands}
+    assert by_block["b1"]["page_id"] == "cp1"
+    assert by_block["b2"]["page_id"] == "cp2"
+
+
+def test_textbook_candidates_grandchild_pages_not_visited():
+    # child_page descent is bounded to ONE level: a child_page nested inside
+    # another child_page's blocks must NOT be visited (no grandchildren).
+    c = _client({}, blocks_by_page={
+        "parent": [{"id": "cp1", "type": "child_page", "child_page": {"title": "1-qism"}}],
+        "cp1": [{"id": "gcp1", "type": "child_page", "child_page": {"title": "nested"}}],
+        "gcp1": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "u1"}}}],
+    })
+    cands = nf.textbook_candidates(c, "parent")
+    assert cands == []
+
+
+def test_textbook_candidates_rank_attached_per_candidate():
+    c = _client({}, blocks_by_page={
+        "page1": [
+            {"id": "b1", "type": "file", "file": {"name": "ish daftari.pdf", "file": {"url": "u1"}}},
+            {"id": "b2", "type": "file", "file": {"name": "algebra darslik.pdf", "file": {"url": "u2"}}},
+        ],
+    })
+    cands = nf.textbook_candidates(c, "page1")
+    by_block = {cd["block_id"]: cd for cd in cands}
+    assert by_block["b1"]["rank"] == 2  # workbook
+    assert by_block["b2"]["rank"] == 0  # textbook
+
+
+def test_textbook_candidates_url_present_via_url_from_block():
+    c = _client({}, blocks_by_page={
+        "page1": [{"id": "b1", "type": "pdf", "pdf": {"external": {"url": "http://ext/u.pdf"}}}],
+    })
+    cands = nf.textbook_candidates(c, "page1")
+    assert cands[0]["url"] == "http://ext/u.pdf"
+
+
+def test_textbook_candidates_ignores_non_pdf_blocks():
+    c = _client({}, blocks_by_page={
+        "page1": [
+            {"id": "p1", "type": "paragraph"},
+            {"id": "img1", "type": "file", "file": {"name": "cover.png", "file": {"url": "u"}}},
+        ],
+    })
+    assert nf.textbook_candidates(c, "page1") == []
+
+
+def test_textbook_candidates_deeply_nested_containers_beyond_bound_not_found():
+    # ~3 container levels are traversed; a PDF nested a 4th level deep inside
+    # toggles-within-toggles must NOT be found (depth-bound).
+    c = _client({}, blocks_by_page={
+        "page1": [{"id": "t1", "type": "toggle", "toggle": {}}],
+        "t1": [{"id": "t2", "type": "toggle", "toggle": {}}],
+        "t2": [{"id": "t3", "type": "toggle", "toggle": {}}],
+        "t3": [{"id": "t4", "type": "toggle", "toggle": {}}],
+        "t4": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "u1"}}}],
+    })
+    assert nf.textbook_candidates(c, "page1") == []
+
+
+def test_subjects_under_finds_textbook_only_in_child_pages():
+    # G1-UZ Matematika shape: the subject page itself has no direct PDF, but
+    # its two child "qism" pages each hold one. has_textbook must flip True
+    # and the candidates list must carry both.
+    c = _client(
+        children_by_parent={
+            "g1": [{"id": "uz", "title": "1 - sinf"}],
+            "uz": [{"id": "math", "title": "Matematika"}],
+        },
+        blocks_by_page={
+            "math": [
+                {"id": "cpb1", "type": "child_page", "child_page": {"title": "1-qism"}},
+                {"id": "cpb2", "type": "child_page", "child_page": {"title": "2-qism"}},
+            ],
+            "cpb1": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "u1"}}}],
+            "cpb2": [{"id": "b2", "type": "pdf", "pdf": {"file": {"url": "u2"}}}],
+        },
+    )
+    subs = nf.list_subjects(c, "g1")
+    by_title = {s["notion_title"]: s for s in subs}
+    assert by_title["Matematika"]["has_textbook"] is True
+    assert len(by_title["Matematika"]["candidates"]) == 2
+    assert {cd["page_id"] for cd in by_title["Matematika"]["candidates"]} == {"cpb1", "cpb2"}
+
+
+def test_available_languages_has_textbook_true_when_only_in_child_pages():
+    c = _client(
+        children_by_parent={
+            "g1": [{"id": "uz", "title": "1 - sinf"}],
+            "uz": [{"id": "math", "title": "Matematika"}],
+        },
+        blocks_by_page={
+            "math": [
+                {"id": "cpb1", "type": "child_page", "child_page": {"title": "1-qism"}},
+            ],
+            "cpb1": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "u1"}}}],
+        },
+    )
+    result = nf.available_languages(c, "g1")
+    assert "matematika" in result
+    uz_entry = result["matematika"]["uz"]
+    assert uz_entry["has_textbook"] is True
+    part = uz_entry["parts"][0]
+    assert part["page_id"] == "math"
+    assert part["candidates"][0]["page_id"] == "cpb1"

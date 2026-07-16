@@ -114,6 +114,69 @@ def _url_from_block(block: dict) -> str | None:
     return (payload.get("file") or {}).get("url") or (payload.get("external") or {}).get("url")
 
 
+def _is_pdf_block(block: dict) -> bool:
+    """True if `block` is a pdf/file block that resolves to a PDF (same
+    criteria as `_first_pdf_block`): a `pdf` block is inherently a PDF; a
+    `file` block needs a `.pdf` filename (covers/attachments must NOT count)."""
+    if not _url_from_block(block):
+        return False
+    t = block.get("type")
+    if t == "pdf":
+        return True
+    if t == "file":
+        name = (block.get("file", {}).get("name") or "").lower()
+        return name.endswith(".pdf")
+    return False
+
+
+_CONTAINER_BLOCK_TYPES = {"toggle", "column_list", "column"}
+_MAX_CONTAINER_DEPTH = 3  # bounds toggle/column_list/column nesting per page
+
+
+def textbook_candidates(client, page_id: str) -> list[dict]:
+    """Enumerate every textbook PDF reachable from `page_id`: direct blocks,
+    PDFs nested inside containers (`toggle`/`column_list`/`column`, recursed
+    depth-bound at ~3 levels), and PDFs living on `child_page` blocks (scanned
+    the same way, but only ONE child-page level deep — no grandchildren).
+
+    Each candidate: `{page_id, block_id, filename, rank, url}` — `page_id` is
+    the page the block conceptually lives ON (the parent page for direct/
+    container blocks; the CHILD page's own id for child_page-hosted PDFs).
+    Block order is preserved; `rank` mirrors `_pdf_rank` so a caller can prefer
+    a `darslik` over an `ish daftari` across the whole candidate set, not just
+    one page's direct blocks."""
+    return _walk_for_candidates(client, container_id=page_id, page_id=page_id,
+                                 container_depth=0, allow_child_page=True)
+
+
+def _walk_for_candidates(client, container_id: str, page_id: str,
+                          container_depth: int, allow_child_page: bool) -> list[dict]:
+    candidates: list[dict] = []
+    for block in client.get_block_children(container_id):
+        t = block.get("type")
+        if _is_pdf_block(block):
+            payload = block.get(t, {})
+            filename = payload.get("name") or ""
+            candidates.append({
+                "page_id": page_id,
+                "block_id": block["id"],
+                "filename": filename,
+                "rank": _pdf_rank(_fold(filename)),
+                "url": _url_from_block(block),
+            })
+        elif t in _CONTAINER_BLOCK_TYPES and container_depth < _MAX_CONTAINER_DEPTH:
+            candidates.extend(_walk_for_candidates(
+                client, container_id=block["id"], page_id=page_id,
+                container_depth=container_depth + 1, allow_child_page=allow_child_page,
+            ))
+        elif t == "child_page" and allow_child_page:
+            candidates.extend(_walk_for_candidates(
+                client, container_id=block["id"], page_id=block["id"],
+                container_depth=0, allow_child_page=False,
+            ))
+    return candidates
+
+
 _SINF_RE = re.compile(r"-\s*sinf\b", re.IGNORECASE)
 
 _LANG_CONTAINER_RE: dict[str, re.Pattern[str]] = {
@@ -143,12 +206,13 @@ def _subjects_under(client, grade_page_id: str, container_re: re.Pattern[str], l
         return []
     out = []
     for s in client.get_child_pages(container["id"]):
-        blocks = client.get_block_children(s["id"])
+        candidates = textbook_candidates(client, s["id"])
         out.append({
             "notion_title": s["title"].strip(),
             "page_id": s["id"],
             "app_subject": _map_subject_for_language(s["title"], language),
-            "has_textbook": _first_pdf_block(blocks) is not None,
+            "has_textbook": bool(candidates),
+            "candidates": candidates,
         })
     return out
 
@@ -217,6 +281,7 @@ def available_languages(client, grade_page_id: str) -> dict[str, dict[str, dict]
                 "page_id": entry["page_id"],
                 "title": entry["notion_title"],
                 "has_textbook": entry["has_textbook"],
+                "candidates": entry["candidates"],
             })
     return result
 
