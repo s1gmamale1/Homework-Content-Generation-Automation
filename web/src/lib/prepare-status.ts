@@ -66,8 +66,12 @@ const NO_ACTIONS: PrepareActions = {
   useExisting: false, redo: false, review: false, retry: false, proceed: false,
 };
 
+// Matches app/api/v1/books.py's `toc_retry_blocked_by_jobs` 409 `message`
+// field verbatim (worklog 0144 task 6 rider) — an operator sees the exact
+// same wording whether the block surfaces from this synthesized status or
+// from a race-condition 409 returned by the retry call itself.
 function redoBlockedReason(count: number): string {
-  return `${count} job(s) reference this TOC — delete affected sections first`;
+  return `${count} homework job(s) reference this book's sections — delete the affected sections first`;
 }
 
 /** Map an availability-enriched part (post `partForResolution`) to the

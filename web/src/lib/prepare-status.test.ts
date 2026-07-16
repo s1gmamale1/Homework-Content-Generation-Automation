@@ -92,12 +92,14 @@ import { hasMidFlightBook, partPrepareStatus } from "./prepare-status";
   assert.equal(s.panel.redo.enabled, false);
   assert.equal(
     s.panel.redo.disabledReason,
-    "3 job(s) reference this TOC — delete affected sections first",
+    "3 homework job(s) reference this book's sections — delete the affected sections first",
   );
 }
 
-// --- redo-blocked, singular count — same "job(s)" phrasing as the backend's
-// 409 (toc_retry_blocked_by_jobs) so operators see a familiar shape ---
+// --- redo-blocked, singular count — VERBATIM match with the backend's 409
+// (toc_retry_blocked_by_jobs `message` field) so an operator sees the same
+// wording whether it comes from this synthesized status or a race-condition
+// 409 from the retry call itself ---
 {
   const part: LangPart = {
     page_id: "p", title: "A", has_textbook: true,
@@ -106,7 +108,10 @@ import { hasMidFlightBook, partPrepareStatus } from "./prepare-status";
   };
   const s = partPrepareStatus(part);
   if (s.panel.kind !== "prepared") throw new Error("expected prepared panel");
-  assert.equal(s.panel.redo.disabledReason, "1 job(s) reference this TOC — delete affected sections first");
+  assert.equal(
+    s.panel.redo.disabledReason,
+    "1 homework job(s) reference this book's sections — delete the affected sections first",
+  );
 }
 
 // --- preparing: toc_extracting ---

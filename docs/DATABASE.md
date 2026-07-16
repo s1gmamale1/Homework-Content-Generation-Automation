@@ -2,8 +2,8 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Last updated: branch `Nggaev-v2`, head `0046_worker_version_floor`
-> (0046), 2026-07-09. When this doc and the code disagree, the code wins — fix the doc.
+> Last updated: branch `feat/prepare-status-redo`, head `0048_book_notion_sources`
+> (0048), 2026-07-16. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
 
@@ -98,6 +98,7 @@ Seven application tables (plus `alembic_version`). Mixins from `app/models/base.
 | `toc_validation_detail` | Text NULL | migration 0042: human-readable explanation from the vision call (issues list when `mismatch`, confirmation when `verified`, reason when `skipped`). Preserved even after operator accept (audit trail). |
 | `status` | String(32) NOT NULL | lifecycle: `uploading → toc_extracting → toc_ready \| toc_review \| failed`. `toc_review` means the vision validator flagged a mismatch — TOC entries are persisted but generation is blocked until an operator accepts or retries. Note there is **no** `"ready"` status. |
 | `error_message` | Text NULL | set when `failed` |
+| `toc_ready_at` | DateTime(tz) NULL | migration 0048 (worklog 0144): stamped when the book reaches `toc_ready` — by `toc_extractor.run`'s direct-ready success path, or by `POST /toc/accept` promoting a `toc_review` book. Cleared by `POST /toc/retry` (a redo carries no stale "prepared since" timestamp forward). Lets the "Prepare a subject" dialog (`lib/prepare-status.ts`) distinguish an already-prepared book from one that's never been TOC-extracted. |
 
 The PDF itself lives **on disk**, not in the DB: `var/books/<book_id>/source.pdf`
 (deterministic path; never delete after TOC extraction — every phase re-reads it).
@@ -346,6 +347,21 @@ Limit resolution (`credential_limiter.resolve_limit`): a `gemini:{project}` cred
 
 **Fail-open, loudly:** any DB error anywhere in resolve/acquire is caught, logged as `credential limiter: BYPASSED (<err>)` (throttled ≤1/60s so a DB outage doesn't flood the log), and the call proceeds uncapped — availability over enforcement.
 
+### 3.13 `book_notion_sources` — Notion source → book link (migration 0048, worklog 0144)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `book_id` | FK → books **ondelete=CASCADE** NOT NULL | `ix_book_notion_sources_book_id` |
+| `notion_page_id` / `notion_block_id` | Text NOT NULL | normalized (hyphen-strip + lowercase, `notion_sources.normalize_notion_id`) before storage/lookup — the Notion API returns hyphenated UUIDs, a config-driven or manually-entered source may not (PR #96 gate class) |
+| `linked_at` | DateTime(tz) NOT NULL, server_default `now()` | refreshed on every upsert, including a re-point |
+
+**`uq_book_notion_sources_page_block (notion_page_id, notion_block_id)`** — a source resolves to exactly ONE book at a time. `notion_sources.upsert_link` writes through `ON CONFLICT DO UPDATE`, so a re-prepare that SHA-dedupes onto a DIFFERENT existing book RE-POINTS the row (moves it), never inserts a duplicate; `notion_sources.links_for_sources` is the batch-loaded `(page,block) -> book_id` lookup (one query for however many candidates a crawl returns) that backs the availability-enrichment route below.
+
+Written by two paths: `POST /books/from-notion` links the resolved source transactionally in the SAME request that creates/dedupes the book (worklog 0144 task 2); `scripts/backfill_notion_sources.py` is the one-off tool for books that predate this table — it re-crawls the Notion tree, downloads + sha256-hashes each candidate, and matches it against existing `books` rows by `(content_sha256, subject)` (dry-run by default, `--apply` to write, `--grade N` to scope the download cost).
+
+Read by `GET /notion/grades/{id}/available-languages`'s enrichment step (`_enrich_available_languages` in `app/api/v1/notion.py`): every crawled candidate whose `(page_id, block_id)` resolves to a linked book gets `book_id`/`book_status`/`toc_validation`/`toc_total`/`toc_ready_at`/`redo_blocked_by_jobs` merged in, and a part gains a `prepared: true` rollup when exactly one of its candidates is linked (more than one linked candidate on the same part — the "two linked parts" edge case — deliberately leaves the part-level rollup absent rather than guessing; `prepare-two-linked-part-redo-1` tracks a real redo affordance for that case, see WISHLIST).
+
 ---
 
 ## 4. Queue semantics (`app/repositories/jobs.py`)
@@ -502,7 +518,8 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 | 44 | 0044_solver_boss_toggle | `0044_solver_boss_toggle` | adds `launch_defaults.solver_boss_arena_enabled` BOOL NOT NULL server_default true — live /settings toggle for boss-arena answer-key solving (worklog 0126) |
 | 45 | 0045_notion_archived_job | `0045_notion_archived_job` | adds `toc_entries.notion_archived_job_id` UUID NULL (no FK) — producing-job stamp for the Notion archive: auto-replace-own-older-output + `stale` rollup (worklog 0129) |
 | 46 | 0046_worker_version_floor | `0046_worker_version_floor` | adds `budget_state.min_worker_version` Integer NULL + `min_worker_version_stamped_by` String(128) NULL + `min_worker_version_stamped_at` DateTime(tz) NULL — the fleet worker version floor (fleet-worker-version-gate, worklog 0133) |
-| 47 | 0047_credential_slots | `0047_credential_slots` | adds `credential_slots` table (`id` UUID PK, `credential` Text NOT NULL indexed, `pc_id` Text NOT NULL, `acquired_at` timestamptz NOT NULL default now()) + `sa_keys.max_concurrent_calls` Integer NULL CHECK `IS NULL OR >= 1` — the BE-16 fleet-wide per-credential api concurrency limiter (worklog 0142) — **HEAD** |
+| 47 | 0047_credential_slots | `0047_credential_slots` | adds `credential_slots` table (`id` UUID PK, `credential` Text NOT NULL indexed, `pc_id` Text NOT NULL, `acquired_at` timestamptz NOT NULL default now()) + `sa_keys.max_concurrent_calls` Integer NULL CHECK `IS NULL OR >= 1` — the BE-16 fleet-wide per-credential api concurrency limiter (worklog 0142) |
+| 48 | 0048_book_notion_sources | `0048_book_notion_sources` | adds `book_notion_sources` table (`id` UUID PK, `book_id` FK→books ondelete=CASCADE NOT NULL indexed, `notion_page_id`/`notion_block_id` Text NOT NULL UNIQUE pair, `linked_at` timestamptz NOT NULL default now()) + `books.toc_ready_at` DateTime(tz) NULL — the Notion source → book link + prepared-since stamp for the system-aware "Prepare a subject" dialog (worklog 0144) — **HEAD** |
 
 ---
 

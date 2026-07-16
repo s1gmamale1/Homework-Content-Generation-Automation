@@ -666,6 +666,24 @@ Key endpoints:
   fetch-then-lock paths (job retry, batch resume, TOC retry) re-fetch their target after
   `session.expire()` — defeating the ORM identity-map short-circuit — while `/generate` and
   batch launch take the lock BEFORE their first read, so they have no pre-lock object to expire.
+  `toc_extracting`, still under review (`toc_review`), or **already accepted (`toc_ready` — a
+  deliberate redo**, e.g. the source PDF was replaced; worklog 0144 task 3 widened this from
+  the original failed/stuck-only set). Mirrors `POST /jobs/{id}/retry`; there's a **Retry**
+  button on failed/stuck books in the UI, and book.tsx also renders a destructive **Redo TOC
+  extraction** button (behind a `window.confirm`) when the book is steady `toc_ready` (worklog
+  0144 task 6, closing the gap where the only redo path was the Prepare dialog). Re-extraction
+  is idempotent (clears prior entries first) and clears `toc_validation`/`toc_validation_detail`/
+  `toc_ready_at` so a redo never carries a stale audit trail or "prepared since" stamp forward.
+  **Refuses with a structured 409** (`{"error": "toc_retry_blocked_by_jobs", "message", "count",
+  "jobs"}`) if any homework job references the book's TOC entries — the clear-before-insert
+  would violate the no-cascade `homework_jobs.toc_entry_id` FK, so the endpoint lists the
+  blocking jobs (ids+statuses, capped at 20) and leaves the book untouched; delete the affected
+  sections first, then retry. The FE's `prepare-status.ts` synthesizes the same disabled-state
+  wording from `redo_blocked_by_jobs` (the availability enrichment's count) so an operator sees
+  identical phrasing whether the block comes from the dialog or a live 409 race.
+- `POST /books/{id}/toc/accept` — promote a `toc_review` book to `toc_ready`, stamping
+  `toc_ready_at` (worklog 0144 task 3) without re-extracting; `toc_validation`/
+  `toc_validation_detail` are preserved as an audit trail (only `/toc/retry` clears them).
 - `PATCH/DELETE .../toc/{entry}` — edit/fix a section's title or page range by hand (useful
   when auto-extraction is imperfect).
 - `DELETE /books/{id}` — permanently remove a book: its `homework_jobs` (and their
@@ -798,7 +816,16 @@ Key endpoints:
   list `textbook_candidates()` returns, so the Fleet launcher's picker can offer a `block_id`
   choice on either a same-page multi-PDF part or a multi-part subject) used by the Fleet
   launcher's prepare-from-Notion language picker to show UZ/RU/EN chips and disable EN when no
-  Notion page exists.
+  Notion page exists. **System-state enrichment (worklog 0144 task 4):** after the crawl, every
+  candidate whose `(page_id, block_id)` already resolves to a `book_notion_sources` link
+  (batch-loaded — one `links_for_sources` query for the WHOLE response, never per-candidate)
+  gains `book_id`/`book_status`/`toc_validation`/`toc_total`/`toc_ready_at`/
+  `redo_blocked_by_jobs`; a part additionally gains `prepared: true` + the same fields when
+  EXACTLY ONE of its candidates is linked (>1 linked candidate on one part — e.g. two uploads
+  of the same file — leaves the part-level rollup absent rather than guessing which book it
+  now represents; per-candidate detail is the fallback, `prepare-two-linked-part-redo-1` in
+  WISHLIST tracks a real fix). This is what lets the Prepare dialog show
+  PREPARED/PREPARING/NEEDS REVIEW/FAILED instead of always offering a fresh upload/fetch.
 
 **Why SSE and not WebSockets?** Progress is one-directional (server → browser) and SSE is
 simpler. One quirk: the browser's `EventSource` can't send auth headers, so the stream/
@@ -847,6 +874,20 @@ The routes mirror the user journey:
   every ~3.5s (components live in `components/fleet/`; moved off `/fleet` in chunk-3).
 
 `lib/api.ts` is the typed client, `lib/types.ts` mirrors the backend schemas.
+
+**"Prepare a subject" dialog (worklog 0144, tasks 4–6).** Both the Notion-fetch upload flow and
+the Fleet launcher's prepare-from-Notion picker consume the same availability-enrichment fields
+(§9's `available-languages` bullet) through one pure mapper, `lib/prepare-status.ts`'s
+`partPrepareStatus`, and one shared component, `components/notion/prepare-status-panel.tsx`. A
+resolved language part renders one of six chip states — NO TEXTBOOK / TEXTBOOK READY / PREPARED ·
+*N* lessons / PREPARING / NEEDS REVIEW / FAILED — with the matching action set: **Use existing**
+(non-mutating, jumps to the book page), **Redo** (destructive, `window.confirm`-gated, disabled
++ reasoned when `redo_blocked_by_jobs > 0`), **Review** (deep-links to `toc_review`), **Retry**
+(re-runs a `failed` extraction). `hasMidFlightBook` gates the dialog's poll interval — it only
+keeps refetching availability while something linked is still `toc_extracting`/`uploading`. The
+book page (`routes/book.tsx`) carries its own (duplicated, deliberately not extracted — see its
+inline comment) redo affordance for a directly-opened `toc_ready` book, using the identical
+confirm copy as the panel.
 
 > ⚠️ The console now renders each phase's **markdown** (`output_md`) rather than bespoke
 > interactive widgets. Some renderers under `components/` (`memory-sprint`, `reading`,
@@ -946,6 +987,20 @@ docker run -d --name edu-postgres -e POSTGRES_USER=edu -e POSTGRES_PASSWORD=edu 
 
 You also need the CLIs you intend to use installed and logged-in on `PATH`
 (`gemini` at minimum, since extraction depends on it).
+
+**One-off: backfill `book_notion_sources`** (worklog 0144) — books ingested before the
+Notion-source link existed have no `book_notion_sources` row, so the Prepare dialog can't tell
+they're already prepared. `scripts/backfill_notion_sources.py` re-crawls the Notion tree,
+downloads + sha256-hashes each candidate, and matches it against existing books by
+`(content_sha256, subject)`. Dry-run by default (reports would-link/already-linked/no-match/
+ambiguous counts); `--apply` writes; `--grade N` bounds the run (a full-tree dry-run still
+downloads every candidate PDF — hundreds of MB). Refuses to start unless `DATABASE_URL` is set
+explicitly in the environment (never falls back to `.env`):
+
+```powershell
+DATABASE_URL=postgresql+asyncpg://edu:edu@localhost:5433/edu_homework `
+  uv run python -m scripts.backfill_notion_sources --grade 9
+```
 
 ---
 
