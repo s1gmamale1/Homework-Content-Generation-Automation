@@ -23,3 +23,15 @@ def test_credentials_env_paired():
     clear_credentials_env(env)
     assert "GOOGLE_APPLICATION_CREDENTIALS" not in env
     assert "GOOGLE_CLOUD_PROJECT" not in env
+
+
+def test_credentials_env_assignment_wins_over_leftover_gemini_key():
+    """An operator SA-key assignment must WIN over a stale GEMINI_API_KEY
+    left in the env — else `_gemini_client`/`credential_id.credential_for`
+    would keep billing/fingerprinting off the old key instead of the new
+    assignment (BE-16 task 5, codex-review #7 — flagged behavior change)."""
+    env = {"GEMINI_API_KEY": "stale-leftover-key"}
+    set_credentials_env(env, "/abs/active.json", "proj-1")
+    assert "GEMINI_API_KEY" not in env
+    assert env["GOOGLE_APPLICATION_CREDENTIALS"] == "/abs/active.json"
+    assert env["GOOGLE_CLOUD_PROJECT"] == "proj-1"

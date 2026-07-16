@@ -484,6 +484,48 @@ async def _spawn(
         await asyncio.sleep(delay)
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Fleet credential limiter wiring (BE-16 task 5)
+# ─────────────────────────────────────────────────────────────────────
+
+# Throttle window for the "credential limiter: BYPASSED" ERROR log — a DB
+# outage would otherwise flood the log once per api call (review M3/M8).
+_BYPASS_LOG_INTERVAL_S = 60.0
+_last_bypass_log_at: float = float("-inf")  # -inf so the FIRST bypass always logs
+_bypass_count_since_log: int = 0
+
+
+def _log_credential_bypass(exc: Exception) -> None:
+    """Throttled ERROR log (<=1/60s) for a credential-limiter DB failure that
+    forces this call to bypass the fleet-wide slot (proceed unlimited, same
+    as no cap configured). Bypasses that land inside a throttle window still
+    happen silently — the count is folded into the next line that IS
+    logged, so operators can see how bad an outage was without a flood."""
+    global _last_bypass_log_at, _bypass_count_since_log
+    _bypass_count_since_log += 1
+    now = perf_counter()
+    if now - _last_bypass_log_at < _BYPASS_LOG_INTERVAL_S:
+        return
+    logger.error(
+        f"credential limiter: BYPASSED ({exc}) "
+        f"[{_bypass_count_since_log} bypass(es) since last report]"
+    )
+    _last_bypass_log_at = now
+    _bypass_count_since_log = 0
+
+
+async def _release_credential_slot(slot: Any) -> None:
+    """Release a fleet credential slot. Logs (never raises) a DB error —
+    this runs inside a caller's ``finally``, so an error here must NEVER
+    mask the model result, an in-flight provider exception, or a
+    cancellation propagating through the caller (codex-review #5)."""
+    from app.services import credential_limiter
+    try:
+        await credential_limiter.release(slot)
+    except Exception:
+        logger.exception("credential limiter: release failed")
+
+
 async def _spawn_once(
     *,
     provider: Provider,
@@ -509,12 +551,71 @@ async def _spawn_once(
     # _resolve_binary so a pure-API worker needs no CLI on PATH; kept INSIDE
     # _semaphore() so direct-API fan-out is bounded exactly like CLI subprocesses.
     if transport == "api" and provider.name in agent_models.API_PROVIDERS:
-        from app.services import api_transport
-        async with _semaphore():
-            return await api_transport.generate(
-                provider=provider.name, model=model, prompt=prompt,
-                attachments=attachments,
+        from app.services import api_transport, credential_id, credential_limiter
+
+        slot: Any = credential_limiter.BYPASS
+        credential = credential_id.credential_for(provider.name, os.environ)
+        if credential is not None:
+            # Unknown-provider guard (BE-16 task 5, deferred Important from
+            # task 4's review): `resolve_limit`'s provider -> settings-attr
+            # lookup silently falls back to 0 (== bypass) for a provider
+            # name it doesn't recognize. This branch already only runs for
+            # `provider.name in agent_models.API_PROVIDERS` (the `if`
+            # above), and `credential_for` only ever returns non-None for
+            # {gemini, claude, clodex} — assert that exact set here too so
+            # any future drift between API_PROVIDERS and credential_for/
+            # resolve_limit's known providers fails LOUD, never silently.
+            assert provider.name in agent_models.API_PROVIDERS, (
+                f"credential limiter: provider {provider.name!r} must not "
+                "reach resolve_limit outside {gemini, claude, clodex}"
             )
+            try:
+                async with SessionLocal() as session:
+                    limit = await credential_limiter.resolve_limit(
+                        session, provider.name, credential
+                    )
+                slot = await credential_limiter.acquire(
+                    credential, limit,
+                    wait_budget_s=settings.credential_slot_wait_seconds,
+                )
+            except Exception as exc:  # noqa: BLE001 — DB outage degrades, never blocks
+                _log_credential_bypass(exc)
+                slot = credential_limiter.BYPASS
+
+            if slot is None:
+                # Budget exhausted, no slot ever freed up. Shaped exactly
+                # like a provider 429 (`_is_rate_limited` matches "429") so
+                # `_spawn`'s existing backoff/retry loop handles fleet
+                # saturation the same way it handles a real rate limit.
+                return (
+                    1, "", {},
+                    "429 fleet credential slot wait exhausted "
+                    f"(credential={credential}, "
+                    f"budget={settings.credential_slot_wait_seconds}s)",
+                )
+
+        async with _semaphore():
+            try:
+                return await api_transport.generate(
+                    provider=provider.name, model=model, prompt=prompt,
+                    attachments=attachments,
+                )
+            finally:
+                # Shielded release (mirrors worker.py's documented
+                # uncancel/shield craft at the cancel-finalize site): a
+                # SECOND cancellation delivered while we're awaiting the
+                # release must not stop the release itself — it only
+                # detaches us from waiting for it; the orphaned task keeps
+                # running on the live loop (STALE_TTL is the backstop if it
+                # somehow never completes). Nothing is re-raised here — the
+                # original outcome of the `try` (a successful return, an
+                # in-flight provider exception, or the FIRST cancellation)
+                # propagates through this `finally` untouched.
+                release_task = asyncio.create_task(_release_credential_slot(slot))
+                try:
+                    await asyncio.shield(release_task)
+                except asyncio.CancelledError:
+                    pass
 
     binary = _resolve_binary(provider)
 
