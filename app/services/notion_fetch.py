@@ -130,10 +130,9 @@ def _walk_for_candidates(client, container_id: str, page_id: str,
         if _is_pdf_block(block):
             payload = block.get(t, {})
             # `filename` stays RAW (for display/return to the caller); it's
-            # folded ONLY for `_pdf_rank` below (rank matching needs lower-case,
-            # apostrophe-stripped text). Not reusing `_pdf_name` here because that
-            # helper takes a whole block, and this loop already has the payload
-            # unpacked — folding the local `filename` inline avoids a second
+            # folded inline ONLY for `_pdf_rank` below (rank matching needs
+            # lower-cased, apostrophe-stripped text) — the payload is already
+            # unpacked here, so folding the local `filename` avoids a second
             # block.get(block.get("type"), {}) lookup for the same value.
             filename = payload.get("name") or ""
             candidates.append({
@@ -268,7 +267,17 @@ def available_languages(client, grade_page_id: str) -> dict[str, dict[str, dict]
 class NoTextbook(Exception):
     """Subject page has no downloadable PDF block (zero candidates at all), OR
     an explicit `block_id` selector wasn't among the page's candidates — either
-    way there's nothing valid to fetch for the given inputs."""
+    way there's nothing valid to fetch for the given inputs. See `StaleSelector`
+    for the latter, more specific case."""
+
+
+class StaleSelector(NoTextbook):
+    """An explicit `block_id` was given but doesn't match any of this page's
+    textbook candidates — distinct from the true "nothing attached" case
+    (raised as the plain `NoTextbook` base) so a caller (the route) can give an
+    actionable message naming the offending selector instead of the generic
+    empty-page text. A `NoTextbook` subclass so existing `except NoTextbook`
+    callers keep catching it unchanged."""
 
 
 class AmbiguousTextbook(Exception):
@@ -299,9 +308,12 @@ def _select_candidate(candidates: list[dict], block_id: str | None = None) -> di
     - `block_id` given: return the matching candidate exactly, whatever its
       rank (an explicit choice overrides auto-ranking) — this also reaches a
       candidate hosted on a child_page, since `textbook_candidates` already
-      flattened those into the same list. Raises `NoTextbook` when `block_id`
-      isn't among `candidates` (a stale/invalid selector must not silently
-      fall back to auto-selection).
+      flattened those into the same list. Raises `StaleSelector` (a
+      `NoTextbook` subclass) when `block_id` isn't among `candidates` (a
+      stale/invalid selector must not silently fall back to auto-selection);
+      the message names the offending block_id and the candidate count so the
+      route can surface an actionable 422 instead of the generic empty-page
+      text.
     - `block_id` omitted: restrict to the BEST-rank tier (mirrors the old
       `_first_pdf_block` min-rank behavior — rank 0 `darslik` beats rank 1
       neutral beats rank 2 `ish daftari`). Exactly one candidate in that tier
@@ -311,7 +323,10 @@ def _select_candidate(candidates: list[dict], block_id: str | None = None) -> di
     if block_id is not None:
         match = next((c for c in candidates if c["block_id"] == block_id), None)
         if match is None:
-            raise NoTextbook(f"block_id {block_id!r} not among this page's textbook candidates")
+            raise StaleSelector(
+                f"block_id {block_id!r} not found among this page's "
+                f"{len(candidates)} textbook candidates (stale selector?)"
+            )
         return match
     best_rank = min(c["rank"] for c in candidates)
     tier = [c for c in candidates if c["rank"] == best_rank]

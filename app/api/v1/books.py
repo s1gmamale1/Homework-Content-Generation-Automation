@@ -197,14 +197,30 @@ async def book_from_notion(
             f"bounded page windows)",
         )
     except notion_fetch.AmbiguousTextbook as exc:
-        options = "; ".join(
-            f"{c['filename']!r} (block_id={c['block_id']})" for c in exc.candidates
-        )
+        # Structured detail (review fix, task 3) — the FE (Task 6) consumes
+        # this as JSON, not prose: {"error": "ambiguous_textbook", "message":
+        # <short human text>, "candidates": [{"block_id","filename","rank"}, ...]}.
         raise HTTPException(
             422,
-            f"multiple equally-ranked textbook candidates on this subject page — "
-            f"pass `block_id` to pick one: {options}",
+            {
+                "error": "ambiguous_textbook",
+                "message": (
+                    f"{len(exc.candidates)} equally-ranked textbook candidates on "
+                    "this subject page — pass `block_id` to pick one"
+                ),
+                "candidates": [
+                    {"block_id": c["block_id"], "filename": c["filename"], "rank": c["rank"]}
+                    for c in exc.candidates
+                ],
+            },
         )
+    except notion_fetch.StaleSelector as exc:
+        # Distinct from the generic empty-page message below (review fix, task
+        # 2) — names the offending block_id so an operator can tell "your
+        # selector is stale" apart from "this page truly has nothing attached".
+        # Caught BEFORE the plain NoTextbook handler since StaleSelector is a
+        # subclass of it.
+        raise HTTPException(422, str(exc))
     except notion_fetch.NoTextbook:
         raise HTTPException(422, "this subject has no attached textbook")
     return await ingest_pdf(

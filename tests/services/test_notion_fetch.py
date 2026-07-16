@@ -130,9 +130,19 @@ def test_select_candidate_explicit_block_id_returns_exact_match():
 
 
 def test_select_candidate_explicit_block_id_not_among_candidates_raises():
+    # StaleSelector is a NoTextbook subclass (review fix): the message must be
+    # distinct/actionable — name the offending block_id and the candidate
+    # count — so the route can tell a stale selector apart from a truly empty
+    # page instead of emitting the same generic "no textbook" text for both.
     candidates = [_cand("tb", "darslik.pdf", 0)]
     with pytest.raises(nf.NoTextbook):
         _select_candidate(candidates, block_id="does-not-exist")
+    with pytest.raises(nf.StaleSelector) as exc_info:
+        _select_candidate(candidates, block_id="does-not-exist")
+    msg = str(exc_info.value)
+    assert "does-not-exist" in msg
+    assert "1" in msg  # candidate count
+    assert "stale selector" in msg.lower()
 
 
 def test_url_from_block_shapes():
@@ -346,6 +356,9 @@ def test_download_explicit_block_id_not_among_candidates_422s_as_notextbook(monk
     ]})
     with pytest.raises(NoTextbook):
         download_textbook(c, "sub", block_id="does-not-exist")
+    with pytest.raises(nf.StaleSelector) as exc_info:
+        download_textbook(c, "sub", block_id="does-not-exist")
+    assert "does-not-exist" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

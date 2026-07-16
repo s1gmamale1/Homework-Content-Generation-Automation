@@ -103,6 +103,9 @@ def test_from_notion_without_block_id_defaults_to_none():
 
 
 def test_from_notion_ambiguous_textbook_422_lists_candidates():
+    # Structured detail (review fix, task 3): the FE (Task 6) consumes this as
+    # JSON, not prose — {"error": "ambiguous_textbook", "message": ...,
+    # "candidates": [{"block_id", "filename", "rank"}, ...]}.
     candidates = [
         {"page_id": "alg", "block_id": "p1", "filename": "algebra 1-qism.pdf", "rank": 0, "url": "u1"},
         {"page_id": "alg", "block_id": "p2", "filename": "algebra 2-qism.pdf", "rank": 0, "url": "u2"},
@@ -114,5 +117,42 @@ def test_from_notion_ambiguous_textbook_422_lists_candidates():
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "alg", "grade": "9"})
     assert r.status_code == 422
-    assert "algebra 1-qism.pdf" in r.text and "p1" in r.text
-    assert "algebra 2-qism.pdf" in r.text and "p2" in r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "ambiguous_textbook"
+    assert isinstance(detail["message"], str) and detail["message"]
+    got = {(c["block_id"], c["filename"], c["rank"]) for c in detail["candidates"]}
+    assert got == {("p1", "algebra 1-qism.pdf", 0), ("p2", "algebra 2-qism.pdf", 0)}
+
+
+def test_from_notion_stale_block_id_422_names_block_id_distinct_from_empty_page():
+    # Review fix (task 2): a stale/invalid block_id selector must NOT collapse
+    # into the generic "this subject has no attached textbook" text — it must
+    # name the offending block_id so the caller can tell "you picked a selector
+    # that no longer exists" apart from "this page truly has nothing attached".
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               side_effect=nf.StaleSelector(
+                   "block_id 'does-not-exist' not found among this page's 2 "
+                   "textbook candidates (stale selector?)")):
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9",
+                              "block_id": "does-not-exist"})
+    assert r.status_code == 422
+    assert "does-not-exist" in r.text
+    assert "2" in r.text
+    assert "stale selector" in r.text.lower()
+    assert "this subject has no attached textbook" not in r.text
+
+
+def test_from_notion_truly_empty_page_keeps_generic_message():
+    # Control: the plain NoTextbook path (zero candidates at all) must still
+    # get the generic, non-block_id-specific message.
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               side_effect=nf.NoTextbook("alg")):
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9"})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "this subject has no attached textbook"
