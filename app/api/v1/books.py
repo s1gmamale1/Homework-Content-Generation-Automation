@@ -182,6 +182,17 @@ def _notion_subject_title(client: NotionClientWrapper, subject_page_id: str) -> 
     return client.get_page_title(subject_page_id)
 
 
+def _notion_api_error_response(exc: APIResponseError, page_id: str) -> HTTPException:
+    """Map a raw `notion_client` `APIResponseError` to a controlled response —
+    404 when Notion reports the page itself is gone (deleted/unshared), 502 for
+    any other Notion-side error. Shared by every step that talks to Notion in
+    `book_from_notion` (title fetch, ancestry walk, download) so the 404/502
+    mapping can't drift between call sites (review fix, task 4 residual-500)."""
+    if exc.status == 404:
+        return HTTPException(404, f"Notion page not found: {page_id!r} ({exc})")
+    return HTTPException(502, f"Notion API error ({exc.status}): {exc}")
+
+
 @router.post("/from-notion", status_code=201)
 async def book_from_notion(
     req: FromNotionRequest,
@@ -209,9 +220,7 @@ async def book_from_notion(
     except notion_fetch.PageOutsideRoot as exc:
         raise HTTPException(422, str(exc))
     except APIResponseError as exc:
-        if exc.status == 404:
-            raise HTTPException(404, f"Notion page not found: {req.subject_page_id!r} ({exc})")
-        raise HTTPException(502, f"Notion API error ({exc.status}): {exc}")
+        raise _notion_api_error_response(exc, req.subject_page_id)
     subject = notion_fetch._map_subject_for_language(title, req.language)
     if subject is None:
         raise HTTPException(
@@ -259,6 +268,12 @@ async def book_from_notion(
         raise HTTPException(422, str(exc))
     except notion_fetch.NoTextbook:
         raise HTTPException(422, "this subject has no attached textbook")
+    except APIResponseError as exc:
+        # Residual-500 fix (task 4 review): the page can vanish (deleted /
+        # unshared) AFTER ancestry passed but before/during the download call —
+        # without this, that race escaped as a bare 500 instead of the
+        # controlled 404/502 the earlier Notion calls already get.
+        raise _notion_api_error_response(exc, req.subject_page_id)
     return await ingest_pdf(
         session, body=body, subject=subject, grade=req.grade, filename=filename,
         source_language=req.language)

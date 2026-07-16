@@ -1,6 +1,9 @@
 import pytest
 
-from app.services.notion_fetch import _map_subject, _select_candidate, _url_from_block, _pdf_rank, _fold
+from app.services.notion_fetch import (
+    _map_subject, _select_candidate, _url_from_block, _pdf_rank, _fold,
+    _grade_number_from_title,
+)
 
 
 def test_map_subject_the_seven():
@@ -26,6 +29,16 @@ def test_map_subject_messy_and_unsupported():
     assert _map_subject("Jismoniy tarbiya") is None
     # A genuinely non-curriculum title still maps to None.
     assert _map_subject("Sinf rahbari soati") is None
+
+
+def test_grade_number_from_title_int_normalizes_zero_padding():
+    # Review fix (task 4): must int()->str() normalize like the sibling
+    # derive_grade_from_filename (app/services/grade.py) so a zero-padded
+    # "09-sinf" title still matches grade "9", not the literal string "09".
+    assert _grade_number_from_title("09-sinf") == "9"
+    assert _grade_number_from_title("9-sinf") == "9"
+    assert _grade_number_from_title("9 - sinf (yangi)") == "9"
+    assert _grade_number_from_title("not a grade title") is None
 
 
 # ---------------------------------------------------------------------------

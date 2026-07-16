@@ -272,12 +272,13 @@ def available_languages(client, grade_page_id: str) -> dict[str, dict[str, dict]
 # apart. Anchored at the start so trailing text ("9-sinf (yangi)") is fine.
 _GRADE_TITLE_RE = re.compile(r"^\s*(\d{1,2})\s*-\s*sinf\b", re.IGNORECASE)
 
-_MAX_ANCESTRY_HOPS = 4
-
 
 def _grade_number_from_title(title: str) -> str | None:
+    """Extract the grade number from a grade-page title, int-normalized (so a
+    zero-padded "09-sinf" matches grade "9") — same normalization as the
+    sibling `derive_grade_from_filename` (app/services/grade.py)."""
     m = _GRADE_TITLE_RE.match(title or "")
-    return m.group(1) if m else None
+    return str(int(m.group(1))) if m else None
 
 
 class PageOutsideRoot(Exception):
@@ -292,7 +293,7 @@ class PageOutsideRoot(Exception):
 def verify_page_ancestry(client, page_id: str, *, grade: str, language: str,
                           lessons_root: str) -> None:
     """Walk `page_id`'s parent chain (subject page -> language container ->
-    grade page -> lessons root, <= `_MAX_ANCESTRY_HOPS` hops) confirming it
+    grade page -> lessons root, a fixed 3-hop sequence) confirming it
     actually lives under the requested grade/language in `lessons_root`.
     Raises `PageOutsideRoot` naming what failed; returns None (silently) when
     the chain checks out. Pure/mockable — only calls `client.get_page_parent`,

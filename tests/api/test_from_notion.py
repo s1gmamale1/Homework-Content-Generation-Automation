@@ -314,6 +314,54 @@ def test_from_notion_ancestry_wrong_language_container_422():
     dl.assert_not_called()
 
 
+def test_from_notion_ancestry_no_parent_chain_end_422():
+    # Chain-end / no-parent (review fix, task 4): the submitted page's parent
+    # isn't a page at all (a top-level page, or lives in a database) —
+    # `get_page_parent` returns None at hop 1. Must 422 naming exactly that,
+    # not fall through to some other branch or crash.
+    inst = MagicMock()
+    inst.get_page_parent.side_effect = lambda pid: None
+    inst.get_page_title.side_effect = lambda pid: ""
+    inst.get_child_pages.side_effect = lambda pid: []
+    with patch("app.api.v1.books.NotionClientWrapper", return_value=inst), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook") as dl:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9"})
+    assert r.status_code == 422
+    # Message text is specific to the hop-1 no-parent branch — a vacuous pass
+    # (some other 422) can't slip through this assertion.
+    assert "no parent page" in r.text
+    assert "top-level page or lives in a database" in r.text
+    dl.assert_not_called()  # fail fast: no wasted download
+
+
+def test_from_notion_ancestry_root_mismatch_422():
+    # Root-mismatch (review fix, task 4): the chain fully resolves (container
+    # matches, grade matches) but the grade page's parent is NOT
+    # settings.notion_lessons_root — a foreign/detached tree that happens to
+    # look like grade 9 / uz. Must 422 naming the mismatched root.
+    inst = MagicMock()
+    parents = {"alg": "uz_cont", "uz_cont": "g9", "g9": "some-other-root"}
+    titles = {"uz_cont": "9 - sinf", "g9": "9-sinf"}
+    inst.get_page_parent.side_effect = lambda pid: parents.get(pid)
+    inst.get_page_title.side_effect = lambda pid: titles.get(pid, "")
+    inst.get_child_pages.side_effect = lambda pid: (
+        [{"id": "uz_cont", "title": "9 - sinf"}] if pid == "g9" else []
+    )
+    assert "some-other-root" != settings.notion_lessons_root
+    with patch("app.api.v1.books.NotionClientWrapper", return_value=inst), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook") as dl:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9"})
+    assert r.status_code == 422
+    # Message text is specific to the hop-3 root-mismatch branch.
+    assert "some-other-root" in r.text
+    assert "is not the lessons root" in r.text
+    dl.assert_not_called()  # fail fast: no wasted download
+
+
 def test_from_notion_ancestry_duplicate_containers_422_names_both():
     inst = MagicMock()
     parents = {"alg": "uz_cont_a", "uz_cont_a": "g9", "g9": settings.notion_lessons_root}
@@ -334,3 +382,32 @@ def test_from_notion_ancestry_duplicate_containers_422_names_both():
     assert r.status_code == 422
     assert "uz_cont_a" in r.text and "uz_cont_b" in r.text
     dl.assert_not_called()
+
+
+def test_from_notion_download_404_page_gone_mid_request():
+    # Residual-500 fix (review, task 4): the subject page can be deleted or
+    # unshared AFTER ancestry passed but during the download call (a race, not
+    # a chain problem) — this must map to the same controlled 404, not escape
+    # as a bare 500.
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         _no_ancestry(), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               side_effect=_api_error(404, "object_not_found", "Could not find page")):
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9"})
+    assert r.status_code == 404
+    assert "alg" in r.text
+
+
+def test_from_notion_download_other_api_error_502():
+    # Same race, non-404 Notion-side error -> 502, mirroring the existing
+    # title-fetch/ancestry-step mapping.
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         _no_ancestry(), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               side_effect=_api_error(503, "service_unavailable", "Notion is down")):
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9"})
+    assert r.status_code == 502
