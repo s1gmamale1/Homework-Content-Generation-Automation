@@ -19,7 +19,7 @@ def _auth_override():
 
 def test_retry_allows_cancelled():
     jid = uuid4()
-    job = SimpleNamespace(id=jid, status="cancelled")
+    job = SimpleNamespace(id=jid, status="cancelled", book_id=uuid4())
     updated = SimpleNamespace(id=jid, book_id=uuid4(), toc_entry_id=uuid4(), subject="kimyo-g7-11", status="pending")
     out = JobOut(id=updated.id, book_id=updated.book_id, toc_entry_id=updated.toc_entry_id,
                  subject=updated.subject, status=updated.status)
@@ -33,6 +33,7 @@ def test_retry_allows_cancelled():
 
 def test_retry_still_rejects_running():
     jid = uuid4()
-    with patch("app.api.v1.jobs.jobs_repo.get", AsyncMock(return_value=SimpleNamespace(id=jid, status="running"))):
+    with patch("app.api.v1.jobs.jobs_repo.get",
+               AsyncMock(return_value=SimpleNamespace(id=jid, status="running", book_id=uuid4()))):
         r = client.post(f"/api/v1/jobs/{jid}/retry")
     assert r.status_code == 409

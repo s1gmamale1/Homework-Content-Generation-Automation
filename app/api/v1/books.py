@@ -384,6 +384,21 @@ async def retry_toc_extraction(
     book = await books_repo.get(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
+    # Book-scoped SHARED advisory lock (BE-02 task 3) — the book_id IS the
+    # target here, so lock right after the 404 fetch and then RE-FETCH: a
+    # concurrent DELETE holding the EXCLUSIVE form blocks us here until it
+    # commits/rolls back, and the re-fetch below sees current state (never a
+    # stale pre-lock book object).
+    await books_repo.lock_book_shared(session, book_id)
+    # `Session.get()` short-circuits via the identity map — expire the
+    # pre-lock `book` object first so this re-fetch actually re-queries
+    # instead of silently returning the same stale in-memory row (see the
+    # identical comment on jobs.py::retry_job; caught for real by
+    # tests/integration/test_book_delete_race.py).
+    session.expire(book)
+    book = await books_repo.get(session, book_id)
+    if book is None:
+        raise HTTPException(404, "book not found")
     if book.status not in ("failed", "toc_extracting", "toc_review"):
         raise HTTPException(
             409,
@@ -573,6 +588,12 @@ async def delete_book(
     book_id: UUID,
     session: AsyncSession = Depends(get_session),
 ) -> None:
+    # Book-scoped EXCLUSIVE advisory lock (BE-02 task 3) — taken at the very
+    # top, BEFORE the 404 fetch. Blocks (and is blocked by) any of the five
+    # activation paths' SHARED lock, and any other concurrent delete of the
+    # same book, so this transaction's guard reads + deletes can never
+    # interleave with an activator's guard read + write.
+    await books_repo.lock_book_exclusive(session, book_id)
     # Fetch first — a missing book must 404 regardless of status/jobs below,
     # never get masked by the guards that follow (BE-02 task 2).
     book = await books_repo.get(session, book_id)

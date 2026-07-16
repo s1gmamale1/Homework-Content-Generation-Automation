@@ -2,11 +2,57 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Book
+
+
+async def lock_book_shared(session: AsyncSession, book_id: UUID) -> None:
+    """Book-scoped Postgres advisory lock, SHARED form (BE-02 task 3).
+
+    Every path that ACTIVATES work for a book (single-section `/generate`,
+    job retry, batch launch, batch resume, TOC retry) takes this lock at the
+    very top of its transaction, before it (re-)reads the state it's about to
+    act on. Concurrent SHARED holders never block each other — two activators
+    can run in parallel — but a SHARED holder blocks (and is blocked by) the
+    EXCLUSIVE holder (`lock_book_exclusive`, taken by `DELETE /books/{id}`).
+
+    `pg_advisory_xact_lock_shared` is transaction-scoped: it releases
+    automatically on commit/rollback, so the caller MUST take it inside the
+    same transaction that performs (and commits) its write — never take it
+    and then return without committing/rolling back soon after, or it pins
+    the delete path open for the life of the request.
+
+    Mirrors the per-section advisory lock idiom in
+    `app/repositories/jobs.py::lock_section_for_generate` (see also
+    `app/api/v1/jobs.py:115`), scoped to the whole book instead of one
+    (book, section) pair — the section-level lock serializes double-clicks
+    on one lesson; this one serializes activation against deletion of the
+    whole book.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock_shared(hashtext(:key))"),
+        {"key": f"book:{book_id}"},
+    )
+
+
+async def lock_book_exclusive(session: AsyncSession, book_id: UUID) -> None:
+    """Book-scoped Postgres advisory lock, EXCLUSIVE form (BE-02 task 3).
+
+    Taken by `DELETE /books/{id}` at the very top of its transaction, before
+    the 404 fetch. Blocks (and is blocked by) any `lock_book_shared` holder,
+    and blocks any other `lock_book_exclusive` holder — so two concurrent
+    deletes of the same book, or a delete racing any of the five activation
+    paths, always serialize instead of interleaving. Same key namespace as
+    `lock_book_shared` (`f"book:{book_id}"`) so the two forms actually
+    contend with each other; transaction-scoped, released on commit/rollback.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"book:{book_id}"},
+    )
 
 
 async def create(

@@ -137,6 +137,11 @@ async def launch_batch(
     body: BatchLaunchRequest,
     session: AsyncSession = Depends(get_session),
 ):
+    # Book-scoped SHARED advisory lock (BE-02 task 3) — taken right after
+    # pydantic body validation, BEFORE the book fetch below, so that fetch
+    # doubles as the post-lock re-read: a concurrent DELETE holding the
+    # EXCLUSIVE form blocks us here until it commits/rolls back.
+    await books_repo.lock_book_shared(session, body.book_id)
     book = await books_repo.get(session, body.book_id)
     if book is None:
         raise HTTPException(404, "book not found")
@@ -476,6 +481,23 @@ async def cancel_batch(batch_id: UUID, session: AsyncSession = Depends(get_sessi
 @router.post("/jobs/batch/{batch_id}/resume")
 async def resume_batch(batch_id: UUID, session: AsyncSession = Depends(get_session)):
     from app.models.batch import Batch
+    batch = await session.get(Batch, batch_id)
+    if batch is None:
+        raise HTTPException(404, "batch not found")
+    book_id = batch.book_id
+    # Book-scoped SHARED advisory lock (BE-02 task 3) — resume doesn't know
+    # the book_id up front, so it derives it from the just-fetched batch
+    # FIRST, then locks, then RE-FETCHES the batch: a concurrent DELETE
+    # holding the EXCLUSIVE form blocks us here, and the re-fetch below sees
+    # whatever remains once it releases (the batch/its jobs may have
+    # vanished while we waited — never resurrect them).
+    await books_repo.lock_book_shared(session, book_id)
+    # `Session.get()` short-circuits via the identity map — expire the
+    # pre-lock `batch` object first so this re-fetch actually re-queries
+    # instead of silently returning the same stale in-memory row (see the
+    # identical comment on jobs.py::retry_job; caught for real by
+    # tests/integration/test_book_delete_race.py).
+    session.expire(batch)
     batch = await session.get(Batch, batch_id)
     if batch is None:
         raise HTTPException(404, "batch not found")
