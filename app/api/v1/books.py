@@ -289,13 +289,25 @@ async def book_from_notion(
     if detected_script == "unknown":
         warnings = ["language check skipped: no extractable text (scanned PDF?)"]
     elif detected_script != expected_script:
-        raise HTTPException(
-            422,
-            f"language mismatch: '{filename}' looks {detected_script}-script but "
-            f"language={req.language!r} expects {expected_script}-script — pass "
-            f"the correct `language`, or upload the PDF directly if this Notion "
-            f"page has the wrong file attached",
-        )
+        # Review fix (task 5): "Rus tili" (Russian-as-a-language, subject
+        # "russian") legitimately has a Cyrillic-dominant textbook sitting
+        # under the uz container — hard-blocking it would be a false positive
+        # (doctrine: hard gates only for wrongness). Downgrade to an advisory
+        # warning for this subject instead of a 422.
+        if subject == "russian":
+            warnings = [
+                f"language check advisory: 'Rus tili' textbooks are expected "
+                f"to be Cyrillic-heavy; detected {detected_script}-script for "
+                f"language={req.language!r}"
+            ]
+        else:
+            raise HTTPException(
+                422,
+                f"language mismatch: '{filename}' looks {detected_script}-script but "
+                f"language={req.language!r} expects {expected_script}-script — pass "
+                f"the correct `language`, or upload the PDF directly if this Notion "
+                f"page has the wrong file attached",
+            )
 
     out = await ingest_pdf(
         session, body=body, subject=subject, grade=req.grade, filename=filename,

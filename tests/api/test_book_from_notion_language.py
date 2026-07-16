@@ -336,3 +336,53 @@ def test_from_notion_matching_script_no_warning():
     body = r.json()
     assert not body.get("warnings"), \
         f"expected no warnings on a script match, got {body.get('warnings')!r}"
+
+
+# ═══════ BE-19 task 5 review fix: Rus tili subject exemption ═══════════════
+#
+# "Rus tili" (Russian-as-a-language, app subject code "russian") legitimately
+# has a Cyrillic-dominant textbook sitting under the uz Notion container —
+# fetched with language="uz" the naive guard above would hard-422 a CORRECT
+# book. Doctrine: hard gates only for wrongness; blocking a right book is a
+# false positive we must not ship. Fix: when the resolved subject is
+# "russian", downgrade the script guard to warn-only for this request.
+
+def test_from_notion_russian_subject_cyrillic_pdf_warns_not_blocks():
+    """Rus tili page (subject 'russian') under the uz container, Cyrillic PDF,
+    language='uz' -> 201 with an advisory warning, NOT a 422."""
+    fake = BookOut(id=uuid4(), subject="russian",
+                   original_filename="rus_tili.pdf", status="uploading")
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Rus tili"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(_FAKE_PDF_BYTES, "rus_tili.pdf")), \
+         _patch_detect("cyrillic"), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "rus_tili"})
+    assert r.status_code == 201, r.text
+    ing.assert_awaited_once()
+    body = r.json()
+    assert body["warnings"], f"expected an advisory warning, got {body.get('warnings')!r}"
+    assert "rus tili" in body["warnings"][0].lower()
+    assert "cyrillic" in body["warnings"][0].lower()
+
+
+# ─── control: same cyrillic+uz mismatch, NON-russian subject -> still 422 ───
+
+def test_from_notion_non_russian_subject_cyrillic_pdf_still_blocks_422():
+    """Same script mismatch shape as the exemption above, but a non-russian
+    subject ('Algebra') must still hard-422 — the exemption is subject-scoped,
+    not a blanket downgrade of the guard."""
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(_FAKE_PDF_BYTES, "algebra_ru.pdf")), \
+         _patch_detect("cyrillic"), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock()) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg"})
+    assert r.status_code == 422
+    assert "algebra_ru.pdf" in r.text
+    assert "cyrillic" in r.text
+    ing.assert_not_awaited()
