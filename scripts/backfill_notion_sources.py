@@ -56,7 +56,16 @@ import os
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from uuid import UUID
+
+# Make BOTH documented invocations work: `python -m scripts.backfill_notion_sources`
+# (repo root already on sys.path) AND `python scripts/backfill_notion_sources.py`
+# (file-path form puts scripts/ on the path, not the repo root — the deferred
+# `app.*` imports inside main() would raise ModuleNotFoundError without this).
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 # ─── preflights (unit-tested; each failure = one clear line + exit 2) ───
 
