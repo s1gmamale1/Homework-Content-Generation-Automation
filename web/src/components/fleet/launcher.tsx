@@ -167,7 +167,7 @@ export function FleetLauncher({
       // normal path.
       const part = partForResolution(v.subjectPageId, v.language, subjectLangMap);
       const resolution = resolveCandidate(part);
-      if (resolution.status === "none") {
+      if (resolution.status === "none" || !part) {
         return Promise.reject(
           new Error("No textbook file found for this language — upload the PDF directly."),
         );
@@ -176,8 +176,11 @@ export function FleetLauncher({
         if (!selectedCandidate) {
           return Promise.reject(new Error("Pick a file to continue."));
         }
+        // The owning PART's page_id (not the candidate's) must be submitted —
+        // a child-page candidate's own page_id fails backend ancestry
+        // validation (BE-19 final-review critical fix).
         return api.fetchBookFromNotion(
-          selectedCandidate.page_id,
+          part.page_id,
           v.grade,
           v.language !== "uz" ? v.language : undefined,
           selectedCandidate.block_id,

@@ -47,6 +47,11 @@ import { cn } from "@/lib/utils";
 interface CandidatePick {
   subject: NotionSubject;
   language: OutputLanguage;
+  // The OWNING PART's page_id (not any candidate's) — this is what must be
+  // submitted as subject_page_id to /from-notion. A child-page candidate's
+  // own page_id fails backend ancestry validation (its direct parent is the
+  // subject page, not the language container) — BE-19 final-review critical fix.
+  partPageId: string;
   candidates: NotionCandidate[];
   selected: NotionCandidate | null;
 }
@@ -158,12 +163,17 @@ export function UploadPage() {
     // picks one; a single best-tier candidate auto-resolves below.
     const part = partForResolution(s.page_id, language, langMap);
     const resolution = resolveCandidate(part);
-    if (resolution.status === "ambiguous") {
-      setCandidatePick({ subject: s, language, candidates: resolution.candidates, selected: null });
+    if (resolution.status === "none" || !part) {
+      toast.error("No textbook file found for this language — upload the PDF directly.");
       return;
     }
-    if (resolution.status === "none") {
-      toast.error("No textbook file found for this language — upload the PDF directly.");
+    if (resolution.status === "ambiguous") {
+      // The owning PART's page_id (not any candidate's) is what must be
+      // submitted to /from-notion — a child-page candidate's own page_id
+      // fails backend ancestry validation (BE-19 final-review critical fix).
+      // Stash it now so the "Fetch selected" handler below never needs to
+      // re-derive `part` from stale state.
+      setCandidatePick({ subject: s, language, partPageId: part.page_id, candidates: resolution.candidates, selected: null });
       return;
     }
     await runFetch(s, language, resolution.page_id, resolution.block_id);
@@ -560,7 +570,7 @@ export function UploadPage() {
                                           void runFetch(
                                             candidatePick.subject,
                                             candidatePick.language,
-                                            candidatePick.selected.page_id,
+                                            candidatePick.partPageId,
                                             candidatePick.selected.block_id,
                                           )
                                         }

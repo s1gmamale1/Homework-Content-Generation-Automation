@@ -126,15 +126,19 @@ assert.deepEqual(
   { status: "ambiguous", candidates: tiedNeutralTier },
 );
 
-// --- resolveCandidate: child-page candidate resolves to the CHILD page_id + block_id,
-// not the owning part's page_id ---
+// --- resolveCandidate: child-page candidate resolves to the OWNING PART's
+// page_id (not the child page's) + the candidate's block_id. A child page's
+// direct parent is the SUBJECT page, not the language container, so
+// verify_page_ancestry's hop-1 check fails if the child id is ever submitted
+// as subject_page_id — block_id alone selects the file across the flattened
+// candidate list (BE-19 final-review critical fix). ---
 const childPageCandidate: NotionCandidate[] = [
   { page_id: "child-page-99", block_id: "blk-child", filename: "Nested.pdf", rank: 0 },
 ];
 assert.deepEqual(
   resolveCandidate({ page_id: "parent-page-1", title: "Part 1", has_textbook: true, candidates: childPageCandidate }),
-  { status: "resolved", page_id: "child-page-99", block_id: "blk-child" },
-  "a child-page candidate resolves to the CHILD page_id, not the owning part's page_id",
+  { status: "resolved", page_id: "parent-page-1", block_id: "blk-child" },
+  "a child-page candidate resolves to the OWNING PART's page_id, not the child page_id",
 );
 
 // --- resolveCandidate: legacy shape (no candidates key) falls back to the part's own

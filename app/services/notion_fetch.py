@@ -335,7 +335,14 @@ def verify_page_ancestry(client, page_id: str, *, grade: str, language: str,
     actually lives under the requested grade/language in `lessons_root`.
     Raises `PageOutsideRoot` naming what failed; returns None (silently) when
     the chain checks out. Pure/mockable — only calls `client.get_page_parent`,
-    `client.get_page_title`, `client.get_child_pages`."""
+    `client.get_page_title`, `client.get_child_pages`.
+
+    Callers MUST pass the SUBJECT page id here — candidates hosted on a
+    child_page are selected via `block_id` (see `download_textbook` /
+    `_select_candidate`), never by submitting the child page's own id: a
+    child page's direct parent is the subject page, not the language
+    container, so it fails hop 1 by design (which also correctly blocks a
+    foreign/unrelated page from slipping through)."""
     container_re = _LANG_CONTAINER_RE.get(language)
     if container_re is None:
         raise PageOutsideRoot(f"unsupported language {language!r}")

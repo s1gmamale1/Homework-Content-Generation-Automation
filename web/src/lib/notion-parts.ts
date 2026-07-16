@@ -103,8 +103,15 @@ function bestTier(candidates: NotionCandidate[] | undefined): NotionCandidate[] 
  *  - >1 candidate tied in the best tier → `ambiguous`; caller renders a
  *    picker (mirrors the backend's `ambiguous_textbook` 422).
  *  - A candidate's `page_id` may be a CHILD page distinct from the owning
- *    part's `page_id` (nested parts) — resolution always uses the
- *    CANDIDATE's page_id, never the part's.
+ *    part's `page_id` (nested parts) — resolution always returns the OWNING
+ *    PART's `page_id`, never the candidate's. The backend's
+ *    `verify_page_ancestry` requires the submitted page's DIRECT parent to be
+ *    the language container; a child page's parent is the subject page, not
+ *    the container, so submitting the child id fails ancestry (BE-19
+ *    final-review critical fix). `download_textbook` matches candidates by
+ *    `block_id` across the flattened list regardless of which page the PDF
+ *    physically lives on, so the part's page_id + the candidate's block_id is
+ *    always sufficient to fetch a child-hosted file.
  *  - No `candidates` at all (legacy shape, pre-crawl-refresh) → fall back to
  *    the part's own `page_id` with an empty `block_id` so older data still
  *    resolves; `none` if the part has no textbook. */
@@ -118,7 +125,7 @@ export function resolveCandidate(part: LangPart | null | undefined): CandidateRe
   }
   if (tier.length === 1) {
     const c = tier[0];
-    return { status: "resolved", page_id: c.page_id, block_id: c.block_id };
+    return { status: "resolved", page_id: part.page_id, block_id: c.block_id };
   }
   return { status: "ambiguous", candidates: tier };
 }

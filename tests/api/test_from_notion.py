@@ -309,6 +309,65 @@ def test_from_notion_happy_path_legacy_sinf_grade_title_201():
     ing.assert_awaited_once()
 
 
+def test_from_notion_child_page_hosted_pdf_prepares_via_subject_page_id(monkeypatch):
+    # BE-19 final-review critical fix, regression pin: FE part candidates can
+    # carry a CHILD page's id for a child_page-hosted PDF, but
+    # verify_page_ancestry requires the submitted page's DIRECT parent to be
+    # the language container — a child page's parent is the SUBJECT page, not
+    # the container, so submitting the child id 422s at hop 1 (the audit's
+    # headline finding). The fixed contract: the FE always submits the
+    # SUBJECT page id; `block_id` alone selects the file, matched by
+    # `download_textbook` across `textbook_candidates`' flattened list
+    # regardless of which page the PDF physically lives on.
+    #
+    # `download_textbook`/`textbook_candidates` run for REAL here (not
+    # mocked) — only the Notion parent-chain calls and the httpx GET are
+    # stubbed — so this pins the whole contract end-to-end, not just one
+    # function's unit behavior.
+    fake = BookOut(id=uuid4(), subject="math-algebra",
+                   original_filename="alg.pdf", status="uploading")
+    inst = MagicMock()
+    parents = {"alg": "uz_cont", "uz_cont": "g9", "g9": settings.notion_lessons_root}
+    titles = {"uz_cont": "9 - sinf", "g9": "9 Grade"}
+    inst.get_page_parent.side_effect = lambda pid: parents.get(pid)
+    inst.get_page_title.side_effect = lambda pid: titles.get(pid, "")
+    inst.get_child_pages.side_effect = lambda pid: (
+        [{"id": "uz_cont", "title": "9 - sinf"}] if pid == "g9" else []
+    )
+    # The SUBJECT page ("alg") hosts a single child_page part ("cp1"); the
+    # textbook PDF block lives ON that child page, not directly on "alg" —
+    # the real nested-part shape covered by BE-19 task 3's descent tests.
+    blocks_by_page = {
+        "alg": [{"id": "cp1", "type": "child_page", "child_page": {"title": "1-qism"}}],
+        "cp1": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "http://x/childpart.pdf"}}}],
+    }
+    inst.get_block_children.side_effect = lambda pid: blocks_by_page.get(pid, [])
+
+    class _Stream:
+        headers = {"Content-Length": "19"}
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def raise_for_status(self): pass
+        def read(self): return b"%PDF-1.4 childpart"
+
+    class _HTTP:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def stream(self, method, url, follow_redirects=True): return _Stream()
+
+    monkeypatch.setattr("app.services.notion_fetch.httpx.Client", lambda **k: _HTTP())
+
+    with patch("app.api.v1.books.NotionClientWrapper", return_value=inst), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
+        # SUBJECT page id ("alg") + the CHILD-hosted block_id ("b1") — never
+        # the child page id ("cp1"), which would fail ancestry.
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9", "block_id": "b1"})
+    assert r.status_code == 201, r.text
+    ing.assert_awaited_once()
+
+
 def test_from_notion_ancestry_wrong_grade_422():
     # Chain genuinely belongs to grade 9, caller asks for grade 7 -> 422 naming
     # what failed, BEFORE any bytes are downloaded.
