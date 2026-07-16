@@ -167,7 +167,11 @@ def test_gemini_client_vertex_uses_location_router(monkeypatch):
     monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
     monkeypatch.delenv("GEMINI_MODEL_LOCATIONS", raising=False)
     api_transport._gemini_client("gemini-2.5-flash")
-    assert seen == {"vertexai": True, "project": "p", "location": "us-central1"}
+    # per-key asserts: BE-16 adds an http_options timeout kwarg alongside
+    # the router's location — the LOCATION assertions stay strict.
+    assert seen["vertexai"] is True
+    assert seen["project"] == "p"
+    assert seen["location"] == "us-central1"
 
 
 def test_gemini_client_api_key_branch_ignores_location_map(monkeypatch):
@@ -177,7 +181,8 @@ def test_gemini_client_api_key_branch_ignores_location_map(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     monkeypatch.setenv("GEMINI_MODEL_LOCATIONS", '{"gemini-2.5-flash":"europe-west4"}')
     api_transport._gemini_client("gemini-2.5-flash")
-    assert seen == {"api_key": "k"}        # no location kw at all — map ignored entirely
+    assert seen["api_key"] == "k"
+    assert "location" not in seen          # no location kw at all — map ignored entirely
 
 
 def test_gemini_client_timeout_kwarg(monkeypatch):
@@ -191,7 +196,7 @@ def test_gemini_client_timeout_kwarg(monkeypatch):
     seen = {}
     monkeypatch.setattr(genai, "Client", lambda **kw: seen.update(kw) or "client")
     monkeypatch.setenv("GEMINI_API_KEY", "k")
-    api_transport._gemini_client()
+    api_transport._gemini_client("gemini-2.5-flash")
     http_options = seen["http_options"]
     assert isinstance(http_options, types.HttpOptions)
     assert http_options.timeout == settings.per_attempt_timeout_seconds * 1000
