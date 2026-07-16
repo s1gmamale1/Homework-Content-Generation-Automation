@@ -22,7 +22,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import BookOut, TOCEntryOut
-from app.services import events_bus, notion_fetch, pdf_lang, storage, toc_extractor
+from app.services import events_bus, notion_fetch, pdf_lang, storage, subjects, toc_extractor
 from app.services.agent_models import validate_output_language
 from app.services.flows import SUPPORTED_SUBJECTS
 from app.services.grade import derive_grade_from_filename
@@ -193,6 +193,23 @@ def _notion_api_error_response(exc: APIResponseError, page_id: str) -> HTTPExcep
     return HTTPException(502, f"Notion API error ({exc.status}): {exc}")
 
 
+# Foreign-language subjects whose textbook's dominant script is fixed by the
+# SUBJECT itself (the language it teaches), independent of which language
+# container it's fetched under — the script guard downgrades to warn-only when
+# a mismatch is consistent with this content script (BE-19 task 5 review
+# fixes 1+2). All entries are `family="languages"` in subjects.REGISTRY (a
+# test enforces this). Deliberately NOT in the map: `adabiyot`,
+# `oqish-savodxonligi`, `alifbe` — literacy subjects taught in the medium of
+# instruction, so their content script follows the container (uz edition =
+# Latin, ru edition "Литература"/"Чтение"/"Букварь" = Cyrillic) and never
+# legitimately diverges from the container expectation.
+_LANGUAGE_SUBJECT_CONTENT_SCRIPT: dict[str, str] = {
+    "russian": "cyrillic",   # Rus tili — teaches Russian, Cyrillic content
+    "english": "latin",      # English — Latin content even under the ru container
+    "ona-tili": "latin",     # Uzbek taught in RU-medium schools ("Узб. яз")
+}
+
+
 @router.post("/from-notion", status_code=201)
 async def book_from_notion(
     req: FromNotionRequest,
@@ -289,16 +306,22 @@ async def book_from_notion(
     if detected_script == "unknown":
         warnings = ["language check skipped: no extractable text (scanned PDF?)"]
     elif detected_script != expected_script:
-        # Review fix (task 5): "Rus tili" (Russian-as-a-language, subject
-        # "russian") legitimately has a Cyrillic-dominant textbook sitting
-        # under the uz container — hard-blocking it would be a false positive
-        # (doctrine: hard gates only for wrongness). Downgrade to an advisory
-        # warning for this subject instead of a 422.
-        if subject == "russian":
+        # Review fixes (task 5, both directions): a foreign-language subject's
+        # textbook is dominated by the language it TEACHES, not by the
+        # container it was fetched under — "Rus tili" under the uz container
+        # is legitimately Cyrillic-heavy; "Английский язык" / "Узб. яз" under
+        # the ru container are legitimately Latin-heavy. Hard-blocking those
+        # is a false positive (doctrine: hard gates only for wrongness), so a
+        # mismatch CONSISTENT with the subject's own content script (see
+        # _LANGUAGE_SUBJECT_CONTENT_SCRIPT) downgrades to an advisory; any
+        # other mismatch — including one that also contradicts the subject's
+        # content script — stays a hard 422.
+        if _LANGUAGE_SUBJECT_CONTENT_SCRIPT.get(subject) == detected_script:
+            label = subjects.REGISTRY[subject].label
             warnings = [
-                f"language check advisory: 'Rus tili' textbooks are expected "
-                f"to be Cyrillic-heavy; detected {detected_script}-script for "
-                f"language={req.language!r}"
+                f"language check advisory: '{label}' textbooks are expected "
+                f"to be {detected_script}-heavy; detected {detected_script}-"
+                f"script for language={req.language!r}"
             ]
         else:
             raise HTTPException(

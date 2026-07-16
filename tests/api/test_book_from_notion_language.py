@@ -368,10 +368,10 @@ def test_from_notion_russian_subject_cyrillic_pdf_warns_not_blocks():
     assert "cyrillic" in body["warnings"][0].lower()
 
 
-# ─── control: same cyrillic+uz mismatch, NON-russian subject -> still 422 ───
+# ─── control: same cyrillic+uz mismatch, NON-language subject -> still 422 ──
 
 def test_from_notion_non_russian_subject_cyrillic_pdf_still_blocks_422():
-    """Same script mismatch shape as the exemption above, but a non-russian
+    """Same script mismatch shape as the exemption above, but a non-language
     subject ('Algebra') must still hard-422 — the exemption is subject-scoped,
     not a blanket downgrade of the guard."""
     with patch("app.api.v1.books.NotionClientWrapper"), \
@@ -386,3 +386,99 @@ def test_from_notion_non_russian_subject_cyrillic_pdf_still_blocks_422():
     assert "algebra_ru.pdf" in r.text
     assert "cyrillic" in r.text
     ing.assert_not_awaited()
+
+
+# ═══════ BE-19 task 5 review fix 2: generalize to all foreign-language ═══════
+# subjects, BOTH directions.
+#
+# The mirror-direction class: `english` (ru keyword "нгл") and `ona-tili`
+# (ru keyword "узб. яз") are Latin-content language subjects fetchable under
+# the RU container with language="ru" -> expected cyrillic -> the guard would
+# hard-422 legitimate Latin-dominant books. The exemption predicate is now:
+# the resolved subject teaches a specific language, so its textbook's dominant
+# script is fixed by the SUBJECT (russian->cyrillic, english/ona-tili->latin),
+# not by the container it was fetched under. A mismatch consistent with the
+# subject's own content script downgrades to an advisory; anything else
+# (including a mismatch that ALSO contradicts the subject's content script,
+# e.g. a Latin PDF on a Rus-tili page under the ru container) stays a hard 422.
+
+def test_from_notion_english_subject_under_ru_latin_pdf_warns_not_blocks():
+    """'Английский язык' page under the ru container (subject 'english'),
+    Latin-detected PDF, language='ru' -> 201 with advisory, NOT 422."""
+    fake = BookOut(id=uuid4(), subject="english",
+                   original_filename="english_g5.pdf", status="uploading")
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title",
+               return_value="Английский язык"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(_FAKE_PDF_BYTES, "english_g5.pdf")), \
+         _patch_detect("latin"), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "en_ru", "language": "ru"})
+    assert r.status_code == 201, r.text
+    ing.assert_awaited_once()
+    body = r.json()
+    assert body["warnings"], f"expected an advisory warning, got {body.get('warnings')!r}"
+    assert "english" in body["warnings"][0].lower()
+    assert "latin" in body["warnings"][0].lower()
+
+
+def test_from_notion_ona_tili_under_ru_latin_pdf_warns_not_blocks():
+    """'Узб. язык' page under the ru container (subject 'ona-tili' — Uzbek
+    taught in RU-medium schools), Latin-detected PDF, language='ru' -> 201
+    with advisory, NOT 422."""
+    fake = BookOut(id=uuid4(), subject="ona-tili",
+                   original_filename="uzb_yaz.pdf", status="uploading")
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title",
+               return_value="Узб. язык"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(_FAKE_PDF_BYTES, "uzb_yaz.pdf")), \
+         _patch_detect("latin"), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "onatili_ru", "language": "ru"})
+    assert r.status_code == 201, r.text
+    ing.assert_awaited_once()
+    body = r.json()
+    assert body["warnings"], f"expected an advisory warning, got {body.get('warnings')!r}"
+    assert "ona tili" in body["warnings"][0].lower()
+    assert "latin" in body["warnings"][0].lower()
+
+
+def test_from_notion_russian_under_ru_latin_pdf_still_blocks_422():
+    """Tightening vs review-fix-1: a LATIN pdf on a Russian-subject page under
+    the ru container contradicts BOTH the container expectation (cyrillic) and
+    the subject's own content script (cyrillic) — that's a wrong book, still
+    a hard 422 (fix 1's bare `subject == "russian"` check would have warned)."""
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title",
+               return_value="Русский язык"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(_FAKE_PDF_BYTES, "rus_latin.pdf")), \
+         _patch_detect("latin"), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock()) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "ru_rus", "language": "ru"})
+    assert r.status_code == 422
+    assert "rus_latin.pdf" in r.text
+    assert "latin" in r.text
+    ing.assert_not_awaited()
+
+
+def test_language_subject_script_map_is_registry_consistent():
+    """Map hygiene: every exempted subject exists in the registry AND is a
+    languages-family subject — the exemption doctrine only covers subjects
+    that teach a specific language (content script fixed by the subject)."""
+    from app.services import subjects
+
+    assert books_api._LANGUAGE_SUBJECT_CONTENT_SCRIPT == {
+        "russian": "cyrillic",
+        "english": "latin",
+        "ona-tili": "latin",
+    }
+    for code in books_api._LANGUAGE_SUBJECT_CONTENT_SCRIPT:
+        assert code in subjects.REGISTRY, f"{code!r} not in subjects.REGISTRY"
+        assert subjects.REGISTRY[code].family == "languages", \
+            f"{code!r} is not a languages-family subject"
