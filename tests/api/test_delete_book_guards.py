@@ -14,9 +14,12 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from loguru import logger
 
 from main import app
 from app.auth import get_current_user
+from app.config import settings
+from app.services import storage
 
 client = TestClient(app)
 
@@ -95,3 +98,63 @@ def test_delete_with_only_terminal_jobs_204():
     r, delete_spy = _delete(bid, book=book, active_count=0)
     assert r.status_code == 204
     delete_spy.assert_awaited_once()
+
+
+# --- post-commit on-disk cleanup (BE-02 task 4) -----------------------------
+
+
+def test_delete_removes_book_dir_on_disk(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    bid = uuid4()
+    book_dir = storage.book_dir(bid)
+    book_dir.mkdir(parents=True)
+    (book_dir / "source.pdf").write_bytes(b"%PDF-1.4 fake")
+    book = SimpleNamespace(id=bid, status="toc_ready")
+
+    r, delete_spy = _delete(bid, book=book, active_count=0)
+
+    assert r.status_code == 204
+    delete_spy.assert_awaited_once()
+    assert not book_dir.exists()
+
+
+def test_delete_dir_cleanup_failure_is_non_fatal(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    bid = uuid4()
+    book_dir = storage.book_dir(bid)
+    book_dir.mkdir(parents=True)
+    (book_dir / "source.pdf").write_bytes(b"%PDF-1.4 fake")
+    book = SimpleNamespace(id=bid, status="toc_ready")
+
+    def _boom(path, *a, **kw):
+        raise OSError("disk exploded")
+
+    monkeypatch.setattr("app.api.v1.books.shutil.rmtree", _boom)
+
+    records: list[str] = []
+    sink_id = logger.add(lambda m: records.append(m.record["message"]), level="ERROR")
+    try:
+        r, delete_spy = _delete(bid, book=book, active_count=0)
+    finally:
+        logger.remove(sink_id)
+
+    assert r.status_code == 204
+    delete_spy.assert_awaited_once()
+    assert any("book delete: dir cleanup FAILED" in m for m in records)
+
+
+def test_delete_no_dir_on_disk_no_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    bid = uuid4()
+    book = SimpleNamespace(id=bid, status="toc_ready")
+
+    records: list[str] = []
+    sink_id = logger.add(lambda m: records.append(m.record["message"]), level="ERROR")
+    try:
+        r, delete_spy = _delete(bid, book=book, active_count=0)
+    finally:
+        logger.remove(sink_id)
+
+    assert r.status_code == 204
+    delete_spy.assert_awaited_once()
+    assert records == []

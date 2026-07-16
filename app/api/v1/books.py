@@ -1,12 +1,14 @@
 import asyncio
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
+from loguru import logger
 from notion_client.errors import APIResponseError
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, select
@@ -620,6 +622,18 @@ async def delete_book(
     if not deleted:
         raise HTTPException(404, "book not found")
     await session.commit()
+    # On-disk cleanup happens strictly AFTER commit (BE-02 task 4) — a rolled
+    # back delete must never have destroyed files. Best-effort: a missing dir
+    # is a silent no-op, and any other failure is logged but never turns a
+    # committed delete into an error response (the DB rows are already gone).
+    try:
+        shutil.rmtree(storage.book_dir(book_id))
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logger.error(
+            f"book delete: dir cleanup FAILED for {storage.book_dir(book_id)}: {exc}"
+        )
 
 
 @router.patch("/{book_id}/toc/{entry_id}")
