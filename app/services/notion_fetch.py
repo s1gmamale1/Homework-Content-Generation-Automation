@@ -105,12 +105,40 @@ def _is_pdf_block(block: dict) -> bool:
 _CONTAINER_BLOCK_TYPES = {"toggle", "column_list", "column"}
 _MAX_CONTAINER_DEPTH = 3  # bounds toggle/column_list/column nesting per page
 
+# Recognized book-part/section child-page titles (uz "qism", uz "bo'lim" ->
+# folded "bolim", ru "часть", en "part"), a bare "kitob" (book) title, and the
+# textbook markers themselves (a child page named after the textbook, e.g.
+# "Algebra darslik", must stay reachable). Matched against the ALREADY
+# `_fold`-ed title, so this is effectively case-insensitive (Cyrillic and
+# Latin both lower-cased by `_fold`); `\bpart\b` is word-bounded so it doesn't
+# false-positive inside unrelated English words.
+_PART_TITLE_RE = re.compile(r"qism|bolim|kitob|часть|\bpart\b|" + "|".join(_TEXTBOOK_MARKERS))
+
+
+def _is_descendable_child_page_title(title: str) -> bool:
+    """True when a `child_page` block's title looks like a recognized book
+    part/section (or names the textbook itself) and should be descended into.
+
+    Live subject pages carry the generated-homework archive as child pages
+    alongside the real book-part pages — dozens to hundreds per subject
+    (lesson titles like "19-§ Burchakning sinusi…", "Generated Homeworks",
+    dates). Descending into ALL of them cost ~2,000 rate-limited Notion API
+    calls for a single grade's `available_languages` (~720s measured,
+    BE-19 live-acceptance perf finding). Filtering by title keeps descent
+    bounded to the handful of real part pages a textbook is actually split
+    across."""
+    return bool(_PART_TITLE_RE.search(_fold(title)))
+
 
 def textbook_candidates(client, page_id: str) -> list[dict]:
     """Enumerate every textbook PDF reachable from `page_id`: direct blocks,
     PDFs nested inside containers (`toggle`/`column_list`/`column`, recursed
-    depth-bound at ~3 levels), and PDFs living on `child_page` blocks (scanned
-    the same way, but only ONE child-page level deep — no grandchildren).
+    depth-bound at ~3 levels), and PDFs living on `child_page` blocks whose
+    title looks like a recognized book part/section or names the textbook
+    itself (see `_is_descendable_child_page_title` — filters out the
+    generated-homework archive child pages that live alongside real book
+    parts on live subject pages, BE-19 perf fix). Scanned the same way, but
+    only ONE child-page level deep — no grandchildren.
 
     Each candidate: `{page_id, block_id, filename, rank, url}` — `page_id` is
     the page the block conceptually lives ON (the parent page for direct/
@@ -148,10 +176,15 @@ def _walk_for_candidates(client, container_id: str, page_id: str,
                 container_depth=container_depth + 1, allow_child_page=allow_child_page,
             ))
         elif t == "child_page" and allow_child_page:
-            candidates.extend(_walk_for_candidates(
-                client, container_id=block["id"], page_id=block["id"],
-                container_depth=0, allow_child_page=False,
-            ))
+            child_title = block.get("child_page", {}).get("title", "")
+            # Title filter is what bounds this to real part pages: without it
+            # this branch also recurses into the homework-archive child pages
+            # (dozens-hundreds per subject) -- see `_is_descendable_child_page_title`.
+            if _is_descendable_child_page_title(child_title):
+                candidates.extend(_walk_for_candidates(
+                    client, container_id=block["id"], page_id=block["id"],
+                    container_depth=0, allow_child_page=False,
+                ))
     return candidates
 
 

@@ -2,7 +2,7 @@ import pytest
 
 from app.services.notion_fetch import (
     _map_subject, _select_candidate, _url_from_block, _pdf_rank, _fold,
-    _grade_number_from_title,
+    _grade_number_from_title, _PART_TITLE_RE,
 )
 
 
@@ -446,6 +446,59 @@ def test_textbook_candidates_grandchild_pages_not_visited():
     })
     cands = nf.textbook_candidates(c, "parent")
     assert cands == []
+
+
+# ---------------------------------------------------------------------------
+# child_page descent is filtered by title (BE-19 live-acceptance perf fix):
+# live subject pages carry the generated-homework archive as dozens-hundreds
+# of child pages alongside the real book-part pages, so unfiltered descent
+# cost ~2,000 rate-limited API calls / grade (720s measured). Only child pages
+# whose title looks like a book part/section, or names the textbook itself,
+# get descended into.
+# ---------------------------------------------------------------------------
+
+
+def test_part_title_re_matches_recognized_part_and_textbook_titles():
+    for title in [
+        "Matematika 1-qism", "Algebra 2-qism", "Часть-1", "часть 2",
+        "Part 1", "part-2", "Bo'lim 1", "1-kitob", "Algebra darslik",
+        "Textbook", "Учебник", "9-sinf algebra 1-qism",
+    ]:
+        assert _PART_TITLE_RE.search(_fold(title)), title
+
+
+def test_part_title_re_rejects_homework_archive_titles():
+    for title in [
+        "19-§ Burchakning sinusi, kosinusi va tangensi",
+        "12-§ Kvadrat tenglamalar",
+        "Generated Homeworks",
+        "2026-07-15",
+        "Mavzu 3",
+    ]:
+        assert not _PART_TITLE_RE.search(_fold(title)), title
+
+
+def test_textbook_candidates_skips_non_part_homework_child_pages():
+    # Adversarial: the homework child page ALSO has a PDF block nested under
+    # it (e.g. an attached worksheet) -- it must still be excluded, and its
+    # children must NEVER be fetched at all (the point is the API-call
+    # saving, not just filtering the returned candidates).
+    c = _client({}, blocks_by_page={
+        "subj": [
+            {"id": "cp1", "type": "child_page", "child_page": {"title": "Matematika 1-qism"}},
+            {"id": "cp2", "type": "child_page", "child_page": {"title": "Часть-2"}},
+            {"id": "hw1", "type": "child_page", "child_page": {"title": "12-§ Kvadrat tenglamalar"}},
+        ],
+        "cp1": [{"id": "b1", "type": "pdf", "pdf": {"file": {"url": "u1"}}}],
+        "cp2": [{"id": "b2", "type": "pdf", "pdf": {"file": {"url": "u2"}}}],
+        "hw1": [{"id": "b3", "type": "pdf", "pdf": {"file": {"url": "u3"}}}],
+    })
+    cands = nf.textbook_candidates(c, "subj")
+    assert {cd["block_id"] for cd in cands} == {"b1", "b2"}
+    # key assertion: hw1's children were never fetched at all
+    fetched_containers = {call.args[0] for call in c.get_block_children.call_args_list}
+    assert "hw1" not in fetched_containers
+    assert {"subj", "cp1", "cp2"} <= fetched_containers
 
 
 def test_textbook_candidates_rank_attached_per_candidate():
