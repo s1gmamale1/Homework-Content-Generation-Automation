@@ -594,8 +594,28 @@ when the call comes back with a *transient* rate-limit (`429` / `RESOURCE_EXHAUS
 `RATE_LIMIT_MAX_RETRIES` times (config in `app/config.py`). The backoff `asyncio.sleep`
 holds **no** concurrency slot, so a throttled call doesn't block its peers. A persistent
 rate-limit (or any other failure) is returned unchanged — so the phase-level failover still
-sees it. (This is Phase 1 — *reactive* — of `concurrency-knob-1`; a proactive shared
-token-bucket is still future work.)
+sees it. (This is Phase 1 — *reactive* — of `concurrency-knob-1`.)
+
+**Phase 2 — proactive fleet-wide limiter (BE-16, worklog 0142, SHIPPED):** the process-wide
+semaphore above only bounds ONE process; N worker processes across the fleet sharing one Vertex
+project could still stampede it. `transport=api` calls now also acquire a **Postgres-backed
+slot** (`app/services/credential_limiter.py`, table `credential_slots`, migration 0047) keyed by
+the credential the call actually bills against (`app/services/credential_id.py:credential_for` —
+`gemini:{project}` for a Vertex SA pair, `{provider}:{sha256[:16]}` for a raw key). The wire point
+is the api branch of `agent._spawn_once`, **inside** the local semaphore (a fleet-slot waiter
+still counts against the local cap — cli is retired, so the local semaphore is process
+protection only, not a second limiter). Acquire is a short Postgres transaction
+(`pg_advisory_xact_lock` + count-then-insert, never held during the model call); a slot that
+never gets released (crash) ages out of the count after `2 × per_attempt_timeout_seconds` and is
+swept by the worker's periodic loop. Ceiling = env default
+(`CREDENTIAL_MAX_CONCURRENT_GEMINI`/`_CLAUDE`/`_CLODEX`, default 8 each, `0` = limiter off for
+that provider) or a per-project override (`sa_keys.max_concurrent_calls`, edited in the SA-keys
+panel, `PATCH /api/v1/sa-keys/{id}` — project-wide atomic update since `project_id` isn't
+unique). Saturation waits up to `credential_slot_wait_seconds` (120s, a dedicated budget — NOT
+the outer per-attempt 600s wait_for, which would swallow the retry) then returns a `429`-shaped
+error that the existing rate-limit retry loop above already knows how to back off from. **Fail
+open, loudly:** any limiter DB error logs `credential limiter: BYPASSED` (throttled ≤1/60s) and
+the call proceeds uncapped rather than blocking generation on a limiter outage.
 
 The functions the pipeline actually calls: `extract_toc` (TOC at upload time),
 `summarize_lesson` / `read_whole_book_text` (the per-section extract), and `run_phase` /

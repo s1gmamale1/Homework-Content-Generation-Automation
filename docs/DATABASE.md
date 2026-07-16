@@ -294,8 +294,9 @@ The DB row holds **metadata only**; the raw JSON bytes live on disk at `<var_dir
 | `byte_size` | Integer NOT NULL | size of the uploaded JSON |
 | `label` | Text NULL | optional operator nickname |
 | `created_at` | timestamptz NOT NULL | |
+| `max_concurrent_calls` | Integer NULL, CHECK `IS NULL OR >= 1` (migration 0047) | per-project override for the BE-16 fleet credential limiter (§3.12); `NULL` = no override, falls back to the provider env default. `PATCH /sa-keys/{id}` writes this **project-wide** (every row sharing this key's `project_id`, since `project_id` is not unique) so two keys for one project can never disagree. |
 
-Uploaded via `POST /sa-keys` (multipart; validated by `sa_key_validate.parse_and_validate_sa_key` — must be `type=="service_account"` with non-empty `project_id`/`client_email`/`private_key`, else 422). Downloaded via `GET /sa-keys/{id}/download` (**header-auth only** — rejects `?token=`; 503 when `AUTH_TOKEN` is empty; raw bytes). Listed via `GET /sa-keys` (metadata + `worker_count`; never returns `private_key`). Deleted via `DELETE /sa-keys/{id}` (409 if still assigned to any host).
+Uploaded via `POST /sa-keys` (multipart; validated by `sa_key_validate.parse_and_validate_sa_key` — must be `type=="service_account"` with non-empty `project_id`/`client_email`/`private_key`, else 422). Downloaded via `GET /sa-keys/{id}/download` (**header-auth only** — rejects `?token=`; 503 when `AUTH_TOKEN` is empty; raw bytes). Listed via `GET /sa-keys` (metadata + `worker_count`; **since BE-16 also `slots_in_use`** — live in-flight count from `credential_slots` — **and `effective_limit`** — the resolved cap, override or provider default; never returns `private_key`). Deleted via `DELETE /sa-keys/{id}` (409 if still assigned to any host). Edited via **`PATCH /sa-keys/{id}`** (`{max_concurrent_calls: int|null}`, `ge=1` or null — the concurrency override; evicts the limiter's resolve-limit cache for this credential so the new value applies immediately in this process, not after the ~60s TTL — other fleet processes still lag up to that TTL).
 
 ### 3.11 `sa_key_assignments` — per-hostname key assignment
 
@@ -306,7 +307,24 @@ Uploaded via `POST /sa-keys` (multipart; validated by `sa_key_validate.parse_and
 | `scrub_requested_at` | timestamptz NULL | set by the scrub/revoke endpoint |
 | `updated_at` | timestamptz NOT NULL | |
 
-Many hostnames may point at one key (shared-key case). Upsert on `PUT /sa-keys/assignments/{hostname}`; `DELETE /sa-keys/assignments/{hostname}` removes the row (non-destructive — the worker keeps its applied key); `POST /sa-keys/assignments/{hostname}/scrub` requests an active clear. On startup-before-claim and on a throttled main-loop tick, a worker calls `sa_keys_repo.get_assignment_with_key(hostname)`; when the assignment's `sha256` differs from what it last applied (and the worker is idle, `len(self._tasks)==0`), `worker._sync_sa_key` pulls the bytes (`sa_key_apply.pull_key_bytes`), writes `<var_dir>/sa_keys/active.json` atomically (`write_active_key` → temp + `os.replace`), sets `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` in `os.environ` and upserts them into the worker's `.env` (UTF-8, line-preserving), and calls `worker._rebind_capabilities()` to reassign the frozen `CAPABILITIES`/`CAPABILITY_BLOB` globals so a freshly-keyed idle worker begins claiming gemini-api jobs. The scrub path clears `os.environ`/`.env`, deletes `active.json`, and rebinds capabilities down.
+Many hostnames may point at one key (shared-key case). Upsert on `PUT /sa-keys/assignments/{hostname}`; `DELETE /sa-keys/assignments/{hostname}` removes the row (non-destructive — the worker keeps its applied key); `POST /sa-keys/assignments/{hostname}/scrub` requests an active clear. On startup-before-claim and on a throttled main-loop tick, a worker calls `sa_keys_repo.get_assignment_with_key(hostname)`; when the assignment's `sha256` differs from what it last applied (and the worker is idle, `len(self._tasks)==0`), `worker._sync_sa_key` pulls the bytes (`sa_key_apply.pull_key_bytes`), writes `<var_dir>/sa_keys/active.json` atomically (`write_active_key` → temp + `os.replace`), sets `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` in `os.environ` and upserts them into the worker's `.env` (UTF-8, line-preserving), and calls `worker._rebind_capabilities()` to reassign the frozen `CAPABILITIES`/`CAPABILITY_BLOB` globals so a freshly-keyed idle worker begins claiming gemini-api jobs. The scrub path clears `os.environ`/`.env`, deletes `active.json`, and rebinds capabilities down. **Assignment wins (BE-16, codex-review #7):** applying an assignment also pops any leftover `GEMINI_API_KEY` from the process env, so billing, the fleet limiter's credential identity, and the panel display can never disagree — a host that wants AI-Studio-key billing must simply not carry an assignment.
+
+### 3.12 `credential_slots` — fleet-wide per-credential api concurrency limiter (BE-16, migration 0047, worklog 0142)
+
+No SQLAlchemy model — every access is raw SQL via `sqlalchemy.text()` (`app/services/credential_limiter.py`). A row is one held "slot" against a credential fingerprint.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID **PK** default `gen_random_uuid()` | pass back to `release` |
+| `credential` | Text NOT NULL, indexed (`ix_credential_slots_credential`) | `gemini:{project}` (Vertex SA) or `{provider}:{sha256(key)[:16]}` (gemini AI-Studio key / claude / clodex) — built by `credential_id.credential_for`/`gemini_project_credential`, never a second inline f-string |
+| `pc_id` | Text NOT NULL | `hostname:pid` of the holder, for operator debugging |
+| `acquired_at` | timestamptz NOT NULL default `now()` | age gates the STALE_TTL count and the sweep |
+
+Acquire (`credential_limiter.acquire`) serializes per credential via `pg_advisory_xact_lock(hashtext(credential))` (transaction-scoped — auto-releases on crash, can never wedge) and does count-then-insert in the same transaction (TOCTOU-safe): counts fresh rows (`acquired_at > now() - STALE_TTL_SECONDS`, `= 2 × per_attempt_timeout_seconds`) against the resolved limit; `count < limit` inserts and returns the new row's id, else polls again (exponential backoff 1s→5s + jitter) until a caller-supplied wait budget (`credential_slot_wait_seconds`, default 120s) is exhausted, returning `None`. Release is a plain `DELETE ... WHERE id = :id` in a `finally` (shielded against a second cancellation, mirroring `worker.py`'s documented release craft) — a no-op if the row is already gone (double-release or already swept). **The DB is only touched at acquire/release/poll — never held during the model call itself.** A crashed holder's row ages out of the count after `STALE_TTL_SECONDS` and is deleted by `credential_limiter.sweep()`, called from the worker's periodic loop as its own step (not inside `_sweep_stuck_jobs`' transaction — a limiter-table error must never abort job reclaims).
+
+Limit resolution (`credential_limiter.resolve_limit`): a `gemini:{project}` credential resolves `MIN(sa_keys.max_concurrent_calls)` over rows sharing that `project_id` (deterministic when duplicate project rows disagree — should never happen given the project-wide atomic PATCH, but resolved conservatively anyway) when any row has a non-NULL override, else the provider's `config.py` env default (`credential_max_concurrent_gemini`/`_claude`/`_clodex`, default 8, `0`=off). Cached per credential ~60s (errors never cached — a blip must not stick fail-open for the TTL); `PATCH /sa-keys/{id}` evicts this process's cache entry immediately.
+
+**Fail-open, loudly:** any DB error anywhere in resolve/acquire is caught, logged as `credential limiter: BYPASSED (<err>)` (throttled ≤1/60s so a DB outage doesn't flood the log), and the call proceeds uncapped — availability over enforcement.
 
 ---
 
@@ -463,7 +481,8 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 | 43 | 0043_solver_role_columns | `0043_solver_role_columns` | adds per-role solver columns: `homework_jobs.solver_transport`/`solver_provider`/`solver_model` + CHECK, `batches` same trio, `launch_defaults` solver trio (seed gemini/gemini-3.1-pro-preview/inherit), `phase_outputs.solver_status` (CQ-C, worklog 0112) |
 | 44 | 0044_solver_boss_toggle | `0044_solver_boss_toggle` | adds `launch_defaults.solver_boss_arena_enabled` BOOL NOT NULL server_default true — live /settings toggle for boss-arena answer-key solving (worklog 0126) |
 | 45 | 0045_notion_archived_job | `0045_notion_archived_job` | adds `toc_entries.notion_archived_job_id` UUID NULL (no FK) — producing-job stamp for the Notion archive: auto-replace-own-older-output + `stale` rollup (worklog 0129) |
-| 46 | 0046_worker_version_floor | `0046_worker_version_floor` | adds `budget_state.min_worker_version` Integer NULL + `min_worker_version_stamped_by` String(128) NULL + `min_worker_version_stamped_at` DateTime(tz) NULL — the fleet worker version floor (fleet-worker-version-gate, worklog 0133) — **HEAD** |
+| 46 | 0046_worker_version_floor | `0046_worker_version_floor` | adds `budget_state.min_worker_version` Integer NULL + `min_worker_version_stamped_by` String(128) NULL + `min_worker_version_stamped_at` DateTime(tz) NULL — the fleet worker version floor (fleet-worker-version-gate, worklog 0133) |
+| 47 | 0047_credential_slots | `0047_credential_slots` | adds `credential_slots` table (`id` UUID PK, `credential` Text NOT NULL indexed, `pc_id` Text NOT NULL, `acquired_at` timestamptz NOT NULL default now()) + `sa_keys.max_concurrent_calls` Integer NULL CHECK `IS NULL OR >= 1` — the BE-16 fleet-wide per-credential api concurrency limiter (worklog 0142) — **HEAD** |
 
 ---
 
@@ -484,6 +503,8 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 | `gemini_max_concurrency` | 8 | deprecated fallback — honored only when `agent_max_concurrency` is left at default 8 |
 | `failover_provider_order` | codex, gemini, kimi, opencode | per-phase failover (no claude) |
 | `agent_limit_<provider>_<1h\|24h\|7d>` | per provider | local call-count caps for `/usage` bars |
+| `credential_max_concurrent_gemini` / `_claude` / `_clodex` | 8 each | BE-16 fleet-wide `transport=api` concurrency ceiling per credential (env `CREDENTIAL_MAX_CONCURRENT_GEMINI`/`_CLAUDE`/`_CLODEX`); `0` disables the limiter for that provider. A Vertex-SA gemini credential can override this per-project via `sa_keys.max_concurrent_calls` (§3.10/§3.12). |
+| `credential_slot_wait_seconds` | 120 | how long a caller waits for a fleet credential slot before surfacing a `429`-shaped retryable error (env `CREDENTIAL_SLOT_WAIT_SECONDS`) — deliberately shorter than `per_attempt_timeout_seconds` so the existing rate-limit retry loop still gets a turn |
 
 > **Judge/extract model selection** is NOT in `config.py` — it lives in the DB `launch_defaults` singleton (§3.9), edited at the `/settings` page. `EXTRACT_PROVIDER`/`EXTRACT_MODEL`/`JUDGE_PROVIDER`/`JUDGE_MODEL`/`EXTRACT_TOC_TRANSPORT` env vars are **deleted** since migration 0037.
 
