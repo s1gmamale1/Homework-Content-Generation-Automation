@@ -55,64 +55,98 @@ Commit: `feat(limiter): migration 0047 — credential_slots + sa_keys.max_concur
 ### Task 2 — credential identity (pure) (RED → GREEN)
 
 `app/services/credential_id.py`: `credential_for(provider: str, env: Mapping) -> str | None` —
-gemini: `f"gemini:{GOOGLE_CLOUD_PROJECT}"` when Vertex SA pair present, else
-`f"gemini:{sha256(GEMINI_API_KEY)[:16]}"`; claude/clodex: `f"{provider}:{sha256(key)[:16]}"`;
-no credential env → None (limiter skips). Tests: per-provider mapping; **no raw key material in the
-output** (assert key substring absent); None paths; deterministic.
+**gemini precedence MUST mirror `api_transport._gemini_client` (`api_transport.py:63-69`) exactly:
+`GEMINI_API_KEY` FIRST** → `f"gemini:{sha256(key)[:16]}"`, else Vertex pair →
+`f"gemini:{GOOGLE_CLOUD_PROJECT}"` (review C1: the client bills the AI-Studio key first; a host
+with a leftover key + an SA assignment must be counted against what actually bills);
+claude/clodex: `f"{provider}:{sha256(key)[:16]}"`; no credential env → None (limiter skips).
+Tests: per-provider mapping; **branch-order parity with `_gemini_client`** (key+pair present →
+key fingerprint wins, matching the client); **no raw key material in the output** (assert key
+substring absent); None paths; deterministic.
 Commit: `feat(limiter): credential fingerprint per provider (BE-16 task 2)`
 
 ### Task 3 — limiter core (RED → GREEN, scratch DB)
 
 `app/services/credential_limiter.py`:
-- `async acquire(credential, limit, *, pc_id, wait_budget_s) -> slot_id | None` — loop: one tx
-  (`pg_advisory_xact_lock(hashtext(:cred))` → `SELECT count(*) WHERE credential=:cred AND
-  acquired_at > now()-interval '<per_attempt_timeout>s'` → if < limit INSERT RETURNING id);
+- `async acquire(credential, limit, *, pc_id, wait_budget_s) -> slot_id | None` — loop: one
+  SHORT session/tx per poll iteration (never hold a connection across the 1s sleep;
+  `pg_advisory_xact_lock(hashtext(:cred))` → `SELECT count(*) WHERE credential=:cred AND
+  acquired_at > now()-interval '<STALE_TTL>s'` → if < limit INSERT RETURNING id);
   else sleep 1s+jitter and retry until `wait_budget_s` exhausted → None.
+  **STALE_TTL = 2 × `per_attempt_timeout_seconds` (1200s)** — review I5: TTL exactly 600s would
+  expire the slot of a legitimately long call (observed max 531s; pipeline attempts run right up
+  to the 600s wait_for) and over-admit; occasional over-admission past 1200s is the reactive
+  backoff's job. `pc_id = f"{socket.gethostname()}:{os.getpid()}"` (review M7).
 - `async release(slot_id)` — DELETE; missing row is a no-op.
-- `async sweep(session) -> int` — DELETE stale rows (leaked by crashes); returns count.
+- `async sweep() -> int` — DELETE rows older than STALE_TTL, **own session + try/except** (review
+  M1: never inside `_sweep_stuck_jobs`' single `session.begin()` — a limiter-table error must not
+  abort job reclaims).
 **RED bites-proofs** (`tests/integration/test_credential_limiter.py`, RUN_DB_INTEGRATION,
-`edu_scratch_credlim`): limit=1 + two concurrent acquires → exactly one wins, second waits then
-wins after release; second times out (small budget) → None; stale row (backdated acquired_at)
-does NOT count and sweep deletes it; limit=0/None → acquire returns sentinel BYPASS without touching DB.
+`edu_scratch_credlim` — pin `127.0.0.1`, and the two concurrent acquires MUST run on separate
+pooled sessions/connections or the advisory lock deadlocks the test itself): limit=1 + two
+concurrent acquires → exactly one wins, second waits then wins after release; second times out
+(small budget) → None; stale row (backdated acquired_at) does NOT count and sweep deletes it;
+limit=0/None → acquire returns sentinel BYPASS without touching DB (assert via session spy).
+hashtext collisions are throughput-only (count is `WHERE credential=`) — no test needed, noted.
 Commit: `feat(limiter): postgres slot limiter — acquire/release/sweep (BE-16 task 3)`
 
 ### Task 4 — limit resolution: per-key override → provider default (RED → GREEN)
 
 `config.py`: `credential_max_concurrent_gemini: int = 8`, `_claude: int = 8`, `_clodex: int = 8`.
-`credential_limiter.resolve_limit(session, provider, hostname) -> int` — hostname's
-`sa_key_assignments` row → `sa_keys.max_concurrent_calls` when set (gemini/SA only), else the
-provider env default. Cache per (provider, hostname) ~60s TTL so per-call cost is zero.
-Tests: override wins; NULL override → default; non-SA providers → default; TTL refresh honors a
-changed override without restart.
+`credential_limiter.resolve_limit(session, provider, credential) -> int` — **keyed by the
+CREDENTIAL string, not hostname** (review I4): a `gemini:{project}` credential looks up
+`sa_keys.project_id == project` → `max_concurrent_calls` when set, else the provider env default.
+Hostname drops out entirely — the override then binds every host actually using that key,
+including the head (which has no `sa_key_assignments` row); fingerprint-form credentials
+(AI-Studio/claude/clodex) always resolve the provider default. Cache per credential ~60s TTL;
+**resolution errors are never cached** (review M3 — a blip must not stick fail-open for a TTL).
+Tests: override wins by project_id; NULL override → default; fingerprint credentials → default;
+TTL refresh honors a changed override without restart; error → un-cached.
 Commit: `feat(limiter): per-key override with provider-default fallback (BE-16 task 4)`
 
 ### Task 5 — wire into the api spawn path + sweep (RED → GREEN)
 
 `agent._spawn_once` api branch: compute `credential_for(provider.name, os.environ)`; resolve limit;
-`slot = await acquire(...)` (wait budget = remaining per-attempt time; own short DB session);
-`try: api_transport.generate(...) finally: release(slot)`. DB error anywhere → log
-`credential limiter: BYPASSED (<err>)` + proceed. `worker.py` periodic sweep gains
-`credential_limiter.sweep` (piggyback on the existing stale-jobs sweep site `worker.py:656-664`).
+`slot = await acquire(...)` with **wait budget = `settings.per_attempt_timeout_seconds`** (review
+I2: the "remaining time" isn't computable inside `_spawn` — the pipeline's `asyncio.wait_for` at
+`pipeline.py:828/875` is the real bound and cancels the wait; the head TOC path has NO outer
+wait_for, so this budget is what bounds it there). **acquire → None (budget exhausted, review I1):
+return the rate-limited error shape** (`rc=1`, err containing `"429 fleet credential slot wait
+exhausted"`) so `_spawn`'s existing `_is_rate_limited` retry loop handles it exactly like a
+provider 429 — saturation degrades to backoff, never to a hard failure or a burned failover leg.
+`try: api_transport.generate(...) finally: await asyncio.shield(release(slot))` (review I3: a
+second cancellation must not strand the row; STALE_TTL sweep is the backstop). DB error anywhere →
+log `credential limiter: BYPASSED (<err>)` **throttled ≤1/60s** (review M3) + proceed.
+`worker.py` periodic loop (call site `worker.py:278-280`) gains `credential_limiter.sweep()` as
+its own step — NOT inside `_sweep_stuck_jobs`' transaction.
 Tests (`tests/services/test_agent_limiter_wiring.py`, monkeypatched api_transport + limiter):
-acquire happens before generate and release after, **including on exception**; None credential →
-no acquire; BYPASS on DB error still calls generate; cli spawns never touch the limiter.
+acquire before generate, release after, **including on exception AND on cancellation** (cancel
+mid-generate → release still ran); **two `_spawn` retry attempts → two distinct acquire/release
+pairs with no slot held across the backoff sleep** (review: the load-bearing wire-point property);
+acquire→None → rate-limited-shaped error consumed by `_spawn`'s retry loop; None credential → no
+acquire; BYPASS on DB error still calls generate; cli spawns never touch the limiter.
 Commit: `feat(agent): api calls acquire fleet credential slots (BE-16 task 5)`
 
 ### Task 6 — API + FE: override editing + visibility
 
 `PATCH /api/v1/sa-keys/{key_id}` accepting `{max_concurrent_calls: int|null}` (validate ≥1 or null;
 `_meta` gains the field). `GET /api/v1/sa-keys` rows + per-credential `slots_in_use` (one grouped
-count over live slot rows). FE (`sa-keys-panel.tsx` + types/api): numeric input per key row
-(blur→PATCH, toast), `in-flight N/limit` text next to the status column. tsc + build + tsx pure
-tests only if logic is extracted.
+count over live slot rows) — **the credential string is built by the SAME shared function as
+Task 2** (review M6: one format, never two). FE (`sa-keys-panel.tsx` + types/api): numeric input
+per key row (blur→PATCH, toast), `in-flight N/limit` text next to the status column.
+**Merge note (review M4): `web/src/lib/types.ts` + `api.ts` are also touched by the in-flight
+notion-fetch lane — additive fields on different types, trivially mergeable, but rebase-check
+both directions at finish.** tsc + build + tsx pure tests only if logic is extracted.
 Commit: `feat(sa-keys): per-key concurrency override + in-flight visibility (BE-16 task 6)`
 
 ### Task 7 — docs + acceptance + finish
 
 - **Acceptance (real, bounded, ~$0.01):** on the head with the live gemini credential, set the
   env default to 2 (env var for the process only), fire **6 concurrent tiny `agent.run_phase`
-  gemini api calls** (5-token prompts); prove from `credential_slots` history + call timestamps
-  that in-flight never exceeded 2 and all 6 complete. Paste evidence in the PR. Restore env.
+  gemini api calls** (5-token prompts) while a **concurrent poller samples
+  `SELECT count(*) FROM credential_slots WHERE credential=…` every 250ms** (review M5: rows are
+  deleted on release — there is no post-hoc history; the live poll IS the evidence). Prove peak
+  sampled count ≤ 2 and all 6 calls complete. Paste the poll trace in the PR. Restore env.
 - Docs de-stale: CLAUDE.md (worker/limits bullet), `docs/HOW_IT_WORKS.md`, `docs/CODE_MAP.md`,
   `docs/DATABASE.md` (new table + column), `.env.example`.
 - Close BE-16 in root `Wishlist.md` + `concurrency-knob-1` Phase-2 note in `docs/memory/WISHLIST.md`.
@@ -128,6 +162,22 @@ Commit: `feat(sa-keys): per-key concurrency override + in-flight visibility (BE-
    calls toward the 600s bound; acceptable at measured hold times, revisit if p90 grows.
 4. Default ceilings (8/8/8) are operator-tunable starting points, not verified quotas — the
    per-key override is the tuning instrument; reactive backoff remains the net.
-5. `sa_keys.max_concurrent_calls` applies only to SA-assigned gemini credentials; env-key
-   credentials (claude/clodex/AI-Studio) use provider defaults only (no DB identity to hang an
-   override on — documented).
+5. `sa_keys.max_concurrent_calls` binds by **project_id** (review I4) — it caps every host whose
+   active credential is that project, head included; env-key credentials (claude/clodex/AI-Studio)
+   use provider defaults only (no DB identity to hang an override on — documented).
+6. **Cross-provider starvation via the shared local semaphore** (review I6): all 8 local slots can
+   fill with gemini fleet-slot waiters and delay claude/clodex api calls in the same process.
+   Bounded (waiters time out into the retry loop), degrades rather than deadlocks — accepted for
+   this plan; a per-provider local semaphore is the follow-up if it bites in practice.
+7. On saturation-timeout the call surfaces as a 429-shaped retryable error into the existing
+   backoff loop (review I1) — saturation NEVER burns a cross-provider failover leg or hard-fails
+   a phase by itself.
+
+## Review record
+
+Fresh-Fable adversarial review 2026-07-16 (~21 tool reads): verdict **APPROVE-WITH-FIXES**; all
+8 fixes folded above — C1 credential-precedence parity with `_gemini_client` (the critical),
+I1 acquire-timeout semantics, I2 implementable wait budget + unbounded-TOC note, I3 shielded
+release + cancellation test, I4 project_id-keyed override, I5 STALE_TTL 2×, M5 live-poller
+acceptance evidence, plus flags I6/M1/M3/M4/M6/M7. Retry-loop interaction and choke-point
+coverage (judge/solver/TOC all via `_spawn`) verified clean by the reviewer.
