@@ -17,6 +17,18 @@ new ancestry walk before subject mapping, and this file's mocked
 `NotionClientWrapper` instance carries no parent-chain data, so the walk would
 otherwise TypeError on a bare MagicMock. Adaptation is scoped to adding that
 one patch per affected test; no assertions changed.
+
+BE-19 task 5 additions (bottom of file): the PDF script guard. A live-
+confirmed case has an Uzbek (Latin) PDF attached to the Russian "Математика"
+part page in Notion — once child pages are reachable (Task 4), naive
+ingestion would silently generate a whole book of wrong-language homework.
+These tests patch `app.api.v1.books.pdf_lang.detect_pdf_script` directly
+(rather than building real Cyrillic/Latin-bearing PDFs — pypdf can't easily
+write extractable text without reportlab, which isn't in this env; the pure
+classifier itself is covered against real/faked pypdf readers in
+tests/services/test_pdf_lang.py) to drive the route's block/warn/pass
+branches. `grade` is omitted throughout so the ancestry walk (Task 4) never
+engages — these tests are entirely about the language guard.
 """
 
 import pytest
@@ -212,3 +224,115 @@ async def test_ingest_pdf_ru_passes_source_language_ru():
     kwargs = mock_create.await_args.kwargs
     assert kwargs["source_language"] == "ru", \
         f"create() should receive source_language='ru', got {kwargs.get('source_language')!r}"
+
+
+# ═══════════════ BE-19 task 5: PDF script guard ═════════════════════════════
+#
+# Route order under test: NotionClientWrapper -> subject title -> subject
+# mapping -> download_textbook -> [NEW] detect_pdf_script -> hard-block on
+# confident mismatch, else thread `warnings` -> ingest_pdf. All tests below
+# patch `download_textbook` to return real-looking (but tiny) PDF bytes and
+# patch `detect_pdf_script` directly to control the detected script without
+# needing a real Cyrillic/Latin-bearing PDF (see module docstring above).
+
+_FAKE_PDF_BYTES = b"%PDF-1.4 x"
+
+
+def _patch_detect(script: str):
+    return patch("app.api.v1.books.pdf_lang.detect_pdf_script", return_value=script)
+
+
+# ─── ru + latin-script PDF -> 422, names filename + detected script ─────────
+
+def test_from_notion_ru_language_latin_pdf_blocks_422():
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Алгебра"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(_FAKE_PDF_BYTES, "algebra_uz.pdf")), \
+         _patch_detect("latin"), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock()) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "ru_alg", "language": "ru"})
+    assert r.status_code == 422
+    assert "algebra_uz.pdf" in r.text
+    assert "latin" in r.text
+    ing.assert_not_awaited()
+
+
+# ─── uz (default) + cyrillic-script PDF -> 422, names filename + script ─────
+
+def test_from_notion_uz_language_cyrillic_pdf_blocks_422():
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(_FAKE_PDF_BYTES, "algebra_ru.pdf")), \
+         _patch_detect("cyrillic"), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock()) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg"})
+    assert r.status_code == 422
+    assert "algebra_ru.pdf" in r.text
+    assert "cyrillic" in r.text
+    ing.assert_not_awaited()
+
+
+# ─── en (treated like uz -- Latin-expected) + cyrillic-script PDF -> 422 ────
+#
+# Explicit nuance: "en" is not "ru", so a naive `language != "ru"` mismatch
+# rule would need to treat it as Latin-expected too (same as uz). Without this
+# case, an English-tagged Notion fetch of a mistakenly-Cyrillic PDF would slip
+# through as a false "match".
+
+def test_from_notion_en_language_cyrillic_pdf_blocks_422():
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Biology"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(_FAKE_PDF_BYTES, "biology_ru.pdf")), \
+         _patch_detect("cyrillic"), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock()) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "bio_en", "language": "en"})
+    assert r.status_code == 422
+    assert "biology_ru.pdf" in r.text
+    assert "cyrillic" in r.text
+    ing.assert_not_awaited()
+
+
+# ─── indeterminate ("unknown") script -> 201, proceeds with a warning ───────
+
+def test_from_notion_unknown_script_proceeds_with_warning():
+    fake = BookOut(id=uuid4(), subject="math-algebra",
+                   original_filename="algebra_scan.pdf", status="uploading")
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(_FAKE_PDF_BYTES, "algebra_scan.pdf")), \
+         _patch_detect("unknown"), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg"})
+    assert r.status_code == 201
+    ing.assert_awaited_once()
+    body = r.json()
+    assert body["warnings"], f"expected a non-empty warnings list, got {body.get('warnings')!r}"
+    assert "language" in body["warnings"][0].lower()
+
+
+# ─── matching script -> 201, no warning ─────────────────────────────────────
+
+def test_from_notion_matching_script_no_warning():
+    fake = BookOut(id=uuid4(), subject="math-algebra",
+                   original_filename="algebra.pdf", status="uploading")
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(_FAKE_PDF_BYTES, "algebra.pdf")), \
+         _patch_detect("latin"), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg"})
+    assert r.status_code == 201
+    ing.assert_awaited_once()
+    body = r.json()
+    assert not body.get("warnings"), \
+        f"expected no warnings on a script match, got {body.get('warnings')!r}"

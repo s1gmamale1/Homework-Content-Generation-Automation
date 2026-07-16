@@ -22,7 +22,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import BookOut, TOCEntryOut
-from app.services import events_bus, notion_fetch, storage, toc_extractor
+from app.services import events_bus, notion_fetch, pdf_lang, storage, toc_extractor
 from app.services.agent_models import validate_output_language
 from app.services.flows import SUPPORTED_SUBJECTS
 from app.services.grade import derive_grade_from_filename
@@ -274,9 +274,35 @@ async def book_from_notion(
         # without this, that race escaped as a bare 500 instead of the
         # controlled 404/502 the earlier Notion calls already get.
         raise _notion_api_error_response(exc, req.subject_page_id)
-    return await ingest_pdf(
+
+    # BE-19 task 5: language guard. A live-confirmed case has an Uzbek
+    # (Latin) PDF attached to the Russian "Математика" part page in Notion —
+    # naive ingestion would silently generate a whole book of wrong-language
+    # homework. Deterministic, script-only check: `ru` expects Cyrillic;
+    # everything else (`uz`, `en`) expects Latin. Hard-block only on a
+    # CONFIDENT mismatch; an indeterminate sample (scanned PDF, no
+    # extractable text) proceeds but is surfaced as a response warning
+    # instead of silently passing through unchecked.
+    detected_script = await asyncio.to_thread(pdf_lang.detect_pdf_script, body)
+    expected_script = "cyrillic" if req.language == "ru" else "latin"
+    warnings: list[str] | None = None
+    if detected_script == "unknown":
+        warnings = ["language check skipped: no extractable text (scanned PDF?)"]
+    elif detected_script != expected_script:
+        raise HTTPException(
+            422,
+            f"language mismatch: '{filename}' looks {detected_script}-script but "
+            f"language={req.language!r} expects {expected_script}-script — pass "
+            f"the correct `language`, or upload the PDF directly if this Notion "
+            f"page has the wrong file attached",
+        )
+
+    out = await ingest_pdf(
         session, body=body, subject=subject, grade=req.grade, filename=filename,
         source_language=req.language)
+    if warnings:
+        out.warnings = warnings
+    return out
 
 
 @router.get("")
