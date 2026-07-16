@@ -97,7 +97,18 @@ def _location_for(model: str) -> str:
             )
         else:
             if isinstance(parsed, dict):
-                overrides = parsed
+                # Per-entry validation (PR #97 gate): only str->non-empty-str
+                # entries may reach genai.Client(location=...). null/number/
+                # empty/nested values are dropped LOUDLY, and a bad entry does
+                # not discard the valid ones next to it.
+                for k, v in parsed.items():
+                    if isinstance(k, str) and isinstance(v, str) and v.strip():
+                        overrides[k] = v.strip()
+                    else:
+                        logger.error(
+                            "GEMINI_MODEL_LOCATIONS entry %r: %r is not a "
+                            "non-empty string location; entry ignored", k, v,
+                        )
             else:
                 logger.error(
                     "GEMINI_MODEL_LOCATIONS must be a JSON object, got %s; "

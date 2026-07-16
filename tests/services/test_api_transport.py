@@ -454,3 +454,30 @@ def test_mime_for_suffix():
     assert _mime_for(Path("x.unknown")) == "application/pdf"   # default
     assert _mime_for(Path("WINDOW.PDF")) == "application/pdf"  # case-insensitive
     assert _mime_for(Path("scan.JPG")) == "image/jpeg"
+
+
+def test_location_for_invalid_entry_values_dropped(monkeypatch, caplog):
+    """Per-entry validation (PR #97 gate): null / empty-string / number / nested-
+    object VALUES (and non-string keys) must be dropped with an error log —
+    never flow into genai.Client(location=...). Valid entries in the SAME JSON
+    still apply (partial acceptance, not all-or-nothing)."""
+    import logging
+    from app.services.api_transport import _location_for
+
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+    monkeypatch.setenv(
+        "GEMINI_MODEL_LOCATIONS",
+        '{"gemini-2.5-flash": null, "gemini-3-flash-preview": "", '
+        '"gemini-2.5-pro": 5, "gemini-3.1-pro-preview": {"nested": 1}, '
+        '"gemini-2.5-flash-lite": "europe-west4"}',
+    )
+    with caplog.at_level(logging.ERROR):
+        # invalid override for 2.5-flash is DROPPED -> built-in default applies
+        assert _location_for("gemini-2.5-flash") == "us-central1"
+        # invalid entries for unmapped models fall through to "global"
+        assert _location_for("gemini-3-flash-preview") == "global"
+        assert _location_for("gemini-2.5-pro") == "global"
+        assert _location_for("gemini-3.1-pro-preview") == "global"
+        # the one VALID entry in the same JSON still applies
+        assert _location_for("gemini-2.5-flash-lite") == "europe-west4"
+    assert any("GEMINI_MODEL_LOCATIONS" in r.message for r in caplog.records)
