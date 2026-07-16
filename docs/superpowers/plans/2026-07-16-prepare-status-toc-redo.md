@@ -36,8 +36,9 @@ below; identity model = mapping table, verified against code).
   (NO mutation — navigate/focus the book) and **Redo TOC extraction** (destructive-styled,
   explicit "re-extracts from the PDF and REPLACES current TOC rows"; disabled with the structured
   reason when `redo_blocked_by_jobs > 0`).
-- **Backfill (pre-migration from-notion books):** safe reconciliation — for each currently-mapped
-  Notion candidate, download bytes READ-ONLY, match `content_sha256` UNIQUELY against existing
+- **Backfill (pre-migration from-notion books):** safe reconciliation — for each candidate discovered
+  from the configured Notion tree, download bytes (Notion access read-only; the script WRITES
+  mapping rows — dry-run default, `--apply` to write), match `content_sha256` UNIQUELY against existing
   books (same subject); ambiguous/multi-match → leave unlinked (they simply show TEXTBOOK READY
   until next prepare, which dedup-upserts the link). Shipped as an operator script
   (`scripts/backfill_notion_sources.py`), run once manually — not in the migration (network in
