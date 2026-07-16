@@ -22,10 +22,16 @@ import {
 import { api } from "@/lib/api";
 import { LANG_LABEL } from "@/lib/language";
 import { fadeUpItem, staggerContainer, tapScale } from "@/lib/motion";
-import { langChipState, resolveNotionPageId } from "@/lib/notion-parts";
+import {
+  langChipState,
+  partForResolution,
+  resolveCandidate,
+  resolveNotionPageId,
+} from "@/lib/notion-parts";
 import { subjectLabel } from "@/lib/subjects";
 import {
   type AvailableLanguages,
+  type NotionCandidate,
   type NotionGrade,
   type NotionSubject,
   type OutputLanguage,
@@ -34,6 +40,16 @@ import {
 } from "@/lib/types";
 import { GHOST_BTN, GLASS_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
+
+/** Pending file-level pick when a resolved part carries >1 candidate in its
+ *  best rank tier (BE-19 task 6) — the operator must choose which file
+ *  before the fetch proceeds. */
+interface CandidatePick {
+  subject: NotionSubject;
+  language: OutputLanguage;
+  candidates: NotionCandidate[];
+  selected: NotionCandidate | null;
+}
 
 const GRADES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"];
 const LBL = "text-sm font-medium text-white/75";
@@ -55,6 +71,9 @@ export function UploadPage() {
   const [nErr, setNErr] = useState<string | null>(null);
   // Available language containers per app_subject for the picked Notion grade.
   const [availLangs, setAvailLangs] = useState<AvailableLanguages | null>(null);
+  // Set when the resolved part has >1 candidate file in its best rank tier —
+  // the fetch is held until the operator picks one.
+  const [candidatePick, setCandidatePick] = useState<CandidatePick | null>(null);
 
   const onDrop = useCallback((accepted: File[]) => {
     if (accepted[0]) setFile(accepted[0]);
@@ -104,6 +123,7 @@ export function UploadPage() {
     setSubjects(null);
     setPendingSubjectId(null);
     setAvailLangs(null);
+    setCandidatePick(null);
     setNErr(null);
     try {
       // Fetch subjects and available-languages in parallel.
@@ -121,32 +141,56 @@ export function UploadPage() {
   async function pickSubject(s: NotionSubject, language: OutputLanguage) {
     if (!s.app_subject || !s.has_textbook) return;
     if (busy) return; // guard against a second fetch while one is in flight
+    setCandidatePick(null);
+    // resolveNotionPageId keeps the clicked UZ page authoritative for UZ output
+    // and translates cross-language only when a single textbook part exists
+    // (notion-multipart-subject-clobber-1). Multi-part chips are disabled below,
+    // so a null here is a defensive guard.
+    const langMap = s.app_subject ? (availLangs?.[s.app_subject] ?? null) : null;
+    const pageId = resolveNotionPageId(s.page_id, language, langMap);
+    if (pageId == null) {
+      toast.error("This language has multiple textbook parts — pick a specific part or upload the PDF directly.");
+      return;
+    }
+    // File-level disambiguation layer (BE-19 task 6): the resolved part may
+    // itself carry >1 candidate PDF in its best rank tier (e.g. two files
+    // that both look like the textbook). Hold the fetch until the operator
+    // picks one; a single best-tier candidate auto-resolves below.
+    const part = partForResolution(s.page_id, language, langMap);
+    const resolution = resolveCandidate(part);
+    if (resolution.status === "ambiguous") {
+      setCandidatePick({ subject: s, language, candidates: resolution.candidates, selected: null });
+      return;
+    }
+    if (resolution.status === "none") {
+      toast.error("No textbook file found for this language — upload the PDF directly.");
+      return;
+    }
+    await runFetch(s, language, resolution.page_id, resolution.block_id);
+  }
+
+  async function runFetch(s: NotionSubject, language: OutputLanguage, pageId: string, blockId: string) {
     setPendingSubjectId(s.page_id);
     setBusy(true);
     try {
-      // resolveNotionPageId keeps the clicked UZ page authoritative for UZ output
-      // and translates cross-language only when a single textbook part exists
-      // (notion-multipart-subject-clobber-1). Multi-part chips are disabled below,
-      // so a null here is a defensive guard.
-      const langMap = s.app_subject ? (availLangs?.[s.app_subject] ?? null) : null;
-      const pageId = resolveNotionPageId(s.page_id, language, langMap);
-      if (pageId == null) {
-        toast.error("This language has multiple textbook parts — pick a specific part or upload the PDF directly.");
-        setBusy(false);
-        setPendingSubjectId(null);
-        return;
-      }
       const book = await api.fetchBookFromNotion(
         pageId,
         nGrade,
         language !== "uz" ? language : undefined,
+        blockId,
       );
+      for (const w of book.warnings ?? []) toast.warning(w);
       toast.success("Fetched.");
       navigate(`/book/${book.id}`);
     } catch (e) {
+      // A stale-crawl ambiguous_textbook 422 lands here too — the message is
+      // already extracted from the dict-shaped detail by api.ts; the picker
+      // self-heals on the next available-languages refresh.
       toast.error(e instanceof Error ? e.message : "Fetch failed");
       setBusy(false);
       setPendingSubjectId(null);
+    } finally {
+      setCandidatePick(null);
     }
   }
 
@@ -476,6 +520,65 @@ export function UploadPage() {
                                         </button>
                                       );
                                     })}
+                                  </div>
+                                )}
+                                {/* File-level candidate picker — shown only when the resolved
+                                    part carries >1 file in its best rank tier. Prepare stays
+                                    disabled with a hint until a candidate is picked. */}
+                                {usable && candidatePick && candidatePick.subject.page_id === s.page_id && (
+                                  <div className="mt-3 flex flex-col gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] p-3">
+                                    <span className="text-xs text-white/60">
+                                      Multiple {LANG_LABEL[candidatePick.language]} files found for this subject
+                                      — pick which one to fetch.
+                                    </span>
+                                    <Select
+                                      value={candidatePick.selected?.block_id ?? ""}
+                                      onValueChange={(blockId) => {
+                                        const selected =
+                                          candidatePick.candidates.find((c) => c.block_id === blockId) ?? null;
+                                        setCandidatePick({ ...candidatePick, selected });
+                                      }}
+                                    >
+                                      <SelectTrigger className={SELECT_TRIGGER}>
+                                        <SelectValue placeholder="Choose a file" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {candidatePick.candidates.map((c) => (
+                                          <SelectItem key={c.block_id} value={c.block_id}>
+                                            {c.filename}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        disabled={!candidatePick.selected || busy}
+                                        title={!candidatePick.selected ? "Pick a file to continue" : undefined}
+                                        onClick={() =>
+                                          candidatePick.selected &&
+                                          void runFetch(
+                                            candidatePick.subject,
+                                            candidatePick.language,
+                                            candidatePick.selected.page_id,
+                                            candidatePick.selected.block_id,
+                                          )
+                                        }
+                                        className={cn(
+                                          GLASS_BTN,
+                                          !candidatePick.selected && "cursor-not-allowed opacity-50",
+                                        )}
+                                      >
+                                        Fetch selected
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setCandidatePick(null)}
+                                        className={GHOST_BTN}
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
                                   </div>
                                 )}
                               </div>

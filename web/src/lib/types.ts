@@ -113,6 +113,9 @@ export interface Book {
   /** True when the upload/fetch reused an existing book (sha dedup) — no
    *  extraction runs, so the UI must not show a "Preparing" state. */
   deduplicated?: boolean;
+  /** Script-guard advisories / scanned-PDF skip notices from a from-notion
+   *  prepare call; null/absent when there's nothing to warn about. */
+  warnings?: string[] | null;
 }
 
 export interface NotionGrade {
@@ -127,11 +130,26 @@ export interface NotionSubject {
   has_textbook: boolean;
 }
 
+/** One candidate PDF file found for a part: `rank` 0=textbook, 1=neutral,
+ *  2=workbook — lower is more authoritative. `page_id` may be a CHILD page's
+ *  id distinct from the owning part's `page_id` (nested/child-page parts);
+ *  callers must fetch using the CANDIDATE's page_id, not the part's. */
+export interface NotionCandidate {
+  page_id: string;
+  block_id: string;
+  filename: string;
+  rank: number;
+  url?: string;
+}
+
 /** One textbook part under a subject/language (multi-volume subjects have >1). */
 export interface LangPart {
   page_id: string;
   title: string;
   has_textbook: boolean;
+  /** File-level candidates for this part (BE-19 task 6); absent on legacy
+   *  responses predating the candidate crawl. */
+  candidates?: NotionCandidate[];
 }
 
 /** Per-language availability for a subject. `page_id`/`has_textbook` are the

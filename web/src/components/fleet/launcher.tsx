@@ -44,6 +44,7 @@ import { accentOf, subjectLabel, subjectLabelWithVariant } from "@/lib/subjects"
 import type {
   BatchSummary,
   Book,
+  NotionCandidate,
   NotionSubject,
   OutputLanguage,
   RoleTransport,
@@ -56,7 +57,12 @@ import { serveability, providerServeableAnyMode } from "@/lib/serveability";
 import { normalizeProviderTransport } from "@/lib/transport-policy";
 import { type LauncherConfig, loadLauncherConfig, saveLauncherConfig } from "@/lib/launcher-config";
 import { LANG_LABEL, langBadge } from "@/lib/language";
-import { resolveNotionPageId, langChipState } from "@/lib/notion-parts";
+import {
+  langChipState,
+  partForResolution,
+  resolveCandidate,
+  resolveNotionPageId,
+} from "@/lib/notion-parts";
 
 const LBL = "text-xs font-medium uppercase tracking-[0.12em] text-white/45";
 
@@ -79,6 +85,10 @@ export function FleetLauncher({
   const [subjectPageId, setSubjectPageId] = useState("");
   // Language chosen in the Prepare form (null = UZ default, shown as "UZ" chip selected).
   const [prepLang, setPrepLang] = useState<OutputLanguage>("uz");
+  // File-level candidate pick (BE-19 task 6) — only meaningful when the
+  // resolved part's best rank tier has >1 candidate; reset whenever the
+  // subject/language selection changes so a stale pick can't carry over.
+  const [selectedCandidate, setSelectedCandidate] = useState<NotionCandidate | null>(null);
 
   const gradesQ = useQuery({
     queryKey: ["notion-grades"],
@@ -105,9 +115,22 @@ export function FleetLauncher({
     ? (availLangsQ.data?.[pickedSubject.app_subject] ?? null)
     : null;
 
+  // File-level candidate resolution (BE-19 task 6) for the currently-picked
+  // subject/language — derived, not stateful, so it's never stale relative to
+  // subjectPageId/prepLang. "ambiguous" means the resolved part's best rank
+  // tier has >1 candidate PDF and the operator must pick one before Prepare.
+  const resolvedPart = subjectPageId ? partForResolution(subjectPageId, prepLang, subjectLangMap) : null;
+  const candidateResolution = resolveCandidate(resolvedPart);
+  const needsCandidatePick = candidateResolution.status === "ambiguous" && !selectedCandidate;
+
   // Reset prepLang to uz whenever subject changes (so stale selection from
   // a prior subject doesn't carry over as a disabled language).
   // (We reset on subjectPageId change via the Select onValueChange handler.)
+
+  // A stale candidate pick must never survive a subject/language change.
+  useEffect(() => {
+    setSelectedCandidate(null);
+  }, [subjectPageId, prepLang]);
 
   // When the availability map loads (or the picked subject changes), default prepLang
   // to the first language that is actually available for this subject. This prevents
@@ -137,7 +160,35 @@ export function FleetLauncher({
           new Error("This language has multiple textbook parts — pick a specific part or upload the PDF directly."),
         );
       }
-      return api.fetchBookFromNotion(pageId, v.grade, v.language !== "uz" ? v.language : undefined);
+      // File-level disambiguation layer (BE-19 task 6): the resolved part may
+      // itself carry >1 candidate PDF in its best rank tier. The Prepare
+      // button is disabled with a hint until the operator picks one (see the
+      // JSX below), so a missing pick here is a defensive guard, not the
+      // normal path.
+      const part = partForResolution(v.subjectPageId, v.language, subjectLangMap);
+      const resolution = resolveCandidate(part);
+      if (resolution.status === "none") {
+        return Promise.reject(
+          new Error("No textbook file found for this language — upload the PDF directly."),
+        );
+      }
+      if (resolution.status === "ambiguous") {
+        if (!selectedCandidate) {
+          return Promise.reject(new Error("Pick a file to continue."));
+        }
+        return api.fetchBookFromNotion(
+          selectedCandidate.page_id,
+          v.grade,
+          v.language !== "uz" ? v.language : undefined,
+          selectedCandidate.block_id,
+        );
+      }
+      return api.fetchBookFromNotion(
+        resolution.page_id,
+        v.grade,
+        v.language !== "uz" ? v.language : undefined,
+        resolution.block_id,
+      );
     },
     onSuccess: (data) => {
       // Honest feedback on a dedup hit: re-preparing an existing book is
@@ -148,6 +199,7 @@ export function FleetLauncher({
       // today's behavior; the branch lights up once the flag exists).
       const deduped = (data as { deduplicated?: boolean }).deduplicated ?? false;
       toast.success(deduped ? "Book already exists — reusing." : "Preparing — extracting lessons…");
+      for (const w of data.warnings ?? []) toast.warning(w);
       qc.invalidateQueries({ queryKey: ["books"] });
       // Collapse + reset the form — progress now shows in the Tray below.
       setOpen(false);
@@ -155,7 +207,11 @@ export function FleetLauncher({
       setGradeDigits("");
       setSubjectPageId("");
       setPrepLang("uz");
+      setSelectedCandidate(null);
     },
+    // A stale-crawl ambiguous_textbook 422 lands here too, generically — its
+    // message is already extracted from the dict-shaped detail by api.ts. The
+    // picker self-heals on the next available-languages refresh.
     onError: (e) => toast.error(e instanceof Error ? e.message : "Prepare failed"),
   });
 
@@ -352,10 +408,42 @@ export function FleetLauncher({
           </div>
         )}
 
+        {/* Step ③.5 File picker — shown only when the resolved part carries >1
+            candidate file in its best rank tier (BE-19 task 6). Prepare stays
+            disabled with a hint until a candidate is picked. */}
+        {subjectUsable && candidateResolution.status === "ambiguous" && (
+          <div className="flex flex-col gap-1.5">
+            <StepLabel n={3.5}>File</StepLabel>
+            <p className="text-xs text-white/45">
+              Multiple {LANG_LABEL[prepLang]} files found for this subject — pick which one to fetch.
+            </p>
+            <Select
+              value={selectedCandidate?.block_id ?? ""}
+              onValueChange={(blockId) => {
+                const c = candidateResolution.candidates.find((x) => x.block_id === blockId) ?? null;
+                setSelectedCandidate(c);
+              }}
+            >
+              <SelectTrigger className={SELECT_TRIGGER}>
+                <SelectValue placeholder="Choose a file" />
+              </SelectTrigger>
+              <SelectContent>
+                {candidateResolution.candidates.map((c) => (
+                  <SelectItem key={c.block_id} value={c.block_id}>
+                    {c.filename}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
         {/* Step ④ Confirmation line + Prepare */}
         <div className="relative flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-white/55">
-            {subjectUsable && pickedSubject ? (
+            {needsCandidatePick ? (
+              <span className="text-white/35">Pick a file above to continue.</span>
+            ) : subjectUsable && pickedSubject ? (
               <>
                 Preparing{" "}
                 <span className="font-medium text-white">
@@ -373,8 +461,9 @@ export function FleetLauncher({
           </p>
           <button
             type="button"
+            title={needsCandidatePick ? "Pick a file to continue" : undefined}
             className={cn(PRIMARY_BTN, "shrink-0")}
-            disabled={!subjectUsable || prepare.isPending}
+            disabled={!subjectUsable || prepare.isPending || needsCandidatePick}
             onClick={() => prepare.mutate({ subjectPageId, grade: gradeDigits, language: prepLang })}
           >
             {prepare.isPending ? (
