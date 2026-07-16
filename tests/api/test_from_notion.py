@@ -254,7 +254,10 @@ def _ancestry_ok_client():
     available_languages-sourced page ids always produce."""
     inst = MagicMock()
     parents = {"alg": "uz_cont", "uz_cont": "g9", "g9": settings.notion_lessons_root}
-    titles = {"uz_cont": "9 - sinf", "g9": "9-sinf"}
+    # Grade PAGE title uses the LIVE Notion shape "N Grade" (verified via
+    # read-only crawl of the real workspace); the uz language CONTAINER one
+    # level down keeps the separate "N - sinf" convention, untouched.
+    titles = {"uz_cont": "9 - sinf", "g9": "9 Grade"}
     inst.get_page_parent.side_effect = lambda pid: parents.get(pid)
     inst.get_page_title.side_effect = lambda pid: titles.get(pid, "")
     inst.get_child_pages.side_effect = lambda pid: (
@@ -277,6 +280,31 @@ def test_from_notion_happy_path_ancestry_chain_201():
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "alg", "grade": "9"})
+    assert r.status_code == 201
+    ing.assert_awaited_once()
+
+
+def test_from_notion_happy_path_legacy_sinf_grade_title_201():
+    # BE-19 live-acceptance fix: keep accepting the legacy/doc "N-sinf" grade
+    # PAGE title too (robustness against a future rename back), even though
+    # the live workspace uses "N Grade" (covered by the test above).
+    fake = BookOut(id=uuid4(), subject="math-algebra",
+                   original_filename="alg.pdf", status="uploading")
+    inst = MagicMock()
+    parents = {"alg": "uz_cont", "uz_cont": "g7", "g7": settings.notion_lessons_root}
+    titles = {"uz_cont": "7 - sinf", "g7": "7-sinf"}
+    inst.get_page_parent.side_effect = lambda pid: parents.get(pid)
+    inst.get_page_title.side_effect = lambda pid: titles.get(pid, "")
+    inst.get_child_pages.side_effect = lambda pid: (
+        [{"id": "uz_cont", "title": "7 - sinf"}] if pid == "g7" else []
+    )
+    with patch("app.api.v1.books.NotionClientWrapper", return_value=inst), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=(b"%PDF-1.4 x", "alg.pdf")), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "7"})
     assert r.status_code == 201
     ing.assert_awaited_once()
 

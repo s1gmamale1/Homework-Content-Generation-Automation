@@ -264,13 +264,18 @@ def available_languages(client, grade_page_id: str) -> dict[str, dict[str, dict]
     return result
 
 
-# Grade-page title convention: "N-sinf" or "N - sinf" (leading grade number,
-# optional whitespace, hyphen, "sinf") — the SAME shape as the uz language
-# container (`_LANG_CONTAINER_RE["uz"]` == `_SINF_RE`), because in practice a
-# grade page and its uz container are both named "<grade>-sinf"-style; only
-# their POSITION in the walk (grade page is two hops up, not one) tells them
-# apart. Anchored at the start so trailing text ("9-sinf (yangi)") is fine.
-_GRADE_TITLE_RE = re.compile(r"^\s*(\d{1,2})\s*-\s*sinf\b", re.IGNORECASE)
+# Grade-page title convention: the LIVE Notion workspace names grade pages
+# "N Grade" (verified via read-only crawl: ['1 Grade','10 Grade','11 Grade',
+# '2 Grade', ...]) — English suffix, NOT the "N-sinf" shape. That "N-sinf"
+# convention belongs one level DOWN, to the uz language CONTAINER child
+# (`_LANG_CONTAINER_RE["uz"]` == `_SINF_RE`); only the walk POSITION (grade
+# page is two hops up, container one hop up) tells them apart. This regex
+# accepts both the live "N Grade" shape and the legacy/doc "N-sinf" / "N - sinf"
+# shape (robustness against a future rename back) — anchored at the start with
+# an explicit known suffix (never a bare leading number) so trailing text
+# ("9-sinf (yangi)", "9 Grade (new)") is fine but unrelated pages ("10 things
+# to know") can't false-positive.
+_GRADE_TITLE_RE = re.compile(r"^\s*(\d{1,2})\s*(?:-\s*sinf\b|grade\b)", re.IGNORECASE)
 
 
 def _grade_number_from_title(title: str) -> str | None:

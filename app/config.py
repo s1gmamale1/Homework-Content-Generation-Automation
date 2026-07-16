@@ -210,7 +210,9 @@ class Settings(BaseSettings):
     # O‘zbekiston tarixi), matched against the book filename at archive time.
     notion_subject_pages: dict[str, str | dict[str, str]] = Field(default_factory=dict)
     # Root "Lessons" page to crawl for the Fetch-From-Notion browser
-    # (grade -> "N - sinf" -> subject pages with attached textbooks).
+    # (lessons root -> "N Grade" grade pages -> per-language container child
+    # ("N - sinf" uz / "N - класс" ru / "N - english" en) -> subject pages
+    # with attached textbooks).
     notion_lessons_root: str = "2c1998381c768063bc43c84d59c0abf3"
 
     # ─── Per-provider call-count caps, per rolling window ─────────────────
