@@ -20,6 +20,15 @@ in ``tests/integration/test_book_delete_race.py`` against a real Postgres —
 mocking it away here is deliberate, not a gap: this directory's tests were
 never meant to (and mostly can't) exercise real Postgres semantics.
 
+Same reasoning applies to the host-scoped advisory lock (SA-key dead-host
+task 2, ``app.repositories.workers.lock_host_exclusive``): the three
+assignment-state-write routes in ``app/api/v1/sa_keys.py`` (assign/unassign/
+scrub) now take it before their mutation. No-op it here too so the mocked
+route tests under this directory (and the real-DB ones that still run
+through this autouse fixture) aren't affected by an extra lock call; the
+real blocking/contention proof lives in
+``tests/integration/test_assignment_writer_locks.py``.
+
 The three "read -> lock -> re-read" routes (job retry, batch resume, TOC
 retry) also call ``session.expire(obj)`` on the pre-lock object right before
 re-fetching it, to defeat SQLAlchemy's identity-map short-circuit (``Session.
@@ -42,9 +51,11 @@ from sqlalchemy.orm.exc import UnmappedInstanceError
 @pytest.fixture(autouse=True)
 def _noop_book_locks(monkeypatch):
     import app.repositories.books as books_repo
+    import app.repositories.workers as workers_repo
 
     monkeypatch.setattr(books_repo, "lock_book_shared", AsyncMock())
     monkeypatch.setattr(books_repo, "lock_book_exclusive", AsyncMock())
+    monkeypatch.setattr(workers_repo, "lock_host_exclusive", AsyncMock())
 
     real_expire = AsyncSession.expire
 

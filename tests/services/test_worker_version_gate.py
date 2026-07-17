@@ -52,6 +52,14 @@ def _run_claim(worker, *, floor, version):
         "app.services.worker.budget_repo.get_state", AsyncMock(return_value=_mock_state(floor))
     ), patch(
         "app.services.worker.jobs_repo.claim_next_job", claim_mock
+    ), patch(
+        # Claim-side scrub gate (task 3): the shared host lock + tombstone
+        # re-read run BEFORE the budget/version gate this file tests, on the
+        # same mocked `session`. Stub both no-op (no scrub pending) so this
+        # file keeps testing the version gate in isolation.
+        "app.services.worker.workers_repo.lock_host_shared", AsyncMock(return_value=None)
+    ), patch(
+        "app.services.worker.sa_keys_repo.scrub_pending_for_host", AsyncMock(return_value=False)
     ), patch.object(
         code_version, "CODE_VERSION", version
     ):

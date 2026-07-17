@@ -416,6 +416,20 @@ class Worker:
         try:
             async with SessionLocal() as session:
                 async with session.begin():
+                    # Host-scoped SA-key scrub-vs-claim gate (BE-02 lock
+                    # pattern, host namespace): take the SHARED host lock
+                    # first — it serializes against a scrub's EXCLUSIVE lock
+                    # for this same hostname — then re-read the tombstone
+                    # under that lock. If a scrub is pending for this host,
+                    # refuse to claim; the host parks and drains instead of
+                    # racing a credential revoke. The lock is transaction-
+                    # scoped (released on this block's commit/rollback) and
+                    # is held through claim_next_job's SELECT...FOR UPDATE +
+                    # UPDATE below, in the same transaction.
+                    await workers_repo.lock_host_shared(session, self.hostname)
+                    if await sa_keys_repo.scrub_pending_for_host(session, self.hostname):
+                        return None
+
                     # Read the fleet-level budget state once per claim attempt.
                     # If api_paused_at is non-NULL, the fleet gate is active and
                     # no api-spending job may be claimed (cli jobs are unaffected).
@@ -767,30 +781,38 @@ class Worker:
         """Resolve this host's SA-key assignment and apply/scrub it LIVE when it
         changed. Idle-gated: the os.environ swap runs only when no job is in
         flight (len(self._tasks)==0), so no concurrent agent spawn snapshots a
-        torn credential state. Best-effort: any failure is logged, never fatal."""
+        torn credential state. Best-effort: any failure is logged, never fatal.
+
+        The revoke (scrub) path — reading the assignment and (if pending)
+        deferring into `_scrub_if_idle` for the host-wide idle check +
+        destructive clear — runs inside an explicit `session.begin()` owned
+        HERE (the caller), not inside `_scrub_if_idle`: `get_assignment_with_key`'s
+        SELECT already auto-begins a transaction on this session, so a nested
+        `session.begin()` inside `_scrub_if_idle` would raise "a transaction is
+        already begun". Owning the tx here also means `_scrub_if_idle`'s
+        exclusive host lock (task 4) is taken INSIDE this same transaction —
+        the lock only matters if the clear it guards commits/rolls back with
+        it. Both the read and the scrub branch are inside ONE try/except so a
+        malformed or unreadable `.env` (e.g. a UnicodeDecodeError) is logged
+        and swallowed, never propagated: `_sync_sa_key` is called at startup
+        BEFORE the main loop's own guard, so an unwrapped raise here would
+        crash the worker."""
         try:
             async with SessionLocal() as session:
-                asg = await sa_keys_repo.get_assignment_with_key(session, self.hostname)
+                async with session.begin():
+                    asg = await sa_keys_repo.get_assignment_with_key(session, self.hostname)
+                    if asg is None:
+                        return  # non-destructive: keep whatever is currently applied
+                    # Scrub: actively clear this host's key (the revoke path).
+                    # Kept inside this try/except AND this transaction so (a) a
+                    # bad .env read is swallowed like the apply branch below,
+                    # and (b) the exclusive host lock + host-wide idle re-read
+                    # reuse the open transaction.
+                    if asg["scrub"]:
+                        await self._scrub_if_idle(session)
+                        return
         except Exception:
-            logger.warning(f"worker {self.id} sa-key assignment read failed")
-            return
-        if asg is None:
-            return  # non-destructive: keep whatever is currently applied
-
-        # Scrub: actively clear this host's key (the revoke path).
-        if asg["scrub"]:
-            if self._applied_key_sha is not None:
-                if self._tasks:
-                    return  # defer the clear until idle
-                sa_key_apply.clear_credentials_env(os.environ)
-                sa_key_apply.upsert_env_file(
-                    _WORKER_ENV_PATH,
-                    {"GOOGLE_APPLICATION_CREDENTIALS": None, "GOOGLE_CLOUD_PROJECT": None},
-                )
-                sa_key_active_path().unlink(missing_ok=True)
-                _rebind_capabilities()
-                self._applied_key_sha = None
-                logger.warning(f"worker {self.id} SA key SCRUBBED (revoked)")
+            logger.warning(f"worker {self.id} sa-key assignment read/scrub failed")
             return
 
         if asg["sha256"] == self._applied_key_sha:
@@ -816,6 +838,75 @@ class Worker:
             )
         except Exception:
             logger.exception(f"worker {self.id} SA key apply failed")
+
+    async def _scrub_if_idle(self, session) -> None:
+        """Clear this host's persisted SA credentials IF nothing on the host is
+        using them. Called only on the revoke path, inside `_sync_sa_key`'s
+        try/except AND its already-open `session.begin()` transaction (the
+        caller owns the tx — see `_sync_sa_key`'s docstring; this method must
+        NEVER open its own `session.begin()`, it would raise on the already-
+        begun session).
+
+        Four-source residue gate — NOT just the in-memory sha. A worker that
+        restarts while a scrub is pending boots with `_applied_key_sha is None`
+        (never re-learned; the assignment IS the scrub), so an sha-only guard
+        would silently skip the clear forever. Check every place residue could
+        still live: the sha, the on-disk active-key file, either var present in
+        os.environ (presence, not truthiness — a leftover empty-string value is
+        still residue to clean up), or a credential line in the worker's
+        persisted .env file (the one place the old guard could never see).
+
+        These two checks stay FIRST, cheap, and lock-free — no point taking the
+        exclusive host lock (which blocks every in-flight claim on this host)
+        when there is plainly nothing to do or this process itself is busy."""
+        has_residue = (
+            self._applied_key_sha is not None
+            or sa_key_active_path().exists()
+            or "GOOGLE_APPLICATION_CREDENTIALS" in os.environ
+            or "GOOGLE_CLOUD_PROJECT" in os.environ
+            or sa_key_apply.env_file_has_credentials(_WORKER_ENV_PATH)
+        )
+        if not has_residue:
+            return  # already clean — no churn, no per-heartbeat log spam
+        if self._tasks:
+            return  # THIS process is busy — defer the clear until idle
+
+        # Host-scoped SA-key scrub-vs-claim gate (BE-02 lock pattern, host
+        # namespace): take the EXCLUSIVE host lock — it serializes against a
+        # job-claim's SHARED lock (`_claim_one`, task 3) for this same
+        # hostname, so the destructive clear below never interleaves with an
+        # in-flight claim. Transaction-scoped (released on this transaction's
+        # commit/rollback, owned by the `_sync_sa_key` caller).
+        await workers_repo.lock_host_exclusive(session, self.hostname)
+
+        # Re-read the tombstone UNDER the lock: `_sync_sa_key`'s first read
+        # happened before we waited for the lock, so a concurrent assign/
+        # unassign could have cleared it in the meantime. If it's gone, this
+        # residue now belongs to a live assignment — abort the clear.
+        if not await sa_keys_repo.scrub_pending_for_host(session, self.hostname):
+            return
+
+        # HOST-WIDE idle gate. active.json and the .env pair are shared by EVERY
+        # worker process on this host (an embedded + a standalone worker can
+        # share one hostname), but `self._tasks` only sees OUR jobs. Deleting
+        # the shared credential files while a sibling process is mid-spawn would
+        # break its next agent call. Defer while any process on this host is
+        # running a job. `claimed_by` is `hostname:pid`, so this counts sibling
+        # pids too. Re-read UNDER the same exclusive lock so a claim that wins
+        # the lock race first is always reflected here — no gap between the
+        # lock and this count. (On a DB error the outer try/except defers —
+        # fail-safe: we never scrub under uncertainty.)
+        if await jobs_repo.count_active_for_host(session, self.hostname) > 0:
+            return
+        sa_key_apply.clear_credentials_env(os.environ)
+        sa_key_apply.upsert_env_file(
+            _WORKER_ENV_PATH,
+            {"GOOGLE_APPLICATION_CREDENTIALS": None, "GOOGLE_CLOUD_PROJECT": None},
+        )
+        sa_key_active_path().unlink(missing_ok=True)
+        _rebind_capabilities()
+        self._applied_key_sha = None
+        logger.warning(f"worker {self.id} SA key SCRUBBED (revoked)")
 
     async def _drain(self) -> None:
         """Wait for in-flight tasks to finish before returning. Bounded by

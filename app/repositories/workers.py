@@ -8,11 +8,53 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import delete, exists, func, select, update
+from sqlalchemy import delete, exists, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.worker import WorkerNode
+
+
+async def lock_host_shared(session: AsyncSession, hostname: str) -> None:
+    """Host-scoped Postgres advisory lock, SHARED form (BE-02 book-lock
+    pattern, host key namespace instead of book).
+
+    Taken by the job-claim path so worker job-claiming on a host serializes
+    against a credential scrub for that same host (`lock_host_exclusive`,
+    taken by the scrub path) instead of interleaving with it. Concurrent
+    SHARED holders never block each other — multiple claims on the same
+    host can proceed in parallel — but a SHARED holder blocks (and is
+    blocked by) the EXCLUSIVE holder.
+
+    `pg_advisory_xact_lock_shared` is transaction-scoped: it releases
+    automatically on commit/rollback, so the caller MUST take it inside the
+    same transaction that performs (and commits) its claim — never take it
+    and then return without committing/rolling back soon after.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock_shared(hashtext(:key))"),
+        {"key": f"host:{hostname}"},
+    )
+
+
+async def lock_host_exclusive(session: AsyncSession, hostname: str) -> None:
+    """Host-scoped Postgres advisory lock, EXCLUSIVE form (BE-02 book-lock
+    pattern, host key namespace instead of book).
+
+    Taken by the SA-key scrub path at the top of its transaction, before it
+    clears the shared credential files for that host. Blocks (and is
+    blocked by) any `lock_host_shared` holder (a job claim in flight on
+    this host), and blocks any other `lock_host_exclusive` holder — so two
+    concurrent scrubs, or a scrub racing a claim, for the same host always
+    serialize instead of interleaving. Same key namespace as
+    `lock_host_shared` (`f"host:{hostname}"`) so the two forms actually
+    contend with each other; transaction-scoped, released on
+    commit/rollback.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"host:{hostname}"},
+    )
 
 
 def is_online(
