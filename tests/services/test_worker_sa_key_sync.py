@@ -434,6 +434,71 @@ async def test_restarted_worker_scrubs_persisted_key(monkeypatch, tmp_path):
     assert worker.CAPABILITIES["can_gemini_api"] is False
 
 
+@pytest.mark.asyncio
+async def test_scrub_clear_takes_lock_before_reads_and_clear(monkeypatch, tmp_path):
+    """Ordering oracle (reviewer finding): `_scrub_if_idle` must take the
+    exclusive host lock BEFORE re-reading `scrub_pending_for_host` and
+    `count_active_for_host`, and the destructive clear must come LAST — the
+    whole point of the lock is to serialize the re-reads + clear against a
+    concurrent claim. Nothing previously asserted call order: the autouse
+    fixture stubs `lock_host_exclusive` with a plain AsyncMock that's never
+    checked, so deleting the lock call or reordering the re-reads left the
+    suite green. This records the actual call sequence and pins it."""
+    import app.config as config
+    monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
+
+    for k in ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GEMINI_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+
+    envfile = tmp_path / ".env"
+    monkeypatch.setattr(worker, "_WORKER_ENV_PATH", envfile, raising=False)
+
+    active_path = tmp_path / "sa_keys" / "active.json"
+    active_path.parent.mkdir(parents=True, exist_ok=True)
+    active_path.write_text('{"type":"service_account"}')
+
+    w = worker.Worker(concurrency=1)
+    w._tasks = set()  # idle
+    w._applied_key_sha = None
+
+    monkeypatch.setattr(worker, "SessionLocal", lambda: _FakeSession())
+
+    async def fake_lookup(session, hostname):
+        return _scrub_assignment()
+
+    monkeypatch.setattr(worker.sa_keys_repo, "get_assignment_with_key", fake_lookup)
+
+    order = []
+
+    async def _record_lock(session, hostname):
+        order.append("lock")
+
+    async def _record_scrub_pending(session, hostname):
+        order.append("scrub_pending")
+        return True
+
+    async def _record_count_active(session, hostname):
+        order.append("count_active")
+        return 0
+
+    def _record_clear(env):
+        order.append("clear")
+
+    lock_mock = AsyncMock(side_effect=_record_lock)
+    monkeypatch.setattr(worker.workers_repo, "lock_host_exclusive", lock_mock)
+    monkeypatch.setattr(worker.sa_keys_repo, "scrub_pending_for_host", _record_scrub_pending)
+    monkeypatch.setattr(worker.jobs_repo, "count_active_for_host", _record_count_active)
+    monkeypatch.setattr(apply_mod, "clear_credentials_env", _record_clear)
+
+    await w._sync_sa_key()
+
+    assert order == ["lock", "scrub_pending", "count_active", "clear"], (
+        "lock must be taken FIRST, both re-reads must happen UNDER the lock, "
+        "and the destructive clear must come LAST"
+    )
+    lock_mock.assert_awaited_once()
+
+
 # ── env_file_has_credentials ──────────────────────────────────────────────
 def test_env_file_has_credentials_missing_file(tmp_path):
     assert apply_mod.env_file_has_credentials(tmp_path / "nope.env") is False
