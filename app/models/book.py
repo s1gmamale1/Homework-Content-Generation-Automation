@@ -33,6 +33,15 @@ class Book(Base, UUIDPK, Timestamps):
     # Post-TOC-extract vision validator result: verified | mismatch | skipped | NULL (not yet run).
     toc_validation: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     toc_validation_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Stamped by toc_extractor.run's success path (final_status == "toc_ready")
+    # so the system-aware "Prepare a subject" dialog can tell an already
+    # TOC-extracted book apart from a stale/never-extracted one. Cleared on
+    # /toc/retry (Task 3, prepare-status-redo — not touched here). The
+    # separate /toc/accept promotion path (toc_review -> toc_ready) does NOT
+    # stamp this yet — that's also Task 3's lifecycle work.
+    toc_ready_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     toc_entries: Mapped[list["TOCEntry"]] = relationship(
         back_populates="book",

@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowRight,
@@ -11,6 +12,7 @@ import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { PrepareStatusPanel } from "@/components/notion/prepare-status-panel";
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import {
   Select,
@@ -23,15 +25,20 @@ import { api } from "@/lib/api";
 import { LANG_LABEL } from "@/lib/language";
 import { fadeUpItem, staggerContainer, tapScale } from "@/lib/motion";
 import {
+  candidateSelectionState,
   langChipState,
   partForResolution,
   resolveCandidate,
   resolveNotionPageId,
 } from "@/lib/notion-parts";
+import {
+  candidatePrepareStatus,
+  hasMidFlightBook,
+  proceedBlockedTooltip,
+  resolvedPrepareStatus,
+} from "@/lib/prepare-status";
 import { subjectLabel } from "@/lib/subjects";
 import {
-  type AvailableLanguages,
-  type NotionCandidate,
   type NotionGrade,
   type NotionSubject,
   type OutputLanguage,
@@ -45,15 +52,12 @@ import { cn } from "@/lib/utils";
  *  best rank tier (BE-19 task 6) — the operator must choose which file
  *  before the fetch proceeds. */
 interface CandidatePick {
-  subject: NotionSubject;
+  subjectPageId: string;
+  appSubject: string;
   language: OutputLanguage;
-  // The OWNING PART's page_id (not any candidate's) — this is what must be
-  // submitted as subject_page_id to /from-notion. A child-page candidate's
-  // own page_id fails backend ancestry validation (its direct parent is the
-  // subject page, not the language container) — BE-19 final-review critical fix.
-  partPageId: string;
-  candidates: NotionCandidate[];
-  selected: NotionCandidate | null;
+  // Candidate objects, option lists, and the owning part are all resolved
+  // from current availability; state retains stable primitives only.
+  selectedBlockId: string | null;
 }
 
 const GRADES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"];
@@ -70,15 +74,41 @@ export function UploadPage() {
   const [busy, setBusy] = useState(false);
 
   const [nGrade, setNGrade] = useState("");
+  const [nGradePageId, setNGradePageId] = useState("");
   const [grades, setGrades] = useState<NotionGrade[] | null>(null);
   const [subjects, setSubjects] = useState<NotionSubject[] | null>(null);
   const [pendingSubjectId, setPendingSubjectId] = useState<string | null>(null);
   const [nErr, setNErr] = useState<string | null>(null);
-  // Available language containers per app_subject for the picked Notion grade.
-  const [availLangs, setAvailLangs] = useState<AvailableLanguages | null>(null);
   // Set when the resolved part has >1 candidate file in its best rank tier —
   // the fetch is held until the operator picks one.
   const [candidatePick, setCandidatePick] = useState<CandidatePick | null>(null);
+
+  // Available language containers per app_subject for the picked Notion grade —
+  // also carries each part's system state (task 4: prepared/preparing/needs
+  // review/failed) that drives the PREPARED/… chips below. Polled while a
+  // Notion grade is picked AND a linked part is still mid-flight, so leaving
+  // and reopening this page (or just waiting) reflects reality instead of a
+  // stale one-shot fetch — same enabled-gated pattern as BatchLessonList.
+  const availLangsQ = useQuery({
+    queryKey: ["notion-avail-langs", nGradePageId],
+    queryFn: () => api.fetchAvailableLanguages(nGradePageId),
+    enabled: source === "notion" && !!nGradePageId,
+    refetchInterval: (query) =>
+      source === "notion" && hasMidFlightBook(query.state.data) ? 4000 : false,
+  });
+  const availLangs = availLangsQ.data ?? null;
+  const candidatePickLangMap = candidatePick
+    ? (availLangs?.[candidatePick.appSubject] ?? null)
+    : null;
+  const candidatePickPart = candidatePick
+    ? partForResolution(candidatePick.subjectPageId, candidatePick.language, candidatePickLangMap)
+    : null;
+  const candidatePickResolution = resolveCandidate(candidatePickPart);
+  const liveCandidateSelection = candidateSelectionState(
+    candidatePickPart,
+    candidatePickResolution,
+    candidatePick?.selectedBlockId,
+  );
 
   const onDrop = useCallback((accepted: File[]) => {
     if (accepted[0]) setFile(accepted[0]);
@@ -125,19 +155,15 @@ export function UploadPage() {
 
   async function pickGrade(gradePageId: string, gradeTitle: string) {
     setNGrade(gradeTitle.replace(/\D/g, ""));
+    setNGradePageId(gradePageId);
     setSubjects(null);
     setPendingSubjectId(null);
-    setAvailLangs(null);
     setCandidatePick(null);
     setNErr(null);
     try {
-      // Fetch subjects and available-languages in parallel.
-      const [subs, langs] = await Promise.all([
-        api.listNotionSubjects(gradePageId),
-        api.fetchAvailableLanguages(gradePageId).catch(() => null),
-      ]);
-      setSubjects(subs);
-      setAvailLangs(langs);
+      // Available-languages is fetched by availLangsQ (react-query, keyed on
+      // nGradePageId above) — only the subject list is imperative here.
+      setSubjects(await api.listNotionSubjects(gradePageId));
     } catch (e) {
       setNErr(e instanceof Error ? e.message : "Could not load subjects");
     }
@@ -167,20 +193,36 @@ export function UploadPage() {
       toast.error("No textbook file found for this language — upload the PDF directly.");
       return;
     }
+    // Defense-in-depth (PR #99 re-gate blocker 1): block entry ONLY when the
+    // part resolves to a SINGLE candidate (non-ambiguous) that's already
+    // prepared/preparing/needs-review/failed — never let a stray click
+    // re-fire /from-notion on an already-tracked book. A MIXED ambiguous part
+    // (>1 candidate in the best tier, exactly one of them linked) makes the
+    // backend emit a part-level PREPARED rollup even though the part's OTHER
+    // candidates are still perfectly preparable — gating entry on the part
+    // rollup here would strand them behind a picker that never opens. So an
+    // ambiguous resolution ALWAYS continues into the picker branch below; the
+    // per-candidate proceed gate applies once a specific file is picked, at
+    // "Fetch selected".
+    const exactStatus = resolvedPrepareStatus(
+      part,
+      candidateSelectionState(part, resolution, null).active,
+    );
+    if (resolution.status !== "ambiguous" && !exactStatus.actions.proceed) return;
     if (resolution.status === "ambiguous") {
-      // The owning PART's page_id (not any candidate's) is what must be
-      // submitted to /from-notion — a child-page candidate's own page_id
-      // fails backend ancestry validation (BE-19 final-review critical fix).
-      // Stash it now so the "Fetch selected" handler below never needs to
-      // re-derive `part` from stale state.
-      setCandidatePick({ subject: s, language, partPageId: part.page_id, candidates: resolution.candidates, selected: null });
+      setCandidatePick({
+        subjectPageId: s.page_id,
+        appSubject: s.app_subject,
+        language,
+        selectedBlockId: null,
+      });
       return;
     }
-    await runFetch(s, language, resolution.page_id, resolution.block_id);
+    await runFetch(s.page_id, language, resolution.page_id, resolution.block_id);
   }
 
-  async function runFetch(s: NotionSubject, language: OutputLanguage, pageId: string, blockId: string) {
-    setPendingSubjectId(s.page_id);
+  async function runFetch(subjectPageId: string, language: OutputLanguage, pageId: string, blockId: string) {
+    setPendingSubjectId(subjectPageId);
     setBusy(true);
     try {
       const book = await api.fetchBookFromNotion(
@@ -477,6 +519,17 @@ export function UploadPage() {
                                 : null;
                             // Language availability for this subject (null = map not yet loaded).
                             const langMap = s.app_subject ? (availLangs?.[s.app_subject] ?? null) : null;
+                            // The ambiguous-file picker's current selection (if any) for THIS
+                            // subject — its own status governs the "Fetch selected" gate
+                            // (PR #99 gate finding 3), not the part rollup. Re-resolved fresh
+                            // by block_id every render (PR #99 re-gate blocker 2a) so a poll
+                            // update to the selected candidate's book_status is reflected
+                            // instead of showing a stale snapshot forever.
+                            const pickedForThisSubject =
+                              candidatePick?.subjectPageId === s.page_id ? candidatePick : null;
+                            const selectedFresh = pickedForThisSubject ? liveCandidateSelection.selected : null;
+                            const candStatus = selectedFresh ? candidatePrepareStatus(selectedFresh) : null;
+                            const candBlockedTooltip = candStatus ? proceedBlockedTooltip(candStatus) : undefined;
                             return (
                               <div
                                 key={s.page_id}
@@ -504,23 +557,48 @@ export function UploadPage() {
                                     {(["uz", "ru", "en"] as OutputLanguage[]).map((lang) => {
                                       const mapLoaded = availLangs != null;
                                       const { available, multiPart, partCount } = langChipState(lang, langMap, mapLoaded);
+                                      // System-aware gate (PR #99 gate finding 2): the language
+                                      // chip IS the primary prepare action here (no separate
+                                      // "Prepare" button like launcher.tsx), so it must respect
+                                      // the resolved part's own status the same way. An
+                                      // as-yet-unresolved two-linked part still falls back to
+                                      // `textbook_ready`/proceed:true, so this never blocks
+                                      // entering the file picker — only a resolved single part
+                                      // that's already prepared/preparing/needs-review/failed.
+                                      const part = partForResolution(s.page_id, lang, langMap);
+                                      // An ambiguous (>1 candidate) resolution must never be
+                                      // entry-blocked by the part-level rollup (PR #99 re-gate
+                                      // blocker 1 — the mixed one-linked-candidate case): the
+                                      // per-candidate gate takes over once inside the picker.
+                                      const resolution = resolveCandidate(part);
+                                      const exactStatus = resolvedPrepareStatus(
+                                        part,
+                                        candidateSelectionState(part, resolution, null).active,
+                                      );
+                                      const ambiguous = resolution.status === "ambiguous";
+                                      const entryBlocked = !ambiguous && !exactStatus.actions.proceed;
+                                      const blockedTooltip = ambiguous ? undefined : proceedBlockedTooltip(exactStatus);
                                       const tooltip = multiPart
                                         ? `${partCount} ${LANG_LABEL[lang]} textbook parts in Notion — pick the specific part from that language's subject list, or upload the PDF directly.`
                                         : !available && lang === "en"
                                           ? "No English page yet — create an English page (with the textbook) in Notion, or upload the PDF directly."
                                           : !available
                                             ? `No ${LANG_LABEL[lang]} textbook available in Notion for this subject.`
-                                            : undefined;
+                                            : blockedTooltip;
                                       return (
                                         <button
                                           key={lang}
                                           type="button"
                                           title={tooltip}
-                                          disabled={!available || busy}
-                                          onClick={() => void pickSubject(s, lang)}
+                                          disabled={!available || busy || entryBlocked}
+                                          onClick={() => {
+                                            // Defense-in-depth — see the disabled= condition above.
+                                            if (entryBlocked) return;
+                                            void pickSubject(s, lang);
+                                          }}
                                           className={cn(
                                             "flex items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs font-medium transition-all",
-                                            available
+                                            available && !entryBlocked
                                               ? "border-white/[0.14] bg-white/[0.05] text-white/75 hover:border-white/[0.25] hover:bg-white/[0.1] hover:text-white"
                                               : "cursor-not-allowed border-white/[0.06] bg-transparent text-white/25 opacity-50",
                                           )}
@@ -532,51 +610,111 @@ export function UploadPage() {
                                     })}
                                   </div>
                                 )}
+                                {/* System-aware chips (task 5): a language above may resolve
+                                    to a part already PREPARED/PREPARING/NEEDS REVIEW/FAILED —
+                                    renders nothing for an unprepared (textbook-ready) part, so
+                                    the button row above is unchanged for that (common) case.
+                                    When the ambiguous-file picker below has an explicit
+                                    selection for THIS subject+language, that candidate's own
+                                    status governs instead of the part rollup (PR #99 gate
+                                    finding 3 — resolvedPrepareStatus). */}
+                                {usable && (
+                                  <div className="mt-2 flex flex-col gap-2">
+                                    {(["uz", "ru", "en"] as OutputLanguage[]).map((lang) => {
+                                      const part = partForResolution(s.page_id, lang, langMap);
+                                      const selectedForLang =
+                                        pickedForThisSubject?.language === lang
+                                          ? (
+                                              selectedFresh ??
+                                              (candidatePickResolution.status === "resolved"
+                                                ? liveCandidateSelection.active
+                                                : null)
+                                            )
+                                          : candidateSelectionState(
+                                              part,
+                                              resolveCandidate(part),
+                                              null,
+                                            ).active;
+                                      const status = resolvedPrepareStatus(part, selectedForLang);
+                                      if (
+                                        status.panel.kind === "no_textbook" ||
+                                        status.panel.kind === "textbook_ready"
+                                      ) {
+                                        return null;
+                                      }
+                                      return (
+                                        <div key={lang} className="flex items-start gap-2">
+                                          <span className="mt-0.5 font-mono text-[0.6rem] uppercase tracking-wide text-white/40">
+                                            {lang}
+                                          </span>
+                                          <PrepareStatusPanel status={status} />
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
                                 {/* File-level candidate picker — shown only when the resolved
                                     part carries >1 file in its best rank tier. Prepare stays
                                     disabled with a hint until a candidate is picked. */}
-                                {usable && candidatePick && candidatePick.subject.page_id === s.page_id && (
+                                {usable && candidatePick && candidatePick.subjectPageId === s.page_id && (
                                   <div className="mt-3 flex flex-col gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] p-3">
                                     <span className="text-xs text-white/60">
-                                      Multiple {LANG_LABEL[candidatePick.language]} files found for this subject
-                                      — pick which one to fetch.
+                                      {candidatePickResolution.status === "ambiguous"
+                                        ? `Multiple ${LANG_LABEL[candidatePick.language]} files found for this subject — pick which one to fetch.`
+                                        : "Available files changed. Cancel and choose the language again to refresh the file choice."}
                                     </span>
                                     <Select
-                                      value={candidatePick.selected?.block_id ?? ""}
+                                      value={liveCandidateSelection.selected?.block_id ?? ""}
                                       onValueChange={(blockId) => {
-                                        const selected =
-                                          candidatePick.candidates.find((c) => c.block_id === blockId) ?? null;
-                                        setCandidatePick({ ...candidatePick, selected });
+                                        setCandidatePick({ ...candidatePick, selectedBlockId: blockId });
                                       }}
+                                      disabled={candidatePickResolution.status !== "ambiguous"}
                                     >
                                       <SelectTrigger className={SELECT_TRIGGER}>
                                         <SelectValue placeholder="Choose a file" />
                                       </SelectTrigger>
                                       <SelectContent>
-                                        {candidatePick.candidates.map((c) => (
+                                        {liveCandidateSelection.candidates.map((c) => (
                                           <SelectItem key={c.block_id} value={c.block_id}>
                                             {c.filename}
                                           </SelectItem>
                                         ))}
                                       </SelectContent>
                                     </Select>
+                                    {/* The selected candidate's own system state (PR #99 gate
+                                        finding 3) — renders nothing when it's the common
+                                        unprepared (textbook-ready) case. */}
+                                    {candStatus &&
+                                      candStatus.panel.kind !== "no_textbook" &&
+                                      candStatus.panel.kind !== "textbook_ready" && (
+                                        <PrepareStatusPanel status={candStatus} />
+                                      )}
                                     <div className="flex items-center gap-2">
                                       <button
                                         type="button"
-                                        disabled={!candidatePick.selected || busy}
-                                        title={!candidatePick.selected ? "Pick a file to continue" : undefined}
-                                        onClick={() =>
-                                          candidatePick.selected &&
-                                          void runFetch(
-                                            candidatePick.subject,
-                                            candidatePick.language,
-                                            candidatePick.partPageId,
-                                            candidatePick.selected.block_id,
-                                          )
+                                        disabled={!selectedFresh || busy || !candStatus?.actions.proceed}
+                                        title={
+                                          liveCandidateSelection.invalidated
+                                            ? "Available files changed — choose the language and file again"
+                                            : !selectedFresh
+                                              ? "Pick a file to continue"
+                                              : candBlockedTooltip
                                         }
+                                        onClick={() => {
+                                          // Require a current best-tier candidate and its
+                                          // explicit proceed permission. A stale id is inert.
+                                          if (!selectedFresh || !candStatus?.actions.proceed || !candidatePickPart) return;
+                                          void runFetch(
+                                            candidatePick.subjectPageId,
+                                            candidatePick.language,
+                                            candidatePickPart.page_id,
+                                            selectedFresh.block_id,
+                                          );
+                                        }}
                                         className={cn(
                                           GLASS_BTN,
-                                          !candidatePick.selected && "cursor-not-allowed opacity-50",
+                                          (!selectedFresh || !candStatus?.actions.proceed) &&
+                                            "cursor-not-allowed opacity-50",
                                         )}
                                       >
                                         Fetch selected

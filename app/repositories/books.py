@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Book
+from app.models.base import _utcnow
 
 
 async def lock_book_shared(session: AsyncSession, book_id: UUID) -> None:
@@ -84,6 +85,20 @@ async def get(session: AsyncSession, book_id: UUID) -> Optional[Book]:
     return await session.get(Book, book_id)
 
 
+async def get_many(session: AsyncSession, book_ids: list[UUID]) -> dict[UUID, Book]:
+    """Batch fetch: `id -> Book` for the given ids, ONE query for the whole
+    list (GK2 batch-load expectation — backs the Notion availability
+    enrichment route, which resolves however many distinct linked books a
+    crawl surfaces without a per-candidate/per-part query). Empty input
+    short-circuits without touching the session, so an unlinked-everything
+    crawl response never opens a query at all."""
+    if not book_ids:
+        return {}
+    stmt = select(Book).where(Book.id.in_(book_ids))
+    rows = (await session.execute(stmt)).scalars().all()
+    return {b.id: b for b in rows}
+
+
 async def get_with_toc(session: AsyncSession, book_id: UUID) -> Optional[Book]:
     stmt = select(Book).where(Book.id == book_id).options(selectinload(Book.toc_entries))
     return (await session.execute(stmt)).scalar_one_or_none()
@@ -117,6 +132,19 @@ async def set_status(
     book.error_message = error_message
 
 
+async def set_toc_ready_at(session: AsyncSession, book_id: UUID) -> None:
+    """Stamp `toc_ready_at=now()` on the extractor success path (toc_extractor.run,
+    final_status == "toc_ready") AND on the /toc/accept promotion path
+    (toc_review -> toc_ready, Task 3). Used by the system-aware "Prepare a
+    subject" dialog (task 2) to distinguish an already-extracted book from a
+    stale one. The mirror-image clear (`clear_toc_validation_and_ready`) runs
+    on /toc/retry after its guards pass."""
+    book = await session.get(Book, book_id)
+    if book is None:
+        return
+    book.toc_ready_at = _utcnow()
+
+
 async def set_toc_validation(
     session: AsyncSession, book_id: UUID, verdict: Optional[str], detail: Optional[str]
 ) -> None:
@@ -125,6 +153,22 @@ async def set_toc_validation(
         return
     book.toc_validation = verdict
     book.toc_validation_detail = detail
+
+
+async def clear_toc_validation_and_ready(session: AsyncSession, book_id: UUID) -> None:
+    """Wipe the prior extraction's audit trail (`toc_validation` +
+    `toc_validation_detail`) and the `toc_ready_at` stamp ahead of a re-extraction.
+    Called by POST /toc/retry (Task 3, prepare-status-redo) AFTER all its guards
+    pass — a redo replaces the old verdict rather than carrying it forward
+    stale. The mirror-image stamp (`set_toc_ready_at`) is written by the
+    extractor's success path and by POST /toc/accept; this is the only place
+    that clears it."""
+    book = await session.get(Book, book_id)
+    if book is None:
+        return
+    book.toc_validation = None
+    book.toc_validation_detail = None
+    book.toc_ready_at = None
 
 
 async def list_running_for_sweep(session: AsyncSession) -> list[Book]:

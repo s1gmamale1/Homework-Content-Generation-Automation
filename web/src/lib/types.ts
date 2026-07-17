@@ -130,11 +130,31 @@ export interface NotionSubject {
   has_textbook: boolean;
 }
 
+/** System-state fields the backend enriches onto a candidate — and, when
+ *  exactly one candidate resolves unambiguously, onto its owning part too —
+ *  whenever `(page_id, block_id)` is already linked to a book row
+ *  (`book_notion_sources`, worklog 0144 task 4). Absent/null when unlinked.
+ *  Drives the "Prepare a subject" dialog's system-aware chips (task 5,
+ *  `lib/prepare-status.ts`). */
+export interface BookLinkState {
+  book_id?: string | null;
+  book_status?: BookStatus | null;
+  toc_validation?: "verified" | "mismatch" | "skipped" | null;
+  /** Whole-book TOC row count as of the last extraction. */
+  toc_total?: number | null;
+  /** ISO timestamp of the toc_ready lifecycle stamp (task 3); null if never
+   *  accepted (or accepted before the stamp existed). */
+  toc_ready_at?: string | null;
+  /** Count of homework jobs that would be orphaned by a TOC redo — mirrors
+   *  the `toc_retry_blocked_by_jobs` 409's `count`. 0 = redo is safe. */
+  redo_blocked_by_jobs?: number | null;
+}
+
 /** One candidate PDF file found for a part: `rank` 0=textbook, 1=neutral,
  *  2=workbook — lower is more authoritative. `page_id` may be a CHILD page's
  *  id distinct from the owning part's `page_id` (nested/child-page parts);
  *  callers must fetch using the CANDIDATE's page_id, not the part's. */
-export interface NotionCandidate {
+export interface NotionCandidate extends BookLinkState {
   page_id: string;
   block_id: string;
   filename: string;
@@ -143,13 +163,18 @@ export interface NotionCandidate {
 }
 
 /** One textbook part under a subject/language (multi-volume subjects have >1). */
-export interface LangPart {
+export interface LangPart extends BookLinkState {
   page_id: string;
   title: string;
   has_textbook: boolean;
   /** File-level candidates for this part (BE-19 task 6); absent on legacy
    *  responses predating the candidate crawl. */
   candidates?: NotionCandidate[];
+  /** True when EXACTLY ONE of this part's candidates resolved to a linked
+   *  book — the part-level `BookLinkState` fields above are the rollup for
+   *  that one book. Absent (or two candidates linked to different books) →
+   *  no rollup; only the per-candidate detail is trustworthy. */
+  prepared?: boolean;
 }
 
 /** Per-language availability for a subject. `page_id`/`has_textbook` are the

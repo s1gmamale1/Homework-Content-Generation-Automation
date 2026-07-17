@@ -86,6 +86,45 @@ export type CandidateResolution =
   | { status: "ambiguous"; candidates: NotionCandidate[] }
   | { status: "none" };
 
+/** Reconcile a picker selection against the CURRENT best-rank tier.
+ *
+ * Consumers keep only `selectedBlockId` in state. Candidate objects and
+ * options always come from the latest availability response, so a removed or
+ * re-ranked candidate is invalidated instead of being submitted from a stale
+ * snapshot.
+ */
+export interface CandidateSelectionState {
+  candidates: NotionCandidate[];
+  selected: NotionCandidate | null;
+  /** Candidate whose system status governs the prepare action: the explicit
+   *  current selection for an ambiguous tier, or the exact auto-resolved
+   *  candidate for a single best tier. `null` only for none/legacy shapes. */
+  active: NotionCandidate | null;
+  needsSelection: boolean;
+  invalidated: boolean;
+}
+
+export function candidateSelectionState(
+  part: LangPart | null | undefined,
+  resolution: CandidateResolution,
+  selectedBlockId: string | null | undefined,
+): CandidateSelectionState {
+  const candidates = resolution.status === "ambiguous" ? resolution.candidates : [];
+  const selected = selectedBlockId
+    ? (candidates.find((candidate) => candidate.block_id === selectedBlockId) ?? null)
+    : null;
+  const active = resolution.status === "resolved" && resolution.block_id
+    ? (part?.candidates?.find((candidate) => candidate.block_id === resolution.block_id) ?? null)
+    : selected;
+  return {
+    candidates,
+    selected,
+    active,
+    needsSelection: resolution.status === "ambiguous" && selected === null,
+    invalidated: !!selectedBlockId && selected === null,
+  };
+}
+
 /** Lowest-rank (most authoritative) tier of a part's candidates: 0=textbook,
  *  1=neutral, 2=workbook. Only ties WITHIN this tier are ambiguous — a rank-0
  *  textbook alongside a rank-2 workbook is not, mirroring the backend's tier

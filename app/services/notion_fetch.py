@@ -5,6 +5,7 @@ crawl + a single file download. sinf-only (Uzbek) for v1."""
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 import httpx
 
@@ -507,10 +508,29 @@ def _select_candidate(candidates: list[dict], block_id: str | None = None) -> di
     return tier[0]
 
 
-def download_textbook(client, subject_page_id: str, block_id: str | None = None) -> tuple[bytes, str]:
+class DownloadedTextbook(NamedTuple):
+    """Result of `download_textbook`: the fetched bytes/filename PLUS the
+    resolved candidate's own (page_id, block_id) — the source identity the
+    caller must link the resulting book to (worklog 0144 task 2).
+
+    `source_page_id`/`source_block_id` are the CANDIDATE's own ids, exactly as
+    `textbook_candidates` recorded them — for a child-page-hosted PDF that's
+    the CHILD page's id, never the submitted subject page id (Task 4's
+    availability enrichment matches on this exact pair)."""
+
+    body: bytes
+    filename: str
+    source_page_id: str
+    source_block_id: str
+
+
+def download_textbook(
+    client, subject_page_id: str, block_id: str | None = None
+) -> DownloadedTextbook:
     """Resolve the subject page's textbook PDF (via `textbook_candidates` +
     `_select_candidate`), reject files larger than the upload cap
-    (settings.max_file_mb), return (bytes, filename).
+    (settings.max_file_mb), return a `DownloadedTextbook` (bytes, filename,
+    source_page_id, source_block_id).
 
     `block_id` selects a specific candidate explicitly (required to resolve an
     ambiguous multi-part page — see `_select_candidate`); omitted, the single
@@ -539,4 +559,7 @@ def download_textbook(client, subject_page_id: str, block_id: str | None = None)
             body = resp.read()
     if len(body) > max_bytes:        # fallback when Content-Length absent
         raise TextbookTooLarge(f"{len(body) / 1048576:.1f} MB > {settings.max_file_mb} MB")
-    return body, filename
+    return DownloadedTextbook(
+        body=body, filename=filename,
+        source_page_id=candidate["page_id"], source_block_id=candidate["block_id"],
+    )

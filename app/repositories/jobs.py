@@ -298,6 +298,25 @@ async def list_for_book(session: AsyncSession, book_id: UUID) -> list[HomeworkJo
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def count_by_book_ids(session: AsyncSession, book_ids: list[UUID]) -> dict[UUID, int]:
+    """Grouped `COUNT(*)` of homework_jobs per book — ANY status, same
+    semantics as `list_for_book`'s /toc/retry blocking guard, just batched:
+    ONE query for the whole list instead of one per book (GK2 batch-load
+    expectation — backs the Notion availability enrichment route's
+    `redo_blocked_by_jobs`). A book with zero referencing jobs is absent from
+    the returned mapping — callers default-0 on lookup. Empty input
+    short-circuits without touching the session."""
+    if not book_ids:
+        return {}
+    stmt = (
+        select(HomeworkJob.book_id, func.count())
+        .where(HomeworkJob.book_id.in_(book_ids))
+        .group_by(HomeworkJob.book_id)
+    )
+    rows = (await session.execute(stmt)).all()
+    return {book_id: count for book_id, count in rows}
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Queue (Postgres-backed work queue using FOR UPDATE SKIP LOCKED)
 # ─────────────────────────────────────────────────────────────────────────

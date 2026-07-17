@@ -9,6 +9,7 @@ from app.auth import get_current_user
 from app.config import settings
 from app.schemas import BookOut
 import app.services.notion_fetch as nf
+import app.api.v1.books as books_api
 
 client = TestClient(app)
 
@@ -24,6 +25,17 @@ def _api_error(status: int, code: str = "validation_error", message: str = "boom
     """Build a real notion_client APIResponseError (the SDK's not-found/other-
     error shape) for exercising the route's 404/502 mapping."""
     return APIResponseError(code, status, message, httpx.Headers(), "")
+
+
+def _dl(body: bytes = b"%PDF-1.4 x", filename: str = "alg.pdf",
+        page_id: str = "alg", block_id: str = "b1") -> nf.DownloadedTextbook:
+    """Build a `DownloadedTextbook` result for patching `download_textbook` —
+    worklog 0144 task 2 changed its return shape from a bare (bytes, filename)
+    tuple to this named result carrying the resolved candidate's own source
+    page/block id."""
+    return nf.DownloadedTextbook(
+        body=body, filename=filename, source_page_id=page_id, source_block_id=block_id,
+    )
 
 
 # Patches `verify_page_ancestry` as a no-op for tests that aren't specifically
@@ -85,7 +97,7 @@ def test_from_notion_happy_path_calls_ingest():
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          _no_ancestry(), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(b"%PDF-1.4 x", "alg.pdf")), \
+               return_value=_dl()), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "alg", "grade": "9"})
@@ -101,7 +113,7 @@ def test_from_notion_threads_block_id_to_download_textbook():
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          _no_ancestry(), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(b"%PDF-1.4 x", "alg.pdf")) as dl, \
+               return_value=_dl()) as dl, \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)):
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "alg", "grade": "9", "block_id": "p2"})
@@ -117,7 +129,7 @@ def test_from_notion_without_block_id_defaults_to_none():
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          _no_ancestry(), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(b"%PDF-1.4 x", "alg.pdf")) as dl, \
+               return_value=_dl()) as dl, \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)):
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "alg", "grade": "9"})
@@ -216,7 +228,7 @@ def test_from_notion_grade_none_stays_legal():
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          _no_ancestry() as ancestry, \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(b"%PDF-1.4 x", "alg.pdf")), \
+               return_value=_dl()), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)):
         r = client.post("/api/v1/books/from-notion", json={"subject_page_id": "alg"})
     assert r.status_code == 201
@@ -281,7 +293,7 @@ def test_from_notion_happy_path_ancestry_chain_201():
     with patch("app.api.v1.books.NotionClientWrapper", return_value=_ancestry_ok_client()), \
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(b"%PDF-1.4 x", "alg.pdf")), \
+               return_value=_dl()), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "alg", "grade": "9"})
@@ -306,7 +318,7 @@ def test_from_notion_happy_path_legacy_sinf_grade_title_201():
     with patch("app.api.v1.books.NotionClientWrapper", return_value=inst), \
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(b"%PDF-1.4 x", "alg.pdf")), \
+               return_value=_dl()), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "alg", "grade": "7"})
@@ -371,6 +383,11 @@ def test_from_notion_child_page_hosted_pdf_prepares_via_subject_page_id(monkeypa
                         json={"subject_page_id": "alg", "grade": "9", "block_id": "b1"})
     assert r.status_code == 201, r.text
     ing.assert_awaited_once()
+    # Binding identity decision (worklog 0144 task 2): the link must be keyed
+    # by the CHILD page's own id ("cp1"), not the submitted subject page id
+    # ("alg") — Task 4's availability enrichment matches candidates by their
+    # OWN (page_id, block_id) as the crawl reports them.
+    assert ing.await_args.kwargs["notion_source"] == ("cp1", "b1")
 
 
 def test_from_notion_ancestry_wrong_grade_422():
@@ -515,7 +532,7 @@ def test_from_notion_grade_none_valid_chain_201():
     with patch("app.api.v1.books.NotionClientWrapper", return_value=inst), \
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(b"%PDF-1.4 x", "alg.pdf")), \
+               return_value=_dl()), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion", json={"subject_page_id": "alg"})
     assert r.status_code == 201
@@ -549,3 +566,204 @@ def test_from_notion_download_other_api_error_502():
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "alg", "grade": "9"})
     assert r.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# Worklog 0144 task 2 — /from-notion upserts the resolved (page, block) ->
+# book link, transactionally. `download_textbook` now returns a
+# `DownloadedTextbook` (bytes, filename, source_page_id, source_block_id);
+# the route threads (source_page_id, source_block_id) into `ingest_pdf` as
+# `notion_source`, which performs the upsert INSIDE the same commit as book
+# creation (fresh ingest) or before returning (dedup hit).
+# ---------------------------------------------------------------------------
+
+
+def test_from_notion_direct_candidate_threads_notion_source_into_ingest_pdf():
+    # Direct (non-child-page) candidate: source_page_id == the submitted
+    # subject page id, source_block_id == the resolved block.
+    fake = BookOut(id=uuid4(), subject="math-algebra",
+                   original_filename="alg.pdf", status="uploading")
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         _no_ancestry(), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=_dl(page_id="alg", block_id="b1")), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9"})
+    assert r.status_code == 201
+    ing.assert_awaited_once()
+    assert ing.await_args.kwargs["notion_source"] == ("alg", "b1")
+
+
+def test_from_notion_guard_rejection_never_calls_ingest_pdf_so_no_link():
+    # A rejection between download and ingest (here: the language guard) must
+    # NOT call ingest_pdf at all — a guard rejection must never leave a link,
+    # and linking only ever happens INSIDE ingest_pdf.
+    with patch("app.api.v1.books.NotionClientWrapper"), \
+         patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
+         _no_ancestry(), \
+         patch("app.api.v1.books.notion_fetch.download_textbook",
+               return_value=_dl(page_id="alg", block_id="b1")), \
+         patch("app.api.v1.books.pdf_lang.detect_pdf_script", return_value="cyrillic"), \
+         patch("app.api.v1.books.ingest_pdf", AsyncMock()) as ing:
+        r = client.post("/api/v1/books/from-notion",
+                        json={"subject_page_id": "alg", "grade": "9"})
+    assert r.status_code == 422
+    ing.assert_not_awaited()
+
+
+# --- ingest_pdf unit tests: transactional linking -------------------------
+
+
+def _pdf_path_stub(tmp_path):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        parent=SimpleNamespace(mkdir=lambda **k: None),
+        write_bytes=lambda b: None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_ingest_pdf_fresh_ingest_upserts_link_before_commit():
+    """Fresh ingest + a notion_source: upsert_link must be awaited BEFORE
+    session.commit() so book creation + link land in ONE commit (a
+    route-level failure after commit could otherwise strand an
+    extracting-but-unlinked book)."""
+    from types import SimpleNamespace
+
+    session = AsyncMock()
+    book_id = uuid4()
+    created_book = SimpleNamespace(id=book_id, status="uploading", source_language="uz")
+
+    order: list[str] = []
+
+    async def _fake_upsert_link(*a, **k):
+        order.append("upsert_link")
+
+    async def _fake_commit():
+        order.append("commit")
+
+    session.commit = _fake_commit
+
+    with patch.object(books_api.books_repo, "find_ready_by_hash", AsyncMock(return_value=None)), \
+         patch.object(books_api.books_repo, "create", AsyncMock(return_value=created_book)), \
+         patch.object(books_api, "BookOut") as MockOut, \
+         patch.object(books_api, "_start_toc_extraction"), \
+         patch.object(books_api.storage, "book_pdf_path", return_value=_pdf_path_stub(None)), \
+         patch.object(books_api, "notion_sources_repo") as mock_repo:
+        mock_repo.upsert_link = AsyncMock(side_effect=_fake_upsert_link)
+        MockOut.model_validate.return_value = "OUT"
+        await books_api.ingest_pdf(
+            session, body=b"%PDF-1.4 x", subject="matematika", grade="9",
+            filename="alg.pdf", notion_source=("page-1", "block-1"),
+        )
+
+    mock_repo.upsert_link.assert_awaited_once_with(
+        session, book_id=book_id, notion_page_id="page-1", notion_block_id="block-1"
+    )
+    assert order == ["upsert_link", "commit"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_pdf_dedup_hit_upserts_and_repoints_link_before_returning():
+    """A dedup hit (SHA already ingested) with a notion_source given must
+    ALSO upsert+commit the link (re-pointing an existing link at the deduped
+    book) BEFORE returning — not just the fresh-ingest path."""
+    from types import SimpleNamespace
+
+    session = AsyncMock()
+    existing_id = uuid4()
+    existing_book = SimpleNamespace(id=existing_id)
+    fake_out = BookOut(id=existing_id, subject="matematika",
+                        original_filename="alg.pdf", status="toc_ready")
+
+    with patch.object(books_api.books_repo, "find_ready_by_hash",
+                      AsyncMock(return_value=existing_book)), \
+         patch.object(books_api, "_book_out_with_toc", AsyncMock(return_value=fake_out)), \
+         patch.object(books_api, "notion_sources_repo") as mock_repo:
+        mock_repo.upsert_link = AsyncMock()
+        out = await books_api.ingest_pdf(
+            session, body=b"%PDF-1.4 x", subject="matematika", grade="9",
+            filename="alg.pdf", notion_source=("page-2", "block-2"),
+        )
+
+    mock_repo.upsert_link.assert_awaited_once_with(
+        session, book_id=existing_id, notion_page_id="page-2", notion_block_id="block-2"
+    )
+    session.commit.assert_awaited_once()
+    assert out.deduplicated is True
+
+
+@pytest.mark.asyncio
+async def test_ingest_pdf_plain_upload_no_notion_source_skips_link_fresh():
+    """Plain upload (no Notion source) -> notion_source defaults to None ->
+    zero behavior change: upsert_link is never called for a fresh ingest."""
+    from types import SimpleNamespace
+
+    session = AsyncMock()
+    book_id = uuid4()
+    created_book = SimpleNamespace(id=book_id, status="uploading", source_language="uz")
+
+    with patch.object(books_api.books_repo, "find_ready_by_hash", AsyncMock(return_value=None)), \
+         patch.object(books_api.books_repo, "create", AsyncMock(return_value=created_book)), \
+         patch.object(books_api, "BookOut") as MockOut, \
+         patch.object(books_api, "_start_toc_extraction"), \
+         patch.object(books_api.storage, "book_pdf_path", return_value=_pdf_path_stub(None)), \
+         patch.object(books_api, "notion_sources_repo") as mock_repo:
+        mock_repo.upsert_link = AsyncMock()
+        MockOut.model_validate.return_value = "OUT"
+        await books_api.ingest_pdf(
+            session, body=b"%PDF-1.4 x", subject="matematika", grade="9",
+            filename="alg.pdf",
+        )
+
+    mock_repo.upsert_link.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ingest_pdf_plain_upload_no_notion_source_skips_link_dedup():
+    """Same pin, dedup-hit path: no notion_source -> no link/commit attempt."""
+    session = AsyncMock()
+    existing_book = MagicMock(id=uuid4())
+    fake_out = BookOut(id=existing_book.id, subject="matematika",
+                        original_filename="alg.pdf", status="toc_ready")
+
+    with patch.object(books_api.books_repo, "find_ready_by_hash",
+                      AsyncMock(return_value=existing_book)), \
+         patch.object(books_api, "_book_out_with_toc", AsyncMock(return_value=fake_out)), \
+         patch.object(books_api, "notion_sources_repo") as mock_repo:
+        mock_repo.upsert_link = AsyncMock()
+        out = await books_api.ingest_pdf(
+            session, body=b"%PDF-1.4 x", subject="matematika", grade="9",
+            filename="alg.pdf",
+        )
+
+    mock_repo.upsert_link.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    assert out.deduplicated is True
+
+
+@pytest.mark.asyncio
+async def test_ingest_pdf_link_failure_prevents_commit_no_partial_write():
+    """Failure-atomicity: a raise from upsert_link (simulating a post-insert,
+    pre-commit failure) must propagate WITHOUT session.commit() ever being
+    called — the flushed-but-uncommitted book insert stays inside the open
+    transaction so a real session's rollback-on-close discards it (see the
+    real-DB proof in tests/integration/test_ingest_pdf_notion_source.py)."""
+    from types import SimpleNamespace
+
+    session = AsyncMock()
+    created_book = SimpleNamespace(id=uuid4(), status="uploading", source_language="uz")
+
+    with patch.object(books_api.books_repo, "find_ready_by_hash", AsyncMock(return_value=None)), \
+         patch.object(books_api.books_repo, "create", AsyncMock(return_value=created_book)), \
+         patch.object(books_api, "notion_sources_repo") as mock_repo:
+        mock_repo.upsert_link = AsyncMock(side_effect=RuntimeError("simulated failure"))
+        with pytest.raises(RuntimeError):
+            await books_api.ingest_pdf(
+                session, body=b"%PDF-1.4 x", subject="matematika", grade="9",
+                filename="alg.pdf", notion_source=("page-3", "block-3"),
+            )
+
+    session.commit.assert_not_awaited()

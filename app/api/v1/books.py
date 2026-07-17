@@ -22,6 +22,7 @@ from app.config import settings
 from app.db import get_session, SessionLocal
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
+from app.repositories import notion_sources as notion_sources_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import BookOut, TOCEntryOut
 from app.services import events_bus, notion_fetch, pdf_lang, storage, subjects, toc_extractor
@@ -67,10 +68,22 @@ async def ingest_pdf(
     grade: str | None,
     filename: str,
     source_language: str = "uz",
+    notion_source: tuple[str, str] | None = None,
 ) -> BookOut:
     """Shared book-creation path for both upload and Notion-fetch. Mirrors the
     original inline upload logic EXACTLY, including its two return shapes:
-    dedup hit -> _book_out_with_toc; new book -> plain BookOut."""
+    dedup hit -> _book_out_with_toc; new book -> plain BookOut.
+
+    `notion_source` (`(notion_page_id, notion_block_id)`) is the RESOLVED
+    Notion candidate's own identity — given only by the `/from-notion` route,
+    never by the plain upload route (worklog 0144 task 2). When given, the
+    (page, block) -> book link is upserted via `notion_sources_repo.upsert_link`
+    BEFORE `session.commit()` on both paths: a fresh ingest so the link lands
+    in the SAME commit as book creation (a route-level failure after a
+    separate commit would otherwise strand an extracting-but-unlinked book),
+    and a dedup hit so a re-prepare re-points an existing link at the deduped
+    book before returning. `None` (the default) is a no-op — zero behavior
+    change for plain uploads."""
     if subject not in SUPPORTED_SUBJECTS:
         raise HTTPException(400, f"unknown subject; allowed: {SUPPORTED_SUBJECTS}")
 
@@ -88,6 +101,12 @@ async def ingest_pdf(
 
     existing = await books_repo.find_ready_by_hash(session, sha, subject)
     if existing is not None:
+        if notion_source is not None:
+            await notion_sources_repo.upsert_link(
+                session, book_id=existing.id,
+                notion_page_id=notion_source[0], notion_block_id=notion_source[1],
+            )
+            await session.commit()
         out = await _book_out_with_toc(session, existing.id)
         out.deduplicated = True
         return out
@@ -112,6 +131,15 @@ async def ingest_pdf(
         status="uploading",
         source_language=source_language,
     )
+    if notion_source is not None:
+        # Same transaction/commit as the book insert above (`create` only
+        # flushes) — a raise here propagates WITHOUT committing, so a real
+        # session's rollback-on-close discards the flushed-but-uncommitted
+        # book row too (see tests/integration/test_ingest_pdf_notion_source.py).
+        await notion_sources_repo.upsert_link(
+            session, book_id=book.id,
+            notion_page_id=notion_source[0], notion_block_id=notion_source[1],
+        )
     await session.commit()
 
     # Persist the PDF to a deterministic on-disk location so every downstream
@@ -163,7 +191,7 @@ class FromNotionRequest(BaseModel):
     # Explicit textbook-candidate selector (BE-19 task 3). Omitted (None) ->
     # download_textbook auto-selects when the page's best-rank tier has exactly
     # one candidate, and 422s (AmbiguousTextbook) when it doesn't — e.g. a
-    # multi-part textbook. The FE learns to send this in task 6.
+    # multi-part textbook. The FE learns to send this in task 5.
     block_id: str | None = None
 
     @field_validator("grade")
@@ -254,7 +282,7 @@ async def book_from_notion(
             f"language container.",
         )
     try:
-        body, filename = await asyncio.to_thread(
+        downloaded = await asyncio.to_thread(
             notion_fetch.download_textbook, client, req.subject_page_id, block_id=req.block_id)
     except notion_fetch.TextbookTooLarge as exc:
         raise HTTPException(
@@ -265,7 +293,7 @@ async def book_from_notion(
             f"bounded page windows)",
         )
     except notion_fetch.AmbiguousTextbook as exc:
-        # Structured detail (review fix, task 3) — the FE (Task 6) consumes
+        # Structured detail (review fix, task 3) — the FE (Task 5) consumes
         # this as JSON, not prose: {"error": "ambiguous_textbook", "message":
         # <short human text>, "candidates": [{"block_id","filename","rank"}, ...]}.
         raise HTTPException(
@@ -306,7 +334,7 @@ async def book_from_notion(
     # CONFIDENT mismatch; an indeterminate sample (scanned PDF, no
     # extractable text) proceeds but is surfaced as a response warning
     # instead of silently passing through unchecked.
-    detected_script = await asyncio.to_thread(pdf_lang.detect_pdf_script, body)
+    detected_script = await asyncio.to_thread(pdf_lang.detect_pdf_script, downloaded.body)
     expected_script = "cyrillic" if req.language == "ru" else "latin"
     warnings: list[str] | None = None
     if detected_script == "unknown":
@@ -332,15 +360,16 @@ async def book_from_notion(
         else:
             raise HTTPException(
                 422,
-                f"language mismatch: '{filename}' looks {detected_script}-script but "
+                f"language mismatch: '{downloaded.filename}' looks {detected_script}-script but "
                 f"language={req.language!r} expects {expected_script}-script — pass "
                 f"the correct `language`, or upload the PDF directly if this Notion "
                 f"page has the wrong file attached",
             )
 
     out = await ingest_pdf(
-        session, body=body, subject=subject, grade=req.grade, filename=filename,
-        source_language=req.language)
+        session, body=downloaded.body, subject=subject, grade=req.grade,
+        filename=downloaded.filename, source_language=req.language,
+        notion_source=(downloaded.source_page_id, downloaded.source_block_id))
     if warnings:
         out.warnings = warnings
     return out
@@ -380,17 +409,21 @@ async def retry_toc_extraction(
     session: AsyncSession = Depends(get_session),
     user: dict = Depends(get_current_user),
 ) -> BookOut:
-    """Re-run TOC extraction for a book stuck in `failed` or `toc_extracting`.
-    Mirrors POST /jobs/{id}/retry for the book-preparation step. The extractor's
-    clear-before-insert makes the re-run idempotent (replaces prior entries)."""
+    """Re-run TOC extraction for a book stuck in `failed` or `toc_extracting`,
+    still under review (`toc_review`), or already accepted (`toc_ready` — a
+    deliberate redo, e.g. the source PDF was replaced). Mirrors POST
+    /jobs/{id}/retry for the book-preparation step. The extractor's
+    clear-before-insert makes the re-run idempotent (replaces prior entries);
+    the prior validation verdict and ready stamp are cleared here too (after
+    all guards pass) so a redo never carries a stale audit trail forward."""
     book = await books_repo.get(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
-    # Book-scoped SHARED advisory lock (BE-02 task 3) — the book_id IS the
-    # target here, so lock right after the 404 fetch and then RE-FETCH: a
-    # concurrent DELETE holding the EXCLUSIVE form blocks us here until it
-    # commits/rolls back, and the re-fetch below sees current state (never a
-    # stale pre-lock book object).
+    # Book-scoped SHARED advisory lock (BE-02 task 3, merged #100) — the
+    # book_id IS the target here, so lock right after the 404 fetch and then
+    # RE-FETCH: a concurrent DELETE holding the EXCLUSIVE form blocks us here
+    # until it commits/rolls back, and the re-fetch below sees current state
+    # (never a stale pre-lock book object).
     await books_repo.lock_book_shared(session, book_id)
     # `Session.get()` short-circuits via the identity map — expire the
     # pre-lock `book` object first so this re-fetch actually re-queries
@@ -401,11 +434,14 @@ async def retry_toc_extraction(
     book = await books_repo.get(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
-    if book.status not in ("failed", "toc_extracting", "toc_review"):
+    # Allowlist gains `toc_ready` (worklog 0144 task 3) — a deliberate redo of
+    # an already-accepted book; the guard runs against the RE-FETCHED status.
+    if book.status not in ("failed", "toc_extracting", "toc_review", "toc_ready"):
         raise HTTPException(
             409,
             f"cannot retry TOC extraction from status '{book.status}' "
-            "(only `failed`, a stuck `toc_extracting`, or `toc_review`)",
+            "(only `failed`, a stuck `toc_extracting`, `toc_review`, or an "
+            "already-ready `toc_ready` book)",
         )
     pdf_path = storage.book_pdf_path(book_id)
     if not pdf_path.exists():
@@ -419,16 +455,28 @@ async def retry_toc_extraction(
     # jobs (delete the affected sections) before retrying.
     blocking = await jobs_repo.list_for_book(session, book_id)
     if blocking:
-        listed = ", ".join(f"{j.id} ({j.status})" for j in blocking[:20])
-        more = f" (+{len(blocking) - 20} more)" if len(blocking) > 20 else ""
+        # Structured detail, not prose — the FE (Task 5) must never parse this
+        # as a string. Listing is capped at 20 (a full-TOC book can carry
+        # 50-60+ jobs); `count` stays the uncapped total.
         raise HTTPException(
             409,
-            f"cannot re-extract the TOC: {len(blocking)} homework job(s) "
-            "reference this book's sections and would be orphaned. Delete the "
-            "affected sections (or their jobs) first, then retry. Blocking jobs: "
-            f"{listed}{more}",
+            {
+                "error": "toc_retry_blocked_by_jobs",
+                # Human message (Task 3 review rider) — matches the
+                # ambiguous_textbook {error, message, ...} convention so every
+                # structured-detail 409 in this router carries a human line
+                # alongside the machine-readable fields. Uses the UNCAPPED
+                # `count`, not the capped `jobs` listing length.
+                "message": (
+                    f"{len(blocking)} homework job(s) reference this book's "
+                    "sections — delete the affected sections first"
+                ),
+                "count": len(blocking),
+                "jobs": [{"id": str(j.id), "status": j.status} for j in blocking[:20]],
+            },
         )
     await books_repo.set_status(session, book_id, "toc_extracting", error_message=None)
+    await books_repo.clear_toc_validation_and_ready(session, book_id)
     await session.commit()
     _start_toc_extraction(book_id, pdf_path, book.subject)
     return await _book_out_with_toc(session, book_id)
@@ -441,7 +489,10 @@ async def accept_toc(
     user: dict = Depends(get_current_user),
 ) -> BookOut:
     """Accept the TOC entries for a `toc_review` book, promoting it to `toc_ready`.
-    The toc_validation / toc_validation_detail columns are preserved as an audit trail.
+    The toc_validation / toc_validation_detail columns are preserved as an audit
+    trail (only /toc/retry clears them). Stamps `toc_ready_at` (Task 3
+    lifecycle split) so the system-aware "Prepare a subject" dialog can tell
+    this book apart from a stale/never-extracted one.
     """
     # Shared book lock BEFORE the first read (post-#100 follow-up): an
     # unlocked mutate racing DELETE /books/{id} hit StaleDataError -> 500;
@@ -454,6 +505,7 @@ async def accept_toc(
     if book.status != "toc_review":
         raise HTTPException(409, "can only accept a book in toc_review")
     await books_repo.set_status(session, book_id, "toc_ready")
+    await books_repo.set_toc_ready_at(session, book_id)
     await session.commit()
     return await _book_out_with_toc(session, book_id)
 

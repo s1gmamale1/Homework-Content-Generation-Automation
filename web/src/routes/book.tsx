@@ -99,6 +99,29 @@ export function BookPage() {
   }
 
   /**
+   * Redo TOC extraction for an already-`toc_ready` book (destructive —
+   * REPLACES the current TOC rows). `POST /toc/retry` allows this status
+   * (Task 3, prepare-status-redo) but the book page never surfaced it —
+   * the only way to redo a two-linked-part book was through the Prepare
+   * dialog's `PrepareStatusPanel`, which doesn't cover a directly-opened
+   * book page. Confirm copy is duplicated from `prepare-status-panel.tsx`'s
+   * `confirmAndRedo` rather than extracted into a shared helper — sharing
+   * one `window.confirm` string across a route file and a component isn't
+   * worth the import/plumbing churn for a single literal; keep both in
+   * sync by hand if the copy ever changes.
+   */
+  function handleRedoReady() {
+    if (
+      !window.confirm(
+        "Redo TOC extraction?\n\nThis re-extracts the table of contents from the source PDF and REPLACES the current TOC rows.",
+      )
+    ) {
+      return;
+    }
+    void handleRetry();
+  }
+
+  /**
    * Accept the TOC for a book in `toc_review` status — transitions it to
    * `toc_ready` without re-extracting. Mirrors handleRetry's state reset pattern.
    */
@@ -218,14 +241,34 @@ export function BookPage() {
         </h1>
 
         {entries && entries.length > 0 && (
-          <div className="relative mt-6 max-w-md">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-white/40" />
-            <Input
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder={`Filter ${entries.length} section${entries.length === 1 ? "" : "s"}`}
-              className={cn(INPUT_GLASS, "pl-9")}
-            />
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <div className="relative max-w-md flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-white/40" />
+              <Input
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder={`Filter ${entries.length} section${entries.length === 1 ? "" : "s"}`}
+                className={cn(INPUT_GLASS, "pl-9")}
+              />
+            </div>
+            {/* toc_ready redo — a steady, error-free, non-review book (the
+                other two statuses have their own retry affordance above). */}
+            {error === null && tocReviewDetail === null && (
+              <button
+                type="button"
+                onClick={handleRedoReady}
+                disabled={retrying}
+                title="Re-extracts the table of contents from the source PDF and replaces the current TOC rows"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-200 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {retrying ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="size-3.5" />
+                )}
+                Redo TOC extraction
+              </button>
+            )}
           </div>
         )}
 

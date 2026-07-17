@@ -65,7 +65,7 @@ def test_from_notion_ru_language_passes_source_language_ru():
          patch("app.api.v1.books._notion_subject_title", return_value="Алгебра"), \
          patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(b"%PDF-1.4 x", "alg_ru.pdf")), \
+               return_value=nf.DownloadedTextbook(body=b"%PDF-1.4 x", filename="alg_ru.pdf", source_page_id="p", source_block_id="b")), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "ru_alg", "grade": "8",
@@ -105,7 +105,7 @@ def test_from_notion_default_language_is_uz():
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(b"%PDF-1.4 x", "alg.pdf")), \
+               return_value=nf.DownloadedTextbook(body=b"%PDF-1.4 x", filename="alg.pdf", source_page_id="p", source_block_id="b")), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion",
                         json={"subject_page_id": "alg", "grade": "9"})
@@ -252,7 +252,7 @@ def test_from_notion_ru_language_latin_pdf_blocks_422():
          patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Алгебра"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(_FAKE_PDF_BYTES, "algebra_uz.pdf")), \
+               return_value=nf.DownloadedTextbook(body=_FAKE_PDF_BYTES, filename="algebra_uz.pdf", source_page_id="p", source_block_id="b")), \
          _patch_detect("latin"), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock()) as ing:
         r = client.post("/api/v1/books/from-notion",
@@ -270,7 +270,7 @@ def test_from_notion_uz_language_cyrillic_pdf_blocks_422():
          patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(_FAKE_PDF_BYTES, "algebra_ru.pdf")), \
+               return_value=nf.DownloadedTextbook(body=_FAKE_PDF_BYTES, filename="algebra_ru.pdf", source_page_id="p", source_block_id="b")), \
          _patch_detect("cyrillic"), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock()) as ing:
         r = client.post("/api/v1/books/from-notion",
@@ -293,7 +293,7 @@ def test_from_notion_en_language_cyrillic_pdf_blocks_422():
          patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books._notion_subject_title", return_value="Biology"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(_FAKE_PDF_BYTES, "biology_ru.pdf")), \
+               return_value=nf.DownloadedTextbook(body=_FAKE_PDF_BYTES, filename="biology_ru.pdf", source_page_id="p", source_block_id="b")), \
          _patch_detect("cyrillic"), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock()) as ing:
         r = client.post("/api/v1/books/from-notion",
@@ -313,7 +313,7 @@ def test_from_notion_unknown_script_proceeds_with_warning():
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(_FAKE_PDF_BYTES, "algebra_scan.pdf")), \
+               return_value=nf.DownloadedTextbook(body=_FAKE_PDF_BYTES, filename="algebra_scan.pdf", source_page_id="p", source_block_id="b")), \
          _patch_detect("unknown"), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion",
@@ -334,7 +334,7 @@ def test_from_notion_matching_script_no_warning():
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(_FAKE_PDF_BYTES, "algebra.pdf")), \
+               return_value=nf.DownloadedTextbook(body=_FAKE_PDF_BYTES, filename="algebra.pdf", source_page_id="p", source_block_id="b")), \
          _patch_detect("latin"), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion",
@@ -364,7 +364,7 @@ def test_from_notion_russian_subject_cyrillic_pdf_warns_not_blocks():
          patch("app.api.v1.books._notion_subject_title", return_value="Rus tili"), \
          patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(_FAKE_PDF_BYTES, "rus_tili.pdf")), \
+               return_value=nf.DownloadedTextbook(body=_FAKE_PDF_BYTES, filename="rus_tili.pdf", source_page_id="p", source_block_id="b")), \
          _patch_detect("cyrillic"), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion",
@@ -387,7 +387,7 @@ def test_from_notion_non_russian_subject_cyrillic_pdf_still_blocks_422():
          patch("app.api.v1.books._notion_subject_title", return_value="Algebra"), \
          patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(_FAKE_PDF_BYTES, "algebra_ru.pdf")), \
+               return_value=nf.DownloadedTextbook(body=_FAKE_PDF_BYTES, filename="algebra_ru.pdf", source_page_id="p", source_block_id="b")), \
          _patch_detect("cyrillic"), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock()) as ing:
         r = client.post("/api/v1/books/from-notion",
@@ -422,7 +422,7 @@ def test_from_notion_english_subject_under_ru_latin_pdf_warns_not_blocks():
                return_value="Английский язык"), \
          patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(_FAKE_PDF_BYTES, "english_g5.pdf")), \
+               return_value=nf.DownloadedTextbook(body=_FAKE_PDF_BYTES, filename="english_g5.pdf", source_page_id="p", source_block_id="b")), \
          _patch_detect("latin"), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion",
@@ -446,7 +446,7 @@ def test_from_notion_ona_tili_under_ru_latin_pdf_warns_not_blocks():
                return_value="Узб. язык"), \
          patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(_FAKE_PDF_BYTES, "uzb_yaz.pdf")), \
+               return_value=nf.DownloadedTextbook(body=_FAKE_PDF_BYTES, filename="uzb_yaz.pdf", source_page_id="p", source_block_id="b")), \
          _patch_detect("latin"), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock(return_value=fake)) as ing:
         r = client.post("/api/v1/books/from-notion",
@@ -469,7 +469,7 @@ def test_from_notion_russian_under_ru_latin_pdf_still_blocks_422():
                return_value="Русский язык"), \
          patch("app.api.v1.books.notion_fetch.verify_page_ancestry"), \
          patch("app.api.v1.books.notion_fetch.download_textbook",
-               return_value=(_FAKE_PDF_BYTES, "rus_latin.pdf")), \
+               return_value=nf.DownloadedTextbook(body=_FAKE_PDF_BYTES, filename="rus_latin.pdf", source_page_id="p", source_block_id="b")), \
          _patch_detect("latin"), \
          patch("app.api.v1.books.ingest_pdf", AsyncMock()) as ing:
         r = client.post("/api/v1/books/from-notion",
