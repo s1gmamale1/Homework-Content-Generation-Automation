@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user_strict
 from app.db import get_session
 from app.repositories import sa_keys as repo
+from app.repositories import workers as workers_repo
 from app.services import credential_id, credential_limiter, storage
 from app.services.sa_key_validate import InvalidServiceAccountKey, parse_and_validate_sa_key
 
@@ -165,8 +166,14 @@ async def list_assignments(session: AsyncSession = Depends(get_session)) -> dict
 async def assign_sa_key(
     hostname: str, req: AssignRequest, session: AsyncSession = Depends(get_session),
 ) -> dict:
+    # Exclusive host lock BEFORE the mutation — serializes against a claim
+    # holding the shared lock (task 1) so a tombstone/re-key write can't
+    # interleave with a claim that already re-read "no tombstone". The
+    # key_id existence check touches no host state, so it may run before
+    # or after; kept before for a cheap 404 without taking the lock first.
     if await repo.get(session, req.key_id) is None:
         raise HTTPException(404, "no such key")
+    await workers_repo.lock_host_exclusive(session, hostname)
     await repo.assign(session, hostname, req.key_id)
     await session.commit()
     return {"hostname": hostname, "key_id": str(req.key_id)}
@@ -174,6 +181,7 @@ async def assign_sa_key(
 
 @router.delete("/assignments/{hostname}")
 async def unassign_sa_key(hostname: str, session: AsyncSession = Depends(get_session)) -> dict:
+    await workers_repo.lock_host_exclusive(session, hostname)
     await repo.unassign(session, hostname)
     await session.commit()
     return {"hostname": hostname, "unassigned": True}
@@ -181,6 +189,7 @@ async def unassign_sa_key(hostname: str, session: AsyncSession = Depends(get_ses
 
 @router.post("/assignments/{hostname}/scrub")
 async def scrub_sa_key(hostname: str, session: AsyncSession = Depends(get_session)) -> dict:
+    await workers_repo.lock_host_exclusive(session, hostname)
     await repo.scrub(session, hostname)
     await session.commit()
     return {"hostname": hostname, "scrub": True}
