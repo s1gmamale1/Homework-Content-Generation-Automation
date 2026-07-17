@@ -416,6 +416,20 @@ class Worker:
         try:
             async with SessionLocal() as session:
                 async with session.begin():
+                    # Host-scoped SA-key scrub-vs-claim gate (BE-02 lock
+                    # pattern, host namespace): take the SHARED host lock
+                    # first — it serializes against a scrub's EXCLUSIVE lock
+                    # for this same hostname — then re-read the tombstone
+                    # under that lock. If a scrub is pending for this host,
+                    # refuse to claim; the host parks and drains instead of
+                    # racing a credential revoke. The lock is transaction-
+                    # scoped (released on this block's commit/rollback) and
+                    # is held through claim_next_job's SELECT...FOR UPDATE +
+                    # UPDATE below, in the same transaction.
+                    await workers_repo.lock_host_shared(session, self.hostname)
+                    if await sa_keys_repo.scrub_pending_for_host(session, self.hostname):
+                        return None
+
                     # Read the fleet-level budget state once per claim attempt.
                     # If api_paused_at is non-NULL, the fleet gate is active and
                     # no api-spending job may be claimed (cli jobs are unaffected).
