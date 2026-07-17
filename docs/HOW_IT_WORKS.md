@@ -662,8 +662,10 @@ Key endpoints:
   `homework_jobs.toc_entry_id` FK, so the endpoint lists the blocking jobs (ids+statuses)
   and leaves the book untouched; delete the affected sections first, then retry. Since BE-02
   (worklog 0145) this and every other **activation path** (`/generate`, job retry, batch
-  launch, batch resume) take the book-scoped SHARED advisory lock below before their guard
-  read, and re-fetch (after `session.expire()`) rather than trust a pre-lock object.
+  launch, batch resume) take the book-scoped SHARED advisory lock below. The three
+  fetch-then-lock paths (job retry, batch resume, TOC retry) re-fetch their target after
+  `session.expire()` — defeating the ORM identity-map short-circuit — while `/generate` and
+  batch launch take the lock BEFORE their first read, so they have no pre-lock object to expire.
 - `PATCH/DELETE .../toc/{entry}` — edit/fix a section's title or page range by hand (useful
   when auto-extraction is imperfect).
 - `DELETE /books/{id}` — permanently remove a book: its `homework_jobs` (and their
