@@ -46,7 +46,9 @@ export function assignmentHosts(
 }
 
 /** Copy shown for an assignment-only (dead/pruned) host row, per registry fetch state. */
-export function assignmentOnlyStatus(registry: "ready" | "loading" | "error"): string {
+export function assignmentOnlyStatus(
+  registry: "ready" | "loading" | "error",
+): "gone" | "checking" | "registry unavailable" {
   switch (registry) {
     case "ready":
       return "gone";

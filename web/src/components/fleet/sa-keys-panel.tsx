@@ -77,7 +77,9 @@ export function SaKeysPanel() {
   const keys = keysQ.data?.keys ?? [];
   const assignments = asgQ.data?.assignments ?? [];
   // One entry per host with liveness (online if any restart-row is fresh), so
-  // you can see which hosts are up before assigning a key to them.
+  // you can see which hosts are up before assigning a key to them. Also
+  // includes assignment-only hosts whose registry row was pruned (dead
+  // >10 min), so a dead host with a key assignment stays manageable.
   const hosts = assignmentHosts(hostLiveness(workersQ.data?.workers ?? []), assignments);
   const onlineCount = hosts.filter((h) => h.online).length;
   const asgFor = (h: string) => assignments.find((a) => a.hostname === h) ?? null;
@@ -320,7 +322,7 @@ export function SaKeysPanel() {
                                 GHOST_BTN,
                                 "h-6 px-1.5 text-[0.68rem] disabled:opacity-40",
                               )}
-                              disabled={isPendingUnassign || !a?.key_id}
+                              disabled={isPendingUnassign || !a}
                               onClick={() => unassign.mutate(h.host)}
                             >
                               {isPendingUnassign ? "…" : "Unassign"}
