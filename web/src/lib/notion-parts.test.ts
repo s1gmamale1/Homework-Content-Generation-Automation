@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import type { LangAvailability, LangPart, NotionCandidate } from "./types";
 import {
+  candidateSelectionState,
   partsFor,
   resolveNotionPageId,
   langChipState,
@@ -216,5 +217,128 @@ assert.deepEqual(
   resolveCandidate(partForResolution("uz-math-1", "uz", uzPartsMap)),
   { status: "resolved", page_id: "uz-math-1", block_id: "blk-uz-1" },
 );
+
+// --- candidateSelectionState: selection is a stable id reconciled strictly
+// against the CURRENT best tier, never a stored candidate snapshot. ---
+const initialPickerPart: LangPart = {
+  page_id: "picker-part",
+  title: "Picker",
+  has_textbook: true,
+  candidates: [
+    { page_id: "picker-part", block_id: "pick-a", filename: "A.pdf", rank: 0 },
+    { page_id: "picker-part", block_id: "pick-b", filename: "B.pdf", rank: 0, book_status: "toc_extracting" },
+    { page_id: "picker-part", block_id: "workbook", filename: "Workbook.pdf", rank: 2 },
+  ],
+};
+const initialSelection = candidateSelectionState(
+  initialPickerPart,
+  resolveCandidate(initialPickerPart),
+  "pick-b",
+);
+assert.equal(initialSelection.selected?.block_id, "pick-b");
+assert.equal(initialSelection.active?.block_id, "pick-b");
+assert.equal(initialSelection.selected?.book_status, "toc_extracting");
+assert.equal(initialSelection.needsSelection, false);
+assert.equal(initialSelection.invalidated, false);
+assert.deepEqual(initialSelection.candidates.map((candidate) => candidate.block_id), ["pick-a", "pick-b"]);
+
+// Same id, fresh object: the current status must replace the old snapshot.
+const statusRefreshedPart: LangPart = {
+  ...initialPickerPart,
+  candidates: initialPickerPart.candidates!.map((candidate) =>
+    candidate.block_id === "pick-b"
+      ? { ...candidate, book_id: "book-b", book_status: "toc_ready" as const }
+      : candidate,
+  ),
+};
+const statusRefreshedSelection = candidateSelectionState(
+  statusRefreshedPart,
+  resolveCandidate(statusRefreshedPart),
+  "pick-b",
+);
+assert.equal(statusRefreshedSelection.selected?.book_status, "toc_ready");
+assert.notEqual(statusRefreshedSelection.selected, initialSelection.selected);
+
+// Removal with a tied tier still present rejects the stale id and requires a
+// new choice from the live option list.
+const removedPart: LangPart = {
+  ...initialPickerPart,
+  candidates: [
+    { page_id: "picker-part", block_id: "pick-a", filename: "A.pdf", rank: 0 },
+    { page_id: "picker-part", block_id: "pick-c", filename: "C.pdf", rank: 0 },
+  ],
+};
+const removedSelection = candidateSelectionState(removedPart, resolveCandidate(removedPart), "pick-b");
+assert.equal(removedSelection.selected, null);
+assert.equal(removedSelection.invalidated, true);
+assert.equal(removedSelection.needsSelection, true);
+assert.deepEqual(removedSelection.candidates.map((candidate) => candidate.block_id), ["pick-a", "pick-c"]);
+
+// Re-ranking is also invalidation: presence anywhere on the part is not
+// enough when the candidate has fallen out of the current best tier.
+const rerankedPart: LangPart = {
+  ...initialPickerPart,
+  candidates: [
+    { page_id: "picker-part", block_id: "pick-a", filename: "A.pdf", rank: 0 },
+    { page_id: "picker-part", block_id: "pick-b", filename: "B.pdf", rank: 1 },
+    { page_id: "picker-part", block_id: "pick-c", filename: "C.pdf", rank: 0 },
+  ],
+};
+const rerankedSelection = candidateSelectionState(rerankedPart, resolveCandidate(rerankedPart), "pick-b");
+assert.equal(rerankedSelection.selected, null);
+assert.equal(rerankedSelection.invalidated, true);
+assert.equal(rerankedSelection.needsSelection, true);
+assert.deepEqual(rerankedSelection.candidates.map((candidate) => candidate.block_id), ["pick-a", "pick-c"]);
+
+// Ambiguity collapsing to one candidate also invalidates the old explicit id;
+// callers must not submit it through the stale picker.
+const collapsedSelection = candidateSelectionState(
+  {
+    page_id: "picker-part",
+    title: "Picker",
+    has_textbook: true,
+    candidates: [{ page_id: "picker-part", block_id: "pick-a", filename: "A.pdf", rank: 0 }],
+  },
+  resolveCandidate({
+    page_id: "picker-part",
+    title: "Picker",
+    has_textbook: true,
+    candidates: [{ page_id: "picker-part", block_id: "pick-a", filename: "A.pdf", rank: 0 }],
+  }),
+  "pick-b",
+);
+assert.equal(collapsedSelection.selected, null);
+assert.equal(collapsedSelection.active?.block_id, "pick-a");
+assert.equal(collapsedSelection.invalidated, true);
+assert.equal(collapsedSelection.needsSelection, false);
+assert.deepEqual(collapsedSelection.candidates, []);
+
+// A part rollup may point at the only linked candidate even when that file is
+// lower-ranked. The exact auto-resolved best-tier candidate must govern.
+const lowerRankLinkedPart: LangPart = {
+  page_id: "picker-part",
+  title: "Picker",
+  has_textbook: true,
+  book_id: "workbook-book",
+  book_status: "toc_ready",
+  candidates: [
+    { page_id: "picker-part", block_id: "textbook", filename: "Textbook.pdf", rank: 0 },
+    {
+      page_id: "picker-part",
+      block_id: "workbook",
+      filename: "Workbook.pdf",
+      rank: 2,
+      book_id: "workbook-book",
+      book_status: "toc_ready",
+    },
+  ],
+};
+const exactAutoSelection = candidateSelectionState(
+  lowerRankLinkedPart,
+  resolveCandidate(lowerRankLinkedPart),
+  null,
+);
+assert.equal(exactAutoSelection.active?.block_id, "textbook");
+assert.equal(exactAutoSelection.active?.book_id, undefined);
 
 console.log("notion-parts.test.ts: all assertions passed");

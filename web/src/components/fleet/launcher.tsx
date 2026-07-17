@@ -44,7 +44,6 @@ import { accentOf, subjectLabel, subjectLabelWithVariant } from "@/lib/subjects"
 import type {
   BatchSummary,
   Book,
-  NotionCandidate,
   NotionSubject,
   OutputLanguage,
   RoleTransport,
@@ -58,6 +57,7 @@ import { normalizeProviderTransport } from "@/lib/transport-policy";
 import { type LauncherConfig, loadLauncherConfig, saveLauncherConfig } from "@/lib/launcher-config";
 import { LANG_LABEL, langBadge } from "@/lib/language";
 import {
+  candidateSelectionState,
   langChipState,
   partForResolution,
   resolveCandidate,
@@ -90,7 +90,7 @@ export function FleetLauncher({
   // File-level candidate pick (BE-19 task 6) — only meaningful when the
   // resolved part's best rank tier has >1 candidate; reset whenever the
   // subject/language selection changes so a stale pick can't carry over.
-  const [selectedCandidate, setSelectedCandidate] = useState<NotionCandidate | null>(null);
+  const [selectedCandidateBlockId, setSelectedCandidateBlockId] = useState<string | null>(null);
 
   const gradesQ = useQuery({
     queryKey: ["notion-grades"],
@@ -129,30 +129,25 @@ export function FleetLauncher({
   // tier has >1 candidate PDF and the operator must pick one before Prepare.
   const resolvedPart = subjectPageId ? partForResolution(subjectPageId, prepLang, subjectLangMap) : null;
   const candidateResolution = resolveCandidate(resolvedPart);
-  const needsCandidatePick = candidateResolution.status === "ambiguous" && !selectedCandidate;
-  // Re-resolve the selected candidate by block_id against the CURRENT
-  // (post-poll) `resolvedPart.candidates` instead of trusting the stored
-  // object snapshot (PR #99 re-gate blocker 2a) — `selectedCandidate` is set
-  // once from `candidateResolution.candidates` at pick time and never
-  // updated, so on a poll refetch its OWN book_status would go stale (e.g.
-  // stuck showing PREPARING after the candidate reaches toc_ready/failed).
-  // block_id is stable across polls, so this always finds the live copy;
-  // falls back to the stored object only if it somehow vanished from fresh
-  // data (defensive — never worse than the pre-fix behavior).
-  const selectedCandidateFresh = selectedCandidate
-    ? (resolvedPart?.candidates?.find((c) => c.block_id === selectedCandidate.block_id) ?? selectedCandidate)
-    : null;
+  const candidateSelection = candidateSelectionState(
+    resolvedPart,
+    candidateResolution,
+    selectedCandidateBlockId,
+  );
+  const selectedCandidate = candidateSelection.active;
+  const candidateSelectionBlocked =
+    candidateSelection.needsSelection || candidateSelection.invalidated;
   // System-aware chip state (task 5) for the currently-selected language's
   // resolved part — PrepareStatusPanel renders nothing for the un-prepared
   // states (no_textbook/textbook_ready), so this is purely additive: the
   // existing UZ/RU/EN buttons + candidate picker below are unchanged.
   // A selected candidate from the ambiguous-file picker below governs over
   // the part-level rollup (PR #99 gate finding 3) — resolvedPrepareStatus
-  // picks it up automatically once `selectedCandidate` is set, now fed the
-  // FRESH copy so the panel doesn't freeze on a stale status.
-  const preparePartStatus = resolvedPrepareStatus(resolvedPart, selectedCandidateFresh);
+  // picks it up automatically once the stable block id resolves to a CURRENT
+  // best-tier candidate.
+  const preparePartStatus = resolvedPrepareStatus(resolvedPart, selectedCandidate);
   // The PRIMARY Prepare button must respect this same status (PR #99 gate
-  // finding 1) — it previously only gated on subjectUsable/needsCandidatePick
+  // finding 1) — it previously only gated on subject/candidate availability
   // and would silently re-fire /from-notion on an already-linked book.
   const preparePermitted = preparePartStatus.actions.proceed;
 
@@ -162,7 +157,7 @@ export function FleetLauncher({
 
   // A stale candidate pick must never survive a subject/language change.
   useEffect(() => {
-    setSelectedCandidate(null);
+    setSelectedCandidateBlockId(null);
   }, [subjectPageId, prepLang]);
 
   // When the availability map loads (or the picked subject changes), default prepLang
@@ -200,13 +195,19 @@ export function FleetLauncher({
       // normal path.
       const part = partForResolution(v.subjectPageId, v.language, subjectLangMap);
       const resolution = resolveCandidate(part);
+      const selection = candidateSelectionState(part, resolution, selectedCandidateBlockId);
       if (resolution.status === "none" || !part) {
         return Promise.reject(
           new Error("No textbook file found for this language — upload the PDF directly."),
         );
       }
+      if (selection.invalidated) {
+        return Promise.reject(
+          new Error("The available files changed — choose the language and file again."),
+        );
+      }
       if (resolution.status === "ambiguous") {
-        if (!selectedCandidate) {
+        if (!selection.selected) {
           return Promise.reject(new Error("Pick a file to continue."));
         }
         // The owning PART's page_id (not the candidate's) must be submitted —
@@ -218,7 +219,7 @@ export function FleetLauncher({
           part.page_id,
           v.grade,
           v.language !== "uz" ? v.language : undefined,
-          (selectedCandidateFresh ?? selectedCandidate).block_id,
+          selection.selected.block_id,
         );
       }
       return api.fetchBookFromNotion(
@@ -245,7 +246,7 @@ export function FleetLauncher({
       setGradeDigits("");
       setSubjectPageId("");
       setPrepLang("uz");
-      setSelectedCandidate(null);
+      setSelectedCandidateBlockId(null);
     },
     // A stale-crawl ambiguous_textbook 422 lands here too, generically — its
     // message is already extracted from the dict-shaped detail by api.ts. The
@@ -421,7 +422,13 @@ export function FleetLauncher({
                     type="button"
                     title={tooltip}
                     disabled={!available}
-                    onClick={() => available && setPrepLang(lang)}
+                    onClick={() => {
+                      if (!available) return;
+                      // Clicking even the current language acknowledges and
+                      // clears a file selection invalidated by a fresh crawl.
+                      setSelectedCandidateBlockId(null);
+                      setPrepLang(lang);
+                    }}
                     className={cn(
                       "rounded-xl border px-3 py-1.5 text-xs font-medium transition-all",
                       selected
@@ -460,17 +467,14 @@ export function FleetLauncher({
               Multiple {LANG_LABEL[prepLang]} files found for this subject — pick which one to fetch.
             </p>
             <Select
-              value={selectedCandidate?.block_id ?? ""}
-              onValueChange={(blockId) => {
-                const c = candidateResolution.candidates.find((x) => x.block_id === blockId) ?? null;
-                setSelectedCandidate(c);
-              }}
+              value={candidateSelection.selected?.block_id ?? ""}
+              onValueChange={setSelectedCandidateBlockId}
             >
               <SelectTrigger className={SELECT_TRIGGER}>
                 <SelectValue placeholder="Choose a file" />
               </SelectTrigger>
               <SelectContent>
-                {candidateResolution.candidates.map((c) => (
+                {candidateSelection.candidates.map((c) => (
                   <SelectItem key={c.block_id} value={c.block_id}>
                     {c.filename}
                   </SelectItem>
@@ -479,11 +483,18 @@ export function FleetLauncher({
             </Select>
           </div>
         )}
+        {subjectUsable &&
+          candidateSelection.invalidated &&
+          candidateResolution.status !== "ambiguous" && (
+            <p className="text-xs text-amber-300/80">
+              Available files changed. Click the selected language again to refresh the file choice.
+            </p>
+          )}
 
         {/* Step ④ Confirmation line + Prepare */}
         <div className="relative flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-white/55">
-            {needsCandidatePick ? (
+            {candidateSelectionBlocked ? (
               <span className="text-white/35">Pick a file above to continue.</span>
             ) : subjectUsable && pickedSubject ? (
               <>
@@ -504,12 +515,14 @@ export function FleetLauncher({
           <button
             type="button"
             title={
-              needsCandidatePick
-                ? "Pick a file to continue"
-                : proceedBlockedTooltip(preparePartStatus)
+              candidateSelection.invalidated
+                ? "Available files changed — choose the language and file again"
+                : candidateSelection.needsSelection
+                  ? "Pick a file to continue"
+                  : proceedBlockedTooltip(preparePartStatus)
             }
             className={cn(PRIMARY_BTN, "shrink-0")}
-            disabled={!subjectUsable || prepare.isPending || needsCandidatePick || !preparePermitted}
+            disabled={!subjectUsable || prepare.isPending || candidateSelectionBlocked || !preparePermitted}
             onClick={() => {
               // Defense-in-depth: the button is already disabled for this
               // case, but never let a stray click fire the mutation on a

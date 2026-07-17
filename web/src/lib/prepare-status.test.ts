@@ -3,6 +3,7 @@
  * Run: cd web && npx tsx src/lib/prepare-status.test.ts
  */
 import assert from "node:assert/strict";
+import { candidateSelectionState, resolveCandidate } from "./notion-parts";
 import type { AvailableLanguages, LangPart, NotionCandidate } from "./types";
 import {
   candidatePrepareStatus,
@@ -345,6 +346,46 @@ import {
   const s = resolvedPrepareStatus(part, selected);
   assert.equal(s.chip.kind, "textbook_ready");
   assert.equal(s.actions.proceed, true);
+}
+{
+  // The backend part rollup represents the only linked candidate, which can
+  // be a lower-ranked workbook. The exact auto-resolved best-tier textbook
+  // must override that rollup and remain preparable.
+  const part: LangPart = {
+    page_id: "p", title: "Algebra", has_textbook: true,
+    book_id: "workbook-book", book_status: "toc_ready",
+    candidates: [
+      { page_id: "p", block_id: "textbook", filename: "Textbook.pdf", rank: 0 },
+      {
+        page_id: "p", block_id: "workbook", filename: "Workbook.pdf", rank: 2,
+        book_id: "workbook-book", book_status: "toc_ready",
+      },
+    ],
+  };
+  const exactCandidate = candidateSelectionState(
+    part,
+    resolveCandidate(part),
+    null,
+  ).active;
+  assert.equal(partPrepareStatus(part).actions.proceed, false);
+  const s = resolvedPrepareStatus(part, exactCandidate);
+  assert.equal(s.chip.kind, "textbook_ready");
+  assert.equal(s.actions.proceed, true);
+}
+{
+  // A disappeared selected id resolves to null and is fail-closed by the
+  // candidate action mapper; the UI guards use this same current selection.
+  const part: LangPart = {
+    page_id: "p", title: "Algebra", has_textbook: true,
+    candidates: [
+      { page_id: "p", block_id: "b1", filename: "A.pdf", rank: 0 },
+      { page_id: "p", block_id: "b2", filename: "B.pdf", rank: 0 },
+    ],
+  };
+  const selection = candidateSelectionState(part, resolveCandidate(part), "gone");
+  assert.equal(selection.invalidated, true);
+  assert.equal(selection.selected, null);
+  assert.equal(candidatePrepareStatus(selection.selected).actions.proceed, false);
 }
 
 // --- proceedBlockedTooltip: the shared tooltip text for the primary
