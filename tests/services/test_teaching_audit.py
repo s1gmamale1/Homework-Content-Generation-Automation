@@ -225,3 +225,36 @@ def test_coverage_prompt_has_objectives_and_packet():
         objectives=_exam_min().objectives, packet_md=PACKET_SENTINEL, language="uz",
     )
     assert "ta'rif" in p and PACKET_SENTINEL in p
+
+
+# ---------- loaders (input assembly) ----------
+
+
+def test_filter_deliverable_excludes_extract_and_non_done():
+    # Gate-1 blocker 1: the student must see the STUDENT-FACING deliverable only —
+    # same filter as jobs._phase_zip and the Notion export (done, non-extract, non-empty).
+    rows = [
+        ("extract", "done", "internal textbook summary"),
+        ("case-based-preview", "done", "cbp matni"),
+        ("flashcards", "failed", "half-written"),
+        ("boss-arena", "done", "boss matni"),
+        ("reflection", "done", "   "),
+    ]
+    assert ta.filter_deliverable(rows) == [
+        ("case-based-preview", "cbp matni"),
+        ("boss-arena", "boss matni"),
+    ]
+
+
+def test_packet_md_renders_sections_and_skips_empty():
+    phases = [("case-based-preview", "cbp matni"), ("flashcards", ""), ("boss-arena", "boss matni")]
+    md = ta.packet_md(phases)
+    assert "## case-based-preview" in md and "cbp matni" in md
+    assert "boss matni" in md
+    assert "## flashcards" not in md  # empty output → omitted
+
+
+def test_control_study_md_is_a_nonempty_no_material_sentinel():
+    # gate-2 blocker 2: the negative control is a TRUE empty packet, not phase-ablation
+    assert ta.CONTROL_STUDY_MD.strip()          # non-empty so the prompt block is well-formed
+    assert "no study material" in ta.CONTROL_STUDY_MD.lower()

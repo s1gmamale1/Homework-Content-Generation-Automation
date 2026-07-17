@@ -424,3 +424,111 @@ def build_coverage_prompt(
         f"--- PACKET ---\n{packet_md}\n\n"
         f"Respond with the CoverageReport JSON schema only."
     )
+
+
+# --------------------------------------------------------------------------
+# Loaders (DB imports local so the module stays import-light, mirroring
+# golden_eval._load_phases_from_db; no domain writes)
+# --------------------------------------------------------------------------
+
+# The negative-control study document (gate-2 blocker 2). A TRUE empty packet:
+# phase-ablation is invalid because the residual phases (memory-check, error
+# detection, boss-arena, …) carry explicit answer keys and could still teach.
+CONTROL_STUDY_MD = "(no study material was provided for this lesson.)"
+
+
+def filter_deliverable(rows: list[tuple[str, str, str]]) -> list[tuple[str, str]]:
+    """(phase_name, status, output_md) rows → the STUDENT-FACING deliverable.
+
+    Mirrors the real exports' filter (`jobs._phase_zip`, notion_archive):
+    done, non-`extract`, non-empty. The `extract` row is an internal
+    textbook-derived summary — feeding it to the simulated student would let
+    the post-test pass on textbook knowledge the packet never delivers.
+    """
+    return [
+        (name, md)
+        for name, status, md in rows
+        if name != "extract" and status == "done" and (md or "").strip()
+    ]
+
+
+def packet_md(phases: list[tuple[str, str]]) -> str:
+    """Render (phase_name, output_md) pairs as one study-packet document.
+    Phases with empty output are omitted."""
+    parts = [
+        f"## {name}\n\n{md.strip()}"
+        for name, md in phases
+        if (md or "").strip()
+    ]
+    return "\n\n".join(parts)
+
+
+@dataclass(frozen=True)
+class AuditInputs:
+    job_id: str
+    book_id: str
+    subject: str
+    grade: Optional[str]
+    language: str
+    lesson_title: str
+    textbook_text: str
+    phases: list[tuple[str, str]]  # student-facing (phase_name, output_md), in phase order
+
+
+async def load_audit_inputs(job_id: UUID | str) -> AuditInputs:
+    """Load everything the audit needs for one job. FAILS LOUD on any gap —
+    missing job/book/TOC row, NULL page range, unreadable PDF or empty page
+    text, or a packet with no completed deliverable phase at all."""
+    from app.db import SessionLocal
+    from app.models import Book, HomeworkJob, TOCEntry
+    from app.repositories import phase_outputs as phase_repo
+    from app.services import storage
+
+    async with SessionLocal() as session:
+        job = await session.get(HomeworkJob, job_id)
+        if job is None:
+            raise TeachingAuditError(f"homework_jobs row {job_id!r} not found")
+        book = await session.get(Book, job.book_id)
+        if book is None:
+            raise TeachingAuditError(f"books row {job.book_id!r} not found")
+        toc = await session.get(TOCEntry, job.toc_entry_id)
+        if toc is None:
+            raise TeachingAuditError(f"toc_entries row {job.toc_entry_id!r} not found")
+        if toc.page_start is None or toc.page_end is None:
+            raise TeachingAuditError(
+                f"TOC entry {toc.id} has no page range (page_start={toc.page_start!r}, "
+                f"page_end={toc.page_end!r}) — cannot derive a textbook exam"
+            )
+        rows = await phase_repo.list_for_job(session, job.id)
+        phases = filter_deliverable(
+            [(r.phase_name, r.status, r.output_md or "") for r in rows]
+        )
+        subject, grade, language = job.subject, book.grade, job.output_language
+        lesson_title, book_id = toc.section_title, str(job.book_id)
+        page_start, page_end = toc.page_start, toc.page_end
+
+    if not phases:
+        raise TeachingAuditError(
+            f"job {job_id} has no completed deliverable phases to audit"
+        )
+
+    pdf_path = storage.book_pdf_path(book_id)
+    if not pdf_path.exists():
+        raise TeachingAuditError(f"source PDF missing: {pdf_path}")
+    textbook_text = agent.read_page_range_text(pdf_path, page_start, page_end)
+    if not textbook_text:
+        raise TeachingAuditError(
+            f"pages {page_start}-{page_end} of {pdf_path.name} yielded no text "
+            f"(image-only scan?) — cannot derive a textbook exam"
+        )
+
+    return AuditInputs(
+        job_id=str(job_id),
+        book_id=book_id,
+        subject=subject,
+        grade=grade,
+        language=language,
+        lesson_title=lesson_title,
+        textbook_text=textbook_text,
+        phases=phases,
+    )
