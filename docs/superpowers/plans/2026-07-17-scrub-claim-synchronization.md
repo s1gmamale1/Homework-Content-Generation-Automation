@@ -38,6 +38,20 @@ state re-read after the lock; mirrors `books_repo.lock_book_shared/exclusive`). 
 - **`count_running_for_host` → `count_active_for_host`**: status in (`running`, `cancelling`),
   matching `count_active_for_book`.
 
+**Explicit guarantees (gate round-3 follow-up — all satisfied by the design above, called out so
+they're tested, not assumed):**
+- **In-flight jobs are NEVER interrupted.** Scrub does not cancel or kill a running/cancelling
+  pipeline — it only blocks *replacements* (claim-gate) and waits for the existing jobs to
+  finish/cancel on their own (`count_active_for_host == 0`) before clearing. A revoke is a drain,
+  not a kill.
+- **Claim-vs-scrub is serialized by the host advisory lock** (shared at claim, exclusive at
+  clear, same `host:{hostname}` key) — they cannot interleave.
+- **The claim side re-reads `scrub_requested_at` AFTER acquiring the shared lock** (via
+  `scrub_pending_for_host` inside the locked claim tx), never off a pre-lock snapshot.
+- **UI (Task 4):** the parked state is explicit — label `SCRUB REQUESTED · HOST PARKED`; and
+  **Unassign on a tombstoned host warns** that dismissing the revoke lets the host claim jobs
+  again with NO service-account key.
+
 **Decision flagged for the gate — "park until dismissed" semantic.** While a scrub tombstone
 stands (`scrub_requested_at IS NOT NULL`), the host's workers claim **nothing** (all providers,
 not just gemini). This is required for drain convergence and is the intended revoke semantic: a
@@ -127,15 +141,33 @@ worker.py + test call-sites updated for the rename.
 3. Run `tests/services/test_worker_sa_key_sync.py` + the real-DB drain test.
 4. Commit: `fix(worker): scrub clears only under exclusive host lock after full drain`.
 
-## Task 4 — Finish
+## Task 4 — UI: HOST PARKED label + Unassign warning (gate round-3 items 4-5)
+
+**Files:** `web/src/components/fleet/sa-keys-panel.tsx`.
+
+1. **Parked label** — the assignment-label cell renders `SCRUB REQUESTED` for a tombstoned row
+   (round-2). Change it to `SCRUB REQUESTED · HOST PARKED` (same amber tint) so the operator sees
+   the host is claiming nothing, not merely that a revoke was recorded.
+2. **Unassign warning** — the Unassign button's onClick, WHEN the row is a scrub tombstone
+   (`a?.scrub`), goes through a `window.confirm` first: "This host is parked by a scrub (revoke).
+   Unassigning dismisses the revoke and lets the host claim jobs again with NO service-account
+   key. Continue?" — proceed only on confirm. A normal keyed Unassign (`a?.key_id`, not a
+   tombstone) keeps today's no-confirm behavior. (`window.confirm` matches the house pattern used
+   by book-delete / batch cancel-all.)
+3. No pure-logic module needed (conditional-confirm + label string); gates
+   `cd web && npx tsc -p tsconfig.app.json --noEmit` && `npm run build`; re-run
+   `npx tsx src/lib/sa-key-hosts.test.ts` (no regression).
+4. Commit: `feat(web): SCRUB REQUESTED · HOST PARKED label + keyless-claim warning on Unassign`.
+
+## Task 5 — Finish
 
 1. Full suite `uv run python -m pytest tests/ -q`; the real-DB tests against `edu_scratch_scrub`.
 2. Rebase check `git fetch origin && git log HEAD..origin/Nggaev-v2`.
 3. Worklog 0147 **round-3 addendum** (MASTER_MEMORY + INDEX row already exist — append the
    synchronization correction); note the "park until dismissed" semantic in `docs/CODE_MAP.md`
    (claim-gate) and the SA-keys panel section.
-4. Push to `feat/sa-key-dead-host` (updates PR #101). No `git mv` (plan for the parent lane already
-   shipped; this correction plan → `shipped/` at finish).
+4. Push to `feat/sa-key-dead-host` (updates PR #101). `git mv` this correction plan →
+   `docs/superpowers/plans/shipped/` (the parent lane's plan already shipped there in worklog 0147).
 
 **Operator note (unchanged + new):** a host with a standing `SCRUB REQUESTED` tombstone now claims
 NO jobs until the operator Unassigns it or assigns a new key — parked by design, visible via the
