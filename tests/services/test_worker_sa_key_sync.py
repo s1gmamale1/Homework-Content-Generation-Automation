@@ -15,6 +15,18 @@ class _FakeSession:
     async def __aexit__(self, *a): return False
 
 
+@pytest.fixture(autouse=True)
+def _host_idle_by_default(monkeypatch):
+    """Default the HOST-WIDE idle gate to 'no sibling running' so scrub tests
+    exercise the clear. `_scrub_if_idle` calls `jobs_repo.count_running_for_host`
+    (a real-DB query, proven in tests/integration/test_count_running_for_host.py)
+    — here it's monkeypatched to 0 so these unit tests never touch a DB. The
+    sibling-busy test overrides it."""
+    async def _zero(session, hostname):
+        return 0
+    monkeypatch.setattr(worker.jobs_repo, "count_running_for_host", _zero)
+
+
 @pytest.mark.asyncio
 async def test_sync_applies_when_idle_and_noops_when_unchanged(monkeypatch, tmp_path):
     import app.config as config
@@ -217,6 +229,84 @@ async def test_scrub_defers_while_busy(monkeypatch, tmp_path):
     assert os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") == "/some/stale/path.json", (
         "residue must remain untouched while busy"
     )
+
+
+@pytest.mark.asyncio
+async def test_scrub_defers_while_sibling_process_busy(monkeypatch, tmp_path):
+    """Host-wide idle gate (gate finding 1): THIS process is idle
+    (`self._tasks` empty) and residue is present, but a SIBLING worker process
+    on the same host is running a job (`count_running_for_host` > 0). The clear
+    must be deferred — an idle process must not yank the shared active.json/.env
+    out from under a sibling that's mid-spawn."""
+    import app.config as config
+    monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
+
+    for k in ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GEMINI_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+
+    envfile = tmp_path / ".env"
+    monkeypatch.setattr(worker, "_WORKER_ENV_PATH", envfile, raising=False)
+
+    active_path = tmp_path / "sa_keys" / "active.json"
+    active_path.parent.mkdir(parents=True, exist_ok=True)
+    active_path.write_text('{"type":"service_account"}')
+
+    w = worker.Worker(concurrency=1)
+    w._tasks = set()  # THIS process is idle
+    w._applied_key_sha = None
+
+    monkeypatch.setattr(worker, "SessionLocal", lambda: _FakeSession())
+
+    async def fake_lookup(session, hostname):
+        return _scrub_assignment()
+
+    monkeypatch.setattr(worker.sa_keys_repo, "get_assignment_with_key", fake_lookup)
+
+    # A sibling process on this host is running a job.
+    async def _one(session, hostname):
+        return 1
+    monkeypatch.setattr(worker.jobs_repo, "count_running_for_host", _one)
+
+    calls = []
+    monkeypatch.setattr(apply_mod, "clear_credentials_env", lambda env: calls.append(env))
+
+    await w._sync_sa_key()
+
+    assert calls == [], "must defer while a sibling process on the host is busy"
+    assert active_path.exists(), "shared active.json must survive a sibling's in-flight job"
+
+
+@pytest.mark.asyncio
+async def test_scrub_swallows_malformed_env_file(monkeypatch, tmp_path):
+    """Best-effort (gate finding 2): a malformed/unreadable `.env` that raises
+    (here a UnicodeDecodeError from invalid UTF-8) while the scrub path reads it
+    must be logged and swallowed — never propagated. `_sync_sa_key` runs at
+    startup BEFORE the main loop's guard, so an unwrapped raise would crash the
+    worker."""
+    import app.config as config
+    monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
+
+    for k in ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GEMINI_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+
+    envfile = tmp_path / ".env"
+    # Invalid UTF-8 — env_file_has_credentials' read_text(encoding="utf-8") raises.
+    envfile.write_bytes(b"\xff\xfe GOOGLE_CLOUD_PROJECT=x\n")
+    monkeypatch.setattr(worker, "_WORKER_ENV_PATH", envfile, raising=False)
+
+    w = worker.Worker(concurrency=1)
+    w._tasks = set()
+    w._applied_key_sha = None
+
+    monkeypatch.setattr(worker, "SessionLocal", lambda: _FakeSession())
+
+    async def fake_lookup(session, hostname):
+        return _scrub_assignment()
+
+    monkeypatch.setattr(worker.sa_keys_repo, "get_assignment_with_key", fake_lookup)
+
+    # Must NOT raise. (Pre-fix, the unwrapped read_text propagated out.)
+    await w._sync_sa_key()
 
 
 @pytest.mark.asyncio

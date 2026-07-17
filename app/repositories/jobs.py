@@ -257,6 +257,28 @@ async def list_running_for_sweep(session: AsyncSession) -> list[HomeworkJob]:
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def count_running_for_host(session: AsyncSession, hostname: str) -> int:
+    """Count `running` jobs claimed by ANY worker process on `hostname`.
+
+    `claimed_by` is `hostname:pid` (see worker `_worker_id`), so the host part
+    is `split_part(claimed_by, ':', 1)`. This is the HOST-WIDE busy signal the
+    SA-key scrub path needs: an embedded and a standalone worker can share one
+    hostname (and thus the same on-disk `active.json` / `.env`), but each only
+    sees its own in-process `_tasks`. Before the destructive credential clear,
+    the scrub path also checks this so an idle process does not yank shared
+    credential files out from under a sibling process that is mid-spawn.
+
+    Uses `split_part(..) = hostname` (not `LIKE 'hostname:%'`) so a hostname
+    containing a LIKE metacharacter can't over- or under-match, and the `:`
+    boundary keeps `mac` from matching `mac-mini:123`.
+    """
+    stmt = select(func.count()).select_from(HomeworkJob).where(
+        HomeworkJob.status == "running",
+        func.split_part(HomeworkJob.claimed_by, ":", 1) == hostname,
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
 async def latest_by_section(
     session: AsyncSession, book_id: UUID, output_language: Optional[str] = None
 ) -> dict[UUID, HomeworkJob]:

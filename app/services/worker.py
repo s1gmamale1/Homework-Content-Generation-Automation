@@ -767,47 +767,28 @@ class Worker:
         """Resolve this host's SA-key assignment and apply/scrub it LIVE when it
         changed. Idle-gated: the os.environ swap runs only when no job is in
         flight (len(self._tasks)==0), so no concurrent agent spawn snapshots a
-        torn credential state. Best-effort: any failure is logged, never fatal."""
+        torn credential state. Best-effort: any failure is logged, never fatal.
+
+        The revoke (scrub) path — reading the assignment, computing residue
+        (which reads the .env file), the host-wide idle check, and the
+        destructive clear — all runs inside ONE try/except so a malformed or
+        unreadable `.env` (e.g. a UnicodeDecodeError) is logged and swallowed,
+        never propagated: `_sync_sa_key` is called at startup BEFORE the main
+        loop's own guard, so an unwrapped raise here would crash the worker."""
         try:
             async with SessionLocal() as session:
                 asg = await sa_keys_repo.get_assignment_with_key(session, self.hostname)
+                if asg is None:
+                    return  # non-destructive: keep whatever is currently applied
+                # Scrub: actively clear this host's key (the revoke path). Kept
+                # inside this try/except AND this session so (a) a bad .env read
+                # is swallowed like the apply branch below, and (b) the
+                # host-wide idle check reuses the open session.
+                if asg["scrub"]:
+                    await self._scrub_if_idle(session)
+                    return
         except Exception:
-            logger.warning(f"worker {self.id} sa-key assignment read failed")
-            return
-        if asg is None:
-            return  # non-destructive: keep whatever is currently applied
-
-        # Scrub: actively clear this host's key (the revoke path).
-        if asg["scrub"]:
-            # Four-source residue gate — NOT just the in-memory sha. A worker
-            # that restarts while a scrub is pending boots with
-            # `_applied_key_sha is None` (never re-learned; the assignment IS
-            # the scrub), so an sha-only guard would silently skip the clear
-            # forever. Check every place residue could still live: the sha,
-            # the on-disk active-key file, either var present in os.environ
-            # (presence, not truthiness — a leftover empty-string value is
-            # still residue to clean up), or a credential line in the
-            # worker's persisted .env file (the one place the old guard could
-            # never see).
-            has_residue = (
-                self._applied_key_sha is not None
-                or sa_key_active_path().exists()
-                or "GOOGLE_APPLICATION_CREDENTIALS" in os.environ
-                or "GOOGLE_CLOUD_PROJECT" in os.environ
-                or sa_key_apply.env_file_has_credentials(_WORKER_ENV_PATH)
-            )
-            if has_residue:
-                if self._tasks:
-                    return  # defer the clear until idle
-                sa_key_apply.clear_credentials_env(os.environ)
-                sa_key_apply.upsert_env_file(
-                    _WORKER_ENV_PATH,
-                    {"GOOGLE_APPLICATION_CREDENTIALS": None, "GOOGLE_CLOUD_PROJECT": None},
-                )
-                sa_key_active_path().unlink(missing_ok=True)
-                _rebind_capabilities()
-                self._applied_key_sha = None
-                logger.warning(f"worker {self.id} SA key SCRUBBED (revoked)")
+            logger.warning(f"worker {self.id} sa-key assignment read/scrub failed")
             return
 
         if asg["sha256"] == self._applied_key_sha:
@@ -833,6 +814,50 @@ class Worker:
             )
         except Exception:
             logger.exception(f"worker {self.id} SA key apply failed")
+
+    async def _scrub_if_idle(self, session) -> None:
+        """Clear this host's persisted SA credentials IF nothing on the host is
+        using them. Called only on the revoke path, inside `_sync_sa_key`'s
+        try/except (so a bad `.env` read here is swallowed, not fatal).
+
+        Four-source residue gate — NOT just the in-memory sha. A worker that
+        restarts while a scrub is pending boots with `_applied_key_sha is None`
+        (never re-learned; the assignment IS the scrub), so an sha-only guard
+        would silently skip the clear forever. Check every place residue could
+        still live: the sha, the on-disk active-key file, either var present in
+        os.environ (presence, not truthiness — a leftover empty-string value is
+        still residue to clean up), or a credential line in the worker's
+        persisted .env file (the one place the old guard could never see)."""
+        has_residue = (
+            self._applied_key_sha is not None
+            or sa_key_active_path().exists()
+            or "GOOGLE_APPLICATION_CREDENTIALS" in os.environ
+            or "GOOGLE_CLOUD_PROJECT" in os.environ
+            or sa_key_apply.env_file_has_credentials(_WORKER_ENV_PATH)
+        )
+        if not has_residue:
+            return  # already clean — no churn, no per-heartbeat log spam
+        if self._tasks:
+            return  # THIS process is busy — defer the clear until idle
+        # HOST-WIDE idle gate. active.json and the .env pair are shared by EVERY
+        # worker process on this host (an embedded + a standalone worker can
+        # share one hostname), but `self._tasks` only sees OUR jobs. Deleting
+        # the shared credential files while a sibling process is mid-spawn would
+        # break its next agent call. Defer while any process on this host is
+        # running a job. `claimed_by` is `hostname:pid`, so this counts sibling
+        # pids too. (On a DB error the outer try/except defers — fail-safe: we
+        # never scrub under uncertainty.)
+        if await jobs_repo.count_running_for_host(session, self.hostname) > 0:
+            return
+        sa_key_apply.clear_credentials_env(os.environ)
+        sa_key_apply.upsert_env_file(
+            _WORKER_ENV_PATH,
+            {"GOOGLE_APPLICATION_CREDENTIALS": None, "GOOGLE_CLOUD_PROJECT": None},
+        )
+        sa_key_active_path().unlink(missing_ok=True)
+        _rebind_capabilities()
+        self._applied_key_sha = None
+        logger.warning(f"worker {self.id} SA key SCRUBBED (revoked)")
 
     async def _drain(self) -> None:
         """Wait for in-flight tasks to finish before returning. Bounded by
