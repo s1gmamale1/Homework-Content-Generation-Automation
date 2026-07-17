@@ -1,4 +1,4 @@
-"""Real-DB proof (task 2, BE-16 fleet SA-key dead-host handling): the three
+"""Real-DB proof (task 2, SA-key dead-host scrub/claim synchronization): the three
 assignment-state-write routes in ``app/api/v1/sa_keys.py`` — ``assign_sa_key``
 (PUT), ``unassign_sa_key`` (DELETE), ``scrub_sa_key`` (POST .../scrub) — take
 the EXCLUSIVE host-scoped advisory lock (``workers_repo.lock_host_exclusive``,

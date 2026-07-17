@@ -1,4 +1,4 @@
-"""Real-DB proof of the claim-side scrub gate (task 3, BE-16 SA-key dead-host
+"""Real-DB proof of the claim-side scrub gate (task 3, SA-key dead-host
 lane, gate round 3 finding 1): `Worker._claim_one` takes the SHARED host lock
 (`workers_repo.lock_host_shared`, task 1) and re-reads the tombstone
 (`sa_keys_repo.scrub_pending_for_host`, task 1) at the top of its claim

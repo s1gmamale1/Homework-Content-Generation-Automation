@@ -20,7 +20,7 @@ in ``tests/integration/test_book_delete_race.py`` against a real Postgres —
 mocking it away here is deliberate, not a gap: this directory's tests were
 never meant to (and mostly can't) exercise real Postgres semantics.
 
-Same reasoning applies to the host-scoped advisory lock (BE-16 dead-host
+Same reasoning applies to the host-scoped advisory lock (SA-key dead-host
 task 2, ``app.repositories.workers.lock_host_exclusive``): the three
 assignment-state-write routes in ``app/api/v1/sa_keys.py`` (assign/unassign/
 scrub) now take it before their mutation. No-op it here too so the mocked

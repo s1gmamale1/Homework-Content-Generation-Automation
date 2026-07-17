@@ -1,5 +1,5 @@
 """Real-DB proof of the scrub-CLEAR side of the host lock pair (task 4,
-BE-16 SA-key dead-host lane, gate correction 1): `Worker._scrub_if_idle`
+SA-key dead-host lane, gate correction 1): `Worker._scrub_if_idle`
 takes the EXCLUSIVE host lock (`workers_repo.lock_host_exclusive`, task 1)
 and re-reads the drain state — `sa_keys_repo.scrub_pending_for_host` +
 `jobs_repo.count_active_for_host` — under that lock, immediately before the
