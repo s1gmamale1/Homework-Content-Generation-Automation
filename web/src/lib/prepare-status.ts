@@ -216,17 +216,29 @@ export function proceedBlockedTooltip(status: PrepareStatus): string | undefined
   }
 }
 
+function isMidFlightStatus(status: BookLinkState["book_status"] | undefined | null): boolean {
+  return status === "toc_extracting" || status === "uploading";
+}
+
 /** True when the availability tree has any linked book still mid-flight
  *  (`toc_extracting`/`uploading`) — the poll gate for the Prepare dialog:
  *  keep refetching availability while it's open AND something in it could
- *  still change (mirrors `BatchLessonList`'s `enabled`-gated refetchInterval). */
+ *  still change (mirrors `BatchLessonList`'s `enabled`-gated refetchInterval).
+ *
+ *  Scans BOTH the part-level rollup AND each part's per-candidate
+ *  `book_status` (PR #99 re-gate blocker 2b): a multi-candidate part whose
+ *  candidates resolve to >1 DIFFERENT linked book has no part-level rollup
+ *  at all (the backend deliberately omits it — ambiguous which book the part
+ *  represents), so a candidate stuck mid-flight would otherwise never be
+ *  seen and the dialog would stop polling while extraction is still running. */
 export function hasMidFlightBook(languages: AvailableLanguages | null | undefined): boolean {
   if (!languages) return false;
   for (const langMap of Object.values(languages)) {
     for (const avail of Object.values(langMap)) {
       for (const part of avail.parts ?? []) {
-        if (part.book_status === "toc_extracting" || part.book_status === "uploading") {
-          return true;
+        if (isMidFlightStatus(part.book_status)) return true;
+        for (const candidate of part.candidates ?? []) {
+          if (isMidFlightStatus(candidate.book_status)) return true;
         }
       }
     }

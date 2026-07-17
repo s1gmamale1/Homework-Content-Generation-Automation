@@ -61,7 +61,13 @@ interface CandidatePick {
   // subject page, not the language container) — BE-19 final-review critical fix.
   partPageId: string;
   candidates: NotionCandidate[];
-  selected: NotionCandidate | null;
+  // Stored as a block_id, NOT a NotionCandidate object snapshot (PR #99
+  // re-gate blocker 2a): a stored object goes stale the moment a poll
+  // refetch resolves the SAME candidate to a new book_status (e.g.
+  // toc_extracting -> toc_ready) — the panel would show PREPARING forever.
+  // block_id is stable across polls; the fresh candidate is re-resolved by
+  // it on every render via `freshSelectedCandidate`.
+  selectedBlockId: string | null;
 }
 
 const GRADES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"];
@@ -180,29 +186,45 @@ export function UploadPage() {
     // that both look like the textbook). Hold the fetch until the operator
     // picks one; a single best-tier candidate auto-resolves below.
     const part = partForResolution(s.page_id, language, langMap);
-    // Defense-in-depth (PR #99 gate finding 2): the language button is
-    // already disabled once this resolves to a linked, non-proceed state —
-    // never let a stray click re-fire /from-notion on an already-tracked
-    // book. A part with an ambiguous (>1 candidate) rollup still falls back
-    // to the conservative `textbook_ready` proceed:true here, so this never
-    // blocks entering the file picker below — only a resolved single part
-    // that's actually prepared/preparing/needs-review/failed is stopped.
-    if (!partPrepareStatus(part).actions.proceed) return;
     const resolution = resolveCandidate(part);
     if (resolution.status === "none" || !part) {
       toast.error("No textbook file found for this language — upload the PDF directly.");
       return;
     }
+    // Defense-in-depth (PR #99 re-gate blocker 1): block entry ONLY when the
+    // part resolves to a SINGLE candidate (non-ambiguous) that's already
+    // prepared/preparing/needs-review/failed — never let a stray click
+    // re-fire /from-notion on an already-tracked book. A MIXED ambiguous part
+    // (>1 candidate in the best tier, exactly one of them linked) makes the
+    // backend emit a part-level PREPARED rollup even though the part's OTHER
+    // candidates are still perfectly preparable — gating entry on the part
+    // rollup here would strand them behind a picker that never opens. So an
+    // ambiguous resolution ALWAYS continues into the picker branch below; the
+    // per-candidate proceed gate applies once a specific file is picked, at
+    // "Fetch selected".
+    if (resolution.status !== "ambiguous" && !partPrepareStatus(part).actions.proceed) return;
     if (resolution.status === "ambiguous") {
       // The owning PART's page_id (not any candidate's) is what must be
       // submitted to /from-notion — a child-page candidate's own page_id
       // fails backend ancestry validation (BE-19 final-review critical fix).
       // Stash it now so the "Fetch selected" handler below never needs to
       // re-derive `part` from stale state.
-      setCandidatePick({ subject: s, language, partPageId: part.page_id, candidates: resolution.candidates, selected: null });
+      setCandidatePick({ subject: s, language, partPageId: part.page_id, candidates: resolution.candidates, selectedBlockId: null });
       return;
     }
     await runFetch(s, language, resolution.page_id, resolution.block_id);
+  }
+
+  /** Re-resolve `candidatePick`'s selection by `block_id` against the
+   *  CURRENT (post-poll) candidate list, instead of trusting the object
+   *  snapshot captured at pick time (PR #99 re-gate blocker 2a). Returns
+   *  `null` when nothing is selected yet, or (defensively) if the candidate
+   *  vanished from the fresh data entirely. */
+  function freshSelectedCandidate(pick: CandidatePick): NotionCandidate | null {
+    if (!pick.selectedBlockId) return null;
+    const langMap = pick.subject.app_subject ? (availLangs?.[pick.subject.app_subject] ?? null) : null;
+    const part = partForResolution(pick.subject.page_id, pick.language, langMap);
+    return part?.candidates?.find((c) => c.block_id === pick.selectedBlockId) ?? null;
   }
 
   async function runFetch(s: NotionSubject, language: OutputLanguage, pageId: string, blockId: string) {
@@ -505,11 +527,14 @@ export function UploadPage() {
                             const langMap = s.app_subject ? (availLangs?.[s.app_subject] ?? null) : null;
                             // The ambiguous-file picker's current selection (if any) for THIS
                             // subject — its own status governs the "Fetch selected" gate
-                            // (PR #99 gate finding 3), not the part rollup.
-                            const candStatus =
-                              candidatePick?.subject.page_id === s.page_id && candidatePick.selected
-                                ? candidatePrepareStatus(candidatePick.selected)
-                                : null;
+                            // (PR #99 gate finding 3), not the part rollup. Re-resolved fresh
+                            // by block_id every render (PR #99 re-gate blocker 2a) so a poll
+                            // update to the selected candidate's book_status is reflected
+                            // instead of showing a stale snapshot forever.
+                            const pickedForThisSubject =
+                              candidatePick?.subject.page_id === s.page_id ? candidatePick : null;
+                            const selectedFresh = pickedForThisSubject ? freshSelectedCandidate(pickedForThisSubject) : null;
+                            const candStatus = selectedFresh ? candidatePrepareStatus(selectedFresh) : null;
                             const candBlockedTooltip = candStatus ? proceedBlockedTooltip(candStatus) : undefined;
                             return (
                               <div
@@ -548,7 +573,13 @@ export function UploadPage() {
                                       // that's already prepared/preparing/needs-review/failed.
                                       const part = partForResolution(s.page_id, lang, langMap);
                                       const partStatus = partPrepareStatus(part);
-                                      const blockedTooltip = proceedBlockedTooltip(partStatus);
+                                      // An ambiguous (>1 candidate) resolution must never be
+                                      // entry-blocked by the part-level rollup (PR #99 re-gate
+                                      // blocker 1 — the mixed one-linked-candidate case): the
+                                      // per-candidate gate takes over once inside the picker.
+                                      const ambiguous = resolveCandidate(part).status === "ambiguous";
+                                      const entryBlocked = !ambiguous && !partStatus.actions.proceed;
+                                      const blockedTooltip = ambiguous ? undefined : proceedBlockedTooltip(partStatus);
                                       const tooltip = multiPart
                                         ? `${partCount} ${LANG_LABEL[lang]} textbook parts in Notion — pick the specific part from that language's subject list, or upload the PDF directly.`
                                         : !available && lang === "en"
@@ -561,15 +592,15 @@ export function UploadPage() {
                                           key={lang}
                                           type="button"
                                           title={tooltip}
-                                          disabled={!available || busy || !partStatus.actions.proceed}
+                                          disabled={!available || busy || entryBlocked}
                                           onClick={() => {
                                             // Defense-in-depth — see the disabled= condition above.
-                                            if (!partStatus.actions.proceed) return;
+                                            if (entryBlocked) return;
                                             void pickSubject(s, lang);
                                           }}
                                           className={cn(
                                             "flex items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs font-medium transition-all",
-                                            available && partStatus.actions.proceed
+                                            available && !entryBlocked
                                               ? "border-white/[0.14] bg-white/[0.05] text-white/75 hover:border-white/[0.25] hover:bg-white/[0.1] hover:text-white"
                                               : "cursor-not-allowed border-white/[0.06] bg-transparent text-white/25 opacity-50",
                                           )}
@@ -594,9 +625,7 @@ export function UploadPage() {
                                     {(["uz", "ru", "en"] as OutputLanguage[]).map((lang) => {
                                       const part = partForResolution(s.page_id, lang, langMap);
                                       const selectedForLang =
-                                        candidatePick?.subject.page_id === s.page_id && candidatePick.language === lang
-                                          ? candidatePick.selected
-                                          : null;
+                                        pickedForThisSubject?.language === lang ? selectedFresh : null;
                                       const status = resolvedPrepareStatus(part, selectedForLang);
                                       if (
                                         status.panel.kind === "no_textbook" ||
@@ -625,11 +654,9 @@ export function UploadPage() {
                                       — pick which one to fetch.
                                     </span>
                                     <Select
-                                      value={candidatePick.selected?.block_id ?? ""}
+                                      value={candidatePick.selectedBlockId ?? ""}
                                       onValueChange={(blockId) => {
-                                        const selected =
-                                          candidatePick.candidates.find((c) => c.block_id === blockId) ?? null;
-                                        setCandidatePick({ ...candidatePick, selected });
+                                        setCandidatePick({ ...candidatePick, selectedBlockId: blockId });
                                       }}
                                     >
                                       <SelectTrigger className={SELECT_TRIGGER}>
@@ -654,26 +681,26 @@ export function UploadPage() {
                                     <div className="flex items-center gap-2">
                                       <button
                                         type="button"
-                                        disabled={!candidatePick.selected || busy || (candStatus ? !candStatus.actions.proceed : false)}
+                                        disabled={!candidatePick.selectedBlockId || busy || (candStatus ? !candStatus.actions.proceed : false)}
                                         title={
-                                          !candidatePick.selected
+                                          !candidatePick.selectedBlockId
                                             ? "Pick a file to continue"
                                             : candBlockedTooltip
                                         }
                                         onClick={() => {
-                                          if (!candidatePick.selected) return;
+                                          if (!candidatePick.selectedBlockId) return;
                                           // Defense-in-depth — see the disabled= condition above.
                                           if (candStatus && !candStatus.actions.proceed) return;
                                           void runFetch(
                                             candidatePick.subject,
                                             candidatePick.language,
                                             candidatePick.partPageId,
-                                            candidatePick.selected.block_id,
+                                            candidatePick.selectedBlockId,
                                           );
                                         }}
                                         className={cn(
                                           GLASS_BTN,
-                                          (!candidatePick.selected || (candStatus && !candStatus.actions.proceed)) &&
+                                          (!candidatePick.selectedBlockId || (candStatus && !candStatus.actions.proceed)) &&
                                             "cursor-not-allowed opacity-50",
                                         )}
                                       >

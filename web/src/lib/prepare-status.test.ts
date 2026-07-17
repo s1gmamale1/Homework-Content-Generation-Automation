@@ -213,6 +213,49 @@ import {
     ] } },
   };
   assert.equal(hasMidFlightBook(unlinked), false);
+
+  // Candidate-level mid-flight (PR #99 re-gate blocker 2b): a multi-candidate
+  // part with NO part-level rollup (ambiguous — >1 linked candidate, so the
+  // backend omits book_id/book_status on the part itself) but ONE candidate
+  // still toc_extracting/uploading must still trigger the poll gate — the
+  // part's own book_status is absent, so scanning only the part misses it.
+  const candidateMidFlightExtracting: AvailableLanguages = {
+    math: { uz: { page_id: "p", has_textbook: true, parts: [
+      {
+        page_id: "p", title: "A", has_textbook: true,
+        candidates: [
+          { page_id: "p", block_id: "b1", filename: "A.pdf", rank: 0, book_id: "bk-1", book_status: "toc_extracting" },
+          { page_id: "p", block_id: "b2", filename: "B.pdf", rank: 0, book_id: "bk-2", book_status: "toc_ready" },
+        ],
+      },
+    ] } },
+  };
+  assert.equal(hasMidFlightBook(candidateMidFlightExtracting), true);
+
+  const candidateMidFlightUploading: AvailableLanguages = {
+    math: { ru: { page_id: "p2", has_textbook: true, parts: [
+      {
+        page_id: "p2", title: "B", has_textbook: true,
+        candidates: [
+          { page_id: "p2", block_id: "c1", filename: "C.pdf", rank: 0, book_id: "bk-3", book_status: "uploading" },
+        ],
+      },
+    ] } },
+  };
+  assert.equal(hasMidFlightBook(candidateMidFlightUploading), true);
+
+  // All candidates steady → still false.
+  const candidateSteady: AvailableLanguages = {
+    math: { uz: { page_id: "p", has_textbook: true, parts: [
+      {
+        page_id: "p", title: "A", has_textbook: true,
+        candidates: [
+          { page_id: "p", block_id: "b1", filename: "A.pdf", rank: 0, book_id: "bk-1", book_status: "toc_ready" },
+        ],
+      },
+    ] } },
+  };
+  assert.equal(hasMidFlightBook(candidateSteady), false);
 }
 
 // --- candidatePrepareStatus: a single file-level candidate (BE-19 task 6),

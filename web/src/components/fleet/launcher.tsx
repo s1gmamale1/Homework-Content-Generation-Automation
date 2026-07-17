@@ -130,14 +130,27 @@ export function FleetLauncher({
   const resolvedPart = subjectPageId ? partForResolution(subjectPageId, prepLang, subjectLangMap) : null;
   const candidateResolution = resolveCandidate(resolvedPart);
   const needsCandidatePick = candidateResolution.status === "ambiguous" && !selectedCandidate;
+  // Re-resolve the selected candidate by block_id against the CURRENT
+  // (post-poll) `resolvedPart.candidates` instead of trusting the stored
+  // object snapshot (PR #99 re-gate blocker 2a) — `selectedCandidate` is set
+  // once from `candidateResolution.candidates` at pick time and never
+  // updated, so on a poll refetch its OWN book_status would go stale (e.g.
+  // stuck showing PREPARING after the candidate reaches toc_ready/failed).
+  // block_id is stable across polls, so this always finds the live copy;
+  // falls back to the stored object only if it somehow vanished from fresh
+  // data (defensive — never worse than the pre-fix behavior).
+  const selectedCandidateFresh = selectedCandidate
+    ? (resolvedPart?.candidates?.find((c) => c.block_id === selectedCandidate.block_id) ?? selectedCandidate)
+    : null;
   // System-aware chip state (task 5) for the currently-selected language's
   // resolved part — PrepareStatusPanel renders nothing for the un-prepared
   // states (no_textbook/textbook_ready), so this is purely additive: the
   // existing UZ/RU/EN buttons + candidate picker below are unchanged.
   // A selected candidate from the ambiguous-file picker below governs over
   // the part-level rollup (PR #99 gate finding 3) — resolvedPrepareStatus
-  // picks it up automatically once `selectedCandidate` is set.
-  const preparePartStatus = resolvedPrepareStatus(resolvedPart, selectedCandidate);
+  // picks it up automatically once `selectedCandidate` is set, now fed the
+  // FRESH copy so the panel doesn't freeze on a stale status.
+  const preparePartStatus = resolvedPrepareStatus(resolvedPart, selectedCandidateFresh);
   // The PRIMARY Prepare button must respect this same status (PR #99 gate
   // finding 1) — it previously only gated on subjectUsable/needsCandidatePick
   // and would silently re-fire /from-notion on an already-linked book.
@@ -198,12 +211,14 @@ export function FleetLauncher({
         }
         // The owning PART's page_id (not the candidate's) must be submitted —
         // a child-page candidate's own page_id fails backend ancestry
-        // validation (BE-19 final-review critical fix).
+        // validation (BE-19 final-review critical fix). block_id is stable
+        // across polls, but prefer the freshly-resolved copy for consistency
+        // with the status the operator is currently looking at.
         return api.fetchBookFromNotion(
           part.page_id,
           v.grade,
           v.language !== "uz" ? v.language : undefined,
-          selectedCandidate.block_id,
+          (selectedCandidateFresh ?? selectedCandidate).block_id,
         );
       }
       return api.fetchBookFromNotion(
