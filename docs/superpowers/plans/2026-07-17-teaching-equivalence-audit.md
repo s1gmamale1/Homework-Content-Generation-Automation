@@ -4,7 +4,7 @@
 
 **Goal:** An offline audit tool that measures whether a generated homework packet actually *teaches what the textbook lesson teaches* — via a closed-book simulated-student exam derived from the textbook, sat once before and once after "studying" only the packet.
 
-**Architecture:** New standalone module `app/services/teaching_audit.py` (schemas, protocol validation, pure prompt builders, classification, orchestrator) + CLI `scripts/teaching_audit.py`, mirroring the `golden_eval` house pattern (offline, `agent.run_phase` with `schema=`, `homework_job_id=None`, per-step `operation=` labels). Normal audit = **5 logical LLM calls** (exam → pre-test → post-test → grade → coverage). Sensitivity audit = **7 logical calls**, paired against a true empty-packet control: one exam + one pre-test + **one combined grading call** shared, plus a post-test and coverage for each of the two study documents (normal packet vs empty control).
+**Architecture:** New standalone module `app/services/teaching_audit.py` (schemas, protocol validation, pure prompt builders, classification, orchestrator) + CLI `scripts/teaching_audit.py`, mirroring the `golden_eval` house pattern (offline, `agent.run_phase` with `schema=`, `homework_job_id=None`, per-step `operation=` labels). Normal audit = **5 logical LLM calls** (exam → pre-test → post-test → grade → coverage). Sensitivity audit = **7 logical calls**, paired against a true empty-packet control: one exam + one pre-test + **one combined grading call** shared, plus a post-test and coverage for each of the two study documents (normal packet vs empty control). The single grading call is **blinded** — sittings are relabeled `s0/s1/…` and remapped only after grading, so the examiner can't tell the control from the real packet.
 
 **Tech Stack:** Python 3.12, Pydantic schemas via `agent.run_phase(schema=…)`, `transport=api` (production transport), pytest with `monkeypatch.setattr(ta.agent, "run_phase", fake)`.
 
@@ -20,7 +20,9 @@
 - **`mentioned` counts as NOT taught** (gate-1 blocker 5): coverage `mentioned` = "the term appears but is never actually explained" — a failed objective that was merely mentioned is a **`not_taught`** teaching-equivalence failure. Only a failed **`taught`** objective is `not_learnable`.
 - **The report retains the full evidence chain** (gate-1 blocker 4): the JSON report embeds all parsed artifacts (exam with questions+keys, sittings' answers, per-question grades with evidence, per-objective coverage with evidence) so a human can audit the audit — none of that is recoverable from `agent_usages`.
 - **Sensitivity is a PAIRED experiment with an IMMUTABLE baseline** (gate-1 blocker 2 + gate-2 blocker 1): `paired_audit` derives the exam ONCE, sits the pre-test ONCE, and **grades every sitting in ONE combined call** (`pre`, `post_normal`, `post_control` together). Because grading happens exactly once, the pre-test baseline is byte-identical across both legs — the examiner cannot grade the same pre answers two different ways, so an objective can't drift between `already_known` and `learned` between legs. The two legs then aggregate off that one shared grade set, differing only in which post-sitting they read. (An earlier design graded each leg independently → non-paired baseline → rejected at gate 2.)
-- **The negative control is a TRUE empty packet, not phase-ablation** (gate-2 blocker 2): the control leg's study document is a fixed "no study material" sentinel — not the packet-with-two-phases-removed. Verified against `prompts/_general/`: the residual phases carry explicit answer keys (`memory-check.md:24` "state the expected answer", "Mark which single option is correct"; `practice-error-detection.md:33` "The correct version — the right content"), so a gutted-but-nonempty packet can still teach the objectives — equal learned-counts there would NOT prove the instrument broken. An empty control is the clean check: if a student given nothing still scores `learned` (with a low pre-test), the post-test path is leaking latent knowledge and the instrument is broken. **Gate:** control `learned` < normal `learned`.
+- **The negative control is a TRUE empty packet, not phase-ablation** (gate-2 blocker 2): the control leg's study document is a fixed "no study material" sentinel — not the packet-with-two-phases-removed. Verified against `prompts/_general/`: the residual phases carry explicit answer keys (`memory-check.md:24` "state the expected answer", "Mark which single option is correct"; `practice-error-detection.md:33` "The correct version — the right content"), so a gutted-but-nonempty packet can still teach the objectives — equal learned-counts there would NOT prove the instrument broken. An empty control is the clean check: if a student given nothing still scores `learned` (with a low pre-test), the post-test path is leaking latent knowledge and the instrument is broken.
+- **The grader is BLINDED** (gate-3 blocker 1): the combined grading call would otherwise carry semantic sitting labels (`pre`/`post_normal`/`post_control`) that tell the examiner which sitting is the control it "should" mark down — biasing the very comparison the audit rests on. The orchestrator relabels sittings to opaque `s0/s1/…` in the grading prompt and remaps back to semantics only after the verdict returns. A call-boundary test asserts the grading prompt contains none of `post_normal`/`post_control`/`control`/`normal`.
+- **Sensitivity is a DUAL gate with distinct failure reasons** (gate-3 blocker 2): coverage is part of the instrument, so a coverage scorer that hallucinates `taught` on an empty document is a broken instrument even if learned-counts drop. `sensitivity_pass` requires BOTH (a) `control.learned_count < normal.learned_count` (student path) AND (b) every control coverage row is `absent` (coverage path). `sensitivity_failures()` reports the two independently so a run tells you *which* path failed — student-path leakage vs coverage-path hallucination.
 - **Fail loud, not degrade-to-pass:** unlike `golden_eval._score_via_rubric` (which degrades to protect baseline freezing), this is an audit instrument — a dead scorer makes the run worthless, so any call failure raises `TeachingAuditError`. Advisory by default: exit 0 with the report; `--strict` exits 1 on failure columns / failed sensitivity.
 - **Models:** examiner `gemini/gemini-2.5-pro` (needs to out-think the packet generator; same default as the CQ-E LLM scorer), student `gemini/gemini-2.5-flash` (persona fidelity, cheap). Model names CLI-overridable; **transport is pinned `api`** — the CLI exposes no transport flag (cli transport is operationally retired; the module keeps a `transport` kwarg defaulting to `"api"` for tests only).
 - **Load-bearing facts verified against code:** `agent.run_phase(provider, model, phase_prompt, phase_name, homework_job_id=None, phase_output_id=None, schema=…, operation=…, transport=…) -> PhaseResult(.parsed, .usage)` (`agent.py:926`); **structured-output validation retries once and records EACH attempt as its own `agent_usages` row, the failed one `success=False`** (`agent.py:1121`) — so "N logical calls" ≤ "N usage rows", and the CLI's cost (summed over `_call`'s retained successful-attempt usage) may undercount retry attempts (gate-2 smaller correction); every `run_phase` call writes a ledger row (`agent.py:807` `_record_usage`), so the tool is "no domain/pipeline mutations; usage-ledger writes only", not literally read-only; textbook text via `agent.read_page_range_text(pdf_path, page_start, page_end, margin=0)` (`agent.py:1491`) + `storage.book_pdf_path(book_id)`; `toc_entries.page_start/page_end` nullable (`app/models/toc_entry.py:25-26`); packet via `phase_outputs.list_for_job(session, job_id)` (`app/repositories/phase_outputs.py:91`) with `PhaseOutput.status` (`app/models/phase_output.py:29`); student-deliverable filter precedent `app/api/v1/jobs.py:87` + `app/services/notion_archive.py:289`; `Book.subject/.grade` (`app/models/book.py:14-15`), `HomeworkJob.output_language` (`app/models/homework_job.py:30`); cost via `pricing.cost_usd(provider, model, usage)` (`pricing.py:83`); house test pattern `monkeypatch.setattr(ge.agent, "run_phase", fake)` (`tests/golden/test_llm_scorers.py:31`); `pyproject.toml` sets `asyncio_mode = "auto"` — async tests need no marker.
@@ -960,7 +962,7 @@ git commit -m "feat(teaching-audit): loaders with student-deliverable filter + e
 
 **Interfaces:**
 - Consumes: everything above, plus `agent.run_phase` (`agent.py:926`) — call shape copied from `golden_eval._score_via_rubric` (`golden_eval.py:401`): `phase_name="__teach__"`, `homework_job_id=None`, `phase_output_id=None`, `schema=<BaseModel>`, `operation="teach:<step>"`, `transport=…`; result is `PhaseResult` with `.parsed` / `.usage`.
-- Produces: `async audit_job(job_id, *, provider="gemini", examiner_model="gemini-2.5-pro", student_model="gemini-2.5-flash", transport="api", inputs=None) -> AuditResult`; `async paired_audit(job_id, *, same kwargs) -> PairedResult` where `PairedResult` is a frozen dataclass `{normal: AuditResult, control: AuditResult, calls: list[dict], sensitivity_pass: bool (property)}`. The `inputs` kwarg lets tests inject `AuditInputs` without a DB.
+- Produces: `async audit_job(job_id, *, provider="gemini", examiner_model="gemini-2.5-pro", student_model="gemini-2.5-flash", transport="api", inputs=None) -> AuditResult`; `async paired_audit(job_id, *, same kwargs) -> PairedResult` where `PairedResult` is a frozen dataclass `{normal: AuditResult, control: AuditResult, calls: list[dict]}` with a dual `sensitivity_pass: bool` property (student-path AND coverage-path) and a `sensitivity_failures() -> list[str]` method; plus the internal `_grade_blinded(...)` helper. The `inputs` kwarg lets tests inject `AuditInputs` without a DB.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -983,13 +985,20 @@ class _R:
                       "total_tokens": 15, "raw": {}}
 
 
-def _fake_factory(captured, *, grade_sittings, control_learns=True, drop_grade=False):
+def _fake_factory(captured, *, grade_meanings, control_learns=True, drop_grade=False,
+                  broken_coverage=False):
     """Schema-dispatching fake: records every call, answers with a minimal
     PROTOCOL-CONSISTENT object for the requested schema.
 
-    `grade_sittings` are the sitting labels the ONE grading call must cover.
-    Pre is always 'wrong'; 'post'/'post_normal' are 'correct' (student learns);
-    'post_control' is 'correct' iff control_learns."""
+    The grader is BLINDED, so it receives opaque labels s0, s1, … The fake
+    emits grades on those opaque labels in the order of `grade_meanings` (the
+    semantic meaning of each position: 'pre' → wrong; 'post'/'post_normal' →
+    correct (student learns); 'post_control' → correct iff control_learns).
+    The orchestrator remaps s{i} back to the semantic label afterwards.
+
+    Coverage is prompt-aware: an empty-control packet correctly scores 'absent'
+    (a working scorer), unless `broken_coverage` forces 'taught' to simulate a
+    coverage-path failure."""
     exam = _exam_min()
 
     async def fake_run_phase(**kw):
@@ -1004,21 +1013,24 @@ def _fake_factory(captured, *, grade_sittings, control_learns=True, drop_grade=F
             ])
         elif schema is ta.GradedExam:
             grades = []
-            for s in grade_sittings:
+            for i, meaning in enumerate(grade_meanings):
+                label = f"s{i}"  # opaque — the grader never sees the semantics
                 for q in ("Q1", "Q2"):
-                    if s == "pre":
+                    if meaning == "pre":
                         v = "wrong"
-                    elif s == "post_control":
+                    elif meaning == "post_control":
                         v = "correct" if control_learns else "wrong"
                     else:  # post / post_normal
                         v = "correct"
-                    grades.append(_grade(q, s, v))
+                    grades.append(_grade(q, label, v))
             if drop_grade:
                 grades.pop()
             parsed = ta.GradedExam(grades=grades)
         elif schema is ta.CoverageReport:
+            is_control = ta.CONTROL_STUDY_MD in kw["phase_prompt"]
+            cov = "taught" if broken_coverage else ("absent" if is_control else "taught")
             parsed = ta.CoverageReport(coverages=[
-                ta.ObjectiveCoverage(objective_id="O1", coverage="taught", evidence="cbp"),
+                ta.ObjectiveCoverage(objective_id="O1", coverage=cov, evidence="cbp"),
             ])
         else:  # pragma: no cover
             raise AssertionError(f"unexpected schema {schema}")
@@ -1030,7 +1042,7 @@ def _fake_factory(captured, *, grade_sittings, control_learns=True, drop_grade=F
 async def test_audit_job_five_calls_isolation_and_evidence(monkeypatch):
     captured = []
     monkeypatch.setattr(ta.agent, "run_phase",
-                        _fake_factory(captured, grade_sittings=("pre", "post")))
+                        _fake_factory(captured, grade_meanings=("pre", "post")))
     result = await ta.audit_job("job-1", inputs=_inputs())
 
     assert [kw["operation"] for kw in captured] == [
@@ -1061,7 +1073,7 @@ async def test_paired_audit_seven_calls_empty_control_and_shared_baseline(monkey
     captured = []
     monkeypatch.setattr(
         ta.agent, "run_phase",
-        _fake_factory(captured, grade_sittings=("pre", "post_normal", "post_control")),
+        _fake_factory(captured, grade_meanings=("pre", "post_normal", "post_control")),
     )
     paired = await ta.paired_audit("job-1", inputs=_inputs())
 
@@ -1080,13 +1092,28 @@ async def test_paired_audit_seven_calls_empty_control_and_shared_baseline(monkey
 
     assert paired.normal.variant == "full" and paired.control.variant == "control"
     assert paired.normal.artifacts["exam"] == paired.control.artifacts["exam"]
-    # the SAME immutable grade set underlies both legs
+    # the SAME immutable grade set underlies both legs (remapped to semantics)
     assert paired.normal.artifacts["graded"] == paired.control.artifacts["graded"]
     assert len(paired.calls) == 7
     assert paired.normal.calls == [] and paired.control.calls == []
-    # control also 'learns' in this fake → no drop → sensitivity FAILS
+    # control also 'learns' in this fake → no drop → sensitivity FAILS on the student path
     assert paired.control.learned_count == paired.normal.learned_count
     assert paired.sensitivity_pass is False
+    assert any("student-path" in r for r in paired.sensitivity_failures())
+
+
+async def test_grading_call_is_blinded(monkeypatch):
+    # gate-3 blocker 1: the grader must not see which sitting is the control
+    captured = []
+    monkeypatch.setattr(
+        ta.agent, "run_phase",
+        _fake_factory(captured, grade_meanings=("pre", "post_normal", "post_control")),
+    )
+    await ta.paired_audit("job-1", inputs=_inputs())
+    grade_prompt = next(kw["phase_prompt"] for kw in captured if kw["operation"] == "teach:grade")
+    assert "post_normal" not in grade_prompt and "post_control" not in grade_prompt
+    assert "control" not in grade_prompt.lower() and "normal" not in grade_prompt.lower()
+    assert "s0" in grade_prompt and "s1" in grade_prompt and "s2" in grade_prompt
 
 
 async def test_paired_audit_grades_once_so_pre_baseline_is_immutable(monkeypatch):
@@ -1109,13 +1136,15 @@ async def test_paired_audit_grades_once_so_pre_baseline_is_immutable(monkeypatch
             # would give a DIFFERENT pre verdict if ever called a second time
             pre_v = "wrong" if grader_calls["n"] == 1 else "correct"
             grades = []
-            for s in ("pre", "post_normal", "post_control"):
+            for i, meaning in enumerate(("pre", "post_normal", "post_control")):
+                label = f"s{i}"  # blinded opaque labels
                 for q in ("Q1", "Q2"):
-                    grades.append(_grade(q, s, pre_v if s == "pre" else "correct"))
+                    grades.append(_grade(q, label, pre_v if meaning == "pre" else "correct"))
             parsed = ta.GradedExam(grades=grades)
         elif schema is ta.CoverageReport:
+            cov = "absent" if ta.CONTROL_STUDY_MD in kw["phase_prompt"] else "taught"
             parsed = ta.CoverageReport(coverages=[
-                ta.ObjectiveCoverage(objective_id="O1", coverage="taught", evidence="e")])
+                ta.ObjectiveCoverage(objective_id="O1", coverage=cov, evidence="e")])
         return _R(parsed)
 
     monkeypatch.setattr(ta.agent, "run_phase", fake)
@@ -1129,12 +1158,32 @@ async def test_paired_sensitivity_passes_when_control_fails(monkeypatch):
     captured = []
     monkeypatch.setattr(
         ta.agent, "run_phase",
-        _fake_factory(captured, grade_sittings=("pre", "post_normal", "post_control"),
+        _fake_factory(captured, grade_meanings=("pre", "post_normal", "post_control"),
                       control_learns=False),
     )
     paired = await ta.paired_audit("job-1", inputs=_inputs())
     assert paired.normal.learned_count == 1 and paired.control.learned_count == 0
+    # empty control correctly scores 'absent' coverage → both gates pass
+    assert all(r.coverage == "absent" for r in paired.control.objectives)
     assert paired.sensitivity_pass is True
+    assert paired.sensitivity_failures() == []
+
+
+async def test_paired_sensitivity_fails_when_control_coverage_not_absent(monkeypatch):
+    # gate-3 blocker 2: coverage is part of the instrument — an empty document
+    # scored 'taught' is a broken scorer, must fail sensitivity even if learned drops.
+    captured = []
+    monkeypatch.setattr(
+        ta.agent, "run_phase",
+        _fake_factory(captured, grade_meanings=("pre", "post_normal", "post_control"),
+                      control_learns=False, broken_coverage=True),
+    )
+    paired = await ta.paired_audit("job-1", inputs=_inputs())
+    assert paired.normal.learned_count == 1 and paired.control.learned_count == 0  # student path OK
+    assert paired.sensitivity_pass is False                                        # coverage path broke
+    reasons = paired.sensitivity_failures()
+    assert any("coverage-path" in r for r in reasons)
+    assert not any("student-path" in r for r in reasons)
 
 
 async def test_audit_job_fails_loud_on_unparsed_call(monkeypatch):
@@ -1149,7 +1198,7 @@ async def test_audit_job_fails_loud_on_unparsed_call(monkeypatch):
 async def test_audit_job_fails_loud_on_protocol_violation(monkeypatch):
     captured = []
     monkeypatch.setattr(ta.agent, "run_phase",
-                        _fake_factory(captured, grade_sittings=("pre", "post"), drop_grade=True))
+                        _fake_factory(captured, grade_meanings=("pre", "post"), drop_grade=True))
     with pytest.raises(ta.TeachingAuditError):
         await ta.audit_job("job-1", inputs=_inputs())
 ```
@@ -1157,7 +1206,7 @@ async def test_audit_job_fails_loud_on_protocol_violation(monkeypatch):
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run python -m pytest tests/services/test_teaching_audit.py -q`
-Expected: 6 new FAIL (`AttributeError: … 'audit_job'`).
+Expected: 8 new FAIL (`AttributeError: … 'audit_job'`).
 
 - [ ] **Step 3: Write the implementation**
 
@@ -1252,6 +1301,30 @@ async def _coverage(data, exam, study_md, *, provider, examiner_model, transport
     )
 
 
+async def _grade_blinded(
+    data, exam, semantic_sittings: list[tuple[str, StudentAnswers]],
+    *, provider, examiner_model, transport, calls,
+) -> GradedExam:
+    """The ONE grading call, BLINDED (gate-3 blocker 1): the grader sees opaque
+    labels s0, s1, … (never 'pre'/'post_normal'/'post_control'), so it cannot
+    favor the real packet or mark down the control. We remap the returned
+    sitting labels back to their semantics before validation/aggregation."""
+    to_semantic = {f"s{i}": label for i, (label, _) in enumerate(semantic_sittings)}
+    blinded = [(f"s{i}", ans) for i, (_, ans) in enumerate(semantic_sittings)]
+    graded = await _call(
+        "grade",
+        build_grading_prompt(exam=exam, sittings=blinded, language=data.language),
+        GradedExam,
+        provider=provider, model=examiner_model, transport=transport, calls=calls,
+    )
+    try:
+        return GradedExam(grades=[
+            g.model_copy(update={"sitting": to_semantic[g.sitting]}) for g in graded.grades
+        ])
+    except KeyError as exc:
+        raise TeachingAuditError(f"grader returned an unknown sitting label {exc}") from exc
+
+
 def _result(data, *, variant, objectives, artifacts, calls) -> AuditResult:
     return AuditResult(
         job_id=data.job_id,
@@ -1285,12 +1358,9 @@ async def audit_job(
     )
     post = await _posttest(data, exam, study, provider=provider,
                            student_model=student_model, transport=transport, calls=calls)
-    graded: GradedExam = await _call(
-        "grade",
-        build_grading_prompt(exam=exam, sittings=[("pre", pre), ("post", post)],
-                             language=data.language),
-        GradedExam,
-        provider=provider, model=examiner_model, transport=transport, calls=calls,
+    graded = await _grade_blinded(
+        data, exam, [("pre", pre), ("post", post)],
+        provider=provider, examiner_model=examiner_model, transport=transport, calls=calls,
     )
     coverage = await _coverage(data, exam, study, provider=provider,
                                examiner_model=examiner_model, transport=transport, calls=calls)
@@ -1313,10 +1383,39 @@ class PairedResult:
     calls: list[dict]  # all 7 calls (legs carry calls=[]; this is the one ledger)
 
     @property
-    def sensitivity_pass(self) -> bool:
-        """A working instrument must report FEWER learned objectives on the
-        empty control than on the real packet."""
+    def _student_path_ok(self) -> bool:
+        """Fewer learned objectives on the empty control than on the real packet."""
         return self.control.learned_count < self.normal.learned_count
+
+    @property
+    def _coverage_path_ok(self) -> bool:
+        """Every objective's coverage on the EMPTY control is 'absent' — a
+        coverage scorer that finds teaching in a blank document is broken."""
+        return all(r.coverage == "absent" for r in self.control.objectives)
+
+    @property
+    def sensitivity_pass(self) -> bool:
+        """DUAL gate (gate-3 blocker 2): both the student path and the coverage
+        path must hold, since coverage is part of the instrument."""
+        return self._student_path_ok and self._coverage_path_ok
+
+    def sensitivity_failures(self) -> list[str]:
+        """Distinct, human-readable reasons — so a failure tells you WHICH path
+        broke (student-path leakage vs coverage-path hallucination)."""
+        reasons: list[str] = []
+        if not self._student_path_ok:
+            reasons.append(
+                f"student-path leak: control learned={self.control.learned_count} is not < "
+                f"normal learned={self.normal.learned_count} — a student given no material "
+                f"still 'learned'"
+            )
+        if not self._coverage_path_ok:
+            bad = [r.objective_id for r in self.control.objectives if r.coverage != "absent"]
+            reasons.append(
+                f"coverage-path failure: the empty control scored non-absent coverage on "
+                f"{bad} — the coverage scorer hallucinates teaching"
+            )
+        return reasons
 
 
 async def paired_audit(
@@ -1344,15 +1443,10 @@ async def paired_audit(
                                   student_model=student_model, transport=transport, calls=calls)
     post_control = await _posttest(data, exam, CONTROL_STUDY_MD, provider=provider,
                                    student_model=student_model, transport=transport, calls=calls)
-    graded: GradedExam = await _call(
-        "grade",
-        build_grading_prompt(
-            exam=exam,
-            sittings=[("pre", pre), ("post_normal", post_normal), ("post_control", post_control)],
-            language=data.language,
-        ),
-        GradedExam,
-        provider=provider, model=examiner_model, transport=transport, calls=calls,
+    graded = await _grade_blinded(
+        data, exam,
+        [("pre", pre), ("post_normal", post_normal), ("post_control", post_control)],
+        provider=provider, examiner_model=examiner_model, transport=transport, calls=calls,
     )
     cov_normal = await _coverage(data, exam, study, provider=provider,
                                  examiner_model=examiner_model, transport=transport, calls=calls)
@@ -1387,13 +1481,13 @@ async def paired_audit(
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run python -m pytest tests/services/test_teaching_audit.py -q`
-Expected: 24 passed.
+Expected: 26 passed.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add app/services/teaching_audit.py tests/services/test_teaching_audit.py
-git commit -m "feat(teaching-audit): orchestrator — 5-call audit + 7-call paired (immutable baseline, empty control)"
+git commit -m "feat(teaching-audit): orchestrator — blinded grader + dual-gate paired sensitivity"
 ```
 
 ---
@@ -1589,6 +1683,9 @@ async def _run(args: argparse.Namespace) -> int:
         verdict = "PASS" if paired.sensitivity_pass else "FAIL"
         print(f"\nsensitivity: {verdict} (learned real={paired.normal.learned_count} "
               f"control={paired.control.learned_count})")
+        failures = paired.sensitivity_failures()
+        for reason in failures:
+            print(f"  - {reason}")
         cost = _cost(paired.calls)
         print(f"cost: ${cost:.4f} across {len(paired.calls)} logical calls "
               f"(examiner {args.examiner_model}, student {args.student_model}, api)")
@@ -1596,6 +1693,7 @@ async def _run(args: argparse.Namespace) -> int:
             "normal": ta.result_to_dict(paired.normal),
             "control": ta.result_to_dict(paired.control),
             "sensitivity_pass": paired.sensitivity_pass,
+            "sensitivity_failures": failures,
             "calls": [dict(c) for c in paired.calls],
             "cost_usd": cost,
         }, "-sensitivity")
@@ -1628,7 +1726,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Run tests + the full suite**
 
-Run: `uv run python -m pytest tests/services/test_teaching_audit.py -q` → 26 passed.
+Run: `uv run python -m pytest tests/services/test_teaching_audit.py -q` → 28 passed.
 Run: `uv run python -m pytest tests/ -q` → green (same skip count as base).
 Run: `uv run python scripts/teaching_audit.py --help` → usage text (no transport flag), exit 0.
 
@@ -1653,17 +1751,17 @@ docker exec edu-postgres psql -U edu -d edu_copy -c "SELECT j.id, t.section_titl
 
 (Adjust container/DB names to the live environment; `DATABASE_URL` must point at the same DB when running the script.)
 
-- [ ] **Step 2:** Paired run — `uv run python scripts/teaching_audit.py --job <id> --sensitivity`. Record: both matrices, verdicts, the sensitivity line, $ cost. Sanity-read the JSON report's retained artifacts: objectives must be real lesson content (not generic); exam questions must be lesson-specific; the pre-test should be mostly wrong/"I don't know" — **if the pre-test aces the exam, the exam is not lesson-specific enough: iterate on `build_exam_prompt` wording and re-run once before judging the instrument.**
+- [ ] **Step 2:** Capture the run's UTC start so the attribution query in Step 4 counts only THIS run's rows (the operation labels are shared across every historical run): run `date -u +%FT%TZ` and record the value as `<START>`. Then the paired run — `uv run python scripts/teaching_audit.py --job <id> --sensitivity`. Record: both matrices, verdicts + any failure reasons, the sensitivity line, $ cost. Sanity-read the JSON report's retained artifacts: objectives must be real lesson content (not generic); exam questions must be lesson-specific; the pre-test should be mostly wrong/"I don't know" — **if the pre-test aces the exam, the exam is not lesson-specific enough: iterate on `build_exam_prompt` wording and re-run once before judging the instrument.**
 
-- [ ] **Step 3:** **The gate:** `sensitivity: PASS` (control `learned` < real `learned` — causal by construction: same exam, same pre-test, one shared grading call, only the study document differs). If FAIL, either the packet genuinely teaches nothing (check the normal matrix) or the post-test path is leaking latent knowledge — STOP, report to the user with the retained artifacts, do not ship as a working instrument.
+- [ ] **Step 3:** **The gate (DUAL):** `sensitivity: PASS` requires BOTH control `learned` < real `learned` (student path) AND every control-leg coverage row `absent` (coverage path) — causal by construction: same exam, same pre-test, one blinded shared grading call, only the study document differs. On FAIL the CLI prints which path broke: a *student-path* leak means the post-test is leaking latent knowledge (or the packet genuinely teaches nothing — check the normal matrix); a *coverage-path* failure means the coverage scorer found teaching in a blank document. Either way STOP, report to the user with the retained artifacts + failure reasons, do not ship as a working instrument.
 
-- [ ] **Step 4:** Verify usage attribution — the expected logical operations are present, api, out-of-pipeline (there may be MORE than 7 rows if a structured call retried; the retry rows carry `success='f'`):
+- [ ] **Step 4:** Verify usage attribution for THIS run only (filter on the `<START>` timestamp from Step 2 — the labels alone would sum every historical `teach:*` call and the counts would be false after the first run). Expected operations are present, api, out-of-pipeline (there may be MORE than 7 rows if a structured call retried; the retry rows carry `success='f'`):
 
 ```bash
-docker exec edu-postgres psql -U edu -d edu_copy -c "SELECT operation, count(*) FILTER (WHERE success), count(*) AS rows, bool_and(auth_mode='api') AS all_api, bool_and(homework_job_id IS NULL) AS all_null_job FROM agent_usages WHERE operation LIKE 'teach:%' GROUP BY operation ORDER BY operation;"
+docker exec edu-postgres psql -U edu -d edu_copy -c "SELECT operation, count(*) FILTER (WHERE success) AS ok_rows, count(*) AS rows, bool_and(auth_mode='api') AS all_api, bool_and(homework_job_id IS NULL) AS all_null_job FROM agent_usages WHERE operation LIKE 'teach:%' AND created_at >= '<START>' GROUP BY operation ORDER BY operation;"
 ```
 
-Expected successful-row counts: `teach:exam` 1, `teach:pretest` 1, `teach:posttest` 2, `teach:grade` 1, `teach:coverage` 2; `all_api` and `all_null_job` both true.
+Expected `ok_rows`: `teach:exam` 1, `teach:pretest` 1, `teach:posttest` 2, `teach:grade` 1, `teach:coverage` 2; `all_api` and `all_null_job` both true.
 
 - [ ] **Step 5:** Commit any prompt-wording fixes that came out of Step 2/3 (with test updates if builder contracts changed), message `fix(teaching-audit): calibrate exam/persona prompts from live smoke`.
 
