@@ -85,3 +85,19 @@ def upsert_env_file(env_path: Path, updates: dict[str, "str | None"]) -> None:
         if val is not None:
             out.append(f"{key}={val}")
     env_path.write_text("\n".join(out) + ("\n" if out else ""), encoding="utf-8")
+
+
+def env_file_has_credentials(env_path: Path) -> bool:
+    """True when `env_path` has a non-comment `GOOGLE_APPLICATION_CREDENTIALS=`
+    or `GOOGLE_CLOUD_PROJECT=` line. False for a missing file. Same
+    line-parsing idiom as `upsert_env_file` — used by the worker's scrub
+    residue gate so a restarted process (in-memory state lost) can still see
+    a leftover credential line the old sha-only guard could never detect."""
+    if not env_path.exists():
+        return False
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    for line in lines:
+        key = line.split("=", 1)[0].strip() if ("=" in line and not line.lstrip().startswith("#")) else None
+        if key in ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT"):
+            return True
+    return False

@@ -779,7 +779,24 @@ class Worker:
 
         # Scrub: actively clear this host's key (the revoke path).
         if asg["scrub"]:
-            if self._applied_key_sha is not None:
+            # Four-source residue gate — NOT just the in-memory sha. A worker
+            # that restarts while a scrub is pending boots with
+            # `_applied_key_sha is None` (never re-learned; the assignment IS
+            # the scrub), so an sha-only guard would silently skip the clear
+            # forever. Check every place residue could still live: the sha,
+            # the on-disk active-key file, either var present in os.environ
+            # (presence, not truthiness — a leftover empty-string value is
+            # still residue to clean up), or a credential line in the
+            # worker's persisted .env file (the one place the old guard could
+            # never see).
+            has_residue = (
+                self._applied_key_sha is not None
+                or sa_key_active_path().exists()
+                or "GOOGLE_APPLICATION_CREDENTIALS" in os.environ
+                or "GOOGLE_CLOUD_PROJECT" in os.environ
+                or sa_key_apply.env_file_has_credentials(_WORKER_ENV_PATH)
+            )
+            if has_residue:
                 if self._tasks:
                     return  # defer the clear until idle
                 sa_key_apply.clear_credentials_env(os.environ)
