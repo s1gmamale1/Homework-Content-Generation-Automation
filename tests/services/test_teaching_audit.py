@@ -258,3 +258,239 @@ def test_control_study_md_is_a_nonempty_no_material_sentinel():
     # gate-2 blocker 2: the negative control is a TRUE empty packet, not phase-ablation
     assert ta.CONTROL_STUDY_MD.strip()          # non-empty so the prompt block is well-formed
     assert "no study material" in ta.CONTROL_STUDY_MD.lower()
+
+
+# ---------- orchestrator (5-call + 7-call) ----------
+
+
+def _inputs() -> ta.AuditInputs:
+    return ta.AuditInputs(
+        job_id="job-1", book_id="book-1", subject="matematika", grade="8", language="uz",
+        lesson_title="Parallelogramm", textbook_text=TEXTBOOK_SENTINEL,
+        phases=[("case-based-preview", PACKET_SENTINEL), ("boss-arena", "boss matni")],
+    )
+
+
+class _R:
+    def __init__(self, parsed):
+        self.parsed = parsed
+        self.usage = {"prompt_tokens": 10, "output_tokens": 5, "cached_tokens": 0,
+                      "total_tokens": 15, "raw": {}}
+
+
+def _fake_factory(captured, *, grade_meanings, control_learns=True, drop_grade=False,
+                  broken_coverage=False):
+    """Schema-dispatching fake: records every call, answers with a minimal
+    PROTOCOL-CONSISTENT object for the requested schema.
+
+    The grader is BLINDED, so it receives opaque labels s0, s1, … The fake
+    emits grades on those opaque labels in the order of `grade_meanings` (the
+    semantic meaning of each position: 'pre' → wrong; 'post'/'post_normal' →
+    correct (student learns); 'post_control' → correct iff control_learns).
+    The orchestrator remaps s{i} back to the semantic label afterwards.
+
+    Coverage is prompt-aware: an empty-control packet correctly scores 'absent'
+    (a working scorer), unless `broken_coverage` forces 'taught' to simulate a
+    coverage-path failure."""
+    exam = _exam_min()
+
+    async def fake_run_phase(**kw):
+        captured.append(kw)
+        schema = kw["schema"]
+        if schema is ta.ExamSpec:
+            parsed = exam
+        elif schema is ta.StudentAnswers:
+            parsed = ta.StudentAnswers(answers=[
+                ta.StudentAnswer(question_id="Q1", answer="j1"),
+                ta.StudentAnswer(question_id="Q2", answer="j2"),
+            ])
+        elif schema is ta.GradedExam:
+            grades = []
+            for i, meaning in enumerate(grade_meanings):
+                label = f"s{i}"  # opaque — the grader never sees the semantics
+                for q in ("Q1", "Q2"):
+                    if meaning == "pre":
+                        v = "wrong"
+                    elif meaning == "post_control":
+                        v = "correct" if control_learns else "wrong"
+                    else:  # post / post_normal
+                        v = "correct"
+                    grades.append(_grade(q, label, v))
+            if drop_grade:
+                grades.pop()
+            parsed = ta.GradedExam(grades=grades)
+        elif schema is ta.CoverageReport:
+            is_control = ta.CONTROL_STUDY_MD in kw["phase_prompt"]
+            cov = "taught" if broken_coverage else ("absent" if is_control else "taught")
+            parsed = ta.CoverageReport(coverages=[
+                ta.ObjectiveCoverage(objective_id="O1", coverage=cov, evidence="cbp"),
+            ])
+        else:  # pragma: no cover
+            raise AssertionError(f"unexpected schema {schema}")
+        return _R(parsed)
+
+    return fake_run_phase
+
+
+async def test_audit_job_five_calls_isolation_and_evidence(monkeypatch):
+    captured = []
+    monkeypatch.setattr(ta.agent, "run_phase",
+                        _fake_factory(captured, grade_meanings=("pre", "post")))
+    result = await ta.audit_job("job-1", inputs=_inputs())
+
+    assert [kw["operation"] for kw in captured] == [
+        "teach:exam", "teach:pretest", "teach:posttest", "teach:grade", "teach:coverage",
+    ]
+    by_op = {kw["operation"]: kw for kw in captured}
+    assert TEXTBOOK_SENTINEL in by_op["teach:exam"]["phase_prompt"]
+    assert PACKET_SENTINEL not in by_op["teach:exam"]["phase_prompt"]
+    assert TEXTBOOK_SENTINEL not in by_op["teach:pretest"]["phase_prompt"]
+    assert PACKET_SENTINEL not in by_op["teach:pretest"]["phase_prompt"]
+    assert PACKET_SENTINEL in by_op["teach:posttest"]["phase_prompt"]
+    assert PACKET_SENTINEL not in by_op["teach:grade"]["phase_prompt"]
+    assert by_op["teach:exam"]["model"] == "gemini-2.5-pro"
+    assert by_op["teach:pretest"]["model"] == "gemini-2.5-flash"
+    assert by_op["teach:grade"]["model"] == "gemini-2.5-pro"
+    assert all(kw["homework_job_id"] is None for kw in captured)
+    assert all(kw["transport"] == "api" for kw in captured)
+
+    assert result.variant == "full"
+    assert [r.outcome for r in result.objectives] == ["learned"]
+    assert len(result.calls) == 5 and result.calls[0]["step"] == "exam"
+    assert result.artifacts["exam"]["questions"][0]["answer_key"] == "Javob bir"
+    assert result.artifacts["graded"]["grades"][0]["evidence"] == "e"
+    assert result.artifacts["coverage"]["coverages"][0]["evidence"] == "cbp"
+
+
+async def test_paired_audit_seven_calls_empty_control_and_shared_baseline(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        ta.agent, "run_phase",
+        _fake_factory(captured, grade_meanings=("pre", "post_normal", "post_control")),
+    )
+    paired = await ta.paired_audit("job-1", inputs=_inputs())
+
+    assert [kw["operation"] for kw in captured] == [
+        "teach:exam", "teach:pretest",
+        "teach:posttest", "teach:posttest",   # normal packet, then empty control
+        "teach:grade",                          # ONE combined grading call
+        "teach:coverage", "teach:coverage",    # normal, then control
+    ]
+    posts = [kw["phase_prompt"] for kw in captured if kw["operation"] == "teach:posttest"]
+    assert PACKET_SENTINEL in posts[0]                         # normal leg sees the packet
+    assert PACKET_SENTINEL not in posts[1]                     # control leg: empty packet
+    assert ta.CONTROL_STUDY_MD in posts[1]
+    covs = [kw["phase_prompt"] for kw in captured if kw["operation"] == "teach:coverage"]
+    assert PACKET_SENTINEL in covs[0] and PACKET_SENTINEL not in covs[1]
+
+    assert paired.normal.variant == "full" and paired.control.variant == "control"
+    assert paired.normal.artifacts["exam"] == paired.control.artifacts["exam"]
+    # the SAME immutable grade set underlies both legs (remapped to semantics)
+    assert paired.normal.artifacts["graded"] == paired.control.artifacts["graded"]
+    assert len(paired.calls) == 7
+    assert paired.normal.calls == [] and paired.control.calls == []
+    # control also 'learns' in this fake → no drop → sensitivity FAILS on the student path
+    assert paired.control.learned_count == paired.normal.learned_count
+    assert paired.sensitivity_pass is False
+    assert any("student-path" in r for r in paired.sensitivity_failures())
+
+
+async def test_grading_call_is_blinded(monkeypatch):
+    # gate-3 blocker 1: the grader must not see which sitting is the control
+    captured = []
+    monkeypatch.setattr(
+        ta.agent, "run_phase",
+        _fake_factory(captured, grade_meanings=("pre", "post_normal", "post_control")),
+    )
+    await ta.paired_audit("job-1", inputs=_inputs())
+    grade_prompt = next(kw["phase_prompt"] for kw in captured if kw["operation"] == "teach:grade")
+    assert "post_normal" not in grade_prompt and "post_control" not in grade_prompt
+    assert "control" not in grade_prompt.lower() and "normal" not in grade_prompt.lower()
+    assert "s0" in grade_prompt and "s1" in grade_prompt and "s2" in grade_prompt
+
+
+async def test_paired_audit_grades_once_so_pre_baseline_is_immutable(monkeypatch):
+    # gate-2 blocker 1: the grader is invoked exactly once; a divergent second
+    # grading of the pre answers is structurally impossible.
+    grader_calls = {"n": 0}
+    exam = _exam_min()
+
+    async def fake(**kw):
+        schema = kw["schema"]
+        if schema is ta.ExamSpec:
+            parsed = exam
+        elif schema is ta.StudentAnswers:
+            parsed = ta.StudentAnswers(answers=[
+                ta.StudentAnswer(question_id="Q1", answer="j"),
+                ta.StudentAnswer(question_id="Q2", answer="j"),
+            ])
+        elif schema is ta.GradedExam:
+            grader_calls["n"] += 1
+            # would give a DIFFERENT pre verdict if ever called a second time
+            pre_v = "wrong" if grader_calls["n"] == 1 else "correct"
+            grades = []
+            for i, meaning in enumerate(("pre", "post_normal", "post_control")):
+                label = f"s{i}"  # blinded opaque labels
+                for q in ("Q1", "Q2"):
+                    grades.append(_grade(q, label, pre_v if meaning == "pre" else "correct"))
+            parsed = ta.GradedExam(grades=grades)
+        elif schema is ta.CoverageReport:
+            cov = "absent" if ta.CONTROL_STUDY_MD in kw["phase_prompt"] else "taught"
+            parsed = ta.CoverageReport(coverages=[
+                ta.ObjectiveCoverage(objective_id="O1", coverage=cov, evidence="e")])
+        return _R(parsed)
+
+    monkeypatch.setattr(ta.agent, "run_phase", fake)
+    paired = await ta.paired_audit("job-1", inputs=_inputs())
+    assert grader_calls["n"] == 1  # graded ONCE — no divergent second grading possible
+    assert ([r.pre_score for r in paired.normal.objectives]
+            == [r.pre_score for r in paired.control.objectives])
+
+
+async def test_paired_sensitivity_passes_when_control_fails(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        ta.agent, "run_phase",
+        _fake_factory(captured, grade_meanings=("pre", "post_normal", "post_control"),
+                      control_learns=False),
+    )
+    paired = await ta.paired_audit("job-1", inputs=_inputs())
+    assert paired.normal.learned_count == 1 and paired.control.learned_count == 0
+    # empty control correctly scores 'absent' coverage → both gates pass
+    assert all(r.coverage == "absent" for r in paired.control.objectives)
+    assert paired.sensitivity_pass is True
+    assert paired.sensitivity_failures() == []
+
+
+async def test_paired_sensitivity_fails_when_control_coverage_not_absent(monkeypatch):
+    # gate-3 blocker 2: coverage is part of the instrument — an empty document
+    # scored 'taught' is a broken scorer, must fail sensitivity even if learned drops.
+    captured = []
+    monkeypatch.setattr(
+        ta.agent, "run_phase",
+        _fake_factory(captured, grade_meanings=("pre", "post_normal", "post_control"),
+                      control_learns=False, broken_coverage=True),
+    )
+    paired = await ta.paired_audit("job-1", inputs=_inputs())
+    assert paired.normal.learned_count == 1 and paired.control.learned_count == 0  # student path OK
+    assert paired.sensitivity_pass is False                                        # coverage path broke
+    reasons = paired.sensitivity_failures()
+    assert any("coverage-path" in r for r in reasons)
+    assert not any("student-path" in r for r in reasons)
+
+
+async def test_audit_job_fails_loud_on_unparsed_call(monkeypatch):
+    async def dead(**kw):
+        return _R(None)
+
+    monkeypatch.setattr(ta.agent, "run_phase", dead)
+    with pytest.raises(ta.TeachingAuditError, match="teach:exam"):
+        await ta.audit_job("job-1", inputs=_inputs())
+
+
+async def test_audit_job_fails_loud_on_protocol_violation(monkeypatch):
+    captured = []
+    monkeypatch.setattr(ta.agent, "run_phase",
+                        _fake_factory(captured, grade_meanings=("pre", "post"), drop_grade=True))
+    with pytest.raises(ta.TeachingAuditError):
+        await ta.audit_job("job-1", inputs=_inputs())

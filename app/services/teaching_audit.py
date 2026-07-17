@@ -532,3 +532,268 @@ async def load_audit_inputs(job_id: UUID | str) -> AuditInputs:
         textbook_text=textbook_text,
         phases=phases,
     )
+
+
+# --------------------------------------------------------------------------
+# Orchestrator
+# --------------------------------------------------------------------------
+
+
+async def _call(
+    step: str,
+    prompt: str,
+    schema: type[BaseModel],
+    *,
+    provider: str,
+    model: Optional[str],
+    transport: str,
+    calls: list[dict],
+):
+    """One structured audit call. Mirrors golden_eval._score_via_rubric's
+    run_phase shape but FAILS LOUD instead of degrading — a dead scorer makes
+    the whole audit worthless.
+
+    NOTE: run_phase may record more than one `agent_usages` row for this call
+    (a structured-output validation retry logs the failed attempt too,
+    agent.py:1121). `usage` here is the successful final attempt only, so the
+    summed $ cost can undercount retried attempts."""
+    try:
+        result = await agent.run_phase(
+            provider=provider,
+            model=model,
+            phase_prompt=prompt,
+            phase_name="__teach__",
+            homework_job_id=None,
+            phase_output_id=None,
+            schema=schema,
+            operation=f"teach:{step}",
+            transport=transport,
+        )
+    except Exception as exc:
+        raise TeachingAuditError(f"teach:{step} call failed: {exc}") from exc
+    if result.parsed is None:
+        raise TeachingAuditError(f"teach:{step} returned no parsed {schema.__name__}")
+    calls.append(
+        {"step": step, "provider": provider, "model": model, "usage": dict(result.usage or {})}
+    )
+    return result.parsed
+
+
+async def _exam_and_pretest(data, *, provider, examiner_model, student_model, transport, calls):
+    exam: ExamSpec = await _call(
+        "exam",
+        build_exam_prompt(
+            textbook_text=data.textbook_text, lesson_title=data.lesson_title,
+            subject=data.subject, grade=data.grade, language=data.language,
+        ),
+        ExamSpec,
+        provider=provider, model=examiner_model, transport=transport, calls=calls,
+    )
+    _validate_exam(exam)  # fail before burning student/grader calls
+    pre: StudentAnswers = await _call(
+        "pretest",
+        build_pretest_prompt(
+            exam=exam, subject=data.subject, grade=data.grade, language=data.language,
+        ),
+        StudentAnswers,
+        provider=provider, model=student_model, transport=transport, calls=calls,
+    )
+    return exam, pre
+
+
+async def _posttest(data, exam, study_md, *, provider, student_model, transport, calls):
+    return await _call(
+        "posttest",
+        build_posttest_prompt(
+            exam=exam, packet_md=study_md,
+            subject=data.subject, grade=data.grade, language=data.language,
+        ),
+        StudentAnswers,
+        provider=provider, model=student_model, transport=transport, calls=calls,
+    )
+
+
+async def _coverage(data, exam, study_md, *, provider, examiner_model, transport, calls):
+    return await _call(
+        "coverage",
+        build_coverage_prompt(objectives=exam.objectives, packet_md=study_md, language=data.language),
+        CoverageReport,
+        provider=provider, model=examiner_model, transport=transport, calls=calls,
+    )
+
+
+async def _grade_blinded(
+    data, exam, semantic_sittings: list[tuple[str, StudentAnswers]],
+    *, provider, examiner_model, transport, calls,
+) -> GradedExam:
+    """The ONE grading call, BLINDED (gate-3 blocker 1): the grader sees opaque
+    labels s0, s1, … (never 'pre'/'post_normal'/'post_control'), so it cannot
+    favor the real packet or mark down the control. We remap the returned
+    sitting labels back to their semantics before validation/aggregation."""
+    to_semantic = {f"s{i}": label for i, (label, _) in enumerate(semantic_sittings)}
+    blinded = [(f"s{i}", ans) for i, (_, ans) in enumerate(semantic_sittings)]
+    graded = await _call(
+        "grade",
+        build_grading_prompt(exam=exam, sittings=blinded, language=data.language),
+        GradedExam,
+        provider=provider, model=examiner_model, transport=transport, calls=calls,
+    )
+    try:
+        return GradedExam(grades=[
+            g.model_copy(update={"sitting": to_semantic[g.sitting]}) for g in graded.grades
+        ])
+    except KeyError as exc:
+        raise TeachingAuditError(f"grader returned an unknown sitting label {exc}") from exc
+
+
+def _result(data, *, variant, objectives, artifacts, calls) -> AuditResult:
+    return AuditResult(
+        job_id=data.job_id,
+        lesson_title=data.lesson_title,
+        subject=data.subject,
+        grade=data.grade,
+        language=data.language,
+        variant=variant,
+        objectives=objectives,
+        artifacts=artifacts,
+        calls=calls,
+    )
+
+
+async def audit_job(
+    job_id: UUID | str,
+    *,
+    provider: str = "gemini",
+    examiner_model: str = "gemini-2.5-pro",
+    student_model: str = "gemini-2.5-flash",
+    transport: str = "api",
+    inputs: Optional[AuditInputs] = None,
+) -> AuditResult:
+    """Run the normal 5-call protocol for one job's packet."""
+    data = inputs if inputs is not None else await load_audit_inputs(job_id)
+    calls: list[dict] = []
+    study = packet_md(data.phases)
+    exam, pre = await _exam_and_pretest(
+        data, provider=provider, examiner_model=examiner_model,
+        student_model=student_model, transport=transport, calls=calls,
+    )
+    post = await _posttest(data, exam, study, provider=provider,
+                           student_model=student_model, transport=transport, calls=calls)
+    graded = await _grade_blinded(
+        data, exam, [("pre", pre), ("post", post)],
+        provider=provider, examiner_model=examiner_model, transport=transport, calls=calls,
+    )
+    coverage = await _coverage(data, exam, study, provider=provider,
+                               examiner_model=examiner_model, transport=transport, calls=calls)
+    validate_protocol(exam, {"pre": pre, "post": post}, graded, coverage)
+    objectives = aggregate(exam, graded, coverage, pre_label="pre", post_label="post")
+    artifacts = {
+        "exam": exam.model_dump(), "pre": pre.model_dump(), "post": post.model_dump(),
+        "graded": graded.model_dump(), "coverage": coverage.model_dump(),
+    }
+    return _result(data, variant="full", objectives=objectives, artifacts=artifacts, calls=calls)
+
+
+@dataclass(frozen=True)
+class PairedResult:
+    """Sensitivity experiment: same exam, same pre-test, ONE shared grade set,
+    two study documents (real packet vs empty control)."""
+
+    normal: AuditResult
+    control: AuditResult
+    calls: list[dict]  # all 7 calls (legs carry calls=[]; this is the one ledger)
+
+    @property
+    def _student_path_ok(self) -> bool:
+        """Fewer learned objectives on the empty control than on the real packet."""
+        return self.control.learned_count < self.normal.learned_count
+
+    @property
+    def _coverage_path_ok(self) -> bool:
+        """Every objective's coverage on the EMPTY control is 'absent' — a
+        coverage scorer that finds teaching in a blank document is broken."""
+        return all(r.coverage == "absent" for r in self.control.objectives)
+
+    @property
+    def sensitivity_pass(self) -> bool:
+        """DUAL gate (gate-3 blocker 2): both the student path and the coverage
+        path must hold, since coverage is part of the instrument."""
+        return self._student_path_ok and self._coverage_path_ok
+
+    def sensitivity_failures(self) -> list[str]:
+        """Distinct, human-readable reasons — so a failure tells you WHICH path
+        broke (student-path leakage vs coverage-path hallucination)."""
+        reasons: list[str] = []
+        if not self._student_path_ok:
+            reasons.append(
+                f"student-path leak: control learned={self.control.learned_count} is not < "
+                f"normal learned={self.normal.learned_count} — a student given no material "
+                f"still 'learned'"
+            )
+        if not self._coverage_path_ok:
+            bad = [r.objective_id for r in self.control.objectives if r.coverage != "absent"]
+            reasons.append(
+                f"coverage-path failure: the empty control scored non-absent coverage on "
+                f"{bad} — the coverage scorer hallucinates teaching"
+            )
+        return reasons
+
+
+async def paired_audit(
+    job_id: UUID | str,
+    *,
+    provider: str = "gemini",
+    examiner_model: str = "gemini-2.5-pro",
+    student_model: str = "gemini-2.5-flash",
+    transport: str = "api",
+    inputs: Optional[AuditInputs] = None,
+) -> PairedResult:
+    """7-call paired sensitivity audit. exam + pre-test ONCE; a post-test for
+    the real packet and for the empty control; ONE combined grading call over
+    {pre, post_normal, post_control} (so the pre baseline is immutable across
+    legs); a coverage call per leg. Both legs aggregate off the one shared
+    grade set, reading their own post label."""
+    data = inputs if inputs is not None else await load_audit_inputs(job_id)
+    calls: list[dict] = []
+    study = packet_md(data.phases)
+    exam, pre = await _exam_and_pretest(
+        data, provider=provider, examiner_model=examiner_model,
+        student_model=student_model, transport=transport, calls=calls,
+    )
+    post_normal = await _posttest(data, exam, study, provider=provider,
+                                  student_model=student_model, transport=transport, calls=calls)
+    post_control = await _posttest(data, exam, CONTROL_STUDY_MD, provider=provider,
+                                   student_model=student_model, transport=transport, calls=calls)
+    graded = await _grade_blinded(
+        data, exam,
+        [("pre", pre), ("post_normal", post_normal), ("post_control", post_control)],
+        provider=provider, examiner_model=examiner_model, transport=transport, calls=calls,
+    )
+    cov_normal = await _coverage(data, exam, study, provider=provider,
+                                 examiner_model=examiner_model, transport=transport, calls=calls)
+    cov_control = await _coverage(data, exam, CONTROL_STUDY_MD, provider=provider,
+                                  examiner_model=examiner_model, transport=transport, calls=calls)
+
+    answers = {"pre": pre, "post_normal": post_normal, "post_control": post_control}
+    _validate_answers_and_grades(exam, answers, graded)
+    _validate_coverage(exam, cov_normal)
+    _validate_coverage(exam, cov_control)
+
+    graded_dump = graded.model_dump()
+    normal = _result(
+        data, variant="full",
+        objectives=aggregate(exam, graded, cov_normal, pre_label="pre", post_label="post_normal"),
+        artifacts={"exam": exam.model_dump(), "pre": pre.model_dump(),
+                   "post": post_normal.model_dump(), "graded": graded_dump,
+                   "coverage": cov_normal.model_dump()},
+        calls=[],
+    )
+    control = _result(
+        data, variant="control",
+        objectives=aggregate(exam, graded, cov_control, pre_label="pre", post_label="post_control"),
+        artifacts={"exam": exam.model_dump(), "pre": pre.model_dump(),
+                   "post": post_control.model_dump(), "graded": graded_dump,
+                   "coverage": cov_control.model_dump()},
+        calls=[],
+    )
+    return PairedResult(normal=normal, control=control, calls=calls)
