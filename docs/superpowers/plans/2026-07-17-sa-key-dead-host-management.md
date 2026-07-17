@@ -155,5 +155,5 @@ now scans `_WORKER_ENV_PATH` directly via `env_file_has_credentials`).
 
 **Operator note (post-ship):** any host scrubbed while its worker was down must have its worker
 **restarted after pulling** this fix — the startup `_sync_sa_key()` then performs the clear. The
-"(scrubbed)" row stays visible until you Unassign it (deliberate — it's the standing revoke
+`SCRUB REQUESTED` row stays visible until you Unassign it (deliberate — it's the standing revoke
 instruction).
