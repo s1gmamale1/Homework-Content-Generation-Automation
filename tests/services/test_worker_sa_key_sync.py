@@ -6,13 +6,27 @@ does not leak into the rest of the suite.
 """
 import os
 import pytest
+from unittest.mock import AsyncMock
 import app.services.worker as worker
 import app.services.sa_key_apply as apply_mod
+
+
+class _NoopTxCtx:
+    """Async context manager standing in for `session.begin()`. Returns
+    False from __aexit__ so an exception raised inside the `async with`
+    block still propagates to the caller's own try/except (the
+    malformed-.env test depends on that propagation reaching
+    `_sync_sa_key`'s outer except)."""
+    async def __aenter__(self): return None
+    async def __aexit__(self, *a): return False
 
 
 class _FakeSession:
     async def __aenter__(self): return self
     async def __aexit__(self, *a): return False
+
+    def begin(self):
+        return _NoopTxCtx()
 
 
 @pytest.fixture(autouse=True)
@@ -21,10 +35,21 @@ def _host_idle_by_default(monkeypatch):
     exercise the clear. `_scrub_if_idle` calls `jobs_repo.count_active_for_host`
     (a real-DB query, proven in tests/integration/test_host_scrub_sync.py)
     — here it's monkeypatched to 0 so these unit tests never touch a DB. The
-    sibling-busy test overrides it."""
+    sibling-busy test overrides it.
+
+    Also defaults `sa_keys_repo.scrub_pending_for_host` -> True (the tombstone
+    is still pending when `_scrub_if_idle` re-reads it under the exclusive
+    lock, so scrub tests reach the clear) and `workers_repo.lock_host_exclusive`
+    -> a no-op AsyncMock (the `_FakeSession` can't run real lock SQL)."""
     async def _zero(session, hostname):
         return 0
     monkeypatch.setattr(worker.jobs_repo, "count_active_for_host", _zero)
+
+    async def _true(session, hostname):
+        return True
+    monkeypatch.setattr(worker.sa_keys_repo, "scrub_pending_for_host", _true)
+
+    monkeypatch.setattr(worker.workers_repo, "lock_host_exclusive", AsyncMock())
 
 
 @pytest.mark.asyncio
@@ -274,6 +299,52 @@ async def test_scrub_defers_while_sibling_process_busy(monkeypatch, tmp_path):
 
     assert calls == [], "must defer while a sibling process on the host is busy"
     assert active_path.exists(), "shared active.json must survive a sibling's in-flight job"
+
+
+@pytest.mark.asyncio
+async def test_scrub_aborts_if_tombstone_cleared_under_lock(monkeypatch, tmp_path):
+    """Gate correction (task 4): after the residue + self._tasks gates pass,
+    `_scrub_if_idle` takes the exclusive host lock and RE-READS
+    `scrub_pending_for_host` under it. If a concurrent assign/unassign
+    cleared the tombstone between `_sync_sa_key`'s first read (outside the
+    lock) and the lock being granted, the clear must be ABORTED — the
+    residue now belongs to a live assignment, not a scrub."""
+    import app.config as config
+    monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
+
+    for k in ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GEMINI_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/some/stale/path.json")
+
+    envfile = tmp_path / ".env"
+    monkeypatch.setattr(worker, "_WORKER_ENV_PATH", envfile, raising=False)
+
+    w = worker.Worker(concurrency=1)
+    w._tasks = set()  # idle
+    w._applied_key_sha = None
+
+    monkeypatch.setattr(worker, "SessionLocal", lambda: _FakeSession())
+
+    async def fake_lookup(session, hostname):
+        return _scrub_assignment()
+
+    monkeypatch.setattr(worker.sa_keys_repo, "get_assignment_with_key", fake_lookup)
+
+    # The re-read under the lock finds the tombstone gone — a concurrent
+    # assign/unassign won the race.
+    async def _false(session, hostname):
+        return False
+    monkeypatch.setattr(worker.sa_keys_repo, "scrub_pending_for_host", _false)
+
+    calls = []
+    monkeypatch.setattr(apply_mod, "clear_credentials_env", lambda env: calls.append(env))
+
+    await w._sync_sa_key()
+
+    assert calls == [], "must abort the clear when the tombstone was cleared under the lock"
+    assert os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") == "/some/stale/path.json", (
+        "residue must remain untouched when the tombstone was cleared concurrently"
+    )
 
 
 @pytest.mark.asyncio
