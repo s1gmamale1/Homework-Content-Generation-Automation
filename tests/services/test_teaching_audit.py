@@ -494,3 +494,37 @@ async def test_audit_job_fails_loud_on_protocol_violation(monkeypatch):
                         _fake_factory(captured, grade_meanings=("pre", "post"), drop_grade=True))
     with pytest.raises(ta.TeachingAuditError):
         await ta.audit_job("job-1", inputs=_inputs())
+
+
+# ---------- renderer ----------
+
+
+def _result_fixture() -> ta.AuditResult:
+    return ta.AuditResult(
+        job_id="job-1", lesson_title="Parallelogramm", subject="matematika", grade="8",
+        language="uz", variant="full",
+        objectives=[
+            ta.ObjectiveResult("O1", "ta'rif", 0.0, 2.0, 2.0, "taught", "learned"),
+            ta.ObjectiveResult("O2", "xossa", 0.0, 0.5, 2.0, "absent", "not_taught"),
+        ],
+        artifacts={"exam": {}, "pre": {}, "post": {}, "graded": {}, "coverage": {}},
+        calls=[{"step": "exam", "provider": "gemini", "model": "gemini-2.5-pro",
+                "usage": {"prompt_tokens": 10, "output_tokens": 5}}],
+    )
+
+
+def test_render_markdown_has_matrix_and_verdicts():
+    md = ta.render_markdown(_result_fixture())
+    assert "O1" in md and "learned" in md
+    assert "not_taught" in md
+    assert "teaching-equivalent: NO" in md and "learnable: YES" in md
+
+
+def test_result_to_dict_retains_artifacts_and_roundtrips():
+    d = ta.result_to_dict(_result_fixture())
+    assert d["job_id"] == "job-1" and d["teaching_equivalent"] is False
+    assert d["variant"] == "full"
+    assert d["objectives"][1]["outcome"] == "not_taught"
+    assert set(d["artifacts"]) == {"exam", "pre", "post", "graded", "coverage"}
+    import json
+    json.dumps(d)  # must be JSON-serializable

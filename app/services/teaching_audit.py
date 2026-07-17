@@ -797,3 +797,58 @@ async def paired_audit(
         calls=[],
     )
     return PairedResult(normal=normal, control=control, calls=calls)
+
+
+# --------------------------------------------------------------------------
+# Report rendering
+# --------------------------------------------------------------------------
+
+
+def result_to_dict(result: AuditResult) -> dict:
+    return {
+        "job_id": result.job_id,
+        "lesson_title": result.lesson_title,
+        "subject": result.subject,
+        "grade": result.grade,
+        "language": result.language,
+        "variant": result.variant,
+        "teaching_equivalent": result.teaching_equivalent,
+        "learnable": result.learnable,
+        "learned_count": result.learned_count,
+        "objectives": [
+            {
+                "objective_id": r.objective_id,
+                "statement": r.statement,
+                "pre_score": r.pre_score,
+                "post_score": r.post_score,
+                "max_score": r.max_score,
+                "coverage": r.coverage,
+                "outcome": r.outcome,
+            }
+            for r in result.objectives
+        ],
+        # full evidence chain — questions, keys, answers, grades, coverage —
+        # so a human can audit the audit (not recoverable from agent_usages)
+        "artifacts": dict(result.artifacts),
+        "calls": [dict(c) for c in result.calls],
+    }
+
+
+def render_markdown(result: AuditResult) -> str:
+    lines = [
+        f"# Teaching audit — {result.lesson_title} "
+        f"({result.subject}, grade {result.grade or '?'}, {result.language})"
+        + (" [control]" if result.variant == "control" else ""),
+        "",
+        f"- teaching-equivalent: {'YES' if result.teaching_equivalent else 'NO'}",
+        f"- learnable: {'YES' if result.learnable else 'NO'}",
+        "",
+        "| objective | statement | pre | post | coverage | outcome |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in result.objectives:
+        lines.append(
+            f"| {r.objective_id} | {r.statement} | {r.pre_score:g}/{r.max_score:g} "
+            f"| {r.post_score:g}/{r.max_score:g} | {r.coverage} | {r.outcome} |"
+        )
+    return "\n".join(lines)
