@@ -293,3 +293,134 @@ class AuditResult:
     @property
     def learnable(self) -> bool:
         return all(r.outcome != "not_learnable" for r in self.objectives)
+
+
+# --------------------------------------------------------------------------
+# Prompt builders (pure). The parameter lists ARE the isolation contract:
+#   exam       ← textbook only (never the packet — anti-circularity)
+#   pre-test   ← questions only (no textbook, no packet, no answer keys)
+#   post-test  ← questions + one study document (no textbook, no answer keys)
+#   grading    ← questions + keys + labeled sittings (no packet, no textbook)
+#   coverage   ← objectives + one study document (no textbook)
+# --------------------------------------------------------------------------
+
+
+def _format_questions(exam: ExamSpec) -> str:
+    return "\n".join(f"- [{q.id}] {q.question}" for q in exam.questions)
+
+
+def _format_sitting(label: str, answers: StudentAnswers) -> str:
+    lines = "\n".join(f"- [{a.question_id}] {a.answer}" for a in answers.answers)
+    return f"--- SITTING '{label}' ANSWERS ---\n{lines}"
+
+
+def _student_persona(subject: str, grade: Optional[str], language: str) -> str:
+    g = grade or "?"
+    return (
+        f"You are simulating an AVERAGE grade-{g} student in Uzbekistan sitting a "
+        f"{subject} exam, answering in language '{language}'.\n"
+        f"HARD RULES:\n"
+        f"- You know ONLY what an average student knows BEFORE this lesson is taught "
+        f"(prior grades + earlier lessons), plus whatever study material this prompt "
+        f"explicitly gives you.\n"
+        f"- Closed book: no outside sources, no adult/model knowledge. If the material "
+        f"you were given did not teach something, you DO NOT know it — answer exactly "
+        f"'I don't know'.\n"
+        f"- Answer briefly, like a real student: 1-3 sentences or the computation."
+    )
+
+
+def build_exam_prompt(
+    *, textbook_text: str, lesson_title: str, subject: str, grade: Optional[str], language: str
+) -> str:
+    return (
+        f"You are a strict {subject} examiner. Below are the OFFICIAL TEXTBOOK PAGES for "
+        f"the grade-{grade or '?'} lesson '{lesson_title}' (language '{language}').\n\n"
+        f"1. Derive the lesson's LEARNING OBJECTIVES — the 3 to 6 distinct things these "
+        f"pages actually teach (concepts, definitions, methods, facts). Ignore exercises "
+        f"and decoration. Ids O1, O2, … Every objective needs a non-empty statement.\n"
+        f"2. Write EXACTLY {_QUESTIONS_PER_OBJECTIVE} short-answer exam questions per "
+        f"objective, ids Q1, Q2, … (every id unique, every question non-empty). Prefer "
+        f"LESSON-SPECIFIC facts, terms, methods and the textbook's own examples over "
+        f"anything answerable by general reasoning — the exam must discriminate 'studied "
+        f"this lesson' from 'is generally clever'.\n"
+        f"3. For each question give a concise non-empty answer_key (and grading_notes when "
+        f"partial credit is possible). Questions, keys and objectives in language "
+        f"'{language}'.\n\n"
+        f"--- TEXTBOOK PAGES ---\n{textbook_text}\n\n"
+        f"Respond with the ExamSpec JSON schema only."
+    )
+
+
+def build_pretest_prompt(
+    *, exam: ExamSpec, subject: str, grade: Optional[str], language: str
+) -> str:
+    return (
+        f"{_student_persona(subject, grade, language)}\n\n"
+        f"It is the day BEFORE this lesson is taught. You were given NO study material. "
+        f"Answer every question; use 'I don't know' freely — guessing well is NOT the "
+        f"goal, simulating a real pre-lesson student is.\n\n"
+        f"--- EXAM QUESTIONS ---\n{_format_questions(exam)}\n\n"
+        f"Respond with the StudentAnswers JSON schema only — EXACTLY one entry per "
+        f"question id above, no extras."
+    )
+
+
+def build_posttest_prompt(
+    *, exam: ExamSpec, packet_md: str, subject: str, grade: Optional[str], language: str
+) -> str:
+    return (
+        f"{_student_persona(subject, grade, language)}\n\n"
+        f"You just studied the homework packet below — it is your ONLY study material for "
+        f"this lesson. You may use ONLY what this packet's text actually taught you, plus "
+        f"prior-grade knowledge. If the packet did not teach it, you do not know it — "
+        f"answer 'I don't know'.\n\n"
+        f"--- STUDY PACKET ---\n{packet_md}\n\n"
+        f"--- EXAM QUESTIONS ---\n{_format_questions(exam)}\n\n"
+        f"Respond with the StudentAnswers JSON schema only — EXACTLY one entry per "
+        f"question id above, no extras."
+    )
+
+
+def build_grading_prompt(
+    *, exam: ExamSpec, sittings: list[tuple[str, StudentAnswers]], language: str
+) -> str:
+    keyed = "\n".join(
+        f"- [{q.id}] {q.question}\n  KEY: {q.answer_key}"
+        + (f"\n  NOTES: {q.grading_notes}" if q.grading_notes else "")
+        for q in exam.questions
+    )
+    labels = ", ".join(label for label, _ in sittings)
+    blocks = "\n\n".join(_format_sitting(label, ans) for label, ans in sittings)
+    return (
+        f"You are the examiner grading {len(sittings)} sittings of the same short-answer "
+        f"exam (language '{language}'). Grade each answer STRICTLY against its KEY: "
+        f"'correct' (matches the key's substance), 'partial' (half-right per the "
+        f"key/notes), 'wrong' (anything else — 'I don't know' is wrong). Judge ONLY "
+        f"against the key, never your own knowledge. A missing answer is wrong.\n"
+        f"Return EXACTLY one grade per (question, sitting) pair. The sitting labels are: "
+        f"{labels}. Use these exact label strings verbatim — no duplicates, no omissions, "
+        f"one-line evidence each.\n\n"
+        f"--- QUESTIONS + KEYS ---\n{keyed}\n\n{blocks}\n\n"
+        f"Respond with the GradedExam JSON schema only."
+    )
+
+
+def build_coverage_prompt(
+    *, objectives: list[Objective], packet_md: str, language: str
+) -> str:
+    objs = "\n".join(f"- [{o.id}] {o.statement}" for o in objectives)
+    return (
+        f"You are auditing a homework packet (language '{language}') against a lesson's "
+        f"learning objectives. For EACH objective (exactly one row per objective id) "
+        f"decide:\n"
+        f"- 'taught': the packet EXPLAINS it with enough substance (definition + example "
+        f"or worked usage) that a student could apply it,\n"
+        f"- 'mentioned': the term/fact appears but is never actually explained,\n"
+        f"- 'absent': it does not appear at all.\n"
+        f"Quote the packet location as evidence ('flashcard 4', 'preview §2', or "
+        f"'nowhere').\n\n"
+        f"--- OBJECTIVES ---\n{objs}\n\n"
+        f"--- PACKET ---\n{packet_md}\n\n"
+        f"Respond with the CoverageReport JSON schema only."
+    )

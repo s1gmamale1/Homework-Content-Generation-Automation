@@ -166,3 +166,62 @@ def test_aggregate_reads_the_requested_post_label():
     assert all(r.outcome == "not_learnable" for r in control)  # taught but failed
     # the pre baseline is identical because it is the SAME grade rows
     assert [r.pre_score for r in normal] == [r.pre_score for r in control]
+
+
+# ---------- prompt builders ----------
+
+TEXTBOOK_SENTINEL = "XTEXTBOOKX parallelogramm sahifa matni"
+PACKET_SENTINEL = "XPACKETX flashcards matni"
+
+
+def _exam_min() -> ta.ExamSpec:
+    return ta.ExamSpec(
+        objectives=[ta.Objective(id="O1", statement="ta'rif")],
+        questions=[
+            ta.ExamQuestion(id="Q1", objective_id="O1", question="Savol bir?", answer_key="Javob bir"),
+            ta.ExamQuestion(id="Q2", objective_id="O1", question="Savol ikki?", answer_key="Javob ikki"),
+        ],
+    )
+
+
+def test_exam_prompt_contains_textbook_and_never_packet():
+    p = ta.build_exam_prompt(
+        textbook_text=TEXTBOOK_SENTINEL, lesson_title="Parallelogramm",
+        subject="matematika", grade="8", language="uz",
+    )
+    assert TEXTBOOK_SENTINEL in p
+    assert "Parallelogramm" in p
+    assert "2" in p  # per-objective question count pinned in the instructions
+
+
+def test_pretest_prompt_has_questions_but_no_textbook_no_packet_no_keys():
+    p = ta.build_pretest_prompt(exam=_exam_min(), subject="matematika", grade="8", language="uz")
+    assert "Savol bir?" in p and "Savol ikki?" in p
+    assert TEXTBOOK_SENTINEL not in p and PACKET_SENTINEL not in p
+    assert "Javob bir" not in p  # answer keys must never reach the student
+
+
+def test_posttest_prompt_has_packet_and_questions_but_no_keys():
+    p = ta.build_posttest_prompt(
+        exam=_exam_min(), packet_md=PACKET_SENTINEL, subject="matematika", grade="8", language="uz",
+    )
+    assert PACKET_SENTINEL in p and "Savol bir?" in p
+    assert "Javob bir" not in p
+
+
+def test_grading_prompt_has_keys_and_all_sittings_but_no_packet():
+    pre = ta.StudentAnswers(answers=[ta.StudentAnswer(question_id="Q1", answer="PRE-JAVOB")])
+    post = ta.StudentAnswers(answers=[ta.StudentAnswer(question_id="Q1", answer="POST-JAVOB")])
+    p = ta.build_grading_prompt(
+        exam=_exam_min(), sittings=[("pre", pre), ("post_normal", post)], language="uz",
+    )
+    assert "Javob bir" in p and "PRE-JAVOB" in p and "POST-JAVOB" in p
+    assert "pre" in p and "post_normal" in p  # sitting labels named for the grader
+    assert PACKET_SENTINEL not in p
+
+
+def test_coverage_prompt_has_objectives_and_packet():
+    p = ta.build_coverage_prompt(
+        objectives=_exam_min().objectives, packet_md=PACKET_SENTINEL, language="uz",
+    )
+    assert "ta'rif" in p and PACKET_SENTINEL in p
