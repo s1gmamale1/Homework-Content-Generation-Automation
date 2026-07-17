@@ -458,7 +458,7 @@ The download endpoint zips those per-phase markdown files on demand. *(An earlie
 a `_render_homework_md` assembler writing `homework_jobs.assembled_md`; both were removed in
 the markdown-per-phase reshape.)*
 
-### Teaching-equivalence audit (worklog 0147, offline)
+### Teaching-equivalence audit (worklog 0148, offline)
 The judge (§ above) and the extract coverage-contract (#84) both grade a packet against
 **itself** or its own extract — neither ever asks "does this packet actually teach what the
 **textbook** teaches?" `app/services/teaching_audit.py` (CLI `scripts/teaching_audit.py
@@ -474,8 +474,10 @@ delta per learning objective yields four outcomes: `already_known`, `learned`, `
 `--sensitivity` runs a paired instrument-validation experiment (shared exam + pre-test + one
 **blinded** grade call over `{pre, post_normal, post_control}`; the examiner sees opaque
 `s0/s1/…` labels, remapped only after grading) against a **true empty-packet** control, and
-`sensitivity_pass` is a dual gate — the real packet must out-teach the empty control on both
-the student path (learned-count) and the coverage path (empty ⇒ all `absent`). A bounded live
+`sensitivity_pass` is a dual gate that validates the *instrument* (not the packet's quality):
+the empty control must measure as **zero** teaching on both paths — learned-count 0 AND all
+coverage `absent`. The real packet's own effectiveness is reported separately
+(`teaching_equivalent`/`learnable`). A bounded live
 paired run costs ≈ $0.20 (examiner `gemini-2.5-pro`, student `gemini-2.5-flash`, api). It is
 fail-loud (any dead/inconsistent scorer raises rather than degrading to a clean pass) and the
 JSON report keeps the full evidence chain so a human can audit a false-positive `learned`.

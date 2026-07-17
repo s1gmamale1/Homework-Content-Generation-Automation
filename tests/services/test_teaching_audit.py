@@ -175,13 +175,22 @@ PACKET_SENTINEL = "XPACKETX flashcards matni"
 
 
 def _exam_min() -> ta.ExamSpec:
-    return ta.ExamSpec(
-        objectives=[ta.Objective(id="O1", statement="ta'rif")],
-        questions=[
-            ta.ExamQuestion(id="Q1", objective_id="O1", question="Savol bir?", answer_key="Javob bir"),
-            ta.ExamQuestion(id="Q2", objective_id="O1", question="Savol ikki?", answer_key="Javob ikki"),
-        ],
-    )
+    # 3 objectives / 6 questions = the minimum VALID exam (examiner bound is 3-6).
+    # O1's Q1/Q2 keep their exact strings so the Task 2 builder assertions hold.
+    objs = [
+        ta.Objective(id="O1", statement="ta'rif"),
+        ta.Objective(id="O2", statement="xossa"),
+        ta.Objective(id="O3", statement="qo'llash"),
+    ]
+    questions = [
+        ta.ExamQuestion(id="Q1", objective_id="O1", question="Savol bir?", answer_key="Javob bir"),
+        ta.ExamQuestion(id="Q2", objective_id="O1", question="Savol ikki?", answer_key="Javob ikki"),
+        ta.ExamQuestion(id="Q3", objective_id="O2", question="Savol uch?", answer_key="Javob uch"),
+        ta.ExamQuestion(id="Q4", objective_id="O2", question="Savol tort?", answer_key="Javob tort"),
+        ta.ExamQuestion(id="Q5", objective_id="O3", question="Savol besh?", answer_key="Javob besh"),
+        ta.ExamQuestion(id="Q6", objective_id="O3", question="Savol olti?", answer_key="Javob olti"),
+    ]
+    return ta.ExamSpec(objectives=objs, questions=questions)
 
 
 def test_exam_prompt_contains_textbook_and_never_packet():
@@ -265,7 +274,8 @@ def test_control_study_md_is_a_nonempty_no_material_sentinel():
 
 def _inputs() -> ta.AuditInputs:
     return ta.AuditInputs(
-        job_id="job-1", book_id="book-1", subject="matematika", grade="8", language="uz",
+        job_id="job-1", book_id="book-1", toc_entry_id="toc-1", page_start=63, page_end=65,
+        subject="matematika", grade="8", language="uz",
         lesson_title="Parallelogramm", textbook_text=TEXTBOOK_SENTINEL,
         phases=[("case-based-preview", PACKET_SENTINEL), ("boss-arena", "boss matni")],
     )
@@ -301,21 +311,20 @@ def _fake_factory(captured, *, grade_meanings, control_learns=True, drop_grade=F
             parsed = exam
         elif schema is ta.StudentAnswers:
             parsed = ta.StudentAnswers(answers=[
-                ta.StudentAnswer(question_id="Q1", answer="j1"),
-                ta.StudentAnswer(question_id="Q2", answer="j2"),
+                ta.StudentAnswer(question_id=q.id, answer="j") for q in exam.questions
             ])
         elif schema is ta.GradedExam:
             grades = []
             for i, meaning in enumerate(grade_meanings):
                 label = f"s{i}"  # opaque — the grader never sees the semantics
-                for q in ("Q1", "Q2"):
+                for q in exam.questions:
                     if meaning == "pre":
                         v = "wrong"
                     elif meaning == "post_control":
                         v = "correct" if control_learns else "wrong"
                     else:  # post / post_normal
                         v = "correct"
-                    grades.append(_grade(q, label, v))
+                    grades.append(_grade(q.id, label, v))
             if drop_grade:
                 grades.pop()
             parsed = ta.GradedExam(grades=grades)
@@ -323,7 +332,8 @@ def _fake_factory(captured, *, grade_meanings, control_learns=True, drop_grade=F
             is_control = ta.CONTROL_STUDY_MD in kw["phase_prompt"]
             cov = "taught" if broken_coverage else ("absent" if is_control else "taught")
             parsed = ta.CoverageReport(coverages=[
-                ta.ObjectiveCoverage(objective_id="O1", coverage=cov, evidence="cbp"),
+                ta.ObjectiveCoverage(objective_id=o.id, coverage=cov, evidence="cbp")
+                for o in exam.objectives
             ])
         else:  # pragma: no cover
             raise AssertionError(f"unexpected schema {schema}")
@@ -355,7 +365,7 @@ async def test_audit_job_five_calls_isolation_and_evidence(monkeypatch):
     assert all(kw["transport"] == "api" for kw in captured)
 
     assert result.variant == "full"
-    assert [r.outcome for r in result.objectives] == ["learned"]
+    assert [r.outcome for r in result.objectives] == ["learned", "learned", "learned"]
     assert len(result.calls) == 5 and result.calls[0]["step"] == "exam"
     assert result.artifacts["exam"]["questions"][0]["answer_key"] == "Javob bir"
     assert result.artifacts["graded"]["grades"][0]["evidence"] == "e"
@@ -421,8 +431,7 @@ async def test_paired_audit_grades_once_so_pre_baseline_is_immutable(monkeypatch
             parsed = exam
         elif schema is ta.StudentAnswers:
             parsed = ta.StudentAnswers(answers=[
-                ta.StudentAnswer(question_id="Q1", answer="j"),
-                ta.StudentAnswer(question_id="Q2", answer="j"),
+                ta.StudentAnswer(question_id=q.id, answer="j") for q in exam.questions
             ])
         elif schema is ta.GradedExam:
             grader_calls["n"] += 1
@@ -431,13 +440,14 @@ async def test_paired_audit_grades_once_so_pre_baseline_is_immutable(monkeypatch
             grades = []
             for i, meaning in enumerate(("pre", "post_normal", "post_control")):
                 label = f"s{i}"  # blinded opaque labels
-                for q in ("Q1", "Q2"):
-                    grades.append(_grade(q, label, pre_v if meaning == "pre" else "correct"))
+                for q in exam.questions:
+                    grades.append(_grade(q.id, label, pre_v if meaning == "pre" else "correct"))
             parsed = ta.GradedExam(grades=grades)
         elif schema is ta.CoverageReport:
             cov = "absent" if ta.CONTROL_STUDY_MD in kw["phase_prompt"] else "taught"
             parsed = ta.CoverageReport(coverages=[
-                ta.ObjectiveCoverage(objective_id="O1", coverage=cov, evidence="e")])
+                ta.ObjectiveCoverage(objective_id=o.id, coverage=cov, evidence="e")
+                for o in exam.objectives])
         return _R(parsed)
 
     monkeypatch.setattr(ta.agent, "run_phase", fake)
@@ -455,7 +465,7 @@ async def test_paired_sensitivity_passes_when_control_fails(monkeypatch):
                       control_learns=False),
     )
     paired = await ta.paired_audit("job-1", inputs=_inputs())
-    assert paired.normal.learned_count == 1 and paired.control.learned_count == 0
+    assert paired.normal.learned_count == 3 and paired.control.learned_count == 0
     # empty control correctly scores 'absent' coverage → both gates pass
     assert all(r.coverage == "absent" for r in paired.control.objectives)
     assert paired.sensitivity_pass is True
@@ -472,11 +482,78 @@ async def test_paired_sensitivity_fails_when_control_coverage_not_absent(monkeyp
                       control_learns=False, broken_coverage=True),
     )
     paired = await ta.paired_audit("job-1", inputs=_inputs())
-    assert paired.normal.learned_count == 1 and paired.control.learned_count == 0  # student path OK
+    assert paired.normal.learned_count == 3 and paired.control.learned_count == 0  # student path OK
     assert paired.sensitivity_pass is False                                        # coverage path broke
     reasons = paired.sensitivity_failures()
     assert any("coverage-path" in r for r in reasons)
     assert not any("student-path" in r for r in reasons)
+
+
+# ---------- sensitivity gate semantics (gate-4 review, control must learn NOTHING) ----------
+
+def _mk_leg(variant, outcomes_and_coverage) -> ta.AuditResult:
+    objs = [ta.ObjectiveResult(f"O{i}", "s", 0.0, 2.0, 2.0, cov, out)
+            for i, (out, cov) in enumerate(outcomes_and_coverage, 1)]
+    return ta.AuditResult(
+        job_id="j", book_id="b", toc_entry_id="t", page_start=1, page_end=2,
+        lesson_title="l", subject="s", grade="9", language="uz", variant=variant,
+        textbook_text="tb", study_md="sm", objectives=objs)
+
+
+def test_sensitivity_fails_when_control_learns_even_though_normal_learns_more():
+    # gate-4: control learned=1, normal learned=3 previously PASSED (1<3); now the
+    # empty control learning ANYTHING is caught as student-path leakage.
+    normal = _mk_leg("full", [("learned", "taught")] * 3)
+    control = _mk_leg("control", [("learned", "taught"), ("not_taught", "absent"),
+                                  ("not_taught", "absent")])
+    pr = ta.PairedResult(normal=normal, control=control, calls=[])
+    assert normal.learned_count == 3 and control.learned_count == 1
+    assert pr.sensitivity_pass is False
+    assert any("student-path" in r for r in pr.sensitivity_failures())
+
+
+def test_sensitivity_passes_on_ineffective_packet_when_control_is_clean():
+    # gate-4: normal=0/control=0 previously FAILED (0<0 is false) and mislabeled a
+    # weak packet as an instrument failure; now the instrument is validated on the
+    # CONTROL alone (learned 0 + all coverage absent), independent of packet quality.
+    normal = _mk_leg("full", [("not_taught", "absent")] * 3)
+    control = _mk_leg("control", [("not_taught", "absent")] * 3)
+    pr = ta.PairedResult(normal=normal, control=control, calls=[])
+    assert normal.learned_count == 0 and control.learned_count == 0
+    assert pr.sensitivity_pass is True
+    assert pr.sensitivity_failures() == []
+
+
+# ---------- objective-count bound (gate-4 review) ----------
+
+def _exam_with_objectives(n) -> ta.ExamSpec:
+    objs = [ta.Objective(id=f"O{i}", statement="s") for i in range(1, n + 1)]
+    qs = [ta.ExamQuestion(id=f"Q{i}", objective_id=f"O{((i - 1) // 2) + 1}",
+                          question="q", answer_key="k")
+          for i in range(1, 2 * n + 1)]
+    return ta.ExamSpec(objectives=objs, questions=qs)
+
+
+def test_validate_objective_count_enforces_declared_3_to_6_bound():
+    ta._validate_objective_count(_exam_with_objectives(3))  # min ok
+    ta._validate_objective_count(_exam_with_objectives(6))  # max ok
+    for bad in (1, 7):
+        with pytest.raises(ta.TeachingAuditError):
+            ta._validate_objective_count(_exam_with_objectives(bad))
+
+
+async def test_audit_job_rejects_out_of_bound_objective_count(monkeypatch):
+    # the 3-6 gate is WIRED into the real flow and fires at the exam step,
+    # BEFORE any student/grader call is made (not a defined-but-unwired guard).
+    one_obj = _exam_with_objectives(1)
+
+    async def fake(**kw):
+        assert kw["schema"] is ta.ExamSpec  # only the exam call may run
+        return _R(one_obj)
+
+    monkeypatch.setattr(ta.agent, "run_phase", fake)
+    with pytest.raises(ta.TeachingAuditError):
+        await ta.audit_job("job-1", inputs=_inputs())
 
 
 async def test_audit_job_fails_loud_on_unparsed_call(monkeypatch):
@@ -501,8 +578,10 @@ async def test_audit_job_fails_loud_on_protocol_violation(monkeypatch):
 
 def _result_fixture() -> ta.AuditResult:
     return ta.AuditResult(
-        job_id="job-1", lesson_title="Parallelogramm", subject="matematika", grade="8",
+        job_id="job-1", book_id="book-1", toc_entry_id="toc-1", page_start=63, page_end=65,
+        lesson_title="Parallelogramm", subject="matematika", grade="8",
         language="uz", variant="full",
+        textbook_text="TEXTBOOK EXCERPT", study_md="## flashcards\n\nPACKET",
         objectives=[
             ta.ObjectiveResult("O1", "ta'rif", 0.0, 2.0, 2.0, "taught", "learned"),
             ta.ObjectiveResult("O2", "xossa", 0.0, 0.5, 2.0, "absent", "not_taught"),
@@ -513,18 +592,28 @@ def _result_fixture() -> ta.AuditResult:
     )
 
 
-def test_render_markdown_has_matrix_and_verdicts():
+def test_render_markdown_has_matrix_verdicts_and_identity():
     md = ta.render_markdown(_result_fixture())
     assert "O1" in md and "learned" in md
     assert "not_taught" in md
     assert "teaching-equivalent: NO" in md and "learnable: YES" in md
+    assert "book-1" in md and "pp63-65" in md  # source identity in the header
 
 
-def test_result_to_dict_retains_artifacts_and_roundtrips():
+def test_result_to_dict_retains_evidence_identity_and_roundtrips():
+    import hashlib
+    import json
+
     d = ta.result_to_dict(_result_fixture())
     assert d["job_id"] == "job-1" and d["teaching_equivalent"] is False
     assert d["variant"] == "full"
     assert d["objectives"][1]["outcome"] == "not_taught"
     assert set(d["artifacts"]) == {"exam", "pre", "post", "graded", "coverage"}
-    import json
+    # gate-4: primary evidence — source identity + immutable snapshots + hashes
+    assert d["book_id"] == "book-1" and d["toc_entry_id"] == "toc-1"
+    assert d["page_start"] == 63 and d["page_end"] == 65
+    assert d["source"]["textbook_text"] == "TEXTBOOK EXCERPT"
+    assert d["source"]["study_md"] == "## flashcards\n\nPACKET"
+    assert d["source"]["textbook_sha256"] == hashlib.sha256(b"TEXTBOOK EXCERPT").hexdigest()
+    assert d["source"]["study_sha256"] == hashlib.sha256("## flashcards\n\nPACKET".encode()).hexdigest()
     json.dumps(d)  # must be JSON-serializable

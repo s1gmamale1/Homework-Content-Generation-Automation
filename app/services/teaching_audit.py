@@ -36,6 +36,7 @@ defaults.
 
 from __future__ import annotations
 
+import hashlib
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Literal, Optional
@@ -111,6 +112,8 @@ class CoverageReport(BaseModel):
 _VERDICT_SCORE = {"correct": 1.0, "partial": 0.5, "wrong": 0.0}
 _KNOWN_FRACTION = 0.75  # ≥75% of max on a sitting counts as "passing" that objective
 _QUESTIONS_PER_OBJECTIVE = 2
+_MIN_OBJECTIVES = 3  # the examiner prompt declares "3 to 6" objectives; enforced fail-loud
+_MAX_OBJECTIVES = 6
 
 Outcome = Literal["already_known", "learned", "not_taught", "not_learnable"]
 
@@ -138,6 +141,21 @@ def classify_objective(
 # --------------------------------------------------------------------------
 # Protocol validation (pure, fail-loud)
 # --------------------------------------------------------------------------
+
+
+def _validate_objective_count(exam: ExamSpec) -> None:
+    """Enforce the examiner prompt's declared 3-6 objective bound (gate-4 review).
+    Enforced at the examiner-output boundary (`_exam_and_pretest`), not inside
+    the structural `_validate_exam`/`validate_protocol` consistency checks (which
+    stay meaningful for any objective count). A 1-objective response omits most of
+    a lesson yet would otherwise produce a clean teaching-equivalence verdict; a
+    runaway count is equally a malformed exam. Fail loud rather than under-measure."""
+    n = len(exam.objectives)
+    if not (_MIN_OBJECTIVES <= n <= _MAX_OBJECTIVES):
+        raise TeachingAuditError(
+            f"examiner returned {n} objectives; expected {_MIN_OBJECTIVES}-{_MAX_OBJECTIVES} "
+            f"(the declared bound) — a malformed or lesson-omitting exam, refusing to audit"
+        )
 
 
 def _validate_exam(exam: ExamSpec) -> None:
@@ -268,11 +286,21 @@ class AuditResult:
     """One audit leg: per-objective matrix + verdicts + the full evidence chain."""
 
     job_id: str
+    book_id: str
+    toc_entry_id: str
+    page_start: int
+    page_end: int
     lesson_title: str
     subject: str
     grade: Optional[str]
     language: str
     variant: str  # "full" (real packet) or "control" (empty negative-control packet)
+    # PRIMARY evidence (gate-4 review): the exact textbook excerpt the exam was
+    # derived from and the exact study document this leg's student saw — snapshotted
+    # so a human can re-verify exam-vs-textbook and coverage-vs-packet even after
+    # the source PDF or the packet outputs change. result_to_dict adds sha256s.
+    textbook_text: str
+    study_md: str
     objectives: list[ObjectiveResult]
     # Full parsed artifacts (exam incl. keys, sittings' answers, grades w/
     # evidence, coverage w/ evidence) as model_dump() dicts — retained so a
@@ -336,9 +364,10 @@ def build_exam_prompt(
     return (
         f"You are a strict {subject} examiner. Below are the OFFICIAL TEXTBOOK PAGES for "
         f"the grade-{grade or '?'} lesson '{lesson_title}' (language '{language}').\n\n"
-        f"1. Derive the lesson's LEARNING OBJECTIVES — the 3 to 6 distinct things these "
-        f"pages actually teach (concepts, definitions, methods, facts). Ignore exercises "
-        f"and decoration. Ids O1, O2, … Every objective needs a non-empty statement.\n"
+        f"1. Derive the lesson's LEARNING OBJECTIVES — the {_MIN_OBJECTIVES} to "
+        f"{_MAX_OBJECTIVES} distinct things these pages actually teach (concepts, "
+        f"definitions, methods, facts). Ignore exercises and decoration. Ids O1, O2, … "
+        f"Every objective needs a non-empty statement.\n"
         f"2. Write EXACTLY {_QUESTIONS_PER_OBJECTIVE} short-answer exam questions per "
         f"objective, ids Q1, Q2, … (every id unique, every question non-empty). Prefer "
         f"LESSON-SPECIFIC facts, terms, methods and the textbook's own examples over "
@@ -467,6 +496,9 @@ def packet_md(phases: list[tuple[str, str]]) -> str:
 class AuditInputs:
     job_id: str
     book_id: str
+    toc_entry_id: str
+    page_start: int
+    page_end: int
     subject: str
     grade: Optional[str]
     language: str
@@ -505,6 +537,7 @@ async def load_audit_inputs(job_id: UUID | str) -> AuditInputs:
         )
         subject, grade, language = job.subject, book.grade, job.output_language
         lesson_title, book_id = toc.section_title, str(job.book_id)
+        toc_entry_id = str(toc.id)
         page_start, page_end = toc.page_start, toc.page_end
 
     if not phases:
@@ -525,6 +558,9 @@ async def load_audit_inputs(job_id: UUID | str) -> AuditInputs:
     return AuditInputs(
         job_id=str(job_id),
         book_id=book_id,
+        toc_entry_id=toc_entry_id,
+        page_start=page_start,
+        page_end=page_end,
         subject=subject,
         grade=grade,
         language=language,
@@ -590,6 +626,7 @@ async def _exam_and_pretest(data, *, provider, examiner_model, student_model, tr
         provider=provider, model=examiner_model, transport=transport, calls=calls,
     )
     _validate_exam(exam)  # fail before burning student/grader calls
+    _validate_objective_count(exam)  # enforce the declared 3-6 bound (gate-4 review)
     pre: StudentAnswers = await _call(
         "pretest",
         build_pretest_prompt(
@@ -646,14 +683,20 @@ async def _grade_blinded(
         raise TeachingAuditError(f"grader returned an unknown sitting label {exc}") from exc
 
 
-def _result(data, *, variant, objectives, artifacts, calls) -> AuditResult:
+def _result(data, *, variant, study_md, objectives, artifacts, calls) -> AuditResult:
     return AuditResult(
         job_id=data.job_id,
+        book_id=data.book_id,
+        toc_entry_id=data.toc_entry_id,
+        page_start=data.page_start,
+        page_end=data.page_end,
         lesson_title=data.lesson_title,
         subject=data.subject,
         grade=data.grade,
         language=data.language,
         variant=variant,
+        textbook_text=data.textbook_text,
+        study_md=study_md,
         objectives=objectives,
         artifacts=artifacts,
         calls=calls,
@@ -691,7 +734,8 @@ async def audit_job(
         "exam": exam.model_dump(), "pre": pre.model_dump(), "post": post.model_dump(),
         "graded": graded.model_dump(), "coverage": coverage.model_dump(),
     }
-    return _result(data, variant="full", objectives=objectives, artifacts=artifacts, calls=calls)
+    return _result(data, variant="full", study_md=study, objectives=objectives,
+                   artifacts=artifacts, calls=calls)
 
 
 @dataclass(frozen=True)
@@ -705,8 +749,13 @@ class PairedResult:
 
     @property
     def _student_path_ok(self) -> bool:
-        """Fewer learned objectives on the empty control than on the real packet."""
-        return self.control.learned_count < self.normal.learned_count
+        """The empty control must teach NOTHING — ANY learned objective on a
+        no-material packet is proof the post-test path is leaking latent
+        knowledge (gate-4 review: `control < normal` wrongly passed a leaking
+        control when normal learned more, and wrongly failed a genuinely
+        ineffective packet where both learned 0). Normal-packet effectiveness is
+        a SEPARATE question, reported by `normal.teaching_equivalent`/`.learnable`."""
+        return self.control.learned_count == 0
 
     @property
     def _coverage_path_ok(self) -> bool:
@@ -717,7 +766,9 @@ class PairedResult:
     @property
     def sensitivity_pass(self) -> bool:
         """DUAL gate (gate-3 blocker 2): both the student path and the coverage
-        path must hold, since coverage is part of the instrument."""
+        path must hold, since coverage is part of the instrument. This validates
+        the INSTRUMENT (does an empty packet correctly measure as zero teaching?),
+        NOT whether the real packet is any good."""
         return self._student_path_ok and self._coverage_path_ok
 
     def sensitivity_failures(self) -> list[str]:
@@ -726,9 +777,9 @@ class PairedResult:
         reasons: list[str] = []
         if not self._student_path_ok:
             reasons.append(
-                f"student-path leak: control learned={self.control.learned_count} is not < "
-                f"normal learned={self.normal.learned_count} — a student given no material "
-                f"still 'learned'"
+                f"student-path leak: the empty control 'learned' {self.control.learned_count} "
+                f"objective(s) (expected 0) — the post-test path is leaking latent knowledge "
+                f"(for context the real packet learned {self.normal.learned_count})"
             )
         if not self._coverage_path_ok:
             bad = [r.objective_id for r in self.control.objectives if r.coverage != "absent"]
@@ -781,7 +832,7 @@ async def paired_audit(
 
     graded_dump = graded.model_dump()
     normal = _result(
-        data, variant="full",
+        data, variant="full", study_md=study,
         objectives=aggregate(exam, graded, cov_normal, pre_label="pre", post_label="post_normal"),
         artifacts={"exam": exam.model_dump(), "pre": pre.model_dump(),
                    "post": post_normal.model_dump(), "graded": graded_dump,
@@ -789,7 +840,7 @@ async def paired_audit(
         calls=[],
     )
     control = _result(
-        data, variant="control",
+        data, variant="control", study_md=CONTROL_STUDY_MD,
         objectives=aggregate(exam, graded, cov_control, pre_label="pre", post_label="post_control"),
         artifacts={"exam": exam.model_dump(), "pre": pre.model_dump(),
                    "post": post_control.model_dump(), "graded": graded_dump,
@@ -804,14 +855,31 @@ async def paired_audit(
 # --------------------------------------------------------------------------
 
 
+def _sha256(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
 def result_to_dict(result: AuditResult) -> dict:
     return {
         "job_id": result.job_id,
+        "book_id": result.book_id,
+        "toc_entry_id": result.toc_entry_id,
+        "page_start": result.page_start,
+        "page_end": result.page_end,
         "lesson_title": result.lesson_title,
         "subject": result.subject,
         "grade": result.grade,
         "language": result.language,
         "variant": result.variant,
+        # PRIMARY evidence (gate-4 review): the exact textbook excerpt + the exact
+        # study document, each with a sha256, so a human can re-verify exam↔textbook
+        # and coverage↔packet independently of any later source/output change.
+        "source": {
+            "textbook_text": result.textbook_text,
+            "textbook_sha256": _sha256(result.textbook_text),
+            "study_md": result.study_md,
+            "study_sha256": _sha256(result.study_md),
+        },
         "teaching_equivalent": result.teaching_equivalent,
         "learnable": result.learnable,
         "learned_count": result.learned_count,
@@ -839,6 +907,9 @@ def render_markdown(result: AuditResult) -> str:
         f"# Teaching audit — {result.lesson_title} "
         f"({result.subject}, grade {result.grade or '?'}, {result.language})"
         + (" [control]" if result.variant == "control" else ""),
+        "",
+        f"job `{result.job_id}` · book `{result.book_id}` · toc `{result.toc_entry_id}` "
+        f"· textbook pp{result.page_start}-{result.page_end}",
         "",
         f"- teaching-equivalent: {'YES' if result.teaching_equivalent else 'NO'}",
         f"- learnable: {'YES' if result.learnable else 'NO'}",
