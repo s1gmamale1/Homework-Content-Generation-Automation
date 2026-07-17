@@ -443,6 +443,11 @@ async def accept_toc(
     """Accept the TOC entries for a `toc_review` book, promoting it to `toc_ready`.
     The toc_validation / toc_validation_detail columns are preserved as an audit trail.
     """
+    # Shared book lock BEFORE the first read (post-#100 follow-up): an
+    # unlocked mutate racing DELETE /books/{id} hit StaleDataError -> 500;
+    # under the lock a concurrent delete serializes and this read sees the
+    # final state (404 instead).
+    await books_repo.lock_book_shared(session, book_id)
     book = await books_repo.get(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
@@ -573,6 +578,9 @@ async def update_book(
     if body.original_filename is not None and not body.original_filename.strip():
         raise HTTPException(400, "original_filename cannot be empty")
 
+    # Shared book lock before the update read-modify-write (post-#100
+    # follow-up — see toc/accept comment).
+    await books_repo.lock_book_shared(session, book_id)
     book = await books_repo.update(
         session,
         book_id,
@@ -644,7 +652,9 @@ async def update_toc_entry(
     session: AsyncSession = Depends(get_session),
 ) -> TOCEntryOut:
     # Verify the entry belongs to this book — prevents accidentally editing
-    # another book's TOC by guessing IDs.
+    # another book's TOC by guessing IDs. Shared book lock first (post-#100
+    # follow-up — see toc/accept comment).
+    await books_repo.lock_book_shared(session, book_id)
     existing = await toc_repo.get(session, entry_id)
     if existing is None or existing.book_id != book_id:
         raise HTTPException(404, "toc entry not found")
@@ -669,6 +679,7 @@ async def delete_toc_entry(
     entry_id: UUID,
     session: AsyncSession = Depends(get_session),
 ) -> None:
+    await books_repo.lock_book_shared(session, book_id)  # post-#100 follow-up
     existing = await toc_repo.get(session, entry_id)
     if existing is None or existing.book_id != book_id:
         raise HTTPException(404, "toc entry not found")

@@ -648,3 +648,65 @@ async def test_plain_delete_no_competitor_204():
 
     async with SessionLocal() as s:
         assert await s.get(Book, book_id) is None
+
+
+# ─── Part G: adjacent (non-activation) mutations vs delete (post-#100 fix) ───
+# The four sibling mutation routes (toc/accept, PATCH book, PATCH/DELETE toc
+# entry) mutate book-scoped rows. Unlocked, a delete committing between their
+# read and their UPDATE raised StaleDataError -> 500. With the shared lock they
+# serialize: delete-wins => clean 404; mutate-wins => delete proceeds after.
+
+
+@pytest.mark.asyncio
+async def test_update_book_delete_wins_patch_404s_never_500():
+    from app.api.v1.books import update_book, BookUpdateRequest
+    from app.db import SessionLocal
+    from app.repositories import books as books_repo
+
+    async with SessionLocal() as s:
+        book, _ = await _seed_book(s)
+        await s.commit()
+        book_id = book.id
+
+    async with SessionLocal() as sH:
+        await books_repo.lock_book_exclusive(sH, book_id)
+        await books_repo.delete(sH, book_id)  # uncommitted
+
+        async with SessionLocal() as sA:
+            patch_task = asyncio.create_task(update_book(
+                book_id, BookUpdateRequest(original_filename="renamed.pdf"), sA))
+            await asyncio.sleep(0.3)
+            assert not patch_task.done(), (
+                "PATCH must BLOCK while the delete holds the exclusive lock")
+
+            await sH.commit()
+
+            with pytest.raises(HTTPException) as exc_info:
+                await patch_task
+            assert exc_info.value.status_code == 404, (
+                "PATCH of a just-deleted book must 404 cleanly, never "
+                "StaleDataError/500")
+
+
+@pytest.mark.asyncio
+async def test_update_book_patch_wins_then_delete_succeeds():
+    from app.api.v1.books import update_book, delete_book, BookUpdateRequest
+    from app.db import SessionLocal
+    from app.repositories import books as books_repo
+
+    async with SessionLocal() as s:
+        book, _ = await _seed_book(s)
+        await s.commit()
+        book_id = book.id
+
+    # PATCH completes first (uncontested), then delete proceeds normally.
+    async with SessionLocal() as sA:
+        out = await update_book(
+            book_id, BookUpdateRequest(original_filename="renamed.pdf"), sA)
+        assert out.original_filename == "renamed.pdf"
+
+    async with SessionLocal() as sD:
+        await delete_book(book_id, sD)
+
+    async with SessionLocal() as s:
+        assert await books_repo.get(s, book_id) is None
