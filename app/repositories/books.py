@@ -1,11 +1,58 @@
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Book
+
+
+async def lock_book_shared(session: AsyncSession, book_id: UUID) -> None:
+    """Book-scoped Postgres advisory lock, SHARED form (BE-02 task 3).
+
+    Every path that ACTIVATES work for a book (single-section `/generate`,
+    job retry, batch launch, batch resume, TOC retry) takes this lock at the
+    very top of its transaction, before it (re-)reads the state it's about to
+    act on. Concurrent SHARED holders never block each other — two activators
+    can run in parallel — but a SHARED holder blocks (and is blocked by) the
+    EXCLUSIVE holder (`lock_book_exclusive`, taken by `DELETE /books/{id}`).
+
+    `pg_advisory_xact_lock_shared` is transaction-scoped: it releases
+    automatically on commit/rollback, so the caller MUST take it inside the
+    same transaction that performs (and commits) its write — never take it
+    and then return without committing/rolling back soon after, or it pins
+    the delete path open for the life of the request.
+
+    Mirrors the per-section advisory lock idiom in
+    `app/repositories/jobs.py::lock_section_for_generate` (see also
+    `app/api/v1/jobs.py:115`), scoped to the whole book instead of one
+    (book, section) pair — the section-level lock serializes double-clicks
+    on one lesson; this one serializes activation against deletion of the
+    whole book.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock_shared(hashtext(:key))"),
+        {"key": f"book:{book_id}"},
+    )
+
+
+async def lock_book_exclusive(session: AsyncSession, book_id: UUID) -> None:
+    """Book-scoped Postgres advisory lock, EXCLUSIVE form (BE-02 task 3).
+
+    Taken by `DELETE /books/{id}` at the very top of its transaction, before
+    the 404 fetch. Blocks (and is blocked by) any `lock_book_shared` holder,
+    and blocks any other `lock_book_exclusive` holder — so two concurrent
+    deletes of the same book, or a delete racing any of the five activation
+    paths, always serialize instead of interleaving. Same key namespace as
+    `lock_book_shared` (`f"book:{book_id}"`) so the two forms actually
+    contend with each other; transaction-scoped, released on commit/rollback.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"book:{book_id}"},
+    )
 
 
 async def create(
@@ -120,12 +167,18 @@ async def update(
 async def delete(session: AsyncSession, book_id: UUID) -> bool:
     """Remove a book and everything that depends on it.
 
-    `toc_entries` cascade automatically (FK ondelete=CASCADE), but
-    `homework_jobs.book_id` has no cascade, so we delete jobs explicitly
-    first. `phase_outputs` cascade off jobs. `gemini_usages` keep their rows
-    with FKs nulled (ondelete=SET NULL) for billing audit retention.
+    Order: `homework_jobs` (and their `phase_outputs`, which cascade off
+    jobs via FK ondelete=CASCADE) are deleted first, then `batches`, then the
+    `book` itself — `toc_entries` cascade automatically off the book (FK
+    ondelete=CASCADE). Neither `homework_jobs.book_id` nor `batches.book_id`
+    has an ondelete rule, so both must be deleted explicitly before the book,
+    or the book DELETE raises IntegrityError on the FK (BE-02 task 1 — the
+    audit's reproduced 500 was `batches` being forgotten here). `agent_usages`
+    rows are the one exception: their book/job/phase FKs are ondelete=SET
+    NULL, so those rows deliberately survive with their FKs nulled, for
+    billing/audit retention.
     """
-    from app.models import HomeworkJob
+    from app.models import Batch, HomeworkJob
 
     # Delete jobs first (and their phase_outputs cascade); ORM-level delete
     # so cascade rules on relationships fire correctly.
@@ -134,6 +187,10 @@ async def delete(session: AsyncSession, book_id: UUID) -> bool:
     ).scalars().all()
     for job in job_rows:
         await session.delete(job)
+
+    # Batches have no ondelete on book_id — delete them before the book, or
+    # the book DELETE below raises IntegrityError on batches_book_id_fkey.
+    await session.execute(sa_delete(Batch).where(Batch.book_id == book_id))
 
     book = await session.get(Book, book_id)
     if book is None:

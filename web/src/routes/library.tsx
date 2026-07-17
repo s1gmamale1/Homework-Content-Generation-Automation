@@ -335,7 +335,8 @@ function BookCard({ book }: { book: Book }) {
     e.stopPropagation();
     if (
       !window.confirm(
-        `Delete "${book.original_filename}" and every homework job derived from it?\n\nThis cannot be undone.`,
+        `Delete "${book.original_filename}"? This permanently removes the PDF and every ` +
+          `homework job and generated content derived from it.\n\nThis cannot be undone.`,
       )
     ) {
       return;

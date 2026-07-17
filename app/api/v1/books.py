@@ -1,12 +1,14 @@
 import asyncio
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
+from loguru import logger
 from notion_client.errors import APIResponseError
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, select
@@ -384,6 +386,21 @@ async def retry_toc_extraction(
     book = await books_repo.get(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
+    # Book-scoped SHARED advisory lock (BE-02 task 3) — the book_id IS the
+    # target here, so lock right after the 404 fetch and then RE-FETCH: a
+    # concurrent DELETE holding the EXCLUSIVE form blocks us here until it
+    # commits/rolls back, and the re-fetch below sees current state (never a
+    # stale pre-lock book object).
+    await books_repo.lock_book_shared(session, book_id)
+    # `Session.get()` short-circuits via the identity map — expire the
+    # pre-lock `book` object first so this re-fetch actually re-queries
+    # instead of silently returning the same stale in-memory row (see the
+    # identical comment on jobs.py::retry_job; caught for real by
+    # tests/integration/test_book_delete_race.py).
+    session.expire(book)
+    book = await books_repo.get(session, book_id)
+    if book is None:
+        raise HTTPException(404, "book not found")
     if book.status not in ("failed", "toc_extracting", "toc_review"):
         raise HTTPException(
             409,
@@ -573,10 +590,50 @@ async def delete_book(
     book_id: UUID,
     session: AsyncSession = Depends(get_session),
 ) -> None:
+    # Book-scoped EXCLUSIVE advisory lock (BE-02 task 3) — taken at the very
+    # top, BEFORE the 404 fetch. Blocks (and is blocked by) any of the five
+    # activation paths' SHARED lock, and any other concurrent delete of the
+    # same book, so this transaction's guard reads + deletes can never
+    # interleave with an activator's guard read + write.
+    await books_repo.lock_book_exclusive(session, book_id)
+    # Fetch first — a missing book must 404 regardless of status/jobs below,
+    # never get masked by the guards that follow (BE-02 task 2).
+    book = await books_repo.get(session, book_id)
+    if book is None:
+        raise HTTPException(404, "book not found")
+    # uploading/toc_extracting: the live _TOC_TASKS extractor is still reading
+    # the on-disk PDF for this book — deleting out from under it would race
+    # the extractor's own file access. failed/toc_review/toc_ready proceed
+    # (the wedged-book escape hatch).
+    if book.status in ("uploading", "toc_extracting"):
+        raise HTTPException(
+            409,
+            f"cannot delete: book is still being ingested (status "
+            f"'{book.status}') — wait for it to finish or fail, then delete",
+        )
+    active = await jobs_repo.count_active_for_book(session, book_id)
+    if active:
+        raise HTTPException(
+            409,
+            f"book has {active} active job(s) (pending/running/cancelling) — "
+            "cancel the active job(s) or their batch first, then delete",
+        )
     deleted = await books_repo.delete(session, book_id)
     if not deleted:
         raise HTTPException(404, "book not found")
     await session.commit()
+    # On-disk cleanup happens strictly AFTER commit (BE-02 task 4) — a rolled
+    # back delete must never have destroyed files. Best-effort: a missing dir
+    # is a silent no-op, and any other failure is logged but never turns a
+    # committed delete into an error response (the DB rows are already gone).
+    try:
+        shutil.rmtree(storage.book_dir(book_id))
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logger.error(
+            f"book delete: dir cleanup FAILED for {storage.book_dir(book_id)}: {exc}"
+        )
 
 
 @router.patch("/{book_id}/toc/{entry_id}")

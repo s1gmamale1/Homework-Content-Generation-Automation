@@ -31,7 +31,7 @@ def _make_session_override(batch_obj):
 
 def test_resume_batch_returns_jobs_resumed():
     bid = uuid4()
-    fake_batch = SimpleNamespace(id=bid)
+    fake_batch = SimpleNamespace(id=bid, book_id=uuid4())
 
     app.dependency_overrides[get_session] = _make_session_override(fake_batch)
     try:

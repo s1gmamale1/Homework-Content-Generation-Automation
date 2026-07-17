@@ -130,6 +130,12 @@ async def generate(
                 # Cached job was deleted upstream — invalidate and fall through.
                 _IDEMPOTENCY_CACHE.pop(idempotency_key, None)
 
+    # Book-scoped SHARED advisory lock (BE-02 task 3) — taken BEFORE the book
+    # fetch below, so that fetch doubles as the post-lock re-read: a
+    # concurrent DELETE holding the EXCLUSIVE form blocks us here until it
+    # commits/rolls back, and our subsequent read always sees current state
+    # (never a stale pre-lock book object).
+    await books_repo.lock_book_shared(session, book_id)
     book = await books_repo.get(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
@@ -361,6 +367,24 @@ async def retry_job(
     Accepts `failed` or `cancelled`; refuses anything else with 409 — there's
     no point retrying a pending/running/done job.
     """
+    job = await jobs_repo.get(session, job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    book_id = job.book_id
+    # Book-scoped SHARED advisory lock (BE-02 task 3) — retry doesn't know the
+    # book_id up front, so it derives it from the just-fetched job FIRST, then
+    # locks, then RE-FETCHES the job: a concurrent DELETE holding the
+    # EXCLUSIVE form blocks us here, and the re-fetch below sees whatever
+    # state remains once it releases (the job may have vanished while we
+    # waited — never resurrect it).
+    await books_repo.lock_book_shared(session, book_id)
+    # `Session.get()` short-circuits via the identity map: without expiring
+    # the pre-lock `job` object first, the "re-fetch" below would silently
+    # hand back that SAME stale in-memory object (even if the row was deleted
+    # while we waited for the lock) instead of re-querying — caught for real
+    # by tests/integration/test_book_delete_race.py (StaleDataError on the
+    # eventual UPDATE, not a clean 404).
+    session.expire(job)
     job = await jobs_repo.get(session, job_id)
     if job is None:
         raise HTTPException(404, "job not found")

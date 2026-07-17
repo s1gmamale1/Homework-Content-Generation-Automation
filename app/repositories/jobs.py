@@ -779,6 +779,19 @@ async def cancel_all_in_batch(session: AsyncSession, batch_id: UUID) -> dict[str
     return {"cancelled": pend.rowcount, "cancelling": run.rowcount}
 
 
+async def count_active_for_book(session: AsyncSession, book_id: UUID) -> int:
+    """Count jobs still in flight (pending/running/cancelling) for a book —
+    used by the book-delete guard (BE-02 task 2) to refuse deletion while a
+    job could still be spawning against files the delete would remove."""
+    stmt = (
+        select(func.count())
+        .select_from(HomeworkJob)
+        .where(HomeworkJob.book_id == book_id,
+               HomeworkJob.status.in_(["pending", "running", "cancelling"]))
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
 async def running_job_ids_in_batch(session: AsyncSession, batch_id: UUID) -> list[UUID]:
     """Job ids that were `cancelling` after cancel_all — so the API can cancel any
     locally-running tasks instantly (rather than waiting for the heartbeat)."""
