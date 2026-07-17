@@ -283,7 +283,7 @@ export function SaKeysPanel() {
                         </td>
                         <td className="px-3 py-2 text-white/60">
                           {a?.scrub
-                            ? <span className="text-amber-300/70">SCRUB REQUESTED</span>
+                            ? <span className="text-amber-300/70">SCRUB REQUESTED · HOST PARKED</span>
                             : a?.key_id
                               ? (() => {
                                   const k = keys.find((kk) => kk.id === a.key_id);
@@ -327,7 +327,15 @@ export function SaKeysPanel() {
                                 "h-6 px-1.5 text-[0.68rem] disabled:opacity-40",
                               )}
                               disabled={isPendingUnassign || !a}
-                              onClick={() => unassign.mutate(h.host)}
+                              onClick={() => {
+                                if (a?.scrub) {
+                                  const ok = window.confirm(
+                                    "This host is parked by a scrub (revoke). Unassigning dismisses the revoke and lets the host claim jobs again with NO service-account key. Continue?",
+                                  );
+                                  if (!ok) return;
+                                }
+                                unassign.mutate(h.host);
+                              }}
                             >
                               {isPendingUnassign ? "…" : "Unassign"}
                             </button>
