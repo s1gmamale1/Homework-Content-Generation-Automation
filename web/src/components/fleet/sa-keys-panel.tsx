@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { ONLINE_GREEN, ago, hostLiveness } from "@/lib/host-liveness";
 import { keyLabel } from "@/lib/sa-key-label";
+import { assignmentHosts, assignmentOnlyStatus } from "@/lib/sa-key-hosts";
 import { CARD, GHOST_BTN, GLASS_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
@@ -49,7 +50,7 @@ export function SaKeysPanel() {
     mutationFn: (host: string) => api.scrubSaKey(host),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sa-key-assignments"] });
-      toast.success("Key scrubbed from host");
+      toast.success("Scrub requested; applies when the host returns and is idle.");
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -77,9 +78,14 @@ export function SaKeysPanel() {
   const assignments = asgQ.data?.assignments ?? [];
   // One entry per host with liveness (online if any restart-row is fresh), so
   // you can see which hosts are up before assigning a key to them.
-  const hosts = hostLiveness(workersQ.data?.workers ?? []);
+  const hosts = assignmentHosts(hostLiveness(workersQ.data?.workers ?? []), assignments);
   const onlineCount = hosts.filter((h) => h.online).length;
   const asgFor = (h: string) => assignments.find((a) => a.hostname === h) ?? null;
+  const registryStatus = workersQ.isSuccess
+    ? "ready"
+    : workersQ.isError
+      ? "error"
+      : "loading";
 
   return (
     <div className="space-y-3">
@@ -237,23 +243,41 @@ export function SaKeysPanel() {
                           <span className="font-mono text-white">{h.host}</span>
                         </td>
                         <td className="px-3 py-2">
-                          <span className="flex items-center gap-1.5">
-                            <span
-                              aria-hidden
-                              className={cn(
-                                "size-2 shrink-0 rounded-full",
-                                !h.online && "bg-white/25",
-                              )}
-                              style={h.online ? { background: ONLINE_GREEN } : undefined}
-                            />
-                            <span className={h.online ? "text-white/70" : "text-white/40"}>
-                              {h.online ? "online" : ago(h.lastHeartbeat)}
+                          {h.assignmentOnly ? (
+                            (() => {
+                              const status = assignmentOnlyStatus(registryStatus);
+                              return (
+                                <span
+                                  className="text-white/40"
+                                  title={
+                                    status === "gone"
+                                      ? "no registry row — worker last seen >10 min ago"
+                                      : undefined
+                                  }
+                                >
+                                  {status === "checking" ? "checking…" : status}
+                                </span>
+                              );
+                            })()
+                          ) : (
+                            <span className="flex items-center gap-1.5">
+                              <span
+                                aria-hidden
+                                className={cn(
+                                  "size-2 shrink-0 rounded-full",
+                                  !h.online && "bg-white/25",
+                                )}
+                                style={h.online ? { background: ONLINE_GREEN } : undefined}
+                              />
+                              <span className={h.online ? "text-white/70" : "text-white/40"}>
+                                {h.online ? "online" : ago(h.lastHeartbeat)}
+                              </span>
                             </span>
-                          </span>
+                          )}
                         </td>
                         <td className="px-3 py-2 text-white/60">
                           {a?.scrub
-                            ? "(scrubbed)"
+                            ? <span className="text-amber-300/70">SCRUB REQUESTED</span>
                             : a?.key_id
                               ? (() => {
                                   const k = keys.find((kk) => kk.id === a.key_id);
