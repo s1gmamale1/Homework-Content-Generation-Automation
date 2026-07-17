@@ -50,6 +50,10 @@ export function SaKeysPanel() {
     mutationFn: (host: string) => api.scrubSaKey(host),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sa-key-assignments"] });
+      // Scrub nulls the assignment's key_id, so worker_count on the key drops —
+      // invalidate sa-keys too or the pool count + Delete-button enablement go
+      // stale (matches unassign, which already invalidates both).
+      qc.invalidateQueries({ queryKey: ["sa-keys"] });
       toast.success("Scrub requested; applies when the host returns and is idle.");
     },
     onError: (e: Error) => toast.error(e.message),
@@ -293,7 +297,7 @@ export function SaKeysPanel() {
                           <div className="flex items-center gap-1.5">
                             <select
                               className="rounded-lg border border-white/[0.1] bg-white/[0.05] px-2 py-1 text-[0.72rem] text-white/80 focus:outline-none focus:ring-1 focus:ring-white/20"
-                              defaultValue={a?.key_id ?? ""}
+                              value={a?.key_id ?? ""}
                               disabled={isPendingAssign}
                               onChange={(e) => {
                                 if (e.target.value) {

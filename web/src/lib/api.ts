@@ -598,17 +598,21 @@ export const api = {
   },
 
   async unassignSaKey(hostname: string): Promise<void> {
-    await authFetch(
+    const res = await authFetch(
       `/api/v1/sa-keys/assignments/${encodeURIComponent(hostname)}`,
       { method: "DELETE" },
     );
+    // authFetch does NOT throw on 4xx/5xx — check res.ok so the caller's
+    // success toast can't fire on a failed unassign (matches assignSaKey).
+    if (!res.ok) throw new Error((await res.json()).detail ?? "unassign failed");
   },
 
   async scrubSaKey(hostname: string): Promise<void> {
-    await authFetch(
+    const res = await authFetch(
       `/api/v1/sa-keys/assignments/${encodeURIComponent(hostname)}/scrub`,
       { method: "POST" },
     );
+    if (!res.ok) throw new Error((await res.json()).detail ?? "scrub failed");
   },
 };
 
