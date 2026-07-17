@@ -330,7 +330,7 @@ export function SaKeysPanel() {
                               onClick={() => {
                                 if (a?.scrub) {
                                   const ok = window.confirm(
-                                    "This host is parked by a scrub (revoke). Unassigning dismisses the revoke and lets the host claim jobs again with NO service-account key. Continue?",
+                                    "This host is parked by a scrub (revoke). Unassigning cancels the revoke and lets the host claim jobs again — the credential clear will NOT complete, so if it hasn't run yet the host keeps its old key. Continue?",
                                   );
                                   if (!ok) return;
                                 }

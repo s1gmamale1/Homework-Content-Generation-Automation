@@ -36,6 +36,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _restore_capabilities():
+    """`_make_worker` reassigns the module-global `worker.CAPABILITIES`; snapshot
+    and restore it so this file's cli-only override never leaks into a later test
+    in the same RUN_DB_INTEGRATION session."""
+    from app.services import worker as worker_mod
+    saved = worker_mod.CAPABILITIES
+    yield
+    worker_mod.CAPABILITIES = saved
+
+
 async def _seed_section(s, name: str):
     from app.models.book import Book
     from app.models.toc_entry import TOCEntry
