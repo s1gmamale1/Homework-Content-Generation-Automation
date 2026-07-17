@@ -458,6 +458,33 @@ The download endpoint zips those per-phase markdown files on demand. *(An earlie
 a `_render_homework_md` assembler writing `homework_jobs.assembled_md`; both were removed in
 the markdown-per-phase reshape.)*
 
+### Teaching-equivalence audit (worklog 0147, offline)
+The judge (§ above) and the extract coverage-contract (#84) both grade a packet against
+**itself** or its own extract — neither ever asks "does this packet actually teach what the
+**textbook** teaches?" `app/services/teaching_audit.py` (CLI `scripts/teaching_audit.py
+--job <id> [--sensitivity]`) closes that gap, offline and read-only. It derives an exam from
+the **textbook lesson pages only** (never the packet — anti-circularity), then runs a
+closed-book simulated grade-N student twice: once with only prior-grade knowledge (the
+pre-test *control*), once after "studying" only the packet's student-facing deliverable
+(`done`, non-`extract` phases — the same filter the real download/Notion export uses, so the
+internal textbook-derived `extract` summary never leaks to the student). Grading the pre→post
+delta per learning objective yields four outcomes: `already_known`, `learned`, `not_taught`
+(the packet never actually teaches it — `mentioned`-but-unexplained counts here), and
+`not_learnable` (taught but the closed-book student still failed — present-but-not-absorbable).
+`--sensitivity` runs a paired instrument-validation experiment (shared exam + pre-test + one
+**blinded** grade call over `{pre, post_normal, post_control}`; the examiner sees opaque
+`s0/s1/…` labels, remapped only after grading) against a **true empty-packet** control, and
+`sensitivity_pass` is a dual gate — the real packet must out-teach the empty control on both
+the student path (learned-count) and the coverage path (empty ⇒ all `absent`). A bounded live
+paired run costs ≈ $0.20 (examiner `gemini-2.5-pro`, student `gemini-2.5-flash`, api). It is
+fail-loud (any dead/inconsistent scorer raises rather than degrading to a clean pass) and the
+JSON report keeps the full evidence chain so a human can audit a false-positive `learned`.
+**Honest limitation:** it measures teaching *under simulation* — the simulated student reads
+more charitably than a real 8th-grader, so it reliably catches structural learnability failures
+(missing examples, broken sequencing, unexplained terms) but not register/readability; real
+classroom data remains the only ground truth. Engagement/motivation is deliberately out of
+scope.
+
 ---
 
 ## 7. Subjects, flows, and phases
