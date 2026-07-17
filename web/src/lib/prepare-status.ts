@@ -1,4 +1,4 @@
-import type { AvailableLanguages, LangPart } from "./types";
+import type { AvailableLanguages, BookLinkState, LangPart, NotionCandidate } from "./types";
 
 /** The six chip states the "Prepare a subject" dialog can show for a
  *  resolved language part (worklog 0144 task 5). */
@@ -74,20 +74,15 @@ function redoBlockedReason(count: number): string {
   return `${count} homework job(s) reference this book's sections — delete the affected sections first`;
 }
 
-/** Map an availability-enriched part (post `partForResolution`) to the
- *  Prepare dialog's chip + panel + enabled-actions state. Pure — no
- *  fetches, no React — so it's exercised with plain node:assert tests. */
-export function partPrepareStatus(part: LangPart | null | undefined): PrepareStatus {
-  if (!part || !part.has_textbook) {
-    return {
-      chip: { kind: "no_textbook", label: "NO TEXTBOOK", colorFamily: "amber", pulse: false },
-      panel: { kind: "no_textbook" },
-      actions: NO_ACTIONS,
-    };
-  }
-
-  const bookId = part.book_id ?? null;
-  const status = part.book_status ?? null;
+/** Shared linked/unlinked resolution for anything carrying `BookLinkState`
+ *  fields — a `LangPart`'s part-level rollup, or a single `NotionCandidate`.
+ *  Both `partPrepareStatus` and `candidatePrepareStatus` funnel into this
+ *  once they've handled their own "is there a textbook at all" check (a part
+ *  can be `has_textbook: false`; a candidate IS a textbook file by
+ *  construction, so it never needs that check). */
+function linkStatus(link: BookLinkState): PrepareStatus {
+  const bookId = link.book_id ?? null;
+  const status = link.book_status ?? null;
   // Unlinked (no book at all), OR the two-linked-candidates edge case where
   // the backend deliberately omits the part-level rollup (ambiguous which of
   // two books this part now represents) — conservative fallback, never
@@ -102,8 +97,8 @@ export function partPrepareStatus(part: LangPart | null | undefined): PrepareSta
 
   switch (status) {
     case "toc_ready": {
-      const blocked = part.redo_blocked_by_jobs ?? 0;
-      const lessons = part.toc_total ?? 0;
+      const blocked = link.redo_blocked_by_jobs ?? 0;
+      const lessons = link.toc_total ?? 0;
       const redo: RedoAction = {
         enabled: blocked === 0,
         disabledReason: blocked > 0 ? redoBlockedReason(blocked) : null,
@@ -119,7 +114,7 @@ export function partPrepareStatus(part: LangPart | null | undefined): PrepareSta
           kind: "prepared",
           bookId,
           lessons,
-          preparedAt: part.toc_ready_at ?? null,
+          preparedAt: link.toc_ready_at ?? null,
           redo,
         },
         actions: { ...NO_ACTIONS, useExisting: true, redo: redo.enabled },
@@ -150,6 +145,74 @@ export function partPrepareStatus(part: LangPart | null | undefined): PrepareSta
       const _exhaustive: never = status;
       return _exhaustive;
     }
+  }
+}
+
+/** Map an availability-enriched part (post `partForResolution`) to the
+ *  Prepare dialog's chip + panel + enabled-actions state. Pure — no
+ *  fetches, no React — so it's exercised with plain node:assert tests. */
+export function partPrepareStatus(part: LangPart | null | undefined): PrepareStatus {
+  if (!part || !part.has_textbook) {
+    return {
+      chip: { kind: "no_textbook", label: "NO TEXTBOOK", colorFamily: "amber", pulse: false },
+      panel: { kind: "no_textbook" },
+      actions: NO_ACTIONS,
+    };
+  }
+  return linkStatus(part);
+}
+
+/** Map a single file-level candidate (BE-19 task 6) to the same chip/panel/
+ *  actions shape as `partPrepareStatus` — a candidate has no `has_textbook`
+ *  flag of its own (it IS a textbook file by construction, being one of a
+ *  part's ranked PDF candidates), so it skips straight to `linkStatus`.
+ *  Used when the ambiguous-file picker has an explicit selection: that
+ *  candidate's OWN link state governs the panel + the primary Prepare gate,
+ *  not the part-level rollup (which the backend omits whenever >1 candidate
+ *  resolves to different books — prepare-two-linked-part-redo-1). */
+export function candidatePrepareStatus(candidate: NotionCandidate | null | undefined): PrepareStatus {
+  if (!candidate) {
+    return {
+      chip: { kind: "no_textbook", label: "NO TEXTBOOK", colorFamily: "amber", pulse: false },
+      panel: { kind: "no_textbook" },
+      actions: NO_ACTIONS,
+    };
+  }
+  return linkStatus(candidate);
+}
+
+/** The effective status the primary Prepare button + panel must reflect for
+ *  a resolved (part, selection) pair: an explicitly SELECTED candidate from
+ *  the ambiguous-file picker governs over the part-level rollup (finding 3
+ *  of the PR #99 gate) — `null`/absent selection falls back to the part's
+ *  own status (the conservative `textbook_ready` fallback for an
+ *  as-yet-unresolved two-linked part, documented gap
+ *  `prepare-two-linked-part-redo-1`). */
+export function resolvedPrepareStatus(
+  part: LangPart | null | undefined,
+  selectedCandidate: NotionCandidate | null | undefined,
+): PrepareStatus {
+  return selectedCandidate ? candidatePrepareStatus(selectedCandidate) : partPrepareStatus(part);
+}
+
+/** Human tooltip explaining why the PRIMARY prepare action is disabled by
+ *  system state (as opposed to disabled for some other reason, e.g. no
+ *  subject picked yet). `undefined` when nothing blocks it — `proceed: true`,
+ *  or a `no_textbook` chip (callers already gate that case on their own
+ *  "usable"/"available" check, so it never needs a system-state tooltip). */
+export function proceedBlockedTooltip(status: PrepareStatus): string | undefined {
+  if (status.actions.proceed) return undefined;
+  switch (status.chip.kind) {
+    case "prepared":
+      return "Already prepared — use the panel above to open it or redo extraction";
+    case "preparing":
+      return "Preparation in progress";
+    case "needs_review":
+      return "Needs review — open it from the panel";
+    case "failed":
+      return "Preparation failed — retry from the panel";
+    default:
+      return undefined;
   }
 }
 

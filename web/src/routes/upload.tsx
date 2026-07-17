@@ -30,7 +30,13 @@ import {
   resolveCandidate,
   resolveNotionPageId,
 } from "@/lib/notion-parts";
-import { hasMidFlightBook, partPrepareStatus } from "@/lib/prepare-status";
+import {
+  candidatePrepareStatus,
+  hasMidFlightBook,
+  partPrepareStatus,
+  proceedBlockedTooltip,
+  resolvedPrepareStatus,
+} from "@/lib/prepare-status";
 import { subjectLabel } from "@/lib/subjects";
 import {
   type NotionCandidate,
@@ -174,6 +180,14 @@ export function UploadPage() {
     // that both look like the textbook). Hold the fetch until the operator
     // picks one; a single best-tier candidate auto-resolves below.
     const part = partForResolution(s.page_id, language, langMap);
+    // Defense-in-depth (PR #99 gate finding 2): the language button is
+    // already disabled once this resolves to a linked, non-proceed state —
+    // never let a stray click re-fire /from-notion on an already-tracked
+    // book. A part with an ambiguous (>1 candidate) rollup still falls back
+    // to the conservative `textbook_ready` proceed:true here, so this never
+    // blocks entering the file picker below — only a resolved single part
+    // that's actually prepared/preparing/needs-review/failed is stopped.
+    if (!partPrepareStatus(part).actions.proceed) return;
     const resolution = resolveCandidate(part);
     if (resolution.status === "none" || !part) {
       toast.error("No textbook file found for this language — upload the PDF directly.");
@@ -489,6 +503,14 @@ export function UploadPage() {
                                 : null;
                             // Language availability for this subject (null = map not yet loaded).
                             const langMap = s.app_subject ? (availLangs?.[s.app_subject] ?? null) : null;
+                            // The ambiguous-file picker's current selection (if any) for THIS
+                            // subject — its own status governs the "Fetch selected" gate
+                            // (PR #99 gate finding 3), not the part rollup.
+                            const candStatus =
+                              candidatePick?.subject.page_id === s.page_id && candidatePick.selected
+                                ? candidatePrepareStatus(candidatePick.selected)
+                                : null;
+                            const candBlockedTooltip = candStatus ? proceedBlockedTooltip(candStatus) : undefined;
                             return (
                               <div
                                 key={s.page_id}
@@ -516,23 +538,38 @@ export function UploadPage() {
                                     {(["uz", "ru", "en"] as OutputLanguage[]).map((lang) => {
                                       const mapLoaded = availLangs != null;
                                       const { available, multiPart, partCount } = langChipState(lang, langMap, mapLoaded);
+                                      // System-aware gate (PR #99 gate finding 2): the language
+                                      // chip IS the primary prepare action here (no separate
+                                      // "Prepare" button like launcher.tsx), so it must respect
+                                      // the resolved part's own status the same way. An
+                                      // as-yet-unresolved two-linked part still falls back to
+                                      // `textbook_ready`/proceed:true, so this never blocks
+                                      // entering the file picker — only a resolved single part
+                                      // that's already prepared/preparing/needs-review/failed.
+                                      const part = partForResolution(s.page_id, lang, langMap);
+                                      const partStatus = partPrepareStatus(part);
+                                      const blockedTooltip = proceedBlockedTooltip(partStatus);
                                       const tooltip = multiPart
                                         ? `${partCount} ${LANG_LABEL[lang]} textbook parts in Notion — pick the specific part from that language's subject list, or upload the PDF directly.`
                                         : !available && lang === "en"
                                           ? "No English page yet — create an English page (with the textbook) in Notion, or upload the PDF directly."
                                           : !available
                                             ? `No ${LANG_LABEL[lang]} textbook available in Notion for this subject.`
-                                            : undefined;
+                                            : blockedTooltip;
                                       return (
                                         <button
                                           key={lang}
                                           type="button"
                                           title={tooltip}
-                                          disabled={!available || busy}
-                                          onClick={() => void pickSubject(s, lang)}
+                                          disabled={!available || busy || !partStatus.actions.proceed}
+                                          onClick={() => {
+                                            // Defense-in-depth — see the disabled= condition above.
+                                            if (!partStatus.actions.proceed) return;
+                                            void pickSubject(s, lang);
+                                          }}
                                           className={cn(
                                             "flex items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs font-medium transition-all",
-                                            available
+                                            available && partStatus.actions.proceed
                                               ? "border-white/[0.14] bg-white/[0.05] text-white/75 hover:border-white/[0.25] hover:bg-white/[0.1] hover:text-white"
                                               : "cursor-not-allowed border-white/[0.06] bg-transparent text-white/25 opacity-50",
                                           )}
@@ -547,12 +584,20 @@ export function UploadPage() {
                                 {/* System-aware chips (task 5): a language above may resolve
                                     to a part already PREPARED/PREPARING/NEEDS REVIEW/FAILED —
                                     renders nothing for an unprepared (textbook-ready) part, so
-                                    the button row above is unchanged for that (common) case. */}
+                                    the button row above is unchanged for that (common) case.
+                                    When the ambiguous-file picker below has an explicit
+                                    selection for THIS subject+language, that candidate's own
+                                    status governs instead of the part rollup (PR #99 gate
+                                    finding 3 — resolvedPrepareStatus). */}
                                 {usable && (
                                   <div className="mt-2 flex flex-col gap-2">
                                     {(["uz", "ru", "en"] as OutputLanguage[]).map((lang) => {
                                       const part = partForResolution(s.page_id, lang, langMap);
-                                      const status = partPrepareStatus(part);
+                                      const selectedForLang =
+                                        candidatePick?.subject.page_id === s.page_id && candidatePick.language === lang
+                                          ? candidatePick.selected
+                                          : null;
+                                      const status = resolvedPrepareStatus(part, selectedForLang);
                                       if (
                                         status.panel.kind === "no_textbook" ||
                                         status.panel.kind === "textbook_ready"
@@ -598,23 +643,38 @@ export function UploadPage() {
                                         ))}
                                       </SelectContent>
                                     </Select>
+                                    {/* The selected candidate's own system state (PR #99 gate
+                                        finding 3) — renders nothing when it's the common
+                                        unprepared (textbook-ready) case. */}
+                                    {candStatus &&
+                                      candStatus.panel.kind !== "no_textbook" &&
+                                      candStatus.panel.kind !== "textbook_ready" && (
+                                        <PrepareStatusPanel status={candStatus} />
+                                      )}
                                     <div className="flex items-center gap-2">
                                       <button
                                         type="button"
-                                        disabled={!candidatePick.selected || busy}
-                                        title={!candidatePick.selected ? "Pick a file to continue" : undefined}
-                                        onClick={() =>
-                                          candidatePick.selected &&
+                                        disabled={!candidatePick.selected || busy || (candStatus ? !candStatus.actions.proceed : false)}
+                                        title={
+                                          !candidatePick.selected
+                                            ? "Pick a file to continue"
+                                            : candBlockedTooltip
+                                        }
+                                        onClick={() => {
+                                          if (!candidatePick.selected) return;
+                                          // Defense-in-depth — see the disabled= condition above.
+                                          if (candStatus && !candStatus.actions.proceed) return;
                                           void runFetch(
                                             candidatePick.subject,
                                             candidatePick.language,
                                             candidatePick.partPageId,
                                             candidatePick.selected.block_id,
-                                          )
-                                        }
+                                          );
+                                        }}
                                         className={cn(
                                           GLASS_BTN,
-                                          !candidatePick.selected && "cursor-not-allowed opacity-50",
+                                          (!candidatePick.selected || (candStatus && !candStatus.actions.proceed)) &&
+                                            "cursor-not-allowed opacity-50",
                                         )}
                                       >
                                         Fetch selected

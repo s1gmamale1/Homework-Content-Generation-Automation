@@ -63,7 +63,7 @@ import {
   resolveCandidate,
   resolveNotionPageId,
 } from "@/lib/notion-parts";
-import { hasMidFlightBook, partPrepareStatus } from "@/lib/prepare-status";
+import { hasMidFlightBook, proceedBlockedTooltip, resolvedPrepareStatus } from "@/lib/prepare-status";
 import { PrepareStatusPanel } from "@/components/notion/prepare-status-panel";
 
 const LBL = "text-xs font-medium uppercase tracking-[0.12em] text-white/45";
@@ -134,7 +134,14 @@ export function FleetLauncher({
   // resolved part — PrepareStatusPanel renders nothing for the un-prepared
   // states (no_textbook/textbook_ready), so this is purely additive: the
   // existing UZ/RU/EN buttons + candidate picker below are unchanged.
-  const preparePartStatus = partPrepareStatus(resolvedPart);
+  // A selected candidate from the ambiguous-file picker below governs over
+  // the part-level rollup (PR #99 gate finding 3) — resolvedPrepareStatus
+  // picks it up automatically once `selectedCandidate` is set.
+  const preparePartStatus = resolvedPrepareStatus(resolvedPart, selectedCandidate);
+  // The PRIMARY Prepare button must respect this same status (PR #99 gate
+  // finding 1) — it previously only gated on subjectUsable/needsCandidatePick
+  // and would silently re-fire /from-notion on an already-linked book.
+  const preparePermitted = preparePartStatus.actions.proceed;
 
   // Reset prepLang to uz whenever subject changes (so stale selection from
   // a prior subject doesn't carry over as a disabled language).
@@ -481,10 +488,20 @@ export function FleetLauncher({
           </p>
           <button
             type="button"
-            title={needsCandidatePick ? "Pick a file to continue" : undefined}
+            title={
+              needsCandidatePick
+                ? "Pick a file to continue"
+                : proceedBlockedTooltip(preparePartStatus)
+            }
             className={cn(PRIMARY_BTN, "shrink-0")}
-            disabled={!subjectUsable || prepare.isPending || needsCandidatePick}
-            onClick={() => prepare.mutate({ subjectPageId, grade: gradeDigits, language: prepLang })}
+            disabled={!subjectUsable || prepare.isPending || needsCandidatePick || !preparePermitted}
+            onClick={() => {
+              // Defense-in-depth: the button is already disabled for this
+              // case, but never let a stray click fire the mutation on a
+              // book the system already tracks (PR #99 gate finding 1).
+              if (!preparePermitted) return;
+              prepare.mutate({ subjectPageId, grade: gradeDigits, language: prepLang });
+            }}
           >
             {prepare.isPending ? (
               <>
