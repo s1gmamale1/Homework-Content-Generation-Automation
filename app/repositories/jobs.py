@@ -257,8 +257,9 @@ async def list_running_for_sweep(session: AsyncSession) -> list[HomeworkJob]:
     return list((await session.execute(stmt)).scalars().all())
 
 
-async def count_running_for_host(session: AsyncSession, hostname: str) -> int:
-    """Count `running` jobs claimed by ANY worker process on `hostname`.
+async def count_active_for_host(session: AsyncSession, hostname: str) -> int:
+    """Count `running` OR `cancelling` jobs claimed by ANY worker process on
+    `hostname`.
 
     `claimed_by` is `hostname:pid` (see worker `_worker_id`), so the host part
     is `split_part(claimed_by, ':', 1)`. This is the HOST-WIDE busy signal the
@@ -267,13 +268,18 @@ async def count_running_for_host(session: AsyncSession, hostname: str) -> int:
     sees its own in-process `_tasks`. Before the destructive credential clear,
     the scrub path also checks this so an idle process does not yank shared
     credential files out from under a sibling process that is mid-spawn.
+    `cancelling` counts too (renamed from `count_running_for_host`, round 3):
+    a job told to stop but not yet unwound is still mid-spawn from the
+    credential-file point of view — mirrors the `count_active_for_book`
+    in-flight set (pending/running/cancelling) minus `pending` (a pending job
+    hasn't claimed this host yet, so it can't be mid-spawn on it).
 
     Uses `split_part(..) = hostname` (not `LIKE 'hostname:%'`) so a hostname
     containing a LIKE metacharacter can't over- or under-match, and the `:`
     boundary keeps `mac` from matching `mac-mini:123`.
     """
     stmt = select(func.count()).select_from(HomeworkJob).where(
-        HomeworkJob.status == "running",
+        HomeworkJob.status.in_(["running", "cancelling"]),
         func.split_part(HomeworkJob.claimed_by, ":", 1) == hostname,
     )
     return int((await session.execute(stmt)).scalar_one())

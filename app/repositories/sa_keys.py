@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import delete as sa_delete, func, select, text
+from sqlalchemy import delete as sa_delete, exists, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -167,6 +167,23 @@ async def scrub(session: AsyncSession, hostname: str) -> None:
         set_={"key_id": None, "scrub_requested_at": _utcnow(), "updated_at": _utcnow()},
     )
     await session.execute(stmt)
+
+
+async def scrub_pending_for_host(session: AsyncSession, hostname: str) -> bool:
+    """True iff `hostname` has an assignment row with a scrub in flight
+    (`scrub_requested_at IS NOT NULL` — the same signal `scrub()` sets and
+    `assign()` clears). False both when the row is keyed to a live SA key
+    and when there is no assignment row at all for this host."""
+    return bool(
+        await session.scalar(
+            select(
+                exists().where(
+                    SAKeyAssignment.hostname == hostname,
+                    SAKeyAssignment.scrub_requested_at.is_not(None),
+                )
+            )
+        )
+    )
 
 
 async def get_assignment_with_key(session: AsyncSession, hostname: str) -> dict | None:

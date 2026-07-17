@@ -847,7 +847,7 @@ class Worker:
         # running a job. `claimed_by` is `hostname:pid`, so this counts sibling
         # pids too. (On a DB error the outer try/except defers — fail-safe: we
         # never scrub under uncertainty.)
-        if await jobs_repo.count_running_for_host(session, self.hostname) > 0:
+        if await jobs_repo.count_active_for_host(session, self.hostname) > 0:
             return
         sa_key_apply.clear_credentials_env(os.environ)
         sa_key_apply.upsert_env_file(

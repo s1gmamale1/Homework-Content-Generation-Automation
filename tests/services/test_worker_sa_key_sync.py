@@ -18,13 +18,13 @@ class _FakeSession:
 @pytest.fixture(autouse=True)
 def _host_idle_by_default(monkeypatch):
     """Default the HOST-WIDE idle gate to 'no sibling running' so scrub tests
-    exercise the clear. `_scrub_if_idle` calls `jobs_repo.count_running_for_host`
-    (a real-DB query, proven in tests/integration/test_count_running_for_host.py)
+    exercise the clear. `_scrub_if_idle` calls `jobs_repo.count_active_for_host`
+    (a real-DB query, proven in tests/integration/test_host_scrub_sync.py)
     — here it's monkeypatched to 0 so these unit tests never touch a DB. The
     sibling-busy test overrides it."""
     async def _zero(session, hostname):
         return 0
-    monkeypatch.setattr(worker.jobs_repo, "count_running_for_host", _zero)
+    monkeypatch.setattr(worker.jobs_repo, "count_active_for_host", _zero)
 
 
 @pytest.mark.asyncio
@@ -235,7 +235,7 @@ async def test_scrub_defers_while_busy(monkeypatch, tmp_path):
 async def test_scrub_defers_while_sibling_process_busy(monkeypatch, tmp_path):
     """Host-wide idle gate (gate finding 1): THIS process is idle
     (`self._tasks` empty) and residue is present, but a SIBLING worker process
-    on the same host is running a job (`count_running_for_host` > 0). The clear
+    on the same host is running a job (`count_active_for_host` > 0). The clear
     must be deferred — an idle process must not yank the shared active.json/.env
     out from under a sibling that's mid-spawn."""
     import app.config as config
@@ -265,7 +265,7 @@ async def test_scrub_defers_while_sibling_process_busy(monkeypatch, tmp_path):
     # A sibling process on this host is running a job.
     async def _one(session, hostname):
         return 1
-    monkeypatch.setattr(worker.jobs_repo, "count_running_for_host", _one)
+    monkeypatch.setattr(worker.jobs_repo, "count_active_for_host", _one)
 
     calls = []
     monkeypatch.setattr(apply_mod, "clear_credentials_env", lambda env: calls.append(env))
