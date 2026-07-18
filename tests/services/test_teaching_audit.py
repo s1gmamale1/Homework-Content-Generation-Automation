@@ -617,3 +617,26 @@ def test_result_to_dict_retains_evidence_identity_and_roundtrips():
     assert d["source"]["textbook_sha256"] == hashlib.sha256(b"TEXTBOOK EXCERPT").hexdigest()
     assert d["source"]["study_sha256"] == hashlib.sha256("## flashcards\n\nPACKET".encode()).hexdigest()
     json.dumps(d)  # must be JSON-serializable
+
+
+# ---------- page-offset guard (teaching-audit-page-offset-1, worklog 0150) ----------
+
+def test_exam_prompt_anchors_on_title_with_zero_objectives_escape():
+    # The slice window may be offset (printed vs physical page numbers, specimen
+    # a92e62ae) — the examiner must derive ONLY from the titled lesson and return
+    # ZERO objectives when it is absent, never substitute a neighbouring lesson.
+    p = ta.build_exam_prompt(
+        textbook_text=TEXTBOOK_SENTINEL, lesson_title="Parallelogramm",
+        subject="matematika", grade="8", language="uz",
+    )
+    assert "ONLY from the lesson" in p
+    assert "ZERO objectives" in p
+    assert "neighbouring" in p
+
+
+def test_zero_objectives_raises_with_page_offset_suspicion():
+    # Load-bearing guard: a zero-objective exam is the anchored examiner saying
+    # "the titled lesson is not in these pages" — must fail LOUD naming the
+    # suspected cause, never flow into a confident wrong verdict.
+    with pytest.raises(ta.TeachingAuditError, match="page offset suspected"):
+        ta._validate_exam(ta.ExamSpec(objectives=[], questions=[]))
