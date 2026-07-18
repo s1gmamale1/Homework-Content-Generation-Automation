@@ -56,7 +56,8 @@ function BookLine({ entry }: { entry: CoverageEntry }) {
       </div>
       {(stuck > 0 || entry.source_language !== "uz") && (
         <p className="mt-1 text-xs text-white/45">
-          {stuck > 0 && `${stuck} lesson${stuck === 1 ? "" : "s"} need a look`}
+          {stuck > 0 &&
+            (stuck === 1 ? "1 lesson needs a look" : `${stuck} lessons need a look`)}
           {stuck > 0 && entry.source_language !== "uz" && " · "}
           {entry.source_language !== "uz" && `${entry.source_language.toUpperCase()} textbook`}
         </p>
