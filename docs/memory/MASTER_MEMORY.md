@@ -1931,6 +1931,18 @@ Gate-hardening: `PUT /settings/launch-defaults` rejects null provider/model with
 
 **Verified:** module suite **32 passed**; full backend suite green; CLI `--help` api-only (no `--transport`). Live paired smoke PASS at $0.1980 (re-verified after the gate-4 fixes — control learned 0, all control coverage absent, evidence block populated). Plan: `docs/superpowers/plans/shipped/2026-07-17-teaching-equivalence-audit.md`.
 
+## 0150 — 2026-07-18 — Nggaev-v2 (direct) — Dashboard: textbook-source chip + tab-matched edition sort
+
+**What:** Live user report: clicking "RU algebra G9" on the Русский tab landed on the uz textbook — read as a language redirect. Traced end-to-end: routing was CORRECT (each bar links its own book_id; all 57 served entries verified against independently recomputed truth — fresh SQL + classifier, zero mismatches incl. batch/paused fields). Root cause is display semantics: the language tabs scope homework OUTPUT language, not textbook language — G9 algebra has only a uz textbook with 1 done ru job, so the Русский tab legitimately shows it, but nothing said "UZ textbook"; and ru+uz edition twins (G5 history, G7/G8 algebra, G8 geometriya) rendered in ingest order with the uz line unannotated (the annotation only fired for non-uz sources — exactly backwards on the ru tab).
+
+**Fix (controller-direct, FE-only):** (1) every book line carries an always-on source-language chip (`UZ`/`RU`); (2) new pure `sortBooksForLang` floats the tab-matching edition first (stable, non-mutating, TDD RED-first — 5 assertions incl. stability + no-mutation); (3) row tooltip = original filename. `lang` threaded dashboard→GradeCard→SubjectRow.
+
+**Files:** `web/src/lib/subject-coverage.ts`+`.test.ts`, `web/src/components/dashboard/subject-row.tsx`, `grade-card.tsx`, `web/src/routes/dashboard.tsx`.
+
+**Verified:** npm test 12/12, tsc clean, build clean.
+
+**Operator note:** FE-only — the box serving the dashboard (192.168.1.16) needs pull + `cd web && npm run build` + hard refresh; no server restart, no migration.
+
 ## 0149 — 2026-07-18 — feat/coverage-dashboard — Subject coverage dashboard (grade-first, plain language, read-only)
 
 **What:** A standalone `/dashboard` page answering, for a NON-TECHNICAL reader, "how is homework generation going for each grade's subjects?" — deliberately separate from `/monitor` (which stays batch-centric and is untouched). Pick a grade → its subjects render as readable rows with a progress bar, a plain-English status, and a stuck-lesson note; subjects with no textbook collapse into a `No textbook yet (N)` disclosure. Language tabs (uz/en/ru), a 4-tile overview, drill-in links to the book page. **Read-only by design** — no launch/resume buttons on a page aimed at non-technical viewers; the launcher already owns those flows.
