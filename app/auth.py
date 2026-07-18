@@ -18,7 +18,7 @@ from typing import Optional
 
 from fastapi import Header, HTTPException, Query, status
 
-from app.config import valid_auth_tokens
+from app.config import valid_auth_tokens, valid_dashboard_tokens
 
 
 async def get_current_user(
@@ -74,3 +74,30 @@ async def get_current_user_strict(
             headers={"WWW-Authenticate": 'Bearer realm="api"'},
         )
     return {"user_id": "authenticated", "auth": "token"}
+
+
+async def get_viewer_user(
+    authorization: Optional[str] = Header(default=None),
+) -> dict:
+    """Header-only auth for the read-only dashboard-viewer port.
+
+    Deliberately separate from operator auth: validates ONLY against
+    `valid_dashboard_tokens()` (DASHBOARD_TOKEN), never `valid_auth_tokens()`
+    (AUTH_TOKEN) — a valid operator token must be rejected here, and a valid
+    viewer token must be rejected by the operator app. Like
+    `get_current_user_strict`, this rejects the `?token=` query param (the
+    viewer has no SSE/download need, and query tokens leak into logs) and
+    refuses entirely (401) when DASHBOARD_TOKEN is unconfigured — a viewer
+    port must never be served wide-open.
+    """
+    valid = valid_dashboard_tokens()
+    provided: Optional[str] = None
+    if authorization and authorization.lower().startswith("bearer "):
+        provided = authorization.split(None, 1)[1].strip()
+    if not valid or not provided or provided not in valid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing or invalid dashboard token",
+            headers={"WWW-Authenticate": 'Bearer realm="dashboard"'},
+        )
+    return {"user_id": "viewer", "auth": "token"}

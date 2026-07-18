@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     # sessionStorage and attaches it to every API call.
     auth_token: str = "123"
 
+    # Dashboard viewer auth: a SEPARATE comma-separated token set for the
+    # read-only dashboard viewer port (a second FastAPI process). Deliberately
+    # distinct from auth_token/AUTH_TOKEN — an operator token must never grant
+    # viewer access and vice versa. Empty disables the viewer entirely (see
+    # get_viewer_user in app/auth.py, which refuses rather than opening wide).
+    dashboard_token: str = ""
+
     # ─── Queue / worker ───────────────────────────────────────────────────
     # 0 = no in-process worker. >0 = embedded worker runs N concurrent jobs
     # within the API process. For multi-process deployments, set to 0 in the
@@ -276,3 +283,9 @@ settings = Settings()
 def valid_auth_tokens() -> set[str]:
     """Parsed valid token set. Empty means auth is disabled."""
     return {t.strip() for t in settings.auth_token.split(",") if t.strip()}
+
+
+def valid_dashboard_tokens() -> set[str]:
+    """Parsed valid dashboard-viewer token set. Empty means the viewer is
+    unconfigured (get_viewer_user refuses rather than opening wide)."""
+    return {t.strip() for t in settings.dashboard_token.split(",") if t.strip()}
