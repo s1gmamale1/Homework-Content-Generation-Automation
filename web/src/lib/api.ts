@@ -11,6 +11,7 @@ import type {
   BatchResumeResponse,
   BatchSummary,
   Book,
+  CoverageResponse,
   Job,
   LaunchDefaults,
   NotionGrade,
@@ -116,6 +117,13 @@ export const api = {
   async listBooks(): Promise<Book[]> {
     const res = await authFetch("/api/v1/books");
     return unwrap<Book[]>(res);
+  },
+
+  async getCoverage(outputLanguage: OutputLanguage): Promise<CoverageResponse> {
+    const res = await authFetch(
+      `/api/v1/dashboard/coverage?output_language=${encodeURIComponent(outputLanguage)}`,
+    );
+    return unwrap<CoverageResponse>(res);
   },
 
   async uploadBook(file: File, subject: Subject, grade?: string, sourceLanguage?: OutputLanguage): Promise<Book> {
