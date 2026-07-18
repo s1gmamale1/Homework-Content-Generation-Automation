@@ -1,4 +1,4 @@
-import { Activity, Gauge, Library, Rocket, Settings } from "lucide-react";
+import { Activity, Gauge, Library, LayoutDashboard, Rocket, Settings } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { NavLink, useLocation, useOutlet } from "react-router-dom";
 import { Nameplate } from "./nameplate";
@@ -16,7 +16,8 @@ export function Layout() {
     pathname === "/" ||
     pathname.startsWith("/usage") ||
     pathname.startsWith("/library") ||
-    pathname.startsWith("/monitor");
+    pathname.startsWith("/monitor") ||
+    pathname.startsWith("/dashboard");
 
   return (
     <div className="flex min-h-screen flex-col bg-(--color-canvas)">
@@ -38,6 +39,9 @@ export function Layout() {
               </NavItem>
               <NavItem to="/monitor" icon={<Activity className="size-4" />}>
                 Monitor
+              </NavItem>
+              <NavItem to="/dashboard" icon={<LayoutDashboard className="size-4" />}>
+                Dashboard
               </NavItem>
               <NavItem to="/library" icon={<Library className="size-4" />}>
                 Library
