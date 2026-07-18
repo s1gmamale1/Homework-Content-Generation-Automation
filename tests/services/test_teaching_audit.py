@@ -619,7 +619,7 @@ def test_result_to_dict_retains_evidence_identity_and_roundtrips():
     json.dumps(d)  # must be JSON-serializable
 
 
-# ---------- page-offset guard (teaching-audit-page-offset-1, worklog 0150) ----------
+# ---------- page-offset guard (teaching-audit-page-offset-1, worklog 0152) ----------
 
 def test_exam_prompt_anchors_on_title_with_zero_objectives_escape():
     # The slice window may be offset (printed vs physical page numbers, specimen
