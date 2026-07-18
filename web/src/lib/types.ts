@@ -590,3 +590,28 @@ export interface SaKeyAssignment {
   label: string | null;
   scrub: boolean;
 }
+
+/** One book's generation coverage, from GET /api/v1/dashboard/coverage. */
+export interface CoverageEntry {
+  grade: string | null;
+  subject: string;
+  book_id: string;
+  book_status: BookStatus;
+  source_language: string;
+  original_filename: string;
+  toc_validation: "verified" | "mismatch" | "skipped" | null;
+  /** launchable lessons (TOC rows classified "lesson"), NOT raw TOC row count */
+  lessons_total: number;
+  done: number;
+  running: number;
+  pending: number;
+  failed: number;
+  cancelled: number;
+  batch_id: string | null;
+  paused: boolean;
+}
+
+export interface CoverageResponse {
+  output_language: OutputLanguage;
+  entries: CoverageEntry[];
+}

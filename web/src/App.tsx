@@ -5,6 +5,7 @@ import { Toaster } from "sonner";
 import { Layout } from "@/components/layout";
 import { ProtectedRoute } from "@/components/protected-route";
 import { BookPage } from "@/routes/book";
+import { DashboardPage } from "@/routes/dashboard";
 import { FleetPage } from "@/routes/fleet";
 import { MonitorPage } from "@/routes/monitor";
 import { JobPage } from "@/routes/job";
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="/library" element={<LibraryPage />} />
             <Route path="/usage" element={<UsagePage />} />
             <Route path="/monitor" element={<MonitorPage />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/book/:id" element={<BookPage />} />
             <Route path="/book/:bookId/section/:sectionId" element={<SectionPage />} />
             <Route path="/job/:id" element={<JobPage />} />

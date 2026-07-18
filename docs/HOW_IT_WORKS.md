@@ -487,6 +487,30 @@ more charitably than a real 8th-grader, so it reliably catches structural learna
 classroom data remains the only ground truth. Engagement/motivation is deliberately out of
 scope.
 
+
+### Subject dashboard (worklog 0149, read-only)
+`/dashboard` answers a different question from `/monitor`: not "how are my batches doing?" but
+"**how is each grade's subject coverage going?**" — for a non-technical reader. It is a separate
+page; Monitor is untouched. Pick a grade and each subject renders as a row with a progress bar,
+a plain-English status (`Ready to start`, `In progress`, `Needs attention`, `Paused`,
+`Started, not running`, `Finished`, `No textbook yet`, …), and a stuck-lesson note; subjects with
+no textbook collapse into a `No textbook yet (N)` disclosure. Language tabs fork the view (batches
+are per `output_language`, so mixing them would misreport). It is **read-only** — clicking a
+subject opens its book page; launching and resuming stay in the launcher.
+
+Two things make the numbers trustworthy. First, the denominator is **lesson-class TOC rows**, not
+`toc_total` — the latter counts headers, tests, revision and answer-key rows, so it would tell a
+reader "12 of 40" for a book with 28 real lessons. Second, the job tally is scoped to **those same
+rows**: legacy (pre-#89, unfiltered) launches left real `done` jobs on test/revision rows, and
+counting them against a lesson-only denominator would let non-lesson work mask a failed lesson as
+"Finished". Both come from `GET /api/v1/dashboard/coverage` (four set-based queries + one pure
+`classify_entries` pass per book — deliberately not built on `/jobs/batches`, which only sees
+launched books and is 3N+1).
+
+Known limit: the subject registry has no per-grade curriculum map, so every grade treats all 26
+subjects as potential gaps (Geometry reads as "missing" in Grade 1). The gap list is honest but not
+curriculum-accurate — tracked as `per-grade-curriculum-map-1`.
+
 ---
 
 ## 7. Subjects, flows, and phases
