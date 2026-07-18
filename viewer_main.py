@@ -111,17 +111,9 @@ if WEB_DIST.is_dir():
     async def spa_fallback(full_path: str, request: Request) -> Response:
         # Reserved prefixes are handled by their own routes; everything else
         # serves the SPA shell so React Router can resolve the path.
-        if full_path.startswith(("api/", "health", "docs", "openapi.json", "assets/")):
+        if full_path.startswith(("api/", "health", "docs", "redoc", "openapi.json", "assets/")):
             return Response(status_code=404)
         index_path = WEB_DIST / "index.html"
         if not index_path.is_file():
             return Response(status_code=404)
         return FileResponse(index_path)
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    from app.config import settings
-
-    uvicorn.run(app, host=settings.host, port=8001)
