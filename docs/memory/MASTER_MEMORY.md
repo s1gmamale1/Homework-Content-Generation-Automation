@@ -1931,6 +1931,14 @@ Gate-hardening: `PUT /settings/launch-defaults` rejects null provider/model with
 
 **Verified:** module suite **32 passed**; full backend suite green; CLI `--help` api-only (no `--transport`). Live paired smoke PASS at $0.1980 (re-verified after the gate-4 fixes — control learned 0, all control coverage absent, evidence block populated). Plan: `docs/superpowers/plans/shipped/2026-07-17-teaching-equivalence-audit.md`.
 
+## 0151 — 2026-07-18 — Nggaev-v2 (direct) — Dashboard: language tabs are now true per-language views
+
+**What:** User rejected the 0150 semantics ("what's the point of language toggles if I don't see only the selected language's subjects?") — the tabs scoped homework OUTPUT language but still listed every book, so the Русский tab was a wall of `[UZ] 0 of N Ready to start` rows. New rule (pure `visibleForLang`, TDD RED-first): a book renders on a tab only if it has something IN that language — its textbook IS that language, OR homework in that language exists/is in flight (entry counts are already tab-scoped by the endpoint). Everything else falls into the collapsed gap bucket, reworded per-language ("Nothing in Russian yet (N)" — a uz textbook may exist, so "No textbook yet" would lie); grade-card header + summary tile + empty-state wording made language-aware too. Result on live data: ru tab 57 rows → 5 (4 ru textbooks + the uz G9 algebra with 1 ru packet, chip `[UZ]` explaining the source).
+
+**Files:** `web/src/lib/subject-coverage.ts`+`.test.ts` (visibleForLang + 6 assertions), `web/src/routes/dashboard.tsx` (filter before grouping), `web/src/components/dashboard/grade-card.tsx`, `coverage-summary.tsx`.
+
+**Verified:** npm test 12/12, tsc clean, build clean; ru-tab preview against the live endpoint = exactly the 5 expected rows. FE-only, no migration; dist rebuilt on the serving host (this Mac = 192.168.1.16 — NOTE: the old memory pinning it at .2 is stale DHCP).
+
 ## 0150 — 2026-07-18 — Nggaev-v2 (direct) — Dashboard: textbook-source chip + tab-matched edition sort
 
 **What:** Live user report: clicking "RU algebra G9" on the Русский tab landed on the uz textbook — read as a language redirect. Traced end-to-end: routing was CORRECT (each bar links its own book_id; all 57 served entries verified against independently recomputed truth — fresh SQL + classifier, zero mismatches incl. batch/paused fields). Root cause is display semantics: the language tabs scope homework OUTPUT language, not textbook language — G9 algebra has only a uz textbook with 1 done ru job, so the Русский tab legitimately shows it, but nothing said "UZ textbook"; and ru+uz edition twins (G5 history, G7/G8 algebra, G8 geometriya) rendered in ingest order with the uz line unannotated (the annotation only fired for non-uz sources — exactly backwards on the ru tab).

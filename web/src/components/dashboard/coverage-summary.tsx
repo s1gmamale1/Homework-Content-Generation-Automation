@@ -11,7 +11,9 @@ function Tile({ label, value, tone }: { label: string; value: number; tone: stri
   );
 }
 
-export function CoverageSummary({ grades }: { grades: GradeCoverage[] }) {
+const LANG_NAME: Record<string, string> = { uz: "Uzbek", en: "English", ru: "Russian" };
+
+export function CoverageSummary({ grades, lang }: { grades: GradeCoverage[]; lang: string }) {
   const totals = grades.reduce(
     (acc, g) => {
       const s = summarizeGrade(g);
@@ -29,7 +31,7 @@ export function CoverageSummary({ grades }: { grades: GradeCoverage[] }) {
       <Tile label="Finished" value={totals.finished} tone="text-emerald-300" />
       <Tile label="In progress" value={totals.inProgress} tone="text-sky-300" />
       <Tile label="Need attention" value={totals.attention} tone="text-amber-300" />
-      <Tile label="No textbook yet" value={totals.missing} tone="text-white/70" />
+      <Tile label={lang === "uz" ? "No textbook yet" : `Nothing in ${LANG_NAME[lang] ?? lang} yet`} value={totals.missing} tone="text-white/70" />
     </div>
   );
 }

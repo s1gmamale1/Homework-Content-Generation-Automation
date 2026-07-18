@@ -129,6 +129,23 @@ export interface GradeCoverage {
   subjects: SubjectCoverage[];
 }
 
+/** Should this book appear on the given language tab AT ALL?
+ *
+ *  A tab is a per-language view for a non-technical reader: it lists a book
+ *  only when the book has something IN that language — the textbook itself is
+ *  that language, OR homework in that language exists/is in flight (the
+ *  entry's job counts are already scoped to the tab's output language by the
+ *  endpoint, so any nonzero count is that-language activity). Books failing
+ *  both drop into the collapsed "Nothing in <lang> yet" bucket instead of
+ *  rendering as a wall of alien-language "Ready to start" rows — which is
+ *  what made the Русский tab read as mis-routed (user report, 2026-07-18). */
+export function visibleForLang(entry: CoverageEntry, lang: string): boolean {
+  if (entry.source_language === lang) return true;
+  return (
+    entry.done + entry.running + entry.pending + entry.failed + entry.cancelled > 0
+  );
+}
+
 /** Numeric grade ascending; the ungraded bucket always last. */
 export function groupByGrade(entries: CoverageEntry[]): GradeCoverage[] {
   const byGrade = new Map<string, Map<string, CoverageEntry[]>>();

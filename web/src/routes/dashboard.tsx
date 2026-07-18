@@ -5,7 +5,7 @@ import { CoverageSummary } from "@/components/dashboard/coverage-summary";
 import { GradeCard } from "@/components/dashboard/grade-card";
 import { api } from "@/lib/api";
 import { LANG_LABEL } from "@/lib/language";
-import { groupByGrade, type GradeCoverage } from "@/lib/subject-coverage";
+import { groupByGrade, visibleForLang, type GradeCoverage } from "@/lib/subject-coverage";
 import { SUBJECTS, type OutputLanguage } from "@/lib/types";
 import { FRAME_OFF, FRAME_ON, PRESSABLE } from "@/lib/ui";
 import { cn } from "@/lib/utils";
@@ -40,8 +40,14 @@ export function DashboardPage() {
   });
 
   const grades = useMemo(
-    () => withFullCurriculum(groupByGrade(q.data?.entries ?? [])),
-    [q.data],
+    // Per-tab visibility: a book renders on this tab only if it has something
+    // IN this language (its own textbook, or homework in this language);
+    // everything else falls into the "Nothing in <lang> yet" bucket.
+    () =>
+      withFullCurriculum(
+        groupByGrade((q.data?.entries ?? []).filter((e) => visibleForLang(e, lang))),
+      ),
+    [q.data, lang],
   );
   const selected = grades.find((g) => g.grade === grade) ?? grades[0];
 
@@ -79,7 +85,7 @@ export function DashboardPage() {
           <p className="text-amber-200">Could not load the dashboard. Retrying…</p>
         ) : (
           <>
-            <CoverageSummary grades={grades} />
+            <CoverageSummary grades={grades} lang={lang} />
 
             <div className="flex flex-wrap items-center gap-2">
               {grades.map((g) => (

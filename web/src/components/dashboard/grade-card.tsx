@@ -18,7 +18,13 @@ function worstRank(item: GradeCoverage["subjects"][number]): number {
   return idx === -1 ? STATE_ORDER.length : idx;
 }
 
+const LANG_NAME: Record<string, string> = { uz: "Uzbek", en: "English", ru: "Russian" };
+
 export function GradeCard({ grade, lang }: { grade: GradeCoverage; lang: string }) {
+  // On non-uz tabs the hidden rows aren't "missing a textbook" — they have no
+  // materials IN THIS LANGUAGE (a uz textbook may well exist). Word it so.
+  const gapLabel =
+    lang === "uz" ? "No textbook yet" : `Nothing in ${LANG_NAME[lang] ?? lang} yet`;
   const [showGaps, setShowGaps] = useState(false);
   const summary = summarizeGrade(grade);
   const present = grade.subjects
@@ -36,7 +42,7 @@ export function GradeCard({ grade, lang }: { grade: GradeCoverage; lang: string 
           {grade.grade === null ? "Ungraded" : `Grade ${grade.grade}`}
         </h2>
         <p className="mt-0.5 text-sm text-white/50">
-          {summary.withTextbook} subject{summary.withTextbook === 1 ? "" : "s"} with a textbook
+          {summary.withTextbook} subject{summary.withTextbook === 1 ? "" : "s"}{lang === "uz" ? " with a textbook" : ` with ${LANG_NAME[lang] ?? lang} materials`}
           {summary.finished > 0 && ` · ${summary.finished} finished`}
           {summary.inProgress > 0 && ` · ${summary.inProgress} in progress`}
           {summary.attention > 0 && ` · ${summary.attention} need attention`}
@@ -46,7 +52,9 @@ export function GradeCard({ grade, lang }: { grade: GradeCoverage; lang: string 
       <div className="px-1 py-1">
         {present.length === 0 ? (
           <p className="px-4 py-6 text-sm text-white/40">
-            No textbooks for this grade yet.
+            {lang === "uz"
+              ? "No textbooks for this grade yet."
+              : `Nothing in ${LANG_NAME[lang] ?? lang} for this grade yet.`}
           </p>
         ) : (
           present.map((s) => <SubjectRow key={s.subject} item={s} lang={lang} />)
@@ -61,7 +69,7 @@ export function GradeCard({ grade, lang }: { grade: GradeCoverage; lang: string 
             aria-expanded={showGaps}
             className="flex w-full items-center justify-between px-4 py-2.5 text-sm text-white/50 transition-colors hover:text-white/75"
           >
-            <span>No textbook yet ({missing.length})</span>
+            <span>{gapLabel} ({missing.length})</span>
             <ChevronDown className={cn("size-4 transition-transform", showGaps && "rotate-180")} />
           </button>
           {showGaps && (

@@ -4,6 +4,7 @@ import {
   groupByGrade,
   progressOf,
   sortBooksForLang,
+  visibleForLang,
   stuckCount,
   summarizeGrade,
   STATE_LABEL,
@@ -125,6 +126,26 @@ assert.strictEqual(sum.missing, 1);
   const input = [ru, uz];
   sortBooksForLang(input, "uz");
   assert.deepStrictEqual(input.map((b) => b.book_id), ["r", "u"], "input not mutated");
+}
+
+// --- per-tab visibility: a book shows on a language tab only if it has
+// something IN that language — its textbook is that language, or homework in
+// that language exists (the entry's counts are already scoped to the tab's
+// output language by the endpoint). Everything else belongs in the collapsed
+// "Nothing in <lang> yet" bucket, not as a wall of alien-language rows.
+{
+  const uzIdle = e({ book_id: "u0", source_language: "uz" });                 // uz book, no ru jobs
+  const uzWithRuWork = e({ book_id: "u1", source_language: "uz", done: 1 });  // uz book, ru homework exists
+  const ruIdle = e({ book_id: "r0", source_language: "ru" });                 // ru book, no jobs yet
+  // viewed on the ru tab (counts above are ru-scoped):
+  assert.strictEqual(visibleForLang(uzIdle, "ru"), false, "uz book with no ru work hides on ru tab");
+  assert.strictEqual(visibleForLang(uzWithRuWork, "ru"), true, "uz book WITH ru homework stays visible");
+  assert.strictEqual(visibleForLang(ruIdle, "ru"), true, "ru textbook always visible on ru tab");
+  // matching source always visible regardless of activity
+  assert.strictEqual(visibleForLang(uzIdle, "uz"), true, "uz book on uz tab: visible");
+  // any in-flight/failed state counts as activity, not just done
+  assert.strictEqual(visibleForLang(e({ source_language: "uz", pending: 2 }), "ru"), true);
+  assert.strictEqual(visibleForLang(e({ source_language: "uz", failed: 1 }), "ru"), true);
 }
 
 console.log("subject-coverage: ok");
