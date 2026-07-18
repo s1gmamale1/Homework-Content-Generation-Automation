@@ -115,6 +115,27 @@ _QUESTIONS_PER_OBJECTIVE = 2
 _MIN_OBJECTIVES = 3  # the examiner prompt declares "3 to 6" objectives; enforced fail-loud
 _MAX_OBJECTIVES = 6
 
+# Extra pages read on each side of the TOC's recorded range.
+#
+# `toc_entries.page_start/page_end` hold the book's PRINTED page numbers, while
+# `read_page_range_text` slices PHYSICAL PDF pages. Front matter makes these
+# disagree on some books, so a bare slice can land on a NEIGHBOURING lesson and
+# the audit then issues a confident verdict about the wrong lesson
+# (teaching-audit-page-offset-1; specimen book a92e62ae, a G9 history text whose
+# printed numbers run ahead of its physical pages).
+#
+# Deterministic repair was measured and rejected: on that specimen only 19 of 35
+# section titles are findable in extracted page text at all (headings are styled,
+# split across lines, or image-only), so a title-presence check would falsely cry
+# "offset" on ~46% of correct slices; and the implied offsets scatter
+# (-3x7, -2x5, -1x1, +1x5, +2x1 — modal -3 at just 37% agreement), so a single
+# per-book correction would mis-slice too. Instead the window is widened here and
+# the EXAMINER is anchored to the lesson title (see `build_exam_prompt`), because a
+# model reading the page recognizes a heading that string matching cannot. If the
+# titled lesson is absent from the window the examiner returns zero objectives and
+# `_validate_exam` fails loud — correct-or-loud, never confidently wrong.
+_PAGE_WINDOW_MARGIN = 4  # covers the observed -3..+2 spread with slack
+
 Outcome = Literal["already_known", "learned", "not_taught", "not_learnable"]
 
 
@@ -164,7 +185,12 @@ def _validate_exam(exam: ExamSpec) -> None:
     inside validate_protocol."""
     obj_ids = [o.id for o in exam.objectives]
     if not obj_ids:
-        raise TeachingAuditError("exam has no objectives")
+        raise TeachingAuditError(
+            "exam has no objectives — the anchored examiner reports the titled "
+            "lesson is not within the sliced pages (page offset suspected: this "
+            "book's TOC likely uses PRINTED page numbers offset from the PDF's "
+            "physical pages, specimen a92e62ae). No verdict issued."
+        )
     if any(not i.strip() for i in obj_ids) or len(set(obj_ids)) != len(obj_ids):
         raise TeachingAuditError(f"exam objective ids not unique/non-empty: {obj_ids}")
     if any(not o.statement.strip() for o in exam.objectives):
@@ -362,18 +388,26 @@ def build_exam_prompt(
     *, textbook_text: str, lesson_title: str, subject: str, grade: Optional[str], language: str
 ) -> str:
     return (
-        f"You are a strict {subject} examiner. Below are the OFFICIAL TEXTBOOK PAGES for "
-        f"the grade-{grade or '?'} lesson '{lesson_title}' (language '{language}').\n\n"
-        f"1. Derive the lesson's LEARNING OBJECTIVES — the {_MIN_OBJECTIVES} to "
-        f"{_MAX_OBJECTIVES} distinct things these pages actually teach (concepts, "
+        f"You are a strict {subject} examiner. Below is a WINDOW of OFFICIAL TEXTBOOK "
+        f"PAGES around the grade-{grade or '?'} lesson '{lesson_title}' (language "
+        f"'{language}'). The window is deliberately wider than the lesson and may "
+        f"include neighbouring lessons — some books' printed page numbers are offset "
+        f"from the PDF's physical pages.\n\n"
+        f"1. FIRST, locate the lesson titled '{lesson_title}' within these pages "
+        f"(headings may vary slightly in punctuation/case). Derive everything below "
+        f"ONLY from the lesson with that title — never from a neighbouring lesson. "
+        f"If NO lesson with this title appears in these pages, return ZERO objectives "
+        f"and ZERO questions (empty lists) — do NOT substitute another lesson.\n"
+        f"2. Derive that lesson's LEARNING OBJECTIVES — the {_MIN_OBJECTIVES} to "
+        f"{_MAX_OBJECTIVES} distinct things it actually teaches (concepts, "
         f"definitions, methods, facts). Ignore exercises and decoration. Ids O1, O2, … "
         f"Every objective needs a non-empty statement.\n"
-        f"2. Write EXACTLY {_QUESTIONS_PER_OBJECTIVE} short-answer exam questions per "
+        f"3. Write EXACTLY {_QUESTIONS_PER_OBJECTIVE} short-answer exam questions per "
         f"objective, ids Q1, Q2, … (every id unique, every question non-empty). Prefer "
         f"LESSON-SPECIFIC facts, terms, methods and the textbook's own examples over "
         f"anything answerable by general reasoning — the exam must discriminate 'studied "
         f"this lesson' from 'is generally clever'.\n"
-        f"3. For each question give a concise non-empty answer_key (and grading_notes when "
+        f"4. For each question give a concise non-empty answer_key (and grading_notes when "
         f"partial credit is possible). Questions, keys and objectives in language "
         f"'{language}'.\n\n"
         f"--- TEXTBOOK PAGES ---\n{textbook_text}\n\n"
@@ -548,11 +582,13 @@ async def load_audit_inputs(job_id: UUID | str) -> AuditInputs:
     pdf_path = storage.book_pdf_path(book_id)
     if not pdf_path.exists():
         raise TeachingAuditError(f"source PDF missing: {pdf_path}")
-    textbook_text = agent.read_page_range_text(pdf_path, page_start, page_end)
+    textbook_text = agent.read_page_range_text(
+        pdf_path, page_start, page_end, margin=_PAGE_WINDOW_MARGIN
+    )
     if not textbook_text:
         raise TeachingAuditError(
-            f"pages {page_start}-{page_end} of {pdf_path.name} yielded no text "
-            f"(image-only scan?) — cannot derive a textbook exam"
+            f"pages {page_start}-{page_end} (±{_PAGE_WINDOW_MARGIN}) of {pdf_path.name} "
+            f"yielded no text (image-only scan?) — cannot derive a textbook exam"
         )
 
     return AuditInputs(

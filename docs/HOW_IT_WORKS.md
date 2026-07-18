@@ -484,7 +484,14 @@ JSON report keeps the full evidence chain so a human can audit a false-positive 
 **Honest limitation:** it measures teaching *under simulation* — the simulated student reads
 more charitably than a real 8th-grader, so it reliably catches structural learnability failures
 (missing examples, broken sequencing, unexplained terms) but not register/readability; real
-classroom data remains the only ground truth. Engagement/motivation is deliberately out of
+classroom data remains the only ground truth.
+
+One trap worth knowing (fixed in worklog 0152): the TOC stores a lesson's **printed** page
+numbers, but the PDF is sliced by **physical** page. On books where those disagree the audit used to
+examine the neighbouring lesson and report a confident wrong verdict. It now reads the range with a
+±4-page margin and anchors the examiner to the lesson title — deriving only from that lesson and
+returning zero objectives (a loud failure naming the suspected offset) if it isn't in the window.
+Generation never had this problem: its extract reads whole-book text and finds lessons by title. Engagement/motivation is deliberately out of
 scope.
 
 
