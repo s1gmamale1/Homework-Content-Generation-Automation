@@ -122,3 +122,18 @@ async def test_coverage_200_with_viewer_token():
     body = r.json()
     assert body["output_language"] == "uz"
     assert "entries" in body
+
+
+async def test_query_token_rejected_at_asgi_level():
+    """Final-review minor 2: prove header-only-ness with a real request — a
+    valid viewer token passed ONLY as ?token= must 401 (before any DB touch),
+    not authenticate. Pins the property against a future refactor that adds a
+    Query parameter back to get_viewer_user."""
+    import app.config as config
+    from unittest.mock import patch
+
+    with patch.object(config.settings, "dashboard_token", "viewer-secret"):
+        transport = ASGITransport(app=viewer_main.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/api/v1/dashboard/coverage?token=viewer-secret")
+    assert r.status_code == 401

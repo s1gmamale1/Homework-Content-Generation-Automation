@@ -63,6 +63,7 @@ export function Layout() {
           </div>
 
           <div className="flex items-center gap-3">
+            {!IS_VIEWER && (
             <a
               href="/docs"
               target="_blank"
@@ -71,6 +72,7 @@ export function Layout() {
             >
               API
             </a>
+            )}
             <span className="hidden font-mono text-[0.66rem] font-medium uppercase tracking-[0.14em] text-(--color-ink-muted) sm:inline">
               v0
             </span>
