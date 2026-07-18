@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MotionConfig } from "motion/react";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster } from "sonner";
 import { Layout } from "@/components/layout";
 import { ProtectedRoute } from "@/components/protected-route";
@@ -16,6 +16,7 @@ import { SectionPage } from "@/routes/section";
 import { UploadPage } from "@/routes/upload";
 import { SettingsPage } from "@/routes/settings";
 import { UsagePage } from "@/routes/usage";
+import { IS_VIEWER } from "@/lib/viewer";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -40,19 +41,32 @@ export default function App() {
               </ProtectedRoute>
             }
           >
-            {/* Fleet is the default landing page. Upload is reachable only
-                via the Library → "Upload book" button, at an explicit path. */}
-            <Route index element={<FleetPage />} />
-            <Route path="/upload" element={<UploadPage />} />
-            <Route path="/library" element={<LibraryPage />} />
-            <Route path="/usage" element={<UsagePage />} />
-            <Route path="/monitor" element={<MonitorPage />} />
-            <Route path="/dashboard" element={<DashboardPage />} />
-            <Route path="/book/:id" element={<BookPage />} />
-            <Route path="/book/:bookId/section/:sectionId" element={<SectionPage />} />
-            <Route path="/job/:id" element={<JobPage />} />
-            <Route path="/preview/:id" element={<PreviewPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
+            {IS_VIEWER ? (
+              <>
+                {/* Dashboard-only viewer build: no fleet/library/monitor/settings
+                    routes exist in this bundle, so index and unknown paths both
+                    redirect to the one page that does. */}
+                <Route index element={<Navigate to="/dashboard" replace />} />
+                <Route path="/dashboard" element={<DashboardPage />} />
+                <Route path="*" element={<Navigate to="/dashboard" replace />} />
+              </>
+            ) : (
+              <>
+                {/* Fleet is the default landing page. Upload is reachable only
+                    via the Library → "Upload book" button, at an explicit path. */}
+                <Route index element={<FleetPage />} />
+                <Route path="/upload" element={<UploadPage />} />
+                <Route path="/library" element={<LibraryPage />} />
+                <Route path="/usage" element={<UsagePage />} />
+                <Route path="/monitor" element={<MonitorPage />} />
+                <Route path="/dashboard" element={<DashboardPage />} />
+                <Route path="/book/:id" element={<BookPage />} />
+                <Route path="/book/:bookId/section/:sectionId" element={<SectionPage />} />
+                <Route path="/job/:id" element={<JobPage />} />
+                <Route path="/preview/:id" element={<PreviewPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+              </>
+            )}
           </Route>
           </Routes>
         </BrowserRouter>

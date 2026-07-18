@@ -11,6 +11,7 @@ import {
 } from "@/lib/subject-coverage";
 import { subjectLabel } from "@/lib/subjects";
 import { cn } from "@/lib/utils";
+import { IS_VIEWER } from "@/lib/viewer";
 
 const TONE_CHIP: Record<string, string> = {
   good: "bg-emerald-400/12 text-emerald-200 border-emerald-300/25",
@@ -31,12 +32,9 @@ function BookLine({ entry }: { entry: CoverageEntry }) {
   const tone = STATE_TONE[state];
   const { done, total, pct } = progressOf(entry);
   const stuck = stuckCount(entry);
-  return (
-    <Link
-      to={`/book/${entry.book_id}`}
-      title={entry.original_filename}
-      className="block rounded-xl px-3 py-2.5 transition-colors hover:bg-white/[0.04]"
-    >
+  const className = "block rounded-xl px-3 py-2.5 transition-colors hover:bg-white/[0.04]";
+  const content = (
+    <>
       <div className="flex items-center gap-3">
         {/* Textbook SOURCE language, always shown: the tabs scope homework
             OUTPUT language, so without this chip a uz textbook generating ru
@@ -69,6 +67,21 @@ function BookLine({ entry }: { entry: CoverageEntry }) {
           {stuck === 1 ? "1 lesson needs a look" : `${stuck} lessons need a look`}
         </p>
       )}
+    </>
+  );
+
+  // The viewer bundle has no /book route — render the same markup as a plain
+  // div instead of a dead link.
+  if (IS_VIEWER) {
+    return (
+      <div title={entry.original_filename} className={className}>
+        {content}
+      </div>
+    );
+  }
+  return (
+    <Link to={`/book/${entry.book_id}`} title={entry.original_filename} className={className}>
+      {content}
     </Link>
   );
 }
