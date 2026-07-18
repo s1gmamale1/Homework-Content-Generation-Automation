@@ -32,7 +32,7 @@
 ## File structure
 
 - Create `app/services/subject_coverage.py` — pure builder: rows in → coverage entries out. No DB, no I/O.
-- Create `app/repositories/subject_coverage.py` — the three set-based queries.
+- Create `app/repositories/subject_coverage.py` — the three set-based queries (books, TOC rows, per-TOC-entry job status).
 - Create `app/api/v1/dashboard.py` — the GET route.
 - Create `app/schemas/dashboard.py` — response models.
 - Create `tests/services/test_subject_coverage.py`, `tests/api/test_dashboard_coverage.py`.
@@ -77,19 +77,20 @@ class _Book:
 
 @dataclass
 class _Toc:
+    id: str
     section_title: str
     page_start: Optional[int] = None
     page_end: Optional[int] = None
 
 
-def _lesson_rows(n):
+def _lesson_rows(n, prefix="t"):
     # plain titles with no keyword hits and no page containment -> classify as "lesson"
-    return [_Toc(f"Mavzu {i}", page_start=i, page_end=i) for i in range(1, n + 1)]
+    return [_Toc(f"{prefix}{i}", f"Mavzu {i}", page_start=i, page_end=i) for i in range(1, n + 1)]
 
 
 def test_lessons_total_counts_only_lesson_class_rows():
     book = _Book("b1", "biology", "9", "toc_ready", "uz", "bio9.pdf")
-    toc = _lesson_rows(3) + [_Toc("Nazorat ishi", 9, 9), _Toc("Takrorlash", 10, 10)]
+    toc = _lesson_rows(3) + [_Toc("x1", "Nazorat ishi", 9, 9), _Toc("x2", "Takrorlash", 10, 10)]
     out = sc.build_coverage([book], {"b1": toc}, {}, {})
     assert len(out) == 1
     # the test/revision rows are excluded by classify_entries
@@ -99,14 +100,44 @@ def test_lessons_total_counts_only_lesson_class_rows():
 
 def test_job_counts_are_mapped_per_status():
     book = _Book("b1", "biology", "9", "toc_ready", "uz", "bio9.pdf")
-    counts = {"b1": {"done": 5, "failed": 2, "running": 1, "pending": 3, "cancelled": 1}}
-    out = sc.build_coverage([book], {"b1": _lesson_rows(12)}, counts, {})
+    toc = _lesson_rows(12)
+    # latest status per TOC entry: 5 done, 2 failed, 1 running, 3 pending, 1 cancelled
+    statuses = (["done"] * 5 + ["failed"] * 2 + ["running"] + ["pending"] * 3 + ["cancelled"])
+    jobs = {"b1": {row.id: st for row, st in zip(toc, statuses)}}
+    out = sc.build_coverage([book], {"b1": toc}, jobs, {})
     e = out[0]
     assert (e.done, e.failed, e.running, e.pending, e.cancelled) == (5, 2, 1, 3, 1)
     assert e.lessons_total == 12
 
 
-def test_missing_toc_and_missing_counts_default_to_zero():
+def test_jobs_on_non_lesson_rows_do_not_count_toward_done():
+    # gate-1 finding: pre-#89 launches were UNFILTERED, so legacy books carry real
+    # `done` jobs on test/revision rows. If those counted, a book whose only failed
+    # lesson is masked by done non-lesson jobs would falsely report "Finished".
+    book = _Book("b1", "biology", "9", "toc_ready", "uz", "bio9.pdf")
+    lessons = _lesson_rows(3)                       # t1, t2, t3 -> lesson
+    extra = [_Toc("x1", "Nazorat ishi", 9, 9), _Toc("x2", "Takrorlash", 10, 10)]
+    jobs = {"b1": {
+        "t1": "done", "t2": "failed", "t3": "done",  # the real lesson picture
+        "x1": "done", "x2": "done",                   # legacy non-lesson jobs
+    }}
+    e = sc.build_coverage([book], {"b1": lessons + extra}, jobs, {})[0]
+    assert e.lessons_total == 3
+    assert e.done == 2          # NOT 4 — the test/revision jobs are excluded
+    assert e.failed == 1
+    # done < lessons_total, so the failed lesson can never be masked as "Finished"
+    assert e.done < e.lessons_total
+
+
+def test_cancelling_is_folded_into_running():
+    book = _Book("b1", "biology", "9", "toc_ready", "uz", "bio9.pdf")
+    toc = _lesson_rows(2)
+    jobs = {"b1": {"t1": "cancelling", "t2": "running"}}
+    e = sc.build_coverage([book], {"b1": toc}, jobs, {})[0]
+    assert e.running == 2
+
+
+def test_missing_toc_and_missing_jobs_default_to_zero():
     book = _Book("b1", "musiqa", "5", "toc_extracting", "uz", "mus5.pdf")
     out = sc.build_coverage([book], {}, {}, {})
     e = out[0]
@@ -170,6 +201,12 @@ answer-key rows, so a raw count would overstate the work ("12 of 40" against
 a book with only 28 real lessons). There is no SQL path for this — the
 classifier is pure Python and must run per book.
 
+The job tally is scoped to the SAME lesson rows, which is why this module
+receives per-TOC-entry job statuses rather than pre-summed counts: legacy
+(pre-#89, unfiltered) launches left real `done` jobs on test/revision rows,
+and counting those against a lesson-only denominator would mask a failed
+lesson as "Finished".
+
 One entry per book (never per grade+subject): a grade+subject can legitimately
 hold two textbooks (e.g. a uz and a ru edition), and silently picking one would
 hide the other. The frontend groups these under a single subject row.
@@ -205,32 +242,59 @@ class CoverageEntry:
 _COUNTED_STATUSES = ("done", "running", "pending", "failed", "cancelled")
 
 
-def _lesson_count(toc_rows: list) -> int:
-    """Launchable-lesson count for one book. `cancelling` is folded into
-    `running` by the caller's status map; here we only classify TOC rows."""
+def _lesson_tally(
+    toc_rows: list, job_status: dict[str, str]
+) -> tuple[int, dict[str, int]]:
+    """(launchable-lesson count, per-status tally) for ONE book.
+
+    Both numbers are scoped to the SAME set of TOC rows — those the classifier
+    calls `lesson`. This scoping is load-bearing, not tidiness: pre-#89 batch
+    launches were unfiltered, so legacy books carry real `done` jobs on
+    test/revision/header rows. Tallying those against a lesson-only denominator
+    would let non-lesson work mask a failed lesson and report "Finished"
+    (a book with 3 lessons, one failed, plus 2 done test-row jobs → done=3 of 3).
+    With one shared scope, `done == lessons_total` means every LESSON is done —
+    correct by construction.
+
+    `cancelling` folds into `running`: it is an in-flight state a non-technical
+    viewer should not have to reason about.
+    """
+    tally = {s: 0 for s in _COUNTED_STATUSES}
     if not toc_rows:
-        return 0
-    return sum(1 for cls in classify_entries(toc_rows) if cls == LESSON)
+        return 0, tally
+    classes = classify_entries(toc_rows)
+    lesson_ids = {str(row.id) for row, cls in zip(toc_rows, classes) if cls == LESSON}
+    for toc_id, status in job_status.items():
+        if toc_id not in lesson_ids:
+            continue  # legacy job on a test/revision/header row — not lesson work
+        key = "running" if status == "cancelling" else status
+        if key in tally:
+            tally[key] += 1
+    return len(lesson_ids), tally
 
 
 def build_coverage(
     books: list,
     toc_by_book: dict[str, list],
-    job_counts: dict[str, dict[str, int]],
+    job_status_by_book: dict[str, dict[str, str]],
     batch_by_book: dict[str, tuple[str, bool]],
 ) -> list[CoverageEntry]:
     """One `CoverageEntry` per book.
 
     `books` are row-likes with `.id/.subject/.grade/.status/.source_language/
-    .original_filename/.toc_validation`. `toc_by_book`/`job_counts`/
-    `batch_by_book` are keyed by the same string book id; a missing key means
+    .original_filename/.toc_validation`. `toc_by_book` maps book id → its TOC
+    rows (row-likes with `.id/.section_title/.page_start/.page_end`).
+    `job_status_by_book` maps book id → {toc_entry_id: latest job status}.
+    `batch_by_book` maps book id → (batch_id, is_paused). A missing key means
     zero/absent (a book with no TOC yet, or no jobs launched).
     """
     entries: list[CoverageEntry] = []
     for book in books:
         bid = str(book.id)
-        counts = job_counts.get(bid, {})
         batch = batch_by_book.get(bid)
+        lessons_total, tally = _lesson_tally(
+            toc_by_book.get(bid, []), job_status_by_book.get(bid, {})
+        )
         entries.append(
             CoverageEntry(
                 grade=book.grade,
@@ -240,8 +304,8 @@ def build_coverage(
                 source_language=book.source_language,
                 original_filename=book.original_filename,
                 toc_validation=getattr(book, "toc_validation", None),
-                lessons_total=_lesson_count(toc_by_book.get(bid, [])),
-                **{s: int(counts.get(s, 0)) for s in _COUNTED_STATUSES},
+                lessons_total=lessons_total,
+                **tally,
                 batch_id=batch[0] if batch else None,
                 paused=bool(batch[1]) if batch else False,
             )
@@ -305,10 +369,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-async def test_coverage_returns_entry_with_lesson_denominator_and_counts():
+async def test_coverage_lesson_scoped_denominator_and_counts(monkeypatch):
+    from app import config
     from app.db import SessionLocal
     from app.models import Book, HomeworkJob, TOCEntry
     from main import app
+
+    # House pattern (tests/api/test_sa_keys_assign_api.py:23): neutralize auth.
+    # Required in a worktree — the outer /Users/macmini5/Documents/.env sets
+    # AUTH_TOKEN, which defeats tests/conftest.py's os.environ.setdefault, so
+    # without this the auth-protected dashboard router 401s.
+    monkeypatch.setattr(config.settings, "auth_token", "")
 
     book_id = uuid.uuid4()
     async with SessionLocal() as s:
@@ -325,14 +396,22 @@ async def test_coverage_returns_entry_with_lesson_denominator_and_counts():
             s.add(t)
             await s.flush()
             toc_ids.append(t.id)
-        s.add(TOCEntry(book_id=book_id, section_title="Nazorat ishi",
-                       page_start=9, page_end=9, order_index=9))  # -> test class
-        s.add(HomeworkJob(book_id=book_id, toc_entry_id=toc_ids[0], subject="biology",
-                          status="done", provider="gemini", transport="api",
-                          output_language="uz"))
-        s.add(HomeworkJob(book_id=book_id, toc_entry_id=toc_ids[1], subject="biology",
-                          status="failed", provider="gemini", transport="api",
-                          output_language="uz"))
+        test_row = TOCEntry(book_id=book_id, section_title="Nazorat ishi",
+                            page_start=9, page_end=9, order_index=9)  # -> test class
+        s.add(test_row)
+        await s.flush()
+
+        def job(toc_entry_id, status):
+            return HomeworkJob(book_id=book_id, toc_entry_id=toc_entry_id,
+                               subject="biology", status=status, provider="gemini",
+                               transport="api", output_language="uz")
+
+        s.add(job(toc_ids[0], "done"))
+        s.add(job(toc_ids[1], "failed"))
+        # gate-1: a legacy unfiltered launch left a DONE job on the test row.
+        # It must not count — otherwise done would reach lessons_total and the
+        # failed lesson above would be masked as "Finished".
+        s.add(job(test_row.id, "done"))
         await s.commit()
 
     try:
@@ -347,8 +426,10 @@ async def test_coverage_returns_entry_with_lesson_denominator_and_counts():
         e = mine[0]
         assert e["grade"] == "9" and e["subject"] == "biology"
         assert e["lessons_total"] == 3          # the "Nazorat ishi" test row is excluded
-        assert e["done"] == 1 and e["failed"] == 1
+        assert e["done"] == 1                   # NOT 2 — the test-row job is excluded
+        assert e["failed"] == 1
         assert e["running"] == 0 and e["pending"] == 0
+        assert e["done"] < e["lessons_total"]   # the failed lesson cannot be masked
     finally:
         async with SessionLocal() as s:
             await s.execute(delete(HomeworkJob).where(HomeworkJob.book_id == book_id))
@@ -357,10 +438,13 @@ async def test_coverage_returns_entry_with_lesson_denominator_and_counts():
             await s.commit()
 
 
-async def test_coverage_language_filter_excludes_other_language_jobs():
+async def test_coverage_language_filter_excludes_other_language_jobs(monkeypatch):
+    from app import config
     from app.db import SessionLocal
     from app.models import Book, HomeworkJob, TOCEntry
     from main import app
+
+    monkeypatch.setattr(config.settings, "auth_token", "")  # see note above
 
     book_id = uuid.uuid4()
     async with SessionLocal() as s:
@@ -415,7 +499,7 @@ from __future__ import annotations
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Batch, Book, HomeworkJob, TOCEntry
@@ -447,13 +531,19 @@ async def toc_rows_by_book(
     return out
 
 
-async def job_counts_by_book(
+async def job_status_by_book(
     session: AsyncSession, output_language: str
-) -> dict[str, dict[str, int]]:
-    """Per-book status tally over the LATEST job per (book, toc_entry) for this
-    output language — the same "latest wins" scope `rollup_for_batch` uses, so a
-    retried lesson counts once. `cancelling` is folded into `running` (it is an
-    in-flight state a viewer shouldn't have to reason about)."""
+) -> dict[str, dict[str, str]]:
+    """`{book_id: {toc_entry_id: latest_status}}` for this output language.
+
+    Returns per-TOC-entry statuses rather than a pre-summed per-book tally: the
+    builder must scope the tally to LESSON-class rows, and it can only do that
+    if it can see which TOC entry each job belongs to (gate-1 finding — legacy
+    unfiltered launches left `done` jobs on test/revision rows).
+
+    "Latest job per (book, toc_entry)" is the same scope `rollup_for_batch`
+    uses, so a retried lesson counts once. Still ONE query.
+    """
     latest = (
         select(
             HomeworkJob.book_id.label("book_id"),
@@ -469,14 +559,10 @@ async def job_counts_by_book(
         .distinct(HomeworkJob.book_id, HomeworkJob.toc_entry_id)
         .subquery()
     )
-    stmt = select(latest.c.book_id, latest.c.status, func.count()).group_by(
-        latest.c.book_id, latest.c.status
-    )
-    out: dict[str, dict[str, int]] = {}
-    for book_id, status, n in (await session.execute(stmt)).all():
-        key = "running" if status == "cancelling" else status
-        bucket = out.setdefault(str(book_id), {})
-        bucket[key] = bucket.get(key, 0) + int(n)
+    stmt = select(latest.c.book_id, latest.c.toc_entry_id, latest.c.status)
+    out: dict[str, dict[str, str]] = {}
+    for book_id, toc_entry_id, status in (await session.execute(stmt)).all():
+        out.setdefault(str(book_id), {})[str(toc_entry_id)] = status
     return out
 
 
@@ -561,9 +647,9 @@ async def coverage(
 ) -> CoverageOut:
     books = await cov_repo.all_books(session)
     toc_by_book = await cov_repo.toc_rows_by_book(session, [b.id for b in books])
-    counts = await cov_repo.job_counts_by_book(session, output_language)
+    job_status = await cov_repo.job_status_by_book(session, output_language)
     batches = await cov_repo.batch_by_book(session, output_language)
-    entries = build_coverage(books, toc_by_book, counts, batches)
+    entries = build_coverage(books, toc_by_book, job_status, batches)
     return CoverageOut(
         output_language=output_language,
         entries=[entry_to_dict(e) for e in entries],
@@ -1336,26 +1422,32 @@ curl -s "http://localhost:8000/api/v1/dashboard/coverage?output_language=uz" \
   -H "Authorization: Bearer $AUTH_TOKEN" | python3 -m json.tool | head -40
 ```
 
-- [ ] **Step 2: Cross-check the denominator against a known book.** Pick one entry, then verify `lessons_total` equals that book's `lesson`-classified TOC rows and `done` equals its latest-job done count:
+- [ ] **Step 2: Cross-check the denominator AND the lesson-scoping against a known book.** Pick one entry, then verify `lessons_total` equals its `lesson`-classified TOC rows and that `done` counts only jobs on those rows. Prefer a **legacy book** (one launched before #89's lesson filter) — that is where non-lesson jobs actually exist and where the scoping bug would have shown:
 
 ```bash
 uv run python - <<'PY'
-import asyncio, sys
+import asyncio, uuid
 from app.db import SessionLocal
 from app.repositories import subject_coverage as cov
 from app.services.toc_classifier import classify_entries
 BOOK = "<book-id-from-step-1>"
 async def main():
     async with SessionLocal() as s:
-        toc = (await cov.toc_rows_by_book(s, [__import__("uuid").UUID(BOOK)]))[BOOK]
+        toc = (await cov.toc_rows_by_book(s, [uuid.UUID(BOOK)]))[BOOK]
         classes = classify_entries(toc)
-        print("toc rows:", len(toc), "lesson-class:", sum(1 for c in classes if c == "lesson"))
-        print("counts:", (await cov.job_counts_by_book(s, "uz")).get(BOOK))
+        lesson_ids = {str(r.id) for r, c in zip(toc, classes) if c == "lesson"}
+        status = (await cov.job_status_by_book(s, "uz")).get(BOOK, {})
+        on_lesson = {t: st for t, st in status.items() if t in lesson_ids}
+        off_lesson = {t: st for t, st in status.items() if t not in lesson_ids}
+        print("toc rows:", len(toc), "lesson-class:", len(lesson_ids))
+        print("done on lesson rows:", sum(1 for st in on_lesson.values() if st == "done"))
+        print("jobs on NON-lesson rows (must be excluded):", len(off_lesson),
+              "of which done:", sum(1 for st in off_lesson.values() if st == "done"))
 asyncio.run(main())
 PY
 ```
 
-The endpoint's `lessons_total`/`done` must match. **A mismatch means the aggregate is wrong — stop and fix before shipping.**
+The endpoint's `lessons_total` must equal `lesson-class`, and its `done` must equal **done on lesson rows** — NOT that plus the non-lesson dones. If the script reports non-lesson done jobs and the endpoint's `done` includes them, the scoping regressed. **A mismatch means the aggregate is wrong — stop and fix before shipping.**
 
 - [ ] **Step 3: Render check.** With the SPA built (`cd web && npm run build`) and served by the API, open `/dashboard`: confirm the grade tabs, that a known in-progress subject shows a partial bar with a sensible "N of M", that a subject with no textbook appears only in the collapsed gap list, and that clicking a subject opens its book page. Confirm `/monitor` is unchanged.
 
