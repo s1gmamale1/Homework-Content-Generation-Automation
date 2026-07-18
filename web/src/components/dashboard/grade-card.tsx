@@ -18,7 +18,7 @@ function worstRank(item: GradeCoverage["subjects"][number]): number {
   return idx === -1 ? STATE_ORDER.length : idx;
 }
 
-export function GradeCard({ grade }: { grade: GradeCoverage }) {
+export function GradeCard({ grade, lang }: { grade: GradeCoverage; lang: string }) {
   const [showGaps, setShowGaps] = useState(false);
   const summary = summarizeGrade(grade);
   const present = grade.subjects
@@ -49,7 +49,7 @@ export function GradeCard({ grade }: { grade: GradeCoverage }) {
             No textbooks for this grade yet.
           </p>
         ) : (
-          present.map((s) => <SubjectRow key={s.subject} item={s} />)
+          present.map((s) => <SubjectRow key={s.subject} item={s} lang={lang} />)
         )}
       </div>
 

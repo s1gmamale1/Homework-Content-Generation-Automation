@@ -98,7 +98,7 @@ export function DashboardPage() {
               ))}
             </div>
 
-            {selected && <GradeCard key={selected.grade ?? "ungraded"} grade={selected} />}
+            {selected && <GradeCard key={selected.grade ?? "ungraded"} grade={selected} lang={lang} />}
           </>
         )}
       </div>

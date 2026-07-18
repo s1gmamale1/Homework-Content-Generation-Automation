@@ -3,6 +3,7 @@ import {
   coverageState,
   groupByGrade,
   progressOf,
+  sortBooksForLang,
   stuckCount,
   summarizeGrade,
   STATE_LABEL,
@@ -88,5 +89,42 @@ assert.strictEqual(sum.finished, 1);
 assert.strictEqual(sum.inProgress, 1);
 assert.strictEqual(sum.attention, 1);
 assert.strictEqual(sum.missing, 1);
+
+// --- edition sort: the tab's matching source language floats first ---
+// A subject with a ru and a uz edition, viewed on the ru tab, must list the ru
+// edition first (and vice versa); order among non-matching books is preserved
+// (stable). Root case: G7 algebra ru+uz twins rendering in ingest order made
+// clicking the wrong near-identical bar feel like a language redirect.
+{
+  const uz = e({ book_id: "u", source_language: "uz" });
+  const ru = e({ book_id: "r", source_language: "ru" });
+  const en = e({ book_id: "n", source_language: "en" });
+  assert.deepStrictEqual(
+    sortBooksForLang([ru, uz], "uz").map((b) => b.book_id),
+    ["u", "r"],
+    "uz tab: uz edition first",
+  );
+  assert.deepStrictEqual(
+    sortBooksForLang([uz, ru], "ru").map((b) => b.book_id),
+    ["r", "u"],
+    "ru tab: ru edition first",
+  );
+  // no match for the tab -> original order untouched (stable)
+  assert.deepStrictEqual(
+    sortBooksForLang([ru, uz], "en").map((b) => b.book_id),
+    ["r", "u"],
+    "no matching edition: original order preserved",
+  );
+  // ties keep relative order
+  assert.deepStrictEqual(
+    sortBooksForLang([en, ru, uz], "uz").map((b) => b.book_id),
+    ["u", "n", "r"],
+    "single match floats, the rest keep order",
+  );
+  // does not mutate its input
+  const input = [ru, uz];
+  sortBooksForLang(input, "uz");
+  assert.deepStrictEqual(input.map((b) => b.book_id), ["r", "u"], "input not mutated");
+}
 
 console.log("subject-coverage: ok");

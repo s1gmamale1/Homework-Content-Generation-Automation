@@ -106,6 +106,24 @@ export interface SubjectCoverage {
   books: CoverageEntry[];
 }
 
+/** Books whose textbook source language matches the selected tab float first;
+ *  everything else keeps its original order (stable, input not mutated).
+ *
+ *  Why: the language tabs scope HOMEWORK output language, not textbook
+ *  language — a subject with ru+uz editions rendered its twins in ingest
+ *  order, so on the Русский tab the uz edition could sit on top and a click
+ *  on the wrong near-identical bar read as a language redirect (traced live
+ *  on G9 algebra / G7 algebra, 2026-07-18). */
+export function sortBooksForLang(
+  books: CoverageEntry[],
+  lang: string,
+): CoverageEntry[] {
+  return [...books].sort(
+    (a, b) =>
+      Number(b.source_language === lang) - Number(a.source_language === lang),
+  );
+}
+
 export interface GradeCoverage {
   grade: string | null; // null = ungraded bucket
   subjects: SubjectCoverage[];
