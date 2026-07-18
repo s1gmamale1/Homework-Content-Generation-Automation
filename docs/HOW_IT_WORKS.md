@@ -1108,3 +1108,8 @@ DATABASE_URL=postgresql+asyncpg://edu:edu@localhost:5433/edu_homework `
 | Set up a new worker PC | `docs/fleet/worker-pc-setup.md` |
 | See the project's terse rules | `CLAUDE.md` |
 | Read the running worklog/history | `docs/memory/MASTER_MEMORY.md` |
+
+
+### Dashboard viewer port (read-only, worklog 0153)
+
+`uv run uvicorn viewer_main:app --host 0.0.0.0 --port 8001` serves ONLY the coverage dashboard: a trimmed SPA build (`web/dist-viewer`, `npm run build:viewer`) and the single GET aggregate, gated by `DASHBOARD_TOKEN` (header-only; strictly disjoint from `AUTH_TOKEN` — either overlap or an empty token refuses startup). No worker, no sweeps, no mutating route exists in the process — hand the URL+token to a non-technical viewer; it is useless against the operator app. Rows are non-clickable in viewer mode (the viewer router has no /book pages).

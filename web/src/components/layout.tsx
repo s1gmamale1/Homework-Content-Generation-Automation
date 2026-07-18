@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { NavLink, useLocation, useOutlet } from "react-router-dom";
 import { Nameplate } from "./nameplate";
 import { cn } from "@/lib/utils";
+import { IS_VIEWER } from "@/lib/viewer";
 
 export function Layout() {
   const { pathname } = useLocation();
@@ -12,12 +13,16 @@ export function Layout() {
   // exiting copy keep the OLD page during its cross-fade — so each route
   // mounts exactly once and SSE/query effects don't double-subscribe.
   const outlet = useOutlet();
-  const wide =
-    pathname === "/" ||
-    pathname.startsWith("/usage") ||
-    pathname.startsWith("/library") ||
-    pathname.startsWith("/monitor") ||
-    pathname.startsWith("/dashboard");
+  // Viewer build has only /dashboard (and / redirecting to it), so the wide
+  // treatment collapses to that one check — the operator-only path literals
+  // below never need to exist in the viewer bundle.
+  const wide = IS_VIEWER
+    ? pathname === "/" || pathname.startsWith("/dashboard")
+    : pathname === "/" ||
+      pathname.startsWith("/usage") ||
+      pathname.startsWith("/library") ||
+      pathname.startsWith("/monitor") ||
+      pathname.startsWith("/dashboard");
 
   return (
     <div className="flex min-h-screen flex-col bg-(--color-canvas)">
@@ -33,29 +38,32 @@ export function Layout() {
               className="hidden h-5 w-px bg-(--color-border) sm:block"
             />
 
-            <nav aria-label="Primary" className="flex items-center gap-1">
-              <NavItem to="/" end icon={<Rocket className="size-4" />}>
-                Fleet
-              </NavItem>
-              <NavItem to="/monitor" icon={<Activity className="size-4" />}>
-                Monitor
-              </NavItem>
-              <NavItem to="/dashboard" icon={<LayoutDashboard className="size-4" />}>
-                Dashboard
-              </NavItem>
-              <NavItem to="/library" icon={<Library className="size-4" />}>
-                Library
-              </NavItem>
-              <NavItem to="/usage" icon={<Gauge className="size-4" />}>
-                Usage
-              </NavItem>
-              <NavItem to="/settings" icon={<Settings className="size-4" />}>
-                Settings
-              </NavItem>
-            </nav>
+            {IS_VIEWER ? null : (
+              <nav aria-label="Primary" className="flex items-center gap-1">
+                <NavItem to="/" end icon={<Rocket className="size-4" />}>
+                  Fleet
+                </NavItem>
+                <NavItem to="/monitor" icon={<Activity className="size-4" />}>
+                  Monitor
+                </NavItem>
+                <NavItem to="/dashboard" icon={<LayoutDashboard className="size-4" />}>
+                  Dashboard
+                </NavItem>
+                <NavItem to="/library" icon={<Library className="size-4" />}>
+                  Library
+                </NavItem>
+                <NavItem to="/usage" icon={<Gauge className="size-4" />}>
+                  Usage
+                </NavItem>
+                <NavItem to="/settings" icon={<Settings className="size-4" />}>
+                  Settings
+                </NavItem>
+              </nav>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
+            {!IS_VIEWER && (
             <a
               href="/docs"
               target="_blank"
@@ -64,6 +72,7 @@ export function Layout() {
             >
               API
             </a>
+            )}
             <span className="hidden font-mono text-[0.66rem] font-medium uppercase tracking-[0.14em] text-(--color-ink-muted) sm:inline">
               v0
             </span>

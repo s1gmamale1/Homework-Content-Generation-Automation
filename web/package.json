@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:viewer": "tsc -b && vite build --config vite.viewer.config.ts",
     "test": "node --import tsx --test src/lib/*.test.ts",
     "preview": "vite preview",
     "lint": "biome check .",

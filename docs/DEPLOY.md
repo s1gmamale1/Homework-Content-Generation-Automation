@@ -316,3 +316,8 @@ These aren't wired yet but the data is in the DB / logs — easy to add a `/metr
 **Gemini cache columns are dead/legacy (no-op).** The `books.gemini_cache_*` columns are leftovers from the removed Gemini *file-cache* SDK era — nothing reads or writes them, there is no server-side cache anymore. They're kept nullable only for backwards-compat. No pod-lifetime concern. (Note: this is only about the legacy cache — `transport=api` *does* use SDKs today, `google-genai` + `anthropic` via `app/services/api_transport.py`.)
 
 **Idempotency-Key in-memory cache** is per-process. With multi-pod API, the same Idempotency-Key sent to two pods will create two jobs (the natural-key + advisory lock still prevent same-section duplicates). For strict cross-pod idempotency, move `_IDEMPOTENCY_CACHE` from `app/api/v1/jobs.py` to a Redis or DB table. For most deployments, the natural-key idempotency is sufficient.
+
+
+## Dashboard viewer port (worklog 0153)
+
+`uv run uvicorn viewer_main:app --host 0.0.0.0 --port 8001` — a separate read-only process (only `/health` + the coverage GET; no worker, no mutations). Requires `DASHBOARD_TOKEN` in the same `.env` (startup refuses when empty or overlapping `AUTH_TOKEN` — the overlap check reads the local env, so if the viewer ever runs on a different host from the operator app, keep the token sets disjoint by convention) and a viewer FE build (`cd web && npm run build:viewer` → gitignored `web/dist-viewer`).
