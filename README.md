@@ -70,6 +70,8 @@ Open `http://localhost:8000`. Compose runs Postgres + migrations + API + embedde
 
 For development without Docker: `uv sync` → `uv run alembic upgrade head` → `uv run uvicorn main:app --reload`. Local dev uses Postgres on port **5433**.
 
+Read-only dashboard viewer (share with non-technical viewers): set `DASHBOARD_TOKEN` in `.env` (disjoint from `AUTH_TOKEN`), `cd web && npm run build:viewer`, then `uv run uvicorn viewer_main:app --host 0.0.0.0 --port 8001`.
+
 ## Tech stack
 
 | Layer | Stack |
