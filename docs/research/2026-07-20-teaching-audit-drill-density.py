@@ -24,7 +24,10 @@ import asyncio, json, pathlib, re, sys
 from collections import defaultdict
 from dotenv import load_dotenv
 _ROOT = pathlib.Path(__file__).resolve().parents[2]  # repo root, so any cwd works
-load_dotenv(_ROOT / ".env", override=True)
+load_dotenv(_ROOT / ".env", override=True)  # override: read-only research script must
+# hit the repo's configured DB, not whatever DATABASE_URL happens to be ambient (a
+# nested worktree's upward .env walk resolves elsewhere). Diverges from the app's
+# load_dotenv(override=False) convention deliberately.
 sys.path.insert(0, str(_ROOT))
 from sqlalchemy import text
 from app.db import SessionLocal
@@ -74,7 +77,7 @@ async def main():
             continue
         items = len(ITEM.findall(drill_md)) + len(QMARK.findall(drill_md))
         _, subj, grade, title, span = jobs[jid]
-        recs.append({"subject": subj, "grade": grade, "span": span,
+        recs.append({"job_id": jid, "subject": subj, "grade": grade, "span": span,
                      "facts": facts, "items": items, "ratio": items / facts})
 
     print(f"packets analysed: {len(recs)}  (no model calls, $0)\n")

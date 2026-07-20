@@ -81,6 +81,8 @@
 
 ## R24 — Long fact-dense lessons produce packets that cover the material but don't teach it (fixed drill budget)
 
+> Filed straight to ROADMAP (worked-up on arrival — issue, root cause and evidence all established before filing); the WISHLIST line is a pointer, not a prior entry.
+
 > **Evidence is durable and re-runnable:** `docs/research/2026-07-20-teaching-audit-drill-density.py` (deterministic, no model calls, $0) + its 1,362-packet dataset `docs/research/2026-07-20-teaching-audit-drill-density-data.json`. The teaching-audit side is `app/services/teaching_audit.py` (worklog 0148/0152).
 
 - **Issue:** on long lessons (7+ printed pages) the generated packet **covers** the lesson yet a student studying only that packet learns little of it. Measured with the teaching audit (worklog 0148): long history lessons scored **10/31 objectives learned (32%)**, versus **14/18 (78%)** for SHORT history lessons drawn from the *same books, grades and authors* — span was the only variable. Worst case is reproducible, not noise: G8 "Muhammad Xorazmshohning mamlakat mudofaasiga oid tadbirlari" (15pp) audited **3 independent times → 0 of 17 objectives learned (0%)**, with essentially every objective marked `coverage=taught`. This class is **structurally invisible to the LLM judge**, which grades a packet against its own prompt/extract and therefore cannot see that the packet under-teaches its source lesson.
