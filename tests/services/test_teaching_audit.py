@@ -686,6 +686,11 @@ def _result_fixture() -> ta.AuditResult:
         objectives=[
             ta.ObjectiveResult("O1", "ta'rif", "core", 0.0, 2.0, 2.0, "taught", "learned"),
             ta.ObjectiveResult("O2", "xossa", "supporting", 0.0, 0.5, 2.0, "absent", "not_taught"),
+            # O3 exists so the fixture's full-set and core-only verdicts DIVERGE on
+            # BOTH axes: without a 'not_learnable' objective, full-set `learnable`
+            # and `core_learnable` are both True and an assertion on the latter
+            # cannot detect it being wired to the full objective set.
+            ta.ObjectiveResult("O3", "isbot", "supporting", 0.0, 1.0, 2.0, "taught", "not_learnable"),
         ],
         artifacts={"exam": {}, "pre": {}, "post": {}, "graded": {}, "coverage": {}},
         calls=[{"step": "exam", "provider": "gemini", "model": "gemini-2.5-pro",
@@ -697,7 +702,7 @@ def test_render_markdown_has_matrix_verdicts_and_identity():
     md = ta.render_markdown(_result_fixture())
     assert "O1" in md and "learned" in md
     assert "not_taught" in md
-    assert "teaching-equivalent: NO" in md and "learnable: YES" in md
+    assert "teaching-equivalent: NO" in md and "learnable: NO" in md
     assert "book-1" in md and "pp63-65" in md  # source identity in the header
     # r24 T1 R3: tier column + a core verdict line. O1 (tier=core) is
     # 'learned' and is the fixture's ONLY core objective.
@@ -712,6 +717,7 @@ def test_result_to_dict_retains_evidence_identity_and_roundtrips():
 
     d = ta.result_to_dict(_result_fixture())
     assert d["job_id"] == "job-1" and d["teaching_equivalent"] is False
+    assert d["learnable"] is False  # full-set: O3 is not_learnable
     assert d["variant"] == "full"
     assert d["objectives"][1]["outcome"] == "not_taught"
     # r24 T1 R3: tier per objective + top-level core figures
