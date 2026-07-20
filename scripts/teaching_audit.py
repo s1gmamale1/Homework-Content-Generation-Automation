@@ -89,7 +89,11 @@ async def _run(args: argparse.Namespace) -> int:
             "calls": [dict(c) for c in paired.calls],
             "cost_usd": cost,
         }, "-sensitivity")
-        ok = paired.sensitivity_pass and paired.normal.teaching_equivalent and paired.normal.learnable
+        # r24 T1 R5: the verdict now keys to the CORE subset (full-set numbers
+        # are still reported above via render_markdown/result_to_dict, just no
+        # longer the gate).
+        ok = (paired.sensitivity_pass and paired.normal.core_teaching_equivalent
+              and paired.normal.core_learnable)
         return 1 if (args.strict and not ok) else 0
 
     result = await ta.audit_job(args.job, **kw)
@@ -100,7 +104,10 @@ async def _run(args: argparse.Namespace) -> int:
     payload = ta.result_to_dict(result)
     payload["cost_usd"] = cost
     _write_report(args, payload, "")
-    ok = result.teaching_equivalent and result.learnable
+    # r24 T1 R5: the verdict now keys to the CORE subset (full-set numbers are
+    # still reported above via render_markdown/result_to_dict, just no longer
+    # the gate).
+    ok = result.core_teaching_equivalent and result.core_learnable
     return 1 if (args.strict and not ok) else 0
 
 

@@ -9,8 +9,8 @@ from app.services import teaching_audit as ta
 def _exam_two_objectives() -> ta.ExamSpec:
     return ta.ExamSpec(
         objectives=[
-            ta.Objective(id="O1", statement="Parallelogramm ta'rifi"),
-            ta.Objective(id="O2", statement="Diagonallar xossasi"),
+            ta.Objective(id="O1", statement="Parallelogramm ta'rifi", tier="core"),
+            ta.Objective(id="O2", statement="Diagonallar xossasi", tier="supporting"),
         ],
         questions=[
             ta.ExamQuestion(id="Q1", objective_id="O1", question="q1", answer_key="a1"),
@@ -37,6 +37,16 @@ def _coverage(pairs):
     return ta.CoverageReport(coverages=[
         ta.ObjectiveCoverage(objective_id=o, coverage=c, evidence="e") for o, c in pairs
     ])
+
+
+def test_objective_tier_is_required_with_no_default():
+    # r24 T1 R1: tier has NO default — a model that ignores the tiering
+    # instruction must fail schema validation (forcing a retry) rather than
+    # silently defaulting into an all-supporting exam that would then fail
+    # the R4 guard for a confusing reason.
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        ta.Objective(id="O1", statement="x")
 
 
 # ---------- classify_objective ----------
@@ -168,6 +178,23 @@ def test_aggregate_reads_the_requested_post_label():
     assert [r.pre_score for r in normal] == [r.pre_score for r in control]
 
 
+def test_aggregate_propagates_tier_onto_every_objective_result():
+    # r24 T1: tier is carried verbatim from the exam's Objective onto the
+    # matching ObjectiveResult so downstream core-only verdicts can key to it.
+    exam = _exam_two_objectives()  # O1 tier=core, O2 tier=supporting
+    graded = ta.GradedExam(grades=[
+        _grade("Q1", "pre", "wrong"), _grade("Q2", "pre", "wrong"),
+        _grade("Q1", "post", "correct"), _grade("Q2", "post", "correct"),
+        _grade("Q3", "pre", "wrong"), _grade("Q4", "pre", "wrong"),
+        _grade("Q3", "post", "wrong"), _grade("Q4", "post", "wrong"),
+    ])
+    cov = _coverage([("O1", "taught"), ("O2", "absent")])
+    results = ta.aggregate(exam, graded, cov)
+    by_id = {r.objective_id: r for r in results}
+    assert by_id["O1"].tier == "core"
+    assert by_id["O2"].tier == "supporting"
+
+
 # ---------- prompt builders ----------
 
 TEXTBOOK_SENTINEL = "XTEXTBOOKX parallelogramm sahifa matni"
@@ -178,9 +205,9 @@ def _exam_min() -> ta.ExamSpec:
     # 3 objectives / 6 questions = the minimum VALID exam (examiner bound is 3-6).
     # O1's Q1/Q2 keep their exact strings so the Task 2 builder assertions hold.
     objs = [
-        ta.Objective(id="O1", statement="ta'rif"),
-        ta.Objective(id="O2", statement="xossa"),
-        ta.Objective(id="O3", statement="qo'llash"),
+        ta.Objective(id="O1", statement="ta'rif", tier="core"),
+        ta.Objective(id="O2", statement="xossa", tier="supporting"),
+        ta.Objective(id="O3", statement="qo'llash", tier="supporting"),
     ]
     questions = [
         ta.ExamQuestion(id="Q1", objective_id="O1", question="Savol bir?", answer_key="Javob bir"),
@@ -201,6 +228,27 @@ def test_exam_prompt_contains_textbook_and_never_packet():
     assert TEXTBOOK_SENTINEL in p
     assert "Parallelogramm" in p
     assert "2" in p  # per-objective question count pinned in the instructions
+
+
+def test_exam_prompt_contains_tiering_instruction_and_preserves_anchor_and_escape():
+    # r24 T1 R2: the examiner now tiers each objective core/supporting. Anti-
+    # circularity is load-bearing — the tiering must be derived from the
+    # textbook window ONLY, so the prompt must gain no reference to the
+    # packet, the extract, or generation. The pre-existing title anchor and
+    # zero-objectives escape hatch (page-offset guard) must survive untouched.
+    p = ta.build_exam_prompt(
+        textbook_text=TEXTBOOK_SENTINEL, lesson_title="Parallelogramm",
+        subject="matematika", grade="8", language="uz",
+    )
+    assert "core" in p and "supporting" in p
+    assert "tier" in p.lower()
+    assert "ONLY from the lesson" in p    # title anchor preserved verbatim
+    assert "ZERO objectives" in p         # zero-objectives escape hatch preserved verbatim
+    assert "neighbouring" in p
+    assert PACKET_SENTINEL not in p
+    assert "packet" not in p.lower()
+    assert "extract" not in p.lower()
+    assert "generat" not in p.lower()     # no "generate"/"generation" reference
 
 
 def test_pretest_prompt_has_questions_but_no_textbook_no_packet_no_keys():
@@ -492,7 +540,9 @@ async def test_paired_sensitivity_fails_when_control_coverage_not_absent(monkeyp
 # ---------- sensitivity gate semantics (gate-4 review, control must learn NOTHING) ----------
 
 def _mk_leg(variant, outcomes_and_coverage) -> ta.AuditResult:
-    objs = [ta.ObjectiveResult(f"O{i}", "s", 0.0, 2.0, 2.0, cov, out)
+    # tier is irrelevant to these sensitivity-gate tests (which validate the
+    # full-set instrument, not the core subset) — hardcode "core" throughout.
+    objs = [ta.ObjectiveResult(f"O{i}", "s", "core", 0.0, 2.0, 2.0, cov, out)
             for i, (out, cov) in enumerate(outcomes_and_coverage, 1)]
     return ta.AuditResult(
         job_id="j", book_id="b", toc_entry_id="t", page_start=1, page_end=2,
@@ -524,10 +574,41 @@ def test_sensitivity_passes_on_ineffective_packet_when_control_is_clean():
     assert pr.sensitivity_failures() == []
 
 
+# ---------- core-tier verdicts (r24 T1 R5) ----------
+
+def test_core_properties_key_only_to_core_subset_not_all_objectives():
+    # Discriminating: O1 is the only 'core' objective and is 'learned'. O2/O3
+    # are 'supporting' and would fail the full-set verdicts (not_taught /
+    # not_learnable). The full-set properties must still see all three; the
+    # core properties must see ONLY O1 — this must fail if core_* is wired to
+    # the whole objective list instead of the tier=='core' subset.
+    result = ta.AuditResult(
+        job_id="j", book_id="b", toc_entry_id="t", page_start=1, page_end=2,
+        lesson_title="l", subject="s", grade="9", language="uz", variant="full",
+        textbook_text="tb", study_md="sm",
+        objectives=[
+            ta.ObjectiveResult("O1", "s1", "core", 0.0, 2.0, 2.0, "taught", "learned"),
+            ta.ObjectiveResult("O2", "s2", "supporting", 0.0, 0.5, 2.0, "absent", "not_taught"),
+            ta.ObjectiveResult("O3", "s3", "supporting", 0.0, 1.0, 2.0, "taught", "not_learnable"),
+        ],
+    )
+    # full-set properties still see the supporting objectives' bad outcomes
+    assert result.learned_count == 1
+    assert result.teaching_equivalent is False   # O2 is not_taught
+    assert result.learnable is False             # O3 is not_learnable
+    # core properties key ONLY to the core subset (just O1, which is clean)
+    assert [r.objective_id for r in result.core_objectives] == ["O1"]
+    assert result.core_total == 1
+    assert result.core_learned_count == 1
+    assert result.core_teaching_equivalent is True
+    assert result.core_learnable is True
+
+
 # ---------- objective-count bound (gate-4 review) ----------
 
 def _exam_with_objectives(n) -> ta.ExamSpec:
-    objs = [ta.Objective(id=f"O{i}", statement="s") for i in range(1, n + 1)]
+    objs = [ta.Objective(id=f"O{i}", statement="s", tier=("core" if i == 1 else "supporting"))
+            for i in range(1, n + 1)]
     qs = [ta.ExamQuestion(id=f"Q{i}", objective_id=f"O{((i - 1) // 2) + 1}",
                           question="q", answer_key="k")
           for i in range(1, 2 * n + 1)]
@@ -540,6 +621,26 @@ def test_validate_objective_count_enforces_declared_3_to_6_bound():
     for bad in (1, 7):
         with pytest.raises(ta.TeachingAuditError):
             ta._validate_objective_count(_exam_with_objectives(bad))
+
+
+# ---------- objective tiering bound (r24 T1 R4 — zero-core fails loud) ----------
+
+def _exam_all_supporting() -> ta.ExamSpec:
+    exam = _exam_min().model_copy(deep=True)
+    for o in exam.objectives:
+        o.tier = "supporting"
+    return exam
+
+
+def test_validate_objective_tiers_rejects_all_supporting_exam():
+    # An exam with zero core objectives cannot answer the question the audit
+    # now asks (core-teaching), so it must never produce a clean verdict.
+    with pytest.raises(ta.TeachingAuditError, match="core"):
+        ta._validate_objective_tiers(_exam_all_supporting())
+
+
+def test_validate_objective_tiers_accepts_exam_with_at_least_one_core():
+    ta._validate_objective_tiers(_exam_min())  # O1 is tier 'core' — must not raise
 
 
 async def test_audit_job_rejects_out_of_bound_objective_count(monkeypatch):
@@ -583,8 +684,8 @@ def _result_fixture() -> ta.AuditResult:
         language="uz", variant="full",
         textbook_text="TEXTBOOK EXCERPT", study_md="## flashcards\n\nPACKET",
         objectives=[
-            ta.ObjectiveResult("O1", "ta'rif", 0.0, 2.0, 2.0, "taught", "learned"),
-            ta.ObjectiveResult("O2", "xossa", 0.0, 0.5, 2.0, "absent", "not_taught"),
+            ta.ObjectiveResult("O1", "ta'rif", "core", 0.0, 2.0, 2.0, "taught", "learned"),
+            ta.ObjectiveResult("O2", "xossa", "supporting", 0.0, 0.5, 2.0, "absent", "not_taught"),
         ],
         artifacts={"exam": {}, "pre": {}, "post": {}, "graded": {}, "coverage": {}},
         calls=[{"step": "exam", "provider": "gemini", "model": "gemini-2.5-pro",
@@ -598,6 +699,11 @@ def test_render_markdown_has_matrix_verdicts_and_identity():
     assert "not_taught" in md
     assert "teaching-equivalent: NO" in md and "learnable: YES" in md
     assert "book-1" in md and "pp63-65" in md  # source identity in the header
+    # r24 T1 R3: tier column + a core verdict line. O1 (tier=core) is
+    # 'learned' and is the fixture's ONLY core objective.
+    assert "supporting" in md   # O2's tier, visible only in the table row
+    assert "core: teaching-equivalent YES" in md
+    assert "1/1 core objectives learned" in md
 
 
 def test_result_to_dict_retains_evidence_identity_and_roundtrips():
@@ -608,6 +714,11 @@ def test_result_to_dict_retains_evidence_identity_and_roundtrips():
     assert d["job_id"] == "job-1" and d["teaching_equivalent"] is False
     assert d["variant"] == "full"
     assert d["objectives"][1]["outcome"] == "not_taught"
+    # r24 T1 R3: tier per objective + top-level core figures
+    assert d["objectives"][0]["tier"] == "core"
+    assert d["objectives"][1]["tier"] == "supporting"
+    assert d["core_total"] == 1
+    assert d["core_learned_count"] == 1
     assert set(d["artifacts"]) == {"exam", "pre", "post", "graded", "coverage"}
     # gate-4: primary evidence — source identity + immutable snapshots + hashes
     assert d["book_id"] == "book-1" and d["toc_entry_id"] == "toc-1"
