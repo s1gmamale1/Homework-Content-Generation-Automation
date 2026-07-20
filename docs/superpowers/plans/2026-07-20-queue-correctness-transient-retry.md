@@ -18,6 +18,7 @@
 - **Rejected:** excluding slot-wait from the 600s timer by restructuring (invasive, still occupies a worker slot for 5×120s); all-failures queue retry (3× bill on deterministic errors violates the money rule); raising `SlotSaturation` from `_spawn_once` (would need pass-throughs at every broad except between agent and pipeline).
 - **Scope guards:** TOC extraction (no job) keeps current behavior — the marker-bearing error just fails the extraction as today; judge/solver get explicit marker pass-throughs so saturation parks the job instead of silently shipping unjudged packets. `agent_usages`-row-on-cancellation (review claim 6) is out of scope — evidence-only claim, no behavioral defect beyond what the above fixes.
 - **Cross-plan:** no file overlap with in-flight `2026-07-20-gemini-25-flash-global-default.md` (api_transport.py lane) or PR #108 (web/). No migration — `scheduled_at`/`attempts`/phase columns all exist.
+- **Gate corrections folded (round 2, all verified against code 2026-07-20):** (1) saturation can bypass `_run_with_failover` — the scanned-PDF extract path calls `agent.summarize_lesson_vision` directly (pipeline.py:1113) and the judge-regen / solver-regen broad catches inside `_execute_phase` (the `except Exception` blocks near pipeline.py:1283 and :1370) swallow marker errors → marker fallback in `_execute_one_phase` + explicit pass-throughs at both regen catches, each tested; (2) error-event ordering — publish is best-effort (`_publish_error_event` try/except); hard failures write DB FIRST, then publish (an events-bus exception must never swallow the terminal mark or the transient signal), tested with a raising bus; (3) Task 7 is a REAL scratch-DB chain through `Worker._execute_job` → `pipeline.run` → `_run_with_failover` (hung provider boundary) → `mark_failed_with_retry`, asserting delayed-pending then terminal-failed; (4) abandoned sibling rows go to **`pending`** when the job is being requeued/parked (transient/saturation/pause) and `failed` only on hard failure or user cancel; (5) the phase-ROW write at `_execute_phase`'s own catch (`error_message=str(exc)`, near pipeline.py:1285) gets the same `_error_text` repr-fallback as the job row, both rows tested; (6) cancel-wins guards — `requeue_slot_saturated` AND `mark_failed_with_retry` update only `status='running'` rows and finalize a concurrent `cancelling` job as `cancelled` (never resurrect to pending), regression-tested; (7) real names: `get_provider` (from `app.services.providers`, re-exported at agent.py:53), `Worker._execute_job` (worker.py:485); `_phase_kwargs` is written out in full.
 
 ## Global Constraints
 
@@ -159,6 +160,7 @@ import asyncio
 import pytest
 
 from app.services import agent
+from app.services.providers import get_provider
 
 
 SLOT_TUPLE = (
@@ -181,7 +183,7 @@ def test_spawn_returns_slot_exhaustion_after_single_attempt(monkeypatch):
     monkeypatch.setattr(agent.asyncio, "sleep", no_sleep)
 
     rc, text, usage, stderr = asyncio.run(agent._spawn(
-        provider=agent._provider("gemini"), model="gemini-2.5-flash",
+        provider=get_provider("gemini"), model="gemini-2.5-flash",
         prompt="x", attachments=[], transport="api",
     ))
     assert calls == [1]
@@ -203,13 +205,11 @@ def test_spawn_still_retries_ordinary_429(monkeypatch):
     monkeypatch.setattr(agent.asyncio, "sleep", instant_sleep)
 
     asyncio.run(agent._spawn(
-        provider=agent._provider("gemini"), model="gemini-2.5-flash",
+        provider=get_provider("gemini"), model="gemini-2.5-flash",
         prompt="x", attachments=[], transport="api",
     ))
     assert len(calls) == agent.settings.rate_limit_max_retries + 1
 ```
-
-  Note for the implementer: if `agent._provider("gemini")` is not the real accessor, find the provider-registry lookup used by `run_phase` (grep `def _provider\|PROVIDERS\[` in agent.py) and use that — the test needs any real `Provider` instance.
 
 - [ ] **Step 2: Run to verify it fails** — `uv run python -m pytest tests/services/test_spawn_slot_saturation.py -q` → first test FAILS (5 calls, or AssertionError from `no_sleep`); second PASSES (guard baseline).
 - [ ] **Step 3: Implement** — in `_spawn` (agent.py:469-471), before the retryable check:
@@ -344,7 +344,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 4: `_execute_one_phase` transient/hard split + full propagation
 
 **Files:**
-- Modify: `app/services/pipeline.py` — `_execute_one_phase` except-chain (:565-582), head loop (:331-336), content-path catch (:401-408), scheduler `task.result()` handling (:724-746), top-level `run()` handler (:456-460)
+- Modify: `app/services/pipeline.py` — `_execute_one_phase` except-chain (:565-582), head loop (:331-336), content-path catch (:401-408), scheduler `task.result()` handling (:724-746), top-level `run()` handler (:456-460), and `_execute_phase`'s own phase-ROW catch (the `except Exception` near :1285 writing `error_message=str(exc)` — becomes `_error_text(exc)`, gate correction 5)
 - Test: `tests/services/test_pipeline_transient_propagation.py` (new)
 
 **Interfaces:**
@@ -392,9 +392,46 @@ def test_requeue_worthy_classes(exc, expected):
 
 
 def _phase_kwargs(**over):
-    """Minimal _execute_one_phase kwargs; implementer: copy the full kwarg
-    set from test_pipeline_judge_status.py's existing call helper and merge."""
-    ...
+    """Full real signature of _execute_one_phase (pipeline.py:485-514)."""
+    base = dict(
+        job_id=uuid4(),
+        resource_id="job-x",
+        log=logger,
+        phase_name="extract",
+        phase_order=0,
+        total_phases_hint=1,
+        subject="history",
+        provider="gemini",
+        model="gemini-2.5-flash",
+        pdf_path=Path("/nonexistent.pdf"),
+        file_phases=set(),
+        section_data={"title": "L1"},
+        lesson_context=None,
+        prior_outputs={},
+        difficulty=None,
+        source_map_digest="",
+        transport="api",
+        extract_transport="api",
+        judge_transport="api",
+        solver_transport="api",
+        custom_prompts=None,
+        judge_provider_ov=None,
+        judge_model_ov=None,
+        solver_provider_ov=None,
+        solver_model_ov=None,
+        solver_boss_arena_enabled=False,
+        extract_provider="gemini",
+        extract_model="gemini-2.5-flash",
+        session_limit_strategy="pause",
+        output_language="uz",
+    )
+    base.update(over)
+    return base
+    # imports this helper needs: from uuid import uuid4; from pathlib import Path;
+    # from loguru import logger. Every test below also monkeypatches
+    # pipeline.events_bus.publish with AsyncMock() (covers _emit_started too)
+    # and pipeline.SessionLocal with the async-context stub used in
+    # test_pipeline_judge_status.py.
 
 
 def test_transient_failure_raises_transient_phase_error(monkeypatch):
@@ -421,6 +458,44 @@ def test_hard_failure_marks_failed_and_raises(monkeypatch):
         "extract: malformed response envelope"
 
 
+def test_marker_error_from_vision_path_parks(monkeypatch):
+    """Gate correction 1: a saturation-marker RuntimeError that BYPASSED
+    _run_with_failover (scanned-PDF vision extract) still parks the job."""
+    async def failing(*a, **k):
+        raise RuntimeError(
+            "gemini api call failed rc=1: 429 fleet credential slot wait "
+            "exhausted (credential=gemini:p, budget=120s)"
+        )
+    monkeypatch.setattr(pipeline, "_execute_phase", failing)
+    set_status = AsyncMock()
+    monkeypatch.setattr(pipeline.jobs_repo, "set_status", set_status)
+    with pytest.raises(SlotSaturation):
+        asyncio.run(pipeline._execute_one_phase(**_phase_kwargs()))
+    set_status.assert_not_awaited()
+
+
+@pytest.mark.parametrize("err,expect_exc,expect_db_mark", [
+    (RuntimeError("429 RESOURCE_EXHAUSTED"), TransientPhaseError, False),
+    (RuntimeError("malformed response envelope"), RuntimeError, True),
+])
+def test_broken_event_bus_never_eats_signals(monkeypatch, err, expect_exc, expect_db_mark):
+    """Gate correction 2: events_bus.publish raising must not swallow the
+    transient signal NOR the terminal DB mark. RED-proof: with publish-first
+    unguarded ordering, the bus error replaces both."""
+    async def failing(*a, **k):
+        raise err
+    monkeypatch.setattr(pipeline, "_execute_phase", failing)
+    monkeypatch.setattr(pipeline, "_emit_started", AsyncMock())
+    monkeypatch.setattr(
+        pipeline.events_bus, "publish", AsyncMock(side_effect=RuntimeError("bus down"))
+    )
+    set_status = AsyncMock()
+    monkeypatch.setattr(pipeline.jobs_repo, "set_status", set_status)
+    with pytest.raises(expect_exc):
+        asyncio.run(pipeline._execute_one_phase(**_phase_kwargs()))
+    assert set_status.await_count == (1 if expect_db_mark else 0)
+
+
 def test_slot_saturation_passes_through_unmarked(monkeypatch):
     async def saturated(*a, **k):
         raise SlotSaturation("429 fleet credential slot wait exhausted (…)")
@@ -440,11 +515,25 @@ def test_slot_saturation_passes_through_unmarked(monkeypatch):
   (a) module-level helpers (place near `_custom_for`, pipeline.py:890):
 
 ```python
+def _error_text(exc: BaseException) -> str:
+    """Non-blank error text: str(exc) with repr fallback (asyncio.TimeoutError
+    stringifies to ''). Shared by the JOB-row and PHASE-row writes."""
+    return str(exc).strip() or repr(exc)
+
+
 def _phase_error_message(phase_name: str, exc: BaseException) -> str:
-    """'<phase>: <reason>' with a guaranteed non-blank reason (repr fallback
-    for exceptions like asyncio.TimeoutError whose str() is '')."""
-    text = str(exc).strip() or repr(exc)
-    return f"{phase_name}: {text}"
+    """'<phase>: <reason>' with a guaranteed non-blank reason."""
+    return f"{phase_name}: {_error_text(exc)}"
+
+
+async def _publish_error_event(resource_id: str, payload: dict) -> None:
+    """Best-effort error-event publish (gate correction 2): a broken events
+    bus must NEVER swallow the failure signal — the DB write / typed raise is
+    the source of truth, the event is advisory UI."""
+    try:
+        await events_bus.publish(resource_id, "error", payload)
+    except Exception:
+        logger.exception(f"error-event publish failed for {resource_id} (non-fatal)")
 
 
 def _requeue_worthy(exc: BaseException) -> bool:
@@ -457,6 +546,8 @@ def _requeue_worthy(exc: BaseException) -> bool:
         return True
     return failure_classifier.classify(exc) == "transient"
 ```
+
+  (a2) `_execute_phase`'s phase-ROW catch (near :1285): replace `error_message=str(exc)` with `error_message=_error_text(exc)` — and extend the test file with `test_phase_row_error_never_blank`: monkeypatch the phase internals so a bare `asyncio.TimeoutError()` escapes to that catch, capture the `phase_repo.set_status` call, assert its `error_message == "TimeoutError()"` (gate correction 5 — both rows non-blank, not just the job row).
 
   (b) `_execute_one_phase` except-chain (:565-582) becomes:
 
@@ -471,13 +562,22 @@ def _requeue_worthy(exc: BaseException) -> bool:
         log.exception(
             f"[job {job_id}] phase '{phase_name}' FAILED after {phase_ms:.0f}ms: {msg}"
         )
-        await events_bus.publish(
-            resource_id, "error", {"phase_name": phase_name, "message": msg}
-        )
+        # Marker fallback (gate correction 1): saturation errors that BYPASSED
+        # _run_with_failover — the scanned-PDF vision extract (pipeline.py:1113)
+        # or any future direct agent call — must still park, never burn retries.
+        if is_slot_saturation(exc):
+            raise SlotSaturation(_error_text(exc)) from exc
         if _requeue_worthy(exc):
             # Do NOT mark failed here — propagate so the worker applies the
             # bounded queue retry (mark_failed_with_retry, queue-correctness-1).
+            # Event publish is best-effort AFTER the decision: a broken bus
+            # must not eat the signal (gate correction 2).
+            await _publish_error_event(
+                resource_id, {"phase_name": phase_name, "message": msg}
+            )
             raise TransientPhaseError(msg) from exc
+        # Hard failure: DB write FIRST (the terminal mark is the contract),
+        # event publish best-effort afterwards (gate correction 2).
         async with SessionLocal() as session:
             await jobs_repo.set_status(
                 session, job_id, "failed",
@@ -485,6 +585,9 @@ def _requeue_worthy(exc: BaseException) -> bool:
                 error_message=msg,
             )
             await session.commit()
+        await _publish_error_event(
+            resource_id, {"phase_name": phase_name, "message": msg}
+        )
         raise
 ```
 
@@ -515,25 +618,25 @@ git commit -m "feat(pipeline): transient failures propagate for bounded queue re
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
-### Task 5: Cancelled-sibling phase rows are reset (+ judge/solver saturation pass-through)
+### Task 5: Abandoned-sibling phase rows reset to pending/failed (+ regen & module saturation pass-throughs)
 
 **Files:**
-- Modify: `app/repositories/phase_outputs.py` (new `fail_abandoned_phases`), `app/services/pipeline.py` (`_abandon_inflight` helper + calls at the three cancel sites), `app/services/phase_judge.py:246-251`, `app/services/solver.py:154`
-- Test: `tests/repositories/test_phase_outputs_abandoned.py` (new, real-DB-marked), `tests/services/test_scheduler_abandoned_rows.py` (new)
+- Modify: `app/repositories/phase_outputs.py` (new `reset_abandoned_phases`), `app/services/pipeline.py` (`_abandon_inflight` helper + calls at the three cancel sites + judge-regen/solver-regen pass-throughs in `_execute_phase`, the broad catches near :1283 and :1370), `app/services/phase_judge.py:246-251`, `app/services/solver.py:154`
+- Test: `tests/repositories/test_phase_outputs_abandoned.py` (new, real-DB-marked), `tests/services/test_scheduler_abandoned_rows.py` (new), `tests/services/test_regen_slot_saturation.py` (new — the two `_execute_phase` regen catches), `tests/services/test_judge_solver_slot_saturation.py` (new — the phase_judge/solver module catches)
 
 **Interfaces:**
-- Produces: `phase_outputs.fail_abandoned_phases(session, job_id, *, phase_names: list[str], error_message: str) -> int` (rows updated); `pipeline._abandon_inflight(job_id, phase_names, reason) -> None` (shielded, never raises).
+- Produces: `phase_outputs.reset_abandoned_phases(session, job_id, *, phase_names: list[str], status: str, error_message: str | None = None) -> int` (rows updated; `status` ∈ {"pending","failed"} — gate correction 4: `pending` when the JOB is being requeued/parked, `failed` only on hard failure or user cancel); `pipeline._abandon_inflight(job_id, phase_names, status, reason) -> None` (shielded, never raises).
 
 - [ ] **Step 1: repo test** — `tests/repositories/test_phase_outputs_abandoned.py`, gated like the repo's other real-DB tests (`pytest.mark.skipif(not os.environ.get("RUN_DB_INTEGRATION"), …)`; copy the skip idiom + session fixture from an existing `tests/repositories/` real-DB file):
 
 ```python
-async def test_fail_abandoned_marks_pending_and_running_only(db_session, seeded_job):
+async def test_reset_abandoned_touches_pending_and_running_only(db_session, seeded_job):
     """Seed 4 phase rows: pending, running, done, failed. RED-proof: predicate
-    must flip exactly pending+running → failed and freeze done."""
-    n = await phase_outputs.fail_abandoned_phases(
+    must flip exactly pending+running → target status and freeze done."""
+    n = await phase_outputs.reset_abandoned_phases(
         db_session, seeded_job.id,
         phase_names=["flashcards", "boss-arena", "reading", "reflection"],
-        error_message="abandoned: sibling phase failed",
+        status="failed", error_message="abandoned: sibling phase failed",
     )
     assert n == 2
     rows = {r.phase_name: r for r in await phase_outputs.list_for_job(db_session, seeded_job.id)}
@@ -543,25 +646,49 @@ async def test_fail_abandoned_marks_pending_and_running_only(db_session, seeded_
     assert rows["reading"].status == "done"            # frozen
     assert rows["reflection"].status == "failed"       # untouched, no message overwrite
     assert rows["reflection"].error_message is None
+
+
+async def test_reset_abandoned_to_pending_for_requeued_job(db_session, seeded_job):
+    """Gate correction 4: a parked/requeued job's siblings go back to PENDING
+    (they are waiting, not failed) and carry no error message."""
+    n = await phase_outputs.reset_abandoned_phases(
+        db_session, seeded_job.id,
+        phase_names=["boss-arena"], status="pending",
+    )
+    assert n == 1
+    rows = {r.phase_name: r for r in await phase_outputs.list_for_job(db_session, seeded_job.id)}
+    assert rows["boss-arena"].status == "pending"
+    assert rows["boss-arena"].error_message is None
 ```
 
 - [ ] **Step 2: implement repo function** — `app/repositories/phase_outputs.py`:
 
 ```python
-async def fail_abandoned_phases(
+async def reset_abandoned_phases(
     session: AsyncSession,
     job_id: UUID,
     *,
     phase_names: list[str],
-    error_message: str,
+    status: str,
+    error_message: str | None = None,
 ) -> int:
-    """Mark still-pending/running phases of a job 'failed' after their
-    siblings' cancellation orphaned them (scheduler peer-cancel leaves rows
-    'running': CancelledError is a BaseException, so per-phase except-Exception
-    cleanup never ran — queue-correctness-1). 'done' rows are untouched."""
+    """Reset still-pending/running phases of a job after their siblings'
+    cancellation orphaned them (scheduler peer-cancel leaves rows 'running':
+    CancelledError is a BaseException, so per-phase except-Exception cleanup
+    never ran — queue-correctness-1). 'done' rows are untouched.
+
+    status='pending' (job requeued/parked — the row is WAITING, error cleared)
+    or status='failed' (hard failure / user cancel — error_message recorded)."""
+    assert status in ("pending", "failed"), status
     if not phase_names:
         return 0
     from sqlalchemy import func as sa_func
+    values: dict = {"status": status}
+    if status == "failed":
+        values["error_message"] = error_message
+        values["completed_at"] = sa_func.now()
+    else:
+        values["error_message"] = None
     stmt = (
         update(PhaseOutput)
         .where(
@@ -569,8 +696,7 @@ async def fail_abandoned_phases(
             PhaseOutput.phase_name.in_(phase_names),
             PhaseOutput.status.in_(("pending", "running")),
         )
-        .values(status="failed", error_message=error_message,
-                completed_at=sa_func.now())
+        .values(**values)
     )
     result = await session.execute(stmt)
     return result.rowcount
@@ -578,22 +704,29 @@ async def fail_abandoned_phases(
 
   Run the repo test against the scratch DB (recipe from the SDD memory: `createdb -O edu edu_scratch_qc` on 127.0.0.1, `RUN_DB_INTEGRATION=1 DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_scratch_qc uv run python -m pytest tests/repositories/test_phase_outputs_abandoned.py -q`) → RED first (function missing), then GREEN.
 
-- [ ] **Step 3: scheduler test** — `tests/services/test_scheduler_abandoned_rows.py`: monkeypatch `pipeline._execute_one_phase` so phase "a" fails hard instantly and phase "b" sleeps forever; monkeypatch `pipeline._abandon_inflight` with an `AsyncMock`; run `_run_content_phases_parallel` with a 2-phase `content_phases` and `PHASE_DEPS` making both root-level; assert it was awaited once with `phase_names=["b"]` and a reason containing `"sibling"`. RED: helper doesn't exist.
+- [ ] **Step 3: scheduler test** — `tests/services/test_scheduler_abandoned_rows.py`: monkeypatch `pipeline._execute_one_phase` so phase "a" fails hard instantly and phase "b" sleeps forever; monkeypatch `pipeline._abandon_inflight` with an `AsyncMock`; run `_run_content_phases_parallel` with a 2-phase `content_phases` and `PHASE_DEPS` making both root-level; assert it was awaited once with `["b"]`, `status="failed"`, and a reason containing `"sibling"`. Second test: phase "a" raises `TransientPhaseError` instead → assert `status="pending"` (gate correction 4 — the job is being requeued, its siblings are waiting, not failed). RED: helper doesn't exist.
 - [ ] **Step 4: implement pipeline side** — helper next to `_emit_started`:
 
 ```python
-async def _abandon_inflight(job_id: UUID, phase_names: list[str], reason: str) -> None:
+async def _abandon_inflight(
+    job_id: UUID, phase_names: list[str], status: str, reason: str
+) -> None:
     """Best-effort, cancellation-shielded reset of orphaned phase rows.
     Mirrors worker.py's shielded cancel-finalize craft: a cancellation
-    delivered while this write runs must not kill the write."""
+    delivered while this write runs must not kill the write.
+
+    status='pending' when the JOB is being requeued/parked (transient /
+    saturation / pause — rows are waiting); status='failed' on hard failure
+    or user cancel (gate correction 4)."""
     if not phase_names:
         return
     async def _do() -> None:
         try:
             async with SessionLocal() as session:
-                await phase_repo.fail_abandoned_phases(
+                await phase_repo.reset_abandoned_phases(
                     session, job_id,
-                    phase_names=phase_names, error_message=reason,
+                    phase_names=phase_names, status=status,
+                    error_message=reason if status == "failed" else None,
                 )
                 await session.commit()
         except Exception:
@@ -615,25 +748,38 @@ async def _abandon_inflight(job_id: UUID, phase_names: list[str], reason: str) -
                         await asyncio.gather(*in_flight.values(), return_exceptions=True)
                         in_flight.clear()
                     await _abandon_inflight(
-                        job_id, abandoned, "abandoned: sibling phase failed"
+                        job_id, abandoned, "failed", "abandoned: sibling phase failed"
                     )
 ```
 
-  Reasons per site: pause/park branch → `"abandoned: job requeued (pause/park)"`; hard-failure branch → `"abandoned: sibling phase failed"`; external-cancel branch (:749-759) → `"abandoned: job cancelled"`. (`_run_content_phases_parallel` already receives `job_id`.)
-- [ ] **Step 5: judge/solver pass-through** — `phase_judge.py:246` head of the except block, BEFORE the auth check:
+  Per site (gate correction 4): pause/park branch (SessionLimitPause / SlotSaturation / TransientPhaseError) → `status="pending"`, reason `"abandoned: job requeued"`; hard-failure branch → `status="failed"`, reason `"abandoned: sibling phase failed"`; external-cancel branch (:749-759) → `status="failed"`, reason `"abandoned: job cancelled"`. (`_run_content_phases_parallel` already receives `job_id`.)
+- [ ] **Step 5: module pass-throughs** — `phase_judge.py:246` head of the except block, BEFORE the auth check:
 
 ```python
         if is_slot_saturation(exc):
             raise SlotSaturation(str(exc))  # park the job — do not ship unjudged
 ```
 
-  and identically at `solver.py:154`'s except head. Add `from app.services.errors import SlotSaturation, is_slot_saturation` imports. Extend `tests/services/test_pipeline_judge_status.py`-style: two small tests (one per module) that a marker-bearing RuntimeError from the underlying call raises `SlotSaturation` instead of degrading.
+  and identically at `solver.py:154`'s except head. Add `from app.services.errors import SlotSaturation, is_slot_saturation` imports. Tests in `tests/services/test_judge_solver_slot_saturation.py` (pattern of `test_pipeline_judge_status.py`): one per module — a marker-bearing RuntimeError from the underlying call raises `SlotSaturation` instead of degrading to `judge-unavailable` / solver-soft-fail.
+
+- [ ] **Step 5b: regen pass-throughs (gate correction 1)** — inside `_execute_phase`, the judge-REGEN broad catch (near pipeline.py:1283) and the solver-REGEN broad catch (near :1370) both currently swallow every non-auth exception. At the head of EACH, before the auth check:
+
+```python
+            except SessionLimitPause:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                if is_slot_saturation(exc):
+                    raise SlotSaturation(str(exc)) from exc  # park, don't degrade
+                # …existing auth-check + degrade path unchanged…
+```
+
+  Tests in `tests/services/test_regen_slot_saturation.py`: monkeypatch the regen generation call (`pipeline._run_with_failover` after the first successful pass — copy the two-phase stub choreography from `test_pipeline_solver.py:96-138`) to raise a marker RuntimeError during regen; assert `SlotSaturation` escapes `_execute_phase` instead of `judge_status`/`solver_status` degrading. One test per regen site. RED: today both degrade.
 - [ ] **Step 6: Run** — `uv run python -m pytest tests/services/ tests/repositories/ -q` green (real-DB file skips without the flag; run it once WITH the flag on the scratch DB and paste the pass into the commit body).
 - [ ] **Step 7: Commit**
 
 ```bash
-git add app/repositories/phase_outputs.py app/services/pipeline.py app/services/phase_judge.py app/services/solver.py tests/repositories/test_phase_outputs_abandoned.py tests/services/test_scheduler_abandoned_rows.py
-git commit -m "fix(pipeline): reset orphaned sibling phase rows on cancel; judge/solver park on slot saturation
+git add app/repositories/phase_outputs.py app/services/pipeline.py app/services/phase_judge.py app/services/solver.py tests/repositories/test_phase_outputs_abandoned.py tests/services/test_scheduler_abandoned_rows.py tests/services/test_regen_slot_saturation.py tests/services/test_judge_solver_slot_saturation.py
+git commit -m "fix(pipeline): reset orphaned sibling phase rows; judge/solver/regen park on slot saturation
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -641,12 +787,12 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 6: Worker parks `SlotSaturation` + repo requeue + setting
 
 **Files:**
-- Modify: `app/config.py` (one field), `app/repositories/jobs.py` (new `requeue_slot_saturated`), `app/services/worker.py` (`_run_job` except-chain, worker.py:536-560)
+- Modify: `app/config.py` (one field), `app/repositories/jobs.py` (new `requeue_slot_saturated`), `app/services/worker.py` (`_execute_job` except-chain, worker.py:536-560)
 - Test: `tests/services/test_worker_slot_saturation.py` (new), `tests/repositories/test_jobs_requeue_slot.py` (new, real-DB-marked)
 
 **Interfaces:**
 - Consumes: `SlotSaturation` (Task 1).
-- Produces: `jobs_repo.requeue_slot_saturated(session, job_id, *, error: str, cooldown_seconds: int) -> None`; `settings.slot_saturation_requeue_seconds: int = 90`.
+- Produces: `jobs_repo.requeue_slot_saturated(session, job_id, *, error: str, cooldown_seconds: int) -> str` (returns `"parked" | "cancelled" | "skipped"`); `mark_failed_with_retry` gains the same cancel-wins guard (returns the new `"cancelled"` outcome when a concurrent cancel won); `settings.slot_saturation_requeue_seconds: int = 90`.
 
 - [ ] **Step 1: Write failing tests** — `tests/services/test_worker_slot_saturation.py` (mock pattern from `test_worker_cooldown.py`):
 
@@ -659,9 +805,11 @@ RED-proof: without the except SlotSaturation branch, the generic
 except Exception → _mark_failed handler burns an attempt."""
 ```
 
-  Tests: patch `worker_mod.pipeline.run` (`AsyncMock(side_effect=SlotSaturation("429 fleet credential slot wait exhausted (…)"))`), patch `worker_mod.jobs_repo.requeue_slot_saturated` + `worker_mod.jobs_repo.mark_failed_with_retry` with `AsyncMock`s, patch `SessionLocal` with the async-context stub used in the existing worker tests, run `Worker(concurrency=1)._run_job(<uuid>, …)` (copy the invocation shape from whichever existing test drives `_run_job`; if none does, drive the smallest worker method that owns the except-chain). Assert: `requeue_slot_saturated` awaited once with `cooldown_seconds=90`; `mark_failed_with_retry` NOT awaited; `worker._cooldown_until` still `None`.
+  Tests: patch `worker_mod.pipeline.run` (`AsyncMock(side_effect=SlotSaturation("429 fleet credential slot wait exhausted (…)"))`), patch `worker_mod.jobs_repo.requeue_slot_saturated` + `worker_mod.jobs_repo.mark_failed_with_retry` with `AsyncMock`s, patch `SessionLocal` with the async-context stub used in the existing worker tests, run `Worker(concurrency=1)._execute_job(<uuid>)` (worker.py:485 — copy the setup any existing test uses to drive it; seed/patch whatever claimed-state it reads first). Assert: `requeue_slot_saturated` awaited once with `cooldown_seconds=90`; `mark_failed_with_retry` NOT awaited; `worker._cooldown_until` still `None`.
 
-  `tests/repositories/test_jobs_requeue_slot.py` (real-DB-marked, scratch-DB): seed a job `status='running', attempts=2, claimed_by='w'`; call `requeue_slot_saturated(cooldown_seconds=90)`; assert `status=='pending'`, `attempts==1` (refund), `claimed_by is None`, `current_phase is None`, and `scheduled_at > now() + 60s` (DB clock) — the RED-proof that the interval actually lands in SQL.
+  `tests/repositories/test_jobs_requeue_slot.py` (real-DB-marked, scratch-DB):
+  - seed a job `status='running', attempts=2, claimed_by='w'`; call `requeue_slot_saturated(cooldown_seconds=90)` → returns `"parked"`; assert `status=='pending'`, `attempts==1` (refund), `claimed_by is None`, `current_phase is None`, and `scheduled_at > now() + 60s` (DB clock) — RED-proof the interval lands in SQL.
+  - **cancel-wins regression (gate correction 6):** seed `status='cancelling'`; `requeue_slot_saturated` → returns `"cancelled"`, job finalized `status=='cancelled'` with `completed_at` set — NEVER `pending`. Same for `mark_failed_with_retry` on a `cancelling` job → `"cancelled"`, never `pending`/attempt-burn. RED-proof: without the status guard both resurrect the job to `pending`.
 
 - [ ] **Step 2: Run to verify fail** — both files → FAIL (missing function/branch).
 - [ ] **Step 3: Implement:**
@@ -679,22 +827,44 @@ except Exception → _mark_failed handler burns an attempt."""
   `app/repositories/jobs.py` (below `requeue_session_limited`, jobs.py:705-733 — same shape, different `scheduled_at`):
 
 ```python
+async def _finalize_if_cancelling(session: AsyncSession, job_id: UUID) -> str:
+    """Cancel-wins helper (gate correction 6): when a guarded requeue/retry
+    UPDATE matched 0 rows, the job's status changed under us. If a user
+    cancel won (status='cancelling'), finalize it as cancelled — a stopped
+    job must never be resurrected to pending. Returns the outcome."""
+    job = await session.get(HomeworkJob, job_id)
+    if job is None:
+        return "skipped"
+    if job.status == "cancelling":
+        await session.execute(
+            update(HomeworkJob)
+            .where(HomeworkJob.id == job_id, HomeworkJob.status == "cancelling")
+            .values(status="cancelled", completed_at=func.now(),
+                    claimed_at=None, claimed_by=None, current_phase=None)
+        )
+        return "cancelled"
+    return "skipped"
+
+
 async def requeue_slot_saturated(
     session: AsyncSession,
     job_id: UUID,
     *,
     error: str,
     cooldown_seconds: int,
-) -> None:
+) -> str:
     """Park a job whose api call exhausted the fleet credential-slot wait.
 
     Like requeue_session_limited: attempt refunded (claim's increment is
     compensated), claim cleared, NOT failed. Unlike it: scheduled_at is
     pushed cooldown_seconds into the future (DB clock) so the fleet backs
-    off the saturated credential instead of thrashing re-claims."""
-    await session.execute(
+    off the saturated credential instead of thrashing re-claims.
+
+    Guarded on status='running' (gate correction 6): a concurrent cancel
+    must win — returns "parked", "cancelled", or "skipped"."""
+    result = await session.execute(
         update(HomeworkJob)
-        .where(HomeworkJob.id == job_id)
+        .where(HomeworkJob.id == job_id, HomeworkJob.status == "running")
         .values(
             status="pending",
             attempts=func.greatest(HomeworkJob.attempts - 1, 0),
@@ -706,7 +876,19 @@ async def requeue_slot_saturated(
             + func.make_interval(0, 0, 0, 0, 0, 0, cooldown_seconds),
         )
     )
+    if result.rowcount > 0:
+        return "parked"
+    return await _finalize_if_cancelling(session, job_id)
 ```
+
+  `app/repositories/jobs.py` — `mark_failed_with_retry` (jobs.py:654) gains the same cancel-wins guard: at the top, after the `job is None` check, add
+
+```python
+    if job.status == "cancelling":
+        return await _finalize_if_cancelling(session, job_id)
+```
+
+  and add `HomeworkJob.status == "running"` to the WHERE of BOTH its UPDATE branches; after either UPDATE, `if result.rowcount == 0: return await _finalize_if_cancelling(session, job_id)`. (Callers only branch on `"failed"` vs `"pending"` — the new `"cancelled"`/`"skipped"` outcomes just log; verify the single caller `worker._mark_failed` at worker.py:568-585 and extend its log line with the outcome.)
 
   `app/services/worker.py` — insert BETWEEN the `except SessionLimitPause` block (:536-555) and `except Exception` (:556):
 
@@ -715,9 +897,10 @@ async def requeue_slot_saturated(
                 # Fleet credential saturation: park the job with a cooldown.
                 # No worker cooldown (unlike session-limit) — jobs billing
                 # OTHER credentials must keep claiming.
+                outcome = "error"
                 try:
                     async with SessionLocal() as session:
-                        await jobs_repo.requeue_slot_saturated(
+                        outcome = await jobs_repo.requeue_slot_saturated(
                             session, job_id, error=str(e),
                             cooldown_seconds=settings.slot_saturation_requeue_seconds,
                         )
@@ -727,8 +910,8 @@ async def requeue_slot_saturated(
                         f"worker {self.id} job={job_id} requeue_slot_saturated failed"
                     )
                 logger.warning(
-                    f"worker {self.id} job={job_id} slot saturation → requeued "
-                    f"+{settings.slot_saturation_requeue_seconds}s: {e}"
+                    f"worker {self.id} job={job_id} slot saturation → {outcome} "
+                    f"(+{settings.slot_saturation_requeue_seconds}s): {e}"
                 )
 ```
 
@@ -750,21 +933,29 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Interfaces:** consumes everything above; produces no new API.
 
-- [ ] **Step 1: Write the chain test** — each link REAL, only the boundaries stubbed:
+- [ ] **Step 1: The REAL chain (gate correction 3)** — one real-DB-marked test driving the whole stack with a single stub at the PROVIDER boundary:
 
 ```python
-"""E2E: persistent attempt timeout → pipeline propagation → worker
-mark_failed_with_retry → bounded pending retry. Closes the review's named
-test gap (no test connected these four links)."""
+"""E2E (real chain, scratch DB): Worker._execute_job → pipeline.run →
+_execute_one_phase → _run_with_failover (hung provider boundary) →
+Worker._mark_failed → jobs_repo.mark_failed_with_retry.
+
+First execution: delayed pending (attempt burned, future scheduled_at,
+last_error carries 'per-attempt timeout'). Final allowed attempt: terminal
+failed. Closes the review's named test gap — every link real except the
+hung provider call itself."""
 ```
 
-  - (a) **failover link (real):** `_run_with_failover` with `per_attempt_timeout_seconds=0.02` and a hung `run_fn` → raises `PhaseAttemptTimeout` (reuses Task 3's fixture shape, asserts the TYPE the next link consumes).
-  - (b) **phase link (real):** `_execute_one_phase` with `_execute_phase` raising exactly that `PhaseAttemptTimeout` instance → raises `TransientPhaseError` whose message starts `"extract: per-attempt timeout"`; `jobs_repo.set_status` mock asserts NOT awaited.
-  - (c) **run link (real):** `pipeline.run` with `_execute_one_phase` patched to raise that `TransientPhaseError` → `pytest.raises(TransientPhaseError)` (RED-proof vs today's swallow at :460); `events_bus` stubbed.
-  - (d) **worker link (real):** worker `_run_job` with `pipeline.run` raising `TransientPhaseError("extract: per-attempt timeout after 600s")` → `mark_failed_with_retry` awaited once, `error_message` containing `"per-attempt timeout"`, `max_attempts=worker.max_attempts`.
-  - (e) **bounded-retry link (real-DB-marked, scratch DB):** seed job `attempts=1` → `mark_failed_with_retry` returns `"pending"` with future `scheduled_at`; bump to `attempts=3` → returns `"failed"` terminal. (Exercises jobs.py:672-702 for real.)
-- [ ] **Step 2: RED where promised** — run against a stashed pre-Task-4 checkout is NOT required; instead each link's RED-proof is documented inline (links a–d fail by construction if the corresponding task's change is reverted — state which assertion catches it in each docstring).
-- [ ] **Step 3: Run** — `uv run python -m pytest tests/services/test_queue_retry_e2e.py -q` green (link e under the flag).
+  Choreography (all against the RUN_DB_INTEGRATION scratch DB, session fixture + seeding idiom copied from the existing `tests/repositories/` real-DB files):
+  1. Seed: a `books` row (`status='toc_ready'`, `grade='9'`, `subject='history'`, tiny scratch PDF written to `book_pdf_path(book_id)`), one `toc_entries` row, one `homework_jobs` row (`provider='gemini'`, `model='gemini-2.5-flash'`, `transport='api'`, `status='pending'`, `attempts=0`).
+  2. Stub ONLY the provider boundary + timers: `monkeypatch.setattr(settings, "per_attempt_timeout_seconds", 0.05)`; `pipeline.agent.read_whole_book_text` → returns `"book text"`; `pipeline.agent.summarize_lesson` → `async` fn that `await asyncio.sleep(60)` (the hang — this sits INSIDE `_run_with_failover`'s `run_fn`, so the extract phase times out for real). `events_bus` publish left real (Postgres NOTIFY works on the scratch DB) or patched `AsyncMock` if the test env lacks LISTEN.
+  3. Claim for real: `jobs_repo.claim_next_job(session, worker_id=..., capabilities=...)` (copy the exact invocation from `tests/services/test_worker_capabilities.py`) → job `running`.
+  4. Drive `await Worker(concurrency=1)._execute_job(job_id)` (worker.py:485).
+  5. Assert first pass: `status == 'pending'`, `attempts == 1`, `scheduled_at > now()` (DB clock), `last_error` contains `"per-attempt timeout"` and is NOT blank after the colon.
+  6. Fast-forward: `UPDATE homework_jobs SET attempts = <queue_max_attempts>, scheduled_at = now()`; re-claim; drive `_execute_job` again.
+  7. Assert terminal: `status == 'failed'`, `error_message` contains `"per-attempt timeout"`, `completed_at` set.
+- [ ] **Step 2: Supplementary fast links (no flag)** — keep the cheap per-link tests as regression pins: (a) `_run_with_failover` + hung `run_fn` → `PhaseAttemptTimeout`; (b) `pipeline.run` with `_execute_one_phase` raising `TransientPhaseError` → propagates (RED-proof vs today's swallow at :460, `events_bus` stubbed); (c) `mark_failed_with_retry` seeded `attempts=1` → `"pending"` + future `scheduled_at`, seeded `attempts=3` → `"failed"` (real-DB-marked).
+- [ ] **Step 3: Run** — `RUN_DB_INTEGRATION=1 DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_scratch_qc uv run python -m pytest tests/services/test_queue_retry_e2e.py -q` → green; then without the flag → the marked chain skips, fast links green.
 - [ ] **Step 4: Commit**
 
 ```bash
@@ -782,11 +973,12 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 - [ ] **Step 1:** `uv run python -m pytest tests/ -q` → full suite green (canonical bar, no flag). Then once more with `RUN_DB_INTEGRATION=1` + scratch DB for the marked files.
 - [ ] **Step 2: Acceptance smoke (real api, bounded, money-rule-compliant):** one minimal real generation call over `transport=api` proving the happy path is untouched — reuse the established single-call smoke shape (in-process `run_phase_prompt` with a tiny prompt, gemini flash). Expected < $0.01; report the actual $ from `agent_usages`. **Fact over theory:** also verify in logs that the call acquired+released a credential slot normally.
-- [ ] **Step 3: Worklog + docs:** MASTER_MEMORY entry + INDEX row (**re-check the INDEX tail number at write time** — 0154 is taken by PR #108's branch); de-stale `docs/HOW_IT_WORKS.md` (the "what happens when a phase fails" story now has three outcomes: transient→bounded requeue, saturation→park+cooldown, hard→terminal) and `docs/CODE_MAP.md` (errors.py signals, `fail_abandoned_phases`, `requeue_slot_saturated`).
+- [ ] **Step 3: Worklog + docs:** MASTER_MEMORY entry + INDEX row (**re-check the INDEX tail number at write time** — 0154 is taken by PR #108's branch); de-stale `docs/HOW_IT_WORKS.md` (the "what happens when a phase fails" story now has three outcomes: transient→bounded requeue, saturation→park+cooldown, hard→terminal) and `docs/CODE_MAP.md` (errors.py signals, `reset_abandoned_phases`, `requeue_slot_saturated`).
 - [ ] **Step 4: Finish:** `git fetch origin && git log HEAD..origin/Nggaev-v2` → rebase if moved + re-run suite; `git mv` this plan to `shipped/`; push `feat/queue-transient-retry`; open PR to `Nggaev-v2` for GK2 (never self-merge).
 
 ## Self-review (done at write time)
 
 - **Coverage vs the verified findings:** claim 1+3 (timeout includes slot wait / not transient) → Tasks 2+3+4+6; claim 2 (blank error) → Tasks 1+3+4; claim 4 (queue retry bypassed, incl. the broader :460 swallow) → Task 4 (c–f) + Task 7c; claim 5 (orphaned running rows) → Task 5; claim 6 (usage row) → out of scope, stated in Approach; test gap → Task 7.
-- **Type consistency:** `SlotSaturation`/`TransientPhaseError`/`PhaseAttemptTimeout` names and `fail_abandoned_phases`/`requeue_slot_saturated` signatures are identical across Tasks 1–7. `_requeue_worthy` and `_phase_error_message` defined in Task 4, consumed only there and in tests.
-- **Known open point for the implementer:** the exact accessor for a `Provider` instance in Task 2's test and the exact `_run_job` invocation shape in Task 6's test are to be copied from existing tests/greps named in the steps — flagged inline, not placeholders for behavior.
+- **Type consistency:** `SlotSaturation`/`TransientPhaseError`/`PhaseAttemptTimeout` names and `reset_abandoned_phases`/`requeue_slot_saturated`/`_finalize_if_cancelling` signatures are identical across Tasks 1–7. `_requeue_worthy` and `_phase_error_message` defined in Task 4, consumed only there and in tests.
+- **Round-2 gate corrections:** all seven folded — (1) vision-path marker fallback + regen pass-throughs (Task 4 chain-head + Task 5 Step 5b); (2) best-effort publish + DB-first ordering with raising-bus test (Task 4); (3) real scratch-DB chain (Task 7 Step 1); (4) pending-vs-failed abandoned rows (Task 5 throughout); (5) `_error_text` on the phase-ROW write (Task 4 a2); (6) cancel-wins guards on both requeue paths with regression tests (Task 6); (7) `get_provider` / `Worker._execute_job` names fixed and `_phase_kwargs` written out in full.
+- **Remaining copy-from-source points (named sources, not placeholders):** the `SessionLocal` async-context stub (from `test_pipeline_judge_status.py`), the `claim_next_job` invocation (from `test_worker_capabilities.py`), the real-DB session/seed fixture idiom (from existing `tests/repositories/` files), and the regen two-phase stub choreography (from `test_pipeline_solver.py:96-138`).
