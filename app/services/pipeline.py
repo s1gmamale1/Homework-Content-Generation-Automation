@@ -332,11 +332,11 @@ async def run(job_id: UUID) -> None:
                     session_limit_strategy=session_limit_strategy,
                     output_language=job_output_language,
                 )
-            except SessionLimitPause:
-                raise  # propagate to worker (Task 5) — job must NOT be marked failed
+            except (SessionLimitPause, SlotSaturation, TransientPhaseError):
+                raise  # propagate to worker — requeue/park, not a swallow
             except Exception:
                 # _execute_one_phase already published the error event and
-                # marked the job failed. We just unwind cleanly.
+                # marked the job failed (hard class). We just unwind cleanly.
                 return
 
             if phase_name == "extract":
@@ -402,8 +402,8 @@ async def run(job_id: UUID) -> None:
                     session_limit_strategy=session_limit_strategy,
                     output_language=job_output_language,
                 )
-            except SessionLimitPause:
-                raise  # propagate to worker (Task 5) — must not be swallowed
+            except (SessionLimitPause, SlotSaturation, TransientPhaseError):
+                raise  # propagate to worker — requeue/park, not a swallow
             except RuntimeError as exc:
                 if "content phase failed" in str(exc):
                     # _execute_one_phase already published the error and marked
@@ -457,9 +457,10 @@ async def run(job_id: UUID) -> None:
         )
         await _log_token_summary(job_id, log)
 
-    except SessionLimitPause:
-        # Worker (Task 5) catches this and requeues with a cooldown — the job
-        # must NOT be marked failed here.  Propagate after closing the SSE bus.
+    except (SessionLimitPause, SlotSaturation, TransientPhaseError):
+        # Worker (Task 5) catches this and requeues/parks with a cooldown —
+        # the job must NOT be marked failed here.  Propagate after closing
+        # the SSE bus.
         raise
     except Exception as exc:
         total_s = perf_counter() - t_start
@@ -568,20 +569,39 @@ async def _execute_one_phase(
         )
     except SessionLimitPause:
         raise  # worker requeues — job must NOT be marked failed
+    except SlotSaturation:
+        raise  # worker parks with cooldown — job must NOT be marked failed
     except Exception as exc:
         phase_ms = (perf_counter() - t_phase) * 1000
+        msg = _phase_error_message(phase_name, exc)
         log.exception(
-            f"[job {job_id}] phase '{phase_name}' FAILED after {phase_ms:.0f}ms: {exc}"
+            f"[job {job_id}] phase '{phase_name}' FAILED after {phase_ms:.0f}ms: {msg}"
         )
+        # Marker fallback (gate correction 1): saturation errors that BYPASSED
+        # _run_with_failover — the scanned-PDF vision extract (pipeline.py:1113)
+        # or any future direct agent call — must still park, never burn retries.
+        if is_slot_saturation(exc):
+            raise SlotSaturation(_error_text(exc)) from exc
+        if _requeue_worthy(exc):
+            # Do NOT mark failed here — propagate so the worker applies the
+            # bounded queue retry (mark_failed_with_retry, queue-correctness-1).
+            # Event publish is best-effort AFTER the decision: a broken bus
+            # must not eat the signal (gate correction 2).
+            await _publish_error_event(
+                resource_id, {"phase_name": phase_name, "message": msg}
+            )
+            raise TransientPhaseError(msg) from exc
+        # Hard failure: DB write FIRST (the terminal mark is the contract),
+        # event publish best-effort afterwards (gate correction 2).
         async with SessionLocal() as session:
             await jobs_repo.set_status(
                 session, job_id, "failed",
                 completed_at=_utcnow(),
-                error_message=f"{phase_name}: {exc}",
+                error_message=msg,
             )
             await session.commit()
-        await events_bus.publish(
-            resource_id, "error", {"phase_name": phase_name, "message": str(exc)}
+        await _publish_error_event(
+            resource_id, {"phase_name": phase_name, "message": msg}
         )
         raise
 
@@ -727,7 +747,7 @@ async def _run_content_phases_parallel(
                 del in_flight[phase_name]
                 try:
                     output_md, _tin, _tout, parsed_struct = task.result()
-                except SessionLimitPause:
+                except (SessionLimitPause, SlotSaturation, TransientPhaseError):
                     # Cancel in-flight peers, drain, then propagate so the worker
                     # can requeue with a cooldown.  Do NOT set failed=True — the
                     # job must NOT be marked failed on a pause.
@@ -907,6 +927,38 @@ def _custom_for(phase_name: str, custom_prompts: Optional[dict]) -> Optional[str
     `extract` is never overridden — callers pass it through harmlessly."""
     c = (custom_prompts or {}).get(phase_name)
     return c if (c and c.strip()) else None
+
+
+def _error_text(exc: BaseException) -> str:
+    """Non-blank error text: str(exc) with repr fallback (asyncio.TimeoutError
+    stringifies to ''). Shared by the JOB-row and PHASE-row writes."""
+    return str(exc).strip() or repr(exc)
+
+
+def _phase_error_message(phase_name: str, exc: BaseException) -> str:
+    """'<phase>: <reason>' with a guaranteed non-blank reason."""
+    return f"{phase_name}: {_error_text(exc)}"
+
+
+async def _publish_error_event(resource_id: str, payload: dict) -> None:
+    """Best-effort error-event publish (gate correction 2): a broken events
+    bus must NEVER swallow the failure signal — the DB write / typed raise is
+    the source of truth, the event is advisory UI."""
+    try:
+        await events_bus.publish(resource_id, "error", payload)
+    except Exception:
+        logger.exception(f"error-event publish failed for {resource_id} (non-fatal)")
+
+
+def _requeue_worthy(exc: BaseException) -> bool:
+    """Transient-only queue-retry policy (user-locked 2026-07-20): attempt
+    timeouts, rate-limit 429s, and transient net errors get the bounded
+    queue retry; hard errors and walls stay terminal (retries bill real $)."""
+    if isinstance(exc, PhaseAttemptTimeout):
+        return True
+    if agent._is_rate_limited(str(exc)):
+        return True
+    return failure_classifier.classify(exc) == "transient"
 
 
 async def _verify_source_for_section(pdf_path, book_text: str, section: dict) -> str:
@@ -1202,7 +1254,7 @@ async def _execute_phase(
             await phase_repo.set_status(
                 session, po_id, "failed",
                 completed_at=_utcnow(),
-                error_message=str(exc),
+                error_message=_error_text(exc),
             )
             await session.commit()
         raise
