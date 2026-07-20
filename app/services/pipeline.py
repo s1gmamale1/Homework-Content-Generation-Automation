@@ -18,7 +18,13 @@ from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
 from app.services import agent, book_fetch, content_lint, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, solver, storage
 from app.services.agent_models import resolve_role_transport, resolve_session_limit_strategy
-from app.services.errors import SessionLimitPause
+from app.services.errors import (
+    PhaseAttemptTimeout,
+    SessionLimitPause,
+    SlotSaturation,
+    TransientPhaseError,
+    is_slot_saturation,
+)
 from app.services.flows import (
     flow_for,
     file_needed_phases,
@@ -830,14 +836,25 @@ async def _run_with_failover(
                     timeout=settings.per_attempt_timeout_seconds,
                 )
                 return out, tin, tout, prov
-            except asyncio.TimeoutError as exc:
-                # Attempt blew per_attempt_timeout — the provider is hung / too slow.
-                # str(asyncio.TimeoutError()) == "" would misclassify as "hard"; and
-                # retrying a hung provider is futile → fail over immediately (no
-                # same-provider retry). Intercept BEFORE the classifier.
-                last_exc = exc
+            except asyncio.TimeoutError:
+                # Attempt blew per_attempt_timeout — hung/too-slow provider.
+                # Wrap in a typed, NON-BLANK error (str(asyncio.TimeoutError())
+                # is '' → the blank "<phase>: " error_message bug). Fail over
+                # immediately (no same-provider retry) exactly as before.
+                last_exc = PhaseAttemptTimeout(
+                    f"per-attempt timeout after "
+                    f"{settings.per_attempt_timeout_seconds}s "
+                    f"(provider={prov}, transport={transport})"
+                )
                 break
             except Exception as exc:  # noqa: BLE001 — classify, don't swallow
+                # Fleet credential-slot exhaustion: park the job (worker
+                # requeues with cooldown) — never classify, never retry,
+                # never mark failed. Checked BEFORE is_session_limit/classify
+                # for the same reason the session-limit check precedes
+                # classify: the '429 …' text would otherwise be misrouted.
+                if is_slot_saturation(exc):
+                    raise SlotSaturation(str(exc))
                 # ── Session-limit check MUST run BEFORE failure_classifier.classify ──
                 # "usage limit reached · resets Xam" matches _WALL in classify()
                 # (contains "limit" + "reached"). If classify ran first, the pause
