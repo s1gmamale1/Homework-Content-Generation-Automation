@@ -276,7 +276,11 @@ def validate_protocol(
 ) -> None:
     """Single-leg convenience: schemas enforce field types, THIS enforces the
     protocol. Any inconsistency raises — a malformed scorer output must never
-    flow into a clean verdict (`all([])` would otherwise fabricate one)."""
+    flow into a clean verdict (`all([])` would otherwise fabricate one). This
+    does NOT cover the zero-core-objective case — that boundary check lives
+    in `_validate_objective_tiers`, run at the examiner-output boundary, which
+    is the complement that guards the core-subset verdict from the same
+    `all([])` fabrication."""
     _validate_exam(exam)
     _validate_answers_and_grades(exam, answers_by_sitting, graded)
     _validate_coverage(exam, coverage_report)
@@ -286,7 +290,7 @@ def validate_protocol(
 class ObjectiveResult:
     objective_id: str
     statement: str
-    tier: str  # "core" | "supporting" — copied verbatim from the exam's Objective.tier
+    tier: Literal["core", "supporting"]  # copied verbatim from the exam's Objective.tier
     pre_score: float
     post_score: float
     max_score: float
@@ -976,8 +980,14 @@ def result_to_dict(result: AuditResult) -> dict:
         "learned_count": result.learned_count,
         # core-tier figures (r24 T1 R3/R5) — the verdict now keys to these;
         # the full-set numbers above are retained, just no longer the gate.
+        # core_teaching_equivalent/core_learnable are the actual --strict gate;
+        # recorded here (not just derivable from objectives) so the archived
+        # JSON is the permanent evidence of what verdict this run was gated
+        # on, immune to drift if the verdict rule changes in a later task.
         "core_total": result.core_total,
         "core_learned_count": result.core_learned_count,
+        "core_teaching_equivalent": result.core_teaching_equivalent,
+        "core_learnable": result.core_learnable,
         "objectives": [
             {
                 "objective_id": r.objective_id,

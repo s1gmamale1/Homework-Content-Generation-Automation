@@ -719,6 +719,10 @@ def test_result_to_dict_retains_evidence_identity_and_roundtrips():
     assert d["objectives"][1]["tier"] == "supporting"
     assert d["core_total"] == 1
     assert d["core_learned_count"] == 1
+    # finding 2: the archived artifact must record the gated core verdict
+    # itself, not just the figures it's derived from.
+    assert d["core_teaching_equivalent"] is True
+    assert d["core_learnable"] is True
     assert set(d["artifacts"]) == {"exam", "pre", "post", "graded", "coverage"}
     # gate-4: primary evidence — source identity + immutable snapshots + hashes
     assert d["book_id"] == "book-1" and d["toc_entry_id"] == "toc-1"
