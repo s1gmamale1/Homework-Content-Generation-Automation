@@ -99,6 +99,11 @@ re-runs the tests before the next task starts.
 - Specimen set, frozen here so before/after compares identical lessons: G8 *Muhammad
   Xorazmshohning…* (the reproducible 0/17), two further long-history packets, and one **short**-history
   packet from the same books as the control.
+- **Gate condition 1 — pin the job UUIDs.** The selection of "two further long-history packets" is
+  resolved *once*, at T2, and the chosen **job IDs are written into the committed baseline dir**
+  (`specimens.json`: job_id, book_id, toc_entry_id, lesson title, page span). T6 regenerates and T7
+  re-audits **those exact job IDs**. Before/after integrity depends on identical jobs, not on
+  re-resolving a name.
 - Run `scripts/teaching_audit.py --job <id>` per specimen; persist raw JSON under
   `docs/research/2026-07-20-r24-baseline/` — **committed, not `/tmp`** (the $0.70 lesson).
 - Deliverable: a before-table of `core_learned/core_total` per specimen. ~$0.80, reported.
@@ -135,8 +140,13 @@ re-runs the tests before the next task starts.
 
 ### T6 — Regenerate the frozen specimens on the new prompts
 
-- Re-run generation for the T2 specimen jobs, `transport=api`. ~$3.50, reported. Bounded to the
-  frozen set — no sweep.
+- Re-run generation for the T2 specimen jobs (**the pinned UUIDs**), `transport=api`. ~$3.50,
+  reported. Bounded to the frozen set — no sweep.
+- **Gate condition 2 — prompt-cache freshness.** `prompts/_general/` is cached in-process (standing
+  repo lesson: restart workers after prompt edits). The regeneration must **demonstrably** load the
+  T4/T5 text: either restart the worker or run in a fresh process, and **state in the worklog which
+  was done**. A regeneration served from a stale cache would silently measure the OLD prompts and
+  produce a false negative for the whole plan.
 
 ### T7 — Acceptance: re-audit, compare, close
 
@@ -145,6 +155,10 @@ re-runs the tests before the next task starts.
   (the control is the load-bearing comparison — same books, same authors, span the only variable),
   and the G8 0/17 specimen moves off zero. A rise in *total* learned that leaves core flat is
   **not** success.
+- **Gate condition 3 — re-run the deterministic script** (`docs/research/2026-07-20-teaching-audit-drill-density.py`,
+  $0) over the post-change corpus as a scheduled acceptance step, not merely a mentioned risk. It is
+  the instrument that found R24 and it is the only wide check against the 4-specimen sample; report
+  the items/fact figures before and after.
 - Re-run CQ-E golden-set; re-freeze baselines or record the expected shift.
 - Full suite green; write `docs/research/2026-07-20-r24-after.md`, worklog entry (**re-check the
   INDEX tail at finish — 0153 is the current tail, but numbers go stale between write and merge**),
