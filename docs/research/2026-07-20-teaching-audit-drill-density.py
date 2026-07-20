@@ -14,18 +14,28 @@ Facts are proxied by countable surface markers in the EXTRACT (the lesson's own
 factual summary): years, numbers, and capitalised proper nouns.
 Drill items are proxied by countable question/card markers in the student-facing
 phases (flashcards, memory-check, practices, boss-arena).
+
+NOTE: the corpus takes EVERY done job, not the latest per toc_entry (unlike the
+batch rollup's DISTINCT ON), so a re-generated lesson is weighted more than once.
+Deliberate — each generated packet is an independent observation of the drill
+budget — but it means n is packets, not distinct lessons.
 """
-import asyncio, json, re, sys
+import asyncio, json, pathlib, re, sys
 from collections import defaultdict
 from dotenv import load_dotenv
-load_dotenv(".env", override=True)
-sys.path.insert(0, ".")
+_ROOT = pathlib.Path(__file__).resolve().parents[2]  # repo root, so any cwd works
+load_dotenv(_ROOT / ".env", override=True)
+sys.path.insert(0, str(_ROOT))
 from sqlalchemy import text
 from app.db import SessionLocal
 
+# MUST match flows._BASE_PHASES + flows._GAMES + boss-arena exactly — a name that
+# doesn't exist is silently skipped by phases.get(p, "") and under-counts every
+# packet. (Gate review 2026-07-20 caught "memory-match"/"tictactoe" here; the real
+# names carry the `practice-` prefix, so 2 of 9 drill phases were excluded.)
 DRILL_PHASES = ("flashcards", "memory-check", "practice-rlc", "practice-jigsaw",
                 "practice-error-detection", "practice-sentence", "boss-arena",
-                "memory-match", "tictactoe")
+                "practice-memory-match", "practice-tictactoe")
 
 YEAR  = re.compile(r"\b1[0-9]{3}\b|\b20[0-2][0-9]\b")
 NUM   = re.compile(r"\b\d{1,3}(?:[ ,]\d{3})+\b|\b\d+(?:[.,]\d+)?\s?(?:%|ming|million|mln|km|kg)\b", re.I)
@@ -87,6 +97,6 @@ async def main():
         f = sum(x["facts"] for x in g)/len(g); i = sum(x["items"] for x in g)/len(g)
         rr = sorted(x["ratio"] for x in g)[len(g)//2]
         print(f"    {sub:<18} n={len(g):<4} avg facts={f:>6.1f}  avg items={i:>6.1f}  median items/fact={rr:.2f}")
-    json.dump(recs, open("docs/research/2026-07-20-teaching-audit-drill-density-data.json","w"), indent=1)
+    json.dump(recs, open(_ROOT / "docs/research/2026-07-20-teaching-audit-drill-density-data.json", "w"), indent=1)
     print("\n  raw -> docs/research/2026-07-20-teaching-audit-drill-density-data.json")
 asyncio.run(main())

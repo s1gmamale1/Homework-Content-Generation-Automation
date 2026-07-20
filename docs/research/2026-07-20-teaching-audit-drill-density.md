@@ -35,7 +35,7 @@ objective carried `coverage=taught` — the packet *does* cover the lesson.
 against its own prompt and extract and therefore cannot observe that the packet
 under-teaches its source lesson. Only an exam derived from the textbook can.
 
-## 2. The mechanism (deterministic, 1,334 packets, $0)
+## 2. The mechanism (deterministic, 1,362 packets, $0)
 
 The flow is a **fixed 11-phase set regardless of lesson size** (`flows.flow_for`:
 `_BASE_PHASES` + `_GAMES` + boss-arena + reflection), so the drill budget does not
@@ -45,27 +45,30 @@ student-facing phases (list/heading items + question marks):
 
 | Lesson length | n | avg facts | avg drill items | median items/fact |
 |---|---|---|---|---|
-| short (0–3pp) | 804 | 25.3 | 177.0 | **8.05** |
-| mid (4–6pp) | 408 | 44.2 | 180.0 | **4.83** |
-| long (7+pp) | 122 | 48.6 | 184.4 | **4.75** |
+| short (0–3pp) | 825 | 25.2 | 202.4 | **9.14** |
+| mid (4–6pp) | 412 | 44.2 | 205.0 | **5.56** |
+| long (7+pp) | 125 | 48.2 | 209.6 | **5.56** |
 
-Drill items move **+4%** (177 → 184) while facts nearly **double** (25 → 49).
+Drill items move **+3.6%** (202 → 210) while facts nearly **double** (25 → 48).
 Practice volume is effectively constant; the material it must cover is not.
+Note the shape: items-per-fact drops **39%** from short to mid and then goes
+**flat** — the budget saturates, so beyond ~4pp extra lesson length buys a student
+no extra practice at all.
 
 By subject, long lessons only — this is why history is the visible casualty:
 
 | Subject (7+pp) | n | avg facts | avg items | median items/fact |
 |---|---|---|---|---|
-| **history** | 50 | **81.6** | 175.5 | **2.24** |
-| biology | 7 | 38.1 | 178.0 | 4.82 |
-| geometry | 23 | 25.2 | 168.3 | 7.75 |
-| chemistry | 9 | 20.1 | 218.4 | 10.96 |
-| algebra | 17 | 23.8 | 195.5 | 16.07 |
-| maths (g6) | 6 | 19.8 | 144.7 | 10.62 |
-| physics | 4 | 20.2 | 168.5 | 9.10 |
+| **history** | 50 | **81.6** | 200.6 | **2.57** |
+| biology | 7 | 38.1 | 204.6 | 5.65 |
+| geometry | 23 | 25.2 | 194.8 | 8.83 |
+| chemistry | 12 | 22.8 | 232.5 | 11.74 |
+| maths (g6) | 6 | 19.8 | 169.2 | 12.77 |
+| physics | 4 | 20.2 | 195.0 | 10.33 |
+| algebra | 17 | 23.8 | 220.2 | 17.93 |
 
 History isn't special *as history*; it is special as the most fact-dense subject
-in the corpus — 3–4× the discrete facts of any other — so the fixed budget divides
+in the corpus — 2–3.4× the discrete facts of any other — so the fixed budget divides
 furthest. The deterministic side covers **50 long-history packets** against the
 audit's 6, retiring the audit's single-corpus sampling limit.
 
@@ -98,9 +101,19 @@ audit's 6, retiring the audit's single-corpus sampling limit.
   re-runnability, not semantic precision. They are comparable *across* lessons
   because the same regexes apply everywhere; they are not absolute counts.
 - Packets with fewer than 5 detected facts, or no drill phases, are excluded.
+- The corpus takes **every** done job, not the latest per `toc_entry` (unlike the
+  batch rollup's `DISTINCT ON`), so a re-generated lesson is weighted more than
+  once. Deliberate — each packet is an independent observation of the drill budget
+  — but it means **n counts packets, not distinct lessons**.
 - Span is `page_end - page_start` from the TOC (printed page numbers).
-- **The corpus grows as generation continues, and the result is stable.** The tables
-  above are the 1,334-packet snapshot; an immediate re-run at 1,362 packets gave
-  short 8.04 vs 8.05, long 4.82 vs 4.75, and long-history **2.24 items/fact —
-  identical**. Expect the committed dataset to lag the live DB; re-run the script
-  rather than trusting the JSON's row count.
+- **The corpus grows as generation continues; re-run rather than trusting the JSON's
+  row count.** The tables above are the 1,362-packet snapshot.
+- **Correction (gate review, 2026-07-20).** The first version of this script listed
+  the two mini-game phases as `memory-match`/`tictactoe`, but `flows._GAMES` names
+  them `practice-memory-match`/`practice-tictactoe` — and `phases.get(p, "")`
+  skips a missing name **silently**, so 2 of 9 drill phases were excluded and every
+  item count was understated by ~13%. Corrected figures are above (long: 184.4 →
+  209.6 items, 4.75 → 5.56 items/fact; long history 2.24 → 2.57). **The conclusion
+  is unchanged** — items flat, facts doubling, history the extreme by ~2× over the
+  next-worst subject — but the absolute numbers here supersede any earlier quote.
+  `DRILL_PHASES` now carries a comment requiring it to track `flows._GAMES`.
