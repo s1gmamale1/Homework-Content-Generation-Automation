@@ -507,8 +507,6 @@ def test_slot_saturation_passes_through_unmarked(monkeypatch):
     set_status.assert_not_awaited()
 ```
 
-  The implementer fills `_phase_kwargs` from the real signature (pipeline.py:485-564) — every parameter, `phase_name="extract"`, `transport="api"`; `events_bus.publish` monkeypatched with `AsyncMock()`; `SessionLocal` monkeypatched with the same async-context stub `test_pipeline_judge_status.py` uses.
-
 - [ ] **Step 2: Run to verify fail** — `uv run python -m pytest tests/services/test_pipeline_transient_propagation.py -q` → helpers missing / wrong propagation.
 - [ ] **Step 3: Implement** in `pipeline.py`:
 
@@ -809,7 +807,8 @@ except Exception → _mark_failed handler burns an attempt."""
 
   `tests/repositories/test_jobs_requeue_slot.py` (real-DB-marked, scratch-DB):
   - seed a job `status='running', attempts=2, claimed_by='w'`; call `requeue_slot_saturated(cooldown_seconds=90)` → returns `"parked"`; assert `status=='pending'`, `attempts==1` (refund), `claimed_by is None`, `current_phase is None`, and `scheduled_at > now() + 60s` (DB clock) — RED-proof the interval lands in SQL.
-  - **cancel-wins regression (gate correction 6):** seed `status='cancelling'`; `requeue_slot_saturated` → returns `"cancelled"`, job finalized `status=='cancelled'` with `completed_at` set — NEVER `pending`. Same for `mark_failed_with_retry` on a `cancelling` job → `"cancelled"`, never `pending`/attempt-burn. RED-proof: without the status guard both resurrect the job to `pending`.
+  - **cancel-wins regression (gate correction 6):** seed `status='cancelling'` plus one `running` phase row; `requeue_slot_saturated` → returns `"cancelled"`, job finalized `status=='cancelled'` with `completed_at` set and the phase row `failed` (mark_cancelled semantics) — NEVER `pending`. Same for `mark_failed_with_retry` on a `cancelling` job → `"cancelled"`, never `pending`/attempt-burn. RED-proof: without the status guard both resurrect the job to `pending`.
+  - **stale-identity-map interleaving (round-3 correction 2):** the REAL race, two sessions on the scratch DB — session A: `await session_a.get(HomeworkJob, job_id)` (loads `running` into A's identity map, exactly what `mark_failed_with_retry` does at entry); session B: `UPDATE … SET status='cancelling'` + commit; session A: call `mark_failed_with_retry(session_a, …)` → its guarded UPDATE matches 0 rows and the helper's FRESH column read must see `cancelling` → returns `"cancelled"`, job finalized. RED-proof: with `session.get` in the helper, A's stale identity-map copy still reads `running` → outcome `"skipped"` and the job is left stuck `cancelling`.
 
 - [ ] **Step 2: Run to verify fail** — both files → FAIL (missing function/branch).
 - [ ] **Step 3: Implement:**
@@ -829,19 +828,22 @@ except Exception → _mark_failed handler burns an attempt."""
 ```python
 async def _finalize_if_cancelling(session: AsyncSession, job_id: UUID) -> str:
     """Cancel-wins helper (gate correction 6): when a guarded requeue/retry
-    UPDATE matched 0 rows, the job's status changed under us. If a user
-    cancel won (status='cancelling'), finalize it as cancelled — a stopped
-    job must never be resurrected to pending. Returns the outcome."""
-    job = await session.get(HomeworkJob, job_id)
-    if job is None:
+    UPDATE matched 0 rows, the job's status changed under us. The caller may
+    already hold this job in the session's identity map (mark_failed_with_retry
+    loads it at entry), so `session.get` would return the STALE pre-cancel
+    object (the BE-02 expire-before-re-fetch lesson) — re-read the status as
+    a fresh column scalar instead. If a user cancel won, finalize via the
+    existing mark_cancelled semantics (job -> cancelled AND every non-done
+    phase row -> failed). A stopped job must never resurrect to pending."""
+    status = await session.scalar(
+        select(HomeworkJob.status)
+        .where(HomeworkJob.id == job_id)
+        .execution_options(populate_existing=True)
+    )
+    if status is None:
         return "skipped"
-    if job.status == "cancelling":
-        await session.execute(
-            update(HomeworkJob)
-            .where(HomeworkJob.id == job_id, HomeworkJob.status == "cancelling")
-            .values(status="cancelled", completed_at=func.now(),
-                    claimed_at=None, claimed_by=None, current_phase=None)
-        )
+    if status == "cancelling":
+        await mark_cancelled(session, job_id)   # jobs.py:796 — job + phase rows
         return "cancelled"
     return "skipped"
 
@@ -949,10 +951,20 @@ hung provider call itself."""
   Choreography (all against the RUN_DB_INTEGRATION scratch DB, session fixture + seeding idiom copied from the existing `tests/repositories/` real-DB files):
   1. Seed: a `books` row (`status='toc_ready'`, `grade='9'`, `subject='history'`, tiny scratch PDF written to `book_pdf_path(book_id)`), one `toc_entries` row, one `homework_jobs` row (`provider='gemini'`, `model='gemini-2.5-flash'`, `transport='api'`, `status='pending'`, `attempts=0`).
   2. Stub ONLY the provider boundary + timers: `monkeypatch.setattr(settings, "per_attempt_timeout_seconds", 0.05)`; `pipeline.agent.read_whole_book_text` → returns `"book text"`; `pipeline.agent.summarize_lesson` → `async` fn that `await asyncio.sleep(60)` (the hang — this sits INSIDE `_run_with_failover`'s `run_fn`, so the extract phase times out for real). `events_bus` publish left real (Postgres NOTIFY works on the scratch DB) or patched `AsyncMock` if the test env lacks LISTEN.
-  3. Claim for real: `jobs_repo.claim_next_job(session, worker_id=..., capabilities=...)` (copy the exact invocation from `tests/services/test_worker_capabilities.py`) → job `running`.
+  3. Claim for real (`capabilities=None` is all-False/cli-only — an api job needs the explicit caps; seed the job's stamped `judge_provider='gemini'`, `extract_provider='gemini'`, `solver_provider='gemini'` so every role gates on the one flag):
+
+```python
+job = await jobs_repo.claim_next_job(
+    session, worker_id="e2e-worker", max_attempts=3,
+    capabilities={"can_gemini_api": True, "can_claude_api": False,
+                  "can_clodex_api": False},
+)
+assert job is not None and job.status == "running" and job.attempts == 1
+```
+
   4. Drive `await Worker(concurrency=1)._execute_job(job_id)` (worker.py:485).
   5. Assert first pass: `status == 'pending'`, `attempts == 1`, `scheduled_at > now()` (DB clock), `last_error` contains `"per-attempt timeout"` and is NOT blank after the colon.
-  6. Fast-forward: `UPDATE homework_jobs SET attempts = <queue_max_attempts>, scheduled_at = now()`; re-claim; drive `_execute_job` again.
+  6. Fast-forward: `UPDATE homework_jobs SET attempts = <queue_max_attempts - 1>, scheduled_at = now()` — the claim gate only takes rows with `attempts < max_attempts` and the claim itself increments, so `max_attempts - 1` re-claims and arrives at the terminal value (round-3 correction 1: seeding `= max_attempts` would make the re-claim return None). Re-claim; drive `_execute_job` again.
   7. Assert terminal: `status == 'failed'`, `error_message` contains `"per-attempt timeout"`, `completed_at` set.
 - [ ] **Step 2: Supplementary fast links (no flag)** — keep the cheap per-link tests as regression pins: (a) `_run_with_failover` + hung `run_fn` → `PhaseAttemptTimeout`; (b) `pipeline.run` with `_execute_one_phase` raising `TransientPhaseError` → propagates (RED-proof vs today's swallow at :460, `events_bus` stubbed); (c) `mark_failed_with_retry` seeded `attempts=1` → `"pending"` + future `scheduled_at`, seeded `attempts=3` → `"failed"` (real-DB-marked).
 - [ ] **Step 3: Run** — `RUN_DB_INTEGRATION=1 DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_scratch_qc uv run python -m pytest tests/services/test_queue_retry_e2e.py -q` → green; then without the flag → the marked chain skips, fast links green.
@@ -981,4 +993,5 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - **Coverage vs the verified findings:** claim 1+3 (timeout includes slot wait / not transient) → Tasks 2+3+4+6; claim 2 (blank error) → Tasks 1+3+4; claim 4 (queue retry bypassed, incl. the broader :460 swallow) → Task 4 (c–f) + Task 7c; claim 5 (orphaned running rows) → Task 5; claim 6 (usage row) → out of scope, stated in Approach; test gap → Task 7.
 - **Type consistency:** `SlotSaturation`/`TransientPhaseError`/`PhaseAttemptTimeout` names and `reset_abandoned_phases`/`requeue_slot_saturated`/`_finalize_if_cancelling` signatures are identical across Tasks 1–7. `_requeue_worthy` and `_phase_error_message` defined in Task 4, consumed only there and in tests.
 - **Round-2 gate corrections:** all seven folded — (1) vision-path marker fallback + regen pass-throughs (Task 4 chain-head + Task 5 Step 5b); (2) best-effort publish + DB-first ordering with raising-bus test (Task 4); (3) real scratch-DB chain (Task 7 Step 1); (4) pending-vs-failed abandoned rows (Task 5 throughout); (5) `_error_text` on the phase-ROW write (Task 4 a2); (6) cancel-wins guards on both requeue paths with regression tests (Task 6); (7) `get_provider` / `Worker._execute_job` names fixed and `_phase_kwargs` written out in full.
-- **Remaining copy-from-source points (named sources, not placeholders):** the `SessionLocal` async-context stub (from `test_pipeline_judge_status.py`), the `claim_next_job` invocation (from `test_worker_capabilities.py`), the real-DB session/seed fixture idiom (from existing `tests/repositories/` files), and the regen two-phase stub choreography (from `test_pipeline_solver.py:96-138`).
+- **Remaining copy-from-source points (named sources, not placeholders):** the `SessionLocal` async-context stub (from `test_pipeline_judge_status.py`), the real-DB session/seed fixture idiom (from existing `tests/repositories/` files), and the regen two-phase stub choreography (from `test_pipeline_solver.py:96-138`). The `claim_next_job` invocation is now written out verbatim in Task 7.
+- **Round-3 corrections folded:** (1) Task 7 final-attempt seeding is `max_attempts - 1` (claim gate requires `attempts < max_attempts`; the claim increments to terminal); (2) `_finalize_if_cancelling` re-reads status as a fresh column scalar (stale-identity-map bug — `session.get` would return the caller's pre-cancel copy) and finalizes through `mark_cancelled` (jobs.py:796) so non-done phase rows go `failed` too, proven by a two-session interleaving test; (3) placeholders removed — exact claim invocation written, stale `_phase_kwargs` sentence deleted.
