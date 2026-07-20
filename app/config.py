@@ -190,6 +190,12 @@ class Settings(BaseSettings):
     # (codex-review #1).
     credential_slot_wait_seconds: int = Field(default=120, ge=1)
 
+    # Cooldown for a job parked by fleet credential-slot saturation
+    # (queue-correctness-1): status='pending' with scheduled_at pushed this
+    # far into the future. Attempt is refunded — saturation is back-pressure,
+    # not a job defect.
+    slot_saturation_requeue_seconds: int = Field(default=90, ge=1)
+
     # ─── Extract robustness (local-text + gates) ──────────────────────────
     # Whole-book local text is injected into the extract prompt; if the book's
     # text exceeds this it terminal-fails here by design (large-book generation

@@ -56,7 +56,7 @@ from app.services import (
     providers,
     sa_key_apply,
 )
-from app.services.errors import SessionLimitPause
+from app.services.errors import SessionLimitPause, SlotSaturation
 from app.services.storage import sa_key_active_path
 
 # Throttle window for the version-gate STALE log — the poll loop runs every
@@ -553,6 +553,26 @@ class Worker:
                     f"worker {self.id} job={job_id} session-limit → requeued + "
                     f"worker cooldown until {self._cooldown_until.isoformat()}"
                 )
+            except SlotSaturation as e:
+                # Fleet credential saturation: park the job with a cooldown.
+                # No worker cooldown (unlike session-limit) — jobs billing
+                # OTHER credentials must keep claiming.
+                outcome = "error"
+                try:
+                    async with SessionLocal() as session:
+                        outcome = await jobs_repo.requeue_slot_saturated(
+                            session, job_id, error=str(e),
+                            cooldown_seconds=settings.slot_saturation_requeue_seconds,
+                        )
+                        await session.commit()
+                except Exception:
+                    logger.exception(
+                        f"worker {self.id} job={job_id} requeue_slot_saturated failed"
+                    )
+                logger.warning(
+                    f"worker {self.id} job={job_id} slot saturation → {outcome} "
+                    f"(+{settings.slot_saturation_requeue_seconds}s): {e}"
+                )
             except Exception as exc:
                 logger.exception(
                     f"worker {self.id} job={job_id} CRASHED: {exc!r}"
@@ -579,9 +599,21 @@ class Worker:
                 logger.error(
                     f"worker {self.id} job={job_id} TERMINAL failure: {error_message}"
                 )
-            else:
+            elif outcome == "pending":
                 logger.warning(
                     f"worker {self.id} job={job_id} will retry: {error_message}"
+                )
+            elif outcome == "cancelled":
+                logger.warning(
+                    f"worker {self.id} job={job_id} cancel-wins: finalized cancelled "
+                    f"instead of retry: {error_message}"
+                )
+            else:
+                # "skipped" / "missing" — the job vanished or moved to some
+                # other terminal state under us; nothing more to do here.
+                logger.warning(
+                    f"worker {self.id} job={job_id} mark_failed_with_retry → "
+                    f"{outcome}: {error_message}"
                 )
         except Exception:
             # If the DB itself is down we can't do much; the stuck-job

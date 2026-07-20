@@ -669,11 +669,14 @@ async def mark_failed_with_retry(
     if job is None:
         return "missing"
 
+    if job.status == "cancelling":
+        return await _finalize_if_cancelling(session, job_id)
+
     if job.attempts >= max_attempts:
         # Terminal: stay in failed, store the error.
-        await session.execute(
+        result = await session.execute(
             update(HomeworkJob)
-            .where(HomeworkJob.id == job_id)
+            .where(HomeworkJob.id == job_id, HomeworkJob.status == "running")
             .values(
                 status="failed",
                 completed_at=func.now(),
@@ -683,13 +686,15 @@ async def mark_failed_with_retry(
                 claimed_by=None,
             )
         )
+        if result.rowcount == 0:
+            return await _finalize_if_cancelling(session, job_id)
         return "failed"
 
     # Retry: bump scheduled_at by exponential backoff (30s, 60s, 120s, ...).
     delay = backoff_seconds * (2 ** (job.attempts - 1))
-    await session.execute(
+    result = await session.execute(
         update(HomeworkJob)
-        .where(HomeworkJob.id == job_id)
+        .where(HomeworkJob.id == job_id, HomeworkJob.status == "running")
         .values(
             status="pending",
             scheduled_at=func.now() + func.make_interval(0, 0, 0, 0, 0, 0, delay),
@@ -699,6 +704,8 @@ async def mark_failed_with_retry(
             claimed_by=None,
         )
     )
+    if result.rowcount == 0:
+        return await _finalize_if_cancelling(session, job_id)
     return "pending"
 
 
@@ -731,6 +738,63 @@ async def requeue_session_limited(
             scheduled_at=func.now(),
         )
     )
+
+
+async def _finalize_if_cancelling(session: AsyncSession, job_id: UUID) -> str:
+    """Cancel-wins helper (gate correction 6): when a guarded requeue/retry
+    UPDATE matched 0 rows, the job's status changed under us. The caller may
+    already hold this job in the session's identity map (mark_failed_with_retry
+    loads it at entry), so `session.get` would return the STALE pre-cancel
+    object (the BE-02 expire-before-re-fetch lesson) — re-read the status as
+    a fresh column scalar instead. If a user cancel won, finalize via the
+    existing mark_cancelled semantics (job -> cancelled AND every non-done
+    phase row -> failed). A stopped job must never resurrect to pending."""
+    status = await session.scalar(
+        select(HomeworkJob.status)
+        .where(HomeworkJob.id == job_id)
+        .execution_options(populate_existing=True)
+    )
+    if status is None:
+        return "skipped"
+    if status == "cancelling":
+        await mark_cancelled(session, job_id)   # jobs.py:796 — job + phase rows
+        return "cancelled"
+    return "skipped"
+
+
+async def requeue_slot_saturated(
+    session: AsyncSession,
+    job_id: UUID,
+    *,
+    error: str,
+    cooldown_seconds: int,
+) -> str:
+    """Park a job whose api call exhausted the fleet credential-slot wait.
+
+    Like requeue_session_limited: attempt refunded (claim's increment is
+    compensated), claim cleared, NOT failed. Unlike it: scheduled_at is
+    pushed cooldown_seconds into the future (DB clock) so the fleet backs
+    off the saturated credential instead of thrashing re-claims.
+
+    Guarded on status='running' (gate correction 6): a concurrent cancel
+    must win — returns "parked", "cancelled", or "skipped"."""
+    result = await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.id == job_id, HomeworkJob.status == "running")
+        .values(
+            status="pending",
+            attempts=func.greatest(HomeworkJob.attempts - 1, 0),
+            claimed_at=None,
+            claimed_by=None,
+            current_phase=None,
+            last_error=error,
+            scheduled_at=func.now()
+            + func.make_interval(0, 0, 0, 0, 0, 0, cooldown_seconds),
+        )
+    )
+    if result.rowcount > 0:
+        return "parked"
+    return await _finalize_if_cancelling(session, job_id)
 
 
 async def queue_depth(session: AsyncSession) -> int:
