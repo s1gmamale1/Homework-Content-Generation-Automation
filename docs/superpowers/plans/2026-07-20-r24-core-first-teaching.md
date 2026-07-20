@@ -121,21 +121,46 @@ re-runs the tests before the next task starts.
   not vacuous); **Gate B (`agent.py:1425` `contract_has_items`) still passes** when `## Core
   objectives` is the first heading — verify, don't assume.
 
-### T4 — Flashcards: resolve the self-conflict, allocate core-first
+### T4 — Flashcards: resolve the self-conflict, allocate core-first as a DEPTH TRADE
 
-- `prompts/_general/flashcards.md`: replace the "extract **every** key term…" instruction (`:3`)
-  with an explicitly *selective* one, and add a core-first allocation rule — **every core objective
-  gets at least one card before any peripheral card is written**; when the lesson's material
-  exceeds the band, drop peripheral detail, never core. Grade bands at `:15-17` unchanged.
-- Update the `:123` self-check line to include the core-coverage requirement.
-- Test: prompt-text assertions are weak by nature — assert the conflicting phrasing is gone and the
-  core clause present; the **real** proof is T7.
+**Reframed after T2 (approved within shape (2), 2026-07-20).** The baseline proved a floor-rule
+("≥1 card per core objective") is a **no-op**: every core objective already scored
+`coverage=taught`, and 8 of 12 were still `not_learnable`. The long packets fail on **depth, not
+coverage**. So T4 is a **trade**, not an addition: peripheral breadth is spent *down* so the fixed
+~12-card budget lands on the **same** core objectives **repeatedly, from multiple angles**
+(definition → application → misconception → contrast), which is what moves an objective from
+"present" to "learned".
 
-### T5 — Memory-check and boss-arena anchor to core
+- `prompts/_general/flashcards.md`:
+  - Replace the "extract **every** key term…" instruction (`:3`) with an explicitly *selective*
+    one keyed to the extract's `## Core objectives`.
+  - Add the **depth-trade allocation rule**: the card budget is spent to give each core objective
+    **multiple cards attacking it from different angles**, and peripheral detail is **cut** to buy
+    that depth — not "one card each then move on". When the lesson's material exceeds the band, drop
+    periphery, never core depth. Grade bands at `:15-17` unchanged (the budget is fixed; only its
+    *allocation* changes).
+- **Reconcile the anti-concentration conflict (mandatory — same R14 class the plan diagnoses).**
+  The `:123` self-check carries "no micro-skill exceeds ~1/3 of cards" and "the deck covers ≥3
+  sub-skills". Deliberately concentrating ~12 cards on 3–4 core objectives is exactly what those
+  rules forbid, so the model must not be left to arbitrate two contradictory instructions.
+  **Resolution:** those anti-concentration caps are **scoped to the periphery** — they govern
+  *supporting* material (their original purpose: stop one incidental micro-skill crowding out the
+  lesson) and **do not apply to core objectives, which are intended to be drilled repeatedly**.
+  Rewrite the `:123` self-check and the sub-skill lines (`:59-66`) to say this explicitly (e.g.
+  "no *supporting* micro-skill exceeds ~1/3 of the *peripheral* cards; core objectives are exempt —
+  depth on core is the goal"). Do NOT simply delete the caps — periphery still needs them.
+- Test: prompt-text assertions are weak by nature — assert (a) the "extract every key term" phrasing
+  is gone, (b) the depth-trade/multiple-angles clause is present, (c) the anti-concentration cap is
+  re-scoped to periphery and no longer reads as an unconditional deck-wide cap. The **real** proof
+  is T7.
 
-- `prompts/_general/memory-check.md:16`: items must trace to cards carrying **core** objectives.
+### T5 — Memory-check and boss-arena anchor to core (depth, not breadth)
+
+- `prompts/_general/memory-check.md:16`: items must trace to cards carrying **core** objectives, and
+  the 8–12 items concentrate on the core rather than sampling every card once.
 - `prompts/_general/boss-arena.md:20`: the 4–6 questions must target core objectives (it already
-  targets "skills flagged as weak"; make core the primary axis).
+  targets "skills flagged as weak"; make core the primary axis) — repeated core exposure from a
+  reasoning angle, complementing flashcards' recall angle.
 - Tests as T4.
 
 ### T6 — Regenerate the frozen specimens on the new prompts
