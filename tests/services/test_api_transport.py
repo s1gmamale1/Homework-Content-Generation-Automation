@@ -118,17 +118,15 @@ def test_gemini_client_credentials(monkeypatch):
 
 
 # ---- Vertex per-model location router (Task 1) ----
-# Verified live 2026-07-16: gemini-2.5-flash 429s (quota exhausted) on the
-# Vertex `global` endpoint across all pool projects, but serves fine on
-# regional endpoints (us-central1/europe-west4). gemini-3-flash-preview and
-# gemini-3.1-pro-preview are the inverse — global-only, 404 on regional
-# endpoints. These tests pin the router that picks the right endpoint per
-# model, with an env escape hatch for ops without a redeploy.
+# The 2026-07-16 global DSQ incident cleared by 2026-07-20, while production
+# data showed recurring us-central1 congestion. Gemini 2.5 Flash therefore
+# defaults to global again. GEMINI_MODEL_LOCATIONS remains the per-model
+# emergency override.
 
 def test_location_for_default_map(monkeypatch):
     monkeypatch.delenv("GEMINI_MODEL_LOCATIONS", raising=False)
     monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
-    assert api_transport._location_for("gemini-2.5-flash") == "us-central1"
+    assert api_transport._location_for("gemini-2.5-flash") == "global"
     assert api_transport._location_for("gemini-3-flash-preview") == "global"
 
 
@@ -136,7 +134,7 @@ def test_location_for_env_default_applies_only_to_unmapped_models(monkeypatch):
     monkeypatch.delenv("GEMINI_MODEL_LOCATIONS", raising=False)
     monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "europe-west4")
     assert api_transport._location_for("gemini-3-flash-preview") == "europe-west4"
-    assert api_transport._location_for("gemini-2.5-flash") == "us-central1"   # still mapped
+    assert api_transport._location_for("gemini-2.5-flash") == "global"   # still mapped
 
 
 def test_location_for_env_json_overrides_default_map(monkeypatch):
@@ -153,7 +151,7 @@ def test_location_for_malformed_json_falls_back_and_logs(monkeypatch, caplog):
     monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
     with caplog.at_level(logging.ERROR):
         result = api_transport._location_for("gemini-2.5-flash")
-    assert result == "us-central1"        # falls back to the built-in default map
+    assert result == "global"        # falls back to the built-in default map
     assert any("GEMINI_MODEL_LOCATIONS" in r.message for r in caplog.records)
 
 
@@ -171,7 +169,7 @@ def test_gemini_client_vertex_uses_location_router(monkeypatch):
     # the router's location — the LOCATION assertions stay strict.
     assert seen["vertexai"] is True
     assert seen["project"] == "p"
-    assert seen["location"] == "us-central1"
+    assert seen["location"] == "global"
 
 
 def test_gemini_client_api_key_branch_ignores_location_map(monkeypatch):
@@ -527,7 +525,7 @@ def test_location_for_invalid_entry_values_dropped(monkeypatch, caplog):
     )
     with caplog.at_level(logging.ERROR):
         # invalid override for 2.5-flash is DROPPED -> built-in default applies
-        assert _location_for("gemini-2.5-flash") == "us-central1"
+        assert _location_for("gemini-2.5-flash") == "global"
         # invalid entries for unmapped models fall through to "global"
         assert _location_for("gemini-3-flash-preview") == "global"
         assert _location_for("gemini-2.5-pro") == "global"

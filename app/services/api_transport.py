@@ -61,13 +61,13 @@ def _mime_for(path: Path) -> str:
     return "application/pdf"  # the only current case (window subsets are PDFs)
 
 
-# Verified live 2026-07-16: gemini-2.5-flash 429s (quota exhausted) on the
-# Vertex `global` endpoint across every pool project, but serves fine on
-# regional endpoints (us-central1/europe-west4). gemini-3-flash-preview and
-# gemini-3.1-pro-preview are the inverse — global-only, 404 on regional
-# endpoints. This is the built-in fallback map; ops can override/extend it
-# per-model via the GEMINI_MODEL_LOCATIONS env var without a redeploy.
-_DEFAULT_MODEL_LOCATIONS = {"gemini-2.5-flash": "us-central1"}
+# 2026-07-16: the Vertex global DSQ pool returned 429 across every pool
+# project, so PR #97 temporarily routed gemini-2.5-flash to us-central1.
+# 2026-07-20: global had recovered while production us-central1 congestion
+# reached ~30% fleet-wide and effectively hard-downed two projects. Default
+# back to global to avoid pinning PayGo traffic to one regional DSQ pool.
+# GEMINI_MODEL_LOCATIONS remains the no-deploy per-model rollback lever.
+_DEFAULT_MODEL_LOCATIONS = {"gemini-2.5-flash": "global"}
 
 
 def _location_for(model: str) -> str:
