@@ -487,6 +487,36 @@ async def _emit_started(resource_id: str, phase_name: str, phase_order: int) -> 
     )
 
 
+async def _abandon_inflight(
+    job_id: UUID, phase_names: list[str], status: str, reason: str
+) -> None:
+    """Best-effort, cancellation-shielded reset of orphaned phase rows.
+    Mirrors worker.py's shielded cancel-finalize craft: a cancellation
+    delivered while this write runs must not kill the write.
+
+    status='pending' when the JOB is being requeued/parked (transient /
+    saturation / pause — rows are waiting); status='failed' on hard failure
+    or user cancel (gate correction 4)."""
+    if not phase_names:
+        return
+    async def _do() -> None:
+        try:
+            async with SessionLocal() as session:
+                await phase_repo.reset_abandoned_phases(
+                    session, job_id,
+                    phase_names=phase_names, status=status,
+                    error_message=reason if status == "failed" else None,
+                )
+                await session.commit()
+        except Exception:
+            logger.exception(f"[job {job_id}] abandoned-phase reset failed")
+    task = asyncio.create_task(_do())
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        pass
+
+
 async def _execute_one_phase(
     *,
     job_id: UUID,
@@ -751,22 +781,30 @@ async def _run_content_phases_parallel(
                     # Cancel in-flight peers, drain, then propagate so the worker
                     # can requeue with a cooldown.  Do NOT set failed=True — the
                     # job must NOT be marked failed on a pause.
+                    abandoned = list(in_flight.keys())
                     for peer in in_flight.values():
                         peer.cancel()
                     if in_flight:
                         await asyncio.gather(*in_flight.values(), return_exceptions=True)
                         in_flight.clear()
+                    await _abandon_inflight(
+                        job_id, abandoned, "pending", "abandoned: job requeued"
+                    )
                     raise
                 except Exception:
                     # Already logged + marked failed by _execute_one_phase. Cancel
                     # any peers still in flight and stop launching new phases.
                     failed = True
+                    abandoned = list(in_flight.keys())
                     for peer in in_flight.values():
                         peer.cancel()
                     # Drain cancellations so we don't leak tasks
                     if in_flight:
                         await asyncio.gather(*in_flight.values(), return_exceptions=True)
                         in_flight.clear()
+                    await _abandon_inflight(
+                        job_id, abandoned, "failed", "abandoned: sibling phase failed"
+                    )
                     continue
 
                 prior_outputs[phase_name] = output_md
@@ -775,11 +813,15 @@ async def _run_content_phases_parallel(
         # its awaitables, so we must cancel every in-flight phase and gather
         # them - that lets each _execute_phase -> _spawn run its
         # `except CancelledError: kill_tree(...)` before we unwind.
+        abandoned = list(in_flight.keys())
         for t in in_flight.values():
             t.cancel()
         if in_flight:
             await asyncio.gather(*in_flight.values(), return_exceptions=True)
             in_flight.clear()
+        await _abandon_inflight(
+            job_id, abandoned, "failed", "abandoned: job cancelled"
+        )
         raise
 
     if failed:
@@ -1352,6 +1394,8 @@ async def _execute_phase(
             except SessionLimitPause:
                 raise  # quota-pause during regen must propagate — not a content failure
             except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job (except api auth, below)
+                if is_slot_saturation(exc):
+                    raise SlotSaturation(str(exc)) from exc  # park, don't degrade
                 if (transport == "api" or judge_transport == "api") and phase_judge._is_auth_error(exc):
                     # This try-block contains TWO spawns with potentially different
                     # transports: the regen GENERATION (content → `transport`) and
@@ -1439,6 +1483,8 @@ async def _execute_phase(
                     except SessionLimitPause:
                         raise
                     except Exception as exc:  # noqa: BLE001 — never fail a job except api auth
+                        if is_slot_saturation(exc):
+                            raise SlotSaturation(str(exc)) from exc  # park, don't degrade
                         if (transport == "api" or solver_transport == "api") and phase_judge._is_auth_error(exc):
                             logger.error(f"[job {job_id}] {phase_name} api auth failure during solver regen ({exc!r})")
                             raise
