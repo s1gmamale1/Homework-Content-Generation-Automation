@@ -1,0 +1,29 @@
+{
+  "_doc": "R24 T6 regenerated jobs (scratch DB edu_scratch_r24t6) \u2014 new prompts. Maps each specimen to its NEW job_id for the after-audit; old_job_id is the frozen before.",
+  "jobs": {
+    "L1": {
+      "new_job_id": "84806993-8ed9-445b-b6a2-b3c27ee52a16",
+      "toc_entry_id": "bff48935-0c5b-4d4d-8a94-5fbb0a6a85e4",
+      "book_id": "6129e3df-2f60-4180-8185-eaaf18cbd221",
+      "old_job_id": "7c025cf3-7396-4bc8-8829-d3a4a50c13f4"
+    },
+    "L2": {
+      "new_job_id": "9381451b-c675-4118-8d73-828ffae4d7da",
+      "toc_entry_id": "d6806ff8-8d2a-4a39-807f-6810535f0a89",
+      "book_id": "6129e3df-2f60-4180-8185-eaaf18cbd221",
+      "old_job_id": "39d96380-2f59-434a-8ba1-cfbb7b614e50"
+    },
+    "L3": {
+      "new_job_id": "aaa75e23-c900-45c0-bb73-5e82665abdc2",
+      "toc_entry_id": "7e51a45d-0db6-454f-92c3-c64231b687f0",
+      "book_id": "c6891154-fd88-483d-961d-e97a4872bffa",
+      "old_job_id": "9d77665a-d1c4-4e2e-ad62-e9e69ec99d02"
+    },
+    "S1": {
+      "new_job_id": "5b1fed95-f37a-4d34-aa62-e5dc55c6af1f",
+      "toc_entry_id": "209e3d8d-47dc-408c-9b12-d6becee1759d",
+      "book_id": "6129e3df-2f60-4180-8185-eaaf18cbd221",
+      "old_job_id": "bae009bd-81ee-45b5-9be9-0e1cb90b2a81"
+    }
+  }
+}

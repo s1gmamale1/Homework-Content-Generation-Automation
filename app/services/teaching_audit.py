@@ -60,6 +60,13 @@ class TeachingAuditError(RuntimeError):
 class Objective(BaseModel):
     id: str  # "O1", "O2", …
     statement: str  # what the lesson teaches, in the lesson's language
+    # core = what the lesson is CENTRALLY teaching (what an exam would test);
+    # supporting = genuine but peripheral detail. Required, NO default (r24
+    # T1 R1, deliberate): a default would let a model that ignores the
+    # tiering instruction silently produce an all-supporting exam that then
+    # fails `_validate_objective_tiers` for a confusing reason; a required
+    # field makes the schema layer force a retry instead.
+    tier: Literal["core", "supporting"]
 
 
 class ExamQuestion(BaseModel):
@@ -179,6 +186,23 @@ def _validate_objective_count(exam: ExamSpec) -> None:
         )
 
 
+def _validate_objective_tiers(exam: ExamSpec) -> None:
+    """Enforce the examiner prompt's declared "at least one core objective" bound
+    (r24 T1 R4). Enforced at the examiner-output boundary (`_exam_and_pretest`),
+    immediately alongside `_validate_objective_count` — NOT inside the structural
+    `_validate_exam`/`validate_protocol` consistency checks (which stay meaningful
+    for any tier mix, including all-supporting). An exam with zero core objectives
+    cannot answer the question the audit now asks (core-teaching), so it must
+    never produce a clean verdict. Fail loud rather than silently keying the
+    core verdict to an empty core set."""
+    if not any(o.tier == "core" for o in exam.objectives):
+        raise TeachingAuditError(
+            "examiner returned zero 'core' objectives (all 'supporting') — the "
+            "audit cannot measure core-teaching from an empty core set, refusing "
+            "to audit"
+        )
+
+
 def _validate_exam(exam: ExamSpec) -> None:
     """Structural integrity of the examiner's output. Called right after the
     exam call (so a broken exam doesn't burn student/grader calls) and again
@@ -252,7 +276,11 @@ def validate_protocol(
 ) -> None:
     """Single-leg convenience: schemas enforce field types, THIS enforces the
     protocol. Any inconsistency raises — a malformed scorer output must never
-    flow into a clean verdict (`all([])` would otherwise fabricate one)."""
+    flow into a clean verdict (`all([])` would otherwise fabricate one). This
+    does NOT cover the zero-core-objective case — that boundary check lives
+    in `_validate_objective_tiers`, run at the examiner-output boundary, which
+    is the complement that guards the core-subset verdict from the same
+    `all([])` fabrication."""
     _validate_exam(exam)
     _validate_answers_and_grades(exam, answers_by_sitting, graded)
     _validate_coverage(exam, coverage_report)
@@ -262,6 +290,7 @@ def validate_protocol(
 class ObjectiveResult:
     objective_id: str
     statement: str
+    tier: Literal["core", "supporting"]  # copied verbatim from the exam's Objective.tier
     pre_score: float
     post_score: float
     max_score: float
@@ -297,6 +326,7 @@ def aggregate(
             ObjectiveResult(
                 objective_id=obj.id,
                 statement=obj.statement,
+                tier=obj.tier,
                 pre_score=pre_score,
                 post_score=post_score,
                 max_score=max_score,
@@ -347,6 +377,31 @@ class AuditResult:
     @property
     def learnable(self) -> bool:
         return all(r.outcome != "not_learnable" for r in self.objectives)
+
+    # ---- core-tier verdicts (r24 T1 R5): the product bar is now tiered — a
+    # packet must TEACH the core (what an exam would centrally test) and only
+    # REPRESENT the periphery. These key to the tier=='core' subset only; the
+    # full-set properties above stay exactly as they are and are still reported.
+
+    @property
+    def core_objectives(self) -> list[ObjectiveResult]:
+        return [r for r in self.objectives if r.tier == "core"]
+
+    @property
+    def core_total(self) -> int:
+        return len(self.core_objectives)
+
+    @property
+    def core_learned_count(self) -> int:
+        return sum(1 for r in self.core_objectives if r.outcome == "learned")
+
+    @property
+    def core_teaching_equivalent(self) -> bool:
+        return all(r.outcome != "not_taught" for r in self.core_objectives)
+
+    @property
+    def core_learnable(self) -> bool:
+        return all(r.outcome != "not_learnable" for r in self.core_objectives)
 
 
 # --------------------------------------------------------------------------
@@ -401,7 +456,10 @@ def build_exam_prompt(
         f"2. Derive that lesson's LEARNING OBJECTIVES — the {_MIN_OBJECTIVES} to "
         f"{_MAX_OBJECTIVES} distinct things it actually teaches (concepts, "
         f"definitions, methods, facts). Ignore exercises and decoration. Ids O1, O2, … "
-        f"Every objective needs a non-empty statement.\n"
+        f"Every objective needs a non-empty statement. Mark each objective's tier: "
+        f"'core' (what this lesson is CENTRALLY teaching — the things an exam on this "
+        f"lesson would test) or 'supporting' (genuine but peripheral detail). At least "
+        f"one objective must be tier 'core'.\n"
         f"3. Write EXACTLY {_QUESTIONS_PER_OBJECTIVE} short-answer exam questions per "
         f"objective, ids Q1, Q2, … (every id unique, every question non-empty). Prefer "
         f"LESSON-SPECIFIC facts, terms, methods and the textbook's own examples over "
@@ -663,6 +721,7 @@ async def _exam_and_pretest(data, *, provider, examiner_model, student_model, tr
     )
     _validate_exam(exam)  # fail before burning student/grader calls
     _validate_objective_count(exam)  # enforce the declared 3-6 bound (gate-4 review)
+    _validate_objective_tiers(exam)  # enforce >=1 core objective (r24 T1 R4)
     pre: StudentAnswers = await _call(
         "pretest",
         build_pretest_prompt(
@@ -919,10 +978,21 @@ def result_to_dict(result: AuditResult) -> dict:
         "teaching_equivalent": result.teaching_equivalent,
         "learnable": result.learnable,
         "learned_count": result.learned_count,
+        # core-tier figures (r24 T1 R3/R5) — the verdict now keys to these;
+        # the full-set numbers above are retained, just no longer the gate.
+        # core_teaching_equivalent/core_learnable are the actual --strict gate;
+        # recorded here (not just derivable from objectives) so the archived
+        # JSON is the permanent evidence of what verdict this run was gated
+        # on, immune to drift if the verdict rule changes in a later task.
+        "core_total": result.core_total,
+        "core_learned_count": result.core_learned_count,
+        "core_teaching_equivalent": result.core_teaching_equivalent,
+        "core_learnable": result.core_learnable,
         "objectives": [
             {
                 "objective_id": r.objective_id,
                 "statement": r.statement,
+                "tier": r.tier,
                 "pre_score": r.pre_score,
                 "post_score": r.post_score,
                 "max_score": r.max_score,
@@ -949,13 +1019,16 @@ def render_markdown(result: AuditResult) -> str:
         "",
         f"- teaching-equivalent: {'YES' if result.teaching_equivalent else 'NO'}",
         f"- learnable: {'YES' if result.learnable else 'NO'}",
+        f"- core: teaching-equivalent {'YES' if result.core_teaching_equivalent else 'NO'} · "
+        f"learnable {'YES' if result.core_learnable else 'NO'} "
+        f"({result.core_learned_count}/{result.core_total} core objectives learned)",
         "",
-        "| objective | statement | pre | post | coverage | outcome |",
-        "|---|---|---|---|---|---|",
+        "| objective | tier | statement | pre | post | coverage | outcome |",
+        "|---|---|---|---|---|---|---|",
     ]
     for r in result.objectives:
         lines.append(
-            f"| {r.objective_id} | {r.statement} | {r.pre_score:g}/{r.max_score:g} "
+            f"| {r.objective_id} | {r.tier} | {r.statement} | {r.pre_score:g}/{r.max_score:g} "
             f"| {r.post_score:g}/{r.max_score:g} | {r.coverage} | {r.outcome} |"
         )
     return "\n".join(lines)

@@ -1,0 +1,62 @@
+{
+  "_doc": "R24 T2 — the FROZEN specimen set for the core-first before/after comparison. Gate condition 1: T6 regenerates and T7 re-audits THESE EXACT job ids. Never re-resolve by lesson name — before/after integrity depends on identical jobs.",
+  "_pinned_at": "2026-07-20",
+  "_plan": "docs/superpowers/plans/2026-07-20-r24-core-first-teaching.md",
+  "_corpus": "homework_jobs status='done', output_language='uz', subject='history' (362 packets, 50 of them span>=7pp)",
+  "_selection_rationale": {
+    "control_pairing": "L1, L2 and S1 all come from the SAME book (6129e3df, '8-sinf O'zbekiston tarixi 2023') — same book, same authors, same grade — so lesson SPAN is the only variable between the long specimens and the short control. This is the load-bearing comparison.",
+    "single_book_guard": "L3 is drawn from a DIFFERENT book and grade (c6891154, grade 10) so a result cannot be an artifact of one book's writing style.",
+    "L1_is_the_reproducible_worst_case": "L1 was audited 3 independent times pre-tiering and returned 0 of 17 objectives learned every run, with essentially every objective marked coverage=taught."
+  },
+  "specimens": [
+    {
+      "label": "L1-g8-span15-xorazmshoh",
+      "job_id": "7c025cf3-7396-4bc8-8829-d3a4a50c13f4",
+      "book_id": "6129e3df",
+      "toc_pages": "20-35",
+      "span_pp": 15,
+      "grade": "8",
+      "group": "long",
+      "lesson_title": "Muhammad Xorazmshohning mamlakat mudofaasiga oid tadbirlari va buning oqibati",
+      "book_filename": "8-sinf O'zbekiston tarixi 2023 (@elekton_darslikbot).pdf",
+      "generated_with": "gemini/gemini-3-flash-preview, transport=api"
+    },
+    {
+      "label": "L2-g8-span11-amir-temur",
+      "job_id": "39d96380-2f59-434a-8ba1-cfbb7b614e50",
+      "book_id": "6129e3df",
+      "toc_pages": "100-111",
+      "span_pp": 11,
+      "grade": "8",
+      "group": "long",
+      "lesson_title": "Amir Temurning davlat chegaralarini mustahkamlashi",
+      "book_filename": "8-sinf O'zbekiston tarixi 2023 (@elekton_darslikbot).pdf",
+      "generated_with": "gemini/gemini-3-flash-preview, transport=api"
+    },
+    {
+      "label": "L3-g10-span12-buxoro",
+      "job_id": "9d77665a-d1c4-4e2e-ad62-e9e69ec99d02",
+      "book_id": "c6891154",
+      "toc_pages": "6-18",
+      "span_pp": 12,
+      "grade": "10",
+      "group": "long",
+      "lesson_title": "Rossiya imperiyasi bosqini arafasida Buxoro amirligi, Qo'qon xonligi",
+      "book_filename": "10 - sinf O'zbekiston tarixi.pdf",
+      "generated_with": "gemini/gemini-3-flash-preview, transport=api"
+    },
+    {
+      "label": "S1-g8-span3-control",
+      "job_id": "bae009bd-81ee-45b5-9be9-0e1cb90b2a81",
+      "book_id": "6129e3df",
+      "toc_pages": "8-11",
+      "span_pp": 3,
+      "grade": "8",
+      "group": "short-control",
+      "lesson_title": "XIII asr boshlarida Xorazm davlatida siyosiy vaziyat",
+      "book_filename": "8-sinf O'zbekiston tarixi 2023 (@elekton_darslikbot).pdf",
+      "generated_with": "gemini/gemini-3-flash-preview, transport=api",
+      "run_mode": "--sensitivity (paired, 7 calls) — the short control is where a good score MUST be proven not to be latent-knowledge leakage, since the whole long-vs-short comparison rests on it"
+    }
+  ]
+}
