@@ -180,13 +180,18 @@ async def reset_abandoned_phases(
     source_statuses may only narrow within {'pending', 'running'} — 'done' is
     always frozen and 'failed' rows are reachable ONLY via
     include_orphan_failed's marker equality, never wholesale."""
-    assert status in ("pending", "failed"), status
-    assert set(source_statuses) <= {"pending", "running"}, (
-        f"source_statuses may only narrow within pending/running "
-        f"(got {tuple(source_statuses)!r}) — 'done' is always frozen and "
-        f"'failed' rows are reachable ONLY via include_orphan_failed's "
-        f"marker equality, never wholesale"
-    )
+    # Real raises, not asserts — python -O strips asserts, and these guards
+    # ARE the preservation contract (PR #110 round-3; closes
+    # reset-abandoned-status-assert-1).
+    if status not in ("pending", "failed"):
+        raise ValueError(f"status must be 'pending' or 'failed', got {status!r}")
+    if not set(source_statuses) <= {"pending", "running"}:
+        raise ValueError(
+            f"source_statuses may only narrow within pending/running "
+            f"(got {tuple(source_statuses)!r}) — 'done' is always frozen and "
+            f"'failed' rows are reachable ONLY via include_orphan_failed's "
+            f"marker equality, never wholesale"
+        )
     if not job_ids:
         return 0
     if phase_names is not None and not phase_names:

@@ -559,9 +559,11 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 ## 9. Operational notes
 
 - **Inspect dev DB:** `docker exec edu-postgres psql -U edu -d edu_homework -c "<sql>"`.
-- **Startup sweep caveat (multi-pod):** the API's `reclaim_stuck_jobs(stale_after_seconds=0)`
-  at startup assumes it owns all running jobs. Safe single-host; in a fleet, rely on the
-  TTL sweep instead (a restarting head would otherwise reset live workers' jobs).
+- **Startup sweep (multi-pod, peer-aware since C5):** boot runs
+  `reclaim_orphans_on_startup`, which uses window=0 (instant reset of all running jobs) only
+  when NO live peer heartbeat exists; with live peers it uses the full lease window so a
+  restarting head never yanks a peer's fresh claim. Since worklog 0156 the reclaim also
+  reconciles the reclaimed jobs' phase rows in the same transaction.
 - **`workers.status` drain is live (C5/P1)** — `POST /workers/{pc_id}/drain` sets `status="draining"`;
   the worker reads its own status each registry beat and self-drains (stops claiming, lets in-flight
   finish), skipping the `online` re-upsert so the signal isn't clobbered (`worker._drain_check_and_beat`).

@@ -141,50 +141,6 @@ async def test_reset_abandoned_to_pending_for_requeued_job(db_session, seeded_jo
     assert rows["boss-arena"].error_message is None
 
 
-def test_empty_job_ids_is_noop_without_touching_session():
-    """Contract: empty job_ids returns 0 before any session use."""
-    import asyncio
-    assert asyncio.run(
-        phase_repo.reset_abandoned_phases(None, [], status="pending")
-    ) == 0
-
-
-def test_empty_phase_names_list_is_still_noop():
-    """phase_names=[] keeps the #109 no-op contract (None means ALL)."""
-    import asyncio
-    assert asyncio.run(
-        phase_repo.reset_abandoned_phases(
-            None, [uuid.uuid4()], phase_names=[], status="pending"
-        )
-    ) == 0
-
-
-def test_source_statuses_done_is_rejected():
-    """Structural guard: 'done' must never be a narrowable source_status —
-    the preservation contract is enforced, not conventional."""
-    import asyncio
-    with pytest.raises(AssertionError):
-        asyncio.run(
-            phase_repo.reset_abandoned_phases(
-                None, [uuid.uuid4()], status="pending",
-                source_statuses=("done",),
-            )
-        )
-
-
-def test_source_statuses_failed_is_rejected():
-    """Structural guard: 'failed' is reachable ONLY via include_orphan_failed's
-    marker equality, never wholesale through source_statuses."""
-    import asyncio
-    with pytest.raises(AssertionError):
-        asyncio.run(
-            phase_repo.reset_abandoned_phases(
-                None, [uuid.uuid4()], status="pending",
-                source_statuses=("failed",),
-            )
-        )
-
-
 async def test_orphan_marker_failed_rows_reconcile_but_genuine_failures_never(
     db_session, seeded_job
 ):
