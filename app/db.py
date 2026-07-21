@@ -4,26 +4,27 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings
 
-# Pool sized for the parallel phase scheduler: a single HARD job can have
-# 8 content phases in flight concurrently, each opening 2-4 sessions during
-# its lifetime (status updates, JSON persistence, etc). The default
-# pool_size=5 / max_overflow=10 was sized for a sequential pipeline and
-# starves under the new wave-based scheduler.
-#
-# pool_pre_ping=True: revalidate connections on checkout. Long-running phases
-# can leave a connection idle for >30s, by which point Postgres' default
-# `idle_in_transaction_session_timeout` (or the server's keepalive) may have
-# closed it server-side. Without pre-ping the pool hands out a dead socket
-# → "connection is closed" InterfaceError, exactly as we just hit.
-#
-# pool_recycle=1800: proactively recycle connections every 30 min so we never
-# hand out one approaching Postgres' connection lifetime limit.
+def _pool_config(*, worker_concurrency: int) -> dict[str, int]:
+    """Return role-appropriate pool bounds.
+
+    API-only heads (``WORKER_CONCURRENCY=0``) retain the larger request pool.
+    Worker processes use short database transactions around model calls, so
+    retaining a 20-connection idle pool per host only exhausts Postgres across
+    the fleet. Two pooled connections plus two temporary overflow connections
+    cover worker heartbeats and phase persistence without permanent residue.
+    """
+    if worker_concurrency == 0:
+        return {"pool_size": 20, "max_overflow": 30}
+    return {"pool_size": 2, "max_overflow": 2}
+
+
+# pool_pre_ping revalidates sockets on checkout; pool_recycle prevents a
+# long-lived process from handing out a connection near the server lifetime.
 engine = create_async_engine(
     settings.database_url,
     echo=False,
     future=True,
-    pool_size=20,
-    max_overflow=30,
+    **_pool_config(worker_concurrency=settings.worker_concurrency),
     pool_pre_ping=True,
     pool_recycle=1800,
 )

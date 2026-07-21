@@ -303,7 +303,7 @@ These aren't wired yet but the data is in the DB / logs — easy to add a `/metr
 
 ## Operational gotchas
 
-**Connection pool sizing.** Each worker holds 2-4 DB connections during a job. With `WORKER_CONCURRENCY=4` and 2 worker pods, peak is ~32 connections. Default pool is 20+30=50 connections per process. If you scale workers to >5 pods on shared Postgres (Neon free tier = 100 connections), you'll exhaust. Either: bump `pool_size` in `app/db.py`, or scale Postgres.
+**Connection pool sizing.** API-only heads (`WORKER_CONCURRENCY=0`) retain a 20+30 request pool. Worker processes (`WORKER_CONCURRENCY>0`) use a bounded 2+2 pool because their DB transactions are short and the model calls happen outside those transactions. Do not enlarge every worker pool to match phase fan-out: across many worker processes, retained idle connections can exhaust shared Postgres even when no jobs are running. Scale Postgres only when measured active checkout demand—not idle worker residue—requires it.
 
 **Worker-claimed-but-died jobs stay `running` until reclaim sweep.** The sweep keys on `RECLAIM_STALE_SECONDS` (default **120s**, `config.py`): a dead worker's `running` job is reclaimed to `pending` within ~2 minutes. Heartbeats keep live jobs' claims fresh, so a long-running job is never falsely reclaimed. There is no "2× job timeout" threshold.
 
