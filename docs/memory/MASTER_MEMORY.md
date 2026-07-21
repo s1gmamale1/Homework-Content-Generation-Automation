@@ -2048,7 +2048,7 @@ already committed here — a guaranteed conflict. Role-derived cannot be half-ap
 
 **Gate corrections worth keeping (all three were wrong in the unsafe direction):**
 1. "Head 20" understates the head — its `max_overflow=30` means a **peak of 50**, so the proposed
-   "6×12 + 20 = 92 < 100" headroom claim was false (真 worst case ~122).
+   "6×12 + 20 = 92 < 100" headroom claim was false (real worst case ~122).
 2. The **viewer process (`viewer_main` on :8001) holds a third, uncounted pool** — it imports the
    same `app.db` engine. Any connection-budget arithmetic must count head + viewer + workers.
 3. "~20 idle connections per worker" was an assumed pool *ceiling*, not reality: SQLAlchemy pools
