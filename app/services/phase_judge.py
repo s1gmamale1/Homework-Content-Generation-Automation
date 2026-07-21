@@ -21,6 +21,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from app.services import agent
+from app.services.errors import SlotSaturation, is_slot_saturation
 from app.services.prompts import get_prompt
 
 
@@ -244,6 +245,8 @@ async def judge(
         if not isinstance(verdict, Verdict):
             raise RuntimeError("judge produced no parsed Verdict")
     except Exception as exc:  # noqa: BLE001 — judge must NEVER block generation
+        if is_slot_saturation(exc):
+            raise SlotSaturation(str(exc))  # park the job — do not ship unjudged
         # An api job that hit an auth/401 error must fail LOUDLY (job-level
         # failure), not silently ship unjudged via the degrade path below.
         if transport == "api" and _is_auth_error(exc):

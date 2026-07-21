@@ -18,7 +18,13 @@ from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
 from app.services import agent, book_fetch, content_lint, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, solver, storage
 from app.services.agent_models import resolve_role_transport, resolve_session_limit_strategy
-from app.services.errors import SessionLimitPause
+from app.services.errors import (
+    PhaseAttemptTimeout,
+    SessionLimitPause,
+    SlotSaturation,
+    TransientPhaseError,
+    is_slot_saturation,
+)
 from app.services.flows import (
     flow_for,
     file_needed_phases,
@@ -326,11 +332,11 @@ async def run(job_id: UUID) -> None:
                     session_limit_strategy=session_limit_strategy,
                     output_language=job_output_language,
                 )
-            except SessionLimitPause:
-                raise  # propagate to worker (Task 5) — job must NOT be marked failed
+            except (SessionLimitPause, SlotSaturation, TransientPhaseError):
+                raise  # propagate to worker — requeue/park, not a swallow
             except Exception:
                 # _execute_one_phase already published the error event and
-                # marked the job failed. We just unwind cleanly.
+                # marked the job failed (hard class). We just unwind cleanly.
                 return
 
             if phase_name == "extract":
@@ -396,8 +402,8 @@ async def run(job_id: UUID) -> None:
                     session_limit_strategy=session_limit_strategy,
                     output_language=job_output_language,
                 )
-            except SessionLimitPause:
-                raise  # propagate to worker (Task 5) — must not be swallowed
+            except (SessionLimitPause, SlotSaturation, TransientPhaseError):
+                raise  # propagate to worker — requeue/park, not a swallow
             except RuntimeError as exc:
                 if "content phase failed" in str(exc):
                     # _execute_one_phase already published the error and marked
@@ -451,9 +457,10 @@ async def run(job_id: UUID) -> None:
         )
         await _log_token_summary(job_id, log)
 
-    except SessionLimitPause:
-        # Worker (Task 5) catches this and requeues with a cooldown — the job
-        # must NOT be marked failed here.  Propagate after closing the SSE bus.
+    except (SessionLimitPause, SlotSaturation, TransientPhaseError):
+        # Worker (Task 5) catches this and requeues/parks with a cooldown —
+        # the job must NOT be marked failed here.  Propagate after closing
+        # the SSE bus.
         raise
     except Exception as exc:
         total_s = perf_counter() - t_start
@@ -478,6 +485,36 @@ async def _emit_started(resource_id: str, phase_name: str, phase_order: int) -> 
         "phase_started",
         {"phase_name": phase_name, "phase_order": phase_order},
     )
+
+
+async def _abandon_inflight(
+    job_id: UUID, phase_names: list[str], status: str, reason: str
+) -> None:
+    """Best-effort, cancellation-shielded reset of orphaned phase rows.
+    Mirrors worker.py's shielded cancel-finalize craft: a cancellation
+    delivered while this write runs must not kill the write.
+
+    status='pending' when the JOB is being requeued/parked (transient /
+    saturation / pause — rows are waiting); status='failed' on hard failure
+    or user cancel (gate correction 4)."""
+    if not phase_names:
+        return
+    async def _do() -> None:
+        try:
+            async with SessionLocal() as session:
+                await phase_repo.reset_abandoned_phases(
+                    session, job_id,
+                    phase_names=phase_names, status=status,
+                    error_message=reason if status == "failed" else None,
+                )
+                await session.commit()
+        except Exception:
+            logger.exception(f"[job {job_id}] abandoned-phase reset failed")
+    task = asyncio.create_task(_do())
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        pass
 
 
 async def _execute_one_phase(
@@ -562,20 +599,39 @@ async def _execute_one_phase(
         )
     except SessionLimitPause:
         raise  # worker requeues — job must NOT be marked failed
+    except SlotSaturation:
+        raise  # worker parks with cooldown — job must NOT be marked failed
     except Exception as exc:
         phase_ms = (perf_counter() - t_phase) * 1000
+        msg = _phase_error_message(phase_name, exc)
         log.exception(
-            f"[job {job_id}] phase '{phase_name}' FAILED after {phase_ms:.0f}ms: {exc}"
+            f"[job {job_id}] phase '{phase_name}' FAILED after {phase_ms:.0f}ms: {msg}"
         )
+        # Marker fallback (gate correction 1): saturation errors that BYPASSED
+        # _run_with_failover — the scanned-PDF vision extract (pipeline.py:1113)
+        # or any future direct agent call — must still park, never burn retries.
+        if is_slot_saturation(exc):
+            raise SlotSaturation(_error_text(exc)) from exc
+        if _requeue_worthy(exc):
+            # Do NOT mark failed here — propagate so the worker applies the
+            # bounded queue retry (mark_failed_with_retry, queue-correctness-1).
+            # Event publish is best-effort AFTER the decision: a broken bus
+            # must not eat the signal (gate correction 2).
+            await _publish_error_event(
+                resource_id, {"phase_name": phase_name, "message": msg}
+            )
+            raise TransientPhaseError(msg) from exc
+        # Hard failure: DB write FIRST (the terminal mark is the contract),
+        # event publish best-effort afterwards (gate correction 2).
         async with SessionLocal() as session:
             await jobs_repo.set_status(
                 session, job_id, "failed",
                 completed_at=_utcnow(),
-                error_message=f"{phase_name}: {exc}",
+                error_message=msg,
             )
             await session.commit()
-        await events_bus.publish(
-            resource_id, "error", {"phase_name": phase_name, "message": str(exc)}
+        await _publish_error_event(
+            resource_id, {"phase_name": phase_name, "message": msg}
         )
         raise
 
@@ -721,26 +777,34 @@ async def _run_content_phases_parallel(
                 del in_flight[phase_name]
                 try:
                     output_md, _tin, _tout, parsed_struct = task.result()
-                except SessionLimitPause:
+                except (SessionLimitPause, SlotSaturation, TransientPhaseError):
                     # Cancel in-flight peers, drain, then propagate so the worker
                     # can requeue with a cooldown.  Do NOT set failed=True — the
                     # job must NOT be marked failed on a pause.
+                    abandoned = list(in_flight.keys())
                     for peer in in_flight.values():
                         peer.cancel()
                     if in_flight:
                         await asyncio.gather(*in_flight.values(), return_exceptions=True)
                         in_flight.clear()
+                    await _abandon_inflight(
+                        job_id, abandoned, "pending", "abandoned: job requeued"
+                    )
                     raise
                 except Exception:
                     # Already logged + marked failed by _execute_one_phase. Cancel
                     # any peers still in flight and stop launching new phases.
                     failed = True
+                    abandoned = list(in_flight.keys())
                     for peer in in_flight.values():
                         peer.cancel()
                     # Drain cancellations so we don't leak tasks
                     if in_flight:
                         await asyncio.gather(*in_flight.values(), return_exceptions=True)
                         in_flight.clear()
+                    await _abandon_inflight(
+                        job_id, abandoned, "failed", "abandoned: sibling phase failed"
+                    )
                     continue
 
                 prior_outputs[phase_name] = output_md
@@ -749,11 +813,15 @@ async def _run_content_phases_parallel(
         # its awaitables, so we must cancel every in-flight phase and gather
         # them - that lets each _execute_phase -> _spawn run its
         # `except CancelledError: kill_tree(...)` before we unwind.
+        abandoned = list(in_flight.keys())
         for t in in_flight.values():
             t.cancel()
         if in_flight:
             await asyncio.gather(*in_flight.values(), return_exceptions=True)
             in_flight.clear()
+        await _abandon_inflight(
+            job_id, abandoned, "failed", "abandoned: job cancelled"
+        )
         raise
 
     if failed:
@@ -830,14 +898,25 @@ async def _run_with_failover(
                     timeout=settings.per_attempt_timeout_seconds,
                 )
                 return out, tin, tout, prov
-            except asyncio.TimeoutError as exc:
-                # Attempt blew per_attempt_timeout — the provider is hung / too slow.
-                # str(asyncio.TimeoutError()) == "" would misclassify as "hard"; and
-                # retrying a hung provider is futile → fail over immediately (no
-                # same-provider retry). Intercept BEFORE the classifier.
-                last_exc = exc
+            except asyncio.TimeoutError:
+                # Attempt blew per_attempt_timeout — hung/too-slow provider.
+                # Wrap in a typed, NON-BLANK error (str(asyncio.TimeoutError())
+                # is '' → the blank "<phase>: " error_message bug). Fail over
+                # immediately (no same-provider retry) exactly as before.
+                last_exc = PhaseAttemptTimeout(
+                    f"per-attempt timeout after "
+                    f"{settings.per_attempt_timeout_seconds}s "
+                    f"(provider={prov}, transport={transport})"
+                )
                 break
             except Exception as exc:  # noqa: BLE001 — classify, don't swallow
+                # Fleet credential-slot exhaustion: park the job (worker
+                # requeues with cooldown) — never classify, never retry,
+                # never mark failed. Checked BEFORE is_session_limit/classify
+                # for the same reason the session-limit check precedes
+                # classify: the '429 …' text would otherwise be misrouted.
+                if is_slot_saturation(exc):
+                    raise SlotSaturation(str(exc))
                 # ── Session-limit check MUST run BEFORE failure_classifier.classify ──
                 # "usage limit reached · resets Xam" matches _WALL in classify()
                 # (contains "limit" + "reached"). If classify ran first, the pause
@@ -890,6 +969,38 @@ def _custom_for(phase_name: str, custom_prompts: Optional[dict]) -> Optional[str
     `extract` is never overridden — callers pass it through harmlessly."""
     c = (custom_prompts or {}).get(phase_name)
     return c if (c and c.strip()) else None
+
+
+def _error_text(exc: BaseException) -> str:
+    """Non-blank error text: str(exc) with repr fallback (asyncio.TimeoutError
+    stringifies to ''). Shared by the JOB-row and PHASE-row writes."""
+    return str(exc).strip() or repr(exc)
+
+
+def _phase_error_message(phase_name: str, exc: BaseException) -> str:
+    """'<phase>: <reason>' with a guaranteed non-blank reason."""
+    return f"{phase_name}: {_error_text(exc)}"
+
+
+async def _publish_error_event(resource_id: str, payload: dict) -> None:
+    """Best-effort error-event publish (gate correction 2): a broken events
+    bus must NEVER swallow the failure signal — the DB write / typed raise is
+    the source of truth, the event is advisory UI."""
+    try:
+        await events_bus.publish(resource_id, "error", payload)
+    except Exception:
+        logger.exception(f"error-event publish failed for {resource_id} (non-fatal)")
+
+
+def _requeue_worthy(exc: BaseException) -> bool:
+    """Transient-only queue-retry policy (user-locked 2026-07-20): attempt
+    timeouts, rate-limit 429s, and transient net errors get the bounded
+    queue retry; hard errors and walls stay terminal (retries bill real $)."""
+    if isinstance(exc, PhaseAttemptTimeout):
+        return True
+    if agent._is_rate_limited(str(exc)):
+        return True
+    return failure_classifier.classify(exc) == "transient"
 
 
 async def _verify_source_for_section(pdf_path, book_text: str, section: dict) -> str:
@@ -1185,7 +1296,7 @@ async def _execute_phase(
             await phase_repo.set_status(
                 session, po_id, "failed",
                 completed_at=_utcnow(),
-                error_message=str(exc),
+                error_message=_error_text(exc),
             )
             await session.commit()
         raise
@@ -1283,6 +1394,8 @@ async def _execute_phase(
             except SessionLimitPause:
                 raise  # quota-pause during regen must propagate — not a content failure
             except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job (except api auth, below)
+                if is_slot_saturation(exc):
+                    raise SlotSaturation(str(exc)) from exc  # park, don't degrade
                 if (transport == "api" or judge_transport == "api") and phase_judge._is_auth_error(exc):
                     # This try-block contains TWO spawns with potentially different
                     # transports: the regen GENERATION (content → `transport`) and
@@ -1370,6 +1483,8 @@ async def _execute_phase(
                     except SessionLimitPause:
                         raise
                     except Exception as exc:  # noqa: BLE001 — never fail a job except api auth
+                        if is_slot_saturation(exc):
+                            raise SlotSaturation(str(exc)) from exc  # park, don't degrade
                         if (transport == "api" or solver_transport == "api") and phase_judge._is_auth_error(exc):
                             logger.error(f"[job {job_id}] {phase_name} api auth failure during solver regen ({exc!r})")
                             raise

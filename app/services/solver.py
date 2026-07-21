@@ -18,6 +18,7 @@ from loguru import logger
 
 from app.schemas.solver import Discrepancy, SolveVerdict
 from app.services import agent
+from app.services.errors import SlotSaturation, is_slot_saturation
 from app.services.phase_judge import _is_auth_error, _is_refusal
 from app.services.prompts import get_prompt
 
@@ -152,6 +153,8 @@ async def solve(
         if not isinstance(verdict, SolveVerdict):
             raise RuntimeError("solver produced no parsed SolveVerdict")
     except Exception as exc:  # noqa: BLE001 — solver must NEVER block generation
+        if is_slot_saturation(exc):
+            raise SlotSaturation(str(exc))  # park the job — do not ship unsolved
         # An api job that hit an auth/401 error must fail LOUDLY (job-level
         # failure), not silently ship unsolved via the degrade path below.
         if transport == "api" and _is_auth_error(exc):

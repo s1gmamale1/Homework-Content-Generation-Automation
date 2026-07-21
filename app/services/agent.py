@@ -48,7 +48,7 @@ from app.schemas import (
     TOCEntryExtracted,
     TOCValidation,
 )
-from app.services import agent_models, content_lint
+from app.services import agent_models, content_lint, errors
 from app.services.errors import AuthEnvError
 from app.services.providers import Provider, get_provider
 from app.services.proc_tree import kill_tree
@@ -459,7 +459,9 @@ async def _spawn(
     the semaphore internally) and retries up to
     ``settings.rate_limit_max_retries`` times, reusing the same backoff/jitter.
     A persistent error (auth 401/403, truncation, session-limit) returns the
-    failure tuple unchanged on the first attempt, exactly as before.
+    failure tuple unchanged on the first attempt, exactly as before. A fleet
+    slot-exhaustion 429 also returns after ONE attempt (never retried here —
+    the pipeline raises SlotSaturation and the worker parks the job).
     """
     for attempt in range(settings.rate_limit_max_retries + 1):
         rc, text, usage, stderr = await _spawn_once(
@@ -467,6 +469,13 @@ async def _spawn(
             attachments=attachments, transport=transport,
         )
         combined = stderr or text
+        # Fleet slot exhaustion is deliberately 429-shaped, but retrying it
+        # in-process re-burns a full credential_slot_wait_seconds wait per
+        # attempt (the 600s-timeout burn, queue-correctness-1). Return it
+        # unretried — the pipeline converts it to SlotSaturation and the
+        # worker parks the job.
+        if errors.is_slot_saturation(combined):
+            return rc, text, usage, stderr
         is_retryable = _is_rate_limited(combined) or _is_transient_net(combined)
         if rc == 0 or not is_retryable:
             return rc, text, usage, stderr

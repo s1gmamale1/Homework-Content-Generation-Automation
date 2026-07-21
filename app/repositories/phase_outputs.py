@@ -150,6 +150,44 @@ async def list_running_for_sweep(session: AsyncSession) -> list[PhaseOutput]:
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def reset_abandoned_phases(
+    session: AsyncSession,
+    job_id: UUID,
+    *,
+    phase_names: list[str],
+    status: str,
+    error_message: Optional[str] = None,
+) -> int:
+    """Reset still-pending/running phases of a job after their siblings'
+    cancellation orphaned them (scheduler peer-cancel leaves rows 'running':
+    CancelledError is a BaseException, so per-phase except-Exception cleanup
+    never ran — queue-correctness-1). 'done' rows are untouched.
+
+    status='pending' (job requeued/parked — the row is WAITING, error cleared)
+    or status='failed' (hard failure / user cancel — error_message recorded)."""
+    assert status in ("pending", "failed"), status
+    if not phase_names:
+        return 0
+    from sqlalchemy import func as sa_func
+    values: dict = {"status": status}
+    if status == "failed":
+        values["error_message"] = error_message
+        values["completed_at"] = sa_func.now()
+    else:
+        values["error_message"] = None
+    stmt = (
+        update(PhaseOutput)
+        .where(
+            PhaseOutput.job_id == job_id,
+            PhaseOutput.phase_name.in_(phase_names),
+            PhaseOutput.status.in_(("pending", "running")),
+        )
+        .values(**values)
+    )
+    result = await session.execute(stmt)
+    return result.rowcount
+
+
 async def find_latest_extract(
     session: AsyncSession,
     *,

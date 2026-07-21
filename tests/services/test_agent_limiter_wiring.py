@@ -570,44 +570,51 @@ async def test_acquire_none_returns_rate_limited_shaped_error(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_spawn_retries_when_acquire_returns_none_then_succeeds(monkeypatch):
-    """The 429-shaped acquire-exhausted error must feed _spawn's existing
-    backoff/retry loop exactly like a real provider 429."""
+async def test_spawn_returns_slot_exhaustion_without_retry_when_acquire_returns_none(
+    monkeypatch,
+):
+    """New contract (356a639, queue-correctness-1): the acquire-exhausted
+    429-shaped tuple is fleet slot saturation, NOT an ordinary provider 429 —
+    `_spawn` must return it after exactly ONE `_spawn_once`/`acquire`
+    attempt, with no backoff and no second acquire. Retrying in-process
+    would re-burn a full `credential_slot_wait_seconds` (120s) fleet-slot
+    wait per attempt; instead the pipeline converts the tuple to a
+    SlotSaturation signal and the worker parks the job at the queue level
+    for a later claim (see tests/services/test_spawn_slot_saturation.py,
+    which covers this same contract from the `_spawn` angle)."""
     monkeypatch.setattr(credential_id, "credential_for", lambda *a, **k: "gemini:proj")
     _patch_resolve(monkeypatch)
 
-    acquire_results = [None, "slot-1"]
+    acquire_calls: list[str] = []
 
     async def fake_acquire(credential, limit, *, wait_budget_s, pc_id=None):
-        return acquire_results.pop(0)
-
-    released: list[str] = []
-
-    async def fake_release(slot_id):
-        released.append(slot_id)
+        acquire_calls.append("call")
+        return None
 
     monkeypatch.setattr(credential_limiter, "acquire", fake_acquire)
-    monkeypatch.setattr(credential_limiter, "release", fake_release)
+
+    generate_called = False
 
     async def fake_generate(**kwargs):
-        return (0, "ok", {"raw": {}}, "")
+        nonlocal generate_called
+        generate_called = True
+        return (0, "should not run", {"raw": {}}, "")
 
     monkeypatch.setattr(api_transport_module, "generate", fake_generate)
 
-    sleeps: list[float] = []
+    async def no_sleep(_delay):  # pragma: no cover — must not be reached
+        raise AssertionError("slot exhaustion must not back off and retry")
 
-    async def fake_sleep(delay):
-        sleeps.append(delay)
+    monkeypatch.setattr(agent_module.asyncio, "sleep", no_sleep)
 
-    monkeypatch.setattr(agent_module.asyncio, "sleep", fake_sleep)
-
-    rc, text, _usage, _stderr = await agent_module._spawn(
+    rc, _text, _usage, stderr = await agent_module._spawn(
         provider=_StubProvider("gemini"), model="gemini-2.5-flash", prompt="x",
         attachments=[], transport="api",
     )
-    assert (rc, text) == (0, "ok")
-    assert len(sleeps) == 1
-    assert released == ["slot-1"]
+    assert rc == 1
+    assert "fleet credential slot wait exhausted" in stderr
+    assert acquire_calls == ["call"]
+    assert generate_called is False
 
 
 # ─────────────────────────────────────────────────────────────────────

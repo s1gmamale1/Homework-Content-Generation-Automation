@@ -185,6 +185,34 @@ There's also retry-with-backoff (up to `queue_max_attempts`), a per-job timeout,
 **backpressure**: if more than ~50 jobs are already waiting, `/generate` returns `503` instead
 of letting the queue grow forever.
 
+**What happens when a phase fails (queue-correctness rework, worklog 0155).** A failing
+phase now takes one of three typed paths instead of always terminal-failing the job:
+
+- **Transient** (attempt timeout — now a `PhaseAttemptTimeout` with a readable message, never
+  a blank `TimeoutError` — plus 429/rate-limit and transient-net errors): the pipeline raises
+  `TransientPhaseError` all the way to the worker, which applies the bounded queue retry
+  (`mark_failed_with_retry`: pending with exponential backoff, terminal `failed` after
+  `queue_max_attempts`). Previously every such failure was swallowed inside the pipeline and
+  terminal-failed the job with no queue retry.
+- **Fleet credential-slot saturation** (`SlotSaturation`, detected by the limiter's
+  `"fleet credential slot wait exhausted"` marker anywhere on the spawn path, including the
+  judge, solver, regen legs, and the scanned-PDF vision extract): the job **parks** — requeued
+  `pending` with `scheduled_at` pushed `slot_saturation_requeue_seconds` (90s) into the future
+  and the attempt refunded. `_spawn` no longer burns its retry budget re-waiting for slots
+  (one ≤120s wait per episode, not five), so saturation can't eat the 600s attempt budget.
+- **Hard** (everything else): terminal fail exactly as before — DB write first, SSE error
+  event best-effort after (a broken event bus can no longer swallow the failure signal).
+
+When a sibling phase drags the job down, the scheduler now resets the abandoned in-flight
+phase rows too: back to `pending` when the job is being requeued/parked, `failed` on hard
+failure or user cancel — the live scheduler no longer leaves phantom `running` rows behind.
+(Scope note: this covers the in-process scheduler only. The startup reclaim and the
+attempts-exhausted path still reset/park the PARENT job without reconciling its phase rows —
+an orphaned `running` phase can still accompany a `pending` parent there; filed as
+`orphan-phase-reconciliation-1`.) All three requeue paths are guarded so a
+concurrent user cancel always wins (`cancelling` finalizes to `cancelled`, never resurrects
+to `pending`).
+
 **Surviving Claude session-limits (worklog 0089).** When a Claude CLI worker hits its
 session-limit (`"You've hit your session limit · resets 12:50am …"`), the old behavior was
 fail-fast — the worker insta-failed every job it claimed and *vacuumed* the queue away from a
