@@ -386,10 +386,19 @@ The job status state machine:
   `heartbeat_seconds` (30 s) while running; no-ops once the job leaves `running`.
 - **`reclaim_stuck_jobs`** — orphan recovery: any `running` row whose `claimed_at` is older
   than `reclaim_stale_seconds` (120 s = 4 missed beats) goes back to `pending` (attempts
-  preserved, so a poison job still exhausts its budget). Runs periodically in the worker
-  and **once at API startup with `stale_after_seconds=0`** — that startup sweep resets *all*
-  running jobs and is explicitly **single-host only** (`main.py:50-52`); a restarting pod in a
-  multi-pod fleet would steal a live peer's job. Fleet workers rely on the TTL-based sweep.
+  preserved, so a poison job still exhausts its budget). Runs periodically in the worker and,
+  wrapped by **`reclaim_orphans_on_startup`**, once at API startup — that wrapper is
+  **peer-aware** (C5): if `workers_repo.has_live_workers` finds a fresh heartbeat, it reclaims
+  with the full `reclaim_stale_seconds` window (a live peer may be mid-run on a
+  recently-claimed job, so yanking it would double-run and mis-bill an api job); only when no
+  live peer exists (solo restart / first boot) does it fall back to `stale_after_seconds=0`,
+  resetting every orphaned `running` row immediately. Since worklog 0156, both
+  `reclaim_stuck_jobs` and `fail_exhausted_pending_jobs` also reconcile `phase_outputs` rows
+  in the same transaction via `reset_abandoned_phases` (`RETURNING id` on the job `UPDATE`
+  feeds the phase sweep): reclaim resets the job's `running` + boot-sweep-marked rows back to
+  `pending` (error and `completed_at` cleared); the exhausted sweep terminal-fails the job's
+  unfinished + marker rows to `failed` with the sweep message. `done` rows and genuinely-failed
+  rows (any other error, including `NULL`) are never touched either way.
 - **`mark_failed_with_retry`** — on failure: if `attempts >= queue_max_attempts` (3) →
   terminal `failed`; else → back to `pending` with exponential backoff
   `scheduled_at = func.now() + 30s × 2^(attempts-1)` (30s, 60s, 120s…).

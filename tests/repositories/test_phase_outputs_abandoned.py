@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(
     os.getenv("RUN_DB_INTEGRATION") != "1", reason="needs real Postgres"
 )
 
-from sqlalchemy import delete, update
+from sqlalchemy import delete, func as sa_func, update
 
 from app.db import SessionLocal
 from app.models.book import Book
@@ -159,6 +159,32 @@ def test_empty_phase_names_list_is_still_noop():
     ) == 0
 
 
+def test_source_statuses_done_is_rejected():
+    """Structural guard: 'done' must never be a narrowable source_status —
+    the preservation contract is enforced, not conventional."""
+    import asyncio
+    with pytest.raises(AssertionError):
+        asyncio.run(
+            phase_repo.reset_abandoned_phases(
+                None, [uuid.uuid4()], status="pending",
+                source_statuses=("done",),
+            )
+        )
+
+
+def test_source_statuses_failed_is_rejected():
+    """Structural guard: 'failed' is reachable ONLY via include_orphan_failed's
+    marker equality, never wholesale through source_statuses."""
+    import asyncio
+    with pytest.raises(AssertionError):
+        asyncio.run(
+            phase_repo.reset_abandoned_phases(
+                None, [uuid.uuid4()], status="pending",
+                source_statuses=("failed",),
+            )
+        )
+
+
 async def test_orphan_marker_failed_rows_reconcile_but_genuine_failures_never(
     db_session, seeded_job
 ):
@@ -174,7 +200,11 @@ async def test_orphan_marker_failed_rows_reconcile_but_genuine_failures_never(
         update(PhaseOutput)
         .where(PhaseOutput.job_id == seeded_job.id,
                PhaseOutput.phase_name == "boss-arena")
-        .values(status="failed", error_message=ORPHANED_RESTART_MESSAGE)
+        .values(
+            status="failed",
+            error_message=ORPHANED_RESTART_MESSAGE,
+            completed_at=sa_func.now(),
+        )
     )
     await db_session.execute(
         update(PhaseOutput)
@@ -194,6 +224,7 @@ async def test_orphan_marker_failed_rows_reconcile_but_genuine_failures_never(
     rows = {r.phase_name: r for r in await phase_repo.list_for_job(db_session, seeded_job.id)}
     assert rows["boss-arena"].status == "pending"
     assert rows["boss-arena"].error_message is None
+    assert rows["boss-arena"].completed_at is None
     assert rows["flashcards"].status == "pending"          # untouched
     assert rows["reading"].status == "done"                # frozen
     assert rows["reflection"].status == "failed"           # genuine evidence kept

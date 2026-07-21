@@ -176,8 +176,17 @@ async def reset_abandoned_phases(
     status='pending' (job requeued/parked — rows are WAITING, error cleared)
     or status='failed' (job terminal — error_message recorded).
     phase_names=None means every phase of the job; [] is a no-op (the #109
-    scheduler contract). Empty job_ids is a no-op before any session use."""
+    scheduler contract). Empty job_ids is a no-op before any session use.
+    source_statuses may only narrow within {'pending', 'running'} — 'done' is
+    always frozen and 'failed' rows are reachable ONLY via
+    include_orphan_failed's marker equality, never wholesale."""
     assert status in ("pending", "failed"), status
+    assert set(source_statuses) <= {"pending", "running"}, (
+        f"source_statuses may only narrow within pending/running "
+        f"(got {tuple(source_statuses)!r}) — 'done' is always frozen and "
+        f"'failed' rows are reachable ONLY via include_orphan_failed's "
+        f"marker equality, never wholesale"
+    )
     if not job_ids:
         return 0
     if phase_names is not None and not phase_names:
@@ -189,6 +198,7 @@ async def reset_abandoned_phases(
         values["completed_at"] = sa_func.now()
     else:
         values["error_message"] = None
+        values["completed_at"] = None
     eligible = PhaseOutput.status.in_(tuple(source_statuses))
     if include_orphan_failed:
         eligible = or_(

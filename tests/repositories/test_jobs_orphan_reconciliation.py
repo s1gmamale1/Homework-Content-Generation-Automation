@@ -215,9 +215,20 @@ async def test_startup_marker_rows_reconcile_but_genuine_failures_kept(db_sessio
                     phases=[("a", "done", None),
                             ("stuck", "failed", ORPHANED_RESTART_MESSAGE),
                             ("real", "failed", "judge crashed: real evidence")])
+    # main.py's boot sweep stamps completed_at on the marker row too
+    # (set_status(..., completed_at=...)) — the reclaim's pending-reset
+    # must clear it, or the row resurfaces as pending-with-a-completion-
+    # timestamp (inconsistent state).
+    await db_session.execute(
+        update(PhaseOutput)
+        .where(PhaseOutput.job_id == job.id, PhaseOutput.phase_name == "stuck")
+        .values(completed_at=func.now())
+    )
+    await db_session.commit()
     n = await jobs_repo.reclaim_stuck_jobs(db_session, stale_after_seconds=120)
     assert n == 1
     ph = await _phases(db_session, job.id)
     assert ph["stuck"].status == "pending" and ph["stuck"].error_message is None
+    assert ph["stuck"].completed_at is None
     assert ph["real"].status == "failed"
     assert ph["real"].error_message == "judge crashed: real evidence"
