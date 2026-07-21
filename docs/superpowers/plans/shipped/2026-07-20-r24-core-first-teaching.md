@@ -1,6 +1,12 @@
 # R24 — Core-first teaching: make long fact-dense packets actually teach
 
-Closes ROADMAP **R24**. Backing evidence: `docs/research/2026-07-20-teaching-audit-drill-density.{md,py,json}`
+> **OUTCOME (2026-07-21): NEGATIVE RESULT — executed in full, acceptance failed, T3–T5 not shipped.**
+> Core-learned fell 33%→18% and coverage regressed 94%→67% on the pinned specimens; the mechanism is
+> structural (generator's self-chosen core ≠ independently-derived exam core — cutting periphery cuts
+> blind). See `docs/research/2026-07-20-r24-baseline/AFTER-RESULT.md` + worklog 0157. T1 (audit
+> tiering) and T2 (baseline) shipped; R24 stays OPEN with shape (3) chunking as the live candidate.
+
+Did NOT close ROADMAP **R24**. Backing evidence: `docs/research/2026-07-20-teaching-audit-drill-density.{md,py,json}`
 (deterministic, 1,362 packets, $0) + the teaching audit (`app/services/teaching_audit.py`, worklog 0148/0152).
 
 ---
