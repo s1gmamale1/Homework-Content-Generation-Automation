@@ -2022,3 +2022,40 @@ Gate-hardening: `PUT /settings/launch-defaults` rejects null provider/model with
 **What:** The R24 shape-(2) lane (plan `2026-07-20-r24-core-first-teaching.md`, T1–T7 executed in full) ended in an honest negative: regenerating the 4 pinned specimens on core-first prompts (extract `## Core objectives` tier + flashcards/memory-check/boss-arena depth trade) made packets WORSE — long-specimen core-learned fell 33%→18% and objective coverage regressed 94%→67% taught, consistent across all three long specimens (`docs/research/2026-07-20-r24-baseline/AFTER-RESULT.md`). Mechanism is structural, not noise: the generator's self-chosen core-list does not align with the examiner's independently-derived one (the audit's anti-circularity is exactly what makes core-targeting unsafe), so cutting periphery cuts blind; and judge-enforced multi-angle depth on core objectives did not convert `coverage=taught` into learning. **Salvaged (this branch):** T1 — audit objectives tiered `core`/`supporting`, verdict keyed to the core subset, `tier` required with no default, zero-core guard fails loud at the examiner boundary, sensitivity gate unchanged on the full set; T2 — frozen 4-specimen baseline pinned by job UUID (L1/L2/S1 same book+author, L3 different book; S1 paired-control sensitivity PASS both runs); the full before/after evidence chain. **Dropped, never merged:** T3–T5 prompt/extract changes (kept on local branch `feat/r24-core-first` for reference; scratch DB `edu_scratch_r24t6` retained pending a noise-bounding decision). ROADMAP R24 stays OPEN: shape (1) blocked by format, shape (2) DISPROVEN do-not-re-propose, shape (3) chunking is the only live engineering shape; the alternative is re-examining the tiered contract (close by decision). Lane spend $4.33 of ~$5.50 approved (T2 $0.82 + T6 $2.73 + T7 $0.79).
 
 **Verified (GK, this session):** T1 tests re-run at review (40/40) incl. the RED-proved discriminating `core_learnable` fix (daaab6b — fixture O3 makes full-set and core verdicts diverge on both axes); L1 raw baseline JSON independently shows the depth pattern (core, `coverage=taught`, `not_learnable`); after-artifacts complete (4 reports + `after-jobs.json` with old/new job UUIDs); cherry-picked salvage suite **1892 passed / 309 skipped**. Instrument validity held through the negative: S1 `sensitivity_pass=True` before AND after with the empty control learning 0.
+
+## 0158 — Worker DB connection pools bounded by process role (2026-07-21)
+
+**Branch:** `fix/worker-db-pool-cap` · **PR #112** (merged `4ca12b3`) · no migration · suite 1895/309
+
+**Symptom.** All four freshly-launched G5/G11 math batches (101 lessons) were paused by the fleet
+monitor after repeated `429 fleet credential slot wait exhausted`. Underneath that, Postgres was
+measured at **93 of 100 connections with 87 idle and zero jobs running** — pure pool residue.
+
+**Root cause.** `app/db.py` built one engine config for every process: `pool_size=20,
+max_overflow=30` → up to 50 connections per process. Each of ~13 worker hosts retained its own
+idle pool. Crucially the pool is sized independently of `WORKER_CONCURRENCY`, so the concurrency
+reduction being planned in parallel would not have reclaimed a single connection.
+
+**Fix.** `_pool_config(worker_concurrency=)` derives bounds from the role a process already
+declares: `WORKER_CONCURRENCY=0` (API-only head) keeps `20+30`; `>0` (worker) gets `2+2`.
+Worker DB transactions are short and model calls happen *outside* them, so the small pool is
+sufficient; the retained idle count is what matters at fleet scale.
+
+**Why role-derived and not env vars.** A competing implementation (`DB_POOL_SIZE`/
+`DB_MAX_OVERFLOW`) was proposed from another host and rejected at gate: it required editing six
+hosts' `.env` and silently no-ops if one is missed, and it touched the same `db.py` lines as work
+already committed here — a guaranteed conflict. Role-derived cannot be half-applied.
+
+**Gate corrections worth keeping (all three were wrong in the unsafe direction):**
+1. "Head 20" understates the head — its `max_overflow=30` means a **peak of 50**, so the proposed
+   "6×12 + 20 = 92 < 100" headroom claim was false (真 worst case ~122).
+2. The **viewer process (`viewer_main` on :8001) holds a third, uncounted pool** — it imports the
+   same `app.db` engine. Any connection-budget arithmetic must count head + viewer + workers.
+3. "~20 idle connections per worker" was an assumed pool *ceiling*, not reality: SQLAlchemy pools
+   grow lazily, and the measured spread was **max 13 on any host, most 5–9** across 15 hosts.
+
+**Follow-ups (not done here):** the viewer still takes the head-sized `20+30` although it serves a
+read-only dashboard — worth its own role marker. Postgres `max_connections=100` remains the hard
+ceiling for a 13-worker fleet; raising it is the other lever if worker count grows.
+
+**Deploy.** Workers pick this up on pull + restart; heads and viewer unchanged by default.
