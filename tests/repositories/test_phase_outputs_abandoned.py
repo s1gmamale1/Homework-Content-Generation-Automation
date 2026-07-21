@@ -18,6 +18,7 @@ DATABASE_URL). Recipe:
 from __future__ import annotations
 
 import os
+import uuid
 
 import pytest
 
@@ -25,7 +26,7 @@ pytestmark = pytest.mark.skipif(
     os.getenv("RUN_DB_INTEGRATION") != "1", reason="needs real Postgres"
 )
 
-from sqlalchemy import delete
+from sqlalchemy import delete, func as sa_func, update
 
 from app.db import SessionLocal
 from app.models.book import Book
@@ -113,7 +114,7 @@ async def test_reset_abandoned_touches_pending_and_running_only(db_session, seed
     """Seed 4 phase rows: pending, running, done, failed. RED-proof: predicate
     must flip exactly pending+running → target status and freeze done."""
     n = await phase_repo.reset_abandoned_phases(
-        db_session, seeded_job.id,
+        db_session, [seeded_job.id],
         phase_names=["flashcards", "boss-arena", "reading", "reflection"],
         status="failed", error_message="abandoned: sibling phase failed",
     )
@@ -131,10 +132,56 @@ async def test_reset_abandoned_to_pending_for_requeued_job(db_session, seeded_jo
     """Gate correction 4: a parked/requeued job's siblings go back to PENDING
     (they are waiting, not failed) and carry no error message."""
     n = await phase_repo.reset_abandoned_phases(
-        db_session, seeded_job.id,
+        db_session, [seeded_job.id],
         phase_names=["boss-arena"], status="pending",
     )
     assert n == 1
     rows = {r.phase_name: r for r in await phase_repo.list_for_job(db_session, seeded_job.id)}
     assert rows["boss-arena"].status == "pending"
     assert rows["boss-arena"].error_message is None
+
+
+async def test_orphan_marker_failed_rows_reconcile_but_genuine_failures_never(
+    db_session, seeded_job
+):
+    """The load-bearing predicate (RED-proof: without the marker clause the
+    orphan-failed row is untouched; without the equality guard the genuine
+    failure would be rewritten).
+
+    seeded_job rows: flashcards=pending, boss-arena=running, reading=done,
+    reflection=failed(error=None). Re-point reflection to a GENUINE error and
+    add the orphan marker to boss-arena as main.py's boot sweep would."""
+    from app.repositories.phase_outputs import ORPHANED_RESTART_MESSAGE
+    await db_session.execute(
+        update(PhaseOutput)
+        .where(PhaseOutput.job_id == seeded_job.id,
+               PhaseOutput.phase_name == "boss-arena")
+        .values(
+            status="failed",
+            error_message=ORPHANED_RESTART_MESSAGE,
+            completed_at=sa_func.now(),
+        )
+    )
+    await db_session.execute(
+        update(PhaseOutput)
+        .where(PhaseOutput.job_id == seeded_job.id,
+               PhaseOutput.phase_name == "reflection")
+        .values(error_message="judge crashed: real evidence")
+    )
+    n = await phase_repo.reset_abandoned_phases(
+        db_session, [seeded_job.id],
+        status="pending",
+        source_statuses=("running",),
+        include_orphan_failed=True,
+    )
+    # flashcards is 'pending' but source_statuses=('running',) excludes it;
+    # boss-arena matches ONLY via the marker clause.
+    assert n == 1
+    rows = {r.phase_name: r for r in await phase_repo.list_for_job(db_session, seeded_job.id)}
+    assert rows["boss-arena"].status == "pending"
+    assert rows["boss-arena"].error_message is None
+    assert rows["boss-arena"].completed_at is None
+    assert rows["flashcards"].status == "pending"          # untouched
+    assert rows["reading"].status == "done"                # frozen
+    assert rows["reflection"].status == "failed"           # genuine evidence kept
+    assert rows["reflection"].error_message == "judge crashed: real evidence"

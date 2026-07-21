@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Sequence
 from uuid import UUID
 
 from sqlalchemy import select, update
@@ -150,40 +150,74 @@ async def list_running_for_sweep(session: AsyncSession) -> list[PhaseOutput]:
     return list((await session.execute(stmt)).scalars().all())
 
 
+# The synthetic error main.lifespan's boot sweep stamps on every
+# pending/running phase row before the startup reclaim runs. The
+# reconciliation predicate matches THIS exact prose — single source,
+# never duplicate the string (orphan-phase-reconciliation-1).
+ORPHANED_RESTART_MESSAGE = "orphaned: worker restarted"
+
+
 async def reset_abandoned_phases(
     session: AsyncSession,
-    job_id: UUID,
+    job_ids: Sequence[UUID],
     *,
-    phase_names: list[str],
+    phase_names: Optional[list[str]] = None,
     status: str,
     error_message: Optional[str] = None,
+    source_statuses: Sequence[str] = ("pending", "running"),
+    include_orphan_failed: bool = False,
 ) -> int:
-    """Reset still-pending/running phases of a job after their siblings'
-    cancellation orphaned them (scheduler peer-cancel leaves rows 'running':
-    CancelledError is a BaseException, so per-phase except-Exception cleanup
-    never ran — queue-correctness-1). 'done' rows are untouched.
+    """Reset a batch of jobs' abandoned phase rows (queue-correctness-1 +
+    orphan-phase-reconciliation-1). 'done' rows are always untouched;
+    'failed' rows are untouched unless they carry the synthetic
+    ORPHANED_RESTART_MESSAGE and include_orphan_failed=True — genuine
+    failure evidence is never rewritten.
 
-    status='pending' (job requeued/parked — the row is WAITING, error cleared)
-    or status='failed' (hard failure / user cancel — error_message recorded)."""
-    assert status in ("pending", "failed"), status
-    if not phase_names:
+    status='pending' (job requeued/parked — rows are WAITING, error cleared)
+    or status='failed' (job terminal — error_message recorded).
+    phase_names=None means every phase of the job; [] is a no-op (the #109
+    scheduler contract). Empty job_ids is a no-op before any session use.
+    source_statuses may only narrow within {'pending', 'running'} — 'done' is
+    always frozen and 'failed' rows are reachable ONLY via
+    include_orphan_failed's marker equality, never wholesale."""
+    # Real raises, not asserts — python -O strips asserts, and these guards
+    # ARE the preservation contract (PR #110 round-3; closes
+    # reset-abandoned-status-assert-1).
+    if status not in ("pending", "failed"):
+        raise ValueError(f"status must be 'pending' or 'failed', got {status!r}")
+    if not set(source_statuses) <= {"pending", "running"}:
+        raise ValueError(
+            f"source_statuses may only narrow within pending/running "
+            f"(got {tuple(source_statuses)!r}) — 'done' is always frozen and "
+            f"'failed' rows are reachable ONLY via include_orphan_failed's "
+            f"marker equality, never wholesale"
+        )
+    if not job_ids:
         return 0
-    from sqlalchemy import func as sa_func
+    if phase_names is not None and not phase_names:
+        return 0
+    from sqlalchemy import func as sa_func, or_
     values: dict = {"status": status}
     if status == "failed":
         values["error_message"] = error_message
         values["completed_at"] = sa_func.now()
     else:
         values["error_message"] = None
+        values["completed_at"] = None
+    eligible = PhaseOutput.status.in_(tuple(source_statuses))
+    if include_orphan_failed:
+        eligible = or_(
+            eligible,
+            (PhaseOutput.status == "failed")
+            & (PhaseOutput.error_message == ORPHANED_RESTART_MESSAGE),
+        )
     stmt = (
         update(PhaseOutput)
-        .where(
-            PhaseOutput.job_id == job_id,
-            PhaseOutput.phase_name.in_(phase_names),
-            PhaseOutput.status.in_(("pending", "running")),
-        )
+        .where(PhaseOutput.job_id.in_(list(job_ids)), eligible)
         .values(**values)
     )
+    if phase_names is not None:
+        stmt = stmt.where(PhaseOutput.phase_name.in_(phase_names))
     result = await session.execute(stmt)
     return result.rowcount
 

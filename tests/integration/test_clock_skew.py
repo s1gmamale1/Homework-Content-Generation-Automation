@@ -100,6 +100,10 @@ async def test_retry_backoff_schedules_in_the_future_server_side():
         book, toc = await _seed_section(s)
         job = await jobs_repo.create(s, book_id=book.id, toc_entry_id=toc.id, subject="math-algebra", output_language="uz")
         job.attempts = 1  # one attempt already spent -> retry branch, not terminal
+        # mark_failed_with_retry is cancel-wins guarded since #109: it only
+        # requeues jobs still 'running' (a pending job returns "skipped").
+        # Model the real caller (worker holding a claimed job).
+        job.status = "running"
         await s.commit()
         job_id, book_id = job.id, book.id
     try:

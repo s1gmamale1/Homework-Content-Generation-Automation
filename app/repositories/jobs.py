@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Batch, HomeworkJob, PhaseOutput, TOCEntry
+from app.repositories import phase_outputs as phase_repo
 from app.repositories import workers as workers_repo
 
 _TERMINAL_STATUSES = ("done", "failed", "cancelled")
@@ -576,6 +577,10 @@ async def reclaim_stuck_jobs(
     Stuck = running and (claimed_at is NULL or claimed_at < now - stale).
     The `attempts` counter persists, so a poison-pill job runs at most
     `max_attempts` times before being marked failed terminally.
+
+    Same-transaction phase reconciliation (orphan-phase-reconciliation-1):
+    every reclaimed job's abandoned phase rows are reset to `pending` too, so
+    a reclaimed job never shows a stale `running`/orphan-marked phase row.
     """
     stmt = (
         update(HomeworkJob)
@@ -590,9 +595,22 @@ async def reclaim_stuck_jobs(
             claimed_by=None,
             current_phase=None,
         )
+        .returning(HomeworkJob.id)
     )
     result = await session.execute(stmt)
-    return result.rowcount or 0
+    reclaimed = [row[0] for row in result.fetchall()]
+    if reclaimed:
+        # Same-transaction phase reconciliation (orphan-phase-reconciliation-1):
+        # a reclaimed job's in-flight rows go back to WAITING. Marker-aware
+        # because main.lifespan's boot sweep pre-marks them failed/"orphaned:
+        # worker restarted" before the startup reclaim runs.
+        await phase_repo.reset_abandoned_phases(
+            session, reclaimed,
+            status="pending",
+            source_statuses=("running",),
+            include_orphan_failed=True,
+        )
+    return len(reclaimed)
 
 
 async def reclaim_orphans_on_startup(
@@ -632,6 +650,11 @@ async def fail_exhausted_pending_jobs(session: AsyncSession, *, max_attempts: in
     Such rows are skipped by the claim query (attempts >= max_attempts) yet
     never failed (mark_failed_with_retry only runs for claimed jobs), so
     without this sweep they wedge in `pending` forever. Returns rows failed.
+
+    Same-transaction phase reconciliation (orphan-phase-reconciliation-1):
+    the job is terminal, so every unfinished phase row is failed too — makes
+    the failure VISIBLE at phase level instead of a job failing silently with
+    zero failed phase rows.
     """
     _msg = "attempts exhausted while pending (stale-pending sweep)"
     stmt = (
@@ -646,9 +669,23 @@ async def fail_exhausted_pending_jobs(session: AsyncSession, *, max_attempts: in
             claimed_at=None,
             claimed_by=None,
         )
+        .returning(HomeworkJob.id)
     )
     result = await session.execute(stmt)
-    return result.rowcount or 0
+    failed_ids = [row[0] for row in result.fetchall()]
+    if failed_ids:
+        # Terminal job ⇒ every unfinished row terminal too (mirrors
+        # mark_cancelled) — makes the failure VISIBLE at phase level: the
+        # 10-done+1-running field case previously failed with zero failed
+        # phase rows, invisible to failed/cancelled-based watchers.
+        await phase_repo.reset_abandoned_phases(
+            session, failed_ids,
+            status="failed",
+            error_message=_msg,
+            source_statuses=("pending", "running"),
+            include_orphan_failed=True,
+        )
+    return len(failed_ids)
 
 
 async def mark_failed_with_retry(
