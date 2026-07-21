@@ -714,7 +714,7 @@ async def requeue_session_limited(
     job_id: UUID,
     *,
     error: str,
-) -> None:
+) -> str:
     """Requeue a session-limited job without burning a retry attempt.
 
     Sets status='pending', decrements attempts by 1 (GREATEST to floor at 0),
@@ -724,10 +724,15 @@ async def requeue_session_limited(
 
     Host-clock note: scheduled_at uses DB clock (func.now()) for consistency
     with all other queue timestamps (fleet-net-1 ops half).
+
+    Guarded on status='running' (gate correction 6, same sibling pattern as
+    requeue_slot_saturated): a concurrent user cancel must win — resurrecting
+    a 'cancelling' job to 'pending' would let it run again after the user
+    asked to stop it. Returns "requeued", "cancelled", or "skipped".
     """
-    await session.execute(
+    result = await session.execute(
         update(HomeworkJob)
-        .where(HomeworkJob.id == job_id)
+        .where(HomeworkJob.id == job_id, HomeworkJob.status == "running")
         .values(
             status="pending",
             attempts=func.greatest(HomeworkJob.attempts - 1, 0),
@@ -738,6 +743,9 @@ async def requeue_session_limited(
             scheduled_at=func.now(),
         )
     )
+    if result.rowcount == 0:
+        return await _finalize_if_cancelling(session, job_id)
+    return "requeued"
 
 
 async def _finalize_if_cancelling(session: AsyncSession, job_id: UUID) -> str:

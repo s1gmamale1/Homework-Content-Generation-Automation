@@ -397,3 +397,86 @@ async def test_mark_failed_with_retry_stale_identity_map_interleaving():
             )
     finally:
         await _cleanup(book_id)
+
+
+@pytest.mark.skipif(not _INTEGRATION, reason=_SKIP_REASON)
+@pytest.mark.asyncio
+async def test_requeue_session_limited_cancel_wins():
+    """Same cancel-wins guard, applied to requeue_session_limited (review
+    finding: it updated by ID with NO status guard, so a concurrent user
+    cancel — status='cancelling' — got resurrected to 'pending'). Seed
+    status='cancelling' plus one running phase row; requeue_session_limited
+    -> 'cancelled', job finalized status='cancelled' with completed_at set
+    and the phase row 'failed' (mark_cancelled semantics) — NEVER 'pending'."""
+    from sqlalchemy import select, update
+
+    from app.db import SessionLocal
+    from app.models.homework_job import HomeworkJob
+    from app.models.phase_output import PhaseOutput
+    from app.repositories import jobs as jobs_repo
+    from app.repositories import phase_outputs as phase_outputs_repo
+
+    book_id: uuid.UUID | None = None
+    try:
+        async with SessionLocal() as session:
+            book, toc = await _seed_book_and_toc(session)
+            book_id = book.id
+            job = await jobs_repo.create(
+                session,
+                book_id=book.id,
+                toc_entry_id=toc.id,
+                subject="math",
+                transport="api",
+                output_language="uz",
+            )
+            job_id = job.id
+            await session.execute(
+                update(HomeworkJob)
+                .where(HomeworkJob.id == job_id)
+                .values(
+                    status="cancelling",
+                    attempts=1,
+                    claimed_by="w",
+                    claimed_at=datetime.now(timezone.utc),
+                    current_phase="flashcards",
+                )
+            )
+            phase = await phase_outputs_repo.create_or_reset(
+                session,
+                job_id=job_id,
+                phase_name="flashcards",
+                phase_order=0,
+                prompt_hash="test-hash",
+                model_name="test-model",
+                status="running",
+            )
+            phase_id = phase.id
+            await session.commit()
+
+        async with SessionLocal() as session:
+            outcome = await jobs_repo.requeue_session_limited(
+                session, job_id, error="session-limit pause — resets at unknown",
+            )
+            await session.commit()
+
+        assert outcome == "cancelled", f"expected 'cancelled', got {outcome!r}"
+
+        async with SessionLocal() as session:
+            result = (
+                await session.execute(select(HomeworkJob).where(HomeworkJob.id == job_id))
+            ).scalar_one()
+            assert result.status == "cancelled", (
+                f"expected status='cancelled' (never resurrected to 'pending'), "
+                f"got {result.status!r}"
+            )
+            assert result.completed_at is not None, "completed_at must be set on finalize"
+
+            phase_row = (
+                await session.execute(select(PhaseOutput).where(PhaseOutput.id == phase_id))
+            ).scalar_one()
+            assert phase_row.status == "failed", (
+                f"non-done phase row must be failed by mark_cancelled semantics, "
+                f"got {phase_row.status!r}"
+            )
+    finally:
+        await _cleanup(book_id)

@@ -86,12 +86,27 @@ async def seeded_job(db_session):
 
     yield job
 
-    async with SessionLocal() as s:
-        await s.execute(delete(PhaseOutput).where(PhaseOutput.job_id == job.id))
-        await s.execute(delete(HomeworkJob).where(HomeworkJob.id == job.id))
-        await s.execute(delete(TOCEntry).where(TOCEntry.book_id == book.id))
-        await s.execute(delete(Book).where(Book.id == book.id))
-        await s.commit()
+    # Capture ids BEFORE rollback: rollback() expires every ORM object in
+    # the session, so a post-rollback `job.id`/`book.id` attribute access
+    # would trigger a synchronous lazy-refresh outside a greenlet context
+    # (sqlalchemy.exc.MissingGreenlet) instead of a clean expired-object
+    # reload.
+    job_id = job.id
+    book_id = book.id
+
+    # Cleanup MUST run through db_session itself, not a second session.
+    # Tests call reset_abandoned_phases without committing, so db_session
+    # still holds uncommitted UPDATE row locks when this finalizer runs
+    # (dependent-fixture finalizers run BEFORE db_session's own teardown
+    # closes it) — a second `SessionLocal()` trying to DELETE those same
+    # rows blocks on the lock for minutes. Roll back first (releases the
+    # locks), then clean up on the same session and commit.
+    await db_session.rollback()
+    await db_session.execute(delete(PhaseOutput).where(PhaseOutput.job_id == job_id))
+    await db_session.execute(delete(HomeworkJob).where(HomeworkJob.id == job_id))
+    await db_session.execute(delete(TOCEntry).where(TOCEntry.book_id == book_id))
+    await db_session.execute(delete(Book).where(Book.id == book_id))
+    await db_session.commit()
 
 
 async def test_reset_abandoned_touches_pending_and_running_only(db_session, seeded_job):

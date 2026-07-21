@@ -536,9 +536,10 @@ class Worker:
             except SessionLimitPause as e:
                 # Requeue without burning a retry attempt so a healthy peer
                 # can pick it up. Self-cooldown until the session resets.
+                outcome = "error"
                 try:
                     async with SessionLocal() as session:
-                        await jobs_repo.requeue_session_limited(
+                        outcome = await jobs_repo.requeue_session_limited(
                             session, job_id, error=str(e)
                         )
                         await session.commit()
@@ -550,7 +551,7 @@ class Worker:
                     _utcnow() + timedelta(seconds=settings.session_limit_default_cooldown_seconds)
                 )
                 logger.warning(
-                    f"worker {self.id} job={job_id} session-limit → requeued + "
+                    f"worker {self.id} job={job_id} session-limit → {outcome} + "
                     f"worker cooldown until {self._cooldown_until.isoformat()}"
                 )
             except SlotSaturation as e:

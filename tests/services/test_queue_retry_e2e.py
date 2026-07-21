@@ -95,6 +95,80 @@ async def _seed_chain_fixture(session, *, pdf_bytes: bytes):
     return book, toc, job
 
 
+async def _seed_decoy_and_park_others(session, job_id, *, pdf_bytes: bytes):
+    """Isolation guard for claim_next_job (review finding: an unasserted
+    ``job is not None`` silently claims an UNRELATED leftover job on the
+    scratch DB, which is deliberately never wiped between test files).
+
+    Seeds an unrelated pending job with an OLDER scheduled_at than `job_id`
+    — it would win claim_next_job's FIFO tiebreak (oldest scheduled_at
+    first) over the seeded job if nothing parked it — then pushes every
+    OTHER claimable pending row (the decoy plus any real leftovers other
+    test files left behind) an hour into the future. Scratch-DB leftovers
+    are garbage: there is nothing to restore, the parking only needs to
+    hold for this test's lifetime.
+
+    Returns the decoy book id for teardown.
+    """
+    from sqlalchemy import update
+
+    from app.models.homework_job import HomeworkJob
+    from app.models.toc_entry import TOCEntry
+    from app.repositories import books as books_repo
+    from app.repositories import jobs as jobs_repo
+
+    decoy_book = await books_repo.create(
+        session,
+        subject="history",
+        original_filename="e2e_queue_retry_decoy.pdf",
+        content_sha256=uuid.uuid4().hex.ljust(64, "0"),
+        file_size_bytes=len(pdf_bytes),
+        status="toc_ready",
+        grade="9",
+    )
+    decoy_toc = TOCEntry(
+        book_id=decoy_book.id,
+        section_title="Decoy Lesson (parking bait)",
+        section_number="1",
+        page_start=1,
+        page_end=1,
+        order_index=0,
+    )
+    session.add(decoy_toc)
+    await session.flush()
+
+    decoy_job = await jobs_repo.create(
+        session,
+        book_id=decoy_book.id,
+        toc_entry_id=decoy_toc.id,
+        subject="history",
+        output_language="uz",
+        provider="gemini",
+        model="gemini-2.5-flash",
+        transport="api",
+        judge_provider="gemini",
+        extract_provider="gemini",
+        solver_provider="gemini",
+    )
+    await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.id == decoy_job.id)
+        .values(scheduled_at=datetime.now(timezone.utc) - timedelta(hours=1))
+    )
+
+    # The fix under test: without this park, claim_next_job's FIFO tiebreak
+    # picks the decoy above (or any other never-wiped scratch-DB leftover)
+    # ahead of `job_id`.
+    await session.execute(
+        update(HomeworkJob)
+        .where(HomeworkJob.status == "pending")
+        .where(HomeworkJob.id != job_id)
+        .values(scheduled_at=datetime.now(timezone.utc) + timedelta(hours=1))
+    )
+
+    return decoy_book.id
+
+
 async def _cleanup_chain_fixture(book_id) -> None:
     if book_id is None:
         return
@@ -158,6 +232,7 @@ async def test_e2e_chain_attempt_timeout_to_bounded_pending_then_terminal_failed
     monkeypatch.setattr(settings, "var_dir", str(tmp_path))
 
     book_id = None
+    decoy_book_id = None
     try:
         async with SessionLocal() as session:
             book, toc, job = await _seed_chain_fixture(
@@ -165,6 +240,9 @@ async def test_e2e_chain_attempt_timeout_to_bounded_pending_then_terminal_failed
             )
             book_id = book.id
             job_id = job.id
+            decoy_book_id = await _seed_decoy_and_park_others(
+                session, job_id, pdf_bytes=b"%PDF-1.4 fake e2e queue retry decoy"
+            )
             await session.commit()
 
         # ── Stub ONLY the provider boundary + the per-attempt clock ──
@@ -193,6 +271,10 @@ async def test_e2e_chain_attempt_timeout_to_bounded_pending_then_terminal_failed
             )
             await session.commit()
         assert job is not None and job.status == "running" and job.attempts == 1
+        assert job.id == job_id, (
+            f"claimed unrelated job {job.id} instead of the seeded job {job_id} "
+            f"— isolation-park leak on the scratch DB"
+        )
 
         await worker._execute_job(job_id)
 
@@ -242,6 +324,10 @@ async def test_e2e_chain_attempt_timeout_to_bounded_pending_then_terminal_failed
             )
             await session.commit()
         assert job is not None and job.status == "running" and job.attempts == 3
+        assert job.id == job_id, (
+            f"claimed unrelated job {job.id} instead of the seeded job {job_id} "
+            f"— isolation-park leak on the scratch DB"
+        )
 
         await worker._execute_job(job_id)
 
@@ -261,6 +347,7 @@ async def test_e2e_chain_attempt_timeout_to_bounded_pending_then_terminal_failed
         assert row.completed_at is not None, "completed_at must be set on terminal failure"
     finally:
         await _cleanup_chain_fixture(book_id)
+        await _cleanup_chain_fixture(decoy_book_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────
