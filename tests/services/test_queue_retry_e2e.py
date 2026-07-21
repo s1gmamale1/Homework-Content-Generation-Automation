@@ -46,6 +46,10 @@ _READABLE_BOOK_TEXT = (
 ) * 8
 
 
+# Outranks every organic job (user-triggered default 0); claim sorts priority DESC.
+_E2E_PRIORITY = 1_000_000
+
+
 async def _seed_chain_fixture(session, *, pdf_bytes: bytes):
     """Seed one toc_ready book + toc_entry + pending api-transport gemini job,
     stamped judge/extract/solver provider='gemini' so every claim-gate role
@@ -156,14 +160,15 @@ async def _seed_decoy_and_park_others(session, job_id, *, pdf_bytes: bytes):
         .values(scheduled_at=datetime.now(timezone.utc) - timedelta(hours=1))
     )
 
-    # The fix under test: without this park, claim_next_job's FIFO tiebreak
-    # picks the decoy above (or any other never-wiped scratch-DB leftover)
-    # ahead of `job_id`.
+    # Isolation is ROW-OWNED (round-5 review): the test's job carries a huge
+    # `priority` (claim_next_job sorts priority DESC first), so it outranks
+    # the decoy above and any never-wiped scratch-DB leftover WITHOUT
+    # rewriting unrelated rows — a blanket scheduled_at park mutated every
+    # other pending job (and could un-park jobs scheduled >1h out).
     await session.execute(
         update(HomeworkJob)
-        .where(HomeworkJob.status == "pending")
-        .where(HomeworkJob.id != job_id)
-        .values(scheduled_at=datetime.now(timezone.utc) + timedelta(hours=1))
+        .where(HomeworkJob.id == job_id)
+        .values(priority=_E2E_PRIORITY)
     )
 
     return decoy_book.id

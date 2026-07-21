@@ -2006,3 +2006,5 @@ Gate-hardening: `PUT /settings/launch-defaults` rejects null provider/model with
 **Ops note:** during execution the shared Postgres hit its 100-connection cap from ~95 IDLE fleet-worker pool connections (a dozen LAN hosts × 6-11 each); 30 long-idle backends were terminated to proceed. Worth a follow-up: per-worker pool caps or a higher `max_connections`.
 
 **Round-4 (PR #109 review):** real-DB teardown deadlock fixed (same-session cleanup after rollback); e2e claim now identity-asserted + isolation-parked against scratch-DB leftovers (decoy-proven); requeue_session_limited guarded like its siblings (cancel-wins, outcome logged) — closing session-limit-requeue-cancel-race-1 in-branch.
+
+**Round-5 (PR #109 review):** e2e isolation made row-owned (test job claims via a huge `priority`, claim's first sort key — the round-4 blanket `scheduled_at` park rewrote every unrelated pending row and could un-park far-future jobs); scope of the sibling cleanup narrowed in docs to the LIVE scheduler only — the startup-reclaim/attempts-exhausted parent-only reset remains and is filed as `orphan-phase-reconciliation-1`.

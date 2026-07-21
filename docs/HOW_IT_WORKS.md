@@ -205,7 +205,11 @@ phase now takes one of three typed paths instead of always terminal-failing the 
 
 When a sibling phase drags the job down, the scheduler now resets the abandoned in-flight
 phase rows too: back to `pending` when the job is being requeued/parked, `failed` on hard
-failure or user cancel — no more phantom `running` rows. Both requeue paths are guarded so a
+failure or user cancel — the live scheduler no longer leaves phantom `running` rows behind.
+(Scope note: this covers the in-process scheduler only. The startup reclaim and the
+attempts-exhausted path still reset/park the PARENT job without reconciling its phase rows —
+an orphaned `running` phase can still accompany a `pending` parent there; filed as
+`orphan-phase-reconciliation-1`.) All three requeue paths are guarded so a
 concurrent user cancel always wins (`cancelling` finalizes to `cancelled`, never resurrects
 to `pending`).
 
