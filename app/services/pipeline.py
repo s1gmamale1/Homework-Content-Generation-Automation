@@ -503,7 +503,7 @@ async def _abandon_inflight(
         try:
             async with SessionLocal() as session:
                 await phase_repo.reset_abandoned_phases(
-                    session, job_id,
+                    session, [job_id],
                     phase_names=phase_names, status=status,
                     error_message=reason if status == "failed" else None,
                 )

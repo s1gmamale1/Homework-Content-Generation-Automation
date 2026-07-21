@@ -41,13 +41,13 @@ async def lifespan(app: FastAPI):
         for b in await books_repo.list_running_for_sweep(session):
             await books_repo.set_status(
                 session, b.id, "failed",
-                error_message="orphaned: worker restarted",
+                error_message=phase_repo.ORPHANED_RESTART_MESSAGE,
             )
         for p in await phase_repo.list_running_for_sweep(session):
             await phase_repo.set_status(
                 session, p.id, "failed",
                 completed_at=datetime.now(timezone.utc),
-                error_message="orphaned: worker restarted",
+                error_message=phase_repo.ORPHANED_RESTART_MESSAGE,
             )
         # Peer-aware startup reclaim (fleet-restart-reclaim-1): if any peer
         # worker has a fresh heartbeat, use the full lease window so its
