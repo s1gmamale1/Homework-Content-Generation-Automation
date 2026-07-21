@@ -99,18 +99,17 @@ async def _seed_chain_fixture(session, *, pdf_bytes: bytes):
     return book, toc, job
 
 
-async def _seed_decoy_and_park_others(session, job_id, *, pdf_bytes: bytes):
+async def _seed_decoy_and_prioritize_job(session, job_id, *, pdf_bytes: bytes):
     """Isolation guard for claim_next_job (review finding: an unasserted
     ``job is not None`` silently claims an UNRELATED leftover job on the
     scratch DB, which is deliberately never wiped between test files).
 
-    Seeds an unrelated pending job with an OLDER scheduled_at than `job_id`
-    — it would win claim_next_job's FIFO tiebreak (oldest scheduled_at
-    first) over the seeded job if nothing parked it — then pushes every
-    OTHER claimable pending row (the decoy plus any real leftovers other
-    test files left behind) an hour into the future. Scratch-DB leftovers
-    are garbage: there is nothing to restore, the parking only needs to
-    hold for this test's lifetime.
+    Row-owned isolation: seeds an unrelated DECOY pending job with an OLDER
+    scheduled_at than `job_id` — it would win claim_next_job's FIFO tiebreak
+    (oldest scheduled_at first) if isolation ever regressed — then raises the
+    test job's own ``priority`` (the claim's FIRST sort key; organic jobs
+    default 0) so it outranks the decoy and every leftover. No row the test
+    doesn't own is touched.
 
     Returns the decoy book id for teardown.
     """
@@ -132,7 +131,7 @@ async def _seed_decoy_and_park_others(session, job_id, *, pdf_bytes: bytes):
     )
     decoy_toc = TOCEntry(
         book_id=decoy_book.id,
-        section_title="Decoy Lesson (parking bait)",
+        section_title="Decoy Lesson (claim bait)",
         section_number="1",
         page_start=1,
         page_end=1,
@@ -245,7 +244,7 @@ async def test_e2e_chain_attempt_timeout_to_bounded_pending_then_terminal_failed
             )
             book_id = book.id
             job_id = job.id
-            decoy_book_id = await _seed_decoy_and_park_others(
+            decoy_book_id = await _seed_decoy_and_prioritize_job(
                 session, job_id, pdf_bytes=b"%PDF-1.4 fake e2e queue retry decoy"
             )
             await session.commit()
@@ -278,7 +277,7 @@ async def test_e2e_chain_attempt_timeout_to_bounded_pending_then_terminal_failed
         assert job is not None and job.status == "running" and job.attempts == 1
         assert job.id == job_id, (
             f"claimed unrelated job {job.id} instead of the seeded job {job_id} "
-            f"— isolation-park leak on the scratch DB"
+            f"— priority isolation leak on the scratch DB"
         )
 
         await worker._execute_job(job_id)
@@ -331,7 +330,7 @@ async def test_e2e_chain_attempt_timeout_to_bounded_pending_then_terminal_failed
         assert job is not None and job.status == "running" and job.attempts == 3
         assert job.id == job_id, (
             f"claimed unrelated job {job.id} instead of the seeded job {job_id} "
-            f"— isolation-park leak on the scratch DB"
+            f"— priority isolation leak on the scratch DB"
         )
 
         await worker._execute_job(job_id)
