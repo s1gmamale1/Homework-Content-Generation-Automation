@@ -41,7 +41,9 @@ over-flagging so it never false-positives a good packet):
   HEADING line matches an explicit English structural-label list (Scenario, How
   to play, Case-Based Preview, Relationship types, Role, Task, Checkpoint,
   Learning Block, Feedback summary, Memory Check, Reflection, Decision Process)
-  on non-en output. Heading-anchored only — the same word in body prose does not
+  on non-en output. Labels may optionally be followed by a number (Checkpoint 1,
+  Learning Block 2) or, for Decision Process only, by "Explanation" with optional
+  "(DPE)" suffix. Heading-anchored only — the same word in body prose does not
   fire. `Boss Arena` is excluded (intentional game name). Companion to the
   prompts.py un-freeze that appends a uz label-localization clause.
 """
@@ -94,17 +96,20 @@ _RU_UZBEK_LEAK = [
 
 # English structural labels that must be localized (Task 3 un-freeze companion
 # detector, 2026-07-23): the prompt bodies name sections with these English
-# labels; on any non-en output they must be translated. Heading-anchored ONLY —
-# the same word in body prose ("Scenario" mentioned mid-paragraph) is legitimate
-# and must not fire. `Boss Arena` is excluded — it's the intentional game name,
-# not a leaked structural label.
-_ENGLISH_HEADING_LABELS = (
-    r"Scenario|How to play|Case-Based Preview|Relationship types|Role|Task|"
-    r"Checkpoint|Learning Block|Feedback summary|Memory Check|Reflection|"
-    r"Decision Process"
-)
+# labels; on any non-en output they must be translated. Labels may appear with
+# a trailing number (Checkpoint 1, Learning Block 2) or, for Decision Process
+# only, "Explanation" with optional "(DPE)" suffix. Heading-anchored ONLY — the
+# same word in body prose ("Scenario" mentioned mid-paragraph) is legitimate and
+# must not fire. `Boss Arena` is excluded — it's the intentional game name, not
+# a leaked structural label.
 _ENGLISH_HEADING_LEAK = re.compile(
-    rf"(?m)^[ \t]*#{{1,6}}[ \t]*\**(?:{_ENGLISH_HEADING_LABELS})\**[ \t]*$"
+    rf"(?m)^[ \t]*#{{1,6}}[ \t]*\**"
+    rf"(?:"
+    rf"Decision Process(?:\s+(?:\d+|Explanation(?:\s*\(DPE\))?))?|"
+    rf"(?:Scenario|How to play|Case-Based Preview|Relationship types|Role|Task|"
+    rf"Checkpoint|Learning Block|Feedback summary|Memory Check|Reflection)(?:\s+\d+)?"
+    rf")"
+    rf"\**[ \t]*$"
 )
 _BOSS_ARENA_HEADING = re.compile(r"(?im)^[ \t]*#{1,6}[ \t]*\**Boss Arena\**[ \t]*$")
 

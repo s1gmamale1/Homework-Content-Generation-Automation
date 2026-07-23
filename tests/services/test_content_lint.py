@@ -381,3 +381,55 @@ def test_english_heading_leak_covers_full_label_list(label):
     md = f"### {label}\nMatn.\n"
     findings = cl.lint_phase("flashcards", md, subject="matematika", output_language="uz")
     assert "english_heading_leak" in _codes(findings), f"did not fire on heading {label!r}"
+
+
+# --- Task 3 extension: numbered and DPE-qualified labels (2026-07-23) ---
+
+def test_english_heading_leak_fires_on_checkpoint_numbered():
+    """Numbered checkpoint form: # Checkpoint 1"""
+    md = "# Checkpoint 1\nMatn.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" in _codes(findings)
+
+
+def test_english_heading_leak_fires_on_learning_block_numbered():
+    """Numbered learning block form: # Learning Block 2"""
+    md = "# Learning Block 2\nMatn.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" in _codes(findings)
+
+
+def test_english_heading_leak_fires_on_decision_process_explanation():
+    """Decision Process with Explanation suffix: # Decision Process Explanation"""
+    md = "# Decision Process Explanation\nMatn.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" in _codes(findings)
+
+
+def test_english_heading_leak_fires_on_decision_process_explanation_with_dpe():
+    """Decision Process with Explanation and DPE label: # Decision Process Explanation (DPE)"""
+    md = "# Decision Process Explanation (DPE)\nMatn.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" in _codes(findings)
+
+
+def test_english_heading_leak_silent_on_uzbek_word_containing_english_snippet():
+    """Uzbek word 'Rolga' contains 'Rol' but it's NOT an English structural label in that context"""
+    md = "# Rolga kirish: Task boshqaruvchisi\nMatn.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
+    # Must NOT fire — "Rolga" is Uzbek, not the English "Role" label
+    assert "english_heading_leak" not in _codes(findings)
+
+
+def test_english_heading_leak_fires_on_scenario_heading_uz():
+    """# Scenario on uz output should fire"""
+    md = "### Scenario\nMatn.\n"
+    findings = cl.lint_phase("flashcards", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" in _codes(findings)
+
+
+def test_english_heading_leak_fires_on_feedback_summary():
+    """# Feedback summary should fire on uz"""
+    md = "## Feedback summary\nMatn.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" in _codes(findings)
