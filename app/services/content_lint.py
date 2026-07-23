@@ -40,12 +40,14 @@ over-flagging so it never false-positives a good packet):
 - **Task 3 (2026-07-23):** `english_heading_leak` (all phases) fires when a
   HEADING line matches an explicit English structural-label list (Scenario, How
   to play, Case-Based Preview, Relationship types, Role, Task, Checkpoint,
-  Learning Block, Feedback summary, Memory Check, Reflection, Decision Process)
-  on non-en output. Labels may optionally be followed by a number (Checkpoint 1,
-  Learning Block 2) or, for Decision Process only, by "Explanation" with optional
-  "(DPE)" suffix. Heading-anchored only — the same word in body prose does not
-  fire. `Boss Arena` is excluded (intentional game name). Companion to the
-  prompts.py un-freeze that appends a uz label-localization clause.
+  Learning Block, Feedback summary, Memory Check, Reflection, Flash Cards,
+  Real-Life Challenge, Decision Process) on non-en output. Labels may optionally
+  be followed by a number (Checkpoint 1, Learning Block 2) or an em/en-dash with
+  subject name (Flash Cards — Geografiya), or for Decision Process only by
+  "Explanation" with optional "(DPE)" suffix. Heading-anchored only — the same
+  word in body prose does not fire. `Boss Arena` is excluded (intentional game
+  name). Companion to the prompts.py un-freeze that appends a uz label-localization
+  clause.
 """
 from __future__ import annotations
 
@@ -98,20 +100,22 @@ _RU_UZBEK_LEAK = [
 # detector, 2026-07-23): the prompt bodies name sections with these English
 # labels; on any non-en output they must be translated. Labels may appear with
 # a trailing number (Checkpoint 1, Learning Block 2) or, for Decision Process
-# only, "Explanation" with optional "(DPE)" suffix. Heading-anchored ONLY — the
-# same word in body prose ("Scenario" mentioned mid-paragraph) is legitimate and
-# must not fire. `Boss Arena` is excluded — it's the intentional game name, not
-# a leaked structural label.
+# only, "Explanation" with optional "(DPE)" suffix. Labels may optionally be
+# followed by an em/en-dash + subject name (Flash Cards — Geografiya) — this
+# suffix is stripped from the detected label for translation. Heading-anchored
+# ONLY — the same word in body prose ("Scenario" mentioned mid-paragraph) is
+# legitimate and must not fire. `Boss Arena` is excluded — it's the intentional
+# game name, not a leaked structural label.
 _ENGLISH_HEADING_LEAK = re.compile(
     rf"(?m)^[ \t]*#{{1,6}}[ \t]*\**"
     rf"(?:"
     rf"Decision Process(?:\s+(?:\d+|Explanation(?:\s*\(DPE\))?))?|"
-    rf"(?:Scenario|How to play|Case-Based Preview|Relationship types|Role|Task|"
+    rf"(?:Flash Cards|Real-Life Challenge|Scenario|How to play|Case-Based Preview|Relationship types|Role|Task|"
     rf"Checkpoint|Learning Block|Feedback summary|Memory Check|Reflection)(?:\s+\d+)?"
     rf")"
-    rf"\**[ \t]*$"
+    rf"\**(?:[ \t]*[—–][ \t]*.{{0,60}})?[ \t]*$"
 )
-_BOSS_ARENA_HEADING = re.compile(r"(?im)^[ \t]*#{1,6}[ \t]*\**Boss Arena\**[ \t]*$")
+_BOSS_ARENA_HEADING = re.compile(r"(?im)^[ \t]*#{1,6}[ \t]*\**Boss Arena\**(?:[ \t]*[—–][ \t]*.{0,60})?[ \t]*$")
 
 
 def _lint_english_heading_leak(output_md: str, output_language: str) -> list[LintFinding]:

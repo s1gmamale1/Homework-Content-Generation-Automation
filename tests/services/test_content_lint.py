@@ -433,3 +433,47 @@ def test_english_heading_leak_fires_on_feedback_summary():
     md = "## Feedback summary\nMatn.\n"
     findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
     assert "english_heading_leak" in _codes(findings)
+
+
+# --- Task 3 extension: new labels (Flash Cards, Real-Life Challenge) + dash suffix (2026-07-23) ---
+
+def test_english_heading_leak_fires_on_flash_cards():
+    """# Flash Cards should fire on uz"""
+    md = "## Flash Cards\nMatn.\n"
+    findings = cl.lint_phase("flashcards", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" in _codes(findings)
+
+
+def test_english_heading_leak_fires_on_flash_cards_with_dash_subject():
+    """# Flash Cards — Geografiya should fire on uz (real leak case)"""
+    md = "## Flash Cards — Geografiya\nMatn.\n"
+    findings = cl.lint_phase("flashcards", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" in _codes(findings)
+
+
+def test_english_heading_leak_fires_on_rlc():
+    """# Real-Life Challenge should fire on uz"""
+    md = "## Real-Life Challenge\nMatn.\n"
+    findings = cl.lint_phase("practice-rlc", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" in _codes(findings)
+
+
+def test_english_heading_leak_fires_on_rlc_with_en_dash_subject():
+    """# Real-Life Challenge — Geography (Geografiya) should fire on uz"""
+    md = "## Real-Life Challenge — Geography (Geografiya)\nMatn.\n"
+    findings = cl.lint_phase("practice-rlc", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" in _codes(findings)
+
+
+def test_english_heading_leak_silent_on_boss_arena_with_dash_suffix():
+    """# Boss Arena — Geografiya should NOT fire (Boss Arena exclusion must tolerate dash)"""
+    md = "# Boss Arena — Geografiya\nMatn.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" not in _codes(findings)
+
+
+def test_english_heading_leak_silent_on_colon_tail():
+    """# Rolga kirish: Task boshqaruvchisi should NOT fire (colon tail, not dash)"""
+    md = "# Rolga kirish: Task boshqaruvchisi\nMatn.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" not in _codes(findings)
