@@ -138,7 +138,73 @@ def test_errdet_real_ru_output_recognizes_russian_boundary_and_marker():
     # RU path produces errdet_inline_spoiler via the RU boundary, not the
     # conservative no-boundary fallback (which would silently suppress it).
     md = (FIX / "errdet-ru-inline-spoiler-b1e40004.md").read_text(encoding="utf-8")
-    assert "errdet_inline_spoiler" in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="ru"))
+    findings = cl.lint_phase(ED, md, subject="geografiya", output_language="ru")
+    assert "errdet_inline_spoiler" in _codes(findings)
+    # Gap B (merge-gate follow-up): this real output's Reveal section ("#
+    # Раскрытие") never restates the block id at all — genuinely non-compliant
+    # under the bounded per-section naming contract, distinct from the
+    # spoiler finding this fixture exists to prove. Asserted here because
+    # it's true of the real sampled output, not invented for the test.
+    assert any("Reveal section names no block id" in f.message for f in findings)
+
+
+# --- Gap A (merge-gate follow-up): digit-bearing English spoiler form ---
+
+def test_errdet_digit_bearing_english_broken_block_is_spoiler():
+    md = ("# The blocks\n1. ok\n2. slip\n### Broken block: 2\n"
+          "## To'g'ri versiya\n2-blok xato edi.\n## Reveal\nXato blok 2.")
+    assert "errdet_inline_spoiler" in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="en"))
+
+
+def test_errdet_digit_bearing_english_prose_form_no_colon_is_spoiler():
+    md = ("# The blocks\n1. ok\n2. Broken block 2 sits here.\n"
+          "## To'g'ri versiya\n2-blok xato edi.\n## Reveal\nXato blok 2.")
+    assert "errdet_inline_spoiler" in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="en"))
+
+
+def test_errdet_canonical_title_echo_still_not_spoiler():
+    # the phase's own canonical title contains the bare "broken block" fragment
+    # with zero spoiler intent and NO digit — must stay immune post Gap-A widening.
+    md = ("# Error Detection — spot the broken block, type the correction — Subject\n"
+          "# The blocks\n1. ok\n2. slip\n"
+          "## To'g'ri versiya\n2-blok xato edi.\n## Reveal\nXato blok 2.")
+    assert "errdet_inline_spoiler" not in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="uz"))
+
+
+# --- Gap B (merge-gate follow-up): bounded per-section naming ---
+
+def test_errdet_reveal_only_id_still_warns_correct_version_omission():
+    # Gap B: reveal-only naming must NOT silently satisfy the correct-version
+    # section's own naming requirement — each PRESENT section is bounded to
+    # its own region, not the combined answer-key region.
+    md = ("# The blocks\n1. ok\n2. slip\n"
+          "## To'g'ri versiya\nXato: o'rta had ishorasi noto'g'ri edi.\n"
+          "## Reveal\n2-blok.")
+    findings = cl.lint_phase(ED, md, subject="geografiya", output_language="uz")
+    codes = _codes(findings)
+    assert "errdet_no_broken_marker" in codes
+    assert any("correct version" in f.message.lower() for f in findings)
+
+
+def test_errdet_correct_version_only_id_still_warns_reveal_omission():
+    md = ("# The blocks\n1. ok\n2. slip\n"
+          "## To'g'ri versiya\n2-blok xato edi.\n"
+          "## Reveal\nXato: tasdiqlaymiz, tuzatildi.")
+    findings = cl.lint_phase(ED, md, subject="geografiya", output_language="uz")
+    codes = _codes(findings)
+    assert "errdet_no_broken_marker" in codes
+    assert any("reveal" in f.message.lower() for f in findings)
+
+
+def test_errdet_reveal_only_heading_missing_id_flags_reveal_only_not_correct_version():
+    # only ONE heading (Reveal) exists at all — do not invent a finding for the
+    # absent correct-version section, only flag the PRESENT one that fails.
+    md = "# The blocks\n1. ok\n2. slip\n## Reveal\nXato: tasdiqlaymiz.\n"
+    findings = cl.lint_phase(ED, md, subject="geografiya", output_language="uz")
+    codes = _codes(findings)
+    assert "errdet_no_broken_marker" in codes
+    assert any("reveal" in f.message.lower() for f in findings)
+    assert not any("correct version" in f.message.lower() for f in findings)
 
 
 def test_errdet_check_only_runs_on_that_phase():

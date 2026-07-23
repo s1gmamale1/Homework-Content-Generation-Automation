@@ -46,6 +46,11 @@ Toʻgʻri! Siz xatoni topdingiz va tuzatdingiz. Qarama-qarshi ifodalarni qisqart
 Bu toʻliq toʻgʻri emas. Yana bir bor urinib koʻring. Mana bir ishora: Surat va maxrajdagi bir-biriga "o'xshash" ko'paytuvchilarni diqqat bilan solishtiring. `(a-b)` ifodasi `(b-a)` ga chindan ham tengmi? Ular orasida qanday bog'liqlik bor?
 
 ## Reveal
-**Xato blok:** `(a-b)` va `(b-a)` qisqartirilganda `1` beradi...
+<!-- Gap B (merge-gate follow-up, 2026-07-23): the Reveal section must name the
+block id WITHIN ITS OWN bounded region, not merely rely on "The correct
+version" section above naming it — extended "Xato blok:" to "Xato blok
+(Block 5):" so this stays a COMPLIANT clean fixture under the new per-section
+naming contract. -->
+**Xato blok (Block 5):** `(a-b)` va `(b-a)` qisqartirilganda `1` beradi...
 **Toʻgʻri shakli:** `(a-b)` va `(b-a)` qisqartirilganda `-1` beradi...
 **Sababi:** `a-b = –(b-a)` boʻlgani uchun ularning nisbati `–1` ga teng.

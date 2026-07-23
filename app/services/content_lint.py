@@ -36,7 +36,22 @@ over-flagging so it never false-positives a good packet):
   output (fixture `errdet-clean-3ca0da6f.md`) echoes the phase's own canonical
   title ("...spot the broken block, type the correction...") verbatim, which
   would otherwise false-positive `errdet_inline_spoiler` on every packet using
-  that title convention.
+  that title convention. A DIGIT-BEARING English form (`broken block: N` / bare
+  `broken block N`) is safe to widen alongside the digit-less sentence, since
+  the canonical title echo never carries a trailing digit (merge-gate Gap A,
+  2026-07-23).
+  Section 2 of `_lint_error_detection` also names each broken-block section
+  BOUNDED to its own region — correct-version region ends at the reveal
+  heading (or end of doc); reveal region ends at the next correct-version
+  heading after it (or end of doc) — rather than scanning the combined
+  answer-key region unbounded. A PRESENT section (heading found) that fails to
+  name a block id within its own bounds gets its own `errdet_no_broken_marker`
+  finding naming which section; an absent section invents no finding (that's
+  the generator's format drift, judged elsewhere). `errdet_reveal_mismatch`
+  compares the two bounded sections' first ids, not an unbounded scan to end
+  of document (merge-gate Gap B, 2026-07-23 — an unbounded scan previously let
+  a reveal-only id silently satisfy a correct-version naming omission, and
+  vice versa).
 - **Task 3 (2026-07-23):** `english_heading_leak` (all phases) fires when a
   HEADING line matches an explicit English structural-label list (Scenario, How
   to play, Case-Based Preview, Relationship types, Role, Task, Checkpoint,
@@ -264,12 +279,16 @@ _MARKER = re.compile(
     rf"|(?P<id_xato_ord>\d+)\s*-\s*{_BLK}\s+xato"            # "4-blok xato"
     rf"|xato\s+{_BLK}\s*(?P<id_xatop>\d+)?"                  # "xato blok[ 4]"
     rf"|xato\s+(?P<id_xatop_ord>\d+)\s*-\s*{_BLK}"           # "xato 4-blok"
-    # English markers, no id. Deliberately NOT the bare "broken block" fragment —
-    # real production output echoes the phase's own canonical title ("...spot
-    # the broken block, type the correction...") verbatim, which contains that
-    # fragment with zero spoiler intent; the full declarative sentence is the
-    # only safe English signal.
+    # English markers, no id. Deliberately NOT the bare digit-LESS "broken
+    # block" fragment — real production output echoes the phase's own
+    # canonical title ("...spot the broken block, type the correction...")
+    # verbatim, which contains that fragment with zero spoiler intent; the
+    # full declarative sentence is the only safe id-less English signal.
     rf"|(?P<eng>this is the broken block)"
+    # DIGIT-BEARING English form ("Broken block: 2" / "Broken block 2" prose,
+    # merge-gate Gap A): safe to widen because the canonical title echo above
+    # never carries a digit right after the fragment, so it stays immune.
+    rf"|broken\s+block\s*:?\s*(?P<id_engd>\d+)"
     rf"|(?P<eng2>\(\s*broken\s*\))"                          # parenthesised "(Broken)"
     rf"|(?P<uz_paren>\(\s*xato(?:\s+{_BLK})?\s*\))"          # "(XATO)" / "(XATO BLOK)"
     rf"|(?P<ru_paren>\(\s*брокованн\w*\s+{_BLK}\s*\))"       # "(БРОКОВАННЫЙ БЛОК)"
@@ -307,7 +326,7 @@ def _marker_id(m: "re.Match[str]", output_md: str) -> "str | None":
     gd = m.groupdict()
     mid = (gd.get("id_pre") or gd.get("id_ord") or gd.get("id_post")
            or gd.get("id_post_ord") or gd.get("id_xato") or gd.get("id_xato_ord")
-           or gd.get("id_xatop") or gd.get("id_xatop_ord"))
+           or gd.get("id_xatop") or gd.get("id_xatop_ord") or gd.get("id_engd"))
     if mid is None and (gd.get("eng") or gd.get("eng2")
                         or gd.get("uz_paren") or gd.get("ru_paren")):
         bm = _BLOCK_ID.search(_line_around(output_md, m.start()))
@@ -342,16 +361,40 @@ def _lint_error_detection(output_md: str) -> list[LintFinding]:
                 f"{_line_around(output_md, spoiler.start()).strip()!r}",
             ))
 
-    # 2. The answer-key region must name exactly one broken block.
+    # 2. The answer-key region must name a broken block. Both-missing (no
+    #    boundary heading at all) keeps the original conservative message.
+    text_len = len(output_md)
+    correct_end: "int | None" = None
+    reveal_end: "int | None" = None
     if key_off is None:
         out.append(LintFinding(
             "errdet_no_broken_marker",
             "no answer-key heading found (prompt requires The correct version / Reveal)",
         ))
-    elif not _BLOCK_ID.search(output_md, key_off):
-        out.append(LintFinding("errdet_no_broken_marker",
-                               "answer-key region names no block id"))
     else:
+        # 2a. Bounded per-section naming (Gap B, merge-gate follow-up): each
+        #     PRESENT section — The correct version and/or Reveal — must name
+        #     a block id WITHIN ITS OWN bounded region, not merely somewhere
+        #     else in the document (an unbounded scan let a reveal-only id
+        #     satisfy a correct-version omission, and vice versa). A section
+        #     heading that doesn't exist at all is the generator's format
+        #     drift (judged elsewhere) — only a PRESENT section that fails to
+        #     name the id gets a finding here (prefer under- to over-flagging).
+        if correct_off is not None:
+            correct_end = reveal_off if (reveal_off is not None and reveal_off > correct_off) else text_len
+            if not _BLOCK_ID.search(output_md, correct_off, correct_end):
+                out.append(LintFinding("errdet_no_broken_marker",
+                                       "The correct version section names no block id"))
+        if reveal_off is not None:
+            next_correct = _CORRECT_VERSION_HDR.search(output_md, reveal_off)
+            reveal_end = next_correct.start() if next_correct else text_len
+            if not _BLOCK_ID.search(output_md, reveal_off, reveal_end):
+                out.append(LintFinding("errdet_no_broken_marker",
+                                       "Reveal section names no block id"))
+
+        # 2b. The answer-key region overall must not name MORE THAN ONE
+        #     distinct broken block. Unbounded from the earliest heading —
+        #     scan scope unchanged by the Gap-B bounding above.
         key_ids: set[str] = set()
         for m in _MARKER.finditer(output_md, key_off):
             mid = _marker_id(m, output_md)
@@ -361,10 +404,12 @@ def _lint_error_detection(output_md: str) -> list[LintFinding]:
             out.append(LintFinding("errdet_multiple_broken",
                                    f"multiple broken blocks marked: blocks {sorted(key_ids)}"))
 
-    # 3. The correct-version and reveal sections must agree on the block id.
+    # 3. The correct-version and reveal sections must agree on the block id —
+    #    compared using the SAME BOUNDED regions as the naming check above
+    #    (Gap B), not an unbounded scan to end of document.
     if correct_off is not None and reveal_off is not None:
-        cbm = _BLOCK_ID.search(output_md, correct_off)
-        rbm = _BLOCK_ID.search(output_md, reveal_off)
+        cbm = _BLOCK_ID.search(output_md, correct_off, correct_end)
+        rbm = _BLOCK_ID.search(output_md, reveal_off, reveal_end)
         c_id = (cbm.group(1) or cbm.group(2)) if cbm else None
         r_id = (rbm.group(1) or rbm.group(2)) if rbm else None
         if c_id is not None and r_id is not None and c_id != r_id:
