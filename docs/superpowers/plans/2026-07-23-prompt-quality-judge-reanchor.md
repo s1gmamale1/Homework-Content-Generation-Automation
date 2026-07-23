@@ -32,9 +32,15 @@ Four surgical fixes, all prompt/contract-side — **no regeneration of existing 
   T6 produces that data). Judge grades against the same `get_prompt` contract, so every
   contract edit auto-propagates to the judge.
 - **Acceptance = real model calls over `transport=api`** (cli retired): a targeted 3-phase
-  generation smoke (~$0.10) + a controlled A/B re-judge of 40 stored phases (~$2.5,
-  judge-only, no content spend). Ops note: workers cache prompts — fleet restart required
-  after merge for any of this to take effect.
+  generation smoke validated through `content_lint.lint_phase` (~$0.10) + a **three-arm**
+  re-judge experiment over 40 stored phases with behavioral safety probes (~$4, judge-only,
+  no content spend, committed script + sanitized result artifact). Ops note: workers cache
+  prompts — fleet restart required after merge for any of this to take effect.
+- **Lint semantics invert deliberately**: today `_lint_error_detection` *enforces* the old
+  contract (warns `errdet_no_broken_marker` when no inline marker exists, and the
+  `errdet-clean-*.md` fixtures pass *because* they carry the marker). Task 2 re-keys the
+  whole family on a student-region/answer-key-region split with localized boundary headings;
+  fixtures are re-authored to the new contract shape.
 
 Branch: `feat/prompt-quality-reanchor` off `origin/Nggaev-v2` (collision gate run 2026-07-23:
 no overlapping branches/PRs; only open PR is unrelated `fix/dashboard-mobile-wrap`).
@@ -88,13 +94,21 @@ _FIDELITY_RULE = (
 4. **Commit:** `fix(judge): fidelity re-anchor — contradiction=major, absence=minor`
    (stage ONLY the two files above).
 
-## Task 2 — Error-detection spoiler: contract + deterministic lint
+## Task 2 — Error-detection spoiler: contract edit + lint-family inversion
 
 **Files:** `prompts/_general/practice-error-detection.md`, `app/services/content_lint.py`,
-`tests/services/test_content_lint.py`, `tests/test_prompt_coverage.py` (or the existing
-prompt-text test home — implementer verifies the right file and follows its pattern).
+`tests/services/test_content_lint.py` (+ its errdet fixtures dir — locate via `FIX` in that
+file), `tests/services/test_prompt_coverage.py`.
 
-1. **RED** — prompt-text assertions:
+**Existing machinery (verified — build on it, do not duplicate):** entrypoint is
+`content_lint.lint_phase(phase_name, output_md, *, subject, output_language)`;
+`_lint_error_detection` (content_lint.py:215) already owns `_MARKER` (catches
+"4-blok noto'g'ri", "BU BLOK XATO", "xato 4-blok", "(Broken)" — Uzbek apostrophe class,
+`yorliq` noun, both orders) and `_REVEAL_HDR` (`reveal|ochish|oshkor`). Today it enforces
+the OLD contract: `errdet_no_broken_marker` fires when NO marker exists anywhere. This task
+**deliberately inverts** that family.
+
+1. **RED** — prompt-text assertions in `tests/services/test_prompt_coverage.py`:
 
 ```python
 def test_error_detection_contract_forbids_inline_marker():
@@ -103,23 +117,32 @@ def test_error_detection_contract_forbids_inline_marker():
     assert "ONLY in" in body and "The correct version" in body
 ```
 
-   And a lint RED test (follow `test_content_lint.py` conventions):
+   Lint RED tests in `tests/services/test_content_lint.py` (new semantics):
 
 ```python
-def test_lint_flags_inline_error_marker():
-    md = "# The blocks\n1. ok\n2. broken **(XATO BLOK)**\n# The correct version\n..."
-    warns = content_lint.lint("practice-error-detection", md)
-    assert any("error_detection_spoiler" in w for w in warns)
+def test_errdet_marker_in_student_region_is_spoiler():
+    # real production shape (G8 electroenergetika): marker inline in the blocks list
+    md = ("# The blocks\n1. ok\n2. broken **(XATO BLOK)**\n"
+          "# The correct version\n2-blok: to'g'ri matn\n# Reveal\n2-blok")
+    assert "errdet_inline_spoiler" in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="uz"))
 
-def test_lint_allows_marker_free_blocks():
-    md = "# The blocks\n1. ok\n2. subtle slip\n# The correct version\n2-blok: ..."
-    assert not [w for w in content_lint.lint("practice-error-detection", md)
-                if "error_detection_spoiler" in w]
+def test_errdet_clean_body_key_names_block_no_findings():
+    md = ("# The blocks\n1. ok\n2. subtle slip\n"
+          "## To'g'ri versiya\n2-blok noto'g'ri edi: ...\n## Reveal\n2-blok")
+    assert not [c for c in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="uz"))
+                if c.startswith("errdet_")]
+
+def test_errdet_no_boundary_heading_never_spoilers():
+    # conservative: no recognized answer-key boundary -> no spoiler finding
+    md = "# The blocks\n1. ok\n2. broken (XATO)\nprose with no key heading"
+    assert "errdet_inline_spoiler" not in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="uz"))
+
+def test_errdet_key_region_names_no_block_warns():
+    md = "# The blocks\n1. ok\n2. slip\n# The correct version\nto'g'ri matn, raqamsiz"
+    assert "errdet_no_broken_marker" in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="uz"))
 ```
 
-   (implementer adapts to `content_lint`'s real entrypoint signature — read it first).
-
-2. **GREEN** — in `practice-error-detection.md`:
+2. **GREEN** — contract (`practice-error-detection.md`):
    - Replace the tail of the **The blocks** bullet (lines 28-32) — delete
      "Make clear (to the reader of this output, not to the student) which block is the
      broken one." and append instead:
@@ -127,17 +150,42 @@ def test_lint_allows_marker_free_blocks():
      > bold/emphasis tells, no wording hints. The list must read clean, exactly as the
      > student will see it. Identify the broken block ONLY in **The correct version** and
      > **Reveal** sections below, naming it by its number there.
-   - In **The correct version** bullet: prepend "Open by naming the broken block's number, then give …".
+   - In **The correct version** bullet: prepend "Open by naming the broken block's number,
+     then give …".
    - Add a **Non-negotiables** bullet:
      > **No inline answer marker.** The blocks list is student-visible; any marker,
      > label, or typographic tell identifying the broken block inside it defeats the
      > entire exercise.
-   - Lint rule in `content_lint.py`: for `practice-error-detection`, warn
-     `error_detection_spoiler` when the text BEFORE the `The correct version` heading
-     matches `r"XATO\s*BLOK|\(XATO\)|WRONG\s+BLOCK|ERROR\s+BLOCK|ОШИБОЧН|\(ОШИБКА\)"`
-     (case-insensitive). Warn-only, like every other lint rule.
-3. `uv run python -m pytest tests/services/test_content_lint.py tests/test_prompt_coverage.py -q`
-4. **Commit:** `fix(prompts): error-detection — no inline broken-block marker + spoiler lint`
+
+   **GREEN** — lint (`content_lint.py`), re-keyed on a region split:
+   - `_ANSWER_KEY_HDR`: extend the boundary beyond `_REVEAL_HDR` to the correct-version
+     headings, localized — `(?im)^[ \t]*#{1,6}[ \t]*(the correct version|to{_APOS}?g{_APOS}?ri
+     versiya|reveal|ochish|oshkor)\b` (reuse `_APOS`). Answer-key region starts at the FIRST
+     such heading; student region is everything before it.
+   - Extend `_MARKER` with the bare parenthesised Uzbek forms `\(\s*xato(\s+{_BLK})?\s*\)`
+     ("(XATO)", "(XATO BLOK)") analogous to the existing `(Broken)` group. (Note "XATO BLOK"
+     without parens already matches the `xato\s+{_BLK}` alternative.)
+   - New semantics of `_lint_error_detection`:
+     - any `_MARKER` hit in the **student region** → `errdet_inline_spoiler` (NEW code),
+       message citing the offending line. **Only when a boundary heading was found** — no
+       recognized boundary ⇒ conservatively NO spoiler finding.
+     - `errdet_no_broken_marker` inverts: fires when the answer-key region exists but names
+       NO block id (`_BLOCK_ID` scan after the boundary), or when no boundary heading exists
+       at all (the contract requires the section).
+     - `errdet_multiple_broken`: ≥2 distinct block ids named as broken in the answer-key
+       region (marker-based ids, per the existing groupdict recovery).
+     - `errdet_reveal_mismatch`: first id after the correct-version boundary vs first id
+       after `_REVEAL_HDR` differ, when both regions exist.
+   - **Fixtures re-authored to the new contract shape** (they currently encode the old one):
+     `errdet-clean-*.md` → clean student region + answer key naming the block;
+     `errdet-zero-markers.md` → still warns (`errdet_no_broken_marker`, no key id);
+     `errdet-two-markers.md` → ids in the key region for `errdet_multiple_broken`;
+     add one REAL sampled spoiler output (G8 electroenergetika `**(XATO BLOK)**` job
+     `83852be1-c31b-43cb-9b69-790be8fc57f6`, sanitized excerpt) as the inline-spoiler
+     fixture. Every existing `test_errdet_*` updated to the inverted semantics —
+     deliberately, in the same commit, with a comment naming the inversion.
+3. `uv run python -m pytest tests/services/test_content_lint.py tests/services/test_prompt_coverage.py -q`
+4. **Commit:** `fix(prompts+lint): error-detection — spoiler-free student region, inverted errdet lint family`
 
 ## Task 3 — uz label localization (un-freeze)
 
@@ -158,6 +206,13 @@ def test_en_ru_keep_their_own_clause_not_uz():
     body = prompts.get_prompt(subj, "flashcards", output_language="ru")
     assert prompts._LOCALIZE_HEADINGS_CLAUSE in body
     assert prompts._LOCALIZE_HEADINGS_CLAUSE_UZ not in body
+
+def test_l2_subject_uz_medium_also_gets_uz_clause():
+    """INTENTIONAL side effect: an English/Russian class packet rendered with the uz
+    medium localizes its student-read labels into Uzbek too — labels are scaffolding,
+    and the L2 scaffolding bridge is Uzbek."""
+    body = prompts.get_prompt("english", "flashcards", output_language="uz")
+    assert prompts._LOCALIZE_HEADINGS_CLAUSE_UZ in body
 ```
 
 2. **GREEN** — in `prompts.py`, next to `_LOCALIZE_HEADINGS_CLAUSE` add:
@@ -186,6 +241,10 @@ _LOCALIZE_HEADINGS_CLAUSE_UZ = (
     return rule
 ```
 
+   Also update the now-stale "uz is untouched / byte-identical" comments in `prompts.py`
+   (verified at lines 83, 131, 141, 159): the FROZEN-BASE claim stays true (the base blocks
+   are still byte-identical); what changed is that uz now gets an APPENDED label clause —
+   say exactly that, dated 2026-07-23.
 3. Whole language-rule surface green:
    `uv run python -m pytest tests/services/test_prompts_output_language.py tests/services/test_prompts_resolver.py tests/services/test_prompt_coverage.py -q`
    (#83 frozen-copy tests must pass UNCHANGED — if any needs editing, stop: the change
@@ -226,32 +285,81 @@ def test_flashcards_contract_scopes_coverage_to_deck_budget():
 3. `uv run python -m pytest tests/test_prompt_coverage.py -q`
 4. **Commit:** `fix(prompts): flashcards — deck-size budget wins over exhaustive coverage`
 
-## Task 5 — Acceptance A: targeted generation smoke (real api calls)
+## Task 5 — Acceptance A: targeted generation smoke (real api calls, lint-validated)
 
 Scratchpad script (NOT committed): pick one real geography lesson with a stored `extract`
 output; call `agent.run_phase_prompt` over `transport=api` (gemini, explicit model) for the
 3 affected phases — `practice-error-detection`, `flashcards`, `case-based-preview` — with the
-stored extract as `lesson_context`. Assert on the real outputs:
-- error-detection: NO spoiler-regex hit before `The correct version`; broken block named there.
-- flashcards: deck within grade band; field keys/enums still English.
-- all 3: no English student-read labels (`### Scenario`, `## How to play`, `# Case-Based`…);
-  headings in Uzbek.
+stored extract as `lesson_context`. Validate the real outputs **through the shipped
+machinery, not ad-hoc regexes**:
+- run `content_lint.lint_phase` on each output: error-detection must produce NO
+  `errdet_inline_spoiler` and NO `errdet_no_broken_marker` (i.e. clean student region AND
+  the answer key names the block); no `lint:language` English-label findings.
+- flashcards: deck within grade band (count `**id:** card_` occurrences); field keys/enums
+  still canonical English.
+- eyeball all 3 for Uzbek student-read headings.
 
 Bounded: 3 calls, ≈$0.05–0.10 — report actual cost. If a check fails, iterate the contract
 wording (back to the relevant task) before proceeding. No mass generation.
 
-## Task 6 — Acceptance B: controlled A/B re-judge (judge-only, no content spend)
+## Task 6 — Acceptance B: three-arm re-judge experiment + behavioral safety probes
 
-Scratchpad script: sample 40 stored phases — 20 `case-based-preview` + 20 `flashcards`,
-half previously `major_shipped` / half clean, drawn from matematika + geografiya `done` jobs.
-For each, run `phase_judge.judge` twice with identical inputs (stored output_md, the job's
-stored extract as lesson_context, `prior_outputs={}` in both arms — controlled): arm OLD =
-module's `_FIDELITY_RULE` monkeypatched to the pre-Task-1 text; arm NEW = shipped rule.
-Judge provider/model per `model_tiers` defaults, `transport=api`.
+**Committed, reproducible** (correction of the earlier scratchpad-only design):
+- script: `scripts/experiments/rejudge_ab.py` (sanitized — no tokens/keys, DB URL from env);
+- result artifact: `scripts/experiments/2026-07-23-rejudge-ab-results.json` containing the
+  sampled job/phase IDs, the sampling seed, sha256 of each arm's fidelity rule AND contract
+  text, judge provider/model, every raw verdict (incl. repeats), the transition tables,
+  token usage, and actual cost.
 
-Deliverable: table `phase × arm → major-rate`, plus the residual-major breakdown for NEW
-(what % is concealment-rule vs deck-size vs real defects). ≈80 judge calls ≈ $2.5 — report
-actual. **This is the data for the deferred CBP-concealment decision and the R25 update.**
+**Cohort (pinned).** Mathematics = the 101-job campaign: batches `4a380da8` + `bd51015b`
+(subject `matematika`, G5, 65 jobs) and `95f49c30` + `0fb09b6c` (subject **`math-algebra`**,
+G11, 36 jobs) — both codes, the earlier "matematika" wording missed all 36 G11 jobs.
+Geography = the 306 `done` jobs across the six `geografiya` books. The artifact lists the
+exact job IDs drawn.
+
+**Sample.** 40 stored phases — 20 `case-based-preview` + 20 `flashcards`, stratified
+half `major_shipped` / half clean, split across the math and geography cohorts.
+Deterministic seeded draw (`ORDER BY md5(:seed || phase_output_id)`, seed recorded).
+
+**Arms (correction: a genuine OLD arm — Task 4 changes the flashcards contract, so
+rule-swap alone measures neither old production nor Task 4):**
+- **A** — old `_FIDELITY_RULE` + old contracts (both pinned from `origin/Nggaev-v2` at the
+  branch point; contracts passed via `judge(contract_override=…)`) → the production baseline.
+- **B** — new rule + old contracts → isolates Task 1.
+- **C** — new rule + new contracts (no override) → the shipped state.
+
+Identical inputs per item across arms (stored `output_md`, the job's stored extract as
+`lesson_context`, `prior_outputs={}` in ALL arms — controlled). The old-rule arm
+monkeypatches `phase_judge._FIDELITY_RULE` inside `try/finally` restoring the module global.
+**Arm order counterbalanced per item** (rotate A/B/C execution order by item index — the
+gemini judge calls are unseeded), and every **discordant pivotal case** (an item whose A
+and C verdicts disagree on `has_major`) is re-run 3× in the deciding arms, majority verdict
+recorded alongside the raws.
+
+**Statistics (correction: the 50/50 draw is case-control — raw arm percentages must NOT be
+compared to the population rates 17.5% math / 4.6% physics / 8.9% history).** Report:
+1. **Paired transition tables** per phase (A→B, A→C): stayed-major / demoted / promoted.
+2. **Reweighted population major-rates** per phase × cohort:
+   `P(major_new) = prev × P(major_new | old-flagged) + (1−prev) × P(major_new | old-clean)`
+   with `prev` = the real per-phase×cohort `major_shipped` prevalence queried from the DB
+   (e.g. CBP-geo 59.2%, flashcards-geo 57.2%) and recorded in the artifact.
+3. Residual-major breakdown for arm C: concealment-rule vs deck-size vs source-fidelity vs
+   other — the data for the deferred CBP decision and the R25 update.
+
+**Behavioral safety probes (must all pass before Task 7):** four constructed cases run
+through the NEW rule (each 3×, unseeded model):
+- a direct contradiction of the extract (planted wrong date) → **stays `major`** every run;
+- an absent-but-uncontested true fact → **never `major`**;
+- generated exercise values (invented practice numbers) → **no fidelity flag**;
+- one manually-confirmed GENUINE defect from the audits (e.g. a verified wrong-fact flag
+  chosen during implementation from `validation_warnings`) → **stays `major`**.
+
+Budget: 120 A/B/C calls + ~24 probe/repeat calls ≈ 144 judge calls ≈ **$4.3** — report
+actual. Judge provider/model per `model_tiers` defaults, `transport=api`. These calls write
+`agent_usages` rows (normal billing attribution) but **never touch `phase_outputs` /
+`judge_status`** — no persisted operational re-judge.
+
+**Commit:** `test(experiments): three-arm re-judge A/B + safety probes (script + artifact)`
 
 ## Task 7 — Finish
 
@@ -272,6 +380,8 @@ actual. **This is the data for the deferred CBP-concealment decision and the R25
 
 - CBP concealment-rule redesign — decided from T6 data, own plan if warranted.
 - Packet-level coverage loop / extract enrichment — own plan (goal A, next slice).
-- Re-judging or regenerating the existing 101 math / 306 geography / 122 clodex packets.
+- **Persisted operational** re-judging (no `judge_status`/`validation_warnings` rewrites) or
+  regenerating the existing 101 math / 306 geography / 122 clodex packets. Task 6's
+  experimental judge calls are read-only with respect to packet state.
 - G8-geometry Notion title collisions, tic-tac-toe verdict-in-board slips (judge already
   catches those; no contract defect).
