@@ -18,6 +18,8 @@ The pipeline injects the grade, never a mode. Size the deck to the grade band:
 
 Grade scales the retrieval load, never source accuracy.
 
+**The band maximum is a HARD CAP.** Before finishing, COUNT your cards. If the count exceeds the band's maximum, DELETE the lowest-value cards until it fits — never ship an oversized deck.
+
 ## Card format — 8 fields
 
 Each card emits these fields:
@@ -125,7 +127,7 @@ evaluate at given values). Then:
   convenient, and never attribute a {{SUBJECT}} convention to a fake authority
   (e.g. "xalqaro standartlarga mos" for standard form). State reasons truthfully:
   "more convenient here", "the textbook's chosen form".
-- Self-check before finishing: every card sets `type` + `difficulty`, no `back` packs an un-atomised topic, every `misconception` card is tagged `source` or `inferred` (never an inferred mistake presented as a textbook fact), the deck covers ≥3 sub-skills (or uses the narrow-lesson escape hatch), no micro-skill exceeds ~1/3 of cards, and no adjacent-section technique is taught-and-tested.
+- Self-check before finishing: the deck size is inside the grade band (count the cards), every card sets `type` + `difficulty`, no `back` packs an un-atomised topic, every `misconception` card is tagged `source` or `inferred` (never an inferred mistake presented as a textbook fact), the deck covers ≥3 sub-skills (or uses the narrow-lesson escape hatch), no micro-skill exceeds ~1/3 of cards, and no adjacent-section technique is taught-and-tested.
 
 ## Output format
 

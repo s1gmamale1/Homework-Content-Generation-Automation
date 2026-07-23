@@ -148,6 +148,9 @@ def test_flashcards_contract_scopes_coverage_to_deck_budget():
     assert "Cover every term, name, structure, process, rule, and classification term" not in body
     assert "extract every key term" not in body
     assert "Deck size wins" in body
+    # Hardened contract (worklog 0159): band maximum is a HARD CAP with count self-check.
+    assert "HARD CAP" in body
+    assert "count the cards" in body
 
 
 def test_error_detection_requires_rederivation_and_feedback_consistency():
