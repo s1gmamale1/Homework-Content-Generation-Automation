@@ -30,15 +30,14 @@ Quyida **(3x²+2)/(x+1) − (2x²−x+1)/(x+1)** ifodani soddalashtirish uchun y
 
 ---
 
-
 ## To'g'ri versiya
 
-**Blok 4 ning to'g'ri mazmuni:**
+**To'g'ri mazmun:** qavs ochilganda o'rta hadning ishorasi noto'g'ri qoldirilgan edi.
 −(2x²−x+1) = −2x² **+** x − 1
 
 **Qabul qilinadigan yozuvlar:** −2x²+x−1; −2x² + x − 1; "−2x² to'g'ri, +1 to'g'ri, lekin −x emas — +x bo'lishi kerak." Asosiy shart: o'rta hadning ishorasi +x bo'lishi — −x bo'lmasligi.
 
-To'g'ri natija (to'g'rilangan blok 4 dan keyin): (3x²+2) + (−2x²+x−1) = **x²+x+1**, kasr = **(x²+x+1)/(x+1)**.
+To'g'ri natija (tuzatishdan keyin): (3x²+2) + (−2x²+x−1) = **x²+x+1**, kasr = **(x²+x+1)/(x+1)**.
 
 ## Haqiqiy xato
 
@@ -46,11 +45,11 @@ Talaba minus belgisini ko'phad qavsi oldida qo'llaganda **birinchi va uchinchi h
 
 ## Maslahat
 
-Blok 3 da qayd etilgan ifodaga qarang: *(2x²−x+1)* uchta haddan iborat. Minus belgisi shularning **har biriga alohida** ta'sir qiladimi — birinchisigami, ikkinchisigami, uchinchisigami?
+Qavs ichida qayd etilgan ifodaga qarang: *(2x²−x+1)* uchta haddan iborat. Minus belgisi shularning **har biriga alohida** ta'sir qiladimi — birinchisigami, ikkinchisigami, uchinchisigami?
 
 ## Nima uchun
 
-**Bu blok nega noto'g'ri edi?** To'g'ri tushuntirish shu fikrga yetishi kerak: minus belgisini ko'paytuvchi −1 sifatida qarash va uni distributiv qonun bo'yicha qavs ichidagi har bir hadga alohida ko'paytirish zarur. −1·(2x²) = −2x²; −1·(−x) = **+x** (manfiy × manfiy = musbat); −1·(+1) = −1. Shuning uchun o'rta hadda −1·(−x) = +x bo'ladi — bu "manfiy × manfiy = musbat" qoidasining bevosita tatbiqi bo'lib, uni o'tkazib yuborish blok 4 dagi xatoni keltirib chiqargan.
+**Bu blok nega noto'g'ri edi?** To'g'ri tushuntirish shu fikrga yetishi kerak: minus belgisini ko'paytuvchi −1 sifatida qarash va uni distributiv qonun bo'yicha qavs ichidagi har bir hadga alohida ko'paytirish zarur. −1·(2x²) = −2x²; −1·(−x) = **+x** (manfiy × manfiy = musbat); −1·(+1) = −1. Shuning uchun o'rta hadda −1·(−x) = +x bo'ladi — bu "manfiy × manfiy = musbat" qoidasining bevosita tatbiqi bo'lib, uni o'tkazib yuborish shu xatoni keltirib chiqargan.
 
 ## To'g'ri javob uchun fikr-mulohaza
 

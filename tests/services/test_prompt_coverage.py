@@ -130,6 +130,15 @@ def test_math_accuracy_guardrails_cover_generation_prompts():
     assert not missing, f"math accuracy guardrails missing: {missing}"
 
 
+def test_error_detection_contract_forbids_inline_marker():
+    # Task 2: the old contract instructed the generator to mark the broken
+    # block inline (spoiling it for the student); the new contract forbids
+    # that and pushes identification into the answer-key sections only.
+    body = get_prompt("geografiya", "practice-error-detection")
+    assert "(to the reader of this output, not to the student)" not in body
+    assert "ONLY in" in body and "The correct version" in body
+
+
 def test_error_detection_requires_rederivation_and_feedback_consistency():
     body = _squash_ws((pathlib.Path(__file__).resolve().parents[2]
                        / "prompts" / "_general" / "practice-error-detection.md").read_text(encoding="utf-8"))

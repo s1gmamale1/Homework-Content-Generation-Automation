@@ -25,6 +25,18 @@ over-flagging so it never false-positives a good packet):
   `(Broken)` markers, and the `oshkor` reveal header. A narrow `ru_uzbek_leak`
   guard flags Uzbek template tokens ("Hali emas", "Kuchli/Zaif tomonlar") that
   survive into RU-medium output (regression guard for the round-2 localization).
+- **Task 2 inversion (2026-07-23):** the error-detection prompt contract used to
+  ask the generator to mark the broken block inline for the reader — a spoiler
+  the student could see. The contract now FORBIDS that; the errdet lint family
+  below inverted to match. `errdet_inline_spoiler` (new) fires on a marker found
+  in the student-visible region (before the answer-key boundary). The other
+  three codes now operate on the answer-key region (after the boundary) instead
+  of the pre-reveal body. Deliberately narrowed the bare English `broken block`
+  alternative to the full-sentence `this is the broken block` — real production
+  output (fixture `errdet-clean-3ca0da6f.md`) echoes the phase's own canonical
+  title ("...spot the broken block, type the correction...") verbatim, which
+  would otherwise false-positive `errdet_inline_spoiler` on every packet using
+  that title convention.
 """
 from __future__ import annotations
 
@@ -181,17 +193,23 @@ def _lint_misconception_tags(output_md: str) -> list[LintFinding]:
 # --- error-detection format check (EXACTLY-ONE-broken-block) -----------------
 
 _APOS = r"['ʻʼ‘’]"
-_NOT = rf"noto{_APOS}?g{_APOS}?ri"
-# Block noun: Uzbek "blok"/"block" OR "yorliq" (label) — the audit found blocks
-# named "N-yorliq" instead of "N-blok".
-_BLK = r"(?:blo(?:k|ck)|yorli(?:q|g'|gʻ))"
-# A block id in EITHER Uzbek order: cardinal "Blok 4" or ordinal "4-blok".
+# Wrongness adjective, all three output languages: Uzbek "noto'g'ri", Russian
+# неправильный/ошибочный/неверный/брокованный (transliteration of "broken"
+# seen in live RU output alongside the standard adjectives).
+_NOT = (
+    rf"(?:noto{_APOS}?g{_APOS}?ri"
+    rf"|неправильн\w*|ошибочн\w*|неверн\w*|брокованн\w*)"
+)
+# Block noun: Uzbek "blok"/"block" OR "yorliq" (label) OR Russian "блок" — the
+# audit found blocks named "N-yorliq" instead of "N-blok".
+_BLK = r"(?:blo(?:k|ck)|yorli(?:q|g'|gʻ)|блок)"
+# A block id in EITHER order: cardinal "Blok 4" / "Блок 4" or ordinal "4-blok".
 _BID = rf"(?:{_BLK}\s*(\d+)|(\d+)\s*-\s*{_BLK})"
 # Every broken-block marker. The noun/ordinal-with-NOT forms REQUIRE a digit (so
 # digitless prose never matches); each captures the id.
 _MARKER = re.compile(
     rf"(?i)"
-    rf"{_BLK}\s*(?P<id_pre>\d+)\s+{_NOT}"                    # "Blok 4 noto'g'ri"
+    rf"{_BLK}\s*(?P<id_pre>\d+)\s+{_NOT}"                    # "Blok 4 noto'g'ri" / "Блок 4 неверный"
     rf"|(?P<id_ord>\d+)\s*-\s*{_BLK}\s+{_NOT}"               # "4-blok noto'g'ri"
     rf"|{_NOT}\s+{_BLK}\s*(?P<id_post>\d+)?"                 # "noto'g'ri blok[ 4]"
     rf"|{_NOT}\s+(?P<id_post_ord>\d+)\s*-\s*{_BLK}"          # "noto'g'ri 4-blok"
@@ -199,10 +217,31 @@ _MARKER = re.compile(
     rf"|(?P<id_xato_ord>\d+)\s*-\s*{_BLK}\s+xato"            # "4-blok xato"
     rf"|xato\s+{_BLK}\s*(?P<id_xatop>\d+)?"                  # "xato blok[ 4]"
     rf"|xato\s+(?P<id_xatop_ord>\d+)\s*-\s*{_BLK}"           # "xato 4-blok"
-    rf"|(?P<eng>this is the broken block|broken block)"      # English markers, no id
+    # English markers, no id. Deliberately NOT the bare "broken block" fragment —
+    # real production output echoes the phase's own canonical title ("...spot
+    # the broken block, type the correction...") verbatim, which contains that
+    # fragment with zero spoiler intent; the full declarative sentence is the
+    # only safe English signal.
+    rf"|(?P<eng>this is the broken block)"
     rf"|(?P<eng2>\(\s*broken\s*\))"                          # parenthesised "(Broken)"
+    rf"|(?P<uz_paren>\(\s*xato(?:\s+{_BLK})?\s*\))"          # "(XATO)" / "(XATO BLOK)"
+    rf"|(?P<ru_paren>\(\s*брокованн\w*\s+{_BLK}\s*\))"       # "(БРОКОВАННЫЙ БЛОК)"
 )
-_REVEAL_HDR = re.compile(r"(?im)^[ \t]*#{1,6}[ \t]*(reveal|ochish|oshkor)\b")
+# The correct-version heading, all three output languages — the START of the
+# answer-key region together with _REVEAL_HDR (below).
+_CORRECT_VERSION_HDR = re.compile(
+    rf"(?im)^[ \t]*#{{1,6}}[ \t]*"
+    rf"(the correct version|to{_APOS}?g{_APOS}?ri versiya|правильная версия)\b"
+)
+_REVEAL_HDR = re.compile(r"(?im)^[ \t]*#{1,6}[ \t]*(reveal|ochish|oshkor|раскрытие)\b")
+# Overall answer-key boundary: the earliest of the correct-version or reveal
+# headings. Everything before this point is the student-visible region.
+_ANSWER_KEY_HDR = re.compile(
+    rf"(?im)^[ \t]*#{{1,6}}[ \t]*("
+    rf"the correct version|to{_APOS}?g{_APOS}?ri versiya|правильная версия"
+    rf"|reveal|ochish|oshkor|раскрытие"
+    rf")\b"
+)
 _BLOCK_ID = re.compile(rf"(?i)\b{_BID}")
 
 
@@ -212,47 +251,81 @@ def _line_around(text: str, pos: int) -> str:
     return text[start: end if end != -1 else len(text)]
 
 
+def _marker_id(m: "re.Match[str]", output_md: str) -> "str | None":
+    """Recover the block id a _MARKER match names, if any. Line-scan recovery is
+    ONLY for the id-less markers (English sentence, and the bare parenthesised
+    Uzbek/Russian forms) whose id may sit on the same line. The noto'g'ri/xato
+    prose forms must NOT borrow a nearby id — that produced spurious
+    multiple/mismatch findings in the pre-inversion version of this check."""
+    gd = m.groupdict()
+    mid = (gd.get("id_pre") or gd.get("id_ord") or gd.get("id_post")
+           or gd.get("id_post_ord") or gd.get("id_xato") or gd.get("id_xato_ord")
+           or gd.get("id_xatop") or gd.get("id_xatop_ord"))
+    if mid is None and (gd.get("eng") or gd.get("eng2")
+                        or gd.get("uz_paren") or gd.get("ru_paren")):
+        bm = _BLOCK_ID.search(_line_around(output_md, m.start()))
+        mid = (bm.group(1) or bm.group(2)) if bm else None
+    return mid
+
+
 def _lint_error_detection(output_md: str) -> list[LintFinding]:
-    rev = _REVEAL_HDR.search(output_md)
-    reveal_off = rev.start() if rev else len(output_md)
-
-    body_ids: set[str] = set()
-    body_marker_count = 0
-    reveal_id: str | None = None
-
-    for m in _MARKER.finditer(output_md):
-        gd = m.groupdict()
-        mid = (gd.get("id_pre") or gd.get("id_ord") or gd.get("id_post")
-               or gd.get("id_post_ord") or gd.get("id_xato") or gd.get("id_xato_ord")
-               or gd.get("id_xatop") or gd.get("id_xatop_ord"))
-        # Line-scan recovery is ONLY for the id-less English markers (whose id may
-        # sit on the same line). The noto'g'ri/xato prose forms must NOT borrow a
-        # nearby id — that produced spurious multiple/mismatch findings.
-        if mid is None and (gd.get("eng") or gd.get("eng2")):
-            bm = _BLOCK_ID.search(_line_around(output_md, m.start()))
-            mid = (bm.group(1) or bm.group(2)) if bm else None
-        if m.start() >= reveal_off:
-            if reveal_id is None and mid is not None:
-                reveal_id = mid
-            continue
-        body_marker_count += 1
-        if mid is not None:
-            body_ids.add(mid)
-
-    if reveal_id is None and rev is not None:  # first block id after the reveal header
-        bm = _BLOCK_ID.search(output_md, reveal_off)
-        reveal_id = (bm.group(1) or bm.group(2)) if bm else None
+    """INVERTED (Task 2): the contract now FORBIDS naming the broken block
+    inside the student-visible blocks list — identification belongs only in
+    the answer-key region (The correct version / Reveal, whichever heading
+    comes first). `errdet_inline_spoiler` is the NEW code for a marker found
+    before that boundary; the other three codes now all read the answer-key
+    region instead of the pre-reveal body."""
+    correct_m = _CORRECT_VERSION_HDR.search(output_md)
+    reveal_m = _REVEAL_HDR.search(output_md)
+    correct_off = correct_m.start() if correct_m else None
+    reveal_off = reveal_m.start() if reveal_m else None
+    key_m = _ANSWER_KEY_HDR.search(output_md)
+    key_off = key_m.start() if key_m else None
 
     out: list[LintFinding] = []
-    if body_marker_count == 0 and reveal_id is None:
+
+    # 1. The student-visible region (everything before the answer-key boundary)
+    #    must be spoiler-free. Conservative: no recognized boundary -> no check.
+    if key_off is not None:
+        spoiler = _MARKER.search(output_md, 0, key_off)
+        if spoiler:
+            out.append(LintFinding(
+                "errdet_inline_spoiler",
+                f"broken-block marker in the student-visible region: "
+                f"{_line_around(output_md, spoiler.start()).strip()!r}",
+            ))
+
+    # 2. The answer-key region must name exactly one broken block.
+    if key_off is None:
+        out.append(LintFinding(
+            "errdet_no_broken_marker",
+            "no answer-key heading found (prompt requires The correct version / Reveal)",
+        ))
+    elif not _BLOCK_ID.search(output_md, key_off):
         out.append(LintFinding("errdet_no_broken_marker",
-                               "no broken-block marker found (prompt requires exactly one)"))
-    elif len(body_ids) >= 2:
-        out.append(LintFinding("errdet_multiple_broken",
-                               f"multiple broken blocks marked: blocks {sorted(body_ids)}"))
-    elif body_ids and reveal_id and reveal_id not in body_ids:
-        out.append(LintFinding("errdet_reveal_mismatch",
-                               f"reveal names block {reveal_id} but body marks {sorted(body_ids)}"))
+                               "answer-key region names no block id"))
+    else:
+        key_ids: set[str] = set()
+        for m in _MARKER.finditer(output_md, key_off):
+            mid = _marker_id(m, output_md)
+            if mid is not None:
+                key_ids.add(mid)
+        if len(key_ids) >= 2:
+            out.append(LintFinding("errdet_multiple_broken",
+                                   f"multiple broken blocks marked: blocks {sorted(key_ids)}"))
+
+    # 3. The correct-version and reveal sections must agree on the block id.
+    if correct_off is not None and reveal_off is not None:
+        cbm = _BLOCK_ID.search(output_md, correct_off)
+        rbm = _BLOCK_ID.search(output_md, reveal_off)
+        c_id = (cbm.group(1) or cbm.group(2)) if cbm else None
+        r_id = (rbm.group(1) or rbm.group(2)) if rbm else None
+        if c_id is not None and r_id is not None and c_id != r_id:
+            out.append(LintFinding(
+                "errdet_reveal_mismatch",
+                f"reveal names block {r_id} but correct-version names block {c_id}",
+            ))
+
     return out
 
 

@@ -19,12 +19,11 @@ Quyida algebraik kasrni soddalashtirish bosqichlari keltirilgan. Ulardan biri xa
 5.  **Umumiy koʻpaytuvchini qisqartiramiz:**
     `(a-b)` va `(b-a)` qisqartirilganda `1` beradi, shuning uchun kasr quyidagicha boʻladi:
     `2 / (b + a)`
-    (This is the broken block)
 6.  **Yakuniy natija:**
     `2 / (a + b)`
 
 ## The correct version
-`(a-b)` va `(b-a)` qisqartirilganda `-1` beradi, shuning uchun kasr quyidagicha boʻladi:
+Block 5 is the broken block. `(a-b)` va `(b-a)` qisqartirilganda `-1` beradi, shuning uchun kasr quyidagicha boʻladi:
 `-2 / (b + a)`
 
 *Shu kabi javoblar qabul qilinadi: "(a-b) va (b-a) nisbati -1 ga teng", "Qisqartirganda -1 qoladi", "Kasrning ishorasi manfiy bo'lishi kerak". Asosiysi, talaba -1 koeffitsiyentini to'g'ri aniqlashi kerak.*

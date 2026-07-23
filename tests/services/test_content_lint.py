@@ -94,6 +94,53 @@ def test_reveal_mismatch_flagged():
     assert "errdet_reveal_mismatch" in _codes(cl.lint_phase(ED, md, subject="matematika", output_language="uz"))
 
 
+# --- Task 2: errdet lint family INVERTED — the contract now forbids marking
+# the broken block inside the student-visible blocks list; the marker belongs
+# only in the answer-key region (The correct version / Reveal). ---
+
+def test_errdet_marker_in_student_region_is_spoiler():
+    # real production shape (G8 electroenergetika): marker inline in the blocks list
+    md = ("# The blocks\n1. ok\n2. broken **(XATO BLOK)**\n"
+          "# The correct version\n2-blok: to'g'ri matn\n# Reveal\n2-blok")
+    assert "errdet_inline_spoiler" in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="uz"))
+
+
+def test_errdet_clean_body_key_names_block_no_findings():
+    md = ("# The blocks\n1. ok\n2. subtle slip\n"
+          "## To'g'ri versiya\n2-blok noto'g'ri edi: ...\n## Reveal\n2-blok")
+    assert not [c for c in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="uz"))
+                if c.startswith("errdet_")]
+
+
+def test_errdet_no_boundary_heading_never_spoilers():
+    # conservative: no recognized answer-key boundary -> no spoiler finding
+    md = "# The blocks\n1. ok\n2. broken (XATO)\nprose with no key heading"
+    assert "errdet_inline_spoiler" not in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="uz"))
+
+
+def test_errdet_key_region_names_no_block_warns():
+    md = "# The blocks\n1. ok\n2. slip\n# The correct version\nto'g'ri matn, raqamsiz"
+    assert "errdet_no_broken_marker" in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="uz"))
+
+
+def test_errdet_real_g8_electroenergetika_output_is_spoiler():
+    # real production output (job 83852be1-c31b-43cb-9b69-790be8fc57f6, G8
+    # electroenergetika, uz): the old contract's inline "(XATO BLOK)" marker
+    # sits in the student-visible "# The blocks" section.
+    md = (FIX / "errdet-inline-spoiler-83852be1.md").read_text(encoding="utf-8")
+    assert "errdet_inline_spoiler" in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="uz"))
+
+
+def test_errdet_real_ru_output_recognizes_russian_boundary_and_marker():
+    # real production RU output (job 477a937b-bf4c-46ea-9de6-f31eed7deb19):
+    # RU boundary heading "# Правильная версия" + inline Russian spoiler
+    # marker "(БРОКОВАННЫЙ БЛОК)" in the student-visible region. Proves the
+    # RU path produces errdet_inline_spoiler via the RU boundary, not the
+    # conservative no-boundary fallback (which would silently suppress it).
+    md = (FIX / "errdet-ru-inline-spoiler-b1e40004.md").read_text(encoding="utf-8")
+    assert "errdet_inline_spoiler" in _codes(cl.lint_phase(ED, md, subject="geografiya", output_language="ru"))
+
+
 def test_errdet_check_only_runs_on_that_phase():
     md = (FIX / "errdet-zero-markers.md").read_text(encoding="utf-8")
     findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
@@ -147,19 +194,29 @@ def test_calque_still_flagged_on_uzbek_lesson():
 
 
 def test_uzbek_ordinal_block_form_clean_no_false_positive():
-    md = "## Bloklar\n**4-blok noto'g'ri.**\n## Ochish\n**Noto'g'ri blok: 4-blok.**"
+    # INVERTED (Task 2): the marker now belongs in the answer-key region, not
+    # the student-visible blocks list — moved here to prove the ordinal form
+    # is still recognized cleanly post-boundary.
+    md = ("## Bloklar\n1. ok\n2. slip\n"
+          "## To'g'ri versiya\n**4-blok noto'g'ri.**\n"
+          "## Ochish\n**Noto'g'ri blok: 4-blok.**")
     findings = cl.lint_phase(ED, md, subject="matematika", output_language="uz")
     assert not [f for f in findings if f.code.startswith("errdet_")]
 
 
 def test_uzbek_ordinal_two_markers_flagged():
-    md = "## Bloklar\n**4-blok noto'g'ri.**\n**6-blok noto'g'ri.**\n## Ochish\n**Noto'g'ri blok: 4-blok.**"
+    # INVERTED (Task 2): both markers now live in the answer-key region.
+    md = ("## Bloklar\n1. ok\n"
+          "## To'g'ri versiya\n**4-blok noto'g'ri.**\n**6-blok noto'g'ri.**\n"
+          "## Ochish\n**Noto'g'ri blok: 4-blok.**")
     assert "errdet_multiple_broken" in _codes(cl.lint_phase(ED, md, subject="matematika", output_language="uz"))
 
 
 def test_feedback_prose_does_not_inject_spurious_block_id():
-    # a praise line naming a DIFFERENT block ("Blok 3") must not create a false multiple/mismatch
-    md = ("## Bloklar\n**Blok 4 noto'g'ri.**\n"
+    # INVERTED (Task 2): moved into the answer-key region. A praise line naming
+    # a DIFFERENT block ("Blok 3") must still not create a false multiple/mismatch.
+    md = ("## Bloklar\n1. ok\n"
+          "## To'g'ri versiya\n**Blok 4 noto'g'ri.**\n"
           "Ajoyib, siz noto'g'ri blokni (Blok 3) topdingiz.\n"
           "## Ochish\n**Noto'g'ri blok: Blok 4.**")
     findings = cl.lint_phase(ED, md, subject="matematika", output_language="uz")
@@ -193,7 +250,10 @@ def test_errdet_recognizes_xato_postfix_and_paren_broken():
 
 
 def test_errdet_oshkor_reveal_header_recognized_for_mismatch():
-    md = "# t\n\nBlok 2 noto'g'ri\n\n## Oshkor qilish\nBlok 3 ...\n"
+    # INVERTED (Task 2): reveal_mismatch now needs BOTH a correct-version
+    # heading and the reveal heading present; "oshkor" is recognized as the
+    # reveal boundary and "to'g'ri versiya" as the correct-version boundary.
+    md = "# t\n\n## To'g'ri versiya\nBlok 2 ...\n\n## Oshkor qilish\nBlok 3 ...\n"
     codes = _codes(cl.lint_phase("practice-error-detection", md, subject="matematika", output_language="uz"))
     assert "errdet_reveal_mismatch" in codes
 
