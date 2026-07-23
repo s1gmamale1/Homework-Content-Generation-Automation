@@ -86,9 +86,10 @@
 > **Limb 2 (term-coverage) SHIPPED** in 0159: the "cover every term" absolutisms are gone
 > (deck-size wins) and the judge's fidelity rule is re-anchored (contradiction=major,
 > absence≤minor). Proven by the three-arm re-judge experiment
-> (`scripts/experiments/2026-07-23-rejudge-ab-results.json`): flashcards reweighted major-rate
-> **0.69→0.37 (math) / 0.89→0.63 (geo)**. **Limb 1 (CBP concealment) remains OPEN and is now
-> the whole of R25:** the same experiment shows CBP **unmoved** (0.64→0.64 geo) with arm-C
+> (two artifacts: `…rejudge-ab-results.json` superseded + `…rejudge-ab-corrected.json`
+> counterbalanced): flashcards reweighted major-rate falls in BOTH runs — **math 0.69→0.37 /
+> 0.66→0.40; geo 0.89→0.71 / 0.63→0.31**. **Limb 1 (CBP concealment) remains OPEN and is now
+> the whole of R25:** both runs show CBP **not reduced** (geo 0.64→0.64 / 0.68→0.60) with arm-C
 > residuals = concealment(6) + other(12) vs only 2 source-fidelity per 20 — the concealment
 > rule is the lever, and it needs its own gated decision (subject-aware relaxation per the
 > deliverable below). Do-NOT-regenerate stands.

@@ -2095,15 +2095,24 @@ acceptance evidence. NOTHING regenerated — all existing packets untouched.
   gemini-flash cannot reliably COUNT cards (±2 on single runs — the judge remains the deck-size
   gate, regen path intended); flashcards phase title still leaks English on some runs (now
   caught warn-only by the new lint).
-- **Three-arm re-judge experiment** (`scripts/experiments/rejudge_ab.py` + committed artifact,
-  $4.15, 8-cell seeded cohort over the 101-math + 306-geografiya campaigns, arms pinned to
-  SHA `57b81aa`): flashcards reweighted population major-rate **0.69→0.37 (math), 0.89→0.63
-  (geo)**; **CBP UNMOVED** (0.64→0.64 geo) — arm-C CBP residuals are concealment(6)+other(12)
-  with only 2 source-fidelity, i.e. **the fidelity lever was never CBP's driver; the
-  concealment contract is** (per-item data in the artifact; feeds R25's open limb). Safety
-  probes: planted contradiction major 3/3; absent-but-true 0/3 contradiction-major (flagged
-  minor, as designed); generated exercise numbers never flagged; subtle genuine defect 1/3
-  under BOTH old and new rule (judge stochasticity, no regression).
+- **Three-arm re-judge experiment** (`scripts/experiments/rejudge_ab.py`; TWO committed
+  artifacts after the #113 gate rejected run 1's methodology: run 1 `…-results.json`
+  ($4.15, arm-grouped — superseded, kept with a `corrections` entry) and run 2
+  `…-corrected.json` ($3.54, 183 calls — per-item counterbalanced, 3-replay majority,
+  cumulative budget); same seed/8-cell cohort both runs, arms pinned to SHA `57b81aa`):
+  **flashcards reweighted population major-rate falls A→C in BOTH runs — math 0.69→0.37 and
+  0.66→0.40; geo 0.89→0.71 and 0.63→0.31** (n=5 cells: direction robust, magnitudes noisy —
+  the A arm itself measured 0.89 vs 0.63 on the same items across runs, unseeded judge).
+  **CBP shows NO reduction in either run** (geo 0.64→0.64 / 0.68→0.60; math 0.49→0.60 /
+  0.60→0.71) — arm-C CBP residuals are concealment+other with only ~2 source-fidelity per 20,
+  i.e. **the fidelity lever was never CBP's driver; the concealment contract is** (feeds
+  R25's open limb). Safety probes (corrected run): planted contradiction major **3/3**;
+  generated exercise numbers never flagged **3/3**; genuine defect (hand-verified one-line
+  range contradiction `99b1e622`; two candidates REJECTED because their stored warnings
+  hallucinated) stays major **3/3**; absent-but-true fact: **1/3 runs still major'd it as
+  "contradicts or significantly alters"** (real residual leak) and a contract-clean deck
+  still draws stochastic structural majors, so the has_major-gated p2 fails — reported as
+  measured, not re-run to a pass.
 
 **Ops:** ships dark until fleet pull + worker restart (prompts cached at startup). Expect
 some legitimate flashcards deck-size regens post-restart (HARD CAP now judge-enforced).
