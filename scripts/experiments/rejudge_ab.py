@@ -687,15 +687,22 @@ async def build_probes(conn, items: list[dict]) -> dict:
     p3_ext_raw = await conn.fetchval(
         "SELECT output_md FROM phase_outputs WHERE job_id=$1 AND phase_name='extract'", p3_math_job)
 
-    # Probe 4 — a manually-confirmed GENUINE defect (real stored output): a geo
-    # flashcards card whose back claims Chinese tea is "eng asosiy qishloq xo'jaligi
-    # ekini" (THE single most important agricultural crop) of East Asia, while the
-    # extract states "O'lkaning asosiy ekini SHOLI va ... Xitoy choyidir" (the main
-    # crop is RICE, with tea also famous). Elevating tea above rice as the primary
-    # crop genuinely contradicts the source — a clearer, non-ambiguous defect than the
-    # earlier Qorovulbozor pick (which the source itself associated with oil refining).
-    p4_pid = "3090f92c-fe23-4bb6-9afa-fd77b3034c76"
-    p4_job = "290b0aa2-113f-4e32-9e53-a5e744e9a79a"
+    # Probe 4 — a manually-confirmed GENUINE defect (real stored output), RESELECTED
+    # 2026-07-23 per P4_SELECTION_CRITERION after the merge gate rejected the earlier
+    # tea-vs-rice pick as a subtle superlative. New pick (verified BY HAND against both
+    # texts — the controller confirmed both lines exist verbatim in the DB rows):
+    # G7 ru math-algebra practice-error-detection 99b1e622…; the extract states the
+    # standard-form mantissa range as `1 < a < 10` while the output's Concepts section
+    # states `1 \le a < 10` — a one-line, unambiguous RANGE/NUMBER contradiction against
+    # the LESSON CONTEXT (the rule's ground truth). Candid disclosure carried in the
+    # provenance: mathematically the OUTPUT's range is the standard convention and the
+    # EXTRACT's is the nonstandard one — the probe tests the rule's MECHANISM
+    # (extract = ground truth by design; extract-side drift is the extract-fidelity
+    # guard's job, not the judge's). Two prior candidates were REJECTED during
+    # reselection because their stored warnings hallucinated: 53dbfbf6 (claimed roots
+    # "(2; -5)" appear nowhere in the output) — recorded in provenance below.
+    p4_pid = "99b1e622-3043-4801-93b2-f112a7600c35"
+    p4_job = "d91b0ace-6761-4bac-945d-b98d0860ae2a"
     p4_out = await conn.fetchval("SELECT output_md FROM phase_outputs WHERE id=$1", p4_pid)
     p4_ext = await conn.fetchval(
         "SELECT output_md FROM phase_outputs WHERE job_id=$1 AND phase_name='extract'", p4_job)
@@ -767,24 +774,30 @@ async def build_probes(conn, items: list[dict]) -> dict:
             "expect": "no invented-number fidelity flag any run (generated example numbers not regen-taxed)",
         },
         "p4_genuine_defect": {
-            "subject": geo_subject, "phase": "flashcards", "output_language": geo_ol,
+            "subject": "math-algebra", "phase": "practice-error-detection",
+            "output_language": "ru",
             "lesson_context": p4_ext, "output_md": p4_out,
             "expect": "has_major present every run (genuine contradiction not demoted)",
             "provenance": {
                 "phase_output_id": p4_pid, "job_id": p4_job,
-                "defect": "flashcard back claims Chinese tea is 'eng asosiy qishloq xo'jaligi ekini' "
-                          "(THE single most important agricultural crop) of East Asia; extract states "
-                          "the main crop is RICE ('asosiy ekini SHOLI'), with tea also famous. Elevating "
-                          "tea above rice as the primary crop genuinely contradicts the source.",
+                "defect": "G7 ru math-algebra error-detection: extract states the standard-form "
+                          "mantissa range as `1 < a < 10` ('где `1 < a < 10`'); the output's "
+                          "Concepts section states `1 \\le a < 10`. One-line, unambiguous "
+                          "RANGE/NUMBER contradiction against the LESSON CONTEXT — both lines "
+                          "verified verbatim in the DB rows by hand (controller, 2026-07-23).",
+                "disclosure": "mathematically the OUTPUT's range is the standard textbook "
+                              "convention and the EXTRACT's is nonstandard; the probe tests the "
+                              "rule's mechanism (extract = ground truth by design). Extract-side "
+                              "drift is the extract-fidelity guard's concern, not the judge's.",
                 "verified_against_extract": True,
-                "superseded_pick": "214e7476 (Qorovulbozor neft/gaz) — dropped as ambiguous: the source "
-                                   "itself associates Qorovulbozor with oil refining.",
+                "superseded_picks": [
+                    "3090f92c (tea-vs-rice) — gate-rejected: subtle superlative/relative-ranking",
+                    "53dbfbf6 (Viet roots) — REJECTED at reselection: its stored warning "
+                    "hallucinated — the quoted '(2; -5)' roots appear nowhere in the output",
+                    "214e7476 (Qorovulbozor neft/gaz) — dropped earlier as ambiguous",
+                ],
                 "selection_criterion": P4_SELECTION_CRITERION,
-                "meets_selection_criterion": False,
-                "criterion_gap": "this pick is a RELATIVE-RANKING/superlative claim ('the single most "
-                                 "important crop') rather than an unambiguous wrong number/name/date "
-                                 "verifiable in one line — flagged for RESELECTION at the next approved "
-                                 "run, not reselected here (no model call made).",
+                "meets_selection_criterion": True,
             },
         },
     }
@@ -1030,6 +1043,7 @@ def recompute_only() -> int:
 
 # ── main orchestration ───────────────────────────────────────────────────────
 async def main() -> int:
+    global ARTIFACT_PATH
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", default=DEFAULT_SEED)
     ap.add_argument("--max-calls", type=int, default=200)
@@ -1042,7 +1056,17 @@ async def main() -> int:
                          "tables / reweighted rates / residual breakdown from the raw "
                          "verdicts already in the artifact, using the corrected Defect-1 "
                          "(3-replay-majority) consolidation")
+    ap.add_argument("--artifact", type=str, default=None,
+                    help="override the artifact path (default: "
+                         f"{ARTIFACT_PATH}); lets a corrected re-run write to a FRESH "
+                         "file, leaving a superseded artifact untouched. The "
+                         "cumulative-budget gate (Defect 3) keys off whichever "
+                         "artifact path is in effect, so a new path starts a clean "
+                         "budget by design.")
     args = ap.parse_args()
+
+    if args.artifact:
+        ARTIFACT_PATH = Path(args.artifact)
 
     if args.recompute_only:
         return recompute_only()
