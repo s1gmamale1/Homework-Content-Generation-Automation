@@ -37,6 +37,13 @@ over-flagging so it never false-positives a good packet):
   title ("...spot the broken block, type the correction...") verbatim, which
   would otherwise false-positive `errdet_inline_spoiler` on every packet using
   that title convention.
+- **Task 3 (2026-07-23):** `english_heading_leak` (all phases) fires when a
+  HEADING line matches an explicit English structural-label list (Scenario, How
+  to play, Case-Based Preview, Relationship types, Role, Task, Checkpoint,
+  Learning Block, Feedback summary, Memory Check, Reflection, Decision Process)
+  on non-en output. Heading-anchored only — the same word in body prose does not
+  fire. `Boss Arena` is excluded (intentional game name). Companion to the
+  prompts.py un-freeze that appends a uz label-localization clause.
 """
 from __future__ import annotations
 
@@ -84,6 +91,37 @@ _RU_UZBEK_LEAK = [
     re.compile(r"\bKuchli tomonlar\b", re.IGNORECASE),
     re.compile(r"\bZaif tomonlar\b", re.IGNORECASE),
 ]
+
+# English structural labels that must be localized (Task 3 un-freeze companion
+# detector, 2026-07-23): the prompt bodies name sections with these English
+# labels; on any non-en output they must be translated. Heading-anchored ONLY —
+# the same word in body prose ("Scenario" mentioned mid-paragraph) is legitimate
+# and must not fire. `Boss Arena` is excluded — it's the intentional game name,
+# not a leaked structural label.
+_ENGLISH_HEADING_LABELS = (
+    r"Scenario|How to play|Case-Based Preview|Relationship types|Role|Task|"
+    r"Checkpoint|Learning Block|Feedback summary|Memory Check|Reflection|"
+    r"Decision Process"
+)
+_ENGLISH_HEADING_LEAK = re.compile(
+    rf"(?m)^[ \t]*#{{1,6}}[ \t]*\**(?:{_ENGLISH_HEADING_LABELS})\**[ \t]*$"
+)
+_BOSS_ARENA_HEADING = re.compile(r"(?im)^[ \t]*#{1,6}[ \t]*\**Boss Arena\**[ \t]*$")
+
+
+def _lint_english_heading_leak(output_md: str, output_language: str) -> list[LintFinding]:
+    if (output_language or "").lower() == "en":
+        return []
+    for line in output_md.splitlines():
+        if _BOSS_ARENA_HEADING.match(line):
+            continue
+        m = _ENGLISH_HEADING_LEAK.match(line)
+        if m:
+            return [LintFinding(
+                "english_heading_leak",
+                f"English structural label left in heading: {line.strip()!r}",
+            )]
+    return []
 
 
 def _lint_ru_leak(output_md: str, output_language: str) -> list[LintFinding]:
@@ -337,6 +375,7 @@ def lint_phase(phase_name: str, output_md: str, *, subject: str, output_language
         return []
     findings = _lint_language(output_md, output_language)
     findings += _lint_ru_leak(output_md, output_language)
+    findings += _lint_english_heading_leak(output_md, output_language)
     if phase_name == "flashcards":
         findings += _lint_misconception_tags(output_md)
     if phase_name == "practice-error-detection":

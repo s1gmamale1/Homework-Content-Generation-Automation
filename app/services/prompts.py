@@ -83,7 +83,10 @@ def _l2_rule(target_lang: str, bridge_medium: str) -> str:
     uz path is byte-identical to the legacy block by construction. For "en"/"ru"
     it substitutes the bridge phrases on that frozen base — it never rebuilds the
     text, so it cannot silently "fix" the base's authoring asymmetry (English's
-    governing line says "in Uzbek", Russian's says "in formal Uzbek")."""
+    governing line says "in Uzbek", Russian's says "in formal Uzbek").
+
+    This base stays frozen (un-freeze 2026-07-23 only appends a label clause in
+    `_resolve_language_rule`, below this function — it never touches this base)."""
     base = _L2_BASE[target_lang]
     if bridge_medium == "uz" or bridge_medium not in _BRIDGE_CLAUSE:
         return base
@@ -102,7 +105,9 @@ def _l2_rule(target_lang: str, bridge_medium: str) -> str:
 # --- Medium-of-instruction rules (whole-output language; decision 2026-06-29) ---
 # Distinct from LANGUAGE_RULES above, which are the L2 *target-language* rules for
 # the English/Russian CLASS subjects. MEDIUM_RULES govern the medium of instruction
-# for every OTHER subject. "uz" reuses _LANG_UZBEK so the UZ path is unchanged.
+# for every OTHER subject. "uz" reuses _LANG_UZBEK so this BASE block is unchanged
+# (un-freeze 2026-07-23 only appends a label clause on top, in
+# `_resolve_language_rule` below — this base itself stays frozen).
 _MEDIUM_ENGLISH = (
     "All student-facing text in natural, formal English. Address the student "
     "respectfully as \"you\"; never slang or childish phrasing. "
@@ -128,17 +133,21 @@ _MEDIUM_RUSSIAN = (
 )
 
 MEDIUM_RULES = {
-    "uz": _LANG_UZBEK,          # byte-identical to the legacy `_default`
+    "uz": _LANG_UZBEK,          # base BLOCK byte-identical to the legacy `_default`
     "en": _MEDIUM_ENGLISH,
     "ru": _MEDIUM_RUSSIAN,
 }
 
-# Appended to the language rule for non-uz media ONLY. The shared prompt bodies
-# name their sections/roles with English structural labels ("Scenario", "Role",
+# Appended to the language rule for en/ru media. The shared prompt bodies name
+# their sections/roles with English structural labels ("Scenario", "Role",
 # "Why/How/What", "Checkpoint", "Learning Block", "Completion status") and the
 # subject label is injected bilingually ("Mathematics (Matematika)"). Left alone,
 # the model echoes those English/Uzbek strings into ru/en output. This directive
-# tells it to localize them. uz is untouched (byte-identical to legacy).
+# tells it to localize them. uz gets its OWN clause instead — see
+# `_LOCALIZE_HEADINGS_CLAUSE_UZ` below (un-freeze 2026-07-23, user-approved): the
+# same leak happens into uz output (English labels surviving untranslated), and
+# the MEDIUM_RULES base block above stays byte-identical — only this appended
+# clause is new.
 _LOCALIZE_HEADINGS_CLAUSE = (
     "\nEVERY student-visible label is part of the output language: render each "
     "section heading, the phase title, and the subject name in the output "
@@ -149,14 +158,31 @@ _LOCALIZE_HEADINGS_CLAUSE = (
     "Correct/Partial/Wrong) untranslated."
 )
 
+# uz-specific counterpart to _LOCALIZE_HEADINGS_CLAUSE (un-freeze 2026-07-23,
+# user-approved). Same leak, uz phrasing: student-read labels (section headings,
+# game labels, feedback labels) must render in Uzbek, not linger in English.
+# Machine-facing keys/enum values are explicitly carved out.
+_LOCALIZE_HEADINGS_CLAUSE_UZ = (
+    "\nEVERY label the student READS is part of the output language: render section "
+    "headings, the phase title, game labels (\"How to play\", \"Scenario\", \"Role\", "
+    "\"Task\", \"Relationship types\", \"Why/How/What\", \"Checkpoint\", \"Learning "
+    "Block\"), and the feedback labels (Correct/Partial/Wrong) in Uzbek — never leave "
+    "them in English. EXCEPTION — machine-facing keys stay exactly as the format "
+    "defines them, in English: card field keys (id, front, back, type, difficulty, "
+    "hint, explanation, example, misconception) and enum values in backticks "
+    "(`easy`, `medium`, `hard`, card/relationship type names)."
+)
+
 
 def _resolve_language_rule(subject: str, output_language: str) -> str:
     """L2 language-class subjects (English/Russian) keep their L2 TARGET regardless
     of medium, but their scaffolding BRIDGE follows the chosen medium
     (l2-bridge-follows-medium). Every other subject renders in the chosen medium
-    (uz/en/ru), defaulting uz. For non-uz media a heading-localization directive is
-    appended so English structural labels + the source-language subject name are
-    localized too (uz stays byte-identical)."""
+    (uz/en/ru), defaulting uz. A heading/label-localization directive is appended
+    for every medium: en/ru get `_LOCALIZE_HEADINGS_CLAUSE` (also covers the
+    source-language subject-name leak); uz gets `_LOCALIZE_HEADINGS_CLAUSE_UZ`
+    (un-freeze 2026-07-23, user-approved — PR #83 originally froze uz byte-identical
+    to legacy; the base blocks above stay frozen, only this appended clause is new)."""
     sd = subjects.REGISTRY.get(subject)
     if sd and sd.language in ("english", "russian"):
         rule = _l2_rule(sd.language, output_language)
@@ -164,6 +190,8 @@ def _resolve_language_rule(subject: str, output_language: str) -> str:
         rule = MEDIUM_RULES.get(output_language, MEDIUM_RULES["uz"])
     if (output_language or "").lower() in ("en", "ru"):
         rule = rule + _LOCALIZE_HEADINGS_CLAUSE
+    else:                        # uz / default — un-freeze (2026-07-23, user-approved)
+        rule = rule + _LOCALIZE_HEADINGS_CLAUSE_UZ
     return rule
 
 # Derived from the single source of truth (app/services/subjects.py). A family of

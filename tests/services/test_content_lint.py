@@ -336,3 +336,48 @@ def test_coverage_clean_when_items_present():
 def test_coverage_formulas_excluded_and_empty_contract_noop():
     assert lint_coverage("## Formulas\n- a/b · c/d = ac/bd\n", "hech narsa") == []
     assert lint_coverage("", "anything") == []
+
+
+# --- Task 3: english_heading_leak — English structural labels left untranslated
+# in a heading, on non-en output (un-freeze #83 companion detector) ------------
+
+def test_english_heading_leak_fires_on_uz_heading():
+    md = "## How to play\nMatn.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" in _codes(findings)
+
+
+def test_english_heading_leak_silent_on_en_output():
+    md = "## How to play\nText.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="ingliz-tili", output_language="en")
+    assert "english_heading_leak" not in _codes(findings)
+
+
+def test_english_heading_leak_silent_on_boss_arena_heading():
+    md = "# Boss Arena\nMatn.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" not in _codes(findings)
+
+
+def test_english_heading_leak_silent_on_body_prose_mention():
+    # "Scenario" mentioned in body prose, not as a heading -> must NOT fire
+    md = "## Vaziyat\nBu yerda Scenario so'zi matn ichida uchraydi, sarlavha emas.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" not in _codes(findings)
+
+
+def test_english_heading_leak_silent_on_ru_output_when_translated():
+    md = "## Сценарий\nТекст.\n"
+    findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="ru")
+    assert "english_heading_leak" not in _codes(findings)
+
+
+@pytest.mark.parametrize("label", [
+    "Scenario", "How to play", "Case-Based Preview", "Relationship types", "Role",
+    "Task", "Checkpoint", "Learning Block", "Feedback summary", "Memory Check",
+    "Reflection", "Decision Process",
+])
+def test_english_heading_leak_covers_full_label_list(label):
+    md = f"### {label}\nMatn.\n"
+    findings = cl.lint_phase("flashcards", md, subject="matematika", output_language="uz")
+    assert "english_heading_leak" in _codes(findings), f"did not fire on heading {label!r}"
