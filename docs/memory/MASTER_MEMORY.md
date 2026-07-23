@@ -2059,3 +2059,54 @@ read-only dashboard — worth its own role marker. Postgres `max_connections=100
 ceiling for a 13-worker fleet; raising it is the other lever if worker count grows.
 
 **Deploy.** Workers pick this up on pull + restart; heads and viewer unchanged by default.
+
+## 0159 — Judge fidelity re-anchor + spoiler-free error-detection + uz label un-freeze + flashcard deck budget (2026-07-23)
+
+**What shipped (branch `feat/prompt-quality-reanchor`, 9 implementation commits, no migration).**
+Four prompt/contract-side fixes aimed at "the flag means it hurts learning", plus their
+acceptance evidence. NOTHING regenerated — all existing packets untouched.
+
+1. **Judge re-anchor** (`phase_judge._FIDELITY_RULE`): contradiction of the lesson context
+   stays `major`; a world claim merely ABSENT but uncontested is at most `minor`, never a
+   regen. The old "contradicted by, or absent from" wording was the single sentence behind
+   the 56-59% CBP/flashcards false-major rates in math AND geography.
+2. **Error-detection spoiler flip**: the contract *instructed* an inline broken-block marker
+   ("(to the reader of this output…)" — `practice-error-detection.md:32`), so ~52% of all
+   production errdet outputs ship the answer visibly (measured 1136/2164 with the new lint).
+   Contract now forbids any marker in the student region; identification lives ONLY in
+   The correct version / Reveal. The `errdet_*` lint family in `content_lint.py` was
+   deliberately INVERTED to match: new `errdet_inline_spoiler` (boundary-aware, en/uz/ru
+   headings incl. `Правильная версия`/`Раскрытие`, RU marker vocab incl. `(БРОКОВАННЫЙ БЛОК)`;
+   conservative no-boundary fallback), other three codes re-keyed to the answer-key region;
+   fixtures re-authored from REAL production rows (uz + ru). Golden scorer fixtures inverted too.
+3. **uz label localization (un-freeze #83, user-approved)**: `_LOCALIZE_HEADINGS_CLAUSE_UZ`
+   appended for uz/default output — student-READ labels in Uzbek; machine-facing card field
+   keys + backtick enums stay English (platform-ingestion anchors). Append-only: #83's frozen
+   base blocks byte-identical, frozen tests untouched. Companion deterministic detector
+   `english_heading_leak` (heading-anchored, numbered/DPE/dash-suffix forms, Boss Arena
+   excluded, warn-only).
+4. **Flashcards deck budget**: all three "cover/extract every term" absolutisms removed —
+   deck size WINS over exhaustive coverage (packet carries the rest); band maximum made a
+   HARD CAP with a count self-check after 2/2 over-band smoke runs.
+
+**Acceptance evidence.**
+- Generation smoke (6 real api calls, ~$0.07): errdet student region clean + key names the
+  block (lint-proven live); CBP fully localized Uzbek. Residuals (documented, low-impact):
+  gemini-flash cannot reliably COUNT cards (±2 on single runs — the judge remains the deck-size
+  gate, regen path intended); flashcards phase title still leaks English on some runs (now
+  caught warn-only by the new lint).
+- **Three-arm re-judge experiment** (`scripts/experiments/rejudge_ab.py` + committed artifact,
+  $4.15, 8-cell seeded cohort over the 101-math + 306-geografiya campaigns, arms pinned to
+  SHA `57b81aa`): flashcards reweighted population major-rate **0.69→0.37 (math), 0.89→0.63
+  (geo)**; **CBP UNMOVED** (0.64→0.64 geo) — arm-C CBP residuals are concealment(6)+other(12)
+  with only 2 source-fidelity, i.e. **the fidelity lever was never CBP's driver; the
+  concealment contract is** (per-item data in the artifact; feeds R25's open limb). Safety
+  probes: planted contradiction major 3/3; absent-but-true 0/3 contradiction-major (flagged
+  minor, as designed); generated exercise numbers never flagged; subtle genuine defect 1/3
+  under BOTH old and new rule (judge stochasticity, no regression).
+
+**Ops:** ships dark until fleet pull + worker restart (prompts cached at startup). Expect
+some legitimate flashcards deck-size regens post-restart (HARD CAP now judge-enforced).
+Suite 1939/309. Final whole-branch review: READY TO MERGE (deferred Lows triaged ship-as-is:
+unbounded `_BLOCK_ID` bleed-through is plan-mandated under-flagging; two errdet tests don't
+assert the new spoiler code; stale docstring bullet).

@@ -79,7 +79,19 @@
 ---
 
 
-## R25 — Judge contracts are subject-hostile to mathematics (~17.5% MAJOR tax, mostly false positives)
+## R25 — Judge contracts are subject-hostile to fact-dense subjects (~17.5% MAJOR tax in math; geography measures the same) — HALF-SHIPPED 0159
+
+> **Status update 2026-07-23 (worklog [[0159]]):** widened from math-only — geography measures
+> CBP 59.2% / flashcards 57.2% flagged, so this is a **fact-density** problem, not a math one.
+> **Limb 2 (term-coverage) SHIPPED** in 0159: the "cover every term" absolutisms are gone
+> (deck-size wins) and the judge's fidelity rule is re-anchored (contradiction=major,
+> absence≤minor). Proven by the three-arm re-judge experiment
+> (`scripts/experiments/2026-07-23-rejudge-ab-results.json`): flashcards reweighted major-rate
+> **0.69→0.37 (math) / 0.89→0.63 (geo)**. **Limb 1 (CBP concealment) remains OPEN and is now
+> the whole of R25:** the same experiment shows CBP **unmoved** (0.64→0.64 geo) with arm-C
+> residuals = concealment(6) + other(12) vs only 2 source-fidelity per 20 — the concealment
+> rule is the lever, and it needs its own gated decision (subject-aware relaxation per the
+> deliverable below). Do-NOT-regenerate stands.
 
 - **Issue:** across the four G5/G11 math batches (2026-07-21/22, 101 packets, 1111 judgeable phases) **194 phases (17.5%) shipped `major_shipped`** — the judge raised a MAJOR, the phase regenerated once, and it shipped still-flagged. Comparable recent runs on other subjects sit at **4.6% (G6 physics)** and **8.9% (G5 history)**, i.e. math pays a **3-4x MAJOR tax**. Cost is real (one extra generation + two judge calls per flagged phase) and the flag is not actionable: it never surfaces anywhere, so a 17.5% rate sat unexplained until hand-queried.
 - **Root cause (read from the stored verdicts, not inferred):** the failures live in `phase_outputs.validation_warnings` (populated on all 194 — `phase_judge._serialize_failures`). Aggregating them, **almost none concern mathematical correctness**; they are pedagogical-structure rules that mathematics structurally cannot satisfy:
