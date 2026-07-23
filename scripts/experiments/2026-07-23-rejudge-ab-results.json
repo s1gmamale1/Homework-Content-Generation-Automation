@@ -2008,7 +2008,7 @@
       "consolidated": {
         "A": true,
         "B": true,
-        "C": false
+        "C": true
       }
     },
     "15": {
@@ -3754,8 +3754,8 @@
           "n": 20
         },
         "flashcards": {
-          "stayed_major": 10,
-          "demoted": 6,
+          "stayed_major": 11,
+          "demoted": 5,
           "promoted": 0,
           "stayed_clean": 4,
           "n": 20
@@ -3770,8 +3770,8 @@
           "n": 10
         },
         "geo:flashcards": {
-          "stayed_major": 6,
-          "demoted": 3,
+          "stayed_major": 7,
+          "demoted": 2,
           "promoted": 0,
           "stayed_clean": 1,
           "n": 10
@@ -3885,8 +3885,8 @@
     "C:geo:flashcards": {
       "prevalence": 0.5719,
       "rate_major_cell": 0.8,
-      "rate_clean_cell": 0.4,
-      "reweighted_major_rate": 0.6288,
+      "rate_clean_cell": 0.6,
+      "reweighted_major_rate": 0.7144,
       "n_major": 5,
       "n_clean": 5
     }
@@ -4252,5 +4252,455 @@
     "probe_rerun_calls": 15,
     "probe_rerun_cost_usd": 0.238998
   },
-  "note_probe_rerun": "Arm calls from the full run are unchanged; the safety probes were re-run after refining the probe harness (well-formed grade-pinned decks + contradiction-scoped gate). The fidelity RULE was NOT modified."
+  "note_probe_rerun": "Arm calls from the full run are unchanged; the safety probes were re-run after refining the probe harness (well-formed grade-pinned decks + contradiction-scoped gate). The fidelity RULE was NOT modified.",
+  "consolidation_method": "3-replay-majority (Defect 1 fix, gate finding 2): for an item with a discordant replay (4 recorded runs: 1 original + 3 replay), the consolidated has_major is the majority of the 3 REPLAY runs ONLY (odd count -> no ties possible); the original run stays recorded in raw_verdicts but does not vote. An item with no replay uses its single recorded run as-is. Superseded method: majority over all 4 runs, where a 2-2 tie resolved to False (clean).",
+  "corrections": [
+    {
+      "date": "2026-07-23T21:42:15.551120+00:00",
+      "reason": "gate finding 2: 3-replay-majority consolidation (was 4-vote with tie→clean)",
+      "changed_items": [
+        {
+          "item_index": 14,
+          "cohort": "geo",
+          "phase": "flashcards",
+          "prior_status": "clean",
+          "phase_output_id": "bace484b-3666-4867-abba-a9b20db95292",
+          "before": {
+            "A": true,
+            "B": true,
+            "C": false
+          },
+          "after": {
+            "A": true,
+            "B": true,
+            "C": true
+          }
+        }
+      ],
+      "before": {
+        "reweighted_population_rates": {
+          "A:math:case-based-preview": {
+            "prevalence": 0.5644,
+            "rate_major_cell": 0.4,
+            "rate_clean_cell": 0.6,
+            "reweighted_major_rate": 0.4871,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "A:math:flashcards": {
+            "prevalence": 0.4356,
+            "rate_major_cell": 0.8,
+            "rate_clean_cell": 0.6,
+            "reweighted_major_rate": 0.6871,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "A:geo:case-based-preview": {
+            "prevalence": 0.5915,
+            "rate_major_cell": 0.8,
+            "rate_clean_cell": 0.4,
+            "reweighted_major_rate": 0.6366,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "A:geo:flashcards": {
+            "prevalence": 0.5719,
+            "rate_major_cell": 0.8,
+            "rate_clean_cell": 1.0,
+            "reweighted_major_rate": 0.8856,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "B:math:case-based-preview": {
+            "prevalence": 0.5644,
+            "rate_major_cell": 0.6,
+            "rate_clean_cell": 0.6,
+            "reweighted_major_rate": 0.6,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "B:math:flashcards": {
+            "prevalence": 0.4356,
+            "rate_major_cell": 0.8,
+            "rate_clean_cell": 0.2,
+            "reweighted_major_rate": 0.4614,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "B:geo:case-based-preview": {
+            "prevalence": 0.5915,
+            "rate_major_cell": 1.0,
+            "rate_clean_cell": 0.8,
+            "reweighted_major_rate": 0.9183,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "B:geo:flashcards": {
+            "prevalence": 0.5719,
+            "rate_major_cell": 1.0,
+            "rate_clean_cell": 0.6,
+            "reweighted_major_rate": 0.8288,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "C:math:case-based-preview": {
+            "prevalence": 0.5644,
+            "rate_major_cell": 0.6,
+            "rate_clean_cell": 0.6,
+            "reweighted_major_rate": 0.6,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "C:math:flashcards": {
+            "prevalence": 0.4356,
+            "rate_major_cell": 0.6,
+            "rate_clean_cell": 0.2,
+            "reweighted_major_rate": 0.3742,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "C:geo:case-based-preview": {
+            "prevalence": 0.5915,
+            "rate_major_cell": 0.8,
+            "rate_clean_cell": 0.4,
+            "reweighted_major_rate": 0.6366,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "C:geo:flashcards": {
+            "prevalence": 0.5719,
+            "rate_major_cell": 0.8,
+            "rate_clean_cell": 0.4,
+            "reweighted_major_rate": 0.6288,
+            "n_major": 5,
+            "n_clean": 5
+          }
+        },
+        "transition_tables": {
+          "A_to_B": {
+            "per_phase": {
+              "case-based-preview": {
+                "stayed_major": 9,
+                "demoted": 2,
+                "promoted": 6,
+                "stayed_clean": 3,
+                "n": 20
+              },
+              "flashcards": {
+                "stayed_major": 12,
+                "demoted": 4,
+                "promoted": 1,
+                "stayed_clean": 3,
+                "n": 20
+              }
+            },
+            "per_phase_cohort": {
+              "geo:case-based-preview": {
+                "stayed_major": 6,
+                "demoted": 0,
+                "promoted": 3,
+                "stayed_clean": 1,
+                "n": 10
+              },
+              "geo:flashcards": {
+                "stayed_major": 7,
+                "demoted": 2,
+                "promoted": 1,
+                "stayed_clean": 0,
+                "n": 10
+              },
+              "math:case-based-preview": {
+                "stayed_major": 3,
+                "demoted": 2,
+                "promoted": 3,
+                "stayed_clean": 2,
+                "n": 10
+              },
+              "math:flashcards": {
+                "stayed_major": 5,
+                "demoted": 2,
+                "promoted": 0,
+                "stayed_clean": 3,
+                "n": 10
+              }
+            }
+          },
+          "A_to_C": {
+            "per_phase": {
+              "case-based-preview": {
+                "stayed_major": 11,
+                "demoted": 0,
+                "promoted": 1,
+                "stayed_clean": 8,
+                "n": 20
+              },
+              "flashcards": {
+                "stayed_major": 10,
+                "demoted": 6,
+                "promoted": 0,
+                "stayed_clean": 4,
+                "n": 20
+              }
+            },
+            "per_phase_cohort": {
+              "geo:case-based-preview": {
+                "stayed_major": 6,
+                "demoted": 0,
+                "promoted": 0,
+                "stayed_clean": 4,
+                "n": 10
+              },
+              "geo:flashcards": {
+                "stayed_major": 6,
+                "demoted": 3,
+                "promoted": 0,
+                "stayed_clean": 1,
+                "n": 10
+              },
+              "math:case-based-preview": {
+                "stayed_major": 5,
+                "demoted": 0,
+                "promoted": 1,
+                "stayed_clean": 4,
+                "n": 10
+              },
+              "math:flashcards": {
+                "stayed_major": 4,
+                "demoted": 3,
+                "promoted": 0,
+                "stayed_clean": 3,
+                "n": 10
+              }
+            }
+          }
+        },
+        "residual_major_breakdown_armC": {
+          "case-based-preview": {
+            "concealment-rule": 6,
+            "deck-size": 0,
+            "source-fidelity": 2,
+            "other": 12
+          },
+          "flashcards": {
+            "concealment-rule": 0,
+            "deck-size": 2,
+            "source-fidelity": 6,
+            "other": 6
+          }
+        }
+      },
+      "after": {
+        "reweighted_population_rates": {
+          "A:math:case-based-preview": {
+            "prevalence": 0.5644,
+            "rate_major_cell": 0.4,
+            "rate_clean_cell": 0.6,
+            "reweighted_major_rate": 0.4871,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "A:math:flashcards": {
+            "prevalence": 0.4356,
+            "rate_major_cell": 0.8,
+            "rate_clean_cell": 0.6,
+            "reweighted_major_rate": 0.6871,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "A:geo:case-based-preview": {
+            "prevalence": 0.5915,
+            "rate_major_cell": 0.8,
+            "rate_clean_cell": 0.4,
+            "reweighted_major_rate": 0.6366,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "A:geo:flashcards": {
+            "prevalence": 0.5719,
+            "rate_major_cell": 0.8,
+            "rate_clean_cell": 1.0,
+            "reweighted_major_rate": 0.8856,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "B:math:case-based-preview": {
+            "prevalence": 0.5644,
+            "rate_major_cell": 0.6,
+            "rate_clean_cell": 0.6,
+            "reweighted_major_rate": 0.6,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "B:math:flashcards": {
+            "prevalence": 0.4356,
+            "rate_major_cell": 0.8,
+            "rate_clean_cell": 0.2,
+            "reweighted_major_rate": 0.4614,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "B:geo:case-based-preview": {
+            "prevalence": 0.5915,
+            "rate_major_cell": 1.0,
+            "rate_clean_cell": 0.8,
+            "reweighted_major_rate": 0.9183,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "B:geo:flashcards": {
+            "prevalence": 0.5719,
+            "rate_major_cell": 1.0,
+            "rate_clean_cell": 0.6,
+            "reweighted_major_rate": 0.8288,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "C:math:case-based-preview": {
+            "prevalence": 0.5644,
+            "rate_major_cell": 0.6,
+            "rate_clean_cell": 0.6,
+            "reweighted_major_rate": 0.6,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "C:math:flashcards": {
+            "prevalence": 0.4356,
+            "rate_major_cell": 0.6,
+            "rate_clean_cell": 0.2,
+            "reweighted_major_rate": 0.3742,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "C:geo:case-based-preview": {
+            "prevalence": 0.5915,
+            "rate_major_cell": 0.8,
+            "rate_clean_cell": 0.4,
+            "reweighted_major_rate": 0.6366,
+            "n_major": 5,
+            "n_clean": 5
+          },
+          "C:geo:flashcards": {
+            "prevalence": 0.5719,
+            "rate_major_cell": 0.8,
+            "rate_clean_cell": 0.6,
+            "reweighted_major_rate": 0.7144,
+            "n_major": 5,
+            "n_clean": 5
+          }
+        },
+        "transition_tables": {
+          "A_to_B": {
+            "per_phase": {
+              "case-based-preview": {
+                "stayed_major": 9,
+                "demoted": 2,
+                "promoted": 6,
+                "stayed_clean": 3,
+                "n": 20
+              },
+              "flashcards": {
+                "stayed_major": 12,
+                "demoted": 4,
+                "promoted": 1,
+                "stayed_clean": 3,
+                "n": 20
+              }
+            },
+            "per_phase_cohort": {
+              "geo:case-based-preview": {
+                "stayed_major": 6,
+                "demoted": 0,
+                "promoted": 3,
+                "stayed_clean": 1,
+                "n": 10
+              },
+              "geo:flashcards": {
+                "stayed_major": 7,
+                "demoted": 2,
+                "promoted": 1,
+                "stayed_clean": 0,
+                "n": 10
+              },
+              "math:case-based-preview": {
+                "stayed_major": 3,
+                "demoted": 2,
+                "promoted": 3,
+                "stayed_clean": 2,
+                "n": 10
+              },
+              "math:flashcards": {
+                "stayed_major": 5,
+                "demoted": 2,
+                "promoted": 0,
+                "stayed_clean": 3,
+                "n": 10
+              }
+            }
+          },
+          "A_to_C": {
+            "per_phase": {
+              "case-based-preview": {
+                "stayed_major": 11,
+                "demoted": 0,
+                "promoted": 1,
+                "stayed_clean": 8,
+                "n": 20
+              },
+              "flashcards": {
+                "stayed_major": 11,
+                "demoted": 5,
+                "promoted": 0,
+                "stayed_clean": 4,
+                "n": 20
+              }
+            },
+            "per_phase_cohort": {
+              "geo:case-based-preview": {
+                "stayed_major": 6,
+                "demoted": 0,
+                "promoted": 0,
+                "stayed_clean": 4,
+                "n": 10
+              },
+              "geo:flashcards": {
+                "stayed_major": 7,
+                "demoted": 2,
+                "promoted": 0,
+                "stayed_clean": 1,
+                "n": 10
+              },
+              "math:case-based-preview": {
+                "stayed_major": 5,
+                "demoted": 0,
+                "promoted": 1,
+                "stayed_clean": 4,
+                "n": 10
+              },
+              "math:flashcards": {
+                "stayed_major": 4,
+                "demoted": 3,
+                "promoted": 0,
+                "stayed_clean": 3,
+                "n": 10
+              }
+            }
+          }
+        },
+        "residual_major_breakdown_armC": {
+          "case-based-preview": {
+            "concealment-rule": 6,
+            "deck-size": 0,
+            "source-fidelity": 2,
+            "other": 12
+          },
+          "flashcards": {
+            "concealment-rule": 0,
+            "deck-size": 2,
+            "source-fidelity": 6,
+            "other": 6
+          }
+        }
+      }
+    }
+  ]
 }

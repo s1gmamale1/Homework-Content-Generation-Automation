@@ -22,21 +22,41 @@ Sanitized: no tokens/keys in this file; the DB URL comes only from the environme
 
     uv run python scripts/experiments/rejudge_ab.py [--seed S] [--max-calls 200] [--max-cost-usd 6.0]
 
-Design notes (why this differs from a naive per-item counterbalanced run):
-  * The OLD-rule arm monkeypatches the process-global `phase_judge._FIDELITY_RULE`.
-    That global is read at judge-prompt build time, so an OLD-rule call MUST NOT run
-    concurrently with a NEW-rule call. We therefore execute grouped BY ARM (all A,
-    then B+C, then replays, then probes) inside a single try/finally that restores the
-    global. This is safe for statistical validity because each judge call is an
-    independent, stateless API request with no shared conversation — call ORDER cannot
-    bias an unseeded gemini verdict, whereas interleaving the global mutation would be
-    a real correctness bug. Documented in the artifact under `arm_construction`.
+Design notes:
+  * Counterbalancing (merge-gate finding 2, corrected): arm execution order is rotated
+    PER ITEM by `item_index % 3` (0->ABC, 1->BCA, 2->CAB) rather than grouped by arm —
+    the earlier grouped-by-arm design (all A, then B+C) was rejected because it let a
+    systematic call-order confound ride alongside the rule/contract manipulation even
+    though gemini verdicts are unseeded per call.
+  * Concurrency tradeoff: the OLD-rule arm (A) monkeypatches the process-global
+    `phase_judge._FIDELITY_RULE`, which is read at judge-prompt build time. Combined
+    with per-item rotation, this means an A call can be immediately adjacent (in
+    wall-clock terms) to a B/C call for a DIFFERENT item if calls ran concurrently —
+    the global has no per-call scoping, so ANY overlap between an A call and a
+    non-A call anywhere in the run is a correctness bug (wrong rule text sent to the
+    judge), not just within one item. The fix is to run every arm call — the main
+    3-arm pass AND the discordant replays — FULLY SEQUENTIALLY, one judge call at a
+    time, with the monkeypatch applied in a try/finally around EACH individual arm-A
+    call (`run_arm_call`). This trades wall-clock time for a hard concurrency
+    guarantee: ~120 main-pass calls + up to 48 replay calls + 12 probe calls at
+    ~30s/call is roughly 1.5-2h end-to-end instead of the few minutes a fully
+    concurrent run would take. Only the probes (which never touch the OLD rule) keep
+    their semaphore-bounded concurrency.
   * Only `prompts/_general/flashcards.md` and the appended uz label clause in
     `prompts._resolve_language_rule` changed between 57b81aa and HEAD; the CBP md and
     the FAMILY_RULES blocks are byte-identical. The OLD contract render reuses the
     (frozen) FAMILY_RULES + base language blocks from the live module and only strips
     the new uz clause / swaps in the OLD md body — so arms differ ONLY in the intended
     text.
+
+Modes:
+  * default          — full three-arm run + probes (real, billed judge calls).
+  * --probes-only     — re-run only the 12 safety-probe calls (real, billed calls).
+  * --recompute-only  — ZERO model calls. Re-derives consolidated verdicts, transition
+    tables, reweighted population rates, and the residual breakdown from the RAW
+    VERDICTS already recorded in the on-disk artifact, using the corrected Defect-1
+    consolidation (majority of the 3 REPLAY runs only; the original run stays recorded
+    but does not vote). Appends a `corrections` entry documenting what changed.
 """
 from __future__ import annotations
 
@@ -73,6 +93,8 @@ PER_CELL = 5
 DISCORDANT_CAP = 8                          # first N discordant items replayed
 REPLAY_RUNS = 3                             # fresh runs per deciding arm for a replayed item
 DEFAULT_SEED = "rejudge-ab-2026-07-23"
+# Per-item counterbalanced arm-execution order (Defect 2 fix), keyed by item_index % 3.
+ARM_ROTATION = {0: "ABC", 1: "BCA", 2: "CAB"}
 
 ARTIFACT_PATH = Path("scripts/experiments/2026-07-23-rejudge-ab-results.json")
 
@@ -168,17 +190,62 @@ async def _wrapped_record(**kw):
 agent._record_usage = _wrapped_record
 
 
+# ── cumulative budget across invocations (Defect 3 fix) ──────────────────────
+def load_prior_budget() -> tuple[int, float]:
+    """Load the calls/cost already recorded on disk from a PRIOR invocation, so a
+    fresh invocation's cap check is CUMULATIVE across invocations rather than
+    silently resetting to zero. This is the fix for the bug where `--probes-only`
+    (or any invocation layered onto an existing artifact) started a fresh Budget(0, 0)
+    each time, so the artifact could show calls_made=219 against max_calls=200 with
+    budget_hit=false — each individual invocation stayed under cap in isolation while
+    the aggregate blew past it silently."""
+    if not ARTIFACT_PATH.exists():
+        return 0, 0.0
+    try:
+        prior = json.loads(ARTIFACT_PATH.read_text(encoding="utf-8")).get("budget", {})
+    except (json.JSONDecodeError, OSError):
+        return 0, 0.0
+    return int(prior.get("calls_made", 0) or 0), float(prior.get("actual_cost_usd", 0.0) or 0.0)
+
+
+def refuse_if_cumulative_cap_hit(prior_calls: int, prior_cost: float,
+                                  max_calls: int, max_cost: float) -> None:
+    """Hard-refuse to start (no DB connect, no model calls) if the CUMULATIVE spend
+    already recorded in the artifact is at/over the requested cap. Raising the cap
+    (or archiving/removing the artifact) is the explicit, visible way past this —
+    never a silent fresh-budget reset."""
+    if prior_calls >= max_calls or prior_cost >= max_cost:
+        print(
+            "REFUSING TO START — cumulative budget already at/over cap.\n"
+            f"  prior calls_made   = {prior_calls} (cap --max-calls {max_calls})\n"
+            f"  prior actual_cost  = ${prior_cost:.4f} (cap --max-cost-usd ${max_cost:.2f})\n"
+            f"  artifact           = {ARTIFACT_PATH}\n"
+            "Raise --max-calls/--max-cost-usd (renewed approval) or archive/remove the "
+            "artifact to start a fresh budget. No calls were made.",
+            file=sys.stderr,
+        )
+        sys.exit(3)
+
+
 # ── budget-guarded judge runner ──────────────────────────────────────────────
 class Budget:
-    def __init__(self, max_calls: int, max_cost: float):
+    """`calls`/`cost` are CUMULATIVE across invocations (seeded from `prior_calls`/
+    `prior_cost` on construction) — they are what gates `reserve()` against the cap.
+    `new_calls`/`new_cost` count only what THIS invocation made, for reporting and for
+    incrementing the artifact's per-invocation fields (e.g. `probe_rerun_calls`)."""
+
+    def __init__(self, max_calls: int, max_cost: float,
+                 prior_calls: int = 0, prior_cost: float = 0.0):
         self.max_calls = max_calls
         self.max_cost = max_cost
-        self.calls = 0
-        self.cost = 0.0
+        self.calls = prior_calls
+        self.cost = prior_cost
+        self.new_calls = 0
+        self.new_cost = 0.0
         self.prompt_tokens = 0
         self.output_tokens = 0
         self.cached_tokens = 0
-        self.hit = False
+        self.hit = prior_calls >= max_calls or prior_cost >= max_cost
         self.skipped: list[dict] = []
         self._lock = asyncio.Lock()
 
@@ -189,6 +256,7 @@ class Budget:
                 self.skipped.append(meta)
                 return False
             self.calls += 1
+            self.new_calls += 1
             return True
 
     async def settle(self, bucket: list):
@@ -198,6 +266,7 @@ class Budget:
         cost = sum(pricing.cost_usd(u["provider"], u["model"], u["usage"]) for u in bucket)
         async with self._lock:
             self.cost += cost
+            self.new_cost += cost
             self.prompt_tokens += pt
             self.output_tokens += ot
             self.cached_tokens += ct
@@ -362,10 +431,16 @@ def is_invented_number_flag(w: str) -> bool:
 
 
 def evaluate_probe(name: str, runs: list[dict]) -> dict:
-    """Fidelity-scoped probe gate. The gate is expressed on the rule's actual
-    mechanism (contradiction-major / invented-number flag), NOT raw has_major —
-    structural/coverage majors are orthogonal to Task 1's rule and are reported for
-    transparency but do not fail the fidelity gate."""
+    """Probe gate (Defect 4 fix). With the probe decks now genuinely contract-clean
+    (see the comment above `_GEO_GRADE_PREFIX`), `has_major` itself cleanly reflects
+    fidelity, so p1/p2/p4 gate on raw `has_major` directly, per the plan's stated
+    expectations ("stays major" / "never major" / "stays major"). p3 keeps a
+    narrower gate on `is_invented_number_flag` specifically, because that probe's
+    question is whether GENERATED practice numbers get regen-taxed as invented
+    facts — a question `has_major` alone can't isolate even on a clean deck (a
+    genuinely miscalculated worked example would be a legitimate, unrelated major).
+    `contradiction_major` / `invented_number_flag` / structural-major counts are
+    still recorded per run for transparency even where they are no longer the gate."""
     if not runs:
         return {"pass": False, "reason": "no runs (budget/skip)"}
     contra = [any(is_contradiction_major(w) for w in r["warnings"]) for r in runs]
@@ -377,9 +452,9 @@ def evaluate_probe(name: str, runs: list[dict]) -> dict:
             "has_major_each_run": hm,
             "structural_major_count_each_run": [len(s) for s in struct]}
     if name == "p1_contradiction":
-        base["pass"] = all(contra)
+        base["pass"] = all(hm)
     elif name == "p2_absent_true_fact":
-        base["pass"] = not any(contra)
+        base["pass"] = not any(hm)
     elif name == "p3_generated_values":
         # R14 guard: the specific concern is generated NUMBERS being flagged as
         # invented/unsourced. Gate on that; a topic/coverage major that merely quotes
@@ -390,6 +465,18 @@ def evaluate_probe(name: str, runs: list[dict]) -> dict:
     else:
         base["pass"] = None
     return base
+
+
+P4_SELECTION_CRITERION = (
+    "Defect 4, second part (merge-gate finding): the p4 'genuine defect' pick must be "
+    "an UNAMBIGUOUS factual contradiction against the extract — a wrong number, name, "
+    "or date verifiable in one line — never a subtle superlative or relative-ranking "
+    "claim (e.g. 'the most important crop'), which a judge can reasonably read as an "
+    "interpretive/emphasis claim rather than a hard factual error, and which is the "
+    "kind of pick that produced the earlier stochastic-looking demotions this probe "
+    "exists to rule out. Re-selection against this criterion happens at the NEXT "
+    "approved run (no model call is made here to pick a replacement)."
+)
 
 
 def classify_residual_major(w: str) -> str:
@@ -405,39 +492,181 @@ def classify_residual_major(w: str) -> str:
     return "other"
 
 
+# ── consolidation + downstream analysis (module-level so --recompute-only reuses ──
+# the EXACT same code as the live run — no drift between "how the artifact was built"
+# and "how it's recomputed").
+def consolidated_hm(it: dict, arm: str) -> bool | None:
+    """Defect 1 fix: for an item with a discordant replay, `it["arms"][arm]` holds 4
+    recorded runs (1 original + 3 replay). The consolidated verdict is the MAJORITY of
+    the 3 REPLAY runs ONLY (odd count -> no ties possible); the original run stays
+    recorded in raw_verdicts but does not vote. An item with no replay has exactly 1
+    recorded run in this arm, which stands as-is (nothing to consolidate).
+
+    The OLD (rejected) method voted over all 4 runs, where a 2-2 split resolved to
+    `majors * 2 > len(runs)` = False ("clean") — a silent tie-break toward the wrong
+    answer for exactly the discordant cases this replay mechanism exists to resolve.
+    """
+    runs = [r for r in it["arms"][arm] if r.get("has_major") is not None]
+    if not runs:
+        return None
+    vote_runs = runs[-REPLAY_RUNS:] if len(runs) > REPLAY_RUNS else runs
+    majors = sum(1 for r in vote_runs if r["has_major"])
+    return majors * 2 > len(vote_runs)  # majority; odd count when replayed => no tie
+
+
+def build_transitions(items: list[dict], pair_arms: tuple[str, str], key_fn) -> dict:
+    tbl: dict = {}
+    for it in items:
+        a = consolidated_hm(it, pair_arms[0])
+        b = consolidated_hm(it, pair_arms[1])
+        if a is None or b is None:
+            continue
+        k = key_fn(it)
+        d = tbl.setdefault(k, {"stayed_major": 0, "demoted": 0, "promoted": 0, "stayed_clean": 0, "n": 0})
+        d["n"] += 1
+        if a and b:
+            d["stayed_major"] += 1
+        elif a and not b:
+            d["demoted"] += 1
+        elif not a and b:
+            d["promoted"] += 1
+        else:
+            d["stayed_clean"] += 1
+    return tbl
+
+
+def build_transition_tables(items: list[dict]) -> dict:
+    """Paired transition tables per phase (A->B, A->C), pooled cohorts + per cohort."""
+    return {
+        "A_to_B": {
+            "per_phase": build_transitions(items, ("A", "B"), lambda it: it["phase"]),
+            "per_phase_cohort": build_transitions(items, ("A", "B"), lambda it: f"{it['cohort']}:{it['phase']}"),
+        },
+        "A_to_C": {
+            "per_phase": build_transitions(items, ("A", "C"), lambda it: it["phase"]),
+            "per_phase_cohort": build_transitions(items, ("A", "C"), lambda it: f"{it['cohort']}:{it['phase']}"),
+        },
+    }
+
+
+def cell_major_rate(items: list[dict], arm: str, cohort: str, phase: str, status: str):
+    """Per-cell arm major-rate (cell = cohort:phase:status), for reweighting."""
+    vals = [consolidated_hm(it, arm) for it in items
+            if it["cohort"] == cohort and it["phase"] == phase and it["prior_status"] == status]
+    vals = [v for v in vals if v is not None]
+    if not vals:
+        return None, 0
+    return sum(1 for v in vals if v) / len(vals), len(vals)
+
+
+def build_reweighted(items: list[dict], prev: dict) -> dict:
+    reweighted = {}
+    for arm in ("A", "B", "C"):
+        for cohort in COHORTS:
+            for phase in PHASES:
+                p = prev[f"{cohort}:{phase}"]["prevalence"]
+                r_major, n_major = cell_major_rate(items, arm, cohort, phase, "major")
+                r_clean, n_clean = cell_major_rate(items, arm, cohort, phase, "clean")
+                if p is None or r_major is None or r_clean is None:
+                    est = None
+                else:
+                    est = round(p * r_major + (1 - p) * r_clean, 4)
+                reweighted[f"{arm}:{cohort}:{phase}"] = {
+                    "prevalence": p,
+                    "rate_major_cell": None if r_major is None else round(r_major, 4),
+                    "rate_clean_cell": None if r_clean is None else round(r_clean, 4),
+                    "reweighted_major_rate": est,
+                    "n_major": n_major, "n_clean": n_clean,
+                }
+    return reweighted
+
+
+def build_residual_armC(items: list[dict]) -> dict:
+    """Residual-major breakdown for arm C (first run per item, majors only). Uses the
+    raw first C run's has_major (not the consolidated verdict) — unaffected by the
+    Defect-1 consolidation fix, recomputed here only for reproducibility."""
+    residual: dict = {}
+    for it in items:
+        runs = it["arms"]["C"]
+        if not runs:
+            continue
+        r0 = runs[0]
+        if not r0.get("has_major"):
+            continue
+        for w in r0["warnings"]:
+            if not w.startswith("[major]"):
+                continue
+            cat = classify_residual_major(w)
+            d = residual.setdefault(it["phase"], {"concealment-rule": 0, "deck-size": 0,
+                                                   "source-fidelity": 0, "other": 0})
+            d[cat] += 1
+    return residual
+
+
 # ── behavioral safety probes ─────────────────────────────────────────────────
 # The probes isolate the SOURCE-FIDELITY CONTRADICTION behavior that Task 1's rule
-# governs. To keep that signal clean, the flashcards decks are WELL-FORMED (grade
-# pinned in the lesson_context so the deck-size band is unambiguous, canonical card
-# types, id/front/back/type/difficulty present) so that structural / coverage majors
-# — which the judge raises regardless of the fidelity rule — do not confound the
-# fidelity gate. The gate is expressed on `is_contradiction_major` (p1/p2/p4) and
-# `is_invented_number_flag` (p3), NOT raw has_major; raw has_major + structural-major
-# counts are still recorded per run for transparency.
+# governs. Defect 4 fix (merge-gate finding): the probe decks must be genuinely
+# CONTRACT-CLEAN — not just "well-formed" in the loose sense the earlier version
+# claimed — so that `has_major` itself cleanly reflects fidelity and the probes can
+# gate on it directly, per the plan. The earlier decks were 9 uniform
+# `question_answer` cards with no `misconception` card; for a G7-8 lesson the
+# flashcards contract REQUIRES one misconception card in the 8-10 band, so those
+# decks earned a genuine structural major (missing misconception card) on top of
+# whatever the fidelity rule did — gating on `is_contradiction_major`/raw
+# `has_major` conflated the two, so the gate was quietly rewritten to
+# `is_contradiction_major`/`is_invented_number_flag` as a harness workaround. Fixed
+# here: `_GEO_FAITHFUL_CARDS` is now 10 cards (9 facts + 1 tagged `misconception`,
+# fits the G7-8 8-10 band with the required card present), spans >=3 distinct
+# sub-skills (region composition; resource-deposit locations; industrial output
+# values; water/irrigation infrastructure), and varies `type` across
+# definition/term_to_meaning/question_answer/misconception. With the decks clean,
+# the gate is raw `has_major` for p1/p2/p4 (exactly what the plan specifies:
+# "stays major" / "never major" / "stays major"); p3 keeps its narrower
+# `is_invented_number_flag` gate because that probe's concern is specifically
+# whether GENERATED practice numbers get regen-taxed as invented facts, not
+# whether the deck has a major at all. `is_contradiction_major` /
+# `is_invented_number_flag` / structural-major counts are still recorded per run
+# for transparency even where they are no longer the gate.
 _GEO_GRADE_PREFIX = "Grade: 8\n\n"
 
-# Nine faithful cards drawn straight from the Zarafshon-region extract (job
-# 5c86f22f): region composition, gas/oil/gold/rare-metal deposits, the Qorovulbozor
-# refinery capacity (5 mln t/yr), the Navoiy TPP fuel, the #2 gas-industry rank, and
-# the irrigation canals. Grade 8 → band 8-10 cards; nine fits.
+# Ten cards drawn straight from the Zarafshon-region extract (job 5c86f22f): region
+# composition, gas/oil/gold/rare-metal deposits, the Qorovulbozor refinery capacity
+# (5 mln t/yr), the Navoiy TPP fuel, the #2 gas-industry rank, the irrigation canals,
+# and one tagged `misconception` card. Grade 8 -> G7-8 band is 8-10 cards INCLUDING
+# one misconception card (flashcards.md: "G7-8 -> 8-10 cards — core atoms plus one
+# misconception card") — 10 fits exactly and satisfies the requirement, closing the
+# structural-major confound Defect 4 flagged (missing misconception card). Sub-skill
+# spread (>=3, per flashcards.md): (1) region composition/administration, (2)
+# resource-deposit locations (gas/oil/gold/rare metals), (3) industrial output
+# values (refinery capacity, TPP fuel, gas-industry rank), (4) water/irrigation
+# infrastructure. `type` varies across definition/term_to_meaning/question_answer/
+# misconception rather than one uniform type for all 9 facts.
 _GEO_FAITHFUL_CARDS = [
-    ("card_1", "Zarafshon iqtisodiy rayoni tarkibi", "Samarqand, Buxoro va Navoiy viloyatlari.", "question_answer", "easy"),
-    ("card_2", "Rayondagi tabiiy gaz konlari", "Gazli, Uchqir, Qorovulbozor va Sortosh.", "question_answer", "medium"),
+    ("card_1", "Zarafshon iqtisodiy rayoni tarkibi", "Samarqand, Buxoro va Navoiy viloyatlari.", "definition", "easy"),
+    ("card_2", "Rayondagi tabiiy gaz konlari", "Gazli, Uchqir, Qorovulbozor va Sortosh.", "term_to_meaning", "medium"),
     ("card_3", "Rayondagi neft koni", "Kogon yaqinida joylashgan.", "question_answer", "medium"),
     ("card_4", "Rayondagi oltin koni", "Muruntov.", "question_answer", "easy"),
-    ("card_5", "Rayondagi nodir metall konlari", "Ingichka va Zarmitan.", "question_answer", "medium"),
+    ("card_5", "Rayondagi nodir metall konlari", "Ingichka va Zarmitan.", "term_to_meaning", "medium"),
     ("card_6", "Qorovulbozor neftni qayta ishlash korxonasi quvvati", "Yiliga 5 mln tonna neftni qayta ishlaydi.", "question_answer", "medium"),
     ("card_7", "Navoiy IESi qanday yoqilg'ida ishlaydi", "Tabiiy gaz bilan ishlaydi.", "question_answer", "easy"),
     ("card_8", "Rayonning gaz sanoati bo'yicha o'rni", "O'zbekistonda ikkinchi o'rinda.", "question_answer", "medium"),
     ("card_9", "Rayonning suv muammosini hal qiluvchi inshootlar", "Amu–Qorako'l va Amu–Buxoro kanallari, Quyimozor suv ombori.", "question_answer", "hard"),
+    ("card_10", "Keng tarqalgan xato: Zarafshon rayoni faqat qishloq xo'jaligi rayoni",
+     "Noto'g'ri — rayon gaz, neft, oltin va nodir metall sanoatiga ham ega og'ir sanoat rayonidir.",
+     "misconception", "medium", ("O'quvchilar rayonni faqat qishloq xo'jaligi bilan bog'laydi, sanoat tarmoqlarini unutadi.", "inferred")),
 ]
 
 
 def _fmt_deck(title: str, cards: list[tuple]) -> str:
     out = [f"# {title}\n"]
-    for cid, front, back, ctype, diff in cards:
-        out.append(f"**id:** {cid}\n**front:** {front}\n**back:** {back}\n"
-                   f"**type:** {ctype}\n**difficulty:** {diff}\n")
+    for card in cards:
+        cid, front, back, ctype, diff = card[:5]
+        block = (f"**id:** {cid}\n**front:** {front}\n**back:** {back}\n"
+                 f"**type:** {ctype}\n**difficulty:** {diff}\n")
+        if len(card) > 5 and card[5] is not None:
+            misc_text, provenance = card[5]
+            block += f"**misconception ({provenance}):** {misc_text}\n"
+        out.append(block)
     return "\n".join(out)
 
 
@@ -550,6 +779,12 @@ async def build_probes(conn, items: list[dict]) -> dict:
                 "verified_against_extract": True,
                 "superseded_pick": "214e7476 (Qorovulbozor neft/gaz) — dropped as ambiguous: the source "
                                    "itself associates Qorovulbozor with oil refining.",
+                "selection_criterion": P4_SELECTION_CRITERION,
+                "meets_selection_criterion": False,
+                "criterion_gap": "this pick is a RELATIVE-RANKING/superlative claim ('the single most "
+                                 "important crop') rather than an unambiguous wrong number/name/date "
+                                 "verifiable in one line — flagged for RESELECTION at the next approved "
+                                 "run, not reselected here (no model call made).",
             },
         },
     }
@@ -615,7 +850,9 @@ async def probes_only(args) -> int:
     `safety_probes` section in place (arm data + transition/reweight analysis from
     the full run are preserved). Used after a probe-harness refinement so the arm
     calls are not needlessly re-billed."""
-    budget = Budget(args.max_calls, args.max_cost_usd)
+    prior_calls, prior_cost = load_prior_budget()
+    refuse_if_cumulative_cap_hit(prior_calls, prior_cost, args.max_calls, args.max_cost_usd)
+    budget = Budget(args.max_calls, args.max_cost_usd, prior_calls, prior_cost)
     sem = asyncio.Semaphore(args.concurrency)
     judge_provider, judge_model = model_tiers.resolve_judge(
         GEN_PROVIDER, GEN_MODEL, JUDGE_PROVIDER_STAMP, JUDGE_MODEL_STAMP)
@@ -641,9 +878,10 @@ async def probes_only(args) -> int:
                             "runs": runs, "provenance": specs[name].get("provenance")}
     artifact["safety_probes"] = {
         "all_pass": all_pass,
-        "gate_note": "fidelity-scoped gate on contradiction-major / invented-number flag "
-                     "(the rule's actual mechanism); structural/coverage majors reported but "
-                     "not part of the gate. Probes are well-formed grade-pinned decks.",
+        "gate_note": "gate is raw has_major for p1/p2/p4 (the decks are genuinely contract-clean, "
+                     "so has_major cleanly reflects fidelity); p3 gates narrowly on the "
+                     "invented-number flag. contradiction-major / invented-number-flag / "
+                     "structural-major counts are still recorded per run for transparency.",
         "genuine_defect_provenance": specs["p4_genuine_defect"].get("provenance"),
         "p4_baseline_comparison": {
             "note": "Same p4 defect output under the OLD rule (57b81aa) x3 vs the NEW rule x3, "
@@ -658,22 +896,136 @@ async def probes_only(args) -> int:
         "reran_at": datetime.now(timezone.utc).isoformat(),
     }
     b = artifact.setdefault("budget", {})
-    b["probe_rerun_calls"] = budget.calls
-    b["probe_rerun_cost_usd"] = round(budget.cost, 6)
-    b["calls_made"] = b.get("calls_made", 0) + budget.calls
-    b["actual_cost_usd"] = round(b.get("actual_cost_usd", 0.0) + budget.cost, 6)
+    # budget.calls / budget.cost are CUMULATIVE (seeded from the artifact's prior
+    # calls_made/actual_cost_usd) — write them straight through, don't add again.
+    b["max_calls"] = args.max_calls
+    b["max_cost_usd"] = args.max_cost_usd
+    b["probe_rerun_calls"] = budget.new_calls
+    b["probe_rerun_cost_usd"] = round(budget.new_cost, 6)
+    b["calls_made"] = budget.calls
+    b["actual_cost_usd"] = round(budget.cost, 6)
+    b["budget_hit"] = budget.hit
     artifact["note_probe_rerun"] = ("Arm calls from the full run are unchanged; the safety "
                                     "probes were re-run after refining the probe harness "
-                                    "(well-formed grade-pinned decks + contradiction-scoped gate). "
+                                    "(well-formed grade-pinned decks + has_major gate). "
                                     "The fidelity RULE was NOT modified.")
     ARTIFACT_PATH.write_text(json.dumps(artifact, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    print(f"probes-only: calls={budget.calls} cost=${budget.cost:.4f} all_pass={all_pass}")
+    print(f"probes-only: calls={budget.new_calls} cost=${budget.new_cost:.4f} "
+          f"(cumulative calls={budget.calls} cost=${budget.cost:.4f}) all_pass={all_pass}")
     for name, po in probes_out.items():
         print(f"  {name}: pass={po['verdict'].get('pass')} "
               f"contra={po['verdict'].get('contradiction_major_each_run')} "
               f"hm={po['verdict'].get('has_major_each_run')}")
     return 0 if all_pass else 2
+
+
+def recompute_only() -> int:
+    """--recompute-only: ZERO model calls, ZERO DB connections. Re-derives consolidated
+    verdicts, transition tables, reweighted population rates, and the residual
+    breakdown FROM THE RAW VERDICTS already recorded in the on-disk artifact, using
+    the corrected Defect-1 consolidation (`consolidated_hm`: majority of the 3 REPLAY
+    runs only; the original run stays recorded but does not vote). Updates the
+    artifact in place and appends a `corrections` entry recording what changed and
+    the before/after headline numbers.
+    """
+    if not ARTIFACT_PATH.exists():
+        print(f"no artifact at {ARTIFACT_PATH} — nothing to recompute", file=sys.stderr)
+        return 1
+
+    artifact = json.loads(ARTIFACT_PATH.read_text(encoding="utf-8"))
+    raw = artifact.get("raw_verdicts")
+    prev = artifact.get("prevalence")
+    if not raw or not prev:
+        print("artifact is missing raw_verdicts/prevalence — cannot recompute", file=sys.stderr)
+        return 1
+
+    # Rebuild lightweight item records straight from the recorded raw verdicts —
+    # every run (original + replays) is already there; nothing is re-fetched or re-run.
+    items: list[dict] = []
+    before_consolidated: dict[int, dict] = {}
+    for idx_str, rv in raw.items():
+        idx = int(idx_str)
+        items.append({
+            "item_index": idx, "cohort": rv["cohort"], "phase": rv["phase"],
+            "prior_status": rv["prior_status"], "phase_output_id": rv["phase_output_id"],
+            "arms": {"A": rv["A"], "B": rv["B"], "C": rv["C"]},
+        })
+        before_consolidated[idx] = dict(rv.get("consolidated") or {})
+    items.sort(key=lambda it: it["item_index"])
+
+    # ── recompute with the corrected consolidation ────────────────────────────
+    new_trans = build_transition_tables(items)
+    new_reweighted = build_reweighted(items, prev)
+    new_residual = build_residual_armC(items)
+
+    changed_items = []
+    for it in items:
+        after = {a: consolidated_hm(it, a) for a in ("A", "B", "C")}
+        before = before_consolidated.get(it["item_index"], {})
+        if before != after:
+            changed_items.append({
+                "item_index": it["item_index"], "cohort": it["cohort"], "phase": it["phase"],
+                "prior_status": it["prior_status"], "phase_output_id": it["phase_output_id"],
+                "before": before, "after": after,
+            })
+        raw[str(it["item_index"])]["consolidated"] = after
+
+    before_reweighted = artifact.get("reweighted_population_rates", {})
+    before_trans = artifact.get("transition_tables", {})
+    before_residual = artifact.get("residual_major_breakdown_armC", {})
+
+    artifact["raw_verdicts"] = raw
+    artifact["transition_tables"] = new_trans
+    artifact["reweighted_population_rates"] = new_reweighted
+    artifact["residual_major_breakdown_armC"] = new_residual
+    artifact["consolidation_method"] = (
+        "3-replay-majority (Defect 1 fix, gate finding 2): for an item with a "
+        "discordant replay (4 recorded runs: 1 original + 3 replay), the consolidated "
+        "has_major is the majority of the 3 REPLAY runs ONLY (odd count -> no ties "
+        "possible); the original run stays recorded in raw_verdicts but does not "
+        "vote. An item with no replay uses its single recorded run as-is. Superseded "
+        "method: majority over all 4 runs, where a 2-2 tie resolved to False (clean)."
+    )
+    corrections = artifact.setdefault("corrections", [])
+    corrections.append({
+        "date": datetime.now(timezone.utc).isoformat(),
+        "reason": "gate finding 2: 3-replay-majority consolidation (was 4-vote with tie→clean)",
+        "changed_items": changed_items,
+        "before": {
+            "reweighted_population_rates": before_reweighted,
+            "transition_tables": before_trans,
+            "residual_major_breakdown_armC": before_residual,
+        },
+        "after": {
+            "reweighted_population_rates": new_reweighted,
+            "transition_tables": new_trans,
+            "residual_major_breakdown_armC": new_residual,
+        },
+    })
+
+    ARTIFACT_PATH.write_text(json.dumps(artifact, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    print("=" * 70)
+    print("recompute-only: ZERO model calls. Corrected 3-replay-majority consolidation.")
+    print(f"changed items ({len(changed_items)}):")
+    for c in changed_items:
+        print(f"  item {c['item_index']} ({c['cohort']}:{c['phase']}:{c['prior_status']}) "
+              f"before={c['before']} after={c['after']}")
+    print("-" * 70)
+    print("reweighted_population_rates (arm C), before -> after:")
+    for key in sorted(k for k in new_reweighted if k.startswith("C:")):
+        b = before_reweighted.get(key, {}).get("reweighted_major_rate")
+        a = new_reweighted[key]["reweighted_major_rate"]
+        flag = "  <-- CHANGED" if b != a else ""
+        print(f"  {key}: {b} -> {a}{flag}")
+    print("-" * 70)
+    print("A_to_C per_phase_cohort, before -> after:")
+    for key in sorted(new_trans["A_to_C"]["per_phase_cohort"]):
+        print(f"  {key}: before={before_trans.get('A_to_C', {}).get('per_phase_cohort', {}).get(key)} "
+              f"after={new_trans['A_to_C']['per_phase_cohort'][key]}")
+    print("=" * 70)
+    return 0
 
 
 # ── main orchestration ───────────────────────────────────────────────────────
@@ -685,12 +1037,22 @@ async def main() -> int:
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--probes-only", action="store_true",
                     help="re-run only the 12 safety-probe calls and patch the artifact")
+    ap.add_argument("--recompute-only", action="store_true",
+                    help="ZERO model calls: re-derive consolidated verdicts / transition "
+                         "tables / reweighted rates / residual breakdown from the raw "
+                         "verdicts already in the artifact, using the corrected Defect-1 "
+                         "(3-replay-majority) consolidation")
     args = ap.parse_args()
+
+    if args.recompute_only:
+        return recompute_only()
 
     if args.probes_only:
         return await probes_only(args)
 
-    budget = Budget(args.max_calls, args.max_cost_usd)
+    prior_calls, prior_cost = load_prior_budget()
+    refuse_if_cumulative_cap_hit(prior_calls, prior_cost, args.max_calls, args.max_cost_usd)
+    budget = Budget(args.max_calls, args.max_cost_usd, prior_calls, prior_cost)
     sem = asyncio.Semaphore(args.concurrency)
 
     judge_provider, judge_model = model_tiers.resolve_judge(
@@ -711,39 +1073,47 @@ async def main() -> int:
     for it in items:
         it["arms"] = {"A": [], "B": [], "C": []}
 
-    async def judge_item(it: dict, arm: str, contract_override):
-        async with sem:
-            v = await run_one_judge(
-                budget,
-                meta={"kind": "arm", "arm": arm, "item_index": it["item_index"],
-                      "phase_output_id": it["phase_output_id"]},
-                subject=it["subject"], phase_name=it["phase"], output_md=it["output_md"],
-                lesson_context=it["extract_md"], prior_outputs={},
-                gen_provider=GEN_PROVIDER, gen_model=GEN_MODEL,
-                judge_provider=judge_provider, judge_model=judge_model,
-                transport=TRANSPORT, contract_override=contract_override,
-                output_language=it["output_language"],
-            )
-            if v is not None:
-                it["arms"][arm].append(v)
+    async def run_arm_call(it: dict, arm: str) -> None:
+        """One judge call for one (item, arm). FULLY SEQUENTIAL by construction — the
+        caller never awaits two of these concurrently. Arm A monkeypatches the
+        process-global `phase_judge._FIDELITY_RULE` in a try/finally scoped to just
+        this one call, so the global is never in the OLD state while any other call
+        (any arm, any item) could observe it."""
+        contract_override = (
+            render_old_contract(it["subject"], it["phase"], it["output_language"])
+            if arm in ("A", "B") else None
+        )
+        meta = {"kind": "arm", "arm": arm, "item_index": it["item_index"],
+                "phase_output_id": it["phase_output_id"]}
+        kwargs = dict(
+            subject=it["subject"], phase_name=it["phase"], output_md=it["output_md"],
+            lesson_context=it["extract_md"], prior_outputs={},
+            gen_provider=GEN_PROVIDER, gen_model=GEN_MODEL,
+            judge_provider=judge_provider, judge_model=judge_model,
+            transport=TRANSPORT, contract_override=contract_override,
+            output_language=it["output_language"],
+        )
+        if arm == "A":
+            saved_rule = phase_judge._FIDELITY_RULE
+            phase_judge._FIDELITY_RULE = old_rule
+            try:
+                v = await run_one_judge(budget, meta, **kwargs)
+            finally:
+                phase_judge._FIDELITY_RULE = saved_rule
+        else:
+            v = await run_one_judge(budget, meta, **kwargs)
+        if v is not None:
+            it["arms"][arm].append(v)
 
-    # ─── Window 1: arm A single runs (OLD rule patched) ──────────────────────
-    saved_rule = phase_judge._FIDELITY_RULE
-    try:
-        phase_judge._FIDELITY_RULE = old_rule
-        await asyncio.gather(*[
-            judge_item(it, "A", render_old_contract(it["subject"], it["phase"], it["output_language"]))
-            for it in items
-        ])
-    finally:
-        phase_judge._FIDELITY_RULE = saved_rule
-
-    # ─── Window 2: arm B + arm C single runs (NEW rule) ──────────────────────
-    tasks = []
+    # ─── main 3-arm pass: per-item rotated order, FULLY SEQUENTIAL ───────────
+    # Counterbalancing (Defect 2 fix): rotate execution order by item_index % 3
+    # instead of running grouped by arm. Sequential (no gather/semaphore) because
+    # arm A's monkeypatch is a process-global with no per-call scoping — ANY
+    # concurrent non-A call while it's active would read the wrong rule text.
     for it in items:
-        tasks.append(judge_item(it, "B", render_old_contract(it["subject"], it["phase"], it["output_language"])))
-        tasks.append(judge_item(it, "C", None))  # None -> production get_prompt
-    await asyncio.gather(*tasks)
+        order = ARM_ROTATION[it["item_index"] % 3]
+        for arm in order:
+            await run_arm_call(it, arm)
 
     # ─── discordant detection (A vs C first-run has_major) ───────────────────
     def first_hm(it, arm):
@@ -759,114 +1129,22 @@ async def main() -> int:
     replay_items = discordant[:DISCORDANT_CAP]
     not_replayed = [it["item_index"] for it in discordant[DISCORDANT_CAP:]]
 
-    # ─── Window 3: arm A replays (OLD rule) ──────────────────────────────────
-    saved_rule = phase_judge._FIDELITY_RULE
-    try:
-        phase_judge._FIDELITY_RULE = old_rule
-        tasks = []
-        for it in replay_items:
-            for _ in range(REPLAY_RUNS):
-                tasks.append(judge_item(it, "A", render_old_contract(it["subject"], it["phase"], it["output_language"])))
-        await asyncio.gather(*tasks)
-    finally:
-        phase_judge._FIDELITY_RULE = saved_rule
-
-    # ─── Window 4: arm C replays (NEW rule) + probes ─────────────────────────
-    tasks = []
+    # ─── replays: A and C only (never B), rotated per item, FULLY SEQUENTIAL ──
     for it in replay_items:
+        replay_order = "AC" if it["item_index"] % 2 == 0 else "CA"
         for _ in range(REPLAY_RUNS):
-            tasks.append(judge_item(it, "C", None))
-    await asyncio.gather(*tasks)
+            for arm in replay_order:
+                await run_arm_call(it, arm)
 
     # probes (NEW rule, no patch, production get_prompt contract)
     probe_results = await run_probes(probes_spec, budget, sem, judge_provider, judge_model)
     p4_baseline = await run_p4_baseline(probes_spec["p4_genuine_defect"], budget, sem,
                                         judge_provider, judge_model)
 
-    # ─── analysis ────────────────────────────────────────────────────────────
-    def consolidated_hm(it, arm):
-        runs = [r for r in it["arms"][arm] if r.get("has_major") is not None]
-        if not runs:
-            return None
-        majors = sum(1 for r in runs if r["has_major"])
-        return majors * 2 > len(runs)  # majority
-
-    # transition tables per phase (A->B, A->C), pooled cohorts + per cohort
-    def transitions(pair_arms, key_fn):
-        tbl: dict = {}
-        for it in items:
-            a = consolidated_hm(it, pair_arms[0])
-            b = consolidated_hm(it, pair_arms[1])
-            if a is None or b is None:
-                continue
-            k = key_fn(it)
-            d = tbl.setdefault(k, {"stayed_major": 0, "demoted": 0, "promoted": 0, "stayed_clean": 0, "n": 0})
-            d["n"] += 1
-            if a and b:
-                d["stayed_major"] += 1
-            elif a and not b:
-                d["demoted"] += 1
-            elif not a and b:
-                d["promoted"] += 1
-            else:
-                d["stayed_clean"] += 1
-        return tbl
-
-    trans = {
-        "A_to_B": {
-            "per_phase": transitions(("A", "B"), lambda it: it["phase"]),
-            "per_phase_cohort": transitions(("A", "B"), lambda it: f"{it['cohort']}:{it['phase']}"),
-        },
-        "A_to_C": {
-            "per_phase": transitions(("A", "C"), lambda it: it["phase"]),
-            "per_phase_cohort": transitions(("A", "C"), lambda it: f"{it['cohort']}:{it['phase']}"),
-        },
-    }
-
-    # per-cell arm major-rates (for reweighting) — cell = cohort:phase:status
-    def cell_major_rate(arm, cohort, phase, status):
-        vals = [consolidated_hm(it, arm) for it in items
-                if it["cohort"] == cohort and it["phase"] == phase and it["prior_status"] == status]
-        vals = [v for v in vals if v is not None]
-        if not vals:
-            return None, 0
-        return sum(1 for v in vals if v) / len(vals), len(vals)
-
-    reweighted = {}
-    for arm in ("A", "B", "C"):
-        for cohort in COHORTS:
-            for phase in PHASES:
-                p = prev[f"{cohort}:{phase}"]["prevalence"]
-                r_major, n_major = cell_major_rate(arm, cohort, phase, "major")
-                r_clean, n_clean = cell_major_rate(arm, cohort, phase, "clean")
-                if p is None or r_major is None or r_clean is None:
-                    est = None
-                else:
-                    est = round(p * r_major + (1 - p) * r_clean, 4)
-                reweighted[f"{arm}:{cohort}:{phase}"] = {
-                    "prevalence": p,
-                    "rate_major_cell": None if r_major is None else round(r_major, 4),
-                    "rate_clean_cell": None if r_clean is None else round(r_clean, 4),
-                    "reweighted_major_rate": est,
-                    "n_major": n_major, "n_clean": n_clean,
-                }
-
-    # residual-major breakdown for arm C (first run per item, majors only)
-    residual = {}
-    for it in items:
-        runs = it["arms"]["C"]
-        if not runs:
-            continue
-        r0 = runs[0]
-        if not r0.get("has_major"):
-            continue
-        for w in r0["warnings"]:
-            if not w.startswith("[major]"):
-                continue
-            cat = classify_residual_major(w)
-            d = residual.setdefault(it["phase"], {"concealment-rule": 0, "deck-size": 0,
-                                                   "source-fidelity": 0, "other": 0})
-            d[cat] += 1
+    # ─── analysis (shared module-level functions — same code path --recompute-only uses) ──
+    trans = build_transition_tables(items)
+    reweighted = build_reweighted(items, prev)
+    residual = build_residual_armC(items)
 
     # probe verdicts
     probes_out = {}
@@ -922,14 +1200,19 @@ async def main() -> int:
             "old_contract_render": "OLD md body from git 57b81aa + get_prompt-mimicking substitutions "
                                    "with the OLD language rule (no uz label clause); FAMILY_RULES + base "
                                    "language blocks are byte-identical old/new so nothing else drifts",
-            "execution_order": "GROUPED BY ARM (A single | B+C single | A replays | C replays+probes), NOT "
-                               "per-item rotation. Rationale: the OLD-rule arm mutates a process-global read "
-                               "at prompt-build time, so it must not interleave with NEW-rule calls; judge "
-                               "calls are independent stateless API requests, so call order cannot bias an "
-                               "unseeded gemini verdict. This trades the brief's counterbalancing (which "
-                               "guards against a bias that does not exist for stateless calls) for a real "
-                               "concurrency-correctness guarantee.",
-            "concurrency": args.concurrency,
+            "execution_order": "PER-ITEM ROTATED (item_index % 3: 0->ABC, 1->BCA, 2->CAB; replays A/C "
+                               "alternate by item_index parity), FULLY SEQUENTIAL — one judge call at a "
+                               "time, never gathered/concurrent. Superseded design (rejected at merge "
+                               "gate): grouped-by-arm (all A, then B+C, then A-replays, then C-replays) "
+                               "on the theory that stateless unseeded judge calls can't be call-order "
+                               "biased; that let a systematic call-order confound ride alongside the "
+                               "rule/contract manipulation. Arm A's process-global monkeypatch "
+                               "(`phase_judge._FIDELITY_RULE`) is applied in a try/finally scoped to "
+                               "each individual A call (`run_arm_call`), which is what makes full "
+                               "sequential execution safe: the global is only ever in the OLD state for "
+                               "the duration of one call.",
+            "concurrency": "sequential (arm calls); probes keep semaphore-bounded concurrency "
+                            f"({args.concurrency})",
         },
         "sample": {
             "per_cell": PER_CELL, "n_cells": len(COHORTS) * len(PHASES) * len(STATUSES),
@@ -968,9 +1251,10 @@ async def main() -> int:
                                       "else other; first arm-C run per item, replays excluded from this tally",
         "safety_probes": {
             "all_pass": all_probes_pass,
-            "gate_note": "fidelity-scoped gate on contradiction-major / invented-number flag "
-                         "(the rule's actual mechanism); structural/coverage majors reported but "
-                         "not part of the gate. Probes are well-formed grade-pinned decks.",
+            "gate_note": "gate is raw has_major for p1/p2/p4 (the decks are genuinely contract-clean, "
+                         "so has_major cleanly reflects fidelity); p3 gates narrowly on the "
+                         "invented-number flag. contradiction-major / invented-number-flag / "
+                         "structural-major counts are still recorded per run for transparency.",
             "genuine_defect_provenance": probes_spec["p4_genuine_defect"].get("provenance"),
             "p4_baseline_comparison": {
                 "note": "Same p4 defect output under the OLD rule (57b81aa) x3 vs the NEW rule x3.",
@@ -984,6 +1268,8 @@ async def main() -> int:
         "budget": {
             "max_calls": args.max_calls, "max_cost_usd": args.max_cost_usd,
             "calls_made": budget.calls, "actual_cost_usd": round(budget.cost, 6),
+            "new_calls_this_run": budget.new_calls,
+            "new_cost_usd_this_run": round(budget.new_cost, 6),
             "prompt_tokens": budget.prompt_tokens, "output_tokens": budget.output_tokens,
             "cached_tokens": budget.cached_tokens,
             "budget_hit": budget.hit,
