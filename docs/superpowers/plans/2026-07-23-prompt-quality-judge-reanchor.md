@@ -159,12 +159,22 @@ def test_errdet_key_region_names_no_block_warns():
 
    **GREEN** — lint (`content_lint.py`), re-keyed on a region split:
    - `_ANSWER_KEY_HDR`: extend the boundary beyond `_REVEAL_HDR` to the correct-version
-     headings, localized — `(?im)^[ \t]*#{1,6}[ \t]*(the correct version|to{_APOS}?g{_APOS}?ri
-     versiya|reveal|ochish|oshkor)\b` (reuse `_APOS`). Answer-key region starts at the FIRST
-     such heading; student region is everything before it.
-   - Extend `_MARKER` with the bare parenthesised Uzbek forms `\(\s*xato(\s+{_BLK})?\s*\)`
-     ("(XATO)", "(XATO BLOK)") analogous to the existing `(Broken)` group. (Note "XATO BLOK"
-     without parens already matches the `xato\s+{_BLK}` alternative.)
+     headings, localized in ALL THREE output languages — English `the correct version`,
+     Uzbek `to{_APOS}?g{_APOS}?ri versiya` (reuse `_APOS`), **Russian `правильная версия`**
+     — plus the reveal set `reveal|ochish|oshkor|раскрытие` (and extend `_REVEAL_HDR` with
+     `раскрытие` for the mismatch check). Live RU production emits `# Правильная версия` /
+     `# Раскрытие`; without these the conservative no-boundary fallback would suppress the
+     spoiler finding for every RU packet. Answer-key region starts at the FIRST such
+     heading; student region is everything before it.
+   - Extend `_MARKER` with:
+     - the bare parenthesised Uzbek forms `\(\s*xato(\s+{_BLK})?\s*\)` ("(XATO)",
+       "(XATO BLOK)") analogous to the existing `(Broken)` group ("XATO BLOK" without
+       parens already matches the `xato\s+{_BLK}` alternative);
+     - **Russian marker vocabulary**: extend `_BLK` with `блок`, add the wrongness
+       adjectives `неправильн\w*|ошибочн\w*|неверн\w*|брокованн\w*` in the same
+       pre/post/ordinal orders as the Uzbek forms, and the parenthesised form
+       `\(\s*брокованн\w*\s+блок\s*\)` — live production contains inline
+       `(БРОКОВАННЫЙ БЛОК)`.
    - New semantics of `_lint_error_detection`:
      - any `_MARKER` hit in the **student region** → `errdet_inline_spoiler` (NEW code),
        message citing the offending line. **Only when a boundary heading was found** — no
@@ -182,7 +192,10 @@ def test_errdet_key_region_names_no_block_warns():
      `errdet-two-markers.md` → ids in the key region for `errdet_multiple_broken`;
      add one REAL sampled spoiler output (G8 electroenergetika `**(XATO BLOK)**` job
      `83852be1-c31b-43cb-9b69-790be8fc57f6`, sanitized excerpt) as the inline-spoiler
-     fixture. Every existing `test_errdet_*` updated to the inverted semantics —
+     fixture, **and one REAL Russian regression fixture** (implementer samples a live RU
+     errdet output with `# Правильная версия` boundary + a Russian inline marker from the
+     DB) proving the RU path produces `errdet_inline_spoiler`, not the no-boundary
+     fallback. Every existing `test_errdet_*` updated to the inverted semantics —
      deliberately, in the same commit, with a comment naming the inversion.
 3. `uv run python -m pytest tests/services/test_content_lint.py tests/services/test_prompt_coverage.py -q`
 4. **Commit:** `fix(prompts+lint): error-detection — spoiler-free student region, inverted errdet lint family`
@@ -245,6 +258,16 @@ _LOCALIZE_HEADINGS_CLAUSE_UZ = (
    (verified at lines 83, 131, 141, 159): the FROZEN-BASE claim stays true (the base blocks
    are still byte-identical); what changed is that uz now gets an APPENDED label clause —
    say exactly that, dated 2026-07-23.
+
+   **Plus a deterministic detector** (the existing `english_template` check does NOT
+   recognize `Scenario`, `How to play`, or `Case-Based` headings — verified): add an
+   `english_heading_leak` rule to `content_lint.py`, warn-only, firing when
+   `output_language != "en"` and a HEADING line matches an explicit English structural-label
+   list: `Scenario|How to play|Case-Based Preview|Relationship types|Role|Task|Checkpoint|
+   Learning Block|Feedback summary|Memory Check|Reflection|Decision Process`. Explicitly
+   EXCLUDE `Boss Arena` (intentional game name). Tests in
+   `tests/services/test_content_lint.py`: fires on `## How to play` in uz output; silent on
+   the same heading in en output; silent on `# Boss Arena` in uz output.
 3. Whole language-rule surface green:
    `uv run python -m pytest tests/services/test_prompts_output_language.py tests/services/test_prompts_resolver.py tests/services/test_prompt_coverage.py -q`
    (#83 frozen-copy tests must pass UNCHANGED — if any needs editing, stop: the change
@@ -282,7 +305,7 @@ def test_flashcards_contract_scopes_coverage_to_deck_budget():
      processes, rules, formulas, and classification terms into a deck sized to the grade
      band (below) — the highest-value atoms first."
      RED addition: `assert "extract every key term" not in body`.
-3. `uv run python -m pytest tests/test_prompt_coverage.py -q`
+3. `uv run python -m pytest tests/services/test_prompt_coverage.py -q`
 4. **Commit:** `fix(prompts): flashcards — deck-size budget wins over exhaustive coverage`
 
 ## Task 5 — Acceptance A: targeted generation smoke (real api calls, lint-validated)
@@ -294,7 +317,9 @@ stored extract as `lesson_context`. Validate the real outputs **through the ship
 machinery, not ad-hoc regexes**:
 - run `content_lint.lint_phase` on each output: error-detection must produce NO
   `errdet_inline_spoiler` and NO `errdet_no_broken_marker` (i.e. clean student region AND
-  the answer key names the block); no `lint:language` English-label findings.
+  the answer key names the block); NO `english_heading_leak` findings (the Task 3 rule —
+  there is no `lint:language` code; the pre-existing codes are `mixed_script` /
+  `english_template` / `calque` / `ru_uzbek_leak`).
 - flashcards: deck within grade band (count `**id:** card_` occurrences); field keys/enums
   still canonical English.
 - eyeball all 3 for Uzbek student-read headings.
@@ -317,14 +342,16 @@ G11, 36 jobs) — both codes, the earlier "matematika" wording missed all 36 G11
 Geography = the 306 `done` jobs across the six `geografiya` books. The artifact lists the
 exact job IDs drawn.
 
-**Sample.** 40 stored phases — 20 `case-based-preview` + 20 `flashcards`, stratified
-half `major_shipped` / half clean, split across the math and geography cohorts.
-Deterministic seeded draw (`ORDER BY md5(:seed || phase_output_id)`, seed recorded).
+**Sample.** 40 stored phases — **exactly 5 items in each of 8 cells:
+cohort {math, geografiya} × phase {case-based-preview, flashcards} × prior status
+{major_shipped, clean}** (all eight cells verified to hold sufficient live rows).
+Deterministic seeded draw per cell (`ORDER BY md5(:seed || phase_output_id)`, seed recorded).
 
 **Arms (correction: a genuine OLD arm — Task 4 changes the flashcards contract, so
 rule-swap alone measures neither old production nor Task 4):**
-- **A** — old `_FIDELITY_RULE` + old contracts (both pinned from `origin/Nggaev-v2` at the
-  branch point; contracts passed via `judge(contract_override=…)`) → the production baseline.
+- **A** — old `_FIDELITY_RULE` + old contracts, both pinned to the **immutable branch-point
+  SHA `57b81aa`** (`git show 57b81aa:<path>`), never the moving `origin/Nggaev-v2` ref;
+  contracts passed via `judge(contract_override=…)` → the production baseline.
 - **B** — new rule + old contracts → isolates Task 1.
 - **C** — new rule + new contracts (no override) → the shipped state.
 
@@ -332,9 +359,11 @@ Identical inputs per item across arms (stored `output_md`, the job's stored extr
 `lesson_context`, `prior_outputs={}` in ALL arms — controlled). The old-rule arm
 monkeypatches `phase_judge._FIDELITY_RULE` inside `try/finally` restoring the module global.
 **Arm order counterbalanced per item** (rotate A/B/C execution order by item index — the
-gemini judge calls are unseeded), and every **discordant pivotal case** (an item whose A
-and C verdicts disagree on `has_major`) is re-run 3× in the deciding arms, majority verdict
-recorded alongside the raws.
+gemini judge calls are unseeded). **Discordant pivotal cases** (items whose A and C
+verdicts disagree on `has_major` — the intended fix will likely produce MANY) are re-run
+3× in the two deciding arms (6 calls each), **deterministically capped at the first 8
+discordant items by item index** — capped-out items are listed in the artifact as
+`discordant_not_replayed` (no silent truncation), single-run verdicts stand for them.
 
 **Statistics (correction: the 50/50 draw is case-control — raw arm percentages must NOT be
 compared to the population rates 17.5% math / 4.6% physics / 8.9% history).** Report:
@@ -354,10 +383,14 @@ through the NEW rule (each 3×, unseeded model):
 - one manually-confirmed GENUINE defect from the audits (e.g. a verified wrong-fact flag
   chosen during implementation from `validation_warnings`) → **stays `major`**.
 
-Budget: 120 A/B/C calls + ~24 probe/repeat calls ≈ 144 judge calls ≈ **$4.3** — report
-actual. Judge provider/model per `model_tiers` defaults, `transport=api`. These calls write
-`agent_usages` rows (normal billing attribution) but **never touch `phase_outputs` /
-`judge_status`** — no persisted operational re-judge.
+**Budget — hard-bounded, worst case.** 120 A/B/C calls + 12 safety-probe calls + at most
+8 × 6 = 48 discordant-replay calls = **180 calls worst case ≈ $5.4**. The script takes
+`--max-calls` (default 200) and `--max-cost-usd` (default 6.0) and **hard-stops cleanly**
+when either is reached — partial results are written to the artifact with a `budget_hit`
+marker and the skipped work enumerated; it never silently exceeds the approved amount.
+Report actual calls + cost. Judge provider/model per `model_tiers` defaults,
+`transport=api`. These calls write `agent_usages` rows (normal billing attribution) but
+**never touch `phase_outputs` / `judge_status`** — no persisted operational re-judge.
 
 **Commit:** `test(experiments): three-arm re-judge A/B + safety probes (script + artifact)`
 
@@ -365,7 +398,10 @@ actual. Judge provider/model per `model_tiers` defaults, `transport=api`. These 
 
 1. Full suite: `uv run python -m pytest tests/ -q` (canonical bar: WITHOUT `RUN_DB_INTEGRATION`).
 2. Rebase-check: `git fetch origin && git log HEAD..origin/Nggaev-v2` — rebase + re-run suite
-   if the base moved.
+   if the base moved. **If the incoming commits touch judge or prompt inputs**
+   (`app/services/phase_judge.py`, `app/services/prompts.py`, `prompts/**`,
+   `app/services/content_lint.py`), **re-run Tasks 5–6**, not merely the unit suite — the
+   acceptance evidence is against those inputs.
 3. Push `feat/prompt-quality-reanchor`, open PR (base `Nggaev-v2`) — user/GK2 gates the merge;
    never self-merge.
 4. Same finish, not deferred: worklog entry in `docs/memory/MASTER_MEMORY.md` + `INDEX.md`
