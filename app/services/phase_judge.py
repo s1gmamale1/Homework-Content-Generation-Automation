@@ -75,14 +75,17 @@ _INSTRUCTIONS = (
 )
 
 _FIDELITY_RULE = (
-    "\n\nSource-fidelity (CRITICAL): a LESSON CONTEXT section is provided below — the lesson the "
-    "output was authored from. Treat it as ground truth. Raise a `major` failure for any factual "
-    "claim ABOUT THE WORLD in the OUTPUT that is contradicted by, or absent from, the LESSON "
-    "CONTEXT (e.g. an invented date, statistic, name, or definition). DO NOT flag numbers the "
-    "OUTPUT generates for teaching — practice-problem values, worked-example arithmetic, invented "
-    "student names, hypothetical scenarios — these are expected and are NOT fidelity violations. "
-    "A hint list of candidate issues may appear below; verify each against the LESSON CONTEXT "
-    "before trusting it, and drop any you cannot substantiate."
+    "\n\nSource-fidelity (CRITICAL): a LESSON CONTEXT section is provided below — the lesson "
+    "the output was authored from. Treat it as ground truth for contradictions: raise a "
+    "`major` failure for any factual claim ABOUT THE WORLD in the OUTPUT that CONTRADICTS "
+    "the LESSON CONTEXT (a changed date, number, name, definition, rule, or causal claim). "
+    "A world claim that is merely ABSENT from the LESSON CONTEXT but not contradicted by it "
+    "(supporting context, standard curriculum facts) is at most `minor` — never `major`, "
+    "never a reason to regenerate. DO NOT flag numbers the OUTPUT generates for teaching — "
+    "practice-problem values, worked-example arithmetic, invented student names, hypothetical "
+    "scenarios — these are expected and are NOT fidelity violations. A hint list of candidate "
+    "issues may appear below; verify each against the LESSON CONTEXT before trusting it, and "
+    "drop any you cannot substantiate."
 )
 
 
