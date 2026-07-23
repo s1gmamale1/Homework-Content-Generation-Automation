@@ -139,6 +139,17 @@ def test_error_detection_contract_forbids_inline_marker():
     assert "ONLY in" in body and "The correct version" in body
 
 
+def test_flashcards_contract_scopes_coverage_to_deck_budget():
+    # Task 4: the old contract demanded both exhaustive coverage (every term)
+    # and a hard 6-8 card cap for G5-6, creating contradiction. Decision:
+    # deck size wins; coverage is packet-level. The prompt must forbid the
+    # absolutist "extract every" wording and explicitly scope to deck budget.
+    body = get_prompt("geografiya", "flashcards")
+    assert "Cover every term, name, structure, process, rule, and classification term" not in body
+    assert "extract every key term" not in body
+    assert "Deck size wins" in body
+
+
 def test_error_detection_requires_rederivation_and_feedback_consistency():
     body = _squash_ws((pathlib.Path(__file__).resolve().parents[2]
                        / "prompts" / "_general" / "practice-error-detection.md").read_text(encoding="utf-8"))

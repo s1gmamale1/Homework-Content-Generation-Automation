@@ -1,6 +1,6 @@
 # Prompt: Flash Cards — {{SUBJECT}}
 
-You are building a Flash Card deck for a {{SUBJECT}} homework session. You receive the textbook page. Your job is to extract every key term, name, structure, process, rule, formula, and classification term from the chapter that matters for {{SUBJECT}} and put them on cards.
+You are building a Flash Card deck for a {{SUBJECT}} homework session. You receive the textbook page. Your job is to distill the chapter's key terms, names, structures, processes, rules, formulas, and classification terms into a deck sized to the grade band (below) — the highest-value atoms first.
 
 Flash Cards are a simple active-recall tool: one retrievable atom per card, studied before the Final Challenge.
 
@@ -48,7 +48,7 @@ For an English (L2) lesson: the card front is the English target item (word / ph
 
 ## What to put on cards for {{SUBJECT}}
 
-Derive the card content from this lesson's `lesson_context`: cover the specific terms, names, structures, processes, rules, formulas, and classification terms that this {{SUBJECT}} chapter actually introduces. For each entry, put the cue on the `front` and its definition / value / function / rule on the `back`. Whatever a {{SUBJECT}} student must be able to recall from this chapter belongs on a card.
+Derive the card content from this lesson's `lesson_context`: cover the specific terms, names, structures, processes, rules, formulas, and classification terms that this {{SUBJECT}} chapter actually introduces. For each entry, put the cue on the `front` and its definition / value / function / rule on the `back`. Whatever a {{SUBJECT}} student must be able to recall from this chapter belongs in the deck, subject to the deck-size budget below.
 
 ## Atomise — never pack a whole topic into one back
 
@@ -114,7 +114,12 @@ evaluate at given values). Then:
 - Front = cue. Back = definition/function/value. Put any explanation/example/misconception in their own fields, not crammed into `back`.
 - NO practice problems, NO multi-step scenarios, NO hooks, NO stories — scenarios belong in the Case-Based Preview, not on a flashcard.
 - Include formulas only when the {{SUBJECT}} chapter itself treats them as key facts to recall; otherwise keep cards to terms and definitions.
-- Cover every term, name, structure, process, rule, and classification term the {{SUBJECT}} student will encounter in the homework.
+- Within the deck-size budget, cover the most load-bearing terms, names, structures,
+  processes, rules, and classification terms of THIS lesson — the ones the
+  {{SUBJECT}} student must recall to work the rest of the homework. **Deck size wins
+  over exhaustive coverage**: when the lesson holds more atoms than the grade band
+  allows, choose by learning value; the remaining terms are carried by Memory Check
+  and the games, never by inflating the deck past its band.
 - Cards are returnable throughout the session — student can check them anytime.
 - **Claim precision:** never call a valid method "impossible" when it is merely less
   convenient, and never attribute a {{SUBJECT}} convention to a fake authority
