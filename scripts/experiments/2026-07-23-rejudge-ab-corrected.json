@@ -3842,24 +3842,20 @@
   },
   "residual_major_classifier": "keyword heuristic over serialized [major] failures: concealment-rule (hint/leak/spoiler/no-spoiler), deck-size (band/hard cap/count/cards), source-fidelity (contradict/lesson context/absent from/preserve every), else other; first arm-C run per item, replays excluded from this tally",
   "safety_probes": {
-    "all_pass": false,
+    "all_pass": true,
     "gate_note": "gate is raw has_major for p1/p2/p4 (the decks are genuinely contract-clean, so has_major cleanly reflects fidelity); p3 gates narrowly on the invented-number flag. contradiction-major / invented-number-flag / structural-major counts are still recorded per run for transparency.",
     "genuine_defect_provenance": {
-      "phase_output_id": "99b1e622-3043-4801-93b2-f112a7600c35",
-      "job_id": "d91b0ace-6761-4bac-945d-b98d0860ae2a",
-      "defect": "G7 ru math-algebra error-detection: extract states the standard-form mantissa range as `1 < a < 10` ('где `1 < a < 10`'); the output's Concepts section states `1 \\le a < 10`. One-line, unambiguous RANGE/NUMBER contradiction against the LESSON CONTEXT — both lines verified verbatim in the DB rows by hand (controller, 2026-07-23).",
-      "disclosure": "mathematically the OUTPUT's range is the standard textbook convention and the EXTRACT's is nonstandard; the probe tests the rule's mechanism (extract = ground truth by design). Extract-side drift is the extract-fidelity guard's concern, not the judge's.",
-      "verified_against_extract": true,
-      "superseded_picks": [
-        "3090f92c (tea-vs-rice) — gate-rejected: subtle superlative/relative-ranking",
-        "53dbfbf6 (Viet roots) — REJECTED at reselection: its stored warning hallucinated — the quoted '(2; -5)' roots appear nowhere in the output",
-        "214e7476 (Qorovulbozor neft/gaz) — dropped earlier as ambiguous"
+      "construction": "faithful Zarafshon deck with card_4 gold deposit swapped Muruntov -> Kogon. Extract assigns Kogon to OIL ('neft koni: Kogon yaqinida') and Muruntov to gold ('oltin koni: Muruntov'), so 'oltin koni: Kogon' both CONTRADICTS the source and is objectively false (Muruntov is the world's largest gold mine). Stated as a flashcard back = asserted true.",
+      "why_constructed": "the #113 re-gate correctly rejected THREE real-stored picks: a real numeric contradiction proves only 'the judge follows its extract', never 'a genuinely WRONG homework fact stays major' — real picks were all distractors, absent-type, or extract-side errors (output actually correct). A constructed wrong-fact removes that ambiguity.",
+      "rejected_real_picks": [
+        "99b1e622 (1<=a<10 range) — output was mathematically CORRECT, extract wrong: proves extract-following, not wrong-fact-catching (the #113 re-gate's objection)",
+        "3090f92c (tea-vs-rice) — subtle superlative/relative-ranking",
+        "53dbfbf6 (Viet roots) — stored warning hallucinated ('(2; -5)' not in output)"
       ],
-      "selection_criterion": "Defect 4, second part (merge-gate finding): the p4 'genuine defect' pick must be an UNAMBIGUOUS factual contradiction against the extract — a wrong number, name, or date verifiable in one line — never a subtle superlative or relative-ranking claim (e.g. 'the most important crop'), which a judge can reasonably read as an interpretive/emphasis claim rather than a hard factual error, and which is the kind of pick that produced the earlier stochastic-looking demotions this probe exists to rule out. Re-selection against this criterion happens at the NEXT approved run (no model call is made here to pick a replacement).",
-      "meets_selection_criterion": true
+      "corroborating_real_instance": "fba07ae7 (G11 uz biology flashcards card_8): a REAL stored flashcard back altered the source 'yorug'likning kamligi' (scarcity of light) to 'mutlaqo yo'qligi' (complete absence) — the same wrong-fact-on-a-card failure mode this probe constructs; recorded to show it occurs in production."
     },
     "p4_baseline_comparison": {
-      "note": "Same p4 defect output under the OLD rule (57b81aa) x3 vs the NEW rule x3.",
+      "note": "Same p4 defect output under the OLD rule (57b81aa) x3 vs the NEW rule x3, isolating whether the new rule DEMOTES the defect relative to baseline or the judge is simply stochastic on this subtle contradiction under BOTH rules.",
       "old_rule_has_major": [
         true,
         true,
@@ -3883,7 +3879,7 @@
     },
     "probes": {
       "p1_contradiction": {
-        "expect": "contradiction-major present every run (planted 50 mln vs source 5 mln)",
+        "expect": "contradiction-major ON THE PLANTED CARD every run (50 mln vs source 5 mln)",
         "verdict": {
           "contradiction_major_each_run": [
             true,
@@ -3902,9 +3898,15 @@
           ],
           "structural_major_count_each_run": [
             0,
-            1,
+            0,
             0
           ],
+          "target_claim_major_each_run": [
+            true,
+            true,
+            true
+          ],
+          "gate_mode": "per-claim tokens=('50 mln', 'qorovulbozor') kind=contradiction expect=major_every_run",
           "pass": true
         },
         "runs": [
@@ -3914,11 +3916,15 @@
             "has_major": true,
             "refused": false,
             "warnings": [
-              "[major] Source-fidelity: Factual claim ABOUT THE WORLD in the OUTPUT contradicts the LESSON CONTEXT (a changed number). — OUTPUT: **id:** card_6, **back:** Yiliga 50 mln tonna neftni qayta ishlaydi. \nLESSON CONTEXT: Qorovulbozorda yiliga 5 mln tonna neftni qayta ishlaydigan korxona mavjud..."
+              "[major] Source-fidelity: factual claims about the world must not contradict LESSON CONTEXT. — id: card_6\nback: Yiliga 50 mln tonna neftni qayta ishlaydi.\n\nLESSON CONTEXT: 'Qorovulbozorda yiliga 5 mln tonna neftni qayta ishlaydigan korxona mavjud bo‘lib...'",
+              "[minor] Sub-skill spread: No single micro-skill may drive more than about a third of the cards. — Cards 2, 3, 4, and 5 (4 out of 10 cards, 40% of the deck) all test the micro-skill of recalling specific resource locations/names (e.g., 'Rayondagi tabiiy gaz konlari' -> 'Gazli, Uchqir, Qorovulbozor va Sortosh.'). This exceeds the one-third limit.",
+              "[minor] Card format: `front` must be a retrieval cue, never 'Explain X' / 'Describe Y' prompts. — id: card_10\nfront: Keng tarqalgan xato: Zarafshon rayoni faqat qishloq xo'jaligi rayoni",
+              "[minor] `misconception` field format: Mark its provenance (`source` or `inferred`) as part of the string value. — id: card_10\nmisconception (inferred): O'quvchilar rayonni faqat qishloq xo'jaligi bilan bog'laydi, sanoat tarmoqlarini unutadi.\n\nThe provenance '(inferred)' is formatted as part of the field key, not as part of the value string.",
+              "[minor] Language: Render the phase title in natural, formal Uzbek, avoiding Russian/English calque phrasing. — # Flesh-kartlar — Zarafshon iqtisodiy rayoni\n\n'Flesh-kartlar' is a transliteration of 'Flash Cards', not a natural Uzbek translation, violating the instruction to render the title in Uzbek and avoid calque phrasing."
             ],
-            "cost_usd": 0.009997,
-            "prompt_tokens": 5866,
-            "output_tokens": 3295,
+            "cost_usd": 0.018317,
+            "prompt_tokens": 5881,
+            "output_tokens": 6621,
             "cached_tokens": 0
           },
           {
@@ -3927,13 +3933,13 @@
             "has_major": true,
             "refused": false,
             "warnings": [
-              "[major] Factual claim ABOUT THE WORLD in the OUTPUT contradicts LESSON CONTEXT. — OUTPUT `card_6` back: \"Yiliga 50 mln tonna neftni qayta ishlaydi.\" contradicts LESSON CONTEXT: \"Qorovulbozorda yiliga 5 mln tonna neftni qayta ishlaydigan korxona mavjud\". The quantity differs by a factor of 10.",
-              "[minor] The field key for 'misconception' is not as specified; provenance (`inferred`) is incorrectly integrated into the field key. — OUTPUT `card_10`: `misconception (inferred): O'quvchilar rayonni faqat qishloq xo'jaligi bilan bog'laydi, sanoat tarmoqlarini unutadi.` The contract defines the field as `misconception`, and the example shows `misconception:` followed by the sentence. The `(inferred)` part should not modify the field key itself.",
-              "[major] No single micro-skill may drive more than about a third of the cards. — Cards 2, 3, 4, and 5 (4 out of 10 cards, 40% of the deck) all focus on the micro-skill of identifying specific mineral deposits and their locations within the Zarafshon economic region. This exceeds the 'about a third' (approximately 33.3%) limit specified by the contract."
+              "[minor] Render section headings, the phase title ... in Uzbek — never leave them in English. — # Flesh-kartlar — Zarafshon iqtisodiy rayoni",
+              "[minor] No single micro-skill ... may drive more than about a third of the cards — Cards 2, 3, 4, 5 all focus on identifying mineral deposits (4 out of 10 cards, 40% of the deck).",
+              "[major] Preserve every term, formula, number, unit, and symbol exactly as in the source — OUTPUT card_6 `back`: \"Yiliga 50 mln tonna neftni qayta ishlaydi.\" contradicts LESSON CONTEXT: \"Qorovulbozorda yiliga 5 mln tonna neftni qayta ishlaydigan korxona mavjud.\""
             ],
-            "cost_usd": 0.01482,
-            "prompt_tokens": 5866,
-            "output_tokens": 5775,
+            "cost_usd": 0.011807,
+            "prompt_tokens": 5881,
+            "output_tokens": 4568,
             "cached_tokens": 5100
           },
           {
@@ -3942,22 +3948,22 @@
             "has_major": true,
             "refused": false,
             "warnings": [
-              "[major] Source-fidelity: factual claims in OUTPUT must not contradict LESSON CONTEXT. — Output `card_6` back: \"Yiliga 50 mln tonna neftni qayta ishlaydi.\" contradicts LESSON CONTEXT: \"Qorovulbozorda yiliga 5 mln tonna neftni qayta ishlaydigan korxona mavjud...\". The output states 50 million tons, while the lesson context states 5 million tons.",
-              "[minor] Sub-skill spread: \"No single micro-skill (...) may drive more than about a third of the cards\". — Four out of ten cards (`card_2`, `card_3`, `card_4`, `card_5`) are dedicated to identifying specific mineral resources/mines within the region (e.g., natural gas, oil, gold, rare metals). This constitutes 40% of the deck (4/10 cards), exceeding the 'about a third' (approx. 33.3%) threshold for a single micro-skill."
+              "[major] Factual claim ABOUT THE WORLD in the OUTPUT contradicts the LESSON CONTEXT (a changed number). — card_6 -> back: \"Yiliga 50 mln tonna neftni qayta ishlaydi.\"\nLESSON CONTEXT: \"Qorovulbozorda yiliga 5 mln tonna neftni qayta ishlaydigan korxona mavjud bo‘lib...\"",
+              "[minor] No single micro-skill may drive more than about a third of the cards. — Cards 2, 3, 4, and 5 (4 out of 10 cards, 40% of the deck) focus on naming specific mineral resource locations, exceeding the 'about a third' limit."
             ],
-            "cost_usd": 0.010503,
-            "prompt_tokens": 5866,
-            "output_tokens": 4048,
-            "cached_tokens": 5100
+            "cost_usd": 0.011364,
+            "prompt_tokens": 5881,
+            "output_tokens": 3840,
+            "cached_tokens": 0
           }
         ],
         "provenance": null
       },
       "p2_absent_true_fact": {
-        "expect": "no contradiction-major any run (absent supporting fact stays <= minor)",
+        "expect": "the injected absent-but-true Samarqand fact is NEVER a major (<= minor) any run",
         "verdict": {
           "contradiction_major_each_run": [
-            true,
+            false,
             false,
             false
           ],
@@ -3976,7 +3982,13 @@
             1,
             1
           ],
-          "pass": false
+          "target_claim_major_each_run": [
+            false,
+            false,
+            false
+          ],
+          "gate_mode": "per-claim tokens=('madaniy markaz', 'qadimiy shahar') kind=any_major expect=never_major",
+          "pass": true
         },
         "runs": [
           {
@@ -3985,13 +3997,13 @@
             "has_major": true,
             "refused": false,
             "warnings": [
-              "[major] Preserve every term, formula, number, unit, and symbol exactly as in the source. Any factual claim about the world in the output that contradicts or significantly alters the LESSON CONTEXT is a major failure. — card_8 `back`: \"O'zbekistonda ikkinchi o'rinda.\" The `LESSON CONTEXT` states: \"Gaz sanoati bo'yicha rayon O'zbekistonda ikkinchi o'rinda (Sho'rtan gaz koni ishga tushirilgach).\" The omission of the conditional clause `(Sho'rtan gaz koni ishga tushirilgach)` alters the precision and completeness of the factual claim.",
-              "[minor] Derive the card content from this lesson's `lesson_context` and teach and test ONLY this section's core concept chain. — card_9 `front`: \"Samarqand shahri haqida\" `back`: \"Samarqand — Zarafshon vodiysida joylashgan qadimiy shahar va O'zbekistonning muhim madaniy markazi.\" This information is not present in the `LESSON CONTEXT`'s 'Key facts' or 'Concepts & terms' and is outside the scope of this specific lesson about the Zarafshon economic region.",
-              "[major] The deck must cover at least 3 distinct sub-skills when the lesson teaches that many. — The `LESSON CONTEXT` explicitly lists 3 distinct sub-skills: \"Rayonning geografik o‘rnini baholash\", \"Iqtisodiy rayonda obikor dehqonchilik qilinadigan joylarni atlasdan aniqlash\", and \"Atlasdagi belgilarni izohlash\". The generated cards exclusively focus on factual recall (e.g., naming components, resources, or industrial positions) and do not address any of the analytical or interpretative sub-skills listed."
+              "[minor] Every card MUST set `type` and `difficulty`. `misconception` (optional) field. Mark its provenance: `source` when the textbook itself states the mistake, `inferred` when you derived it. NEVER present an `inferred` misconception as a textbook-stated fact. — **misconception (inferred):** O'quvchilar rayonni faqat qishloq xo'jaligi bilan bog'laydi, sanoat tarmoqlarini unutadi.",
+              "[major] the deck must cover **at least 3 distinct sub-skills** when the lesson teaches that many. No single micro-skill (e.g. \"multiply coefficients, don't add\") may drive more than about a third of the cards. Within the deck-size budget, cover the most load-bearing terms, names, structures, processes, rules, and classification terms of THIS lesson. — Cards 2, 3, 4, 5 are all dedicated to naming specific mineral resource locations (natural gas, oil, gold, rare metals). This constitutes 40% (4 out of 10) of the deck, exceeding the one-third limit for a single micro-skill (naming mineral resource locations). Additionally, the deck largely omits other significant \"Concepts & terms\" from the LESSON CONTEXT, such as `Iqtisodiy geografik o‘rin`, `Keskin kontinental iqlim`, `Garmsel shamoli`, `Obikor dehqonchilik`, `Agrosanoat majmuyi`, `Qorako‘lchilik`, failing to cover the most load-bearing terms and a sufficient spread of distinct sub-skills.",
+              "[minor] Source-fidelity (CRITICAL): ...A world claim that is merely ABSENT from the LESSON CONTEXT but not contradicted by it (supporting context, standard curriculum facts) is at most `minor` — never `major`... — **id:** card_9\n**front:** Samarqand shahri haqida\n**back:** Samarqand — Zarafshon vodiysida joylashgan qadimiy shahar va O'zbekistonning muhim madaniy markazi.\nThe LESSON CONTEXT mentions Samarqand as one of the provinces in the region but does not describe it as an 'ancient city' or 'important cultural center'. While factually correct as general knowledge, this specific detail is not derived from the provided lesson context."
             ],
-            "cost_usd": 0.021266,
-            "prompt_tokens": 5862,
-            "output_tokens": 7803,
+            "cost_usd": 0.022766,
+            "prompt_tokens": 5877,
+            "output_tokens": 8401,
             "cached_tokens": 0
           },
           {
@@ -4000,13 +4012,13 @@
             "has_major": true,
             "refused": false,
             "warnings": [
-              "[minor] Derive the card content from this lesson's `lesson_context`: cover the specific terms, names, structures, processes, rules, formulas, and classification terms that this Geography (Geografiya) chapter actually introduces. — id: card_9\nfront: Samarqand shahri haqida\nback: Samarqand — Zarafshon vodiysida joylashgan qadimiy shahar va O'zbekistonning muhim madaniy markazi.",
-              "[major] No single micro-skill (...) may drive more than about a third of the cards — repeating one drill teaches less than varied retrieval. — Card 2 (Rayondagi tabiiy gaz konlari), Card 3 (Rayondagi neft koni), Card 4 (Rayondagi oltin koni), and Card 5 (Rayondagi nodir metall konlari) all test the same micro-skill of identifying specific mineral resource locations. This accounts for 4 out of 10 cards, which is 40% of the deck, exceeding the one-third (33.3%) limit."
+              "[major] The `misconception` field must contain a single sentence describing a common wrong idea, with its provenance (`(inferred)` or `(source)`) appended to the sentence, and not use an invalid field name like `misconception (inferred)`. — **misconception:** medium\n**misconception (inferred):** O'quvchilar rayonni faqat qishloq xo'jaligi bilan bog'laydi, sanoat tarmoqlarini unutadi.",
+              "[minor] The phase title must be rendered in natural, formal Uzbek, avoiding Russian/English calque phrasing. — # Flesh-kartlar — Zarafshon iqtisodiy rayoni"
             ],
-            "cost_usd": 0.018087,
-            "prompt_tokens": 5862,
-            "output_tokens": 6972,
-            "cached_tokens": 4079
+            "cost_usd": 0.016756,
+            "prompt_tokens": 5877,
+            "output_tokens": 6548,
+            "cached_tokens": 5100
           },
           {
             "available": true,
@@ -4014,13 +4026,13 @@
             "has_major": true,
             "refused": false,
             "warnings": [
-              "[major] The phase title must be rendered in natural, formal Uzbek, avoiding calque phrasing, and should translate the prompt's given title structure ('Flash Cards — Geography (Geografiya)') rather than replacing the subject. — # Flesh-kartlar — Zarafshon iqtisodiy rayoni",
-              "[minor] Card content must be derived from the provided `lesson_context`. — id: card_9\nfront: Samarqand shahri haqida\nback: Samarqand — Zarafshon vodiysida joylashgan qadimiy shahar va O'zbekistonning muhim madaniy markazi."
+              "[major] No single micro-skill may drive more than about a third of the cards. — **id:** card_2\n**front:** Rayondagi tabiiy gaz konlari\n**back:** Gazli, Uchqir, Qorovulbozor va Sortosh.\n**type:** term_to_meaning\n**difficulty:** medium\n\n**id:** card_3\n**front:** Rayondagi neft koni\n**back:** Kogon yaqinida joylashgan.\n**type:** question_answer\n**difficulty:** medium\n\n**id:** card_4\n**front:** Rayondagi oltin koni\n**back:** Muruntov.\n**type:** question_answer\n**difficulty:** easy\n\n**id:** card_5\n**front:** Rayondagi nodir metall konlari\n**back:** Ingichka va Zarmitan.\n**type:** term_to_meaning\n**difficulty:** medium",
+              "[minor] Factual claims about the world must be sourced from the LESSON CONTEXT, or, if absent but not contradicted, be marked as minor. — **id:** card_9\n**front:** Samarqand shahri haqida\n**back:** Samarqand — Zarafshon vodiysida joylashgan qadimiy shahar va O'zbekistonning muhim madaniy markazi.\n**type:** question_answer\n**difficulty:** easy"
             ],
-            "cost_usd": 0.014606,
-            "prompt_tokens": 5862,
-            "output_tokens": 5139,
-            "cached_tokens": 0
+            "cost_usd": 0.012629,
+            "prompt_tokens": 5877,
+            "output_tokens": 4897,
+            "cached_tokens": 5100
           }
         ],
         "provenance": null
@@ -4041,12 +4053,12 @@
           "has_major_each_run": [
             true,
             true,
-            true
+            false
           ],
           "structural_major_count_each_run": [
-            2,
             1,
-            1
+            2,
+            0
           ],
           "pass": true
         },
@@ -4057,14 +4069,12 @@
             "has_major": true,
             "refused": false,
             "warnings": [
-              "[minor] Every `misconception` card is tagged `source` or `inferred`. — id: card_7\nfront: Keng tarqalgan xatolik: 10 ga bo'lish\nback: Ba'zi o'quvchilar nol o'chirish o'rniga nol qo'shib yuboradi.\ntype: misconception\ndifficulty: easy\n\n(Missing 'misconception' field with 'source' or 'inferred' tag)",
-              "[major] Derive the card content from this lesson's `lesson_context`: cover the specific terms, names, structures, processes, rules, formulas, and classification terms that this Mathematics (Matematika) chapter actually introduces. For G5-6, this means 'core atoms only'. — id: card_7\nfront: Keng tarqalgan xatolik: 10 ga bo'lish\nback: Ba'zi o'quvchilar nol o'chirish o'rniga nol qo'shib yuboradi.\ntype: misconception\ndifficulty: easy\n\nThis card describes a misconception. The `LESSON CONTEXT` does not mention any misconceptions or common errors. For Grade 5-6, the `CONTRACT` specifies 'core atoms only', and `misconception` cards are explicitly noted as part of the G7-8 and G9-11 requirements, implying they are not core for G5-6. The content is thus not derived from the `lesson_context` and is out of scope for the grade band.",
-              "[major] Derive the card content from this lesson's `lesson_context`: cover the specific terms, names, structures, processes, rules, formulas, and classification terms that this Mathematics (Matematika) chapter actually introduces. — The `LESSON CONTEXT` under 'Rules & theorems' lists: 'Sonni mingliklarga bo‘lish usuli: Avval 1000 ga bo‘lib, so‘ng qolgan raqamga bo‘lish'. There is no card in the output that covers this core process/rule. The deck has 7 cards, while the allowed maximum for Grade 5 is 8, so there was capacity to include this essential concept.",
-              "[minor] Write natural Uzbek — avoid Russian/English calque phrasing. Render the phase title in Uzbek. — Phase title: `# Flesh-kartlar — Sonlarni 10, 100, 1000 ga bo'lish`\n\n'Flesh-kartlar' is a direct transliteration/calque of 'Flash cards', rather than a natural Uzbek translation."
+              "[major] Put any explanation/example/misconception in their own fields, not crammed into `back`. — **id:** card_7\n**front:** Keng tarqalgan xatolik: 10 ga bo'lish\n**back:** Ba'zi o'quvchilar nol o'chirish o'rniga nol qo'shib yuboradi.\n**type:** misconception\n**difficulty:** easy\n\nThe `back` field of `card_7` contains the description of the misconception (`Ba'zi o'quvchilar nol o'chirish o'rniga nol qo'shib yuboradi.`) instead of placing this content in a dedicated `misconception` field as required by the contract for such information.",
+              "[minor] every `misconception` card is tagged `source` or `inferred` (never an inferred mistake presented as a textbook fact) and \"Mark its provenance: `source` when the textbook itself states the mistake, `inferred` when you derived it.\" — **id:** card_7\n**front:** Keng tarqalgan xatolik: 10 ga bo'lish\n**back:** Ba'zi o'quvchilar nol o'chirish o'rniga nol qo'shib yuboradi.\n**type:** misconception\n**difficulty:** easy\n\n`card_7` is of `type: misconception` but lacks the required `misconception` field containing its provenance (e.g., `misconception: source | inferred`)."
             ],
-            "cost_usd": 0.018765,
+            "cost_usd": 0.01657,
             "prompt_tokens": 5376,
-            "output_tokens": 6861,
+            "output_tokens": 5983,
             "cached_tokens": 0
           },
           {
@@ -4073,33 +4083,34 @@
             "has_major": true,
             "refused": false,
             "warnings": [
-              "[minor] Every `misconception` card is tagged `source` or `inferred`. — id: card_7\nfront: Keng tarqalgan xatolik: 10 ga bo'lish\nback: Ba'zi o'quvchilar nol o'chirish o'rniga nol qo'shib yuboradi.\ntype: misconception\ndifficulty: easy",
-              "[major] Derive the card content from this lesson's `lesson_context`: cover the specific terms, names, structures, processes, rules, formulas... this Mathematics (Matematika) chapter actually introduces. Within the deck-size budget, cover the most load-bearing terms, names, structures, processes, rules... of THIS lesson. — The LESSON CONTEXT explicitly lists 'Sonni mingliklarga bo‘lish usuli: Avval 1000 ga bo‘lib, so‘ng qolgan raqamga bo‘lish' under 'Rules & theorems' and 'Natural sonni mingliklarga bo‘lish (masalan, 39000 ÷ 3000)' under 'Worked-example types'. The output includes cards for 'Sonni o'nliklarga bo'lish usuli' (card_4) and 'Sonni yuzliklarga bo'lish usuli' (card_5), but entirely omits the corresponding method for 'mingliklarga bo'lish', which is a core, parallel process taught in the lesson.",
-              "[minor] Write natural Uzbek — avoid Russian/English calque phrasing. EVERY label the student READS is part of the output language: render section headings, the phase title ... in Uzbek — never leave them in English. — # Flesh-kartlar — Sonlarni 10, 100, 1000 ga bo'lish\n\nThe phrase 'Flesh-kartlar' is a direct transliteration/calque of 'Flash Cards' and is not natural, idiomatic Uzbek."
+              "[major] Every `misconception` card must be tagged `source` or `inferred` in the `misconception` field. — id: card_7\nfront: Keng tarqalgan xatolik: 10 ga bo'lish\nback: Ba'zi o'quvchilar nol o'chirish o'rniga nol qo'shib yuboradi.\ntype: misconception\ndifficulty: easy\n\n(The card is missing the `misconception` field with a 'source' or 'inferred' tag.)",
+              "[major] The deck must cover the specific terms, names, structures, processes, rules, formulas, and classification terms that this Mathematics (Matematika) chapter actually introduces. — The `LESSON CONTEXT` under 'Rules & theorems' explicitly lists 'Sonni mingliklarga bo‘lish usuli'. The output contains cards for 'Sonni o'nliklarga bo'lish usuli' and 'Sonni yuzliklarga bo'lish usuli' (card_4, card_5), but no card for 'Sonni mingliklarga bo'lish usuli'.",
+              "[minor] No single micro-skill may drive more than about a third of the cards. — Cards 1, 2, and 3 ('Sonni 10 ga bo'lish qonuniyati', 'Sonni 100 ga bo'lish qonuniyati', 'Sonni 1000 ga bo'lish qonuniyati') all cover the same micro-skill of applying the 'remove zeros' rule for division by powers of ten. These 3 cards constitute 3/7 (approx. 43%) of the 7-card deck, exceeding the 'about a third' (33.3%) limit."
             ],
-            "cost_usd": 0.019335,
+            "cost_usd": 0.017818,
             "prompt_tokens": 5376,
-            "output_tokens": 7089,
+            "output_tokens": 6482,
             "cached_tokens": 0
           },
           {
             "available": true,
             "passed": false,
-            "has_major": true,
+            "has_major": false,
             "refused": false,
             "warnings": [
-              "[major] Every `misconception` card is tagged `source` or `inferred` (never an inferred mistake presented as a textbook-stated fact). — **id:** card_7\n**front:** Keng tarqalgan xatolik: 10 ga bo'lish\n**back:** Ba'zi o'quvchilar nol o'chirish o'rniga nol qo'shib yuboradi.\n**type:** misconception\n**difficulty:** easy\n\n(Missing the required `misconception` field with `source` or `inferred` provenance for a card of `type: misconception`.)"
+              "[minor] The `misconception` field must specify its provenance as `source` or `inferred`. — ```\n**id:** card_7\n**front:** Keng tarqalgan xatolik: 10 ga bo'lish\n**back:** Ba'zi o'quvchilar nol o'chirish o'rniga nol qo'shib yuboradi.\n**type:** misconception\n**difficulty:** easy\n```\nThe `misconception` field in `card_7` is missing the `source` or `inferred` tag as required.",
+              "[minor] The phase title should follow the format `# Flash Cards — Matematika` (in Uzbek), as indicated by the prompt's own title format and examples. — The output title is `# Flesh-kartlar — Sonlarni 10, 100, 1000 ga bo'lish` instead of the expected `# Flesh-kartlar — Matematika` (or similar general subject title)."
             ],
-            "cost_usd": 0.010335,
+            "cost_usd": 0.016545,
             "prompt_tokens": 5376,
-            "output_tokens": 3489,
+            "output_tokens": 5973,
             "cached_tokens": 0
           }
         ],
         "provenance": null
       },
       "p4_genuine_defect": {
-        "expect": "has_major present every run (genuine contradiction not demoted)",
+        "expect": "contradiction-major ON THE WRONG GOLD-DEPOSIT CARD every run (constructed: 'oltin koni: Kogon' contradicts source gold=Muruntov/oil=Kogon)",
         "verdict": {
           "contradiction_major_each_run": [
             true,
@@ -4117,10 +4128,16 @@
             true
           ],
           "structural_major_count_each_run": [
-            2,
-            4,
-            3
+            0,
+            1,
+            1
           ],
+          "target_claim_major_each_run": [
+            true,
+            true,
+            true
+          ],
+          "gate_mode": "per-claim tokens=('oltin',) kind=contradiction expect=major_every_run",
           "pass": true
         },
         "runs": [
@@ -4130,16 +4147,15 @@
             "has_major": true,
             "refused": false,
             "warnings": [
-              "[major] Concepts section: Factual contradiction with LESSON CONTEXT regarding the range of 'a' in standard form definition. — OUTPUT Concepts: `Стандартная запись числа — это представление числа в виде $a \\cdot 10^n$, где $1 \\le a < 10`, LESSON CONTEXT: `стандартную запись числа, где число, большее 10, представляется в виде `a · 10^n` (где `1 < a < 10`)`",
-              "[major] No inline answer marker. — The blocks section contains: `*Блок с ошибкой: №3.*`",
-              "[major] Every other block must be correct so the slip is subtle, not glaring. — Block 4: `Шаг 3: $5.4 \\cdot 10^4 = 5.4 \\cdot 10^5$`. This step is mathematically correct in isolation, but it implicitly uses `$5.4 \\cdot 10^4$` as a starting point, which is the incorrect result from the (erroneous) Block 3. In a correct, sequential derivation of standard form, after Block 2 (`$540\\,000 = 54 \\cdot 10^4$`), the next and final step would directly be `$54 \\cdot 10^4 = 5.4 \\cdot 10^5$`. The presence of Block 4, starting from the result of the error, makes the sequence logically inconsistent with the 'one error' rule for a progressive derivation.",
-              "[minor] All student-facing text in natural, formal Russian. — Why prompt section starts with non-Russian text: `Bu blok nega noto'g'ri edi?`",
-              "[minor] Do NOT copy the parenthetical source-language subject name. — Phase title and introductory paragraph contain `Mathematics / Algebra (Matematika / Algebra)`."
+              "[major] Source-fidelity: factual claims about the world in the OUTPUT must not contradict the LESSON CONTEXT. — OUTPUT `card_4` back: 'Kogon yaqinida joylashgan.' for 'Rayondagi oltin koni'.\nLESSON CONTEXT: '...Muruntov (oltin)...'",
+              "[minor] Card format: use only the 8 specified field names; machine-facing keys (including card field names) must match the format exactly. — OUTPUT `card_10` uses the field name `misconception (inferred)` instead of the required `misconception`.",
+              "[minor] Sub-skill spread: no single micro-skill may drive more than about a third of the cards. — 4 out of 10 cards (card_2, card_3, card_4, card_5) are dedicated to identifying specific natural resources (mineral resources), which is 40% of the deck, exceeding 'about a third' (33.3%).",
+              "[minor] Language: render all student-facing labels, including the phase title, in natural, formal Uzbek; never leave them in English (or transliterated English). — The phase title `# Flesh-kartlar — Zarafshon iqtisodiy rayoni` uses 'Flesh-kartlar', a transliteration of 'Flash Cards', instead of a natural Uzbek translation."
             ],
-            "cost_usd": 0.034106,
-            "prompt_tokens": 7779,
-            "output_tokens": 12709,
-            "cached_tokens": 0
+            "cost_usd": 0.017739,
+            "prompt_tokens": 5885,
+            "output_tokens": 6940,
+            "cached_tokens": 5100
           },
           {
             "available": true,
@@ -4147,16 +4163,13 @@
             "has_major": true,
             "refused": false,
             "warnings": [
-              "[major] Fidelity to Lesson Context: Definition of 'a' in standard notation. — LESSON CONTEXT: \"(где `1 < a < 10`, `n` — натуральное число).\"\nOUTPUT Concepts: \"Стандартная запись числа — это представление числа в виде $a \\cdot 10^n$, где $1 \\le a < 10$, а $n$ — натуральное число.\"\n\nThe output's definition of 'a' ($1 \\le a < 10$) contradicts the lesson context's definition ($1 < a < 10$).",
-              "[major] Exactly one error & Verify every non-broken block. — OUTPUT The blocks list:\n3. **Шаг 2 (ошибка):** $54 \\cdot 10^4 = 5.4 \\cdot 10^4$ (Identified as the error)\n4. **Шаг 3:** $5.4 \\cdot 10^4 = 5.4 \\cdot 10^5$\n\nBlock 4 is also mathematically incorrect ($5.4 \\cdot 10^4 = 54,000$ while $5.4 \\cdot 10^5 = 540,000$). The contract explicitly states \"EXACTLY ONE block is wrong\" and \"Verify every non-broken block.\" The presence of a second incorrect block (Block 4) violates both these requirements.",
-              "[major] No inline answer marker. — OUTPUT The blocks section contains: `*Блок с ошибкой: №3.*` immediately following the numbered list of blocks, but preceding the \"The correct version\" section. The contract states: \"Do NOT mark the broken block inside the blocks list... Identify the broken block ONLY in **The correct version** and **Reveal** sections below.\"",
-              "[major] No auto-reveal in hint. — OUTPUT Hint: \"Если вы уменьшили коэффициент в 10 раз, что нужно сделать с множителем $10^4$, чтобы итоговое значение числа осталось прежним?\"\n\nThis hint directly leads the student to the required corrective action (increase the exponent by one) which is part of the 'corrected block'. The contract states: \"It must NEVER reveal the corrected block.\"",
-              "[major] Language of structural labels. — OUTPUT: The section heading `Why prompt` is an English structural label. It is followed by an Uzbek sentence `Bu blok nega noto'g'ri edi?`. The contract requires: \"EVERY student-visible label is part of the output language: render each section heading... and DO NOT leave English structural labels... untranslated.\""
+              "[major] Source-fidelity (CRITICAL): a LESSON CONTEXT section is provided below — the lesson the output was authored from. Treat it as ground truth for contradictions: raise a `major` failure for any factual claim ABOUT THE WORLD in the OUTPUT that CONTRADICTS the LESSON CONTEXT (a changed date, number, name, definition, rule, or causal claim). — id: card_4\nfront: Rayondagi oltin koni\nback: Kogon yaqinida joylashgan.\n\nLESSON CONTEXT states: 'Muruntov (oltin)'",
+              "[major] Spread: the deck must cover at least 3 distinct sub-skills when the lesson teaches that many. No single micro-skill (e.g. \"multiply coefficients, don't add\") may drive more than about a third of the cards. — Out of 10 cards, 4 cards (card_2, card_3, card_4, card_5) are dedicated to identifying specific mineral resource locations. This accounts for 40% of the deck (4/10), which exceeds the 'about a third' (approximately 33.3%) limit for a single micro-skill."
             ],
-            "cost_usd": 0.016292,
-            "prompt_tokens": 3838,
-            "output_tokens": 6386,
-            "cached_tokens": 3053
+            "cost_usd": 0.015969,
+            "prompt_tokens": 5885,
+            "output_tokens": 6232,
+            "cached_tokens": 5100
           },
           {
             "available": true,
@@ -4164,46 +4177,45 @@
             "has_major": true,
             "refused": false,
             "warnings": [
-              "[major] Source-fidelity (CRITICAL): a LESSON CONTEXT section is provided below — the lesson the output was authored from. Treat it as ground truth for contradictions: raise a `major` failure for any factual claim ABOUT THE WORLD in the OUTPUT that CONTRADICTS the LESSON CONTEXT (a changed date, number, name, definition, rule, or causal claim). — OUTPUT Concepts: \"Стандартная запись числа — это представление числа в виде $a \\cdot 10^n$, где $1 \\le a < 10$, а $n$ — натуральное число.\" CONTEXT: \"стандартную запись числа, где число, большее 10, представляется в виде `a · 10^n` (где `1 < a < 10`, `n` — натуральное число).\"",
-              "[major] Do NOT mark the broken block inside the blocks list — no '(XATO)'-style labels, no bold/emphasis tells, no wording hints. The list must read clean, exactly as the student will see it. / No inline answer marker. The blocks list is student-visible; any marker, label, or typographic tell identifying the broken block inside it defeats the entire exercise. — OUTPUT after 'The blocks' section: \"*Блок с ошибкой: №3.*\"",
-              "[major] EXACTLY ONE block is wrong. Every other block must be correct so the slip is subtle, not glaring. — OUTPUT Block 4: \"Шаг 3: $5.4 \\cdot 10^4 = 5.4 \\cdot 10^5$\". This equality is mathematically false ($54000 \\ne 540000$), meaning Block 4 is also incorrect, in addition to Block 3, violating the 'exactly one block is wrong' rule.",
-              "[minor] Open by naming the broken block's number, then give the right content / real role of the broken block... — OUTPUT in 'The correct version' section: \"**Правильный блок:** $54 \\cdot 10^4 = 5.4 \\cdot 10^5$\". It provides the corrected content, but does not explicitly name the block by its number (e.g., 'Блок №3:').",
-              "[major] All student-facing text in natural, formal Russian. ... Preserve every term, formula, number, unit, and symbol exactly as in the source; for a difficult term, keep it and add a short plain-language gloss rather than deleting it. Write natural Russian — avoid word-for-word calques from the source language. — OUTPUT in 'Why prompt' section: \"Bu blok nega noto'g'ri edi?\". This phrase is in Uzbek, not Russian."
+              "[major] No single micro-skill may drive more than about a third of the cards. — Cards 2, 3, 4, 5 all focus on identifying mineral resources and their locations (natural gas, oil, gold, rare metals), which constitutes 4 out of 10 cards (40% of the deck).",
+              "[major] Treat LESSON CONTEXT as ground truth for contradictions: raise a major failure for any factual claim ABOUT THE WORLD in the OUTPUT that CONTRADICTS the LESSON CONTEXT. — OUTPUT card_4 'back': 'Kogon yaqinida joylashgan.' (referring to gold mine) contradicts LESSON CONTEXT: 'Rayonda ... Muruntov (oltin)...'",
+              "[minor] Use `#` for the phase title (which is 'Flash Cards — Geography (Geografiya)' from the prompt). The title should be rendered in Uzbek, but the topic 'Geography (Geografiya)' and the core 'Flash Cards' identity should be maintained. — OUTPUT phase title: '# Flesh-kartlar — Zarafshon iqtisodiy rayoni' instead of a translation of 'Flash Cards — Geography (Geografiya)'. The title changes the topic of the phase, not just translates it.",
+              "[minor] Machine-facing keys stay exactly as the format defines them, in English: card field keys (id, front, back, type, difficulty, hint, explanation, example, misconception). — OUTPUT uses `misconception (inferred):` as the field key for card_10, which is not the exact key `misconception`."
             ],
-            "cost_usd": 0.030515,
-            "prompt_tokens": 7780,
-            "output_tokens": 11602,
-            "cached_tokens": 3053
+            "cost_usd": 0.017946,
+            "prompt_tokens": 5885,
+            "output_tokens": 7023,
+            "cached_tokens": 5100
           }
         ],
         "provenance": {
-          "phase_output_id": "99b1e622-3043-4801-93b2-f112a7600c35",
-          "job_id": "d91b0ace-6761-4bac-945d-b98d0860ae2a",
-          "defect": "G7 ru math-algebra error-detection: extract states the standard-form mantissa range as `1 < a < 10` ('где `1 < a < 10`'); the output's Concepts section states `1 \\le a < 10`. One-line, unambiguous RANGE/NUMBER contradiction against the LESSON CONTEXT — both lines verified verbatim in the DB rows by hand (controller, 2026-07-23).",
-          "disclosure": "mathematically the OUTPUT's range is the standard textbook convention and the EXTRACT's is nonstandard; the probe tests the rule's mechanism (extract = ground truth by design). Extract-side drift is the extract-fidelity guard's concern, not the judge's.",
-          "verified_against_extract": true,
-          "superseded_picks": [
-            "3090f92c (tea-vs-rice) — gate-rejected: subtle superlative/relative-ranking",
-            "53dbfbf6 (Viet roots) — REJECTED at reselection: its stored warning hallucinated — the quoted '(2; -5)' roots appear nowhere in the output",
-            "214e7476 (Qorovulbozor neft/gaz) — dropped earlier as ambiguous"
+          "construction": "faithful Zarafshon deck with card_4 gold deposit swapped Muruntov -> Kogon. Extract assigns Kogon to OIL ('neft koni: Kogon yaqinida') and Muruntov to gold ('oltin koni: Muruntov'), so 'oltin koni: Kogon' both CONTRADICTS the source and is objectively false (Muruntov is the world's largest gold mine). Stated as a flashcard back = asserted true.",
+          "why_constructed": "the #113 re-gate correctly rejected THREE real-stored picks: a real numeric contradiction proves only 'the judge follows its extract', never 'a genuinely WRONG homework fact stays major' — real picks were all distractors, absent-type, or extract-side errors (output actually correct). A constructed wrong-fact removes that ambiguity.",
+          "rejected_real_picks": [
+            "99b1e622 (1<=a<10 range) — output was mathematically CORRECT, extract wrong: proves extract-following, not wrong-fact-catching (the #113 re-gate's objection)",
+            "3090f92c (tea-vs-rice) — subtle superlative/relative-ranking",
+            "53dbfbf6 (Viet roots) — stored warning hallucinated ('(2; -5)' not in output)"
           ],
-          "selection_criterion": "Defect 4, second part (merge-gate finding): the p4 'genuine defect' pick must be an UNAMBIGUOUS factual contradiction against the extract — a wrong number, name, or date verifiable in one line — never a subtle superlative or relative-ranking claim (e.g. 'the most important crop'), which a judge can reasonably read as an interpretive/emphasis claim rather than a hard factual error, and which is the kind of pick that produced the earlier stochastic-looking demotions this probe exists to rule out. Re-selection against this criterion happens at the NEXT approved run (no model call is made here to pick a replacement).",
-          "meets_selection_criterion": true
+          "corroborating_real_instance": "fba07ae7 (G11 uz biology flashcards card_8): a REAL stored flashcard back altered the source 'yorug'likning kamligi' (scarcity of light) to 'mutlaqo yo'qligi' (complete absence) — the same wrong-fact-on-a-card failure mode this probe constructs; recorded to show it occurs in production."
         }
       }
-    }
+    },
+    "reran_at": "2026-07-24T13:54:12.773694+00:00"
   },
   "budget": {
     "max_calls": 200,
     "max_cost_usd": 6.0,
-    "calls_made": 183,
-    "actual_cost_usd": 3.543587,
+    "calls_made": 198,
+    "actual_cost_usd": 3.788362,
     "new_calls_this_run": 183,
     "new_cost_usd_this_run": 3.543587,
     "prompt_tokens": 1211326,
     "output_tokens": 1290367,
     "cached_tokens": 169365,
     "budget_hit": false,
-    "skipped": []
-  }
+    "skipped": [],
+    "probe_rerun_calls": 15,
+    "probe_rerun_cost_usd": 0.244775
+  },
+  "note_probe_rerun": "Arm calls from the full run are unchanged; the safety probes were re-run after refining the probe harness (well-formed grade-pinned decks + has_major gate). The fidelity RULE was NOT modified."
 }

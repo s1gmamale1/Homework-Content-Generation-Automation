@@ -2119,8 +2119,11 @@ acceptance evidence. NOTHING regenerated — all existing packets untouched.
   wrong) — so p4 is now a constructed unambiguous wrong fact (gold deposit "Muruntov"→"Kogon",
   contradicting the extract's gold=Muruntov/oil=Kogon), with a real corroborating production
   instance (`fba07ae7`, a G11 biology card that altered "scarcity of light"→"complete
-  absence"). Corrected-probe re-run pending gate approval; p1 (planted number contradiction)
-  and p3 (generated numbers not regen-taxed) already clean.
+  absence"). **Corrected probes (per-claim, $0.24) all pass 3/3**: p1 planted contradiction
+  major on card_6; p2 Samarqand fact never major (deck-wide majors are on other cards, ignored
+  by the per-claim gate); p3 no invented-number flag; p4 constructed wrong fact
+  ("oltin koni: Kogon" vs source gold=Muruntov) contradiction-major on card_4 every run, and
+  major under the OLD rule too (no demotion).
 
 **Ops:** ships dark until fleet pull + worker restart (prompts cached at startup). Expect
 some legitimate flashcards deck-size regens post-restart (HARD CAP now judge-enforced).
