@@ -149,13 +149,16 @@ MEDIUM_RULES = {
 # the MEDIUM_RULES base block above stays byte-identical — only this appended
 # clause is new.
 _LOCALIZE_HEADINGS_CLAUSE = (
-    "\nEVERY student-visible label is part of the output language: render each "
-    "section heading, the phase title, and the subject name in the output "
-    "language. Do NOT copy the parenthetical source-language subject name (e.g. "
-    "write the localized subject name, not \"Matematika\") and do NOT leave "
-    "English structural labels (Scenario, Role, Task, Why/How/What, Checkpoint, "
-    "Learning Block, Completion status, and the feedback labels "
-    "Correct/Partial/Wrong) untranslated."
+    "\nEVERY label the student READS is part of the output language: render each "
+    "section heading, the phase title, game labels (\"How to play\", \"Scenario\", "
+    "\"Role\", \"Task\", \"Relationship types\", \"Why/How/What\", \"Checkpoint\", "
+    "\"Learning Block\", \"Completion status\"), the feedback labels "
+    "(Correct/Partial/Wrong), and the subject name in the output language. Do NOT "
+    "copy the parenthetical source-language subject name (e.g. write the localized "
+    "subject name, not \"Matematika\"). EXCEPTION — machine-facing keys stay exactly "
+    "as the format defines them, in English: card field keys (id, front, back, type, "
+    "difficulty, hint, explanation, example, misconception) and enum values in "
+    "backticks (`easy`, `medium`, `hard`, card/relationship type names)."
 )
 
 # uz-specific counterpart to _LOCALIZE_HEADINGS_CLAUSE (un-freeze 2026-07-23,
