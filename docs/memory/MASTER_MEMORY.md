@@ -2059,3 +2059,76 @@ read-only dashboard — worth its own role marker. Postgres `max_connections=100
 ceiling for a 13-worker fleet; raising it is the other lever if worker count grows.
 
 **Deploy.** Workers pick this up on pull + restart; heads and viewer unchanged by default.
+
+## 0159 — Judge fidelity re-anchor + spoiler-free error-detection + uz label un-freeze + flashcard deck budget (2026-07-23)
+
+**What shipped (branch `feat/prompt-quality-reanchor`, 9 implementation commits, no migration).**
+Four prompt/contract-side fixes aimed at "the flag means it hurts learning", plus their
+acceptance evidence. NOTHING regenerated — all existing packets untouched.
+
+1. **Judge re-anchor** (`phase_judge._FIDELITY_RULE`): contradiction of the lesson context
+   stays `major`; a world claim merely ABSENT but uncontested is at most `minor`, never a
+   regen. The old "contradicted by, or absent from" wording was the single sentence behind
+   the 56-59% CBP/flashcards false-major rates in math AND geography.
+2. **Error-detection spoiler flip**: the contract *instructed* an inline broken-block marker
+   ("(to the reader of this output…)" — `practice-error-detection.md:32`), so ~52% of all
+   production errdet outputs ship the answer visibly (measured 1136/2164 with the new lint).
+   Contract now forbids any marker in the student region; identification lives ONLY in
+   The correct version / Reveal. The `errdet_*` lint family in `content_lint.py` was
+   deliberately INVERTED to match: new `errdet_inline_spoiler` (boundary-aware, en/uz/ru
+   headings incl. `Правильная версия`/`Раскрытие`, RU marker vocab incl. `(БРОКОВАННЫЙ БЛОК)`;
+   conservative no-boundary fallback), other three codes re-keyed to the answer-key region;
+   fixtures re-authored from REAL production rows (uz + ru). Golden scorer fixtures inverted too.
+3. **uz label localization (un-freeze #83, user-approved)**: `_LOCALIZE_HEADINGS_CLAUSE_UZ`
+   appended for uz/default output — student-READ labels in Uzbek; machine-facing card field
+   keys + backtick enums stay English (platform-ingestion anchors). Append-only: #83's frozen
+   base blocks byte-identical, frozen tests untouched. Companion deterministic detector
+   `english_heading_leak` (heading-anchored, numbered/DPE/dash-suffix forms, Boss Arena
+   excluded, warn-only).
+4. **Flashcards deck budget**: all three "cover/extract every term" absolutisms removed —
+   deck size WINS over exhaustive coverage (packet carries the rest); band maximum made a
+   HARD CAP with a count self-check after 2/2 over-band smoke runs.
+
+**Acceptance evidence.**
+- Generation smoke (6 real api calls, ~$0.07): errdet student region clean + key names the
+  block (lint-proven live); CBP fully localized Uzbek. Residuals (documented, low-impact):
+  gemini-flash cannot reliably COUNT cards (±2 on single runs — the judge remains the deck-size
+  gate, regen path intended); flashcards phase title still leaks English on some runs (now
+  caught warn-only by the new lint).
+- **Three-arm re-judge experiment** (`scripts/experiments/rejudge_ab.py`; TWO committed
+  artifacts after the #113 gate rejected run 1's methodology: run 1 `…-results.json`
+  ($4.15, arm-grouped — superseded, kept with a `corrections` entry) and run 2
+  `…-corrected.json` ($3.54, 183 calls — per-item counterbalanced, 3-replay majority,
+  cumulative budget); same seed/8-cell cohort both runs, arms pinned to SHA `57b81aa`):
+  **flashcards reweighted population major-rate falls A→C in BOTH runs — math 0.69→0.37 and
+  0.66→0.40; geo 0.89→0.71 and 0.63→0.31** (n=5 cells: direction robust, magnitudes noisy —
+  the A arm itself measured 0.89 vs 0.63 on the same items across runs, unseeded judge).
+  **CBP shows NO reduction in either run** (geo 0.64→0.64 / 0.68→0.60; math 0.49→0.60 /
+  0.60→0.71) — arm-C CBP residuals are concealment+other with only ~2 source-fidelity per 20,
+  i.e. **the fidelity lever was never CBP's driver; the concealment contract is** (feeds
+  R25's open limb). Safety probes: after the #113 re-gate the harness was **rebuilt to gate
+  PER-CLAIM** — on the judge's verdict about each probe's OWN injected fact, not deck-wide
+  `has_major`, which had conflated the target fact with incidental structural majors on other
+  cards. Corrected reading of the run-2 raws: **p2's injected absent-but-true Samarqand fact
+  was graded MINOR in all 3 runs — the target behaviour WORKS** (an earlier "1/3 absent-fact
+  leak" note was a misattribution: the lone contradiction-major was on a DIFFERENT card,
+  card_8, whose back dropped a source conditional clause — a legitimate flag, since fixed in
+  the deck). p4 was **reconstructed** after three real-stored picks were rejected — a real
+  numeric contradiction only proves the judge FOLLOWS its extract, never that a genuinely
+  WRONG fact stays major (the `1≤a<10` pick's output was mathematically correct, extract
+  wrong) — so p4 is now a constructed unambiguous wrong fact (gold deposit "Muruntov"→"Kogon",
+  contradicting the extract's gold=Muruntov/oil=Kogon), with a real corroborating production
+  instance (`fba07ae7`, a G11 biology card that altered "scarcity of light"→"complete
+  absence"). **Corrected probes (per-claim, $0.24) all pass 3/3**: p1 planted contradiction
+  major on card_6; p2 Samarqand fact never major (deck-wide majors are on other cards, ignored
+  by the per-claim gate); p3 no invented-number flag; p4 constructed wrong fact
+  ("oltin koni: Kogon" vs source gold=Muruntov) contradiction-major on card_4 every run, and
+  major under the OLD rule too (no demotion).
+
+**Ops:** ships dark until fleet pull + worker restart (prompts cached at startup). Expect
+some legitimate flashcards deck-size regens post-restart (HARD CAP now judge-enforced).
+Suite 1945/309. Final whole-branch review: READY TO MERGE (deferred Lows triaged ship-as-is:
+unbounded `_BLOCK_ID` bleed-through is plan-mandated under-flagging; two errdet tests don't
+assert the new spoiler code; stale docstring bullet). Two #113 gate rounds closed:
+methodology (counterbalanced arms, 3-replay majority, cumulative budget, digit-bearing +
+bounded-section errdet lint) then per-claim safety probes + constructed p4.

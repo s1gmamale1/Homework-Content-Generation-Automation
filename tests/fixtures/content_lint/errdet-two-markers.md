@@ -30,11 +30,9 @@ Quyida **(3x²+2)/(x+1) − (2x²−x+1)/(x+1)** ifodani soddalashtirish uchun y
 
 ---
 
-*Tekshiruvchi uchun (o'quvchiga ko'rsatilmaydi): **Blok 4 noto'g'ri.** −(2x²−x+1) = −2x²+x−1 bo'lishi kerak; talaba o'rta hadning ishorasini o'zgartirmadi: −x ni +x qilmadi.*
-
-**Blok 6 noto'g'ri.**
-
 ## To'g'ri versiya
+
+**Blok 4 noto'g'ri edi.** Boshqa bir tekshiruvda esa **Blok 6 noto'g'ri.** deb ham belgilangan — ikkalasi qarama-qarshi, faqat bittasi to'g'ri bo'lishi kerak.
 
 **Blok 4 ning to'g'ri mazmuni:**
 −(2x²−x+1) = −2x² **+** x − 1

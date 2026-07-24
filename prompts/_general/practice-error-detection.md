@@ -28,11 +28,15 @@ Write the task as Markdown sections, in this order:
   5–6 (G5–8) / 6–8 (G9–11). Present each block's content clearly. **EXACTLY ONE
   block is wrong** — it names the wrong thing or applies the wrong step/role for
   the part it represents. Every other block must be correct so the slip is
-  subtle, not glaring. Make clear (to the reader of this output, not to the
-  student) which block is the broken one.
-- **The correct version** — the right content / real role of the broken block,
-  and a note on the wordings that should count as substantively correct so a
-  right answer is never rejected on phrasing alone.
+  subtle, not glaring. Do NOT mark the broken block inside the blocks list — no
+  "(XATO)"-style labels, no bold/emphasis tells, no wording hints. The list must
+  read clean, exactly as the student will see it. Identify the broken block
+  ONLY in **The correct version** and **Reveal** sections below, naming it by
+  its number there.
+- **The correct version** — Open by naming the broken block's number, then give
+  the right content / real role of the broken block, and a note on the wordings
+  that should count as substantively correct so a right answer is never
+  rejected on phrasing alone.
 - **The real mistake** — name the genuine student mix-up this error encodes.
 - **Hint** — ONE probing hint. It must NEVER reveal the corrected block.
 - **Why prompt** — **MANDATORY** (non-empty) for worked-equation and
@@ -47,6 +51,9 @@ Write the task as Markdown sections, in this order:
 
 ## Non-negotiables
 
+- **No inline answer marker.** The blocks list is student-visible; any marker,
+  label, or typographic tell identifying the broken block inside it defeats the
+  entire exercise.
 - **Exactly one error.** Any other count is rejected by the validator.
 - **Verify every non-broken block.** Before finishing, re-derive every block that
   is meant to be correct. For worked equations, re-compute arithmetic and algebra

@@ -416,16 +416,24 @@ with the provider that produced it. There is no per-phase JSON column — the ma
 deliverable. Each produced phase is also graded by the LLM judge (see `phase_judge.py`)
 before the job moves on. The judge receives the full lesson source (via `_build_master_prompt`'s
 `--- LESSON CONTEXT ---` block) and is instructed to treat it as the authoritative ground truth
-for fact-checking (`_FIDELITY_RULE`). A conservative warning-only deterministic year-signal
+for fact-checking (`_FIDELITY_RULE`, re-anchored worklog 0159: a claim that **contradicts** the
+lesson context is `major`; a claim merely **absent** but uncontested is at most `minor` and never
+triggers a regen — kills the false-major tax on fact-dense subjects while keeping the
+hallucination gate). A conservative warning-only deterministic year-signal
 (`_fidelity_flags`) cross-checks 4-digit years in the output against the source (skips
 math/exercise lines; never gates a regen). The regen cap is configurable via
 `settings.max_judge_regens` (default 1). After the judge, each non-extract phase
 also runs a deterministic **no-LLM content lint** (`content_lint.py`, CQ-B): its
 `lint:`-prefixed findings — mixed Latin+Cyrillic words, structural English-template
 tokens (`Mode:`, `Needs Retry`), calques, untagged flashcard misconceptions,
-error-detection EXACTLY-ONE-broken-block violations (the broken-marker vocab
-recognizes the `N-blok`/`N-yorliq`/`(BU BLOK XATO)`/`(Broken)` forms + the
-`reveal`/`ochish`/`oshkor` reveal headers, worklog 0117), and a `ru_uzbek_leak`
+error-detection **spoiler/format** violations (inverted worklog 0159: a broken-block
+marker in the student-visible region — before the localized `The correct version` /
+`To'g'ri versiya` / `Правильная версия` / Reveal boundary — is the defect
+`errdet_inline_spoiler`; the answer-key region must name exactly one block; the
+marker vocab spans uz/en/ru incl. `(XATO BLOK)`/`(БРОКОВАННЫЙ БЛОК)`), an
+`english_heading_leak` guard for English structural labels left in non-en headings
+(`### Scenario`, `# Flash Cards — …`, numbered `Checkpoint N` forms; `Boss Arena`
+excluded as the intentional game name, worklog 0159), and a `ru_uzbek_leak`
 guard that flags leftover Uzbek template tokens (`Hali emas`, `Kuchli/Zaif
 tomonlar`) in RU-medium output — join the same
 `validation_warnings`, warn-only, never gating a regen (semantic answer-key

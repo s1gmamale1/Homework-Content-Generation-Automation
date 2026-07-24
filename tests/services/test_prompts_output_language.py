@@ -120,3 +120,29 @@ def test_uz_medium_has_no_heading_localization_directive():
     subj = _uz_subject()
     body = prompts.get_prompt(subj, "reflection", output_language="uz")
     assert prompts._LOCALIZE_HEADINGS_CLAUSE not in body
+
+
+# --- Task 3: un-freeze uz — append a uz-language label-localization clause
+# (user-approved, 2026-07-23). Append-only: the frozen #83 tests above stay green.
+
+def test_uz_medium_gets_uz_localize_clause():
+    subj = _uz_subject()
+    body = prompts.get_prompt(subj, "flashcards", output_language="uz")
+    assert prompts._LOCALIZE_HEADINGS_CLAUSE_UZ in body
+    # frozen base still present (append-only un-freeze)
+    assert prompts.LANGUAGE_RULES["_default"] in body
+
+
+def test_en_ru_keep_their_own_clause_not_uz():
+    subj = _uz_subject()
+    body = prompts.get_prompt(subj, "flashcards", output_language="ru")
+    assert prompts._LOCALIZE_HEADINGS_CLAUSE in body
+    assert prompts._LOCALIZE_HEADINGS_CLAUSE_UZ not in body
+
+
+def test_l2_subject_uz_medium_also_gets_uz_clause():
+    """INTENTIONAL side effect: an English/Russian class packet rendered with the uz
+    medium localizes its student-read labels into Uzbek too — labels are scaffolding,
+    and the L2 scaffolding bridge is Uzbek."""
+    body = prompts.get_prompt("english", "flashcards", output_language="uz")
+    assert prompts._LOCALIZE_HEADINGS_CLAUSE_UZ in body

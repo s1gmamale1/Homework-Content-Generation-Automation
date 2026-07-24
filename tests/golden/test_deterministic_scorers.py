@@ -147,8 +147,12 @@ def test_reflection_ignores_non_reflection_phases():
 
 
 def test_error_detection_format_flags_multiple_broken_blocks():
+    # Re-authored 2026-07-23: errdet lint family inverted — spoiler-free student region.
+    # Clean student region, TWO distinct block ids marked in answer-key region
+    # should trigger errdet_multiple_broken.
     md = (
-        "Blok 1 noto'g'ri. Blok 2 noto'g'ri.\n"
+        "# The blocks\n1. ok\n2. ok\n"
+        "## To'g'ri versiya\n1-blok xato. 2-blok xato.\n"
         "## Reveal\nXato blok 1."
     )
     phases = [_pv("practice-error-detection", md)]
@@ -157,13 +161,29 @@ def test_error_detection_format_flags_multiple_broken_blocks():
 
 
 def test_error_detection_format_passes_single_broken_block():
+    # Re-authored 2026-07-23: errdet lint family inverted — spoiler-free student region.
+    # Clean student region, ONE broken block marked only in answer-key region is compliant.
     md = (
-        "Blok 3 noto'g'ri.\n"
+        "# The blocks\n1. ok\n2. ok\n3. subtle slip\n"
+        "## To'g'ri versiya\nBlok 3 noto'g'ri edi: to'g'ri matn.\n"
         "## Reveal\nXato blok 3."
     )
     phases = [_pv("practice-error-detection", md)]
     s = score_error_detection_format(phases, subject="matematika", language="uz")
     assert s.verdict == "pass"
+
+
+def test_error_detection_format_flags_inline_spoiler():
+    # Re-authored 2026-07-23: errdet lint family inverted — spoiler-free student region.
+    # This test guards the inversion: a marker in the student-visible region
+    # should trigger errdet_inline_spoiler (mapped to broken_question dimension).
+    md = (
+        "# The blocks\n1. ok\n2. broken (XATO BLOK)\n"
+        "## To'g'ri versiya\n2-blok xato edi.\n## Reveal\nXato blok 2."
+    )
+    phases = [_pv("practice-error-detection", md)]
+    s = score_error_detection_format(phases, subject="matematika", language="uz")
+    assert s.verdict == "flag" and s.dimension == "broken_question"
 
 
 def test_error_detection_format_ignores_other_phases():

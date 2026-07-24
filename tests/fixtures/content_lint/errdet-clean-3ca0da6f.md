@@ -19,12 +19,11 @@ Quyida algebraik kasrni soddalashtirish bosqichlari keltirilgan. Ulardan biri xa
 5.  **Umumiy koʻpaytuvchini qisqartiramiz:**
     `(a-b)` va `(b-a)` qisqartirilganda `1` beradi, shuning uchun kasr quyidagicha boʻladi:
     `2 / (b + a)`
-    (This is the broken block)
 6.  **Yakuniy natija:**
     `2 / (a + b)`
 
 ## The correct version
-`(a-b)` va `(b-a)` qisqartirilganda `-1` beradi, shuning uchun kasr quyidagicha boʻladi:
+Block 5 is the broken block. `(a-b)` va `(b-a)` qisqartirilganda `-1` beradi, shuning uchun kasr quyidagicha boʻladi:
 `-2 / (b + a)`
 
 *Shu kabi javoblar qabul qilinadi: "(a-b) va (b-a) nisbati -1 ga teng", "Qisqartirganda -1 qoladi", "Kasrning ishorasi manfiy bo'lishi kerak". Asosiysi, talaba -1 koeffitsiyentini to'g'ri aniqlashi kerak.*
@@ -47,6 +46,11 @@ Toʻgʻri! Siz xatoni topdingiz va tuzatdingiz. Qarama-qarshi ifodalarni qisqart
 Bu toʻliq toʻgʻri emas. Yana bir bor urinib koʻring. Mana bir ishora: Surat va maxrajdagi bir-biriga "o'xshash" ko'paytuvchilarni diqqat bilan solishtiring. `(a-b)` ifodasi `(b-a)` ga chindan ham tengmi? Ular orasida qanday bog'liqlik bor?
 
 ## Reveal
-**Xato blok:** `(a-b)` va `(b-a)` qisqartirilganda `1` beradi...
+<!-- Gap B (merge-gate follow-up, 2026-07-23): the Reveal section must name the
+block id WITHIN ITS OWN bounded region, not merely rely on "The correct
+version" section above naming it — extended "Xato blok:" to "Xato blok
+(Block 5):" so this stays a COMPLIANT clean fixture under the new per-section
+naming contract. -->
+**Xato blok (Block 5):** `(a-b)` va `(b-a)` qisqartirilganda `1` beradi...
 **Toʻgʻri shakli:** `(a-b)` va `(b-a)` qisqartirilganda `-1` beradi...
 **Sababi:** `a-b = –(b-a)` boʻlgani uchun ularning nisbati `–1` ga teng.

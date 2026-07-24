@@ -49,6 +49,22 @@ def test_build_judge_prompt_omits_flags_section_when_empty():
     assert "POSSIBLE SOURCE ISSUES" not in p
 
 
+def test_fidelity_rule_downgrades_absence_to_minor():
+    """Re-anchor (2026-07-23): only a CONTRADICTION of the lesson context is major;
+    an absent-but-uncontested world claim is minor. Guards the 56-59% false-major
+    rates measured on math/geography CBP+flashcards."""
+    rule = pj._FIDELITY_RULE
+    assert "CONTRADICTS" in rule
+    assert "`minor`" in rule and "ABSENT" in rule
+    # the old anchor text must be gone
+    assert "contradicted by, or absent from" not in rule
+
+
+def test_judge_prompt_carries_reanchored_rule():
+    p = pj._build_judge_prompt(contract="C", output_md="O")
+    assert "merely ABSENT" in p
+
+
 def test_build_feedback_lists_failures():
     fb = pj._build_feedback(["A — x", "B — y"])
     assert "A — x" in fb and "B — y" in fb
