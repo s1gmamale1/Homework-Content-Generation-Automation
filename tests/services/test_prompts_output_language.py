@@ -140,6 +140,18 @@ def test_en_ru_keep_their_own_clause_not_uz():
     assert prompts._LOCALIZE_HEADINGS_CLAUSE_UZ not in body
 
 
+def test_en_ru_clause_has_full_label_coverage_and_machine_key_carveout():
+    """RU/EN parity with the uz clause (2026-07-24): the en/ru directive must name the
+    fuller game-label set (incl. the ones only the uz clause used to carry) AND carve
+    out machine-facing card keys / backtick enums, while KEEPING its en/ru-specific
+    bilingual subject-name de-parenthetical instruction."""
+    c = prompts._LOCALIZE_HEADINGS_CLAUSE
+    assert "How to play" in c and "Relationship types" in c        # labels uz had, ru lacked
+    assert "id, front, back, type, difficulty" in c                # machine-key carve-out
+    assert "`easy`" in c and "`medium`" in c and "`hard`" in c      # enum-value exception
+    assert "Matematika" in c                                        # kept: subject-name delocalization
+
+
 def test_l2_subject_uz_medium_also_gets_uz_clause():
     """INTENTIONAL side effect: an English/Russian class packet rendered with the uz
     medium localizes its student-read labels into Uzbek too — labels are scaffolding,

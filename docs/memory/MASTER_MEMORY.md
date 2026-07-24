@@ -2132,3 +2132,21 @@ unbounded `_BLOCK_ID` bleed-through is plan-mandated under-flagging; two errdet 
 assert the new spoiler code; stale docstring bullet). Two #113 gate rounds closed:
 methodology (counterbalanced arms, 3-replay majority, cumulative budget, digit-bearing +
 bounded-section errdet lint) then per-claim safety probes + constructed p4.
+
+## 0160 — RU/EN label localization to uz parity (2026-07-24)
+
+Follow-on to 0159. The uz un-freeze in 0159 gave uz output a fuller label-localization
+clause than the pre-existing en/ru clause (`_LOCALIZE_HEADINGS_CLAUSE`, worklog 0117): the
+game labels `How to play` and `Relationship types` and the machine-facing-key carve-out
+(card keys `id/front/back/...` + backtick enums stay English) were **uz-only**. RU/EN launches
+could therefore still leak those specific English labels into student-facing text — the
+`english_heading_leak` lint (0159, fires for non-`en`) would surface them warn-only but not
+prevent them. **Fix:** expanded `_LOCALIZE_HEADINGS_CLAUSE` to the same label set + machine-key
+carve-out, while KEEPING the one thing the en/ru clause has that uz doesn't — the bilingual
+subject-name de-parenthetical instruction (write the localized subject name, not `Matematika`),
+needed because the subject label is injected bilingually only for non-uz media. Tests reference
+the constant (not literal text), so the change is value-only; RED-proved the new coverage.
+**Acceptance:** RU generation smoke (gemini flash, 2 real api calls, $0.016) — a `practice-jigsaw`
+render came back with `Как играть` (How to play) and `Типы отношений` (Relationship types)
+localized, zero English-label heading leaks across flashcards+jigsaw, content_lint clean.
+Ships dark until fleet restart (prompt cache). Suite 1946/309, no migration.
