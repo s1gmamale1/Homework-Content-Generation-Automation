@@ -430,17 +430,27 @@ def is_invented_number_flag(w: str) -> bool:
     return any(ch.isdigit() for ch in w)
 
 
-def evaluate_probe(name: str, runs: list[dict]) -> dict:
-    """Probe gate (Defect 4 fix). With the probe decks now genuinely contract-clean
-    (see the comment above `_GEO_GRADE_PREFIX`), `has_major` itself cleanly reflects
-    fidelity, so p1/p2/p4 gate on raw `has_major` directly, per the plan's stated
-    expectations ("stays major" / "never major" / "stays major"). p3 keeps a
-    narrower gate on `is_invented_number_flag` specifically, because that probe's
-    question is whether GENERATED practice numbers get regen-taxed as invented
-    facts — a question `has_major` alone can't isolate even on a clean deck (a
-    genuinely miscalculated worked example would be a legitimate, unrelated major).
-    `contradiction_major` / `invented_number_flag` / structural-major counts are
-    still recorded per run for transparency even where they are no longer the gate."""
+def _major_mentions(warnings: list[str], tokens: tuple[str, ...]) -> bool:
+    """True iff some [major] warning references the TARGET claim (any token, case-
+    insensitive). This is the per-claim gate: it isolates the judge's verdict ON THE
+    INJECTED FACT from incidental structural majors on OTHER cards (deck size, sub-skill
+    spread, phase-title calque) — the confound the #113 re-gate correctly flagged when
+    the probes gated on global `has_major`."""
+    low = [w.lower() for w in warnings if w.startswith("[major]")]
+    toks = tuple(t.lower() for t in tokens)
+    return any(any(t in w for t in toks) for w in low)
+
+
+def evaluate_probe(name: str, runs: list[dict], spec: dict | None = None) -> dict:
+    """Probe gate — PER-CLAIM (rebuilt after the #113 re-gate). The earlier gate on
+    global `has_major` was invalid: a contract-clean deck still draws incidental
+    structural majors (sub-skill spread, title calque) on cards OTHER than the injected
+    one, so `has_major` conflated "the judge mis-graded the target fact" with "the deck
+    has some unrelated nit". Each probe now gates on the judge's verdict ABOUT ITS OWN
+    injected claim, via `spec['gate']` = {'tokens': (...), 'expect': 'major_every_run'|
+    'never_major', 'kind': 'contradiction'|'any_major'}. p3 keeps its orthogonal
+    invented-number gate. Full contradiction/structural/has_major counts stay recorded
+    for transparency."""
     if not runs:
         return {"pass": False, "reason": "no runs (budget/skip)"}
     contra = [any(is_contradiction_major(w) for w in r["warnings"]) for r in runs]
@@ -451,19 +461,32 @@ def evaluate_probe(name: str, runs: list[dict]) -> dict:
     base = {"contradiction_major_each_run": contra, "invented_number_flag_each_run": invnum,
             "has_major_each_run": hm,
             "structural_major_count_each_run": [len(s) for s in struct]}
-    if name == "p1_contradiction":
-        base["pass"] = all(hm)
-    elif name == "p2_absent_true_fact":
-        base["pass"] = not any(hm)
-    elif name == "p3_generated_values":
-        # R14 guard: the specific concern is generated NUMBERS being flagged as
-        # invented/unsourced. Gate on that; a topic/coverage major that merely quotes
-        # the rule's boilerplate is not a number-fidelity flag.
+
+    if name == "p3_generated_values":
+        # R14 guard: the specific concern is generated NUMBERS flagged invented/unsourced.
         base["pass"] = not any(invnum)
-    elif name == "p4_genuine_defect":
-        base["pass"] = all(hm)
+        return base
+
+    gate = (spec or {}).get("gate") or {}
+    tokens = tuple(gate.get("tokens", ()))
+    kind = gate.get("kind", "any_major")
+    expect = gate.get("expect")
+    if not tokens or expect is None:
+        # No per-claim gate supplied (recompute of an OLD artifact): fall back to the
+        # legacy has_major gate, clearly flagged so a reader knows it is not per-claim.
+        legacy = all(hm) if name in ("p1_contradiction", "p4_genuine_defect") else not any(hm)
+        base["pass"] = legacy
+        base["gate_mode"] = "legacy_has_major (no per-claim spec)"
+        return base
+
+    if kind == "contradiction":
+        target = [any(is_contradiction_major(w) and _major_mentions([w], tokens) for w in r["warnings"])
+                  for r in runs]
     else:
-        base["pass"] = None
+        target = [_major_mentions(r["warnings"], tokens) for r in runs]
+    base["target_claim_major_each_run"] = target
+    base["gate_mode"] = f"per-claim tokens={tokens} kind={kind} expect={expect}"
+    base["pass"] = all(target) if expect == "major_every_run" else not any(target)
     return base
 
 
@@ -649,7 +672,8 @@ _GEO_FAITHFUL_CARDS = [
     ("card_5", "Rayondagi nodir metall konlari", "Ingichka va Zarmitan.", "term_to_meaning", "medium"),
     ("card_6", "Qorovulbozor neftni qayta ishlash korxonasi quvvati", "Yiliga 5 mln tonna neftni qayta ishlaydi.", "question_answer", "medium"),
     ("card_7", "Navoiy IESi qanday yoqilg'ida ishlaydi", "Tabiiy gaz bilan ishlaydi.", "question_answer", "easy"),
-    ("card_8", "Rayonning gaz sanoati bo'yicha o'rni", "O'zbekistonda ikkinchi o'rinda.", "question_answer", "medium"),
+    ("card_8", "Rayonning gaz sanoati bo'yicha o'rni",
+     "O'zbekistonda ikkinchi o'rinda (Sho'rtan gaz koni ishga tushirilgach).", "question_answer", "medium"),
     ("card_9", "Rayonning suv muammosini hal qiluvchi inshootlar", "Amu–Qorako'l va Amu–Buxoro kanallari, Quyimozor suv ombori.", "question_answer", "hard"),
     ("card_10", "Keng tarqalgan xato: Zarafshon rayoni faqat qishloq xo'jaligi rayoni",
      "Noto'g'ri — rayon gaz, neft, oltin va nodir metall sanoatiga ham ega og'ir sanoat rayonidir.",
@@ -687,25 +711,26 @@ async def build_probes(conn, items: list[dict]) -> dict:
     p3_ext_raw = await conn.fetchval(
         "SELECT output_md FROM phase_outputs WHERE job_id=$1 AND phase_name='extract'", p3_math_job)
 
-    # Probe 4 — a manually-confirmed GENUINE defect (real stored output), RESELECTED
-    # 2026-07-23 per P4_SELECTION_CRITERION after the merge gate rejected the earlier
-    # tea-vs-rice pick as a subtle superlative. New pick (verified BY HAND against both
-    # texts — the controller confirmed both lines exist verbatim in the DB rows):
-    # G7 ru math-algebra practice-error-detection 99b1e622…; the extract states the
-    # standard-form mantissa range as `1 < a < 10` while the output's Concepts section
-    # states `1 \le a < 10` — a one-line, unambiguous RANGE/NUMBER contradiction against
-    # the LESSON CONTEXT (the rule's ground truth). Candid disclosure carried in the
-    # provenance: mathematically the OUTPUT's range is the standard convention and the
-    # EXTRACT's is the nonstandard one — the probe tests the rule's MECHANISM
-    # (extract = ground truth by design; extract-side drift is the extract-fidelity
-    # guard's job, not the judge's). Two prior candidates were REJECTED during
-    # reselection because their stored warnings hallucinated: 53dbfbf6 (claimed roots
-    # "(2; -5)" appear nowhere in the output) — recorded in provenance below.
-    p4_pid = "99b1e622-3043-4801-93b2-f112a7600c35"
-    p4_job = "d91b0ace-6761-4bac-945d-b98d0860ae2a"
-    p4_out = await conn.fetchval("SELECT output_md FROM phase_outputs WHERE id=$1", p4_pid)
-    p4_ext = await conn.fetchval(
-        "SELECT output_md FROM phase_outputs WHERE job_id=$1 AND phase_name='extract'", p4_job)
+    # Probe 4 — a CONSTRUCTED, unambiguously-wrong homework fact (rebuilt after the #113
+    # re-gate rejected THREE real-stored picks). The gate's decisive objection: a real
+    # stored "defect" proved only "the judge follows its extract", never "a genuinely
+    # WRONG homework fact stays major", because every real numeric contradiction I found
+    # was one of: a distractor (meant to be wrong), an absent-type claim (the new rule
+    # demotes by design), or a case where the OUTPUT was actually correct and the
+    # EXTRACT wrong (the range 1≤a<10 pick — see rejected_real_picks). A constructed
+    # probe removes that ambiguity: the same faithful deck, but card_4 swaps the gold
+    # deposit to KOGON — the extract explicitly assigns Kogon to the OIL deposit
+    # ("Rayondagi neft koni: Kogon yaqinida") and Muruntov to gold ("oltin koni:
+    # Muruntov"). So "oltin koni: Kogon" DIRECTLY CONTRADICTS the source AND is
+    # objectively false (Muruntov is the world-famous gold mine). Stated as a flashcard
+    # back = asserted true. This is precisely "a genuinely wrong homework fact" and it
+    # must stay a contradiction-major every run. Corroborating REAL production instance
+    # recorded in provenance (does not gate).
+    p4_cards = list(_GEO_FAITHFUL_CARDS)
+    p4_cards[3] = ("card_4", "Rayondagi oltin koni", "Kogon yaqinida joylashgan.",
+                   "question_answer", "easy")
+    p4_out = _fmt_deck("Flesh-kartlar — Zarafshon iqtisodiy rayoni", p4_cards)
+    p4_ext = geo_ext
 
     # Probe 1 — direct CONTRADICTION: same faithful deck, but card_6 changes the
     # refinery capacity 5 mln t/yr -> 50 mln t/yr (a 10x changed statistic that the
@@ -761,12 +786,21 @@ async def build_probes(conn, items: list[dict]) -> dict:
         "p1_contradiction": {
             "subject": geo_subject, "phase": "flashcards", "output_language": geo_ol,
             "lesson_context": geo_ext, "output_md": p1_out,
-            "expect": "contradiction-major present every run (planted 50 mln vs source 5 mln)",
+            "expect": "contradiction-major ON THE PLANTED CARD every run (50 mln vs source 5 mln)",
+            # per-claim gate: a contradiction-major that references the corrupted
+            # refinery-capacity card (card_6 / '50 mln'), not any deck-wide major.
+            "gate": {"tokens": ("50 mln", "qorovulbozor"), "kind": "contradiction",
+                     "expect": "major_every_run"},
         },
         "p2_absent_true_fact": {
             "subject": geo_subject, "phase": "flashcards", "output_language": geo_ol,
             "lesson_context": geo_ext, "output_md": p2_out,
-            "expect": "no contradiction-major any run (absent supporting fact stays <= minor)",
+            "expect": "the injected absent-but-true Samarqand fact is NEVER a major (<= minor) any run",
+            # per-claim gate (the #113 re-gate's own diagnosis: this fact was correctly
+            # graded MINOR 3/3; the earlier has_major gate wrongly failed on incidental
+            # structural/other-card majors). Gate ONLY on the injected claim's tokens.
+            "gate": {"tokens": ("madaniy markaz", "qadimiy shahar"), "kind": "any_major",
+                     "expect": "never_major"},
         },
         "p3_generated_values": {
             "subject": "matematika", "phase": "flashcards", "output_language": "uz",
@@ -774,30 +808,36 @@ async def build_probes(conn, items: list[dict]) -> dict:
             "expect": "no invented-number fidelity flag any run (generated example numbers not regen-taxed)",
         },
         "p4_genuine_defect": {
-            "subject": "math-algebra", "phase": "practice-error-detection",
-            "output_language": "ru",
+            "subject": geo_subject, "phase": "flashcards", "output_language": geo_ol,
             "lesson_context": p4_ext, "output_md": p4_out,
-            "expect": "has_major present every run (genuine contradiction not demoted)",
+            "expect": "contradiction-major ON THE WRONG GOLD-DEPOSIT CARD every run "
+                      "(constructed: 'oltin koni: Kogon' contradicts source gold=Muruntov/oil=Kogon)",
+            # per-claim gate: a contradiction-major referencing the corrupted gold card
+            # (card_4 / 'oltin'), isolating the injected wrong fact from deck-wide nits.
+            "gate": {"tokens": ("oltin",), "kind": "contradiction", "expect": "major_every_run"},
             "provenance": {
-                "phase_output_id": p4_pid, "job_id": p4_job,
-                "defect": "G7 ru math-algebra error-detection: extract states the standard-form "
-                          "mantissa range as `1 < a < 10` ('где `1 < a < 10`'); the output's "
-                          "Concepts section states `1 \\le a < 10`. One-line, unambiguous "
-                          "RANGE/NUMBER contradiction against the LESSON CONTEXT — both lines "
-                          "verified verbatim in the DB rows by hand (controller, 2026-07-23).",
-                "disclosure": "mathematically the OUTPUT's range is the standard textbook "
-                              "convention and the EXTRACT's is nonstandard; the probe tests the "
-                              "rule's mechanism (extract = ground truth by design). Extract-side "
-                              "drift is the extract-fidelity guard's concern, not the judge's.",
-                "verified_against_extract": True,
-                "superseded_picks": [
-                    "3090f92c (tea-vs-rice) — gate-rejected: subtle superlative/relative-ranking",
-                    "53dbfbf6 (Viet roots) — REJECTED at reselection: its stored warning "
-                    "hallucinated — the quoted '(2; -5)' roots appear nowhere in the output",
-                    "214e7476 (Qorovulbozor neft/gaz) — dropped earlier as ambiguous",
+                "construction": "faithful Zarafshon deck with card_4 gold deposit swapped "
+                                "Muruntov -> Kogon. Extract assigns Kogon to OIL ('neft koni: "
+                                "Kogon yaqinida') and Muruntov to gold ('oltin koni: Muruntov'), "
+                                "so 'oltin koni: Kogon' both CONTRADICTS the source and is "
+                                "objectively false (Muruntov is the world's largest gold mine). "
+                                "Stated as a flashcard back = asserted true.",
+                "why_constructed": "the #113 re-gate correctly rejected THREE real-stored picks: "
+                                   "a real numeric contradiction proves only 'the judge follows its "
+                                   "extract', never 'a genuinely WRONG homework fact stays major' — "
+                                   "real picks were all distractors, absent-type, or extract-side "
+                                   "errors (output actually correct). A constructed wrong-fact "
+                                   "removes that ambiguity.",
+                "rejected_real_picks": [
+                    "99b1e622 (1<=a<10 range) — output was mathematically CORRECT, extract wrong: "
+                    "proves extract-following, not wrong-fact-catching (the #113 re-gate's objection)",
+                    "3090f92c (tea-vs-rice) — subtle superlative/relative-ranking",
+                    "53dbfbf6 (Viet roots) — stored warning hallucinated ('(2; -5)' not in output)",
                 ],
-                "selection_criterion": P4_SELECTION_CRITERION,
-                "meets_selection_criterion": True,
+                "corroborating_real_instance": "fba07ae7 (G11 uz biology flashcards card_8): a REAL "
+                    "stored flashcard back altered the source 'yorug'likning kamligi' (scarcity of "
+                    "light) to 'mutlaqo yo'qligi' (complete absence) — the same wrong-fact-on-a-card "
+                    "failure mode this probe constructs; recorded to show it occurs in production.",
             },
         },
     }
@@ -884,7 +924,7 @@ async def probes_only(args) -> int:
     probes_out = {}
     all_pass = True
     for name, runs in probe_results.items():
-        verdict = evaluate_probe(name, runs)
+        verdict = evaluate_probe(name, runs, specs[name])
         if verdict.get("pass") is not True:
             all_pass = False
         probes_out[name] = {"expect": specs[name]["expect"], "verdict": verdict,
@@ -1174,7 +1214,7 @@ async def main() -> int:
     probes_out = {}
     all_probes_pass = True
     for name, runs in probe_results.items():
-        verdict = evaluate_probe(name, runs)
+        verdict = evaluate_probe(name, runs, probes_spec[name])
         if verdict.get("pass") is not True:
             all_probes_pass = False
         probes_out[name] = {

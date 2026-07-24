@@ -2106,13 +2106,21 @@ acceptance evidence. NOTHING regenerated — all existing packets untouched.
   **CBP shows NO reduction in either run** (geo 0.64→0.64 / 0.68→0.60; math 0.49→0.60 /
   0.60→0.71) — arm-C CBP residuals are concealment+other with only ~2 source-fidelity per 20,
   i.e. **the fidelity lever was never CBP's driver; the concealment contract is** (feeds
-  R25's open limb). Safety probes (corrected run): planted contradiction major **3/3**;
-  generated exercise numbers never flagged **3/3**; genuine defect (hand-verified one-line
-  range contradiction `99b1e622`; two candidates REJECTED because their stored warnings
-  hallucinated) stays major **3/3**; absent-but-true fact: **1/3 runs still major'd it as
-  "contradicts or significantly alters"** (real residual leak) and a contract-clean deck
-  still draws stochastic structural majors, so the has_major-gated p2 fails — reported as
-  measured, not re-run to a pass.
+  R25's open limb). Safety probes: after the #113 re-gate the harness was **rebuilt to gate
+  PER-CLAIM** — on the judge's verdict about each probe's OWN injected fact, not deck-wide
+  `has_major`, which had conflated the target fact with incidental structural majors on other
+  cards. Corrected reading of the run-2 raws: **p2's injected absent-but-true Samarqand fact
+  was graded MINOR in all 3 runs — the target behaviour WORKS** (an earlier "1/3 absent-fact
+  leak" note was a misattribution: the lone contradiction-major was on a DIFFERENT card,
+  card_8, whose back dropped a source conditional clause — a legitimate flag, since fixed in
+  the deck). p4 was **reconstructed** after three real-stored picks were rejected — a real
+  numeric contradiction only proves the judge FOLLOWS its extract, never that a genuinely
+  WRONG fact stays major (the `1≤a<10` pick's output was mathematically correct, extract
+  wrong) — so p4 is now a constructed unambiguous wrong fact (gold deposit "Muruntov"→"Kogon",
+  contradicting the extract's gold=Muruntov/oil=Kogon), with a real corroborating production
+  instance (`fba07ae7`, a G11 biology card that altered "scarcity of light"→"complete
+  absence"). Corrected-probe re-run pending gate approval; p1 (planted number contradiction)
+  and p3 (generated numbers not regen-taxed) already clean.
 
 **Ops:** ships dark until fleet pull + worker restart (prompts cached at startup). Expect
 some legitimate flashcards deck-size regens post-restart (HARD CAP now judge-enforced).
