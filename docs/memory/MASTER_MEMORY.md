@@ -2127,6 +2127,8 @@ acceptance evidence. NOTHING regenerated — all existing packets untouched.
 
 **Ops:** ships dark until fleet pull + worker restart (prompts cached at startup). Expect
 some legitimate flashcards deck-size regens post-restart (HARD CAP now judge-enforced).
-Suite 1939/309. Final whole-branch review: READY TO MERGE (deferred Lows triaged ship-as-is:
+Suite 1945/309. Final whole-branch review: READY TO MERGE (deferred Lows triaged ship-as-is:
 unbounded `_BLOCK_ID` bleed-through is plan-mandated under-flagging; two errdet tests don't
-assert the new spoiler code; stale docstring bullet).
+assert the new spoiler code; stale docstring bullet). Two #113 gate rounds closed:
+methodology (counterbalanced arms, 3-replay majority, cumulative budget, digit-bearing +
+bounded-section errdet lint) then per-claim safety probes + constructed p4.

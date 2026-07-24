@@ -642,14 +642,16 @@ def build_residual_armC(items: list[dict]) -> dict:
 # fits the G7-8 8-10 band with the required card present), spans >=3 distinct
 # sub-skills (region composition; resource-deposit locations; industrial output
 # values; water/irrigation infrastructure), and varies `type` across
-# definition/term_to_meaning/question_answer/misconception. With the decks clean,
-# the gate is raw `has_major` for p1/p2/p4 (exactly what the plan specifies:
-# "stays major" / "never major" / "stays major"); p3 keeps its narrower
+# definition/term_to_meaning/question_answer/misconception. NOTE: keeping the decks
+# clean of structural nits was the FIRST attempt to make `has_major` a valid gate;
+# the #113 re-gate showed that insufficient (a clean deck still draws incidental
+# structural majors on cards OTHER than the injected one), so the gate is now
+# PER-CLAIM (see `evaluate_probe`): each probe is judged on the verdict about its OWN
+# injected fact, and these deck-quality efforts merely reduce (not eliminate) the
+# incidental majors the per-claim gate already ignores. p3 keeps its narrower
 # `is_invented_number_flag` gate because that probe's concern is specifically
-# whether GENERATED practice numbers get regen-taxed as invented facts, not
-# whether the deck has a major at all. `is_contradiction_major` /
-# `is_invented_number_flag` / structural-major counts are still recorded per run
-# for transparency even where they are no longer the gate.
+# whether GENERATED practice numbers get regen-taxed as invented facts. Full
+# contradiction / invented-number / structural counts are recorded per run.
 _GEO_GRADE_PREFIX = "Grade: 8\n\n"
 
 # Ten cards drawn straight from the Zarafshon-region extract (job 5c86f22f): region
@@ -873,9 +875,9 @@ async def run_probes(specs: dict, budget: Budget, sem: asyncio.Semaphore,
 
 async def run_p4_baseline(spec: dict, budget: Budget, sem: asyncio.Semaphore,
                           judge_provider: str, judge_model) -> list[dict]:
-    """Run the p4 genuine-defect output under the OLD rule 3x, to answer whether the
-    new rule DEMOTES the defect relative to the production baseline (vs. the judge
-    simply being stochastic on a subtle contradiction under BOTH rules)."""
+    """Run the p4 constructed wrong-fact output (gold Muruntov->Kogon) under the OLD
+    rule 3x, confirming the new rule does NOT demote a genuine, unambiguous contradiction
+    relative to the OLD-rule baseline (it is a contradiction-major under both)."""
     old = old_fidelity_rule()
     runs: list[dict] = []
     saved = phase_judge._FIDELITY_RULE
@@ -931,15 +933,17 @@ async def probes_only(args) -> int:
                             "runs": runs, "provenance": specs[name].get("provenance")}
     artifact["safety_probes"] = {
         "all_pass": all_pass,
-        "gate_note": "gate is raw has_major for p1/p2/p4 (the decks are genuinely contract-clean, "
-                     "so has_major cleanly reflects fidelity); p3 gates narrowly on the "
-                     "invented-number flag. contradiction-major / invented-number-flag / "
-                     "structural-major counts are still recorded per run for transparency.",
+        "gate_note": "gate is PER-CLAIM: each probe is judged on the verdict about its OWN injected "
+                     "fact (p1/p4 -> that fact's contradiction-major every run; p2 -> that "
+                     "fact never major), NOT deck-wide has_major, so incidental structural "
+                     "majors on other cards cannot confound the result. p3 gates narrowly on "
+                     "the invented-number flag. contradiction / invented-number / structural "
+                     "counts + per-claim target_claim_major are recorded per run.",
         "genuine_defect_provenance": specs["p4_genuine_defect"].get("provenance"),
         "p4_baseline_comparison": {
             "note": "Same p4 defect output under the OLD rule (57b81aa) x3 vs the NEW rule x3, "
-                    "isolating whether the new rule DEMOTES the defect relative to baseline or the "
-                    "judge is simply stochastic on this subtle contradiction under BOTH rules.",
+                    "confirming the new rule does NOT demote the constructed wrong-fact contradiction "
+                    "(gold Muruntov->Kogon) relative to the OLD-rule baseline; major under both.",
             "old_rule_has_major": [bool(r["has_major"]) for r in p4_baseline],
             "old_rule_contradiction_major": [any(is_contradiction_major(w) for w in r["warnings"]) for r in p4_baseline],
             "new_rule_has_major": probes_out["p4_genuine_defect"]["verdict"]["has_major_each_run"],
@@ -1315,10 +1319,12 @@ async def main() -> int:
                                       "else other; first arm-C run per item, replays excluded from this tally",
         "safety_probes": {
             "all_pass": all_probes_pass,
-            "gate_note": "gate is raw has_major for p1/p2/p4 (the decks are genuinely contract-clean, "
-                         "so has_major cleanly reflects fidelity); p3 gates narrowly on the "
-                         "invented-number flag. contradiction-major / invented-number-flag / "
-                         "structural-major counts are still recorded per run for transparency.",
+            "gate_note": "gate is PER-CLAIM: each probe is judged on the verdict about its OWN "
+                         "injected fact (p1/p4 -> that fact's contradiction-major every run; p2 -> "
+                         "that fact never major), NOT deck-wide has_major, so incidental structural "
+                         "majors on other cards cannot confound the result. p3 gates narrowly on the "
+                         "invented-number flag. contradiction / invented-number / structural counts "
+                         "+ per-claim target_claim_major are recorded per run.",
             "genuine_defect_provenance": probes_spec["p4_genuine_defect"].get("provenance"),
             "p4_baseline_comparison": {
                 "note": "Same p4 defect output under the OLD rule (57b81aa) x3 vs the NEW rule x3.",

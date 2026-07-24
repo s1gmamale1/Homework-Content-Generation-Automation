@@ -3843,7 +3843,7 @@
   "residual_major_classifier": "keyword heuristic over serialized [major] failures: concealment-rule (hint/leak/spoiler/no-spoiler), deck-size (band/hard cap/count/cards), source-fidelity (contradict/lesson context/absent from/preserve every), else other; first arm-C run per item, replays excluded from this tally",
   "safety_probes": {
     "all_pass": true,
-    "gate_note": "gate is raw has_major for p1/p2/p4 (the decks are genuinely contract-clean, so has_major cleanly reflects fidelity); p3 gates narrowly on the invented-number flag. contradiction-major / invented-number-flag / structural-major counts are still recorded per run for transparency.",
+    "gate_note": "gate is PER-CLAIM: each probe is judged on the verdict about its OWN injected fact (p1/p4 -> that fact's contradiction-major every run; p2 -> that fact never major), NOT deck-wide has_major, so incidental structural majors on other cards cannot confound the result. p3 gates narrowly on the invented-number flag. contradiction / invented-number / structural counts + per-claim target_claim_major are recorded per run.",
     "genuine_defect_provenance": {
       "construction": "faithful Zarafshon deck with card_4 gold deposit swapped Muruntov -> Kogon. Extract assigns Kogon to OIL ('neft koni: Kogon yaqinida') and Muruntov to gold ('oltin koni: Muruntov'), so 'oltin koni: Kogon' both CONTRADICTS the source and is objectively false (Muruntov is the world's largest gold mine). Stated as a flashcard back = asserted true.",
       "why_constructed": "the #113 re-gate correctly rejected THREE real-stored picks: a real numeric contradiction proves only 'the judge follows its extract', never 'a genuinely WRONG homework fact stays major' — real picks were all distractors, absent-type, or extract-side errors (output actually correct). A constructed wrong-fact removes that ambiguity.",
@@ -3855,7 +3855,7 @@
       "corroborating_real_instance": "fba07ae7 (G11 uz biology flashcards card_8): a REAL stored flashcard back altered the source 'yorug'likning kamligi' (scarcity of light) to 'mutlaqo yo'qligi' (complete absence) — the same wrong-fact-on-a-card failure mode this probe constructs; recorded to show it occurs in production."
     },
     "p4_baseline_comparison": {
-      "note": "Same p4 defect output under the OLD rule (57b81aa) x3 vs the NEW rule x3, isolating whether the new rule DEMOTES the defect relative to baseline or the judge is simply stochastic on this subtle contradiction under BOTH rules.",
+      "note": "Same p4 constructed wrong-fact output (gold Muruntov->Kogon) under the OLD rule (57b81aa) x3 vs the NEW rule x3, confirming the new rule does NOT demote the contradiction relative to baseline; it is a contradiction-major under both rules.",
       "old_rule_has_major": [
         true,
         true,
