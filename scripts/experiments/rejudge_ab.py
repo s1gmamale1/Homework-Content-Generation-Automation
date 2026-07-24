@@ -963,9 +963,10 @@ async def probes_only(args) -> int:
     b["actual_cost_usd"] = round(budget.cost, 6)
     b["budget_hit"] = budget.hit
     artifact["note_probe_rerun"] = ("Arm calls from the full run are unchanged; the safety "
-                                    "probes were re-run after refining the probe harness "
-                                    "(well-formed grade-pinned decks + has_major gate). "
-                                    "The fidelity RULE was NOT modified.")
+                                    "probes were re-run after rebuilding the probe harness to "
+                                    "gate PER-CLAIM (each probe judged on the verdict about its "
+                                    "own injected fact, not deck-wide has_major) + a constructed "
+                                    "p4 wrong-fact. The fidelity RULE was NOT modified.")
     ARTIFACT_PATH.write_text(json.dumps(artifact, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(f"probes-only: calls={budget.new_calls} cost=${budget.new_cost:.4f} "

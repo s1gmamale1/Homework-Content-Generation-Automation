@@ -4217,5 +4217,5 @@
     "probe_rerun_calls": 15,
     "probe_rerun_cost_usd": 0.244775
   },
-  "note_probe_rerun": "Arm calls from the full run are unchanged; the safety probes were re-run after refining the probe harness (well-formed grade-pinned decks + has_major gate). The fidelity RULE was NOT modified."
+  "note_probe_rerun": "Arm calls from the full run are unchanged; the safety probes were re-run after rebuilding the probe harness to gate PER-CLAIM (each probe judged on the verdict about its own injected fact, not deck-wide has_major) + a constructed p4 wrong-fact. The fidelity RULE was NOT modified."
 }
