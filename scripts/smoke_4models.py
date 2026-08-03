@@ -16,6 +16,8 @@ sys.path.insert(0, ".")
 
 from app.services import api_transport  # noqa: E402
 
+# historical repro — model list intentionally pinned to the 4-model campaign
+# comparison (matches the job IDs in save_homeworks.py / fanout_analysis.py)
 MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-pro",

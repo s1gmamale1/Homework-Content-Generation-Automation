@@ -406,9 +406,9 @@ async def test_audit_job_five_calls_isolation_and_evidence(monkeypatch):
     assert PACKET_SENTINEL not in by_op["teach:pretest"]["phase_prompt"]
     assert PACKET_SENTINEL in by_op["teach:posttest"]["phase_prompt"]
     assert PACKET_SENTINEL not in by_op["teach:grade"]["phase_prompt"]
-    assert by_op["teach:exam"]["model"] == "gemini-2.5-pro"
-    assert by_op["teach:pretest"]["model"] == "gemini-2.5-flash"
-    assert by_op["teach:grade"]["model"] == "gemini-2.5-pro"
+    assert by_op["teach:exam"]["model"] == "gemini-3.6-flash"
+    assert by_op["teach:pretest"]["model"] == "gemini-3.5-flash"
+    assert by_op["teach:grade"]["model"] == "gemini-3.6-flash"
     assert all(kw["homework_job_id"] is None for kw in captured)
     assert all(kw["transport"] == "api" for kw in captured)
 

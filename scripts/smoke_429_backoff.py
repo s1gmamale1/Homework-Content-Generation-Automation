@@ -15,7 +15,7 @@ async def main() -> None:
     prov = get_provider("gemini")
     rc, text, usage, stderr = await agent._spawn(
         provider=prov,
-        model="gemini-2.5-flash",
+        model="gemini-3.5-flash",
         prompt="Reply with exactly one word: OK",
         attachments=[],
         transport="api",

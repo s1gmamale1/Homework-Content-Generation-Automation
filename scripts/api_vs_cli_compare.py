@@ -248,6 +248,7 @@ def _fmt_usage(u: dict) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--provider", default="gemini", choices=["gemini", "claude"])
+    # historical repro — model intentionally pinned (cli retired; needs a both-transport model)
     ap.add_argument("--model", default=None, help="default: gemini-2.5-flash / claude-haiku-4-5-20251001")
     ap.add_argument("--prompt", default=DEFAULT_PROMPT)
     ap.add_argument("--max-tokens", type=int, default=None,
@@ -260,6 +261,7 @@ def main() -> None:
     ap.add_argument("--only", choices=["both", "cli", "rest", "sdk"], default="both",
                     help="run only one leg (default both = cli+rest); 'sdk' = google-genai SDK")
     args = ap.parse_args()
+    # historical repro — model intentionally pinned (cli retired; needs a both-transport model)
     model = args.model or ("gemini-2.5-flash" if args.provider == "gemini" else "claude-haiku-4-5-20251001")
 
     if args.realistic:

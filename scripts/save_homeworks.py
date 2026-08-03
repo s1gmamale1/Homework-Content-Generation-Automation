@@ -21,6 +21,8 @@ from app.services import pricing  # noqa: E402
 DSN = "postgresql://edu:edu@localhost:5432/edu_copy"
 OUT = Path.home() / "Documents" / "gemini-4model-biology-g9-fungi"
 
+# historical repro — model labels intentionally pinned to the actual models
+# these already-completed jobs (fixed UUIDs below) were generated with.
 JOBS = [
     ("7979bd1f-a19b-48d7-9d30-ab71a969e87c", "gemini-2.5-flash"),
     ("1ac8ad89-f8ab-4892-8064-774a47234af4", "gemini-2.5-pro"),

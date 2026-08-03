@@ -802,8 +802,8 @@ async def audit_job(
     job_id: UUID | str,
     *,
     provider: str = "gemini",
-    examiner_model: str = "gemini-2.5-pro",
-    student_model: str = "gemini-2.5-flash",
+    examiner_model: str = "gemini-3.6-flash",
+    student_model: str = "gemini-3.5-flash",
     transport: str = "api",
     inputs: Optional[AuditInputs] = None,
 ) -> AuditResult:
@@ -889,8 +889,8 @@ async def paired_audit(
     job_id: UUID | str,
     *,
     provider: str = "gemini",
-    examiner_model: str = "gemini-2.5-pro",
-    student_model: str = "gemini-2.5-flash",
+    examiner_model: str = "gemini-3.6-flash",
+    student_model: str = "gemini-3.5-flash",
     transport: str = "api",
     inputs: Optional[AuditInputs] = None,
 ) -> PairedResult:

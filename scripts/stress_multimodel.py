@@ -27,6 +27,8 @@ import app.config  # noqa: F401,E402  (loads .env into os.environ)
 from google import genai  # noqa: E402
 from google.genai import types  # noqa: E402
 
+# historical repro — model list intentionally pinned to the 4-model campaign
+# comparison (matches the job IDs in save_homeworks.py / fanout_analysis.py)
 MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-pro",

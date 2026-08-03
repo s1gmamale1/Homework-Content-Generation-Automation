@@ -42,9 +42,9 @@ from app.services.pipeline import _inject_grade, _inject_lesson_boundary
 from app.services.prompts import get_prompt
 
 BOOK_ID_PREFIX = "860e86aa"
-# transport=api requires an explicit model. gemini-2.5-flash = the campaign
-# content-tier model; the boundary/reflection fixes are model-agnostic prompt edits.
-GEN_MODEL = "gemini-2.5-flash"
+# transport=api requires an explicit model; the boundary/reflection fixes are
+# model-agnostic prompt edits, so any live content-tier model works here.
+GEN_MODEL = "gemini-3.5-flash"
 # The audit's packet #5 lesson: §17 "Pifagor teoremasi va uning turli isbotlari"
 # (pp 41-43). Its successor is §18 "…teskari teorema" (the converse) — exactly the
 # next-lesson material boss-arena must NOT reach for. NB: this book stores
