@@ -64,6 +64,21 @@ Keep the scan **read-only**: never switch, reset, clean or commit on another ses
 worktree. **Verify the branch before every commit** — `git rev-parse --abbrev-ref HEAD` must be
 `Nggaev-v2`, and abort if it is not. Repeat this gate when resuming stale work or when the base moves.
 
+### Gate result — 2026-08-03, recorded per the standing rule
+
+Refs inspected: `origin/Nggaev-v2` @ `36725fa` · `feat/model-config-3x-flash` @ `94dad05`
+(worktree = main checkout) · `feat/model-config-3x-flash-exec` @ `8e6b558`
+(worktree `../HCGA-model-config`, **unpushed, no PR**) · `feat/gemini-global-default` @ `f82bdc2` ·
+`fix/dashboard-mobile-wrap` @ `3ff8403` (PR #108 open).
+
+**Conclusion: no blocking overlap.** The model-config lane touches `agent_models.py`,
+`model_tiers.py`, `pricing.py`, `config.py`, `jobs.py`, `batch.py`, `job_reactivation.py`,
+`teaching_audit.py` and `scripts/*` — but **not** `pipeline.py`, **not** `prompts/`, **not**
+`app/schemas/`. The single interaction is migration numbering: **`0049` is claimed**, so this plan
+takes **`0050`** (see Task 4 Step 1).
+
+No serialization needed; Tasks 1–3 and 5–9 may proceed immediately. Re-run this gate on resume.
+
 ## Global Constraints
 
 - **Never `git add -A`.** Stage only the files each task lists — other sessions share this repo.
@@ -807,10 +822,22 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Determine the migration number**
 
-Run: `ls alembic/versions/ | sed 's/_.*//' | sort -n | tail -3`
-At plan time the head is `0048`, and the model-config lane plans `0049` (not yet built). **Use the
-next free number** — expect `0050` if that lane landed, `0049` if it has not. Set `down_revision` to
-the current head revision id, which you read from the newest file.
+**Gate finding (2026-08-03): `0049` is TAKEN.** The model-config lane's execution branch
+`feat/model-config-3x-flash-exec` (worktree `../HCGA-model-config`, **unpushed, no PR yet**) already
+contains `alembic/versions/0049_launch_defaults_3x.py`. **Use `0050`.**
+
+Because their `0049` is unmerged, set `down_revision` to the **current merged head** (`0048`), not to
+their revision id — pointing at an unmerged revision would dangle if their lane is abandoned or
+renumbered.
+
+```bash
+ls alembic/versions/ | sed 's/_.*//' | sort -n | tail -3   # confirm before writing
+git fetch origin && git log --oneline origin/Nggaev-v2 -1  # confirm the merged head
+```
+
+**At finish/rebase time, re-check**: if their `0049` has merged ahead of you, re-point your
+`down_revision` to it so alembic keeps a single head. If alembic reports multiple heads after a
+rebase, that is the signal — resolve it before merging, never with a merge-migration added silently.
 
 - [ ] **Step 2: Write the failing test**
 
