@@ -56,3 +56,83 @@ def test_render_sentence_lists_passage_and_bank():
 def test_render_unknown_phase_raises():
     with pytest.raises(phase_render.RenderError):
         phase_render.render_md("flashcards", _rlc_cfg())
+
+
+# ── Author-only answer key ───────────────────────────────────────────────────
+# practice-rlc is in pipeline._SOLVER_PHASES, and the judge grades against a
+# markdown contract that says "Mark which option is correct". So the rendered
+# markdown MUST carry the key — but in a section the platform provably strips
+# before a student sees it.
+
+import importlib.util
+import pathlib as _pl
+import subprocess
+import sys
+import types
+
+import pytest
+
+_PLATFORM_REPO = _pl.Path("/Users/macmini5/Documents/Class-A-Education-Platform-Backend")
+
+
+def _platform_redactor():
+    """Load the platform's REAL redactor (django stubbed) so this test asserts
+    against their behaviour, not a local copy of it."""
+    dj = types.ModuleType("django")
+    conf = types.ModuleType("django.conf")
+
+    class _S:
+        def __getattr__(self, n):
+            return None
+
+    conf.settings = _S()
+    dj.conf = conf
+    sys.modules.setdefault("django", dj)
+    sys.modules.setdefault("django.conf", conf)
+    src = subprocess.run(
+        ["git", "-C", str(_PLATFORM_REPO), "show",
+         "origin/Akademiya-AI:apps/library/redactor.py"],
+        capture_output=True, text=True,
+    ).stdout
+    if not src.strip():
+        pytest.skip("platform checkout unavailable")
+    f = _pl.Path("/tmp/_plat_redactor_test.py")
+    f.write_text(src)
+    spec = importlib.util.spec_from_file_location("_plat_red_test", f)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_rendered_markdown_carries_an_answer_key_for_the_solver():
+    md = phase_render.render_md("practice-rlc", _rlc_cfg())
+    assert "## Answer key" in md
+    assert "Yes" in md.split("## Answer key", 1)[1]   # the correct option is listed
+
+
+@pytest.mark.skipif(not _PLATFORM_REPO.exists(), reason="platform checkout absent")
+def test_platform_redactor_strips_our_answer_key_section():
+    red = _platform_redactor()
+    md = phase_render.render_md("practice-rlc", _rlc_cfg())
+    clean, dropped = red.strip_answer_sections(md)
+    assert dropped == ["Answer key"]
+    assert "## Answer key" not in clean
+    # The fixture reuses "Yes"/"No" across the three option steps, so "Yes"
+    # appears 3x as an option + 3x in the key. After stripping, only the three
+    # option occurrences survive: RLC must still render every option, but the
+    # key listing is gone.
+    assert md.count("Yes") == 6
+    assert clean.count("Yes") == 3
+    # no numbered key rows survive
+    assert "\n1. Yes" not in clean
+
+
+@pytest.mark.skipif(not _PLATFORM_REPO.exists(), reason="platform checkout absent")
+def test_platform_redactor_strips_sentence_answer_key():
+    red = _platform_redactor()
+    cfg = SentenceFillConfig.model_validate({"items": [{
+        "id": "i1", "mode": "word_bank", "passage": "A ___ ran.",
+        "answers": ["cat"], "word_bank": ["cat", "dog"]}]})
+    clean, dropped = red.strip_answer_sections(phase_render.render_md("practice-sentence", cfg))
+    assert dropped == ["Answer key"]
+    assert "## Answer key" not in clean
