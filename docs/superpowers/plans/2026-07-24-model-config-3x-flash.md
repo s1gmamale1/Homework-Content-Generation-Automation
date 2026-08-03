@@ -1,4 +1,4 @@
-# Model config → 3.x flash family on the plain Gemini API key (rev 6)
+# Model config → 3.x flash family on the plain Gemini API key (rev 7)
 
 ## Approach & key decisions
 
@@ -24,18 +24,24 @@ running tools, the self-grade guard, or the fleet auth cutover.
   acceptance asserts the per-operation model for all four solve:* calls, not just boss-arena.
 - `launch_defaults` = 4 provider/model pairs + 5 transports; TOC-validator MODEL is process config.
   `validate_toc` returns `skipped` on any failure (never raises). Pricing coverage scoped to `API_PROVIDERS`.
-- **Concurrency — MEASURED, not inherited (gate finding 1 corrected):** the old "~8 ceiling" was the
-  **Vertex per-project quota**; this plain Developer-API key is a different regime. A bounded ramp
-  (2026-08-03) on BOTH `gemini-3.5-flash` and `gemini-3.6-flash` returned **8/16/32/64/128 concurrent all
-  clean — 0 × 429** (p50 grows 1.7→6.7s, pure queueing, no rejection). So the fleet must NOT be throttled
-  to 8. **Caveat on scope:** this ramp measured *burst instantaneous concurrency with tiny payloads*; it
-  did NOT measure sustained RPM/TPM over minutes or real 6–10k-token payloads — so the config below starts
-  well above 8 but below the proven 128, and is raised on observation. Also: `AGENT_MAX_CONCURRENCY=1`
-  would serialize each job's DAG-parallel phase wave (killing the pipeline's ~2× speedup) — keep it at 8.
+- **Concurrency — MEASURED, not inherited:** the old "~8 ceiling" was the **Vertex per-project quota**;
+  this plain Developer-API key is a different regime. Bounded ramps (2026-08-03), 0 × 429 everywhere:
+  `gemini-3.5-flash` and `gemini-3.6-flash` → 8/16/32/64/**128** concurrent all clean; the SOLVER model
+  `gemini-3.1-pro-preview` → 4/8/16/**32** concurrent all clean, all ≤60s, p50 ~5s (this **disproves** the
+  "Pro borderline at 8" claim on this key). So the fleet must NOT be capped at 8. **But two real
+  load-composition limits remain, so the cap follows the SLOWEST realistic path, not the burst ceiling:**
+  (1) these ramps used *tiny* payloads — real content calls run p95 ~94s and real Pro solver calls
+  p50 ~13s/p95 ~51s/max ~594s (production), so slow calls hold shared slots long; (2) with a shared cap +
+  `CREDENTIAL_SLOT_WAIT_SECONDS=120`, total fleet demand must not so exceed the cap that queued calls
+  can't drain within 120s (they'd park). Sizing rule: keep `hosts × AGENT_MAX_CONCURRENCY ≈
+  CREDENTIAL_MAX_CONCURRENT_GEMINI`. **`AGENT_MAX_CONCURRENCY` footgun:** `_effective_concurrency()`
+  (`agent.py:235`) treats the value **8** as "use legacy `GEMINI_MAX_CONCURRENCY`" — so `AMC=8` on a host
+  with a stale `GEMINI_MAX_CONCURRENCY=1` stays serialized. Use a NON-8 explicit value (4) and REMOVE
+  `GEMINI_MAX_CONCURRENCY` from every `.env`. Never set AMC=1 (serializes each job's DAG phase wave).
 - Pricing (Google Standard Developer API, pinned in Task 1 RED): 3.6-flash `1.50/7.50/0.15`, 3.5-flash
   `1.50/9.00/0.15`, 3.5-flash-lite `0.30/2.50/0.03` (input/output/cache-read per 1M). Cost ≈ **$1.43/hw**.
 
-**Collision:** branch plan-only at **bc41b0e**; base `origin/Nggaev-v2` a80cac3; PR #108 overlaps only the
+**Collision:** branch plan-only at **4d875ac**; base `origin/Nggaev-v2` a80cac3; PR #108 overlaps only the
 append-only memory docs (Task 9). Worklog **0161**; revision **0049**.
 
 Branch: `feat/model-config-3x-flash` off `origin/Nggaev-v2`.
@@ -137,22 +143,32 @@ toc_transport=`api`. RED (scratch real DB): fresh-0048 AND prod tuples → upgra
 4. Worklog **0161** + INDEX; de-stale CLAUDE.md (`settings.extract_*`; 2.5 retired; api-only; retry guard),
    `HOW_IT_WORKS.md`, `CODE_MAP.md`, `DATABASE.md`; `git mv` plan → `shipped/`.
 5. **Ops (operator, user-owned) — coordinated cutover:**
+   0. **Pre-flight assertion (F4):** immediately before migration/restart, query
+      `SELECT count(*) FROM homework_jobs WHERE status IN ('pending','running','cancelling') AND (…2.5
+      stamp on any role…)` and require **0** — so nothing launched after planning slips through with a
+      retired stamp (currently 0 active; 115 cancelled / 42 failed are terminal + Task-3-guarded).
    1. Stop new launches + drain.
    2. Pull code on head AND every worker.
    3. **Per host, in order:** Scrub → verify local SA residue cleared (worker `active.json`/env; tombstone
       row still present) → **STOP the worker** → Unassign (unpark) → install plain `GEMINI_API_KEY` in `.env`
       → restart. (Stopping before Unassign closes the keyless-claim window.)
    4. Apply migration 0049 on head; **restart head** (auto-stamps version floor — verify; PUT only to override).
-   5. **Concurrency — evidence-based, NOT the stale cap-8** (measured ≥128 burst-clean; start below the
-      proven ceiling with headroom for the untested sustained-rate dimension, then raise on observation):
-      - Workers (×N): `WORKER_CONCURRENCY=2`, `AGENT_MAX_CONCURRENCY=8` (keep DAG parallelism),
-        `CREDENTIAL_SLOT_WAIT_SECONDS=120`.
-      - Shared-key fleet cap: `CREDENTIAL_MAX_CONCURRENT_GEMINI=32` (4× the old Vertex 8, ≈¼ of the proven
-        128 ceiling) — the single binding fleet-wide limit for the shared key.
-      - Head: `WORKER_CONCURRENCY=0`, `AGENT_MAX_CONCURRENCY=8`, `CREDENTIAL_MAX_CONCURRENT_GEMINI=32`.
-      - **Tune up:** watch 429s / slot-wait timeouts / RPM-TPM over the first campaign hour; if clean, raise
-        `CREDENTIAL_MAX_CONCURRENT_GEMINI` toward 64+. A cheap sustained-rate + real-payload ramp before a
-        large campaign would confirm the RPM/TPM headroom my burst ramp didn't cover.
+   5. **Concurrency — evidence-based provisional (NOT the stale cap-8; sized so demand ≈ cap so slow real
+      calls can't overrun the 120s slot-wait). First REMOVE `GEMINI_MAX_CONCURRENCY` from every `.env`
+      (else `AMC=8` silently falls back to it — `agent.py:235`), then set:**
+      - Workers (×N): `WORKER_CONCURRENCY=2`, `AGENT_MAX_CONCURRENCY=4` (explicit non-8 → honored, avoids
+        the sentinel; still parallelizes the DAG wave), `CREDENTIAL_SLOT_WAIT_SECONDS=120`.
+      - Shared-key fleet cap: `CREDENTIAL_MAX_CONCURRENT_GEMINI=32` — the single binding fleet-wide limit.
+        Sizing: `hosts × AMC ≈ cap` (e.g. 8 hosts × 4 = 32); for ~10 hosts this is a mild 40→32
+        oversubscription that drains inside 120s.
+      - Head: `WORKER_CONCURRENCY=0`, `AGENT_MAX_CONCURRENCY=4`, `CREDENTIAL_MAX_CONCURRENT_GEMINI=32`.
+      - **After restart, VERIFY effective per-process concurrency is actually 4** (not silently 1 from a
+        leftover legacy var).
+      - **Before a large campaign, run a REAL-payload solver Pro ramp (4/8/16/32) + a mixed-model sustained
+        run** (content+judge+solver together over several minutes) — the tiny-payload burst ramps proved the
+        provider doesn't 429, but not sustained mixed-output slot-hold behavior. **Raise together** to
+        `AGENT_MAX_CONCURRENCY=8` + `CREDENTIAL_MAX_CONCURRENT_GEMINI≈64` only once that run is clean (never
+        raise AMC while the cap stays 32 — that just deepens the queue).
    6. One post-deploy smoke, then reopen launches.
 
 ## Explicitly out of scope
