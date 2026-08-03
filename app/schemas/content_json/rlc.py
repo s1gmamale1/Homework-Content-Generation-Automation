@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import ClassVar, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, model_validator
 
 from .common import StrictModel, all_unique_normalized
 
@@ -60,7 +60,10 @@ class Step(StrictModel):
 
 
 class RlcConfig(StrictModel):
-    SCHEMA_VERSION: str = "rlc_config@1"
+    # ClassVar, NOT a field: it must not appear in model_dump() — the version
+    # travels in the envelope as content_schema_version, and an extra key inside
+    # content_json would defeat the extra="forbid" containment.
+    SCHEMA_VERSION: ClassVar[str] = "rlc_config@1"
 
     id: str = Field(min_length=1)
     title: str = Field(min_length=1)
@@ -68,12 +71,6 @@ class RlcConfig(StrictModel):
     expert_role: Literal[EXPERT_ROLES]  # type: ignore[valid-type]
     steps: list[Step]
 
-    @field_validator("SCHEMA_VERSION")
-    @classmethod
-    def _pin_version(cls, v: str) -> str:
-        if v != "rlc_config@1":
-            raise ValueError("SCHEMA_VERSION is fixed")
-        return v
 
     @model_validator(mode="after")
     def _shape(self):

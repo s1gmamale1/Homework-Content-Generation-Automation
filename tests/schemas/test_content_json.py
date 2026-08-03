@@ -114,3 +114,16 @@ def test_sentence_fill_bank_must_contain_every_answer():
 def test_schemas_registry():
     assert SCHEMAS["practice-rlc"] is RlcConfig
     assert SCHEMAS["practice-sentence"] is SentenceFillConfig
+
+
+def test_schema_version_is_classvar_not_a_payload_field():
+    """The version travels in the ENVELOPE as content_schema_version. If it were a
+    pydantic field it would appear inside content_json, adding an unknown key to the
+    object we ship — exactly what extra="forbid" + model_dump() exists to prevent."""
+    cfg = SentenceFillConfig.model_validate({"items": [{
+        "id": "i1", "mode": "word_bank", "passage": "A ___ ran.",
+        "answers": ["cat"], "word_bank": ["cat", "dog"]}]})
+    assert "SCHEMA_VERSION" not in cfg.model_dump(mode="json")
+    assert cfg.SCHEMA_VERSION == "sentence_fill_config@1"
+    assert "SCHEMA_VERSION" not in SentenceFillConfig.model_fields
+    assert "SCHEMA_VERSION" not in RlcConfig.model_fields

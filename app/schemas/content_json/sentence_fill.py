@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import Field, model_validator
 
@@ -38,7 +38,8 @@ class SentenceItem(StrictModel):
 
 
 class SentenceFillConfig(StrictModel):
-    SCHEMA_VERSION: str = "sentence_fill_config@1"
+    # ClassVar, NOT a field — see rlc.py.
+    SCHEMA_VERSION: ClassVar[str] = "sentence_fill_config@1"
 
     items: list[SentenceItem] = Field(min_length=1)
 
