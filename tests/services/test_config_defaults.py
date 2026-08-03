@@ -17,4 +17,4 @@ def test_max_file_mb_default_is_textbook_sized():
 
 def test_toc_validation_model_default_off_2_5():
     from app.config import settings
-    assert settings.toc_validation_model == "gemini-3.5-flash-lite"
+    assert settings.toc_validation_model == "gemini-3.5-flash"
