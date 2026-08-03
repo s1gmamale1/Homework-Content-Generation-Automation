@@ -9,9 +9,11 @@ from typing import Any, Optional
 from uuid import UUID
 
 from loguru import logger
+from pydantic import ValidationError
 
 from app.config import settings
 from app.db import SessionLocal
+from app.schemas.content_json import SCHEMAS
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
@@ -32,7 +34,13 @@ from app.services.flows import (
     max_output_tokens_for,
     resolve_phase_deps,
 )
-from app.services.prompts import get_prompt, get_prompt_hash
+from app.services.phase_artifact import (
+    PhaseArtifact,
+    StructuredPhaseError,
+    artifact_from_config,
+    artifact_from_markdown,
+)
+from app.services.prompts import get_prompt, get_prompt_hash, get_structured_prompt
 
 _INTERNAL_PHASES = {"extract", "classify"}
 
@@ -941,6 +949,136 @@ async def _run_with_failover(
     raise last_exc or RuntimeError(f"{requested_provider}: all providers exhausted")
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Artifact generation: structured attempt → typed markdown fallback
+#
+# Every content-generation call site (initial, judge regen, solver regen) goes
+# through `_generate_artifact`, so the markdown and the JSON that produced it
+# can never drift apart: a regen replaces the WHOLE artifact, never output_md
+# alone.
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def _run_markdown_attempt(
+    *,
+    phase_name: str,  # noqa: ARG001 — symmetry with _run_structured_attempt
+    requested_provider: str,
+    model: Optional[str],
+    run_fn,
+    transport: str = "cli",
+    session_limit_strategy: str = "pause",
+    **_structured_only,
+) -> tuple[str, Optional[int], Optional[int], str]:
+    """Today's markdown generation path, extracted verbatim.
+
+    It is exactly ``_run_with_failover``: classify → retry same → next provider.
+    Pulled out as a named seam so `_generate_artifact` has one thing to fall
+    back to (and tests have one thing to monkeypatch) while the nine phases
+    without a structured schema keep byte-identical behaviour.
+    """
+    return await _run_with_failover(
+        requested_provider=requested_provider,
+        model=model,
+        run_fn=run_fn,
+        transport=transport,
+        session_limit_strategy=session_limit_strategy,
+    )
+
+
+async def _run_structured_attempt(
+    *,
+    phase_name: str,
+    structured_prompt: Optional[str],
+    requested_provider: str,
+    model: Optional[str],
+    transport: str = "cli",
+    lesson_context: Optional[str] = None,
+    prior_outputs: Optional[dict[str, str]] = None,
+    difficulty: Optional[str] = None,
+    attachments: Optional[list[Path]] = None,
+    job_id: Optional[UUID] = None,
+    po_id: Optional[UUID] = None,
+    source_map_digest: str = "",
+    **_markdown_only,
+) -> tuple[PhaseArtifact, Optional[int], Optional[int], str]:
+    """One JSON-authoring call, validated into a `PhaseArtifact`.
+
+    Deliberately calls ``agent.run_phase`` DIRECTLY rather than going through
+    ``_run_with_failover``: that helper does "classify the error → retry the
+    same provider → fail over", so a `StructuredPhaseError` escaping into it
+    would be retried as though it were a transport fault, burning the budget on
+    a model that simply cannot produce the config. Transport errors raised by
+    ``agent.run_phase`` (auth, 429, slot saturation, timeout, network) propagate
+    out of here untouched and keep their existing semantics one level up.
+    """
+    if not structured_prompt:
+        raise StructuredPhaseError(f"no structured prompt for phase '{phase_name}'")
+    schema = SCHEMAS[phase_name]
+    try:
+        result = await agent.run_phase(
+            provider=requested_provider,
+            model=model,
+            phase_prompt=structured_prompt,
+            phase_name=phase_name,
+            homework_job_id=job_id,
+            phase_output_id=po_id,
+            lesson_context=lesson_context,
+            prior_outputs=prior_outputs,
+            attachments=list(attachments or []),
+            schema=schema,
+            difficulty=difficulty,
+            max_output_tokens=max_output_tokens_for(phase_name),
+            source_map_digest=source_map_digest,
+            transport=transport,
+        )
+    except ValidationError as exc:
+        raise StructuredPhaseError(
+            f"{schema.__name__} validation failed: {exc}"
+        ) from exc
+    if result.parsed is None:
+        raise StructuredPhaseError(
+            f"{schema.__name__}: model returned no valid config"
+        )
+    tin = int(result.usage.get("prompt_tokens") or 0) or None
+    tout = int(result.usage.get("output_tokens") or 0) or None
+    # artifact_from_config may itself raise StructuredPhaseError (renderer
+    # refused / produced nothing) — that is a fallback trigger, by design.
+    return artifact_from_config(phase_name, result.parsed), tin, tout, requested_provider
+
+
+async def _generate_artifact(
+    *, phase_name: str, is_custom: bool = False, **kw
+) -> tuple[PhaseArtifact, Optional[int], Optional[int], str]:
+    """Structured attempt, then markdown fallback ONLY on StructuredPhaseError.
+
+    Any other exception (auth, 429, slot saturation, timeout, network)
+    propagates untouched so the existing classify/retry/failover logic still
+    applies. Widening this catch would silently convert a transport outage into
+    a "the model can't do JSON" fallback and hide real breakage.
+
+    A custom uploaded prompt is a MARKDOWN contract (it is what the judge, the
+    solver and the lint all read), so it disables the structured lane entirely
+    and records ``markdown_custom``.
+    """
+    structured = phase_name in SCHEMAS and not is_custom
+    if structured:
+        try:
+            return await _run_structured_attempt(phase_name=phase_name, **kw)
+        except StructuredPhaseError as exc:
+            logger.warning(
+                f"[{phase_name}] structured generation failed ({exc}); "
+                f"falling back to markdown"
+            )
+    md, tin, tout, produced_by = await _run_markdown_attempt(phase_name=phase_name, **kw)
+    if is_custom:
+        mode = "markdown_custom"
+    elif structured:
+        mode = "markdown_fallback"
+    else:
+        mode = "markdown_builtin"
+    return artifact_from_markdown(md, mode=mode), tin, tout, produced_by
+
+
 async def _judge_with_timeout(**kwargs) -> phase_judge.JudgeOutcome:
     """Wrap phase_judge.judge in the per-attempt timeout.
 
@@ -1261,8 +1399,17 @@ async def _execute_phase(
                     session_limit_strategy=session_limit_strategy,
                 )
                 parsed_struct = None
+            # extract is a builtin-prompt markdown phase — no structured lane.
+            artifact = artifact_from_markdown(output_md, mode="markdown_builtin")
         else:
             base_phase_prompt = _custom_md if _custom_md is not None else get_prompt(subject, phase_name, output_language=output_language)
+            # None for the 9 phases without a JSON-authoring prompt, and for any
+            # phase whose contract the operator replaced with a custom upload.
+            structured_prompt = (
+                None
+                if _custom_md is not None
+                else get_structured_prompt(subject, phase_name, output_language=output_language)
+            )
 
             def _make_run(prompt_text: str):
                 async def _run(prov: str, mdl: Optional[str]):
@@ -1283,11 +1430,37 @@ async def _execute_phase(
                     )
                 return _run
 
-            output_md, tin, tout, produced_by = await _run_with_failover(
-                requested_provider=provider, model=model,
-                run_fn=_make_run(base_phase_prompt), transport=transport,
-                session_limit_strategy=session_limit_strategy,
+            async def _generate(*, feedback: str, req_provider: str, req_model: Optional[str]):
+                """One generation attempt as a whole artifact.
+
+                Used by the initial generation AND by both regens, so a regen can
+                never replace the markdown while leaving a stale content_json
+                beside it — the artifact is always swapped wholesale.
+                """
+                return await _generate_artifact(
+                    phase_name=phase_name,
+                    is_custom=_custom_md is not None,
+                    requested_provider=req_provider,
+                    model=req_model,
+                    run_fn=_make_run(base_phase_prompt + feedback),
+                    structured_prompt=(
+                        structured_prompt + feedback if structured_prompt else None
+                    ),
+                    transport=transport,
+                    session_limit_strategy=session_limit_strategy,
+                    lesson_context=lesson_context or "",
+                    prior_outputs=prior_outputs,
+                    difficulty=difficulty,
+                    attachments=[pdf_path] if attach_file else [],
+                    job_id=job_id,
+                    po_id=po_id,
+                    source_map_digest=source_map_digest,
+                )
+
+            artifact, tin, tout, produced_by = await _generate(
+                feedback="", req_provider=provider, req_model=model,
             )
+            output_md = artifact.output_md
             parsed_struct = None
     except SessionLimitPause:
         raise  # propagate to worker — phase must NOT be marked failed on a pause
@@ -1368,16 +1541,17 @@ async def _execute_phase(
             # regen failure keep the judge-rejected-but-complete original output +
             # its warnings and proceed to `done`.
             try:
-                regen_prompt = base_phase_prompt + outcome.feedback
-                r_md, r_tin, r_tout, r_prod = await _run_with_failover(
-                    requested_provider=produced_by,
-                    model=_gen_model_of(produced_by),
-                    run_fn=_make_run(regen_prompt),
-                    transport=transport,
-                    session_limit_strategy=session_limit_strategy,
+                r_art, r_tin, r_tout, r_prod = await _generate(
+                    feedback=outcome.feedback,
+                    req_provider=produced_by,
+                    req_model=_gen_model_of(produced_by),
                 )
                 # Commit to the regenerated output only after it actually succeeded.
-                output_md, tin, tout, produced_by = r_md, r_tin, r_tout, r_prod
+                # The WHOLE artifact is swapped — a regen that falls back to
+                # markdown carries content_json=None with it, so new markdown can
+                # never be persisted beside the previous attempt's JSON.
+                artifact, tin, tout, produced_by = r_art, r_tin, r_tout, r_prod
+                output_md = artifact.output_md
                 _jp2, _jm2 = model_tiers.resolve_judge(
                     produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
                 )
@@ -1458,15 +1632,15 @@ async def _execute_phase(
                 solver_status = "mismatch_shipped"  # default until a regen fixes it
                 for _s_regen in range(settings.max_solve_regens):
                     try:
-                        regen_prompt = base_phase_prompt + s_outcome.feedback
-                        r_md, r_tin, r_tout, r_prod = await _run_with_failover(
-                            requested_provider=produced_by,
-                            model=_gen_model_of(produced_by),
-                            run_fn=_make_run(regen_prompt),
-                            transport=transport,
-                            session_limit_strategy=session_limit_strategy,
+                        r_art, r_tin, r_tout, r_prod = await _generate(
+                            feedback=s_outcome.feedback,
+                            req_provider=produced_by,
+                            req_model=_gen_model_of(produced_by),
                         )
-                        output_md, tin, tout, produced_by = r_md, r_tin, r_tout, r_prod
+                        # Same whole-artifact swap as the judge regen above —
+                        # markdown and content_json move together or not at all.
+                        artifact, tin, tout, produced_by = r_art, r_tin, r_tout, r_prod
+                        output_md = artifact.output_md
                         _sp2, _sm2 = model_tiers.resolve_solver(
                             produced_by, _gen_model_of(produced_by), solver_provider_ov, solver_model_ov,
                         )
@@ -1509,6 +1683,10 @@ async def _execute_phase(
             logger.warning(f"[job {job_id}] {phase_name} content_lint error ({exc!r}); skipping")
         if warnings:
             logger.warning(f"[job {job_id}] {phase_name} validation warnings: {warnings}")
+    # The ONLY write of the generated content — after the judge regen AND the
+    # solver regen. `artifact` is whatever survived them, so the markdown, the
+    # JSON, the schema version and the renderer version are always the SAME
+    # attempt's. Never add an earlier write here.
     async with SessionLocal() as session:
         await phase_repo.set_status(
             session, po_id, "done",
@@ -1520,6 +1698,10 @@ async def _execute_phase(
             provider=produced_by,
             judge_status=judge_status,
             solver_status=solver_status,
+            content_json=artifact.content_json,
+            authoring_mode=artifact.authoring_mode,
+            content_schema_version=artifact.content_schema_version,
+            renderer_version=artifact.renderer_version,
         )
         await session.commit()
 

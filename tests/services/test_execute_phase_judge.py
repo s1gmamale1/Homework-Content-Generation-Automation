@@ -9,7 +9,16 @@ def test_execute_phase_invokes_the_judge():
     # phase_judge.judge in the per-attempt timeout) — check the indirection.
     assert "_judge_with_timeout" in src
     assert "produced_by" in src
-    assert src.count("_run_with_failover") >= 2
+    # Content generation now goes through _generate_artifact (structured attempt
+    # → markdown fallback): initial generation + judge regen + solver regen.
+    # The markdown leg still IS the failover driver — assert the indirection
+    # rather than the old direct call, so "regen runs through failover" is still
+    # covered end to end.
+    assert src.count("await _generate(") >= 3, src.count("await _generate(")
+    assert "_generate_artifact" in src
+    assert "_run_with_failover" in inspect.getsource(pipeline._run_markdown_attempt)
+    # extract keeps its own direct failover call (no structured lane)
+    assert "_run_with_failover" in src
     # the regen is GUARDED — an exhausted regen must not fail the job
     assert "regen failed" in src
     # regen is gated on a MAJOR issue, not merely "not passed" (minor nits only warn)
