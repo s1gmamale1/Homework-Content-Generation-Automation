@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services import pricing
+from app.services import agent_models, pricing
 
 
 def test_opus_input_plus_output_anchor():
@@ -154,6 +154,38 @@ def test_claude_cache_creation_tokens_adds_premium():
     cache_write_rate = 3.0 * 1.25  # $3.75/Mtok
     expected = (1_000_000 * 3.0 + 300_000 * cache_write_rate) / 1_000_000
     assert pricing.cost_usd("claude", "claude-sonnet-4-6", usage) == pytest.approx(expected)
+
+
+# ── gemini 3.x flash trio (2026-08-03 rollout, task 1) ───────────────────────
+# Rates pinned EXACT per the task brief / Google Standard Developer API list
+# price (ai.google.dev/gemini-api/docs/pricing, 2026-08-03).
+
+def test_gemini_3_6_flash_pricing():
+    # Gemini's prompt_tokens INCLUDES cached — 2M prompt incl. 1M cached, so
+    # uncached input = 1M. input $1.50 + output $7.50 + cache_read $0.15.
+    usage = {"prompt_tokens": 2_000_000, "output_tokens": 1_000_000, "cached_tokens": 1_000_000}
+    assert pricing.cost_usd("gemini", "gemini-3.6-flash", usage) == pytest.approx(1.50 + 7.50 + 0.15)
+
+
+def test_gemini_3_5_flash_pricing():
+    # input $1.50 + output $9.00 + cache_read $0.15
+    usage = {"prompt_tokens": 2_000_000, "output_tokens": 1_000_000, "cached_tokens": 1_000_000}
+    assert pricing.cost_usd("gemini", "gemini-3.5-flash", usage) == pytest.approx(1.50 + 9.00 + 0.15)
+
+
+def test_gemini_3_5_flash_lite_pricing():
+    # input $0.30 + output $2.50 + cache_read $0.03
+    usage = {"prompt_tokens": 2_000_000, "output_tokens": 1_000_000, "cached_tokens": 1_000_000}
+    assert pricing.cost_usd("gemini", "gemini-3.5-flash-lite", usage) == pytest.approx(0.30 + 2.50 + 0.03)
+
+
+def test_every_api_billable_manifest_model_is_priced():
+    """Completeness gate SCOPED to API_PROVIDERS (claude/gemini/clodex) — the
+    providers actually billed under transport=api. kimi/codex/opencode are
+    intentionally unpriced (cli-only, always $0) and must NOT be included."""
+    for provider in agent_models.API_PROVIDERS:
+        for model in agent_models.MODEL_MANIFEST[provider]:
+            assert (provider, model) in pricing.PRICE_MAP, (provider, model)
 
 
 def test_provider_without_cache_write_key_never_raises():

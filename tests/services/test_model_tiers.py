@@ -24,6 +24,23 @@ def test_every_manifest_model_has_a_tier():
             assert t in (1, 2, 3, 4), f"{provider}/{model} -> {t}"
 
 
+def test_gemini_3x_flash_trio_tiers_pinned():
+    # Pinned per the task brief (2026-08-03 gemini-3.x-flash rollout):
+    # 3.6-flash and 3.5-flash are Strong (tier 2); 3.5-flash-lite is Light (tier 4).
+    assert mt.tier_of("gemini", "gemini-3.6-flash") == 2
+    assert mt.tier_of("gemini", "gemini-3.5-flash") == 2
+    assert mt.tier_of("gemini", "gemini-3.5-flash-lite") == 4
+
+
+def test_retired_gemini_2_5_tiers_kept_for_historical_reference():
+    # ACCOUNTING test (unchanged by retirement): 2.5 is removed from the
+    # offerable MODEL_MANIFEST but its tier rows are KEPT — judge_model_for
+    # and any historical job still resolve a real tier, not the default.
+    assert mt.tier_of("gemini", "gemini-2.5-pro") == 2
+    assert mt.tier_of("gemini", "gemini-2.5-flash") == 3
+    assert mt.tier_of("gemini", "gemini-2.5-flash-lite") == 4
+
+
 def test_none_model_resolves_to_provider_default_tier():
     """model=None resolves to provider default, then its tier."""
     assert mt.tier_of("gemini", None) == mt.tier_of(

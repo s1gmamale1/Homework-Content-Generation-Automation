@@ -27,13 +27,19 @@ MODEL_MANIFEST: dict[str, list[str]] = {
         "gpt-5.4-mini",
         "gpt-5.3-codex-spark",
     ],
+    # gemini-2.5 (pro/flash/flash-lite) was RETIRED 2026-08-03 — the family
+    # 404s on the plain API key. See RETIRED_GEMINI_MODELS below: their
+    # price/tier rows are kept for historical attribution, but they are no
+    # longer offerable here. gemini-3.6-flash / gemini-3.5-flash /
+    # gemini-3.5-flash-lite are the api-only replacements — see
+    # GEMINI_API_ONLY_MODELS.
     "gemini": [
         "gemini-3.1-pro-preview",
         "gemini-3-flash-preview",
         "gemini-3.1-flash-lite-preview",
-        "gemini-2.5-pro",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
     ],
     "opencode": [
         # opencode zen models, addressed as provider/model. The *-free ones
@@ -77,6 +83,25 @@ def default_model(provider: str) -> str | None:
 API_PROVIDERS: frozenset[str] = frozenset({"claude", "gemini", "clodex"})
 API_ONLY_PROVIDERS: frozenset[str] = frozenset({"clodex"})
 
+# gemini-3.x-flash rollout (2026-08-03): these three models are reachable
+# through the plain gemini API key but do NOT exist in the gemini CLI's model
+# catalog (ModelNotFoundError, verified live) — so, unlike API_ONLY_PROVIDERS
+# (a whole provider), this is a per-MODEL cli rejection within a provider that
+# otherwise supports cli (gemini).
+GEMINI_API_ONLY_MODELS: frozenset[str] = frozenset(
+    {"gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"}
+)
+
+# gemini-2.5 (pro/flash/flash-lite) — retired 2026-08-03 (404s on the plain
+# API key). Removed from MODEL_MANIFEST (no longer offerable / is_valid ==
+# False) but the price map (pricing.py) and tier table (model_tiers.py) keep
+# their rows so historical agent_usages rows still resolve a real $ and tier
+# for attribution/reporting. Consumed by a later task (retired-model UI badge
+# / historical-job read paths).
+RETIRED_GEMINI_MODELS: frozenset[str] = frozenset(
+    {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"}
+)
+
 
 def api_supported(provider: str) -> bool:
     return provider in API_PROVIDERS
@@ -88,6 +113,8 @@ def validate_transport(provider: str, model: str | None, transport: str) -> str 
         return f"unknown transport {transport!r} (expected 'cli' | 'api')"
     if transport == "cli" and provider in API_ONLY_PROVIDERS:
         return f"provider {provider!r} is api-only (transport=cli is unsupported)"
+    if transport == "cli" and model in GEMINI_API_ONLY_MODELS:
+        return f"model {model!r} is api-only (transport=cli is unsupported)"
     if transport == "api":
         if not api_supported(provider):
             return f"transport=api unsupported for provider {provider!r} (only {sorted(API_PROVIDERS)})"
