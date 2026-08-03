@@ -55,6 +55,7 @@ import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { serveability, providerServeableAnyMode } from "@/lib/serveability";
 import { normalizeProviderTransport } from "@/lib/transport-policy";
+import { resolveTransport } from "@/lib/model-transport";
 import { type LauncherConfig, loadLauncherConfig, saveLauncherConfig } from "@/lib/launcher-config";
 import { LANG_LABEL, langBadge } from "@/lib/language";
 import {
@@ -990,7 +991,17 @@ function ReadyCard({
   // claude/gemini do; the toggle is hidden for the rest and transport pins cli.
   const fleet = modelsQ.data?.fleet;
   const apiSupported = modelsQ.data?.api_supported?.[provider] ?? false;
-  const apiOnly = modelsQ.data?.api_only?.[provider] ?? false;
+  // Provider-level api-only (whole provider, e.g. clodex) OR model-level
+  // api-only (gemini-3.x-flash — 404s/ModelNotFoundError on the gemini CLI's
+  // own catalog even though gemini itself supports cli). Both pin the
+  // toggle to api below — shared resolver every picker uses.
+  const modelForcedApi = resolveTransport({
+    provider,
+    model,
+    currentTransport: transport,
+    apiOnlyModels: modelsQ.data?.api_only_models,
+  }).forced;
+  const apiOnly = (modelsQ.data?.api_only?.[provider] ?? false) || modelForcedApi;
   const apiFleetCheck = serveability(fleet, provider, "api");
 
   // Reset transport to cli whenever the provider can't do api (keeps an

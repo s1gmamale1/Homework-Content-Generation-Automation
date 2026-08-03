@@ -27,6 +27,7 @@ from app.services import events_bus, notion_archive, pricing
 from app.services.agent_models import (
     MODEL_MANIFEST,
     API_ONLY_PROVIDERS,
+    GEMINI_API_ONLY_MODELS,
     api_supported,
     is_valid,
     resolve_output_language_for_book,
@@ -679,6 +680,12 @@ async def list_agent_models(session: AsyncSession = Depends(get_session)):
         "providers": MODEL_MANIFEST,
         "api_supported": {p: api_supported(p) for p in MODEL_MANIFEST},
         "api_only": {p: p in API_ONLY_PROVIDERS for p in MODEL_MANIFEST},
+        # Model-level api-only (task 4, F2-FE/F4): a per-MODEL cli rejection
+        # within a provider that otherwise supports cli (gemini-3.x-flash
+        # 404s/ModelNotFoundError on the CLI's catalog). Distinct from
+        # `api_only` above, which is provider-wide (e.g. clodex). Only gemini
+        # has any entries today — other providers are omitted.
+        "api_only_models": {"gemini": sorted(GEMINI_API_ONLY_MODELS)},
         "tiers": tiers,
         "fleet": await workers_repo.aggregate_fleet_capability(
             session, stale_after_seconds=settings.worker_registry_stale_seconds

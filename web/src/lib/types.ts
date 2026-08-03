@@ -250,6 +250,12 @@ export interface ProviderModelManifest {
   api_supported: Record<string, boolean>;
   /** Providers that have no CLI lane and must stay pinned to API. */
   api_only: Record<string, boolean>;
+  /** provider -> model ids that are api-only WITHIN a provider that otherwise
+   *  supports cli (e.g. gemini-3.x-flash 404s/ModelNotFoundError on the
+   *  gemini CLI's own catalog). Distinct from `api_only` above, which flags a
+   *  whole provider (e.g. clodex). Only providers with at least one api-only
+   *  model are present; absent/missing entries mean "none". */
+  api_only_models?: Record<string, string[]>;
   /** provider -> model -> tier int. */
   tiers?: Record<string, Record<string, number>>;
   /** Live fleet capability snapshot; absent when the endpoint hasn't loaded yet. */
