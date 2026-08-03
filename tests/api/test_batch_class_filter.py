@@ -43,9 +43,14 @@ def _fake_book():
 
 
 def _fake_launch_defaults():
+    # live target defaults — gemini-2.5 retired 2026-08-03. extract_transport is
+    # explicit "api" (not "inherit"): extract's model is api-only
+    # (GEMINI_API_ONLY_MODELS) and this test's content transport defaults to "cli"
+    # (BatchRequest schema default) — matches migration 0049's actual target row.
+    # judge stays claude/inherit — unaffected (claude is not in GEMINI_API_ONLY_MODELS).
     return SimpleNamespace(
         judge_provider="claude", judge_model="claude-sonnet-4-6", judge_transport="inherit",
-        extract_provider="gemini", extract_model="gemini-2.5-flash", extract_transport="inherit",
+        extract_provider="gemini", extract_model="gemini-3.5-flash-lite", extract_transport="api",
         solver_provider="claude", solver_model="claude-haiku-4-5-20251001", solver_transport="inherit",
         output_language="uz",
     )

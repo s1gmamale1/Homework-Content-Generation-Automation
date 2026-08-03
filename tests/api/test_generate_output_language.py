@@ -71,11 +71,19 @@ def _make_fake_job(output_language="uz"):
 
 
 def _make_fake_ld(output_language="uz"):
-    """Fake launch_defaults singleton."""
+    """Fake launch_defaults singleton (live target defaults — gemini-2.5 retired 2026-08-03).
+
+    judge/extract_transport are explicit "api" (not "inherit"): the live judge/extract
+    models are api-only (GEMINI_API_ONLY_MODELS), and these tests' content transport
+    defaults to "cli" (GenerateRequest schema default) — an "inherit" role transport
+    would follow that cli content transport and fail validate_transport's cli-rejection.
+    This matches migration 0049's actual target row (these roles stamped "api"
+    unconditionally, not "inherit").
+    """
     return SimpleNamespace(
-        judge_provider="gemini", judge_model="gemini-2.5-flash",
-        judge_transport="inherit", extract_provider="gemini",
-        extract_model="gemini-2.5-flash", extract_transport="inherit",
+        judge_provider="gemini", judge_model="gemini-3.5-flash",
+        judge_transport="api", extract_provider="gemini",
+        extract_model="gemini-3.5-flash-lite", extract_transport="api",
         solver_provider="gemini", solver_model="gemini-3.1-pro-preview",
         solver_transport="inherit",
         output_language=output_language,
