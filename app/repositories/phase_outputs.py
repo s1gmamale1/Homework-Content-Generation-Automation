@@ -75,6 +75,10 @@ async def create_or_reset(
         existing.provider = None
         existing.started_at = None
         existing.completed_at = None
+        existing.content_json = None
+        existing.authoring_mode = None
+        existing.content_schema_version = None
+        existing.renderer_version = None
         await session.flush()
         return existing
     return await create(
