@@ -1,6 +1,6 @@
 # Structured `content_json` generation — Design Spec (Pass 1: RLC + sentence-fill)
 
-**Date:** 2026-08-03 · **Rev 3** (gate rounds 1–3 folded)
+**Date:** 2026-08-03 · **Rev 4** (gate rounds 1–4 folded)
 **HCGA branch:** Nggaev-v2 · work in worktree `../HCGA-content-json`
 **Platform base:** `origin/Akademiya-AI` @ `2cf98fb` — **not** the local `Nggaev` checkout, which is
 **668 commits behind** (verified).
@@ -80,9 +80,30 @@ Bound it in **both** the Pydantic model and the platform's validation/projection
 
 ### `sentence_fill_config`
 
-- `items` non-empty; each item carries an explicit `id` and explicit `mode`
+- `items` non-empty; each item carries an explicit `id`
 - `passage` with **1–6** `___` blanks; `answers` length **equal to blank count**
-- `mode: "word_bank"` → `word_bank` must contain every answer
+- **`mode` is restricted to `"word_bank"` in Pass 1** (producer schema *and* native projection)
+- `word_bank` must contain every answer
+
+#### Why `free_recall` is excluded (mobile blocker)
+
+On active mobile `origin/main@f761c5a`, `SentenceFill.tsx`:
+
+- `normalizeConfigItems()` maps `id`/`passage`/`answers: []`/`bank`/… and **never reads `mode`**
+- the UI renders **word-bank chips only** — there is **no `TextInput` anywhere in the file**
+
+So `mode="free_recall"` with no bank is **impossible to complete**. Emitting it would ship a dead
+exercise. A genuine free-recall implementation is a mobile lane, not this one.
+
+#### Answers and bank entries must be normalized-unique per item
+
+`usedWords` consumes a chip once used (`disabled = isUsed || !bankActive`), so **duplicate answer
+values across blanks make a valid-looking exercise uncompletable** — the second blank has no chip
+left. The platform validator does not catch this: it checks only `items` non-empty and
+`len(answers) == blanks`, with no uniqueness or non-empty-string checks.
+
+Our schema therefore requires, per item: answers normalized-unique, bank entries normalized-unique,
+and every string non-empty.
 
 ### Schema modelling rules
 
@@ -131,6 +152,26 @@ Two distinct leaks:
 
    **Unknown answer dialects must produce `needs_review`, never a silent publish.**
    Tests must cover RLC option labels, chip labels, step titles/prompts, and sentence passages.
+
+#### Scrub-then-revalidate — the exact sequence
+
+"Sanitize or reject" is ambiguous, and scrubbing is destructive: `{"label": "Correct answer: Paris"}`
+can scrub to an empty or damaged label, and **the platform validator would still accept it** — it
+checks only counts (`len(steps)`, `len(opts)`, `len(chips)`), never label/title/prompt content.
+
+The native path must run, in this order:
+
+1. **Project** strictly to known fields.
+2. **Scrub** every student-visible string.
+3. **Record** scrub spans and any unknown dialect encountered.
+4. **Revalidate** the *sanitized* object against the full native + mobile contract (including our
+   non-empty and normalized-uniqueness rules, which the platform validator does not enforce).
+5. If sanitization produced empty, duplicate or otherwise invalid data — or an unknown dialect
+   remains — **fall back and mark `structured_invalid` / `needs_review`**.
+6. **Publish natively only when the post-scrub object is still valid.**
+
+Regression required: a label consisting **entirely** of an answer marker (scrubs to empty) must
+route to `needs_review`, not publish as a blank chip.
 
 ### Schema versioning
 
@@ -190,9 +231,23 @@ platform `subject_id` + `grade`, and `phases[]` as a **list**:
  "judge_status": "ok"}
 ```
 
-**Rules:** the platform `subject_id` comes from an **explicit mapping table — never inferred
-heuristically**; a missing mapping is a hard error. Only `status='done'` jobs and `done`, non-empty
-phase rows export.
+**Subject mapping — fully specified:**
+
+- **Lives in** one config file, path from env (`PLATFORM_SUBJECT_MAP`), JSON.
+- **Keyed by canonical HCGA subject code** (`app/services/subjects.py` — e.g. `history`,
+  `math-algebra`), value = platform `subject_id` (positive int).
+- **Environment-specific** — platform IDs differ per deployment, so the map is config, never
+  committed constants.
+- **Injected into the pure builder** as a plain dict argument; the builder does no file or env I/O
+  (keeps it unit-testable).
+- **Fails before any HTTP request** on a missing key, malformed JSON, or a non-positive/non-integer
+  ID.
+- **Operator-inspectable** — the CLI exposes a `--check-map` mode that prints the resolved mapping
+  and validates every entry without posting.
+- **UUIDs are serialized explicitly as strings** (`source_ref`, `external_key`) — never raw UUID
+  objects.
+
+Only `status='done'` jobs and `done`, non-empty phase rows export.
 
 `scripts/export_homeworks.py` (untracked, emits `phases` as a **dict** where the platform iterates a
 **list**) is superseded and not part of this design.
@@ -211,6 +266,10 @@ Plus:
 - **`min_chars` bounds** — negative, zero, boolean, and excessive values all rejected.
 - **Semantic scrub** — planted answer markers in RLC option/chip labels, step titles/prompts and
   sentence passages never reach the student payload; an unknown dialect yields `needs_review`.
+- **Scrub-then-revalidate** — a label consisting entirely of an answer marker scrubs to empty and
+  must route to `needs_review`, never publish.
+- **Sentence-fill guards** — `mode != "word_bank"` rejected; duplicate answers or duplicate bank
+  entries rejected; empty strings rejected.
 - **Projection** — a planted extra `answer_key` never reaches the student payload.
 - **Atomicity** — judge-regen and solver-regen produce a consistent artifact (RED-proved by
   mutating one path to return a bare string).
@@ -220,7 +279,19 @@ Plus:
 - **Mobile parity** — `minChars` from config is enforced client-side and matches server grading.
 - **Acceptance** — one real lesson × 2 phases over `transport=api`, then the full platform path:
   ingest → sanitization → transform → publish validation → student-facing redaction. Expect
-  `native` for both phases with no answer text in the student payload.
+  `native` for both phases, and assert the precise (achievable) privacy property below.
+
+### The privacy property, stated correctly
+
+"No answer text in the student payload" is **impossible by construction** — a word-bank exercise
+must expose its answer vocabulary as selectable chips, and RLC must render every option including
+the correct one. The correct assertion is:
+
+> No **hidden answer arrays**, **correctness flags** (`is_correct`), **consequences**,
+> **acceptable keywords**, or **correctness-identifying markers** in visible text reach the student
+> payload.
+
+Word-bank entries and unlabeled options are expected and correct.
 
 ## Out of scope
 
