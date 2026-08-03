@@ -1,4 +1,4 @@
-# Model config → 3.x flash family on the plain Gemini API key (rev 7)
+# Model config → 3.x flash family on the plain Gemini API key (rev 8 — gate-approved)
 
 ## Approach & key decisions
 
@@ -33,16 +33,20 @@ running tools, the self-grade guard, or the fleet auth cutover.
   (1) these ramps used *tiny* payloads — real content calls run p95 ~94s and real Pro solver calls
   p50 ~13s/p95 ~51s/max ~594s (production), so slow calls hold shared slots long; (2) with a shared cap +
   `CREDENTIAL_SLOT_WAIT_SECONDS=120`, total fleet demand must not so exceed the cap that queued calls
-  can't drain within 120s (they'd park). Sizing rule: keep `hosts × AGENT_MAX_CONCURRENCY ≈
-  CREDENTIAL_MAX_CONCURRENT_GEMINI`. **`AGENT_MAX_CONCURRENCY` footgun:** `_effective_concurrency()`
+  can't drain within 120s (they'd park). Sizing rule (by PROCESS, not host — AMC is a process-local
+  semaphore and limiter holders are keyed `hostname:pid`, so two worker processes on one PC contribute
+  2×AMC, and the head is a model-calling process too via its embedded worker + jobless TOC extraction):
+  keep `sum(AGENT_MAX_CONCURRENCY over every model-calling process) ≈ CREDENTIAL_MAX_CONCURRENT_GEMINI`.
+  **`AGENT_MAX_CONCURRENCY` footgun:** `_effective_concurrency()`
   (`agent.py:235`) treats the value **8** as "use legacy `GEMINI_MAX_CONCURRENCY`" — so `AMC=8` on a host
   with a stale `GEMINI_MAX_CONCURRENCY=1` stays serialized. Use a NON-8 explicit value (4) and REMOVE
   `GEMINI_MAX_CONCURRENCY` from every `.env`. Never set AMC=1 (serializes each job's DAG phase wave).
 - Pricing (Google Standard Developer API, pinned in Task 1 RED): 3.6-flash `1.50/7.50/0.15`, 3.5-flash
   `1.50/9.00/0.15`, 3.5-flash-lite `0.30/2.50/0.03` (input/output/cache-read per 1M). Cost ≈ **$1.43/hw**.
 
-**Collision:** branch plan-only at **4d875ac**; base `origin/Nggaev-v2` a80cac3; PR #108 overlaps only the
-append-only memory docs (Task 9). Worklog **0161**; revision **0049**.
+**Collision:** branch plan-only (Rev-7 parent anchor `4d875ac`; do not re-embed the live HEAD SHA — it
+goes stale each commit); base `origin/Nggaev-v2` a80cac3; PR #108 overlaps only the append-only memory
+docs (Task 9). Worklog **0161**; revision **0049**.
 
 Branch: `feat/model-config-3x-flash` off `origin/Nggaev-v2`.
 
@@ -143,11 +147,18 @@ toc_transport=`api`. RED (scratch real DB): fresh-0048 AND prod tuples → upgra
 4. Worklog **0161** + INDEX; de-stale CLAUDE.md (`settings.extract_*`; 2.5 retired; api-only; retry guard),
    `HOW_IT_WORKS.md`, `CODE_MAP.md`, `DATABASE.md`; `git mv` plan → `shipped/`.
 5. **Ops (operator, user-owned) — coordinated cutover:**
-   0. **Pre-flight assertion (F4):** immediately before migration/restart, query
-      `SELECT count(*) FROM homework_jobs WHERE status IN ('pending','running','cancelling') AND (…2.5
-      stamp on any role…)` and require **0** — so nothing launched after planning slips through with a
-      retired stamp (currently 0 active; 115 cancelled / 42 failed are terminal + Task-3-guarded).
-   1. Stop new launches + drain.
+   1. Stop new launches + drain in-flight jobs to completion.
+   1a. **Retired-job preflight (F4) — run AFTER drain completes, then AGAIN immediately before the
+       migration; require count 0 both times** (exact SQL, all four role pairs):
+       ```sql
+       SELECT count(*) FROM homework_jobs
+       WHERE status IN ('pending','running','cancelling')
+         AND ( (provider='gemini'         AND model         IN ('gemini-2.5-pro','gemini-2.5-flash','gemini-2.5-flash-lite'))
+            OR (extract_provider='gemini' AND extract_model IN ('gemini-2.5-pro','gemini-2.5-flash','gemini-2.5-flash-lite'))
+            OR (judge_provider='gemini'   AND judge_model   IN ('gemini-2.5-pro','gemini-2.5-flash','gemini-2.5-flash-lite'))
+            OR (solver_provider='gemini'  AND solver_model  IN ('gemini-2.5-pro','gemini-2.5-flash','gemini-2.5-flash-lite')) );
+       ```
+       (Currently 0 active; 115 cancelled / 42 failed are terminal + Task-3-guarded.)
    2. Pull code on head AND every worker.
    3. **Per host, in order:** Scrub → verify local SA residue cleared (worker `active.json`/env; tombstone
       row still present) → **STOP the worker** → Unassign (unpark) → install plain `GEMINI_API_KEY` in `.env`
@@ -162,8 +173,11 @@ toc_transport=`api`. RED (scratch real DB): fresh-0048 AND prod tuples → upgra
         Sizing: `hosts × AMC ≈ cap` (e.g. 8 hosts × 4 = 32); for ~10 hosts this is a mild 40→32
         oversubscription that drains inside 120s.
       - Head: `WORKER_CONCURRENCY=0`, `AGENT_MAX_CONCURRENCY=4`, `CREDENTIAL_MAX_CONCURRENT_GEMINI=32`.
-      - **After restart, VERIFY effective per-process concurrency is actually 4** (not silently 1 from a
-        leftover legacy var).
+      - **After restart, VERIFY on EVERY model-calling process** (each reads its OWN env, so one stale
+        process at 64 would admit beyond the intended 32): same credential fingerprint; effective local
+        concurrency == 4 (not silently 1 from a leftover legacy var); effective Gemini credential limit
+        == 32; `GEMINI_MAX_CONCURRENCY` absent; exactly one intended worker process per PC (embedded head
+        worker vs standalone workers counted, per the by-process sizing rule).
       - **Before a large campaign, run a REAL-payload solver Pro ramp (4/8/16/32) + a mixed-model sustained
         run** (content+judge+solver together over several minutes) — the tiny-payload burst ramps proved the
         provider doesn't 429, but not sustained mixed-output slot-hold behavior. **Raise together** to
