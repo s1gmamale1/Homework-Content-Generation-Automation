@@ -18,7 +18,21 @@ import pytest
 from scripts import ingest_to_platform as cli
 
 
+def _async_job(job, phases):
+    """Async stub matching the real `_load_job` signature.
+
+    The production path is `asyncio.run(_load_job(jid))` — a single shape. Tests
+    match it instead of making production branch on `iscoroutine`, which would be
+    test-shaped code in a shipping script.
+    """
+    async def _stub(jid):
+        return job, phases
+    return _stub
+
+
+
 @pytest.mark.parametrize("bad", ["", "   ", "old,new", "tok en", "tok\ten", "a\nb"])
+
 def test_validate_token_rejects_multi_blank_and_whitespace(bad):
     with pytest.raises(cli.TokenError):
         cli.validate_token(bad)
@@ -33,7 +47,7 @@ def test_dry_run_does_not_post(monkeypatch, capsys):
         raise AssertionError("dry-run must not POST")
 
     monkeypatch.setattr(cli, "_post", _explode)
-    monkeypatch.setattr(cli, "_load_job", lambda jid: ({}, []))
+    monkeypatch.setattr(cli, "_load_job", _async_job({}, []))
     monkeypatch.setattr(cli, "_load_map", lambda: {"history": 7})
     monkeypatch.setenv("PLATFORM_BASE_URL", "https://example.test")
     monkeypatch.setenv("PLATFORM_INGEST_TOKEN", "tok")
@@ -77,7 +91,7 @@ def test_post_flag_calls_post_and_never_opens_a_real_socket(monkeypatch):
         return 0
 
     monkeypatch.setattr(cli, "_post", _fake_post)
-    monkeypatch.setattr(cli, "_load_job", lambda jid: ({"id": jid}, []))
+    monkeypatch.setattr(cli, "_load_job", _async_job({"id": "j"}, []))
     monkeypatch.setattr(cli, "_load_map", lambda: {"history": 7})
     monkeypatch.setattr(cli, "build_ingest_payload", lambda **k: {"phases": []})
     monkeypatch.setenv("PLATFORM_BASE_URL", "https://example.test")

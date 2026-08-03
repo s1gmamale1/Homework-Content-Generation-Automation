@@ -110,11 +110,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     rc = 0
     for jid in args.job:
-        result = _load_job(jid)
-        # ``_load_job`` is async in production; tests may monkeypatch it with
-        # a plain sync stub that already returns ``(job, phases)`` — accept
-        # both shapes rather than forcing every test through the event loop.
-        job, phases = asyncio.run(result) if asyncio.iscoroutine(result) else result
+        job, phases = asyncio.run(_load_job(jid))
         payload = build_ingest_payload(job=job, phases=phases, subject_map=subject_map)
         if not args.post:
             print(json.dumps(payload, ensure_ascii=False, indent=2)[:4000])
