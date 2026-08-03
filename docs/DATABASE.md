@@ -281,25 +281,29 @@ No UUIDPK/Timestamps mixins — intentionally minimal.
 
 `budget_repo.get_state(session)` returns the singleton row; raises `RuntimeError` if the row is missing (indicates a broken migration state — run `alembic upgrade head`). The budget monitor clears the fleet pause if spend drops back below cap (e.g. after UTC midnight resets the 24h window). The singleton's pause state is distinct from per-batch `batches.paused_at` — an operator can check both via `GET /jobs/batch/{id}/cost` (returns `fleet_api_paused_at`/`fleet_api_paused_reason` alongside the per-batch fields).
 
-### 3.9 `launch_defaults` — global model-selection singleton (migration 0037)
+### 3.9 `launch_defaults` — global model-selection singleton (migration 0037; current values set by migration 0049)
 
-Exactly **one row** (`id=1`) enforced by `CHECK(id = 1)`, seeded by migration 0037.
+Exactly **one row** (`id=1`) enforced by `CHECK(id = 1)`, seeded by migration 0037. Migration
+0049 (`0049_launch_defaults_3x`, 2026-08-03) unconditionally flips this row to the 3.x-flash
+target tuple below — it runs on every DB (fresh-seed or existing prod) so the seed values
+migration 0037/0039 originally wrote are historical, not current.
 No UUIDPK/Timestamps mixins — intentionally minimal.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | Integer PK | always `1` (singleton) |
-| `judge_provider` / `judge_model` | String(32/128) NOT NULL | provider·model used by the LLM judge when the job's per-job override is Auto (NULL explicit pick); seed: `gemini`/`gemini-2.5-flash` |
-| `judge_transport` | String(16) NOT NULL | `cli` \| `api` \| `inherit`; seed: `inherit` (follows the job's transport) |
-| `solver_provider` / `solver_model` / `solver_transport` | String(32 / 128 / 16) NULL | answer-key solver global default (migration 0043, CQ-C): seed `gemini` / `gemini-3.1-pro-preview` / `inherit`. **Not yet in `launch_defaults_repo._MUTABLE`** → not operator-editable via `/settings` yet (deferred, ROADMAP R21.8); the seed is the effective default. |
-| `extract_provider` / `extract_model` | String(32/128) NOT NULL | provider·model for lesson extract; seed: `gemini`/`gemini-2.5-flash` |
-| `extract_transport` | String(16) NOT NULL | `cli` \| `api` \| `inherit`; seed: `inherit` |
-| `toc_transport` | String(16) NOT NULL | transport for job-less book-upload TOC extraction: `cli` (seed, uses OAuth) or `api` (uses Vertex SDK — required on an all-Vertex head where gemini CLI OAuth is unavailable) |
-| `output_language` | String(16) NOT NULL, server_default `'uz'` | migration 0038: the global default medium of instruction — `uz` / `en` / `ru`; **DB CHECK `uz\|en\|ru`**. Per-launch `output_language` overrides this; `null` inherits it. Resolved by `agent_models.resolve_output_language(explicit, global_default)`. Seed: `'uz'` (byte-identical to pre-0038 behavior). |
+| `content_provider` / `content_model` / `content_transport` | String(32 / 128 / 16) NULL | migration 0039; current value (post-0049): `gemini` / `gemini-3.6-flash` / `api` |
+| `judge_provider` / `judge_model` | String(32/128) NOT NULL | provider·model used by the LLM judge when the job's per-job override is Auto (NULL explicit pick); current value (post-0049): `gemini`/`gemini-3.5-flash` |
+| `judge_transport` | String(16) NOT NULL | `cli` \| `api` \| `inherit`; current value (post-0049): `api` |
+| `solver_provider` / `solver_model` / `solver_transport` | String(32 / 128 / 16) NULL | answer-key solver global default (migration 0043, CQ-C): current value (post-0049) `gemini` / `gemini-3.1-pro-preview` / `api` — provider/model unchanged by 0049 (solver stays on 3.1-pro, out of scope for the 3.x-flash migration), `solver_transport` flipped `inherit`→`api` like every other role. **Not yet in `launch_defaults_repo._MUTABLE`** → not operator-editable via `/settings` yet (deferred, ROADMAP R21.8); the seed is the effective default. |
+| `extract_provider` / `extract_model` | String(32/128) NOT NULL | provider·model for lesson extract; current value (post-0049): `gemini`/`gemini-3.5-flash-lite` (tier4 — cheapest of the three new models, matching the pre-existing "cheap model" design intent) |
+| `extract_transport` | String(16) NOT NULL | `cli` \| `api` \| `inherit`; current value (post-0049): `api` |
+| `toc_transport` | String(16) NOT NULL | transport for job-less book-upload TOC extraction: `cli` (0037 seed, uses OAuth) or `api` (uses Vertex SDK — required on an all-Vertex head where gemini CLI OAuth is unavailable); current value (post-0049): `api` |
+| `output_language` | String(16) NOT NULL, server_default `'uz'` | migration 0038: the global default medium of instruction — `uz` / `en` / `ru`; **DB CHECK `uz\|en\|ru`**. Per-launch `output_language` overrides this; `null` inherits it. Resolved by `agent_models.resolve_output_language(explicit, global_default)`. Seed: `'uz'` (byte-identical to pre-0038 behavior; untouched by 0049). |
 
 **Write surface:** `PUT /api/v1/settings/launch-defaults` (validates non-null provider/model + valid output_language; HTTP 422 on null — prevents a launch-bricking footgun; validated against `agent_models.MODEL_MANIFEST` + `OUTPUT_LANGUAGES`). **Read surface:** `GET /api/v1/settings/launch-defaults` + `launch_defaults_repo.get_or_create()` (called by launch endpoints, `toc_extractor`, and the claim gate). **No credentials here** — those live in `.env`/`os.environ`.
 
-**⚠ Operator note (all-Vertex head):** the seed `toc_transport='cli'` means a worker with only Vertex SA creds and no gemini CLI OAuth will fail TOC extraction. After first deploy on an all-Vertex head, flip `toc_transport→api` at `/settings`.
+**⚠ Operator note (all-Vertex head, historical):** before migration 0049, the seed `toc_transport='cli'` meant a worker with only Vertex SA creds and no gemini CLI OAuth would fail TOC extraction, requiring a manual `/settings` flip to `api`. 0049 now sets `toc_transport='api'` unconditionally, so this manual step is no longer needed on a DB that has run 0049.
 
 ### 3.10 `sa_keys` — pool of uploaded GCP service-account keys (migration 0041)
 
@@ -457,13 +461,14 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 ## 6. Engine layers above the queue (pointers)
 
 - **Pipeline** (`app/services/pipeline.py`) — head: pinned extract
-  (`extract_provider`/`extract_model` = gemini/gemini-2.5-flash) with local-text gates,
+  (`extract_provider`/`extract_model` = gemini/gemini-3.5-flash-lite, current `launch_defaults`
+  default post-migration-0049) with local-text gates,
   failover (`failover_provider_order = [codex, gemini, kimi, opencode]` — claude
   deliberately absent to protect the Max pool), and cross-job cache reuse keyed on
   `(toc_entry_id, prompt_hash)` (a free `"<cache>"` usage row records the hit). Tail:
   wave scheduler over `flows.PHASE_DEPS`, `create_or_reset` per phase row, LLM judge
   (reads `job.judge_provider`/`job.judge_model` — stamped at launch from the explicit pick
-  or `launch_defaults` global default; seed gemini/gemini-2.5-flash) grading every content
+  or `launch_defaults` global default; current default gemini/gemini-3.5-flash) grading every content
   phase — regen on MAJOR verdict
   (cap = `settings.max_judge_regens`, default 1); outcome recorded as
   `phase_outputs.judge_status`. Job `done` → fire-and-forget Notion archive.
@@ -528,7 +533,8 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 | 45 | 0045_notion_archived_job | `0045_notion_archived_job` | adds `toc_entries.notion_archived_job_id` UUID NULL (no FK) — producing-job stamp for the Notion archive: auto-replace-own-older-output + `stale` rollup (worklog 0129) |
 | 46 | 0046_worker_version_floor | `0046_worker_version_floor` | adds `budget_state.min_worker_version` Integer NULL + `min_worker_version_stamped_by` String(128) NULL + `min_worker_version_stamped_at` DateTime(tz) NULL — the fleet worker version floor (fleet-worker-version-gate, worklog 0133) |
 | 47 | 0047_credential_slots | `0047_credential_slots` | adds `credential_slots` table (`id` UUID PK, `credential` Text NOT NULL indexed, `pc_id` Text NOT NULL, `acquired_at` timestamptz NOT NULL default now()) + `sa_keys.max_concurrent_calls` Integer NULL CHECK `IS NULL OR >= 1` — the BE-16 fleet-wide per-credential api concurrency limiter (worklog 0142) |
-| 48 | 0048_book_notion_sources | `0048_book_notion_sources` | adds `book_notion_sources` table (`id` UUID PK, `book_id` FK→books ondelete=CASCADE NOT NULL indexed, `notion_page_id`/`notion_block_id` Text NOT NULL UNIQUE pair, `linked_at` timestamptz NOT NULL default now()) + `books.toc_ready_at` DateTime(tz) NULL — the Notion source → book link + prepared-since stamp for the system-aware "Prepare a subject" dialog (worklog 0144) — **HEAD** |
+| 48 | 0048_book_notion_sources | `0048_book_notion_sources` | adds `book_notion_sources` table (`id` UUID PK, `book_id` FK→books ondelete=CASCADE NOT NULL indexed, `notion_page_id`/`notion_block_id` Text NOT NULL UNIQUE pair, `linked_at` timestamptz NOT NULL default now()) + `books.toc_ready_at` DateTime(tz) NULL — the Notion source → book link + prepared-since stamp for the system-aware "Prepare a subject" dialog (worklog 0144) |
+| 49 | 0049_launch_defaults_3x | `0049_launch_defaults_3x` | unconditional `UPDATE launch_defaults SET ... WHERE id=1` flipping the singleton to the 3.x-flash target tuple: content=`gemini`/`gemini-3.6-flash`, extract=`gemini`/`gemini-3.5-flash-lite`, judge=`gemini`/`gemini-3.5-flash`, solver=`gemini`/`gemini-3.1-pro-preview`, all 5 transport columns `'api'`. Converges both a fresh-seeded DB and the pre-existing prod row onto the same tuple; downgrade restores the exact pre-migration prod tuple (worklog 0161) — **HEAD** |
 
 ---
 

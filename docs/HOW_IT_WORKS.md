@@ -25,7 +25,7 @@ That's the whole thing. Everything below is *how* that happens.
 a command like you would type in a terminal:
 
 ```
-gemini -m gemini-2.5-flash      # (prompt piped into the program's stdin)
+gemini -m gemini-3-flash-preview      # (prompt piped into the program's stdin)
 claude --model claude-sonnet-4-6
 ```
 
@@ -50,8 +50,11 @@ API-only, text-only, defaults to `https://clodex.xyz/v1`, and never reads
 accepts PDF/image attachments** over Vertex (multimodal — scanned-book vision via api,
 `api-vision-1`); **claude stays text-only** (attachments raise a loud `NotImplementedError`).
 The **extract role** is pinned to its
-provider/model (default gemini/`gemini-2.5-flash`, editable at `/settings` — DB-backed
+provider/model (default gemini/`gemini-3.5-flash-lite`, editable at `/settings` — DB-backed
 `launch_defaults` singleton); its **auth** follows the job transport like any other spawn.
+(gemini-2.5 pro/flash/flash-lite were retired 2026-08-03 — the family 404s on the plain
+API key — so the current api-only gemini roster is `gemini-3.6-flash`/`gemini-3.5-flash`/
+`gemini-3.5-flash-lite`, none of which exist in the gemini CLI's own model catalog.)
 
 **Why do it the CLI way for `transport=cli`?**
 - Each CLI handles its own login/billing — no API key needed. (Phase 4.1 also added
@@ -371,7 +374,7 @@ machine with two stages (a head and a parallel tail):
    solved problem, so every downstream phase can see the full inventory of problem *types*
    the lesson teaches, not just prose about it — this closed a measured gap where the old
    free-form summary silently dropped a lesson's worked-example coverage. This step is
-   **pinned to a cheap model** (`gemini` / `gemini-2.5-flash`) regardless of which provider
+   **pinned to a cheap model** (`gemini` / `gemini-3.5-flash-lite`) regardless of which provider
    the user picked, because it's a high-input / low-creativity task — paying premium rates
    here buys nothing. It has its own readability gates and fails over if the pinned provider
    can't read the book. **Gate B** (`agent.validate_extract_summary`) validates *structure*,
@@ -516,7 +519,7 @@ delta per learning objective yields four outcomes: `already_known`, `learned`, `
 the empty control must measure as **zero** teaching on both paths — learned-count 0 AND all
 coverage `absent`. The real packet's own effectiveness is reported separately
 (`teaching_equivalent`/`learnable`). A bounded live
-paired run costs ≈ $0.20 (examiner `gemini-2.5-pro`, student `gemini-2.5-flash`, api). It is
+paired run costs ≈ $0.20 (examiner `gemini-3.6-flash`, student `gemini-3.5-flash`, api). It is
 fail-loud (any dead/inconsistent scorer raises rather than degrading to a clean pass) and the
 JSON report keeps the full evidence chain so a human can audit a false-positive `learned`.
 **Honest limitation:** it measures teaching *under simulation* — the simulated student reads
@@ -738,6 +741,19 @@ calls (e.g. TOC extraction and the LLM judge's verdict), not the homework phases
 allowed. The `/agent/models` endpoint serves it to the frontend dropdown; `is_valid()`
 enforces it when a job is created. **Add or remove models here**, never by hardcoding names
 in the pipeline.
+
+**Retired models (2026-08-03):** gemini-2.5 (pro/flash/flash-lite) 404s on the plain API key
+and was pulled from `MODEL_MANIFEST` (`RETIRED_GEMINI_MODELS`), but its rows stay in
+`pricing.PRICE_MAP` + `model_tiers._MODEL_TIER` so historical `agent_usages` still resolve a
+real $/tier. `GEMINI_API_ONLY_MODELS` (the new `gemini-3.6-flash`/`gemini-3.5-flash`/
+`gemini-3.5-flash-lite` trio) is a per-model cli reject — `validate_transport` refuses
+`transport=cli` for them even though gemini generally supports cli, because they aren't in
+the gemini CLI's own model catalog. `/agent/models` also exposes `api_only_models` (per-model,
+alongside the existing provider-level `api_only`) so the frontend can force `transport=api`
+for these specific picks. A job stamped with a retired model before the cutover can't be
+silently re-fired: `app/services/job_reactivation.retired_models_in_job` guards single-job
+retry (409), batch Resume (partial skip), and relaunch-resume (409/block + FE consent
+dialog).
 
 ---
 
@@ -1039,7 +1055,7 @@ you configure to match your plan.
   rather than hallucinate.
 - **Extract is pinned to a cheap model because it's high-input/low-value** (whole-PDF
   read → enumerated coverage contract, not creative writing), so paying smart-tier rates buys nothing — that's the
-  design reason for the gemini/`gemini-2.5-flash` extract default (the **provider/model**
+  design reason for the gemini/`gemini-3.5-flash-lite` extract default (the **provider/model**
   is editable at `/settings` via the `launch_defaults` DB singleton; auth follows job
   transport). Separately, **claude refuses copyrighted textbooks** — Claude Code's copyright
   filter rejects extracting from a real published textbook, so claude is a poor extract
