@@ -221,7 +221,7 @@ class Settings(BaseSettings):
     # Disabled → toc_validation DB column stays NULL (distinct from "skipped").
     toc_validation_enabled: bool = True
     toc_validation_provider: str = "gemini"
-    toc_validation_model: str = "gemini-2.5-flash"
+    toc_validation_model: str = "gemini-3.5-flash-lite"
 
     # ─── Filesystem ───────────────────────────────────────────────────────
     # Where PDFs are persisted on disk.
