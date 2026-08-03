@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import type { BatchSummary } from "@/lib/types";
 import { api } from "@/lib/api";
 import { batchActionFlags } from "@/lib/monitor-grouping";
+import { formatResumeToast } from "@/lib/retired-resume";
 import { FRAME_OFF, GHOST_BTN, PRESSABLE } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
@@ -40,8 +41,8 @@ export function BatchActions({ batch }: { batch: BatchSummary }) {
 
   const retryMut = useMutation({
     mutationFn: () => api.resumeBatch(batch.batch_id),
-    onSuccess: () => {
-      toast.success("Retrying failed lessons");
+    onSuccess: (r) => {
+      toast.success(formatResumeToast(r.jobs_resumed, r.jobs_skipped_retired.length));
       qc.invalidateQueries({ queryKey: ["batches"] });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Action failed"),

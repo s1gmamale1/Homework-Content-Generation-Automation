@@ -31,6 +31,7 @@ from app.services.agent_models import (
     validate_transport,
 )
 from app.services.flows import order_phase_selection, flow_for, selection_missing_prompts
+from app.services import job_reactivation
 from app.services.toc_classifier import classify_entries, CLASSES
 
 router = APIRouter(tags=["batches"])
@@ -282,7 +283,7 @@ async def launch_batch(
     # (a) STRICT zero-write preview — compute disposition and return BEFORE any
     # batch create/mutation. Leaves no phantom batch row in rollups.
     if body.preview:
-        new = resumable = empty = 0
+        new = resumable = empty = retired = 0
         for t in targets:
             active = await jobs_repo.find_active_for_section(
                 session, body.book_id, t.id, transport=body.transport,
@@ -293,7 +294,12 @@ async def launch_batch(
                 session, body.book_id, t.id, transport=body.transport,
                 output_language=res_output_language)
             if latest is not None and latest.status in ("failed", "cancelled"):
-                if await jobs_repo.done_phase_count_for_job(session, latest.id) > 0:
+                # Disjoint from resumable/empty: a retired-stamped saved
+                # section can never be safely resumed (it would reuse the
+                # dead pinned model), regardless of how much saved work it has.
+                if job_reactivation.retired_models_in_job(latest):
+                    retired += 1
+                elif await jobs_repo.done_phase_count_for_job(session, latest.id) > 0:
                     resumable += 1
                 else:
                     empty += 1
@@ -303,6 +309,7 @@ async def launch_batch(
             status_code=200,
             content={"book_id": str(body.book_id), "preview": True,
                      "new": new, "resumable": resumable, "empty": empty,
+                     "retired": retired,
                      "target_count": len(targets),
                      "excluded_by_class": excluded_by_class})
 
@@ -368,6 +375,29 @@ async def launch_batch(
             output_language=res_output_language)
         if (latest is not None and latest.status in ("failed", "cancelled")
                 and body.relaunch_mode != "discard"):
+            # Resuming reuses the saved job's pinned provider/model verbatim —
+            # refuse rather than silently reactivate a retired-stamped section
+            # (would call a dead model) or silently fall through to a fresh
+            # create (masks the operator's need to explicitly pick discard).
+            retired = job_reactivation.retired_models_in_job(latest)
+            if retired:
+                raise HTTPException(
+                    409,
+                    detail={
+                        "error": "retired_model",
+                        "message": (
+                            f"section {t.id} has saved work pinned to a "
+                            "retired model; relaunch with "
+                            "relaunch_mode='discard' to regenerate it with "
+                            "a live model instead of resuming a dead one."
+                        ),
+                        "toc_entry_id": str(t.id),
+                        "retired_roles": [
+                            {"role": role, "provider": provider, "model": model}
+                            for role, provider, model in retired
+                        ],
+                    },
+                )
             await jobs_repo.reset_for_retry(session, latest.id, batch_id=batch.id)   # reuses done phases + adopts batch
             resumed += 1
             continue
@@ -501,9 +531,10 @@ async def resume_batch(batch_id: UUID, session: AsyncSession = Depends(get_sessi
     batch = await session.get(Batch, batch_id)
     if batch is None:
         raise HTTPException(404, "batch not found")
-    resumed = await jobs_repo.resume_failed_in_batch(session, batch_id)
+    result = await jobs_repo.resume_failed_in_batch(session, batch_id)
     await session.commit()
-    return {"batch_id": str(batch_id), "jobs_resumed": resumed}
+    return {"batch_id": str(batch_id), "jobs_resumed": result["resumed"],
+            "jobs_skipped_retired": result["skipped_retired"]}
 
 
 @router.post("/jobs/batch/{batch_id}/pause")

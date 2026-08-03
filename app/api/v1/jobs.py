@@ -39,6 +39,7 @@ from app.services.agent_models import (
     validate_transport,
 )
 from app.services.flows import order_phase_selection, flow_for, selection_missing_prompts
+from app.services import job_reactivation
 from app.services.providers import PROVIDERS
 from app.services.worker import RUNNING_JOBS
 
@@ -392,6 +393,28 @@ async def retry_job(
         raise HTTPException(
             409,
             f"only failed or cancelled jobs can be retried; current status={job.status!r}",
+        )
+    # A retry reuses the job's pinned provider/model verbatim on every role —
+    # refuse outright if any role is stamped with a since-retired model
+    # (gemini-2.5, retired 2026-08-03) rather than silently re-firing a call
+    # that will 404. force-regenerate (POST .../generate?force=true) is the
+    # way to re-stamp the job with a live model.
+    retired = job_reactivation.retired_models_in_job(job)
+    if retired:
+        raise HTTPException(
+            409,
+            detail={
+                "error": "retired_model",
+                "message": (
+                    "job is pinned to one or more retired models and cannot "
+                    "be retried in place; force-regenerate to re-stamp it "
+                    "with a live model instead."
+                ),
+                "retired_roles": [
+                    {"role": role, "provider": provider, "model": model}
+                    for role, provider, model in retired
+                ],
+            },
         )
     updated = await jobs_repo.reset_for_retry(session, job_id)
     if updated is None:

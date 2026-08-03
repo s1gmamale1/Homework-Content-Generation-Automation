@@ -958,19 +958,35 @@ async def running_job_ids_in_batch(session: AsyncSession, batch_id: UUID) -> lis
     return list(rows.scalars().all())
 
 
-async def resume_failed_in_batch(session: AsyncSession, batch_id: UUID) -> int:
+async def resume_failed_in_batch(session: AsyncSession, batch_id: UUID) -> dict:
     """Re-enqueue every failed/cancelled job in a batch via reset_for_retry
     (status->pending, attempts->0). reset_for_retry keeps phase rows, so the
     pipeline RESUMES — done phases are reused, only unfinished ones re-run.
-    Returns the count re-enqueued."""
+
+    SKIPS any job pinned to a retired model (gemini-2.5, retired 2026-08-03,
+    see job_reactivation.retired_models_in_job) instead of resuming it — resume
+    reuses the job's pinned provider/model verbatim, so re-enqueuing a
+    retired-stamped job would call a dead model.
+
+    Returns ``{"resumed": <count re-enqueued>, "skipped_retired": [<job id
+    str>, ...]}``.
+    """
+    from app.services import job_reactivation
+
     rows = await session.execute(
-        select(HomeworkJob.id).where(
+        select(HomeworkJob).where(
             HomeworkJob.batch_id == batch_id,
             HomeworkJob.status.in_(["failed", "cancelled"])))
-    ids = list(rows.scalars().all())
-    for jid in ids:
-        await reset_for_retry(session, jid)
-    return len(ids)
+    jobs = list(rows.scalars().all())
+    resumed = 0
+    skipped_retired: list[str] = []
+    for job in jobs:
+        if job_reactivation.retired_models_in_job(job):
+            skipped_retired.append(str(job.id))
+            continue
+        await reset_for_retry(session, job.id)
+        resumed += 1
+    return {"resumed": resumed, "skipped_retired": skipped_retired}
 
 
 async def latest_for_section(

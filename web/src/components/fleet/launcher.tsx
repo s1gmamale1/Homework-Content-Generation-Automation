@@ -40,6 +40,7 @@ import {
   toSelectValue,
 } from "@/lib/launch-model";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
+import { decideRelaunch, formatResumeToast, retiredResumeNotice } from "@/lib/retired-resume";
 import { accentOf, subjectLabel, subjectLabelWithVariant } from "@/lib/subjects";
 import type {
   BatchSummary,
@@ -1141,7 +1142,7 @@ function ReadyCard({
       return api.resumeBatch(batchId);
     },
     onSuccess: (r) => {
-      toast.success(`Resuming ${r.jobs_resumed} lessons`);
+      toast.success(formatResumeToast(r.jobs_resumed, r.jobs_skipped_retired.length));
       qc.invalidateQueries({ queryKey: ["batches"] });
       qc.invalidateQueries({ queryKey: ["books"] });
     },
@@ -1546,8 +1547,21 @@ function ReadyCard({
                     setLaunching(true);
                     try {
                       const p = await api.previewBatch(launchBody());
-                      if (p.resumable > 0) {
-                        // Some remaining lessons have saved phases.
+                      const counts = { new: p.new, resumable: p.resumable, retired: p.retired, empty: p.empty };
+                      const decision = decideRelaunch(counts);
+                      if (decision.kind === "retired_blocks_resume") {
+                        // Any retired-stamped saved section blocks Resume
+                        // outright (the backend refuses it with 409 anyway —
+                        // this dialog just makes that explicit up front).
+                        // Discard & regenerate is the only path forward, and
+                        // it regenerates every selected saved job, live or
+                        // retired, with the current live model selection.
+                        const discard = window.confirm(
+                          `${retiredResumeNotice(counts)}\n\nDiscard & regenerate now?`,
+                        );
+                        if (discard) launch.mutate({ relaunch_mode: "discard" });
+                      } else if (decision.kind === "offer_resume_or_discard") {
+                        // Some remaining lessons have saved phases (none retired).
                         // Three-way: Resume (OK) → Discard (second confirm OK) → bail.
                         const resume = window.confirm(
                           `${p.resumable} of these lessons have saved work.\n\n` +

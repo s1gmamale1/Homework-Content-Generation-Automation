@@ -503,6 +503,9 @@ export interface BatchCancelResponse {
 export interface BatchResumeResponse {
   batch_id: string;
   jobs_resumed: number;
+  /** job ids that carried a retired model (gemini-2.5, retired 2026-08-03) on
+   *  one of their four role pairs — skipped rather than resumed. */
+  jobs_skipped_retired: string[];
 }
 
 /** Response from POST /jobs/batch/{id}/retry-archive */
@@ -525,6 +528,11 @@ export interface BatchPreviewResponse {
   new: number;
   resumable: number;
   empty: number;
+  /** Saved sections whose latest failed/cancelled job is pinned to a retired
+   *  model (gemini-2.5, retired 2026-08-03) — DISJOINT from `resumable`: these
+   *  can never be safely resumed (would call a dead model). Only
+   *  `relaunch_mode: "discard"` can regenerate them. */
+  retired: number;
   /** Count of TOC rows the launch would actually target (class-filtered). */
   target_count?: number;
   /** Rows excluded by class filtering, keyed by entry_class → count. */
