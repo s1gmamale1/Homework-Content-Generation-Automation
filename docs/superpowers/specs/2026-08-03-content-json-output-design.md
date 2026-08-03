@@ -1,6 +1,6 @@
 # Structured `content_json` generation — Design Spec (Pass 1: RLC + sentence-fill)
 
-**Date:** 2026-08-03 · **Rev 4** (gate rounds 1–4 folded)
+**Date:** 2026-08-03 · **Rev 5** (gate rounds 1–5 folded)
 **HCGA branch:** Nggaev-v2 · work in worktree `../HCGA-content-json`
 **Platform base:** `origin/Akademiya-AI` @ `2cf98fb` — **not** the local `Nggaev` checkout, which is
 **668 commits behind** (verified).
@@ -105,6 +105,15 @@ left. The platform validator does not catch this: it checks only `items` non-emp
 Our schema therefore requires, per item: answers normalized-unique, bank entries normalized-unique,
 and every string non-empty.
 
+**Normalization is defined exactly as mobile's `norm()`** — otherwise our uniqueness check and the
+runtime's chip-consumption disagree:
+
+```ts
+function norm(s: string): string { return s.trim().toLowerCase().replace(/\s+/g, " ") }
+```
+
+i.e. trim → lowercase → collapse internal whitespace to single spaces.
+
 ### Schema modelling rules
 
 Strict recursive Pydantic: `extra="forbid"`, strict integers (rejects `bool`), non-empty unique IDs.
@@ -173,6 +182,11 @@ The native path must run, in this order:
 Regression required: a label consisting **entirely** of an answer marker (scrubs to empty) must
 route to `needs_review`, not publish as a blank chip.
 
+**Post-scrub uniqueness applies to RLC too, not only sentence answers/banks.** Within each step,
+option labels must be normalized-unique and non-empty, and chip labels likewise — scrubbing can
+collapse two distinct options into the same string (or into nothing), producing an unanswerable
+step that the platform validator would still accept (it counts options, never inspects labels).
+
 ### Schema versioning
 
 The native path accepts **only exact `(phase, version)` pairs** — `practice-rlc` + `rlc_config@1`,
@@ -218,9 +232,37 @@ re-check the head at implementation time.
 1. **Pure payload builder** (`app/services/platform_payload.py`) — job → complete ingest envelope.
    Pure and unit-testable, no I/O.
 2. **Operator CLI** (`scripts/ingest_to_platform.py`) — posts to
-   `POST /api/v1/library/homework-imports/ingest` with
-   `Authorization: Bearer <LIBRARY_INGEST_TOKEN>` (comma-separated tokens, read at request time;
-   admin JWT also accepted). **`--dry-run` is the default**; posting requires an explicit flag.
+   `POST {PLATFORM_BASE_URL}/api/v1/library/homework-imports/ingest`.
+   **`--dry-run` is the default**; posting requires an explicit flag.
+
+#### Token semantics — server list, client singular
+
+These are **not** the same variable, and conflating them breaks authentication.
+
+The server splits `LIBRARY_INGEST_TOKEN` on commas into an *acceptance list*, but compares the
+**entire** presented Bearer value against each entry:
+
+```python
+presented = parts[1]
+return any(hmac.compare_digest(presented, token) for token in configured)
+```
+
+So a client reading a comma-joined value and sending `Authorization: Bearer old,new` matches
+**neither** `old` nor `new` — auth fails.
+
+| side | variable | semantics |
+|---|---|---|
+| Platform server | `LIBRARY_INGEST_TOKEN` | comma-separated **acceptance list** (rotation window) |
+| HCGA client | **`PLATFORM_INGEST_TOKEN`** | **exactly one token** |
+
+Client guards, enforced **before any HTTP request**: reject a token containing a comma, reject blank
+— and reject **whitespace**, because the server does `parts = header.split()` and requires
+`len(parts) == 2`, so an embedded space fails too.
+
+`PLATFORM_BASE_URL` is a separate required setting. An admin JWT remains an alternative server-side
+auth path but is not used by this CLI.
+
+**Rotation test:** server configured with `old,new`; a client presenting **only** `new` succeeds.
 
 **Envelope fields:** `source="hcg"`, `source_ref = book.id`, `external_key = job.id`, `language`,
 platform `subject_id` + `grade`, and `phases[]` as a **list**:
@@ -276,6 +318,10 @@ Plus:
 - **Fallback typing** — a schema failure falls back; a 429/auth error does **not** (RED-proved).
 - **Version pinning** — unknown `content_schema_version` ⇒ `structured_invalid` + `needs_review`.
 - **Payload builder** — envelope shape, subject-ID mapping error on miss, done-only filtering.
+- **Token guards** — a `PLATFORM_INGEST_TOKEN` containing a comma, whitespace, or blank is rejected
+  before any HTTP call; rotation test (server `old,new`, client presents only `new`) succeeds.
+- **Post-scrub uniqueness** — RLC option/chip labels that collapse to duplicates or empty after
+  scrubbing route to `needs_review`.
 - **Mobile parity** — `minChars` from config is enforced client-side and matches server grading.
 - **Acceptance** — one real lesson × 2 phases over `transport=api`, then the full platform path:
   ingest → sanitization → transform → publish validation → student-facing redaction. Expect
