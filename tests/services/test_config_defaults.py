@@ -18,3 +18,11 @@ def test_max_file_mb_default_is_textbook_sized():
 def test_toc_validation_model_default_off_2_5():
     from app.config import settings
     assert settings.toc_validation_model == "gemini-3.5-flash"
+
+
+def test_structured_output_disabled_by_default():
+    # Production default: the content_json lane stays dark until deliberately
+    # flipped on. Inspect the DECLARED default, not the env-loaded singleton, so
+    # this holds even when STRUCTURED_OUTPUT_ENABLED is set in the environment.
+    from app.config import Settings
+    assert Settings.model_fields["structured_output_enabled"].default is False

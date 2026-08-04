@@ -1087,8 +1087,17 @@ async def _generate_artifact(
     A custom uploaded prompt is a MARKDOWN contract (it is what the judge, the
     solver and the lint all read), so it disables the structured lane entirely
     and records ``markdown_custom``.
+
+    ``settings.structured_output_enabled`` (default False) is the global kill
+    switch: while off, no phase attempts JSON-authoring and every phase renders
+    markdown_builtin, regardless of SCHEMAS membership — this keeps the
+    content_json lane dark in production until it is flipped on deliberately.
     """
-    structured = phase_name in SCHEMAS and not is_custom
+    structured = (
+        phase_name in SCHEMAS
+        and not is_custom
+        and settings.structured_output_enabled
+    )
     if structured:
         try:
             return await _run_structured_attempt(phase_name=phase_name, **kw)

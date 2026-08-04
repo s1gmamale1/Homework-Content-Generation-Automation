@@ -163,6 +163,14 @@ class Settings(BaseSettings):
     solver_enabled: bool = True
     max_solve_regens: int = 1
 
+    # ─── Structured content_json authoring (content-json lane) ─────────────
+    # Default False: the pipeline never attempts JSON-authoring for the phases
+    # in schemas.content_json.SCHEMAS — every phase renders markdown exactly as
+    # before the content_json lane landed. Flip to True (STRUCTURED_OUTPUT_ENABLED=true)
+    # to activate structured output once that lane is verified end-to-end. The
+    # gate itself lives in pipeline._generate_artifact.
+    structured_output_enabled: bool = False
+
     # ─── Reactive rate-limit backoff (concurrency-knob-1, Phase 1) ────────
     # On a transient 429/RESOURCE_EXHAUSTED, agent._spawn retries the SAME call
     # with exponential backoff + jitter instead of failing. Worst-case total

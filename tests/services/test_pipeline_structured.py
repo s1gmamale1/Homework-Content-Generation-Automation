@@ -155,6 +155,15 @@ def _make_kwargs(phase_name: str = STRUCTURED_PHASE) -> dict:
     )
 
 
+@pytest.fixture(autouse=True)
+def _structured_enabled(monkeypatch):
+    """Every contract in this module exercises the structured lane, so the
+    global kill switch (settings.structured_output_enabled, default False in
+    production) is turned ON as their precondition. The two dedicated
+    kill-switch tests below override this back to False in-test."""
+    monkeypatch.setattr(_settings, "structured_output_enabled", True)
+
+
 @pytest.fixture()
 def patch_io(monkeypatch):
     """Patch every DB / model boundary; capture set_status kwargs.
@@ -309,6 +318,46 @@ async def test_phase_without_a_schema_never_attempts_structured(monkeypatch):
     art, *_ = await pipeline._generate_artifact(phase_name=PLAIN_PHASE, **_gen_kwargs())
     assert art.authoring_mode == "markdown_builtin"
     assert art.content_json is None
+
+
+async def test_kill_switch_off_forces_markdown_builtin_for_a_structured_phase(monkeypatch):
+    """The global kill switch OFF (production default) must make a phase that
+    IS in SCHEMAS render markdown_builtin and never attempt JSON-authoring —
+    this is what keeps the content_json lane dark until deliberately flipped."""
+    monkeypatch.setattr(_settings, "structured_output_enabled", False)
+
+    async def boom(**kw):
+        raise AssertionError("kill switch OFF must not attempt structured generation")
+
+    async def markdown(**kw):
+        return "# plain markdown", 7, 8, "gemini"
+
+    monkeypatch.setattr(pipeline, "_run_structured_attempt", boom)
+    monkeypatch.setattr(pipeline, "_run_markdown_attempt", markdown)
+
+    art, *_ = await pipeline._generate_artifact(
+        phase_name=STRUCTURED_PHASE, **_gen_kwargs()
+    )
+    assert art.authoring_mode == "markdown_builtin"
+    assert art.content_json is None
+
+
+async def test_kill_switch_on_attempts_structured_for_a_structured_phase(monkeypatch):
+    """The kill switch ON restores the structured attempt for a SCHEMAS phase."""
+    monkeypatch.setattr(_settings, "structured_output_enabled", True)
+    ran = []
+
+    async def structured(**kw):
+        ran.append(kw)
+        return artifact_from_config("practice-sentence", _sentence_cfg()), 1, 2, "claude"
+
+    monkeypatch.setattr(pipeline, "_run_structured_attempt", structured)
+
+    art, *_ = await pipeline._generate_artifact(
+        phase_name=STRUCTURED_PHASE, **_gen_kwargs()
+    )
+    assert len(ran) == 1, "kill switch ON must attempt structured generation"
+    assert art.content_json is not None
 
 
 async def test_custom_prompt_disables_structured_and_records_markdown_custom(monkeypatch):
