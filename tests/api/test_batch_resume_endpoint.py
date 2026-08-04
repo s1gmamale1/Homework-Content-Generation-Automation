@@ -36,7 +36,7 @@ def test_resume_batch_returns_jobs_resumed():
     app.dependency_overrides[get_session] = _make_session_override(fake_batch)
     try:
         with patch("app.api.v1.batch.jobs_repo.resume_failed_in_batch",
-                   AsyncMock(return_value=3)):
+                   AsyncMock(return_value={"resumed": 3, "skipped_retired": []})):
             r = client.post(f"/api/v1/jobs/batch/{bid}/resume")
     finally:
         app.dependency_overrides.pop(get_session, None)
@@ -44,6 +44,7 @@ def test_resume_batch_returns_jobs_resumed():
     assert r.status_code == 200
     data = r.json()
     assert data["jobs_resumed"] == 3
+    assert data["jobs_skipped_retired"] == []
     assert data["batch_id"] == str(bid)
 
 

@@ -118,7 +118,7 @@ async def check2_vision_recovery() -> bool:
         garbled_pdf = _resolve_pdf(_F20_PREFIX)
         summary, ptok, otok = await agent.summarize_lesson_vision(
             provider="gemini",
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash",
             pdf_path=garbled_pdf,
             section_title="Algebra",
             section_number="1",
@@ -181,7 +181,7 @@ async def check3_verify_discrimination() -> bool:
                 book_text=book_text[:8000],
                 candidates=drift_cands,
                 provider="gemini",
-                model="gemini-2.5-flash",
+                model="gemini-3.5-flash",
                 transport="api",
                 homework_job_id=None,
                 phase_output_id=None,
@@ -209,7 +209,7 @@ async def check3_verify_discrimination() -> bool:
                 book_text=book_text[:8000],
                 candidates=faithful_cands,
                 provider="gemini",
-                model="gemini-2.5-flash",
+                model="gemini-3.5-flash",
                 transport="api",
                 homework_job_id=None,
                 phase_output_id=None,

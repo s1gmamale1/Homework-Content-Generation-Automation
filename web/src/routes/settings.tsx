@@ -14,6 +14,7 @@ import { api, ApiError } from "@/lib/api";
 import type { LaunchDefaults, OutputLanguage, RoleTransport } from "@/lib/types";
 import { CARD, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
+import { resolveTocTransport, resolveTransport } from "@/lib/model-transport";
 
 const ROLE_TRANSPORT_OPTIONS: { value: RoleTransport; label: string }[] = [
   { value: "inherit", label: "Auto" },
@@ -44,6 +45,7 @@ function RoleRow({
   providerNames,
   modelOptions,
   transportOptions,
+  forcedApi,
 }: {
   label: string;
   provider: string | null;
@@ -55,6 +57,10 @@ function RoleRow({
   providerNames: string[];
   modelOptions: string[];
   transportOptions?: { value: string; label: string }[];
+  /** True when the selected (provider, model) is api-only (gemini-3.x-flash —
+   *  404s/ModelNotFoundError on the cli catalog). Hides every transport
+   *  option except api — mirrors the other three pickers' behavior. */
+  forcedApi?: boolean;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-3">
@@ -99,7 +105,8 @@ function RoleRow({
           (select a provider first)
         </span>
       )}
-      {/* Transport */}
+      {/* Transport — an api-only model (gemini-3.x-flash) hides every option
+          but api; the effect in SettingsPage keeps the underlying state pinned. */}
       <Select
         value={transport}
         onValueChange={(v) => onTransport(v as RoleTransport)}
@@ -108,7 +115,10 @@ function RoleRow({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {(transportOptions ?? ROLE_TRANSPORT_OPTIONS).map((o) => (
+          {(forcedApi
+            ? (transportOptions ?? ROLE_TRANSPORT_OPTIONS).filter((o) => o.value === "api")
+            : (transportOptions ?? ROLE_TRANSPORT_OPTIONS)
+          ).map((o) => (
             <SelectItem key={o.value} value={o.value}>
               {o.label}
             </SelectItem>
@@ -188,6 +198,62 @@ export function SettingsPage() {
   const extractModelOptions = extractProvider
     ? (manifest?.providers?.[extractProvider] ?? [])
     : [];
+
+  // Model-level api-only (gemini-3.x-flash — 404s/ModelNotFoundError on the
+  // gemini CLI's own catalog): each role forces its own transport to api, and
+  // an api-only EXTRACT model additionally forces `toc_transport` (mirrors
+  // app/api/v1/settings.py:108-115, which 422s that combo on cli). Same
+  // shared resolver every other picker uses (lib/model-transport.ts).
+  const apiOnlyModels = manifest?.api_only_models;
+  const contentForcedApi = resolveTransport({
+    provider: contentProvider ?? "",
+    model: contentModel,
+    currentTransport: contentTransport,
+    apiOnlyModels,
+  }).forced;
+  const judgeForcedApi = resolveTransport({
+    provider: judgeProvider ?? "",
+    model: judgeModel,
+    currentTransport: judgeTransport,
+    apiOnlyModels,
+  }).forced;
+  const solverForcedApi = resolveTransport({
+    provider: solverProvider ?? "",
+    model: solverModel,
+    currentTransport: solverTransport,
+    apiOnlyModels,
+  }).forced;
+  const extractForcedApi = resolveTransport({
+    provider: extractProvider ?? "",
+    model: extractModel,
+    currentTransport: extractTransport,
+    apiOnlyModels,
+  }).forced;
+  const tocForcedApi = resolveTocTransport({
+    extractProvider: extractProvider ?? "",
+    extractModel,
+    currentTocTransport: tocTransport,
+    apiOnlyModels,
+  }).forced;
+
+  useEffect(() => {
+    if (contentForcedApi && contentTransport !== "api") setContentTransport("api");
+  }, [contentForcedApi, contentTransport]);
+  useEffect(() => {
+    if (judgeForcedApi && judgeTransport !== "api") setJudgeTransport("api");
+  }, [judgeForcedApi, judgeTransport]);
+  useEffect(() => {
+    if (solverForcedApi && solverTransport !== "api") setSolverTransport("api");
+  }, [solverForcedApi, solverTransport]);
+  useEffect(() => {
+    if (extractForcedApi && extractTransport !== "api") setExtractTransport("api");
+  }, [extractForcedApi, extractTransport]);
+  // The extract role forcing api and the toc coupling forcing api are two
+  // independent triggers (an api-only extract model forces both), so this
+  // effect is separate from the one above rather than folded in.
+  useEffect(() => {
+    if (tocForcedApi && tocTransport !== "api") setTocTransport("api");
+  }, [tocForcedApi, tocTransport]);
 
   const saveMut = useMutation({
     mutationFn: (patch: Partial<LaunchDefaults>) => api.updateLaunchDefaults(patch),
@@ -327,6 +393,7 @@ export function SettingsPage() {
                 providerNames={providerNames}
                 modelOptions={contentModelOptions}
                 transportOptions={TOC_TRANSPORT_OPTIONS}
+                forcedApi={contentForcedApi}
               />
 
               {/* Judge row */}
@@ -340,6 +407,7 @@ export function SettingsPage() {
                 onTransport={setJudgeTransport}
                 providerNames={providerNames}
                 modelOptions={judgeModelOptions}
+                forcedApi={judgeForcedApi}
               />
 
               {/* Solver row — re-solves answer keys; resolves like Judge (self-grade guard). */}
@@ -353,6 +421,7 @@ export function SettingsPage() {
                 onTransport={setSolverTransport}
                 providerNames={providerNames}
                 modelOptions={solverModelOptions}
+                forcedApi={solverForcedApi}
               />
               <p className="ml-16 -mt-2 max-w-[46ch] text-[0.65rem] leading-snug text-white/40">
                 Re-solves answer keys and regenerates on a high-confidence mismatch. If the
@@ -380,9 +449,13 @@ export function SettingsPage() {
                 onTransport={setExtractTransport}
                 providerNames={providerNames}
                 modelOptions={extractModelOptions}
+                forcedApi={extractForcedApi}
               />
 
-              {/* TOC row — transport only (cli|api, no inherit) */}
+              {/* TOC row — transport only (cli|api, no inherit). An api-only
+                  extract model forces this to api too (validate_transport in
+                  app/api/v1/settings.py 422s toc_transport=cli against an
+                  api-only extract model) — hide cli so that combo can't reach Save. */}
               <div className="flex flex-wrap items-center gap-3">
                 <span className="w-16 shrink-0 text-[0.7rem] font-medium uppercase tracking-wide text-white/50">
                   TOC
@@ -401,7 +474,10 @@ export function SettingsPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {TOC_TRANSPORT_OPTIONS.map((o) => (
+                    {(tocForcedApi
+                      ? TOC_TRANSPORT_OPTIONS.filter((o) => o.value === "api")
+                      : TOC_TRANSPORT_OPTIONS
+                    ).map((o) => (
                       <SelectItem key={o.value} value={o.value}>
                         {o.label}
                       </SelectItem>
@@ -409,6 +485,11 @@ export function SettingsPage() {
                   </SelectContent>
                 </Select>
               </div>
+              {tocForcedApi && (
+                <p className="ml-16 -mt-3 text-[0.65rem] leading-snug text-amber-300/80">
+                  Extract model is api-only — TOC transport pinned to API.
+                </p>
+              )}
 
               {/* Output Language row — concrete (no Auto; the global default must be explicit) */}
               <div className="flex flex-wrap items-center gap-3">

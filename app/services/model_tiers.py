@@ -8,6 +8,11 @@ peer that is guaranteed non-self for ANY generator.
 
 `tier_of` / `_MODEL_TIER` are retained for reference + the manifest-completeness
 test; judge selection no longer depends on them.
+
+Every current MODEL_MANIFEST model appears here exactly once, PLUS the
+retired gemini-2.5 family (`agent_models.RETIRED_GEMINI_MODELS`) — kept so a
+historical job whose stamped judge/generator is a 2.5 model still resolves a
+real tier instead of silently falling back to `_DEFAULT_TIER`.
 """
 
 from __future__ import annotations
@@ -29,17 +34,20 @@ _MODEL_TIER: dict[str, int] = {
     "codex-auto-review": 2,
     "gpt-5.4": 2,
     "gemini-3-flash-preview": 2,
-    "gemini-2.5-pro": 2,
+    "gemini-3.6-flash": 2,
+    "gemini-3.5-flash": 2,
+    "gemini-2.5-pro": 2,  # retired from MODEL_MANIFEST — kept for historical attribution
     # Tier 3 — Mid
     "claude-haiku-4-5-20251001": 3,
     "gpt-5.6-luna": 3,
     "gemini-3.1-flash-lite-preview": 3,
-    "gemini-2.5-flash": 3,
+    "gemini-2.5-flash": 3,  # retired from MODEL_MANIFEST — kept for historical attribution
     "kimi-code/kimi-for-coding": 3,
     # Tier 4 — Light
     "gpt-5.4-mini": 4,
     "gpt-5.3-codex-spark": 4,
-    "gemini-2.5-flash-lite": 4,
+    "gemini-3.5-flash-lite": 4,
+    "gemini-2.5-flash-lite": 4,  # retired from MODEL_MANIFEST — kept for historical attribution
     "opencode/deepseek-v4-flash-free": 4,
     "opencode/nemotron-3-super-free": 4,
     "opencode/mimo-v2.5-free": 4,

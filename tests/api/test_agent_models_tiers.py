@@ -2,7 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from app.api.v1.jobs import list_agent_models
-from app.services.agent_models import MODEL_MANIFEST
+from app.services.agent_models import GEMINI_API_ONLY_MODELS, MODEL_MANIFEST
 from app.services.model_tiers import tier_of
 
 
@@ -32,3 +32,17 @@ def test_endpoint_exposes_tiers():
     assert isinstance(out["tiers"][prov][model], int)
     # additive — existing keys untouched
     assert "providers" in out and "api_supported" in out
+
+
+def test_endpoint_exposes_api_only_models_for_gemini():
+    """Task 4 (F2-FE/F4): the three gemini-3.x-flash models are api-only —
+    they 404 (ModelNotFoundError) on the gemini CLI. The FE needs this at the
+    MODEL level (not just the provider level `api_only`) so all four
+    model/transport pickers can force api and hide the cli option instead of
+    only failing at Launch."""
+    out = asyncio.run(list_agent_models(session=_mock_session_no_workers()))
+    assert "api_only_models" in out
+    assert set(out["api_only_models"]["gemini"]) == set(GEMINI_API_ONLY_MODELS)
+    # every listed id must actually be offerable in the manifest
+    for m in out["api_only_models"]["gemini"]:
+        assert m in MODEL_MANIFEST["gemini"]

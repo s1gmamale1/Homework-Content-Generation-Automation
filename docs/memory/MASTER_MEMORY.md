@@ -2150,3 +2150,60 @@ the constant (not literal text), so the change is value-only; RED-proved the new
 render came back with `Как играть` (How to play) and `Типы отношений` (Relationship types)
 localized, zero English-label heading leaks across flashcards+jigsaw, content_lint clean.
 Ships dark until fleet restart (prompt cache). Suite 1946/309, no migration.
+
+## 0161 — Model config: retire gemini-2.5, adopt 3.x-flash defaults (2026-08-03)
+
+gemini-2.5 (pro/flash/flash-lite) started 404ing on the plain gemini API key. Response:
+removed the family from `MODEL_MANIFEST` (`RETIRED_GEMINI_MODELS`) while **keeping** its
+`pricing.PRICE_MAP` + `model_tiers._MODEL_TIER` rows so historical `agent_usages` still
+resolve a real $/tier for the ~157 terminal (115 cancelled / 42 failed, 0 active) jobs
+stamped with a 2.5 model. New model-level guard: `GEMINI_API_ONLY_MODELS` makes
+`validate_transport` reject `transport=cli` per-*model* (not just per-provider like
+`API_ONLY_PROVIDERS`) — the three new models aren't in the gemini CLI's own catalog.
+
+**New models registered** (manifest + pricing + tier): `gemini-3.6-flash` (content, tier2,
+$1.50/$7.50/$0.15), `gemini-3.5-flash` (judge, tier2, $1.50/$9.00/$0.15), `gemini-3.5-flash-lite`
+(extract, tier4, $0.30/$2.50/$0.03). Solver stays `gemini-3.1-pro-preview` (out of scope).
+`config.py`'s `toc_validation_model` moved `gemini-2.5-flash` → **`gemini-3.5-flash`**
+(not `-lite`) — acceptance testing showed `-lite` flaked 33% on structured output, so the
+mid tier landed the toc-validator role, not the cheap extract role's `-lite`.
+
+**Retirement guard** (`app/services/job_reactivation.retired_models_in_job`, pure, checks all
+four independent role pairs content/extract/judge/solver) wired into every path that
+reactivates a job while preserving its pinned provider/model: single-job retry (`jobs.py::retry_job`
+→ 409), batch Resume (`batch.py` → partial skip, `jobs_resumed`/`jobs_skipped_retired`), and
+relaunch-resume (409/block + a new FE consent dialog). Without this a retry/resume on a
+pre-cutover job would silently re-fire a dead model.
+
+**FE:** `/agent/models` now serves `api_only_models` (per-model, alongside the existing
+provider-level `api_only`); a new shared resolver `web/src/lib/model-transport.ts` is wired
+into all 4 model pickers (launcher, section, `RoleAgentControls`, `/settings`) so picking one
+of the three new models forces `transport=api` and couples the TOC transport. Tools/scripts
+repointed off 2.5 runnable defaults — `teaching_audit.py` examiner/student now
+`gemini-3.6-flash`/`gemini-3.5-flash` (other 2.5 script refs either repointed or left as
+historical-pinned examples).
+
+**Migration 0051** (`0051_launch_defaults_3x`) unconditionally flips the `launch_defaults`
+singleton to the target tuple — content=`gemini-3.6-flash`, extract=`gemini-3.5-flash-lite`,
+judge=`gemini-3.5-flash`, solver=`gemini-3.1-pro-preview`, all 5 transport columns `'api'` —
+converging both a fresh-seeded DB and the existing prod row onto the same state; downgrade
+restores the exact pre-migration prod tuple. No code change to `_auth_env` (it already
+prefers `GEMINI_API_KEY`) — the plain-key cutover is entirely operator-owned.
+
+**Acceptance ($2.8 total, real api calls, no homework-spam):** judge-parsing probe on
+`gemini-3.5-flash` 20/20 clean + quality probes 4/4 ($1.41); full-pipeline routing proof —
+content on 3.6-flash, extract on 3.5-flash-lite, judge×11 calls on 3.5-flash, solver×4 calls
+on 3.1-pro, TOC validator verified — real job, cost $1.34 (~$1.43 anchor, in range).
+7 code commits + 1 acceptance-driven fix (toc-validator model bump), all reviewed clean.
+
+**Branch note:** executed on `feat/model-config-3x-flash-exec` in an isolated worktree — the
+original `feat/model-config-3x-flash` picked up a foreign commit from a concurrent session
+mid-flight, so execution moved rather than risk cross-contamination.
+
+**Deferred (operator-owned, NOT done by this branch — see the plan's cutover runbook):**
+fleet SA-scrub + plain-`GEMINI_API_KEY` rollout + per-host restart + apply migration 0051 to
+prod + concurrency env (`WORKER_CONCURRENCY=2`/`AGENT_MAX_CONCURRENCY=4`/
+`CREDENTIAL_MAX_CONCURRENT_GEMINI=32`, remove any `GEMINI_MAX_CONCURRENCY` sentinel first) +
+retired-job preflight (0 active, both before-drain and immediately-before-migration checks) +
+post-deploy smoke. Production, fleet `.env`, and prod migration state were **not touched** by
+this branch.

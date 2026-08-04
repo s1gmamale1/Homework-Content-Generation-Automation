@@ -27,6 +27,7 @@ from app.services import events_bus, notion_archive, pricing
 from app.services.agent_models import (
     MODEL_MANIFEST,
     API_ONLY_PROVIDERS,
+    GEMINI_API_ONLY_MODELS,
     api_supported,
     is_valid,
     resolve_output_language_for_book,
@@ -39,6 +40,7 @@ from app.services.agent_models import (
     validate_transport,
 )
 from app.services.flows import order_phase_selection, flow_for, selection_missing_prompts
+from app.services import job_reactivation
 from app.services.providers import PROVIDERS
 from app.services.worker import RUNNING_JOBS
 
@@ -393,6 +395,28 @@ async def retry_job(
             409,
             f"only failed or cancelled jobs can be retried; current status={job.status!r}",
         )
+    # A retry reuses the job's pinned provider/model verbatim on every role —
+    # refuse outright if any role is stamped with a since-retired model
+    # (gemini-2.5, retired 2026-08-03) rather than silently re-firing a call
+    # that will 404. force-regenerate (POST .../generate?force=true) is the
+    # way to re-stamp the job with a live model.
+    retired = job_reactivation.retired_models_in_job(job)
+    if retired:
+        raise HTTPException(
+            409,
+            detail={
+                "error": "retired_model",
+                "message": (
+                    "job is pinned to one or more retired models and cannot "
+                    "be retried in place; force-regenerate to re-stamp it "
+                    "with a live model instead."
+                ),
+                "retired_roles": [
+                    {"role": role, "provider": provider, "model": model}
+                    for role, provider, model in retired
+                ],
+            },
+        )
     updated = await jobs_repo.reset_for_retry(session, job_id)
     if updated is None:
         # Race: row was deleted between the get() and the reset. Treat as 404.
@@ -656,6 +680,12 @@ async def list_agent_models(session: AsyncSession = Depends(get_session)):
         "providers": MODEL_MANIFEST,
         "api_supported": {p: api_supported(p) for p in MODEL_MANIFEST},
         "api_only": {p: p in API_ONLY_PROVIDERS for p in MODEL_MANIFEST},
+        # Model-level api-only (task 4, F2-FE/F4): a per-MODEL cli rejection
+        # within a provider that otherwise supports cli (gemini-3.x-flash
+        # 404s/ModelNotFoundError on the CLI's catalog). Distinct from
+        # `api_only` above, which is provider-wide (e.g. clodex). Only gemini
+        # has any entries today — other providers are omitted.
+        "api_only_models": {"gemini": sorted(GEMINI_API_ONLY_MODELS)},
         "tiers": tiers,
         "fleet": await workers_repo.aggregate_fleet_capability(
             session, stale_after_seconds=settings.worker_registry_stale_seconds

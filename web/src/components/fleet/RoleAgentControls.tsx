@@ -10,6 +10,7 @@ import type { ProviderModelManifest, RoleTransport } from "@/lib/types";
 import { SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { serveability, providerServeableAnyMode, resolveRoleTransport } from "@/lib/serveability";
+import { resolveTransport } from "@/lib/model-transport";
 
 /** Sentinel <Select> value for "Auto" (null at the data boundary). Radix
  *  Select dislikes empty/null values, so we map null <-> "auto" here. */
@@ -60,7 +61,21 @@ export function RoleAgentControls({
   const fleet = manifest?.fleet;
   const providerNames = manifest ? Object.keys(manifest.providers) : [];
   const modelOptions = provider ? (manifest?.providers?.[provider] ?? []) : [];
-  const apiOnly = provider ? (manifest?.api_only?.[provider] ?? false) : false;
+  // Provider-level api-only (a whole provider with no cli lane, e.g. clodex)
+  // OR model-level api-only (gemini-3.x-flash — 404s/ModelNotFoundError on
+  // the cli catalog even though gemini itself supports cli). Both force this
+  // role's transport to api and hide cli/inherit below — same shared
+  // resolver every other picker uses (model-transport.ts).
+  const modelForcedApi = provider
+    ? resolveTransport({
+        provider,
+        model,
+        currentTransport: transport,
+        parentTransport: jobTransport,
+        apiOnlyModels: manifest?.api_only_models,
+      }).forced
+    : false;
+  const apiOnly = provider ? (manifest?.api_only?.[provider] ?? false) || modelForcedApi : false;
   const isExtract = label.toLowerCase() === "extract";
 
   // Fleet reason for the currently-effective transport (only when a concrete provider is set).

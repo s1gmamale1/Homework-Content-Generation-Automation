@@ -12,8 +12,8 @@ async def _main():
         output_md="# Preview\n\nThis lesson introduces linear equations and how to isolate a variable.",
         lesson_context="The lesson covers solving linear equations by isolating the variable.",
         prior_outputs={},
-        gen_provider="gemini", gen_model="gemini-2.5-flash",
-        judge_provider="gemini", judge_model="gemini-2.5-flash",
+        gen_provider="gemini", gen_model="gemini-3.5-flash",
+        judge_provider="gemini", judge_model="gemini-3.5-flash",
         transport="api",
     )
     print(f"available={out.available} passed={out.passed} refused={out.refused} "

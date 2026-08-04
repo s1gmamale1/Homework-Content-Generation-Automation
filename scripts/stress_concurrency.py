@@ -1,7 +1,7 @@
 """Max-concurrency stress probe for transport=api gemini (SDK / Vertex SA),
 on ONE PC — WITHOUT spending real money on full homeworks (hard user rule:
 never mass-generate homeworks). It fires CHEAP minimal-token concurrent SDK
-calls (tiny prompt, ~1-token reply, cheapest model gemini-2.5-flash-lite) and
+calls (tiny prompt, ~1-token reply, cheapest model gemini-3.5-flash-lite) and
 ramps concurrency to find where the API/box stops scaling: 429/RESOURCE_EXHAUSTED
 onset, latency-vs-N, throughput plateau, CPU%/RSS.
 
@@ -34,7 +34,7 @@ try:
 except Exception:
     _HAVE_PS = False
 
-MODEL = "gemini-2.5-flash-lite"      # cheapest priced model ($0.10/$0.40 per Mtok)
+MODEL = "gemini-3.5-flash-lite"      # cheapest priced model ($0.30/$2.50 per Mtok)
 PROMPT = "Reply with exactly one word: OK"
 LEVELS = [1, 2, 4, 8, 16, 24, 32, 48, 64]
 ROUNDS = 2                            # rounds per level (stability vs cost)

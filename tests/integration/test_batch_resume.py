@@ -9,7 +9,7 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_DB_INTEGRATION") != "1", reason="needs Postgres")
 
 
-async def _seed_batch_with_statuses(statuses):
+async def _seed_batch_with_statuses(statuses, *, retired_key=None):
     from app.db import SessionLocal
     from app.models.book import Book
     from app.models.toc_entry import TOCEntry
@@ -26,9 +26,18 @@ async def _seed_batch_with_statuses(statuses):
         for i, st in enumerate(statuses):
             toc = TOCEntry(book_id=book.id, section_title=f"L{i}", order_index=i)
             s.add(toc); await s.flush()
-            job = HomeworkJob(book_id=book.id, toc_entry_id=toc.id,
-                              subject="math-algebra", provider="claude",
-                              status=st, batch_id=batch.id)
+            # retired_key marks one status as pinned to a since-retired gemini
+            # model (gemini-2.5-flash) instead of the default claude job — the
+            # resume guard must skip exactly this row.
+            if st == retired_key:
+                job = HomeworkJob(book_id=book.id, toc_entry_id=toc.id,
+                                  subject="math-algebra", provider="gemini",
+                                  model="gemini-2.5-flash",
+                                  status=st, batch_id=batch.id)
+            else:
+                job = HomeworkJob(book_id=book.id, toc_entry_id=toc.id,
+                                  subject="math-algebra", provider="claude",
+                                  status=st, batch_id=batch.id)
             s.add(job); await s.flush()
             job_ids[st] = job.id
         await s.commit()
@@ -57,12 +66,32 @@ async def test_resume_failed_in_batch():
         ["failed", "cancelled", "done"])
     try:
         async with SessionLocal() as s:
-            n = await jobs_repo.resume_failed_in_batch(s, batch_id)
+            result = await jobs_repo.resume_failed_in_batch(s, batch_id)
             await s.commit()
-        assert n == 2
+        assert result["resumed"] == 2
+        assert result["skipped_retired"] == []
         async with SessionLocal() as s:
             assert await jobs_repo.get_status(s, ids["failed"]) == "pending"
             assert await jobs_repo.get_status(s, ids["cancelled"]) == "pending"
             assert await jobs_repo.get_status(s, ids["done"]) == "done"
+    finally:
+        await _cleanup(book_id)
+
+
+@pytest.mark.asyncio
+async def test_resume_failed_in_batch_skips_retired_stamped_job():
+    from app.db import SessionLocal
+    from app.repositories import jobs as jobs_repo
+    book_id, batch_id, ids = await _seed_batch_with_statuses(
+        ["failed"], retired_key="failed")
+    try:
+        async with SessionLocal() as s:
+            result = await jobs_repo.resume_failed_in_batch(s, batch_id)
+            await s.commit()
+        assert result["resumed"] == 0
+        assert result["skipped_retired"] == [str(ids["failed"])]
+        async with SessionLocal() as s:
+            # left untouched — still failed, not silently reset to pending.
+            assert await jobs_repo.get_status(s, ids["failed"]) == "failed"
     finally:
         await _cleanup(book_id)

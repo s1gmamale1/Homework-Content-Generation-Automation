@@ -47,8 +47,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--out", default=None,
                    help="JSON report path (default var/teaching_audit/<job8>[-sensitivity].json)")
     p.add_argument("--provider", default="gemini")
-    p.add_argument("--examiner-model", default="gemini-2.5-pro")
-    p.add_argument("--student-model", default="gemini-2.5-flash")
+    p.add_argument("--examiner-model", default="gemini-3.6-flash")
+    p.add_argument("--student-model", default="gemini-3.5-flash")
     p.add_argument("--strict", action="store_true",
                    help="exit 1 when not teaching-equivalent/learnable (or sensitivity fails)")
     return p.parse_args(argv)

@@ -250,6 +250,12 @@ export interface ProviderModelManifest {
   api_supported: Record<string, boolean>;
   /** Providers that have no CLI lane and must stay pinned to API. */
   api_only: Record<string, boolean>;
+  /** provider -> model ids that are api-only WITHIN a provider that otherwise
+   *  supports cli (e.g. gemini-3.x-flash 404s/ModelNotFoundError on the
+   *  gemini CLI's own catalog). Distinct from `api_only` above, which flags a
+   *  whole provider (e.g. clodex). Only providers with at least one api-only
+   *  model are present; absent/missing entries mean "none". */
+  api_only_models?: Record<string, string[]>;
   /** provider -> model -> tier int. */
   tiers?: Record<string, Record<string, number>>;
   /** Live fleet capability snapshot; absent when the endpoint hasn't loaded yet. */
@@ -503,6 +509,9 @@ export interface BatchCancelResponse {
 export interface BatchResumeResponse {
   batch_id: string;
   jobs_resumed: number;
+  /** job ids that carried a retired model (gemini-2.5, retired 2026-08-03) on
+   *  one of their four role pairs — skipped rather than resumed. */
+  jobs_skipped_retired: string[];
 }
 
 /** Response from POST /jobs/batch/{id}/retry-archive */
@@ -525,6 +534,11 @@ export interface BatchPreviewResponse {
   new: number;
   resumable: number;
   empty: number;
+  /** Saved sections whose latest failed/cancelled job is pinned to a retired
+   *  model (gemini-2.5, retired 2026-08-03) — DISJOINT from `resumable`: these
+   *  can never be safely resumed (would call a dead model). Only
+   *  `relaunch_mode: "discard"` can regenerate them. */
+  retired: number;
   /** Count of TOC rows the launch would actually target (class-filtered). */
   target_count?: number;
   /** Rows excluded by class filtering, keyed by entry_class → count. */

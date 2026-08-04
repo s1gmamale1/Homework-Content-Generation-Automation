@@ -34,7 +34,7 @@ async def _gen(grade: str) -> int:
     assert "grade" not in LESSON_BODY.lower()          # body itself never mentions grade
     prompt = get_prompt(SUBJECT, "flashcards")
     text, _tin, _tout = await agent.run_phase_prompt(
-        provider="gemini", model="gemini-2.5-flash",
+        provider="gemini", model="gemini-3.5-flash",
         phase_prompt=prompt, lesson_context=ctx, prior_outputs={},
         difficulty=None, phase_name="flashcards", transport="api",
     )

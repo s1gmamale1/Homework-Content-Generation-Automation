@@ -27,6 +27,7 @@ import { RoleAgentControls } from "@/components/fleet/RoleAgentControls";
 import { api } from "@/lib/api";
 import { serveability, providerServeableAnyMode } from "@/lib/serveability";
 import { normalizeProviderTransport } from "@/lib/transport-policy";
+import { resolveTransport } from "@/lib/model-transport";
 import { safeUUID } from "@/lib/uuid";
 import { subjectLabel, CONTENT_PHASES } from "@/lib/subjects";
 import type {
@@ -150,7 +151,17 @@ export function SectionPage() {
   // api, drop back to cli so we never send an invalid transport.
   const fleet = manifest?.fleet;
   const apiSupported = manifest?.api_supported?.[provider] ?? false;
-  const apiOnly = manifest?.api_only?.[provider] ?? false;
+  // Provider-level api-only (whole provider, e.g. clodex) OR model-level
+  // api-only (gemini-3.x-flash — 404s/ModelNotFoundError on the gemini CLI's
+  // own catalog even though gemini itself supports cli). Same shared
+  // resolver every picker uses (model-transport.ts).
+  const modelForcedApi = resolveTransport({
+    provider,
+    model,
+    currentTransport: transport,
+    apiOnlyModels: manifest?.api_only_models,
+  }).forced;
+  const apiOnly = (manifest?.api_only?.[provider] ?? false) || modelForcedApi;
   const apiFleetCheck = serveability(fleet, provider, "api");
   useEffect(() => {
     const next = normalizeProviderTransport({
@@ -654,7 +665,18 @@ function AgentPicker({
   const modelDisabled = !manifest || modelOptions.length === 0;
   // Fleet gate for the API transport button (anded with apiSupported above).
   const apiFleetCheck = serveability(fleet, provider, "api");
-  const apiOnly = manifest?.api_only?.[provider] ?? false;
+  // Provider-level OR model-level api-only (see SectionPage's own apiOnly —
+  // this component gets the same forced-api fact via a prop-free recompute so
+  // the Transport toggle below hides cli/pins api independently of the
+  // parent's effect timing).
+  const apiOnly =
+    (manifest?.api_only?.[provider] ?? false) ||
+    resolveTransport({
+      provider,
+      model,
+      currentTransport: transport,
+      apiOnlyModels: manifest?.api_only_models,
+    }).forced;
 
   return (
     <section className={CARD}>

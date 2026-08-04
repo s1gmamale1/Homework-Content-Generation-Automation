@@ -43,7 +43,7 @@ async def main() -> None:
     pdf = _one_page_pdf_with_word("BANANA")
     try:
         rc, text, usage, stderr = await api_transport._gemini(
-            "gemini-2.5-flash",
+            "gemini-3.5-flash-lite",
             "This PDF page shows a single word. Reply with ONLY that word "
             "(or 'BLANK' if the page is empty).",
             attachments=[pdf],

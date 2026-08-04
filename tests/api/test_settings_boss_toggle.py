@@ -18,12 +18,18 @@ def _auth():
 
 
 def _row(boss=True):
+    # live target defaults — gemini-2.5 retired 2026-08-03. judge/extract_transport
+    # are explicit "api" (not "inherit"): judge/extract models are api-only
+    # (GEMINI_API_ONLY_MODELS) — matches migration 0051's actual target row.
+    # toc_transport is ALSO "api" for the same reason: the PUT endpoint validates
+    # extract_model against toc_transport directly (settings.py:111-115), and an
+    # api-only extract model can never validate against toc_transport="cli".
     return SimpleNamespace(
-        judge_provider="gemini", judge_model="gemini-2.5-flash", judge_transport="inherit",
+        judge_provider="gemini", judge_model="gemini-3.5-flash", judge_transport="api",
         solver_provider="gemini", solver_model="gemini-3.1-pro-preview", solver_transport="inherit",
-        extract_provider="gemini", extract_model="gemini-2.5-flash", extract_transport="inherit",
+        extract_provider="gemini", extract_model="gemini-3.5-flash-lite", extract_transport="api",
         content_provider="gemini", content_model="gemini-3-flash-preview", content_transport="api",
-        toc_transport="cli", output_language="uz", solver_boss_arena_enabled=boss)
+        toc_transport="api", output_language="uz", solver_boss_arena_enabled=boss)
 
 
 def test_get_exposes_boss_toggle():

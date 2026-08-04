@@ -4,7 +4,7 @@ Fact-over-theory proof that the validator DISCRIMINATES: against a real book
 PDF's printed contents page, the genuine extracted TOC must read ``verified``
 while a deliberately-scrambled TOC must read ``mismatch``.
 
-Makes 2 real Gemini-2.5-flash vision calls (one per case) over whatever
+Makes 2 real Gemini-3.5-flash-lite vision calls (one per case) over whatever
 transport the env credentials support (api: GEMINI_API_KEY or the Vertex SA
 pair). One-time, cheap — NOT homework generation.
 
@@ -101,7 +101,7 @@ async def main() -> int:
 
     common = dict(
         pdf_path=pdf_path, subject=subject, book_id=book_id,
-        provider="gemini", model="gemini-2.5-flash", transport="api",
+        provider="gemini", model="gemini-3.5-flash-lite", transport="api",
     )
 
     print("\n[case A] genuine TOC → expect verified")

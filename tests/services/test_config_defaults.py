@@ -13,3 +13,8 @@ def test_max_file_mb_default_is_textbook_sized():
     # only a 300 MB+/high-concurrency regime would force).
     from app.config import Settings
     assert Settings.model_fields["max_file_mb"].default == 250
+
+
+def test_toc_validation_model_default_off_2_5():
+    from app.config import settings
+    assert settings.toc_validation_model == "gemini-3.5-flash"

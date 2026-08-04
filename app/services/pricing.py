@@ -50,6 +50,12 @@ PRICE_MAP: dict[tuple[str, str], dict[str, float]] = {
     ("gemini", "gemini-3-flash-preview"): {"input": 0.50, "output": 3.0, "cache_read": 0.05},
     ("gemini", "gemini-3.1-flash-lite-preview"): {"input": 0.25, "output": 1.50, "cache_read": 0.025},
 
+    # ─── Gemini 3.x flash (api-only, 2026-08-03 rollout — replaces retired 2.5) ──
+    # Google Standard Developer API list price, ai.google.dev/gemini-api/docs/pricing, 2026-08-03
+    ("gemini", "gemini-3.6-flash"): {"input": 1.50, "output": 7.50, "cache_read": 0.15},
+    ("gemini", "gemini-3.5-flash"): {"input": 1.50, "output": 9.00, "cache_read": 0.15},
+    ("gemini", "gemini-3.5-flash-lite"): {"input": 0.30, "output": 2.50, "cache_read": 0.03},
+
     # ─── Clodex (public /api/pricing payload, 2026-07-15) ───────────────
     # usage_fixed_price is the $/M input rate and completion_ratio multiplies
     # output. For entries with usage_floor_price, use max(fixed, floor) as a

@@ -241,7 +241,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--audit-check", action="store_true",
                     help="compare vs manifest audit_verdict; exits 1 on any measured mismatch")
     p.add_argument("--provider", default="gemini", help="LLM-scorer provider (default: gemini)")
-    p.add_argument("--model", default="gemini-2.5-pro", help="LLM-scorer model (default: gemini-2.5-pro)")
+    p.add_argument("--model", default="gemini-3.5-flash", help="LLM-scorer model (default: gemini-3.5-flash)")
     return p.parse_args(argv)
 
 

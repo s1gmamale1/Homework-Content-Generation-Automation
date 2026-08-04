@@ -40,6 +40,7 @@ import {
   toSelectValue,
 } from "@/lib/launch-model";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
+import { decideRelaunch, formatResumeToast, retiredResumeNotice } from "@/lib/retired-resume";
 import { accentOf, subjectLabel, subjectLabelWithVariant } from "@/lib/subjects";
 import type {
   BatchSummary,
@@ -54,6 +55,7 @@ import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { serveability, providerServeableAnyMode } from "@/lib/serveability";
 import { normalizeProviderTransport } from "@/lib/transport-policy";
+import { resolveTransport } from "@/lib/model-transport";
 import { type LauncherConfig, loadLauncherConfig, saveLauncherConfig } from "@/lib/launcher-config";
 import { LANG_LABEL, langBadge } from "@/lib/language";
 import {
@@ -989,7 +991,17 @@ function ReadyCard({
   // claude/gemini do; the toggle is hidden for the rest and transport pins cli.
   const fleet = modelsQ.data?.fleet;
   const apiSupported = modelsQ.data?.api_supported?.[provider] ?? false;
-  const apiOnly = modelsQ.data?.api_only?.[provider] ?? false;
+  // Provider-level api-only (whole provider, e.g. clodex) OR model-level
+  // api-only (gemini-3.x-flash — 404s/ModelNotFoundError on the gemini CLI's
+  // own catalog even though gemini itself supports cli). Both pin the
+  // toggle to api below — shared resolver every picker uses.
+  const modelForcedApi = resolveTransport({
+    provider,
+    model,
+    currentTransport: transport,
+    apiOnlyModels: modelsQ.data?.api_only_models,
+  }).forced;
+  const apiOnly = (modelsQ.data?.api_only?.[provider] ?? false) || modelForcedApi;
   const apiFleetCheck = serveability(fleet, provider, "api");
 
   // Reset transport to cli whenever the provider can't do api (keeps an
@@ -1141,7 +1153,7 @@ function ReadyCard({
       return api.resumeBatch(batchId);
     },
     onSuccess: (r) => {
-      toast.success(`Resuming ${r.jobs_resumed} lessons`);
+      toast.success(formatResumeToast(r.jobs_resumed, r.jobs_skipped_retired.length));
       qc.invalidateQueries({ queryKey: ["batches"] });
       qc.invalidateQueries({ queryKey: ["books"] });
     },
@@ -1546,8 +1558,21 @@ function ReadyCard({
                     setLaunching(true);
                     try {
                       const p = await api.previewBatch(launchBody());
-                      if (p.resumable > 0) {
-                        // Some remaining lessons have saved phases.
+                      const counts = { new: p.new, resumable: p.resumable, retired: p.retired, empty: p.empty };
+                      const decision = decideRelaunch(counts);
+                      if (decision.kind === "retired_blocks_resume") {
+                        // Any retired-stamped saved section blocks Resume
+                        // outright (the backend refuses it with 409 anyway —
+                        // this dialog just makes that explicit up front).
+                        // Discard & regenerate is the only path forward, and
+                        // it regenerates every selected saved job, live or
+                        // retired, with the current live model selection.
+                        const discard = window.confirm(
+                          `${retiredResumeNotice(counts)}\n\nDiscard & regenerate now?`,
+                        );
+                        if (discard) launch.mutate({ relaunch_mode: "discard" });
+                      } else if (decision.kind === "offer_resume_or_discard") {
+                        // Some remaining lessons have saved phases (none retired).
                         // Three-way: Resume (OK) → Discard (second confirm OK) → bail.
                         const resume = window.confirm(
                           `${p.resumable} of these lessons have saved work.\n\n` +

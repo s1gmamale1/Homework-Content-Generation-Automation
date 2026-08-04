@@ -25,7 +25,7 @@ async def _main():
         prompt = get_prompt(SUBJECT, phase)
         assert "{{" not in prompt, f"{phase}: prompt has unresolved tokens"
         text, tin, tout = await agent.run_phase_prompt(
-            provider="gemini", model="gemini-2.5-flash",
+            provider="gemini", model="gemini-3.5-flash",
             phase_prompt=prompt, lesson_context=LESSON, prior_outputs={},
             difficulty=None, phase_name=phase, transport="api",
         )

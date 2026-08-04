@@ -102,13 +102,19 @@ _FAKE_JOB = SimpleNamespace(
     selected_phases=None,
 )
 
-# Fake launch_defaults singleton row — matches the migration-seeded defaults so
-# resolution is a no-op (Auto → gemini/gemini-2.5-flash, transport inherit→inherit).
+# Fake launch_defaults singleton row — matches the live target defaults (2026-08-03
+# gemini-3.x-flash rollout, gemini-2.5 retired). judge/extract_transport are
+# explicit "api" (not "inherit") because gemini-3.5-flash / gemini-3.5-flash-lite
+# are api-only (GEMINI_API_ONLY_MODELS) — an "inherit" role transport would follow
+# a cli-transport content job and fail validate_transport's cli-rejection; this
+# matches the actual migration-0051 target row, which stamps these roles' transport
+# as "api" unconditionally rather than "inherit". solver stays "inherit": its model
+# (gemini-3.1-pro-preview) is not api-only, so inherit is harmless either way.
 # Added to every batch/generate success-path test that reaches launch_defaults_repo.get.
 _FAKE_LD = SimpleNamespace(
-    judge_provider="gemini", judge_model="gemini-2.5-flash",
-    judge_transport="inherit", extract_provider="gemini",
-    extract_model="gemini-2.5-flash", extract_transport="inherit",
+    judge_provider="gemini", judge_model="gemini-3.5-flash",
+    judge_transport="api", extract_provider="gemini",
+    extract_model="gemini-3.5-flash-lite", extract_transport="api",
     solver_provider="gemini", solver_model="gemini-3.1-pro-preview",
     solver_transport="inherit",
     output_language="uz",
