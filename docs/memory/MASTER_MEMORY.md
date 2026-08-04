@@ -2207,3 +2207,39 @@ prod + concurrency env (`WORKER_CONCURRENCY=2`/`AGENT_MAX_CONCURRENCY=4`/
 retired-job preflight (0 active, both before-drain and immediately-before-migration checks) +
 post-deploy smoke. Production, fleet `.env`, and prod migration state were **not touched** by
 this branch.
+
+## 0162 — Default-off kill switch for structured content_json output (2026-08-04)
+
+The content_json lane (structured JSON authoring, already merged onto `Nggaev-v2` via
+direct pushes: PhaseArtifact / structured-generation pipeline) hardwired the structured
+attempt for the two phases in `schemas.content_json.SCHEMAS` (`practice-rlc`,
+`practice-sentence`) purely by dict membership — `structured = phase_name in SCHEMAS and
+not is_custom` in `pipeline._generate_artifact`, with **no way to turn it off**. That
+coupled two things that must be independent: deploying #115's model config requires the
+backend to run head code, and running head code auto-activated structured output for those
+two phases, before the lane is verified end-to-end.
+
+**Change:** added `settings.structured_output_enabled: bool = False`
+(`STRUCTURED_OUTPUT_ENABLED`) and AND-ed it into the gate:
+`structured = phase_name in SCHEMAS and not is_custom and settings.structured_output_enabled`.
+Off (production default) ⇒ every phase renders `markdown_builtin`, exactly as before the
+content_json lane landed. Flip to `true` to activate once the lane is ready. Fully
+reversible; does not revert the lane. No frontend change (the #115 frontend model/transport
+rebuild is a separate coordinated step).
+
+**Tests** (`test_pipeline_structured.py` + `test_config_defaults.py`): kill-switch off forces
+`markdown_builtin` for a SCHEMAS phase and never runs the structured attempt (RED-proved:
+removing the gate fails this test); kill-switch on restores the structured attempt; declared
+default is `False` — asserted via `Settings.model_fields["structured_output_enabled"].default`
+(NOT the env-loaded singleton, so it holds even when `STRUCTURED_OUTPUT_ENABLED=true` is set,
+a gate-review finding). An autouse fixture enables the flag for the file's existing structured
+contracts (their precondition). Suite 2053/312, no migration, no billed smoke (pure
+control-flow, deterministically covered).
+
+**Merge order + #118 rebase requirement (gate-review, load-bearing):** merge this BEFORE the
+content_json gate-corrections PR **#118**. #118 introduces `get_structured_prompt_hash(...) if
+phase_name in SCHEMAS` for provenance — on rebase it must ALSO check
+`settings.structured_output_enabled` (`... and settings.structured_output_enabled`), otherwise
+with the flag OFF the phase emits markdown but records the *structured* prompt's hash →
+mis-attribution. (Current `Nggaev-v2` head is unaffected — it records `get_prompt_hash`, the
+markdown hash — so this is a #118-only rebase condition, not a bug in this branch.)
