@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import ClassVar, Literal
 
-from pydantic import Field, model_validator
+from pydantic import model_validator
 
-from .common import StrictModel, all_unique_normalized
+from .common import StrictModel, StrippedStr, all_unique_normalized, first_duplicate_id
 
 EXPERT_ROLES = (
     "fire_inspector", "structural_engineer", "business_consultant",
@@ -18,16 +18,16 @@ MIN_CHARS_CEIL = 1000
 
 
 class Choice(StrictModel):
-    id: str = Field(min_length=1)
-    label: str = Field(min_length=1)
+    id: StrippedStr
+    label: StrippedStr
     is_correct: bool = False
 
 
 class Step(StrictModel):
-    id: str = Field(min_length=1)
+    id: StrippedStr
     kind: Literal[STEP_ORDER]  # type: ignore[valid-type]
-    title: str = Field(min_length=1)
-    prompt: str = Field(min_length=1)
+    title: StrippedStr
+    prompt: StrippedStr
     options: list[Choice] | None = None
     concept_chips: list[Choice] | None = None
     min_chars: int | None = None
@@ -40,6 +40,12 @@ class Step(StrictModel):
                 raise ValueError(f"{self.kind}: options needs >=2 entries")
             if sum(1 for o in opts if o.is_correct) != 1:
                 raise ValueError(f"{self.kind}: exactly 1 is_correct option required")
+            # Ids, not just labels: `grade_rlc` resolves the submitted answer by
+            # FIRST id match, so a duplicate id can credit the option the student
+            # never picked (and hide the visibly-correct one).
+            dup = first_duplicate_id([o.id for o in opts])
+            if dup is not None:
+                raise ValueError(f"{self.kind}: duplicate option id '{dup}'")
             if not all_unique_normalized([o.label for o in opts]):
                 raise ValueError(f"{self.kind}: option labels must be normalized-unique")
         elif self.kind == "concept_select":
@@ -48,6 +54,9 @@ class Step(StrictModel):
                 raise ValueError("concept_select: concept_chips needs >=2 entries")
             if sum(1 for c in chips if c.is_correct) != 1:
                 raise ValueError("concept_select: exactly 1 is_correct chip required")
+            dup = first_duplicate_id([c.id for c in chips])
+            if dup is not None:
+                raise ValueError(f"concept_select: duplicate chip id '{dup}'")
             if not all_unique_normalized([c.label for c in chips]):
                 raise ValueError("concept_select: chip labels must be normalized-unique")
         elif self.kind == "reasoning":
@@ -65,9 +74,9 @@ class RlcConfig(StrictModel):
     # content_json would defeat the extra="forbid" containment.
     SCHEMA_VERSION: ClassVar[str] = "rlc_config@1"
 
-    id: str = Field(min_length=1)
-    title: str = Field(min_length=1)
-    intro: str = Field(min_length=1)
+    id: StrippedStr
+    title: StrippedStr
+    intro: StrippedStr
     expert_role: Literal[EXPERT_ROLES]  # type: ignore[valid-type]
     steps: list[Step]
 
@@ -79,6 +88,7 @@ class RlcConfig(StrictModel):
         for i, (step, expected) in enumerate(zip(self.steps, STEP_ORDER)):
             if step.kind != expected:
                 raise ValueError(f"steps[{i}].kind must be '{expected}'")
-        if not all_unique_normalized([s.id for s in self.steps]):
-            raise ValueError("step ids must be unique")
+        dup = first_duplicate_id([s.id for s in self.steps])
+        if dup is not None:
+            raise ValueError(f"duplicate step id '{dup}' — step ids must be unique")
         return self

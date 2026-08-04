@@ -2,7 +2,7 @@
 
 > The complete, verified reference for the Postgres schema, the queue semantics, and the
 > fleet layer. `HOW_IT_WORKS.md` is the plain-English tour; this is the precise map.
-> Last updated: branch `feat/prepare-status-redo`, head `0048_book_notion_sources`
+> Last updated: branch `feat/content-json-producer`, head `0050_phase_output_structured`
 > (0048), 2026-07-16. When this doc and the code disagree, the code wins — fix the doc.
 
 ---
@@ -29,7 +29,7 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`0046_worker_version_floor`** (0028 = enum CHECK constraints,
+also runs it on deploy). Current head: **`0050_phase_output_structured`** (0028 = enum CHECK constraints,
 0029 = `phase_outputs.judge_status`, 0030 = `agent_usages.cache_creation_tokens`,
 0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton,
 0033 = `custom_prompts`/`selected_phases` JSONB on `homework_jobs`+`batches`,
@@ -44,7 +44,10 @@ also runs it on deploy). Current head: **`0046_worker_version_floor`** (0028 = e
 0043 = `solver_*` role columns on `launch_defaults`/`homework_jobs`/`batches` + `phase_outputs.solver_status` + `launch_defaults` seed + `homework_jobs.solver_provider` NULL-row backfill (CQ-C/worklog 0112),
 0044 = `launch_defaults.solver_boss_arena_enabled` Boolean NOT NULL default true (worklog 0126),
 0045 = `toc_entries.notion_archived_job_id` UUID NULL (worklog 0129),
-0046 = `budget_state` worker-version-floor columns `min_worker_version`/`min_worker_version_stamped_by`/`min_worker_version_stamped_at` (fleet-worker-version-gate, worklog 0133)).
+0046 = `budget_state` worker-version-floor columns `min_worker_version`/`min_worker_version_stamped_by`/`min_worker_version_stamped_at` (fleet-worker-version-gate, worklog 0133),
+0047 = `credential_slots` + `sa_keys.max_concurrent_calls` (fleet per-credential api limiter, worklog 0142),
+0048 = `book_notion_sources` table + `books.toc_ready_at` (worklog 0144),
+0050 = `phase_outputs.content_json`/`authoring_mode`/`content_schema_version`/`renderer_version` + `ck_phase_outputs_authoring_mode` CHECK (structured producer, worklog 0162; `down_revision` is `0048_book_notion_sources` — `0049` was claimed by the model-config lane)).
 Full chain in §7. (Revision IDs stay ≤32 chars — `alembic_version.version_num` is VARCHAR(32).)
 
 ---
@@ -528,7 +531,8 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 | 45 | 0045_notion_archived_job | `0045_notion_archived_job` | adds `toc_entries.notion_archived_job_id` UUID NULL (no FK) — producing-job stamp for the Notion archive: auto-replace-own-older-output + `stale` rollup (worklog 0129) |
 | 46 | 0046_worker_version_floor | `0046_worker_version_floor` | adds `budget_state.min_worker_version` Integer NULL + `min_worker_version_stamped_by` String(128) NULL + `min_worker_version_stamped_at` DateTime(tz) NULL — the fleet worker version floor (fleet-worker-version-gate, worklog 0133) |
 | 47 | 0047_credential_slots | `0047_credential_slots` | adds `credential_slots` table (`id` UUID PK, `credential` Text NOT NULL indexed, `pc_id` Text NOT NULL, `acquired_at` timestamptz NOT NULL default now()) + `sa_keys.max_concurrent_calls` Integer NULL CHECK `IS NULL OR >= 1` — the BE-16 fleet-wide per-credential api concurrency limiter (worklog 0142) |
-| 48 | 0048_book_notion_sources | `0048_book_notion_sources` | adds `book_notion_sources` table (`id` UUID PK, `book_id` FK→books ondelete=CASCADE NOT NULL indexed, `notion_page_id`/`notion_block_id` Text NOT NULL UNIQUE pair, `linked_at` timestamptz NOT NULL default now()) + `books.toc_ready_at` DateTime(tz) NULL — the Notion source → book link + prepared-since stamp for the system-aware "Prepare a subject" dialog (worklog 0144) — **HEAD** |
+| 48 | 0048_book_notion_sources | `0048_book_notion_sources` | adds `book_notion_sources` table (`id` UUID PK, `book_id` FK→books ondelete=CASCADE NOT NULL indexed, `notion_page_id`/`notion_block_id` Text NOT NULL UNIQUE pair, `linked_at` timestamptz NOT NULL default now()) + `books.toc_ready_at` DateTime(tz) NULL — the Notion source → book link + prepared-since stamp for the system-aware "Prepare a subject" dialog (worklog 0144) |
+| 50 | 0050_phase_output_structured | `0050_phase_output_structured` (down_revision `0048_book_notion_sources`; `0049` was claimed by the model-config lane) | adds `phase_outputs.content_json` JSONB NULL + `authoring_mode` String NULL + `content_schema_version` String NULL + `renderer_version` String NULL, and the `ck_phase_outputs_authoring_mode` CHECK over `structured|markdown_fallback|markdown_builtin|markdown_custom|markdown_legacy` — the structured `content_json` producer (worklog 0162) — **HEAD** |
 
 ---
 

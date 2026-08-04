@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -40,7 +41,9 @@ from app.services.phase_artifact import (
     artifact_from_config,
     artifact_from_markdown,
 )
-from app.services.prompts import get_prompt, get_prompt_hash, get_structured_prompt
+from app.services.prompts import (
+    get_prompt, get_prompt_hash, get_structured_prompt, get_structured_prompt_hash,
+)
 
 _INTERNAL_PHASES = {"extract", "classify"}
 
@@ -1130,6 +1133,53 @@ async def _judge_with_timeout(**kwargs) -> phase_judge.JudgeOutcome:
         )
 
 
+def _judge_inputs_for(
+    artifact: PhaseArtifact,
+    *,
+    subject: str,
+    phase_name: str,
+    output_language: str,
+    custom_override: Optional[str] = None,
+) -> tuple[str, Optional[str]]:
+    """(text_to_grade, contract_override) for the judge.
+
+    A structured artifact's markdown is DERIVED, so grading it against the
+    hand-authored markdown prompt is a category error — it demands narrative
+    sections (Task/Context/Prediction/Final summary, Why + confidence prompts,
+    feedback lines, "How to play") that content_json does not and should not
+    carry; a live acceptance run returned MAJOR for exactly that reason. Grade
+    the JSON against the structured authoring contract instead.
+
+    Every markdown mode keeps today's path exactly: `markdown_custom` is graded
+    on its markdown against the operator's uploaded contract (`custom_override`
+    — the helper must never clobber it with None), and the two builtin markdown
+    modes keep the judge's own per-phase contract (override None).
+
+    Callers must pass the CURRENT artifact: after a regen that fell back to
+    markdown the mode is `markdown_fallback` and the previous attempt's JSON is
+    no longer the phase's output.
+    """
+    if artifact.authoring_mode == "structured" and artifact.content_json is not None:
+        # A custom prompt disables the structured lane entirely (see
+        # _generate_artifact), so `custom_override` cannot apply here.
+        contract = get_structured_prompt(
+            subject, phase_name, output_language=output_language
+        )
+        if contract:
+            text = json.dumps(
+                artifact.content_json, sort_keys=True, ensure_ascii=False, indent=2
+            )
+            return text, contract
+        # No JSON-authoring contract to grade against (a structured artifact
+        # should never reach this) — fall back to today's markdown path rather
+        # than hand the judge JSON with a markdown contract.
+        logger.warning(
+            f"[{phase_name}] structured artifact without a structured prompt — "
+            f"judging the rendered markdown instead"
+        )
+    return artifact.output_md, custom_override
+
+
 def _custom_for(phase_name: str, custom_prompts: Optional[dict]) -> Optional[str]:
     """The stripped custom prompt for this phase, or None (blank/missing).
     `extract` is never overridden — callers pass it through harmlessly."""
@@ -1254,7 +1304,24 @@ async def _execute_phase(
     elif _custom_md is not None:
         prompt_hash = "custom:sha256:" + hashlib.sha256(_custom_md.encode("utf-8")).hexdigest()
     else:
-        prompt_hash = get_prompt_hash(subject, phase_name, output_language=output_language)
+        # A structured phase is AUTHORED by the JSON contract, not by the markdown
+        # one — recording the markdown prompt's hash attributed the output to a
+        # document the model never saw. The structured lane is taken exactly when
+        # the phase has a schema, no custom override (a custom prompt is a MARKDOWN
+        # contract and disables the lane) and a structured prompt exists — the same
+        # three conditions `_generate`/`_run_structured_attempt` apply.
+        #
+        # If that attempt exhausts its schema retries the phase falls back to
+        # markdown; the row still carries the structured hash, and
+        # `authoring_mode="markdown_fallback"` is what distinguishes that case.
+        _structured_hash = (
+            get_structured_prompt_hash(subject, phase_name, output_language=output_language)
+            if phase_name in SCHEMAS
+            else None
+        )
+        prompt_hash = _structured_hash or get_prompt_hash(
+            subject, phase_name, output_language=output_language
+        )
 
     # Per-phase model_name on the phase row records exactly what served this
     # call. The ``extract`` phase is pinned to the cheap-extractor settings
@@ -1526,14 +1593,21 @@ async def _execute_phase(
         _jp, _jm = model_tiers.resolve_judge(
             produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
         )
+        # `output_md=` is the judge's "text to grade" parameter — for a
+        # structured artifact that text is its canonical JSON, graded against
+        # the JSON-authoring contract (the parameter name predates Task 10).
+        _judge_text, _judge_contract = _judge_inputs_for(
+            artifact, subject=subject, phase_name=phase_name,
+            output_language=output_language, custom_override=_custom_md,
+        )
         outcome = await _judge_with_timeout(
-            subject=subject, phase_name=phase_name, output_md=output_md,
+            subject=subject, phase_name=phase_name, output_md=_judge_text,
             lesson_context=lesson_context, prior_outputs=prior_outputs,
             gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
             judge_provider=_jp, judge_model=_jm,
             homework_job_id=job_id, phase_output_id=po_id,
             transport=judge_transport,
-            contract_override=_custom_md,
+            contract_override=_judge_contract,
             output_language=output_language,
         )
         # Retry-once on unavailable: a transient CLI/parse failure (or timeout
@@ -1546,13 +1620,22 @@ async def _execute_phase(
             logger.info(
                 f"[job {job_id}] {phase_name} judge unavailable on first attempt — retrying once"
             )
+            # Same artifact, inputs re-derived (never grade text carried over
+            # from another site). This site deliberately does NOT thread
+            # `custom_override`: it never has, and the retry must stay
+            # byte-identical to today for every markdown mode.
+            _retry_text, _retry_contract = _judge_inputs_for(
+                artifact, subject=subject, phase_name=phase_name,
+                output_language=output_language,
+            )
             outcome = await _judge_with_timeout(
-                subject=subject, phase_name=phase_name, output_md=output_md,
+                subject=subject, phase_name=phase_name, output_md=_retry_text,
                 lesson_context=lesson_context, prior_outputs=prior_outputs,
                 gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
                 judge_provider=_jp, judge_model=_jm,
                 homework_job_id=job_id, phase_output_id=po_id,
                 transport=judge_transport,
+                contract_override=_retry_contract,
                 output_language=output_language,
             )
         # Regenerate ONLY on a MAJOR issue; minor (stylistic/length) nits are
@@ -1589,14 +1672,23 @@ async def _execute_phase(
                 _jp2, _jm2 = model_tiers.resolve_judge(
                     produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
                 )
+                # Re-derived from the REGENERATED artifact: a regen that fell
+                # back to markdown is now `markdown_fallback` with
+                # content_json=None, so it must be judged on that markdown
+                # against the markdown contract — never the stale JSON.
+                # (`output_md=` is the judge's "text to grade" parameter.)
+                _regen_text, _regen_contract = _judge_inputs_for(
+                    artifact, subject=subject, phase_name=phase_name,
+                    output_language=output_language, custom_override=_custom_md,
+                )
                 outcome = await _judge_with_timeout(
-                    subject=subject, phase_name=phase_name, output_md=output_md,
+                    subject=subject, phase_name=phase_name, output_md=_regen_text,
                     lesson_context=lesson_context, prior_outputs=prior_outputs,
                     gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
                     judge_provider=_jp2, judge_model=_jm2,
                     homework_job_id=job_id, phase_output_id=po_id,
                     transport=judge_transport,
-                    contract_override=_custom_md,
+                    contract_override=_regen_contract,
                     output_language=output_language,
                 )
             except SessionLimitPause:
