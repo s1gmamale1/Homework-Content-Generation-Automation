@@ -565,3 +565,20 @@ def get_prompt_hash(subject: str, phase_name: str, output_language: str = "uz") 
     return hashlib.sha256(
         get_prompt(subject, phase_name, output_language=output_language).encode("utf-8")
     ).hexdigest()
+
+
+def get_structured_prompt_hash(
+    subject: str, phase_name: str, output_language: str = "uz"
+) -> "str | None":
+    """Provenance hash of the JSON-authoring contract, or None if it has none.
+
+    Prefixed (like ``custom:sha256:``) rather than a bare hex digest, because the
+    markdown and structured contracts for the SAME phase are different documents:
+    an unprefixed digest would silently read as "the markdown prompt" and make the
+    two indistinguishable in `phase_outputs.prompt_hash`.
+    """
+    import hashlib
+    body = get_structured_prompt(subject, phase_name, output_language=output_language)
+    if body is None:
+        return None
+    return "structured:sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()

@@ -41,7 +41,9 @@ from app.services.phase_artifact import (
     artifact_from_config,
     artifact_from_markdown,
 )
-from app.services.prompts import get_prompt, get_prompt_hash, get_structured_prompt
+from app.services.prompts import (
+    get_prompt, get_prompt_hash, get_structured_prompt, get_structured_prompt_hash,
+)
 
 _INTERNAL_PHASES = {"extract", "classify"}
 
@@ -1302,7 +1304,24 @@ async def _execute_phase(
     elif _custom_md is not None:
         prompt_hash = "custom:sha256:" + hashlib.sha256(_custom_md.encode("utf-8")).hexdigest()
     else:
-        prompt_hash = get_prompt_hash(subject, phase_name, output_language=output_language)
+        # A structured phase is AUTHORED by the JSON contract, not by the markdown
+        # one — recording the markdown prompt's hash attributed the output to a
+        # document the model never saw. The structured lane is taken exactly when
+        # the phase has a schema, no custom override (a custom prompt is a MARKDOWN
+        # contract and disables the lane) and a structured prompt exists — the same
+        # three conditions `_generate`/`_run_structured_attempt` apply.
+        #
+        # If that attempt exhausts its schema retries the phase falls back to
+        # markdown; the row still carries the structured hash, and
+        # `authoring_mode="markdown_fallback"` is what distinguishes that case.
+        _structured_hash = (
+            get_structured_prompt_hash(subject, phase_name, output_language=output_language)
+            if phase_name in SCHEMAS
+            else None
+        )
+        prompt_hash = _structured_hash or get_prompt_hash(
+            subject, phase_name, output_language=output_language
+        )
 
     # Per-phase model_name on the phase row records exactly what served this
     # call. The ``extract`` phase is pinned to the cheap-extractor settings
