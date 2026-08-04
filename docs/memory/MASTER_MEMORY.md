@@ -2183,7 +2183,7 @@ repointed off 2.5 runnable defaults — `teaching_audit.py` examiner/student now
 `gemini-3.6-flash`/`gemini-3.5-flash` (other 2.5 script refs either repointed or left as
 historical-pinned examples).
 
-**Migration 0049** (`0049_launch_defaults_3x`) unconditionally flips the `launch_defaults`
+**Migration 0051** (`0051_launch_defaults_3x`) unconditionally flips the `launch_defaults`
 singleton to the target tuple — content=`gemini-3.6-flash`, extract=`gemini-3.5-flash-lite`,
 judge=`gemini-3.5-flash`, solver=`gemini-3.1-pro-preview`, all 5 transport columns `'api'` —
 converging both a fresh-seeded DB and the existing prod row onto the same state; downgrade
@@ -2201,7 +2201,7 @@ original `feat/model-config-3x-flash` picked up a foreign commit from a concurre
 mid-flight, so execution moved rather than risk cross-contamination.
 
 **Deferred (operator-owned, NOT done by this branch — see the plan's cutover runbook):**
-fleet SA-scrub + plain-`GEMINI_API_KEY` rollout + per-host restart + apply migration 0049 to
+fleet SA-scrub + plain-`GEMINI_API_KEY` rollout + per-host restart + apply migration 0051 to
 prod + concurrency env (`WORKER_CONCURRENCY=2`/`AGENT_MAX_CONCURRENCY=4`/
 `CREDENTIAL_MAX_CONCURRENT_GEMINI=32`, remove any `GEMINI_MAX_CONCURRENCY` sentinel first) +
 retired-job preflight (0 active, both before-drain and immediately-before-migration checks) +

@@ -11,13 +11,13 @@ UPDATE has to correctly land on BOTH starting states seen in the fleet:
     gemini-2.5-flash, all transports already 'api')
 Both converge on the same target tuple after this migration.
 
-Revision ID: 0049_launch_defaults_3x
-Revises: 0048_book_notion_sources
+Revision ID: 0051_launch_defaults_3x
+Revises: 0050_phase_output_structured
 """
 from alembic import op
 
-revision = "0049_launch_defaults_3x"
-down_revision = "0048_book_notion_sources"
+revision = "0051_launch_defaults_3x"
+down_revision = "0050_phase_output_structured"
 branch_labels = None
 depends_on = None
 

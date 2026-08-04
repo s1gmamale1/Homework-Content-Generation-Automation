@@ -77,7 +77,7 @@ def _make_fake_ld(output_language="uz"):
     models are api-only (GEMINI_API_ONLY_MODELS), and these tests' content transport
     defaults to "cli" (GenerateRequest schema default) — an "inherit" role transport
     would follow that cli content transport and fail validate_transport's cli-rejection.
-    This matches migration 0049's actual target row (these roles stamped "api"
+    This matches migration 0051's actual target row (these roles stamped "api"
     unconditionally, not "inherit").
     """
     return SimpleNamespace(

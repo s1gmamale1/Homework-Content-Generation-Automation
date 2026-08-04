@@ -20,7 +20,7 @@ def _auth():
 def _row(boss=True):
     # live target defaults — gemini-2.5 retired 2026-08-03. judge/extract_transport
     # are explicit "api" (not "inherit"): judge/extract models are api-only
-    # (GEMINI_API_ONLY_MODELS) — matches migration 0049's actual target row.
+    # (GEMINI_API_ONLY_MODELS) — matches migration 0051's actual target row.
     # toc_transport is ALSO "api" for the same reason: the PUT endpoint validates
     # extract_model against toc_transport directly (settings.py:111-115), and an
     # api-only extract model can never validate against toc_transport="cli".

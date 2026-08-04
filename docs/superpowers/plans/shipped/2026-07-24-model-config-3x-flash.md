@@ -46,7 +46,8 @@ running tools, the self-grade guard, or the fleet auth cutover.
 
 **Collision:** branch plan-only (Rev-7 parent anchor `4d875ac`; do not re-embed the live HEAD SHA — it
 goes stale each commit); base `origin/Nggaev-v2` a80cac3; PR #108 overlaps only the append-only memory
-docs (Task 9). Worklog **0161**; revision **0049**.
+docs (Task 9). Worklog **0161**; final revision **0051** (renumbered from the
+planned 0049 after migration 0050 landed first).
 
 Branch: `feat/model-config-3x-flash` off `origin/Nggaev-v2`.
 
@@ -111,14 +112,15 @@ app/ scripts/`: each hit → repoint / pin-historical-comment / leave-legit (pri
 location comment, docstring). RED: teaching_audit module defaults ∉ `RETIRED_GEMINI_MODELS`. Record the
 allowlist in the commit body. **Commit:** `chore(tools): runnable defaults off retired 2.5 + historical allowlist`.
 
-## Task 6 — Migration 0049: launch_defaults → target (4 pairs + 5 transports)
+## Task 6 — Migration 0051: launch_defaults → target (4 pairs + 5 transports)
 
 `upgrade` id=1 → content=`gemini-3.6-flash`, extract=`gemini-3.5-flash-lite`, judge=`gemini-3.5-flash`,
 solver=`gemini-3.1-pro-preview` (all `gemini`), content/extract/judge/toc/solver `_transport='api'`.
 Unconditional. **`downgrade` explicit tuple** (the current live row): content=`gemini-3-flash-preview`/api,
 extract=`gemini-2.5-flash`/api, judge=`gemini-2.5-flash`/api, solver=`gemini-3.1-pro-preview`/api,
 toc_transport=`api`. RED (scratch real DB): fresh-0048 AND prod tuples → upgrade==target; downgrade==prod.
-**Commit:** `feat(launch-defaults): migration 0049 → 3.x flash target tuple`.
+**Commit:** `feat(launch-defaults): migration 0049 → 3.x flash target tuple`;
+renumbered to 0051 during the final rebase.
 
 ## Task 7 — Acceptance A: judge parsing (20/20) + judgment quality (imported probes) — scratch DB
 
@@ -163,7 +165,7 @@ toc_transport=`api`. RED (scratch real DB): fresh-0048 AND prod tuples → upgra
    3. **Per host, in order:** Scrub → verify local SA residue cleared (worker `active.json`/env; tombstone
       row still present) → **STOP the worker** → Unassign (unpark) → install plain `GEMINI_API_KEY` in `.env`
       → restart. (Stopping before Unassign closes the keyless-claim window.)
-   4. Apply migration 0049 on head; **restart head** (auto-stamps version floor — verify; PUT only to override).
+   4. Apply migration 0051 on head; **restart head** (auto-stamps version floor — verify; PUT only to override).
    5. **Concurrency — evidence-based provisional (NOT the stale cap-8; sized so demand ≈ cap so slow real
       calls can't overrun the 120s slot-wait). First REMOVE `GEMINI_MAX_CONCURRENCY` from every `.env`
       (else `AMC=8` silently falls back to it — `agent.py:235`), then set:**

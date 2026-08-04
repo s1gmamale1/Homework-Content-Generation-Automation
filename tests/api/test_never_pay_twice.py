@@ -107,7 +107,7 @@ _FAKE_JOB = SimpleNamespace(
 # explicit "api" (not "inherit") because gemini-3.5-flash / gemini-3.5-flash-lite
 # are api-only (GEMINI_API_ONLY_MODELS) — an "inherit" role transport would follow
 # a cli-transport content job and fail validate_transport's cli-rejection; this
-# matches the actual migration-0049 target row, which stamps these roles' transport
+# matches the actual migration-0051 target row, which stamps these roles' transport
 # as "api" unconditionally rather than "inherit". solver stays "inherit": its model
 # (gemini-3.1-pro-preview) is not api-only, so inherit is harmless either way.
 # Added to every batch/generate success-path test that reaches launch_defaults_repo.get.

@@ -1,12 +1,12 @@
-"""Real-DB: migration 0049 flips launch_defaults (id=1) to the 3.x-flash
+"""Real-DB: migration 0051 flips launch_defaults (id=1) to the 3.x-flash
 target tuple, from EITHER of the two starting states seen in the fleet —
-a fresh-0048-seeded row and the current PROD row — and downgrade restores
+a fresh pre-0051 row and the current PROD row — and downgrade restores
 the exact PROD tuple regardless of starting state (task 6, 2026-07-24
 model-config-3x-flash plan).
 
 Recipe:
-  createdb -O edu edu_scratch_mig0049
-  DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_scratch_mig0049 \
+  createdb -O edu edu_scratch_mig0051
+  DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_scratch_mig0051 \
     RUN_DB_INTEGRATION=1 uv run alembic upgrade head
   DATABASE_URL=... RUN_DB_INTEGRATION=1 uv run python -m pytest \
     tests/repositories/test_launch_defaults_migration.py -q
@@ -91,14 +91,14 @@ async def _fetch(engine) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_0049_upgrade_from_fresh_0048_tuple_lands_on_target():
+async def test_0051_upgrade_from_fresh_tuple_lands_on_target():
     engine = create_async_engine(_DB_URL)
     try:
         _run_alembic(["downgrade", "0048_book_notion_sources"])
         await _seed(engine, _FRESH_0048_TUPLE)
         assert await _fetch(engine) == _FRESH_0048_TUPLE
 
-        _run_alembic(["upgrade", "0049_launch_defaults_3x"])
+        _run_alembic(["upgrade", "0051_launch_defaults_3x"])
         assert await _fetch(engine) == _TARGET_TUPLE
 
         _run_alembic(["downgrade", "0048_book_notion_sources"])
@@ -109,14 +109,14 @@ async def test_0049_upgrade_from_fresh_0048_tuple_lands_on_target():
 
 
 @pytest.mark.asyncio
-async def test_0049_upgrade_from_prod_tuple_lands_on_target():
+async def test_0051_upgrade_from_prod_tuple_lands_on_target():
     engine = create_async_engine(_DB_URL)
     try:
         _run_alembic(["downgrade", "0048_book_notion_sources"])
         await _seed(engine, _PROD_TUPLE)
         assert await _fetch(engine) == _PROD_TUPLE
 
-        _run_alembic(["upgrade", "0049_launch_defaults_3x"])
+        _run_alembic(["upgrade", "0051_launch_defaults_3x"])
         assert await _fetch(engine) == _TARGET_TUPLE
 
         _run_alembic(["downgrade", "0048_book_notion_sources"])
