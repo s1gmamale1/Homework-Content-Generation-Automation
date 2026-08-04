@@ -1,6 +1,6 @@
 # Structured `content_json` generation — Design Spec (Pass 1: RLC + sentence-fill)
 
-**Date:** 2026-08-03 · **Rev 5** (gate rounds 1–5 folded)
+**Date:** 2026-08-03 · **Rev 6** (gate rounds 1–6; artifact-aware judge)
 **HCGA branch:** Nggaev-v2 · work in worktree `../HCGA-content-json`
 **Platform base:** `origin/Akademiya-AI` @ `2cf98fb` — **not** the local `Nggaev` checkout, which is
 **668 commits behind** (verified).
@@ -19,8 +19,9 @@
 Generate the platform's canonical `content_json` **directly**, instead of emitting markdown the
 platform reverse-engineers. Pass 1 covers `practice-rlc` and `practice-sentence`.
 
-Markdown becomes a **rendered artifact derived from the JSON**, so the judge, solver, `content_lint`,
-teaching audit, Notion archival and the operator console keep working unchanged.
+Markdown becomes a **rendered artifact derived from the JSON**. The solver, `content_lint`,
+teaching audit, Notion archival and the operator console keep working on it unchanged — but the
+**judge does not**, and rev 5's claim that it did was wrong (see "Artifact-aware judge" below).
 
 ## Why
 
@@ -186,6 +187,45 @@ route to `needs_review`, not publish as a blank chip.
 option labels must be normalized-unique and non-empty, and chip labels likewise — scrubbing can
 collapse two distinct options into the same string (or into nothing), producing an unanswerable
 step that the platform validator would still accept (it counts options, never inspects labels).
+
+### Artifact-aware judge (rev 6 — corrects rev 5)
+
+**Measured, not predicted.** The rev-5 design was taken to a live acceptance run
+(`edu_cj_task9`, $0.2717). Both phases generated `structured` with `content_json` that validates
+CLEAN against the platform, and the solver returned `ok` — but the **judge returned
+`major_shipped` on both**, because it grades rendered markdown against the *markdown authoring
+prompt*:
+
+> "The OUTPUT completely omits the Task, Context, Prediction, and Final summary sections… missing
+> the Why prompt, confidence prompt, and all feedback sections."
+> "Missing 'How to play' section."
+
+Those sections are narrative scaffolding of hand-authored markdown. They are **not** in
+`content_json` and must not be added to it — the schema is the platform's canonical shape, and
+`consequence` / `acceptable_keywords` are optional redacted platform fields that still would not
+supply the demanded narrative.
+
+Grading *derived* output against a prompt written for *hand-authored* output is a category error.
+So the judge becomes **artifact-aware**:
+
+| `authoring_mode` | judge input | judge contract |
+|---|---|---|
+| `structured` | **canonical serialization of `content_json`** | `get_structured_prompt(...)` |
+| `markdown_builtin` · `markdown_custom` · `markdown_fallback` | `output_md` (today) | today's markdown prompt / custom override |
+
+Pydantic already guarantees deterministic structure; the LLM judge is left to evaluate **fidelity
+and pedagogical quality**. The existing `judge(..., contract_override=)` parameter is the seam —
+no signature change is required.
+
+**The solver is unchanged**: it continues to check the rendered markdown and its author-only
+`## Answer key` section (proven working — `solver=ok` on `practice-rlc` in the acceptance run).
+
+#### Revised acceptance contract
+
+- Structured `content_json` passes **its structured judge**.
+- Rendered markdown passes the **solver, `content_lint`, teaching-audit loading, Notion rendering,
+  and answer-section stripping**.
+- Rendered markdown is **no longer required** to satisfy the old free-form authoring prompt.
 
 ### Schema versioning
 

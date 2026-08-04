@@ -59,6 +59,15 @@ from app.services.proc_tree import kill_tree
 # ─────────────────────────────────────────────────────────────────────
 
 
+class SchemaValidationExhausted(RuntimeError):
+    """Schema mode exhausted every attempt without producing a valid model.
+
+    Subclasses RuntimeError so existing callers that catch RuntimeError keep
+    working; the distinct type is what lets the pipeline tell "the model cannot
+    produce this config" apart from a transport fault.
+    """
+
+
 @dataclass
 class PhaseResult:
     """Outcome of a single ``run_phase`` call.
@@ -1193,8 +1202,11 @@ async def run_phase(
             raw_envelope=usage.get("raw") or {},
         )
 
-    # Schema mode but both attempts failed validation.
-    raise RuntimeError(
+    # Schema mode but both attempts failed validation. Typed (not a bare
+    # RuntimeError) so the caller can tell "this model cannot author this
+    # config" apart from a transport fault and route it to the markdown
+    # fallback instead of failing the job.
+    raise SchemaValidationExhausted(
         f"phase.run {phase_name}: schema {schema.__name__ if schema else '?'} "
         f"validation failed after {max_attempts} attempts: {last_error} "
         f":: {_failure_preview(last_stderr, last_text)}"

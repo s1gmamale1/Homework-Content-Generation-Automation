@@ -122,6 +122,14 @@ The flow in words:
    (many in parallel), each producing its own markdown. (Every subject runs the same
    sequence — there's no easy/hard split, and no separate assembly step: the per-phase
    markdown *is* the deliverable.)
+
+   **Structured phases (worklog 0162).** `practice-rlc` and `practice-sentence` now author the
+   platform's canonical `content_json` directly, and their markdown is *rendered from* that JSON
+   rather than written by the model. Both artifacts are stored on the phase row
+   (`content_json` + `output_md` + `authoring_mode`). If the model cannot produce valid JSON, the
+   phase falls back to the old markdown path and records `authoring_mode="markdown_fallback"` —
+   never worse than before for import compatibility. This is the PRODUCER only: the platform still
+   ingests `output_md`, so no phase is `native` yet.
 6. **Live updates.** Throughout, the browser is subscribed to a Server-Sent-Events stream
    and shows each phase lighting up as it completes.
 7. **Download / review.** When done, the packet downloads as a ZIP of one markdown file per
@@ -140,7 +148,7 @@ Windows often already runs its own Postgres on 5432). Seven tables matter
 | `books` | uploaded PDF | subject, filename, file hash, **`source_language`** (`uz`/`ru`/`en` — the language of the source textbook, migration 0040), status. The PDF itself lives on **disk** at `var/books/<book_id>/source.pdf`, not in the DB. |
 | `toc_entries` | chapter section | chapter/section number + title, page range. This is what the user picks to generate homework from. |
 | `homework_jobs` | generation request | the chosen `provider`/`model`, `status` (pending/running/done/failed/cancelling/cancelled), `current_phase`, the queue columns (`attempts`, `claimed_at`, …), an optional `batch_id` (fleet membership), and Notion-archive markers. The generated content lives on `phase_outputs`, **not** here — there are no structured-JSON columns. |
-| `phase_outputs` | one phase of one job | the phase name, order, status, its markdown output, token counts. A unique constraint (`uq_phase_output_job_order`) forbids two rows for the same (job, order). |
+| `phase_outputs` | one phase of one job | the phase name, order, status, its markdown output, token counts, and (structured phases) `content_json` + `authoring_mode` + `content_schema_version` + `renderer_version`. A unique constraint (`uq_phase_output_job_order`) forbids two rows for the same (job, order). |
 | `agent_usages` | one CLI subprocess call | provider, model, normalized token counts, duration, success/failure, and the raw envelope. This is how the usage dashboard and the end-of-job cost table are built. |
 | `batches` | fleet batch (one per `(book, transport, output_language)` since migration 0038 — a different-transport OR different-language re-launch forks a new batch for clean per-combination benchmarking) | the launch-time subject/grade/provider/model/transport (+ Phase-4.1 role-transport launch defaults; member jobs carry the truth). **No stored counters** — progress is computed on read from member jobs (one vote per lesson, its newest job), so retries can't inflate the tally. |
 | `workers` | worker process (a fleet PC) | `pc_id` ("hostname:pid"), `last_heartbeat`, status label, and a `capabilities` JSONB blob (which provider CLIs are installed + which api creds are present, published each beat — migration 0035). Online/offline is **derived** from heartbeat freshness against the DB clock, never stored. |

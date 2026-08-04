@@ -1830,6 +1830,129 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
+### Task 9 — STATUS: RUN, FAILED criterion 3 (2026-08-04)
+
+Executed on scratch DB `edu_cj_task9`, **$0.2717**, 13 successful calls.
+
+| criterion | result |
+|---|---|
+| both phases `authoring_mode="structured"` | PASS (zero fallback warnings) |
+| non-null valid `content_json`, correct versions | PASS (CLEAN against the platform validator) |
+| rendered markdown passes existing consumers | **FAIL — `judge=major_shipped` on both** (solver `ok`) |
+| usage + exact cost reported | PASS |
+
+Cause: the judge grades rendered markdown against the **markdown authoring prompt**, which demands
+narrative sections (`Task`, `Context`, `Prediction`, `Final summary`, Why/confidence prompts,
+feedback lines, "How to play") that do not exist in `content_json`. Fixed by Task 10, not by
+expanding the schema. **Task 9 must be re-run after Task 10, under a newly approved budget.**
+
+---
+
+### Task 10: Artifact-aware judge routing
+
+**Files:**
+- Modify: `app/services/pipeline.py` (the three `_judge_with_timeout` call sites)
+- Test: `tests/services/test_judge_routing.py`
+
+**Interfaces:**
+- Consumes: `PhaseArtifact.authoring_mode` (Task 5), `prompts.get_structured_prompt` (Task 6),
+  `phase_judge.judge(..., contract_override=)` (existing).
+- Produces: `_judge_inputs_for(artifact, *, subject, phase_name, output_language) -> tuple[str, str | None]`
+  returning `(text_to_grade, contract_override)`.
+
+**Routing rule:**
+
+| `authoring_mode` | text to grade | contract override |
+|---|---|---|
+| `structured` | canonical JSON of `artifact.content_json` (`json.dumps(..., sort_keys=True, ensure_ascii=False, indent=2)`) | `get_structured_prompt(subject, phase_name, output_language=...)` |
+| `markdown_builtin` / `markdown_custom` / `markdown_fallback` | `artifact.output_md` | `None` (or the existing custom override — unchanged) |
+
+**Do NOT** change the judge's signature, the solver (it keeps grading rendered markdown and its
+author-only `## Answer key`), or the schemas.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+import json
+
+from app.services import pipeline
+from app.services.phase_artifact import PhaseArtifact
+
+
+def _structured():
+    return PhaseArtifact(output_md="# md", content_json={"b": 2, "a": 1},
+                         authoring_mode="structured",
+                         content_schema_version="rlc_config@1", renderer_version="2")
+
+
+def test_structured_artifact_is_judged_on_canonical_json_with_structured_contract():
+    text, contract = pipeline._judge_inputs_for(
+        _structured(), subject="history", phase_name="practice-rlc", output_language="uz")
+    assert json.loads(text) == {"a": 1, "b": 2}
+    assert text.index('"a"') < text.index('"b"')      # canonical: sorted keys
+    assert contract and "JSON" in contract            # the structured authoring prompt
+
+
+@pytest.mark.parametrize("mode", ["markdown_builtin", "markdown_custom", "markdown_fallback"])
+def test_markdown_modes_keep_todays_judge_path(mode):
+    art = PhaseArtifact(output_md="# original markdown", authoring_mode=mode)
+    text, contract = pipeline._judge_inputs_for(
+        art, subject="history", phase_name="practice-rlc", output_language="uz")
+    assert text == "# original markdown"
+    assert contract is None
+
+
+def test_all_three_judge_sites_route_through_the_helper():
+    src = inspect.getsource(pipeline._execute_phase)
+    assert src.count("_judge_inputs_for(") >= 3, src.count("_judge_inputs_for(")
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `uv run python -m pytest tests/services/test_judge_routing.py -q`
+Expected: FAIL — `AttributeError: module 'app.services.pipeline' has no attribute '_judge_inputs_for'`
+
+- [ ] **Step 3: Implement the helper and route all three sites**
+
+```python
+def _judge_inputs_for(artifact, *, subject: str, phase_name: str, output_language: str):
+    """(text_to_grade, contract_override) for the judge.
+
+    A structured artifact's markdown is DERIVED, so grading it against the
+    hand-authored markdown prompt is a category error — it demands narrative
+    sections (Task/Context/Prediction/Final summary, Why + confidence prompts,
+    feedback lines) that content_json does not and should not carry. Grade the
+    JSON against the structured authoring contract instead. Every markdown mode
+    keeps today's path exactly.
+    """
+    if artifact.authoring_mode == "structured" and artifact.content_json is not None:
+        text = json.dumps(artifact.content_json, sort_keys=True, ensure_ascii=False, indent=2)
+        return text, get_structured_prompt(subject, phase_name, output_language=output_language)
+    return artifact.output_md, None
+```
+
+Route the initial judge, the one-free-retry judge, and the post-regen judge through it. Where a
+custom prompt override already exists, that path must be preserved for `markdown_custom`.
+
+- [ ] **Step 4: Run tests** — `uv run python -m pytest tests/services/test_judge_routing.py -q` → PASS
+
+- [ ] **Step 5: RED-prove the routing**
+
+Force `_judge_inputs_for` to always return `(artifact.output_md, None)`; the structured test must
+FAIL. Restore and re-run. Report both outputs.
+
+- [ ] **Step 6: Regeneration-site coverage**
+
+Add tests proving BOTH regeneration sites re-derive judge inputs from the **current** artifact —
+a judge regen that falls back to markdown must be judged on markdown with the markdown contract,
+not on the stale structured JSON.
+
+- [ ] **Step 7: Full suite + commit**
+
+```
+uv run python -m pytest tests/ -q
+```
+
 ## Finish
 
 - [ ] Full suite green: `uv run python -m pytest tests/ -q`

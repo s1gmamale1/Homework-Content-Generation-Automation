@@ -512,13 +512,25 @@ def _raw(dirname: str, phase_name: str) -> tuple[str, str]:
     return _cache[dirname][phase_name], _hash_cache[dirname][phase_name]
 
 
+def _apply_substitutions(body: str, subject: str, output_language: str) -> str:
+    """Shared `{{SUBJECT}}` / `{{LANGUAGE_RULES}}` substitution.
+
+    Used by both `get_prompt` (the markdown evaluation contract) and
+    `get_structured_prompt` (the JSON-authoring contract) so the two can never
+    drift apart on how these two tokens resolve. `{{FAMILY_RULES}}` is NOT
+    handled here — it's phase-family-specific and only `get_prompt` needs it.
+    """
+    body = body.replace("{{SUBJECT}}", SUBJECT_LABELS.get(subject, subject))
+    body = body.replace("{{LANGUAGE_RULES}}",
+                        _resolve_language_rule(subject, output_language))
+    return body
+
+
 def get_prompt(subject: str, phase_name: str, provider_suffix: str = "",
                output_language: str = "uz") -> str:
     dirname = _resolve_dir(subject, phase_name)
     body, _h = _raw(dirname, phase_name)
-    body = body.replace("{{SUBJECT}}", SUBJECT_LABELS.get(subject, subject))
-    body = body.replace("{{LANGUAGE_RULES}}",
-                        _resolve_language_rule(subject, output_language))
+    body = _apply_substitutions(body, subject, output_language)
     phase_blocks = FAMILY_RULES.get(phase_name, {})
     family = _SUBJECT_FAMILY.get(subject)
     family_block = phase_blocks.get(family) or phase_blocks.get("_default", "")
@@ -526,6 +538,25 @@ def get_prompt(subject: str, phase_name: str, provider_suffix: str = "",
     if provider_suffix:
         body = body + "\n\n" + provider_suffix
     return body
+
+
+def get_structured_prompt(
+    subject: str, phase: str, *, output_language: str = "uz"
+) -> "str | None":
+    """The JSON-authoring prompt for a structured phase, or None if it has none.
+
+    Separate from `get_prompt`: that one is the MARKDOWN evaluation contract the
+    judge, solver and lint read, and it says "Markdown only". A single prompt
+    cannot both demand JSON and serve as the markdown contract. Structured
+    prompts live under `prompts/_general/structured/` — a subdirectory of
+    `_general`, deliberately not picked up by the `*.md` (non-recursive) globs
+    that scan `_general` itself for the markdown contracts.
+    """
+    path = PROMPTS_DIR / "_general" / "structured" / f"{phase}.md"
+    if not path.exists():
+        return None
+    body = path.read_text(encoding="utf-8")
+    return _apply_substitutions(body, subject, output_language)
 
 
 def get_prompt_hash(subject: str, phase_name: str, output_language: str = "uz") -> str:

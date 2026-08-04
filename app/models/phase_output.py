@@ -8,6 +8,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, UUIDPK
 
+AUTHORING_MODES = (
+    "structured",
+    "markdown_fallback",
+    "markdown_builtin",
+    "markdown_custom",
+    "markdown_legacy",
+)
+
 
 class PhaseOutput(Base, UUIDPK):
     __tablename__ = "phase_outputs"
@@ -37,6 +45,12 @@ class PhaseOutput(Base, UUIDPK):
     solver_status: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Structured generation (content_json lane). All nullable — pre-migration
+    # rows read as markdown_legacy.
+    content_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    authoring_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    content_schema_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    renderer_version: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
     job: Mapped["HomeworkJob"] = relationship(back_populates="phase_outputs")
 

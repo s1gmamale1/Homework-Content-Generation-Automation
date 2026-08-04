@@ -41,6 +41,7 @@ also runs it on deploy). Current head: **`0046_worker_version_floor`** (0028 = e
 0040 = `books.source_language` String(8) NOT NULL server_default `'uz'` + CHECK `uz|ru|en`,
 0041 = `sa_keys` table + `sa_key_assignments` table,
 0042 = `books.toc_validation`/`toc_validation_detail` — post-TOC vision-validator verdict columns,
+0050 = `phase_outputs.content_json`/`authoring_mode`/`content_schema_version`/`renderer_version` + `ck_phase_outputs_authoring_mode` CHECK (structured producer, worklog 0162; `0049` was claimed by the model-config lane),
 0043 = `solver_*` role columns on `launch_defaults`/`homework_jobs`/`batches` + `phase_outputs.solver_status` + `launch_defaults` seed + `homework_jobs.solver_provider` NULL-row backfill (CQ-C/worklog 0112),
 0044 = `launch_defaults.solver_boss_arena_enabled` Boolean NOT NULL default true (worklog 0126),
 0045 = `toc_entries.notion_archived_job_id` UUID NULL (worklog 0129),

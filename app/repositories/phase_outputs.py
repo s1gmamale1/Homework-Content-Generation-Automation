@@ -75,6 +75,10 @@ async def create_or_reset(
         existing.provider = None
         existing.started_at = None
         existing.completed_at = None
+        existing.content_json = None
+        existing.authoring_mode = None
+        existing.content_schema_version = None
+        existing.renderer_version = None
         await session.flush()
         return existing
     return await create(
@@ -112,11 +116,22 @@ async def set_status(
     provider: Optional[str] = None,
     judge_status: Optional[str] = None,
     solver_status: Optional[str] = None,
+    content_json: Optional[dict] = None,
+    authoring_mode: Optional[str] = None,
+    content_schema_version: Optional[str] = None,
+    renderer_version: Optional[str] = None,
     guard: bool = True,
 ) -> bool:
     """Set a phase row's status. With ``guard`` (default), a ``done`` phase is
     frozen — protects the resumable set (``_done_phase_md``) from a
-    cancel-race clobber. Returns True iff a row was updated."""
+    cancel-race clobber. Returns True iff a row was updated.
+
+    The four structured fields follow the same ``is not None`` skip semantics as
+    every other optional field. That is safe for the "markdown regen clears the
+    stale JSON" rule because ``create_or_reset`` NULLs all four when the row is
+    (re)opened and ``_execute_phase`` writes them exactly once, at the end —
+    so a markdown-fallback artifact leaves them NULL rather than overwriting a
+    previously-persisted config."""
     values: dict = {"status": status}
     if started_at is not None:
         values["started_at"] = started_at
@@ -138,6 +153,14 @@ async def set_status(
         values["judge_status"] = judge_status
     if solver_status is not None:
         values["solver_status"] = solver_status
+    if content_json is not None:
+        values["content_json"] = content_json
+    if authoring_mode is not None:
+        values["authoring_mode"] = authoring_mode
+    if content_schema_version is not None:
+        values["content_schema_version"] = content_schema_version
+    if renderer_version is not None:
+        values["renderer_version"] = renderer_version
     stmt = update(PhaseOutput).where(PhaseOutput.id == phase_output_id)
     if guard:
         stmt = stmt.where(PhaseOutput.status != "done")
