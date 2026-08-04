@@ -111,6 +111,103 @@ def test_sentence_fill_bank_must_contain_every_answer():
         SentenceFillConfig.model_validate(cfg)
 
 
+def test_rlc_duplicate_option_ids_rejected():
+    """RED-proof case. The platform's `grade_rlc` resolves a submitted answer with
+    ``next((o for o in opts if o.get("id") == ua), None)`` — FIRST id match wins.
+    Two options sharing an id therefore grade against the option the student never
+    saw: here `dup` awards 0 for the WRONG label while the visibly-correct option
+    is unreachable. Before this rule the config validated clean."""
+    cfg = _rlc()
+    cfg["steps"][0]["options"] = [
+        {"id": "dup", "label": "WRONG answer", "is_correct": False},
+        {"id": "dup", "label": "RIGHT answer", "is_correct": True},
+    ]
+    with pytest.raises(ValidationError, match="duplicate option id"):
+        RlcConfig.model_validate(cfg)
+
+
+def test_rlc_duplicate_option_ids_rejected_case_insensitively():
+    cfg = _rlc()
+    cfg["steps"][2]["options"] = [
+        {"id": "O1", "label": "a", "is_correct": True},
+        {"id": " o1 ", "label": "b", "is_correct": False},
+    ]
+    with pytest.raises(ValidationError, match="duplicate option id"):
+        RlcConfig.model_validate(cfg)
+
+
+def test_rlc_duplicate_chip_ids_rejected():
+    cfg = _rlc()
+    cfg["steps"][3]["concept_chips"] = [
+        {"id": "k", "label": "A", "is_correct": True},
+        {"id": "k", "label": "B", "is_correct": False},
+    ]
+    with pytest.raises(ValidationError, match="duplicate chip id"):
+        RlcConfig.model_validate(cfg)
+
+
+def test_rlc_duplicate_step_ids_rejected():
+    cfg = _rlc()
+    cfg["steps"][1]["id"] = "s1"
+    with pytest.raises(ValidationError, match="duplicate step id"):
+        RlcConfig.model_validate(cfg)
+
+
+@pytest.mark.parametrize("field", ["id", "title", "intro"])
+@pytest.mark.parametrize("blank", ["", "   ", "\t", "\n "])
+def test_rlc_top_level_strings_reject_whitespace_only(field, blank):
+    with pytest.raises(ValidationError):
+        RlcConfig.model_validate(_rlc(**{field: blank}))
+
+
+@pytest.mark.parametrize("field", ["id", "title", "prompt"])
+def test_rlc_step_strings_reject_whitespace_only(field):
+    cfg = _rlc()
+    cfg["steps"][0][field] = "   "
+    with pytest.raises(ValidationError):
+        RlcConfig.model_validate(cfg)
+
+
+@pytest.mark.parametrize("field", ["id", "label"])
+def test_rlc_choice_strings_reject_whitespace_only(field):
+    cfg = _rlc()
+    cfg["steps"][0]["options"][0][field] = " \t "
+    with pytest.raises(ValidationError):
+        RlcConfig.model_validate(cfg)
+
+
+def test_rlc_strings_are_stored_stripped():
+    cfg = _rlc(title="  Fire drill  ")
+    cfg["steps"][0]["options"][0]["label"] = "  Evacuate  "
+    m = RlcConfig.model_validate(cfg)
+    assert m.title == "Fire drill"
+    assert m.steps[0].options[0].label == "Evacuate"
+
+
+def test_sentence_fill_item_id_rejects_whitespace_only():
+    cfg = _sf()
+    cfg["items"][0]["id"] = "   "
+    with pytest.raises(ValidationError):
+        SentenceFillConfig.model_validate(cfg)
+
+
+def test_sentence_fill_duplicate_item_ids_rejected():
+    cfg = _sf()
+    cfg["items"].append(dict(cfg["items"][0]))
+    with pytest.raises(ValidationError, match="duplicate item id"):
+        SentenceFillConfig.model_validate(cfg)
+
+
+@pytest.mark.parametrize("field", ["answers", "word_bank"])
+def test_sentence_fill_entries_reject_whitespace_only(field):
+    cfg = _sf()
+    cfg["items"][0]["answers"] = ["cat", "dog"]
+    cfg["items"][0]["word_bank"] = ["cat", "dog", "fox"]
+    cfg["items"][0][field][1] = "   "
+    with pytest.raises(ValidationError):
+        SentenceFillConfig.model_validate(cfg)
+
+
 def test_schemas_registry():
     assert SCHEMAS["practice-rlc"] is RlcConfig
     assert SCHEMAS["practice-sentence"] is SentenceFillConfig

@@ -4,17 +4,21 @@ from typing import ClassVar, Literal
 
 from pydantic import Field, model_validator
 
-from .common import StrictModel, all_unique_normalized, norm
+from .common import (
+    StrictModel, StrippedStr, all_unique_normalized, first_duplicate_id, norm,
+)
 
 
 class SentenceItem(StrictModel):
-    id: str = Field(min_length=1)
+    id: StrippedStr
     # Pass 1 is word_bank ONLY: mobile's normalizeConfigItems() drops `mode` and
     # the component has no TextInput, so free_recall is uncompletable.
     mode: Literal["word_bank"]
     passage: str = Field(min_length=1)
-    answers: list[str]
-    word_bank: list[str]
+    # StrippedStr, so a blank/whitespace chip can never reach the word bank —
+    # it would render as an untappable empty chip.
+    answers: list[StrippedStr]
+    word_bank: list[StrippedStr]
 
     @model_validator(mode="after")
     def _shape(self):
@@ -23,10 +27,7 @@ class SentenceItem(StrictModel):
             raise ValueError("passage needs 1-6 '___' blanks")
         if len(self.answers) != blanks:
             raise ValueError(f"answers length must equal blank count ({blanks})")
-        if any(not a.strip() for a in self.answers):
-            raise ValueError("answers must be non-empty")
-        if any(not w.strip() for w in self.word_bank):
-            raise ValueError("word_bank entries must be non-empty")
+        # Non-emptiness is enforced by StrippedStr on the field types above.
         if not all_unique_normalized(self.answers):
             raise ValueError("answers must be normalized-unique (mobile consumes each chip once)")
         if not all_unique_normalized(self.word_bank):
@@ -45,6 +46,7 @@ class SentenceFillConfig(StrictModel):
 
     @model_validator(mode="after")
     def _unique_ids(self):
-        if not all_unique_normalized([i.id for i in self.items]):
-            raise ValueError("item ids must be unique")
+        dup = first_duplicate_id([i.id for i in self.items])
+        if dup is not None:
+            raise ValueError(f"duplicate item id '{dup}' — item ids must be unique")
         return self
