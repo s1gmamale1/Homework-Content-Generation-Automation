@@ -6,12 +6,13 @@ value against each entry. So this client reads a singular PLATFORM_INGEST_TOKEN.
 
 --dry-run is the DEFAULT; posting requires --post.
 
---post FAILS CLOSED on structured phases: before any HTTP POST the CLI asks the
-target platform which (phase_name, content_schema_version) pairs it can ingest
-natively, and refuses the whole job unless every structured phase in the payload
-is covered. The capability endpoint does not exist yet, so TODAY every structured
-post is blocked — that is the intended behaviour, not a bug. Markdown-only
-payloads are unaffected and never trigger the probe.
+--post FAILS CLOSED on structured phases, and does so for the ENTIRE RUN: every
+payload is built first, then ONE capability probe asks the target platform which
+(phase_name, content_schema_version) pairs it can ingest natively, and if any
+structured phase in any selected job is uncovered, NOTHING is posted. The
+capability endpoint does not exist yet, so TODAY every structured post is
+blocked — that is the intended behaviour, not a bug. Runs made up entirely of
+markdown-only payloads are unaffected and never trigger the probe.
 """
 from __future__ import annotations
 
@@ -121,26 +122,43 @@ def supported_pairs(caps: "dict | None") -> set[tuple[str, str]]:
     return out
 
 
-def _assert_structured_supported(base: str, token: str, payload: dict, client=None) -> None:
-    """Fail closed: refuse to POST structured phases the platform cannot ingest.
+def _assert_structured_supported(
+    base: str, token: str, jobs: "list[tuple[str, dict]]", client=None
+) -> None:
+    """Fail closed: refuse the WHOLE RUN if any structured phase is unsupported.
 
     The ingest endpoint SCHEDULES transformation immediately — it is not passive
     raw staging — and the platform's current markdown parsers DOWNGRADE our RLC
     and DROP our sentence-fill. Posting today would therefore silently lose a
     phase and could carry an incomplete packet into review or publication.
 
+    This gates the run, not the job. Gating per job meant an earlier
+    markdown-only job POSTed before a later structured job was refused, leaving
+    a half-ingested run behind — an outcome that depended on argument order and
+    that nobody asked for. One capability probe covers the union of every
+    structured pair in the run.
+
     There is no ``--force``. An operator flag here is exactly the mechanism that
     turns "we know this drops a phase" into "we shipped a packet missing a
     phase"; the correct unblock is the platform gaining native support (and
     advertising it), not a client-side override.
     """
-    pairs = structured_pairs(payload)
-    if not pairs:
-        return  # legacy markdown-only payload — nothing to gate, no probe
+    # Union across the run, remembering which job needs each pair so the
+    # operator is told what to drop from the run, not just what is unsupported.
+    needed: dict[tuple[str, str], list[str]] = {}
+    for jid, payload in jobs:
+        for pair in structured_pairs(payload):
+            needed.setdefault(pair, []).append(jid)
+    if not needed:
+        return  # every job is legacy markdown-only — nothing to gate, no probe
+
     supported = supported_pairs(_fetch_capabilities(base, token, client=client))
-    missing = [p for p in pairs if p not in supported]
+    missing = [p for p in needed if p not in supported]
     if missing:
-        listing = "\n".join(f"    - {ph} ({ver})" for ph, ver in missing)
+        listing = "\n".join(
+            f"    - {ph} ({ver})  [jobs: {', '.join(needed[(ph, ver)])}]"
+            for ph, ver in missing
+        )
         raise UnsupportedStructuredPhase(
             "refusing to POST: the target platform does not advertise native "
             "ingestion for these structured phases:\n"
@@ -148,6 +166,7 @@ def _assert_structured_supported(base: str, token: str, payload: dict, client=No
             "  The ingest endpoint schedules transformation immediately, and the "
             "current markdown parsers downgrade practice-rlc and DROP "
             "practice-sentence — posting would silently lose a phase.\n"
+            "  NOTHING in this run was posted — the run is all-or-nothing.\n"
             f"  Unblock: the platform must serve {CAPABILITIES_PATH} listing each "
             "(phase_name, content_schema_version). There is no --force."
         )
@@ -215,21 +234,34 @@ def main(argv: "list[str] | None" = None) -> int:
         raise TokenError("PLATFORM_BASE_URL is not set")
     token = validate_token(os.environ.get("PLATFORM_INGEST_TOKEN", ""))
 
-    rc = 0
+    # Preflight: load and build EVERY payload before the first POST, so a job
+    # that cannot be loaded or built aborts the run instead of aborting it
+    # halfway through.
+    jobs: list[tuple[str, dict]] = []
     for jid in args.job:
         job, phases = asyncio.run(_load_job(jid))
-        payload = build_ingest_payload(job=job, phases=phases, subject_map=subject_map)
-        if not args.post:
+        jobs.append((jid, build_ingest_payload(job=job, phases=phases, subject_map=subject_map)))
+
+    if not args.post:
+        for jid, payload in jobs:
             n = len(payload["payload"]["phases"])
             print(json.dumps(payload, ensure_ascii=False, indent=2)[:4000])
             print(f"[dry-run] {jid}: {n} phases — not posted")
-            continue
-        try:
-            _assert_structured_supported(base, token, payload)
-        except UnsupportedStructuredPhase as exc:
-            print(f"[blocked] {jid}: {exc}", file=sys.stderr)
-            rc |= 1
-            continue
+        return 0
+
+    try:
+        _assert_structured_supported(base, token, jobs)
+    except UnsupportedStructuredPhase as exc:
+        print(f"[blocked] {exc}", file=sys.stderr)
+        return 1
+
+    # Past this point every structured phase in the run is natively supported.
+    # A per-request server failure can still leave the run partially ingested —
+    # the platform's ingest is idempotent on (pack, external_key, content_hash),
+    # so re-running after fixing the cause is safe.
+    rc = 0
+    for jid, payload in jobs:
+        print(f"[post] {jid}")
         rc |= _post(base, token, payload)
     return rc
 

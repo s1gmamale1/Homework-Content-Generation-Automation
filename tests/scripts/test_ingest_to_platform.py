@@ -214,7 +214,9 @@ def test_structured_post_blocked_when_capabilities_cover_only_one_pair(monkeypat
     err = capsys.readouterr().err
     listed = [ln.strip() for ln in err.splitlines() if ln.strip().startswith("- ")]
     # Only the UNSUPPORTED pair is listed; practice-rlc is advertised as native.
-    assert listed == ["- practice-sentence (sentence_fill_config@1)"]
+    # Each line also names the jobs that carry it, so the operator knows what to
+    # drop from the run.
+    assert listed == ["- practice-sentence (sentence_fill_config@1)  [jobs: abc]"]
 
 
 @pytest.mark.parametrize("probe", [
@@ -240,6 +242,88 @@ def test_structured_post_allowed_when_every_pair_is_supported(monkeypatch):
 
     assert cli.main(["--job", "abc", "--post"]) == 0
     assert posts == [payload]
+
+
+# --- The run is ALL-OR-NOTHING ----------------------------------------------
+# Gating per job let an earlier markdown-only job POST before a later structured
+# job was refused, leaving a half-ingested run behind. The platform's ingest is
+# idempotent on (pack, external_key, content_hash) so such a run is re-runnable,
+# but a partially-ingested batch is still a state no operator asked for. So the
+# whole run is now validated and probed BEFORE the first POST.
+
+
+def _wire_multi(monkeypatch, payload_by_jid, post_calls, probe_response=None):
+    """Like `_wire`, but each job id maps to its own payload."""
+    def _fake_post(base, token, p, client=None):
+        post_calls.append(p)
+        return 0
+
+    async def _load(jid):
+        return {"id": jid}, []
+
+    client = _FakeClient(probe_response)
+    monkeypatch.setattr(cli.httpx, "Client", lambda *a, **k: client)
+    monkeypatch.setattr(cli, "_post", _fake_post)
+    monkeypatch.setattr(cli, "_load_job", _load)
+    monkeypatch.setattr(cli, "_load_map", lambda: {"history": 7})
+    monkeypatch.setattr(
+        cli, "build_ingest_payload",
+        lambda *, job, phases, subject_map: payload_by_jid[job["id"]],
+    )
+    monkeypatch.setenv("PLATFORM_BASE_URL", "https://example.test")
+    monkeypatch.setenv("PLATFORM_INGEST_TOKEN", "tok")
+    return client
+
+
+def test_markdown_job_preceding_an_unsupported_structured_job_posts_nothing(
+    monkeypatch, capsys
+):
+    """The regression: order must not decide what gets ingested.
+
+    `md` is legacy markdown-only and would post fine on its own; `st` is
+    structured and unsupported. Because they share a run, NEITHER posts.
+    """
+    posts: list = []
+    _wire_multi(
+        monkeypatch,
+        {"md": _md_payload([{"phase_name": "flashcards",
+                             "authoring_mode": "markdown_builtin",
+                             "content_schema_version": None, "output_md": "# f"}]),
+         "st": _structured_payload()},
+        posts,
+        _FakeResponse(404, text="not found"),
+    )
+
+    rc = cli.main(["--job", "md", "--job", "st", "--post"])
+
+    assert rc != 0
+    assert posts == []          # <-- the whole point: ZERO posts, not one
+    err = capsys.readouterr().err
+    assert "practice-rlc (rlc_config@1)" in err
+    assert "practice-sentence (sentence_fill_config@1)" in err
+
+
+def test_supported_multi_job_run_probes_once_and_posts_every_job(monkeypatch):
+    """Two STRUCTURED jobs — per-job gating would probe twice."""
+    posts: list = []
+    one, two = _structured_payload(), _structured_payload()
+    client = _wire_multi(monkeypatch, {"one": one, "two": two}, posts,
+                         _caps(_RLC, _SENT))
+
+    assert cli.main(["--job", "one", "--job", "two", "--post"]) == 0
+    assert posts == [one, two]
+    assert len(client.get_calls) == 1        # one probe for the run, not per job
+
+
+def test_markdown_only_run_never_probes(monkeypatch):
+    posts: list = []
+    md = _md_payload()
+    client = _wire_multi(monkeypatch, {"a": md, "b": md}, posts,
+                         _FakeResponse(404, text="not found"))
+
+    assert cli.main(["--job", "a", "--job", "b", "--post"]) == 0
+    assert posts == [md, md]
+    assert client.get_calls == []
 
 
 def test_markdown_only_post_never_probes_and_posts_normally(monkeypatch):

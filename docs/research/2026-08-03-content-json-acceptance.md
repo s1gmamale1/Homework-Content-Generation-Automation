@@ -116,3 +116,43 @@ bare module load cannot resolve them. `library/models/__init__.py` is left empty
 on purpose; the real one imports Django models.
 
 No network, no database, no model calls: **$0**.
+
+## Known residuals (accepted, not defects)
+
+Recorded explicitly so nothing downstream reads these as exact.
+
+**1. `prompt_hash` on a `markdown_fallback` row names the STRUCTURED prompt.**
+`pipeline.py:1317-1324` picks the structured prompt's hash whenever the phase has
+a schema and no custom override — including the runs where the structured attempt
+exhausted its schema retries and markdown actually produced the output. The row
+therefore attributes the output to a prompt that did not write it;
+`authoring_mode="markdown_fallback"` is what distinguishes the case.
+
+This is **provenance-only, not operational**: `prompt_hash` has exactly one
+consumer, `phase_outputs.find_latest_extract` (`app/repositories/phase_outputs.py:248-284`),
+which filters `phase_name == "extract"`. No content-phase resume, reuse or
+regeneration path reads it. Do not describe content-phase provenance as exact.
+
+**2. The structured prompts do not tell the model that ids must be unique.**
+`prompts/_general/structured/practice-rlc.md:22` says every step, option and chip
+needs an `id` and `label`; it never says *unique*. Uniqueness is enforced by the
+schemas instead (`app/schemas/content_json/rlc.py:46,57,91`,
+`sentence_fill.py:49`), so a duplicate is rejected, retried, and — if the retry
+also collides — falls back to markdown.
+
+Correctness is therefore safe; what suffers is the **fallback rate**. Adding the
+constraint to the prompt is a cheap improvement, deferred only because a prompt
+change is a generation change and wants a real smoke to accept.
+
+## Run-level export gate
+
+`--post` is **all-or-nothing across the run**, not per job. Every payload is
+built first, then a single capability probe covers the union of structured pairs;
+if any pair is unsupported, zero jobs post. Gating per job let an earlier
+markdown-only job POST before a later structured job was refused, so what got
+ingested depended on argument order.
+
+The platform's ingest is idempotent on `(pack, external_key, content_hash)`
+(`uniq_homework_import_idempotency`, `apps/library/models/packs.py:187`), so a run
+interrupted by a **server** error mid-batch is safely re-runnable. The preflight
+prevents known-unsupported partials; it is not a distributed transaction.
