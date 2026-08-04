@@ -985,6 +985,13 @@ async def _run_markdown_attempt(
     )
 
 
+# Carried in `run_fn`'s first tuple slot to signal "the model could not author
+# this config" WITHOUT raising into _run_with_failover (which would classify it
+# as a transport fault and burn the retry/failover budget). A unique object(),
+# never a truthy/falsey value, so `is` identity is the only way to match it.
+_SCHEMA_EXHAUSTED = object()
+
+
 async def _run_structured_attempt(
     *,
     phase_name: str,
@@ -992,6 +999,7 @@ async def _run_structured_attempt(
     requested_provider: str,
     model: Optional[str],
     transport: str = "cli",
+    session_limit_strategy: str = "pause",
     lesson_context: Optional[str] = None,
     prior_outputs: Optional[dict[str, str]] = None,
     difficulty: Optional[str] = None,
@@ -1003,47 +1011,67 @@ async def _run_structured_attempt(
 ) -> tuple[PhaseArtifact, Optional[int], Optional[int], str]:
     """One JSON-authoring call, validated into a `PhaseArtifact`.
 
-    Deliberately calls ``agent.run_phase`` DIRECTLY rather than going through
-    ``_run_with_failover``: that helper does "classify the error → retry the
-    same provider → fail over", so a `StructuredPhaseError` escaping into it
-    would be retried as though it were a transport fault, burning the budget on
-    a model that simply cannot produce the config. Transport errors raised by
-    ``agent.run_phase`` (auth, 429, slot saturation, timeout, network) propagate
-    out of here untouched and keep their existing semantics one level up.
+    Runs through ``_run_with_failover`` exactly like the markdown lane, so a
+    structured call keeps the per-attempt timeout, slot-saturation parking,
+    error classification, same-provider retry and cross-provider failover.
+    Calling ``agent.run_phase`` directly (the shape this replaced) silently
+    dropped all of it — there is no layer above that restores it.
+
+    Schema exhaustion must NOT reach the failover driver as an exception: that
+    driver classifies and retries, which would burn the budget on a model that
+    simply cannot produce this config. So ``agent.SchemaValidationExhausted``
+    (and a ``parsed is None`` result) is converted into the ``_SCHEMA_EXHAUSTED``
+    sentinel, returned in ``run_fn``'s first slot, and re-raised here as a
+    `StructuredPhaseError` — the one signal `_generate_artifact` falls back on.
+    Every OTHER exception still escapes ``run_fn`` normally and keeps the full
+    classify/retry/failover semantics.
     """
     if not structured_prompt:
         raise StructuredPhaseError(f"no structured prompt for phase '{phase_name}'")
     schema = SCHEMAS[phase_name]
-    try:
-        result = await agent.run_phase(
-            provider=requested_provider,
-            model=model,
-            phase_prompt=structured_prompt,
-            phase_name=phase_name,
-            homework_job_id=job_id,
-            phase_output_id=po_id,
-            lesson_context=lesson_context,
-            prior_outputs=prior_outputs,
-            attachments=list(attachments or []),
-            schema=schema,
-            difficulty=difficulty,
-            max_output_tokens=max_output_tokens_for(phase_name),
-            source_map_digest=source_map_digest,
-            transport=transport,
-        )
-    except ValidationError as exc:
+
+    async def _structured_run(prov: str, mdl: Optional[str]):
+        try:
+            result = await agent.run_phase(
+                provider=prov,
+                model=mdl,
+                phase_prompt=structured_prompt,
+                phase_name=phase_name,
+                homework_job_id=job_id,
+                phase_output_id=po_id,
+                lesson_context=lesson_context,
+                prior_outputs=prior_outputs,
+                attachments=list(attachments or []),
+                schema=schema,
+                difficulty=difficulty,
+                max_output_tokens=max_output_tokens_for(phase_name),
+                source_map_digest=source_map_digest,
+                transport=transport,
+            )
+        except (agent.SchemaValidationExhausted, ValidationError):
+            # Returned, NOT raised: keeps _run_with_failover from classifying
+            # and retrying a model that cannot produce this config.
+            return _SCHEMA_EXHAUSTED, None, None
+        if result.parsed is None:
+            return _SCHEMA_EXHAUSTED, None, None
+        tin_ = int(result.usage.get("prompt_tokens") or 0) or None
+        tout_ = int(result.usage.get("output_tokens") or 0) or None
+        return result.parsed, tin_, tout_
+
+    parsed, tin, tout, produced_by = await _run_with_failover(
+        requested_provider=requested_provider,
+        model=model,
+        run_fn=_structured_run,
+        transport=transport,
+        session_limit_strategy=session_limit_strategy,
+    )
+    if parsed is _SCHEMA_EXHAUSTED:
         raise StructuredPhaseError(
-            f"{schema.__name__} validation failed: {exc}"
-        ) from exc
-    if result.parsed is None:
-        raise StructuredPhaseError(
-            f"{schema.__name__}: model returned no valid config"
+            f"{schema.__name__}: model could not produce a valid config"
         )
-    tin = int(result.usage.get("prompt_tokens") or 0) or None
-    tout = int(result.usage.get("output_tokens") or 0) or None
     # artifact_from_config may itself raise StructuredPhaseError (renderer
     # refused / produced nothing) — that is a fallback trigger, by design.
-    return artifact_from_config(phase_name, result.parsed), tin, tout, requested_provider
+    return artifact_from_config(phase_name, parsed), tin, tout, produced_by
 
 
 async def _generate_artifact(
@@ -1293,6 +1321,12 @@ async def _execute_phase(
                         output_md=cached_extract.output_md,
                         tokens_input=0,
                         tokens_output=0,
+                        # Same provenance as the non-cached extract path: a
+                        # reused summary is still builtin-prompt markdown.
+                        # Omitting this leaves the row NULL -> reads as
+                        # `markdown_legacy`, which the contract reserves for
+                        # pre-migration rows.
+                        authoring_mode="markdown_builtin",
                     )
                     await session.commit()
                 # Visibility: record a free agent_usages row

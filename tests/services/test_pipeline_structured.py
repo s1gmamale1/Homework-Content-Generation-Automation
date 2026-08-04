@@ -17,6 +17,7 @@ only one is the exact bug this file exists to prevent.
 
 $0: every model call, DB session and repo write is stubbed.
 """
+import asyncio
 import types
 import uuid
 from pathlib import Path
@@ -27,6 +28,11 @@ import pytest
 from app.config import settings as _settings
 from app.schemas.content_json import RlcConfig, SentenceFillConfig
 from app.services import pipeline
+from app.services.errors import (
+    SLOT_SATURATION_MARKER,
+    PhaseAttemptTimeout,
+    SlotSaturation,
+)
 from app.services.phase_artifact import (
     StructuredPhaseError,
     artifact_from_config,
@@ -493,14 +499,22 @@ def test_markdown_attempt_is_the_failover_driver():
     assert "artifact_from" not in src, "the markdown attempt must not build artifacts itself"
 
 
-def test_structured_attempt_bypasses_the_failover_driver():
-    """_run_with_failover classifies-and-retries; a StructuredPhaseError entering
-    it would be retried as though it were a transport fault."""
+def test_structured_attempt_uses_the_failover_driver_via_a_sentinel():
+    """Supersedes `test_structured_attempt_bypasses_the_failover_driver`.
+
+    Task 7 shipped the structured lane calling `agent.run_phase` directly to
+    keep a `StructuredPhaseError` out of the classify-and-retry driver — but
+    that also dropped the per-attempt timeout, slot-saturation parking, error
+    classification, same-provider retry and failover from EVERY structured
+    call, with no layer above restoring them. The original intent is preserved
+    by the `_SCHEMA_EXHAUSTED` sentinel: schema exhaustion is *returned*, not
+    raised, so it still short-circuits the driver, while every transport fault
+    keeps the full driver semantics."""
     import inspect
     src = inspect.getsource(pipeline._run_structured_attempt)
-    # match the CALL, not the docstring that explains why it is absent
-    assert "await _run_with_failover(" not in src
+    assert "await _run_with_failover(" in src
     assert "agent.run_phase(" in src
+    assert "_SCHEMA_EXHAUSTED" in src
 
 
 def test_artifact_from_markdown_is_the_only_fallback_shape():
@@ -508,3 +522,180 @@ def test_artifact_from_markdown_is_the_only_fallback_shape():
     assert (art.content_json, art.content_schema_version, art.renderer_version) == (
         None, None, None
     )
+
+
+# ===========================================================================
+# REAL CALL CHAIN (task 7b)
+#
+# Everything above stubs `_run_structured_attempt` itself, so it proves the
+# artifact/regen/atomicity contract but says nothing about whether a REAL
+# schema failure ever reaches the fallback. It did not: `agent.run_phase`
+# raised a bare RuntimeError on schema exhaustion and `_run_structured_attempt`
+# caught only ValidationError, so the job failed instead of falling back.
+#
+# These tests stub ONLY the provider boundary — `agent._spawn`, the narrowest
+# seam below `run_phase` (its caller `_spawn`/`_spawn_once` is the last thing
+# before argv/SDK). Real code under test: `_generate_artifact` ->
+# `_run_structured_attempt` -> `_run_with_failover` -> `agent.run_phase`
+# (prompt build, Pydantic validation, the one-retry-with-error-feedback loop,
+# the typed `SchemaValidationExhausted` raise) -> sentinel -> fallback.
+# ===========================================================================
+
+_SPAWN_USAGE = {
+    "prompt_tokens": 10, "output_tokens": 5, "cached_tokens": 0,
+    "total_tokens": 15, "raw": {},
+}
+
+
+@pytest.fixture()
+def real_chain(monkeypatch):
+    """Stub the provider boundary + the usage-row write; nothing else.
+
+    Monkeypatching `agent.run_phase` instead would re-open the exact gap this
+    file's task exists to close, so it is deliberately left real.
+    """
+    ns = types.SimpleNamespace(spawn_prompts=[], md_calls=[])
+
+    async def fake_record_usage(**kw):
+        return None
+    monkeypatch.setattr(pipeline.agent, "_record_usage", fake_record_usage)
+
+    # Pin the failover chain to the requested provider so the assertions do not
+    # depend on which fallback CLIs happen to be installed on the test box.
+    # (The requested provider is never skipped — see _run_with_failover.)
+    monkeypatch.setattr(pipeline.agent, "provider_cli_installed", lambda name: False)
+
+    async def markdown_run(prov, mdl):
+        ns.md_calls.append(prov)
+        return "# fallback markdown", 11, 22
+    ns.markdown_run = markdown_run
+    return ns
+
+
+async def test_real_chain_two_invalid_structured_responses_fall_back_to_markdown(
+    real_chain, monkeypatch
+):
+    """1. The model returns non-conforming JSON twice.
+
+    `run_phase` validates, retries once with the validation error appended,
+    validates again, and raises `SchemaValidationExhausted`. That must surface
+    as a markdown fallback — NOT as a job failure.
+    """
+    async def fake_spawn(*, provider, model, prompt, attachments, transport="cli"):
+        real_chain.spawn_prompts.append(prompt)
+        return 0, '{"totally": "not a sentence-fill config"}', dict(_SPAWN_USAGE), ""
+
+    monkeypatch.setattr(pipeline.agent, "_spawn", fake_spawn)
+
+    art, tin, tout, produced_by = await pipeline._generate_artifact(
+        phase_name=STRUCTURED_PHASE, **_gen_kwargs(run_fn=real_chain.markdown_run)
+    )
+
+    # run_phase's REAL retry loop ran: two spawns, the second carrying the
+    # validation-error feedback. (A stubbed run_phase could not show this.)
+    assert len(real_chain.spawn_prompts) == 2
+    assert "failed schema validation" in real_chain.spawn_prompts[1]
+    # ...and the schema exhaustion was NOT retried by the failover driver.
+    assert real_chain.md_calls == ["claude"]
+
+    assert art.authoring_mode == "markdown_fallback"
+    assert art.content_json is None
+    assert art.output_md == "# fallback markdown"
+    assert (tin, tout, produced_by) == (11, 22, "claude")
+
+
+async def test_real_chain_hung_structured_call_times_out_without_falling_back(
+    real_chain, monkeypatch
+):
+    """2. A hung provider must hit the per-attempt timeout `_run_structured_attempt`
+    used to be missing entirely — and must NOT be laundered into a fallback."""
+    monkeypatch.setattr(_settings, "per_attempt_timeout_seconds", 0.05)
+
+    async def hung_spawn(**kw):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(pipeline.agent, "_spawn", hung_spawn)
+
+    with pytest.raises(PhaseAttemptTimeout) as excinfo:
+        await pipeline._generate_artifact(
+            phase_name=STRUCTURED_PHASE, **_gen_kwargs(run_fn=real_chain.markdown_run)
+        )
+
+    assert "per-attempt timeout" in str(excinfo.value)
+    assert real_chain.md_calls == [], "a hung provider is not a fallback trigger"
+
+
+async def test_real_chain_slot_saturation_parks_and_never_falls_back(
+    real_chain, monkeypatch
+):
+    """3a. Fleet slot exhaustion must park the job (SlotSaturation), unretried
+    and unclassified — the structured lane had lost this handling entirely."""
+    async def saturated_spawn(**kw):
+        real_chain.spawn_prompts.append("x")
+        raise RuntimeError(f"429 {SLOT_SATURATION_MARKER} (credential=gemini:p, budget=120s)")
+
+    monkeypatch.setattr(pipeline.agent, "_spawn", saturated_spawn)
+
+    with pytest.raises(SlotSaturation):
+        await pipeline._generate_artifact(
+            phase_name=STRUCTURED_PHASE, **_gen_kwargs(run_fn=real_chain.markdown_run)
+        )
+
+    assert len(real_chain.spawn_prompts) == 1, "saturation is parked, never retried"
+    assert real_chain.md_calls == []
+
+
+async def test_real_chain_transport_error_retries_same_provider_and_never_falls_back(
+    real_chain, monkeypatch
+):
+    """3b. A transport fault keeps the classify -> same-provider-retry budget
+    (`hard` = 1 retry) and still propagates — never a markdown fallback."""
+    async def failing_spawn(**kw):
+        real_chain.spawn_prompts.append("x")
+        raise RuntimeError("claude api call failed rc=1: 429 Too Many Requests")
+
+    monkeypatch.setattr(pipeline.agent, "_spawn", failing_spawn)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await pipeline._generate_artifact(
+            phase_name=STRUCTURED_PHASE, **_gen_kwargs(run_fn=real_chain.markdown_run)
+        )
+
+    assert type(excinfo.value) is RuntimeError, f"got {type(excinfo.value).__name__}"
+    assert "429 Too Many Requests" in str(excinfo.value)
+    # 1 attempt + 1 same-provider retry ('hard' budget). Calling run_phase
+    # directly (the pre-fix shape) gave exactly 1 — no retry at all.
+    assert len(real_chain.spawn_prompts) == 2
+    assert real_chain.md_calls == []
+
+
+async def test_cached_extract_records_markdown_builtin(patch_io, monkeypatch):
+    """4. A reused extract is builtin-prompt markdown like any other extract.
+
+    Leaving authoring_mode unset makes the row read as `markdown_legacy`, which
+    the provenance contract reserves for pre-migration / NULL rows.
+    """
+    cached = MagicMock()
+    cached.output_md = "# cached extract summary"
+    cached.job_id = uuid.uuid4()
+    cached.id = uuid.uuid4()
+
+    async def has_cache(session, **kw):
+        return cached
+    monkeypatch.setattr(pipeline.phase_repo, "find_latest_extract", has_cache)
+
+    async def fake_record_cached(**kw):
+        return None
+    monkeypatch.setattr(
+        pipeline.agent, "record_cached_lesson_extract", fake_record_cached
+    )
+
+    async def no_agent_call(*a, **kw):
+        raise AssertionError("the cached path must not call the model")
+    monkeypatch.setattr(pipeline, "_run_with_failover", no_agent_call)
+
+    await pipeline._execute_phase(**_make_kwargs(phase_name="extract"))
+
+    done = patch_io.done_kwargs()
+    assert done["output_md"] == "# cached extract summary"
+    assert done["authoring_mode"] == "markdown_builtin"
