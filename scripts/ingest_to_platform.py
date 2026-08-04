@@ -113,8 +113,9 @@ def main(argv: "list[str] | None" = None) -> int:
         job, phases = asyncio.run(_load_job(jid))
         payload = build_ingest_payload(job=job, phases=phases, subject_map=subject_map)
         if not args.post:
+            n = len(payload["payload"]["phases"])
             print(json.dumps(payload, ensure_ascii=False, indent=2)[:4000])
-            print(f"[dry-run] {jid}: {len(payload['phases'])} phases — not posted")
+            print(f"[dry-run] {jid}: {n} phases — not posted")
             continue
         rc |= _post(base, token, payload)
     return rc

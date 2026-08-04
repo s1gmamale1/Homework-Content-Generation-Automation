@@ -18,6 +18,15 @@ import pytest
 from scripts import ingest_to_platform as cli
 
 
+def _md_payload(phases=None):
+    """A legacy markdown-only envelope in the serializer's shape."""
+    return {
+        "source": "hcg", "source_ref": "b1", "language": "uz",
+        "subject_id": 7, "grade": 8, "external_key": "j1",
+        "payload": {"phases": phases if phases is not None else []},
+    }
+
+
 def _async_job(job, phases):
     """Async stub matching the real `_load_job` signature.
 
@@ -51,7 +60,7 @@ def test_dry_run_does_not_post(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_load_map", lambda: {"history": 7})
     monkeypatch.setenv("PLATFORM_BASE_URL", "https://example.test")
     monkeypatch.setenv("PLATFORM_INGEST_TOKEN", "tok")
-    monkeypatch.setattr(cli, "build_ingest_payload", lambda **k: {"phases": []})
+    monkeypatch.setattr(cli, "build_ingest_payload", lambda **k: _md_payload())
 
     assert cli.main(["--job", "abc"]) == 0
 
@@ -93,11 +102,11 @@ def test_post_flag_calls_post_and_never_opens_a_real_socket(monkeypatch):
     monkeypatch.setattr(cli, "_post", _fake_post)
     monkeypatch.setattr(cli, "_load_job", _async_job({"id": "j"}, []))
     monkeypatch.setattr(cli, "_load_map", lambda: {"history": 7})
-    monkeypatch.setattr(cli, "build_ingest_payload", lambda **k: {"phases": []})
+    monkeypatch.setattr(cli, "build_ingest_payload", lambda **k: _md_payload())
     monkeypatch.setenv("PLATFORM_BASE_URL", "https://example.test")
     monkeypatch.setenv("PLATFORM_INGEST_TOKEN", "tok")
 
     rc = cli.main(["--job", "abc", "--post"])
 
     assert rc == 0
-    assert calls == [("https://example.test", "tok", {"phases": []})]
+    assert calls == [("https://example.test", "tok", _md_payload())]
