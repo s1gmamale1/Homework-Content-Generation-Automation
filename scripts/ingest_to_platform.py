@@ -5,6 +5,13 @@ request must present exactly ONE token: the server compares the whole Bearer
 value against each entry. So this client reads a singular PLATFORM_INGEST_TOKEN.
 
 --dry-run is the DEFAULT; posting requires --post.
+
+--post FAILS CLOSED on structured phases: before any HTTP POST the CLI asks the
+target platform which (phase_name, content_schema_version) pairs it can ingest
+natively, and refuses the whole job unless every structured phase in the payload
+is covered. The capability endpoint does not exist yet, so TODAY every structured
+post is blocked — that is the intended behaviour, not a bug. Markdown-only
+payloads are unaffected and never trigger the probe.
 """
 from __future__ import annotations
 
@@ -23,10 +30,11 @@ from sqlalchemy import text  # noqa: E402
 
 from app.db import SessionLocal  # noqa: E402
 from app.services.platform_payload import (  # noqa: E402
-    SubjectMapError, build_ingest_payload, load_subject_map,
+    SubjectMapError, build_ingest_payload, load_subject_map, structured_pairs,
 )
 
 INGEST_PATH = "/api/v1/library/homework-imports/ingest"
+CAPABILITIES_PATH = "/api/v1/library/homework-imports/capabilities"
 
 _JOB_SQL = """
 SELECT j.id::text AS id, j.book_id::text AS book_id, j.subject,
@@ -44,6 +52,105 @@ FROM phase_outputs WHERE job_id::text = :jid ORDER BY phase_order
 
 class TokenError(RuntimeError):
     """The client token is unusable before any HTTP request is attempted."""
+
+
+class UnsupportedStructuredPhase(RuntimeError):
+    """The target platform cannot ingest a structured phase in this payload.
+
+    Raised BEFORE any POST. Not a warning and there is deliberately no bypass —
+    see ``_assert_structured_supported``.
+    """
+
+
+def _fetch_capabilities(base: str, token: str, client=None) -> "dict | None":
+    """Return the platform's advertised native-support map, or None.
+
+    None means "we could not establish support" for ANY reason — endpoint
+    absent (404), unreachable, non-200, or a body that is not JSON. Every one
+    of those is treated identically by the caller: block.
+    """
+    http = client or httpx.Client(timeout=30)
+    try:
+        resp = http.get(
+            f"{base}{CAPABILITIES_PATH}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    except Exception as exc:  # noqa: BLE001 — any transport failure is "unknown"
+        print(f"  -> capability probe failed: {type(exc).__name__}: {exc}")
+        return None
+    if resp.status_code != 200:
+        print(f"  -> capability probe: HTTP {resp.status_code} (no native-support info)")
+        return None
+    try:
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  -> capability probe: malformed body ({exc})")
+        return None
+    if not isinstance(data, dict):
+        print("  -> capability probe: body is not a JSON object")
+        return None
+    return data
+
+
+def supported_pairs(caps: "dict | None") -> set[tuple[str, str]]:
+    """Normalize the capability body into a set of supported pairs.
+
+    Expected shape::
+
+        {"structured_phases": [
+            {"phase_name": "practice-rlc", "content_schema_version": "rlc_config@1"},
+            ...
+        ]}
+
+    Anything that does not parse into that shape contributes NOTHING — a
+    malformed or half-understood body must never be read as support.
+    """
+    out: set[tuple[str, str]] = set()
+    if not isinstance(caps, dict):
+        return out
+    entries = caps.get("structured_phases")
+    if not isinstance(entries, list):
+        return out
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        phase = e.get("phase_name")
+        version = e.get("content_schema_version")
+        if isinstance(phase, str) and isinstance(version, str) and phase and version:
+            out.add((phase, version))
+    return out
+
+
+def _assert_structured_supported(base: str, token: str, payload: dict, client=None) -> None:
+    """Fail closed: refuse to POST structured phases the platform cannot ingest.
+
+    The ingest endpoint SCHEDULES transformation immediately — it is not passive
+    raw staging — and the platform's current markdown parsers DOWNGRADE our RLC
+    and DROP our sentence-fill. Posting today would therefore silently lose a
+    phase and could carry an incomplete packet into review or publication.
+
+    There is no ``--force``. An operator flag here is exactly the mechanism that
+    turns "we know this drops a phase" into "we shipped a packet missing a
+    phase"; the correct unblock is the platform gaining native support (and
+    advertising it), not a client-side override.
+    """
+    pairs = structured_pairs(payload)
+    if not pairs:
+        return  # legacy markdown-only payload — nothing to gate, no probe
+    supported = supported_pairs(_fetch_capabilities(base, token, client=client))
+    missing = [p for p in pairs if p not in supported]
+    if missing:
+        listing = "\n".join(f"    - {ph} ({ver})" for ph, ver in missing)
+        raise UnsupportedStructuredPhase(
+            "refusing to POST: the target platform does not advertise native "
+            "ingestion for these structured phases:\n"
+            f"{listing}\n"
+            "  The ingest endpoint schedules transformation immediately, and the "
+            "current markdown parsers downgrade practice-rlc and DROP "
+            "practice-sentence — posting would silently lose a phase.\n"
+            f"  Unblock: the platform must serve {CAPABILITIES_PATH} listing each "
+            "(phase_name, content_schema_version). There is no --force."
+        )
 
 
 def validate_token(raw: str) -> str:
@@ -116,6 +223,12 @@ def main(argv: "list[str] | None" = None) -> int:
             n = len(payload["payload"]["phases"])
             print(json.dumps(payload, ensure_ascii=False, indent=2)[:4000])
             print(f"[dry-run] {jid}: {n} phases — not posted")
+            continue
+        try:
+            _assert_structured_supported(base, token, payload)
+        except UnsupportedStructuredPhase as exc:
+            print(f"[blocked] {jid}: {exc}", file=sys.stderr)
+            rc |= 1
             continue
         rc |= _post(base, token, payload)
     return rc
