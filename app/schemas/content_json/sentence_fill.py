@@ -5,7 +5,7 @@ from typing import ClassVar, Literal
 from pydantic import Field, model_validator
 
 from .common import (
-    StrictModel, StrippedStr, all_unique_normalized, first_duplicate_id, norm,
+    StrictModel, StrippedStr, all_unique_normalized, first_duplicate_id,
 )
 
 
@@ -32,9 +32,25 @@ class SentenceItem(StrictModel):
             raise ValueError("answers must be normalized-unique (mobile consumes each chip once)")
         if not all_unique_normalized(self.word_bank):
             raise ValueError("word_bank entries must be normalized-unique")
-        bank = {norm(w) for w in self.word_bank}
-        if not all(norm(a) in bank for a in self.answers):
-            raise ValueError("word_bank must contain every answer")
+        # EXACT membership, deliberately not normalized: the platform validator
+        # does `all(a in bank for a in answers)` on the raw strings, so a
+        # case-differing answer would pass here and be REJECTED at publish. The
+        # prompt already requires every answer "verbatim"; this enforces it.
+        # (Uniqueness stays normalized — mobile consumes chips by normalized
+        # value, so two chips differing only in case are one chip to a student.)
+        missing = [a for a in self.answers if a not in self.word_bank]
+        if missing:
+            raise ValueError(
+                f"word_bank must contain every answer VERBATIM; missing: {missing}"
+            )
+        # Redaction pops `answers` and ships `word_bank` as the chips, so a bank
+        # with no distractor hands the student exactly the right words — a
+        # one-blank item becomes a single tappable chip that cannot be failed.
+        if len(self.word_bank) <= len(self.answers):
+            raise ValueError(
+                "word_bank needs at least one distractor beyond the answers "
+                f"(got {len(self.word_bank)} chips for {len(self.answers)} blanks)"
+            )
         return self
 
 

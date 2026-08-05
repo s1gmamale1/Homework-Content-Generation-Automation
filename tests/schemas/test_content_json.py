@@ -111,6 +111,34 @@ def test_sentence_fill_bank_must_contain_every_answer():
         SentenceFillConfig.model_validate(cfg)
 
 
+def test_sentence_fill_bank_membership_is_EXACT_not_normalized():
+    """The platform validator does `all(a in bank for a in answers)` — plain
+    string membership, no normalization. Accepting a case-differing answer here
+    produced a config we called valid and the platform REJECTS at publish, which
+    is precisely the cross-repo divergence this schema exists to prevent.
+    """
+    cfg = _sf()
+    cfg["items"][0]["answers"] = ["Cat", "dog"]
+    cfg["items"][0]["word_bank"] = ["cat", "dog", "fox"]   # 'Cat' not present verbatim
+    with pytest.raises(ValidationError):
+        SentenceFillConfig.model_validate(cfg)
+
+
+def test_sentence_fill_word_bank_needs_at_least_one_distractor():
+    """A bank with no distractor is not an exercise.
+
+    Redaction pops `answers` and ships `word_bank` as the chips, so answers ==
+    bank means the student is handed exactly the right words, one per blank.
+    A single-blank item degenerates to one tappable chip: unfailable, and it
+    teaches nothing. The prompt already asks for "1-3 plausible distractors" —
+    this makes the schema enforce what the contract already says.
+    """
+    cfg = _sf()
+    cfg["items"][0]["word_bank"] = ["cat", "dog"]          # == answers, no distractor
+    with pytest.raises(ValidationError):
+        SentenceFillConfig.model_validate(cfg)
+
+
 def test_rlc_duplicate_option_ids_rejected():
     """RED-proof case. The platform's `grade_rlc` resolves a submitted answer with
     ``next((o for o in opts if o.get("id") == ua), None)`` — FIRST id match wins.

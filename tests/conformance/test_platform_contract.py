@@ -311,6 +311,34 @@ def test_sentence_fill_config_passes_the_platform_validator(platform):
     assert errors == {}
 
 
+def test_word_bank_membership_agrees_with_the_platform(platform):
+    """Our membership rule must be at least as strict as the platform's.
+
+    The platform does plain `a in bank`. We briefly did it on normalized values,
+    which accepted `answers=["Cat"]` against `word_bank=["cat", ...]` — a config
+    we called valid and the platform rejects at publish. A same-repo unit test
+    cannot catch that class of divergence; only this one can, so the case is
+    pinned HERE against the platform's real validator rather than only in
+    tests/schemas.
+    """
+    divergent = {"items": [{
+        "id": "i1", "mode": "word_bank", "passage": "A ___ ran.",
+        "answers": ["Cat"], "word_bank": ["cat", "dog"],
+    }]}
+
+    # The platform rejects it...
+    errors: dict = {}
+    platform.validate_sentence_fill_config(divergent, errors)
+    assert errors != {}, (
+        "the platform now accepts case-differing bank membership — if that is "
+        "deliberate, our schema may relax to match; until then it must not."
+    )
+
+    # ...so we must too, before it can ever be built.
+    with pytest.raises(Exception):
+        SentenceFillConfig.model_validate(divergent)
+
+
 # --- 3. redactor ------------------------------------------------------------
 
 @pytest.mark.parametrize("phase,cfg_fn", [
