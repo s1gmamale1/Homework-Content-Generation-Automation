@@ -88,9 +88,37 @@ phase" into "we shipped a packet missing a phase". `--dry-run` (the default) and
 ## 4. The standing gate
 
 `tests/conformance/test_platform_contract.py` locks all of the above against the
-platform's REAL source, read from `origin/Akademiya-AI` in the sibling checkout
-(`/Users/macmini5/Documents/Class-A-Education-Platform-Backend`); the whole file
-skips when that checkout is absent. It covers:
+platform's REAL source. Where that source comes from is configurable, because a
+gate that only runs on one laptop is how these defects reached a PR in the first
+place:
+
+| env | default | meaning |
+|---|---|---|
+| `PLATFORM_SRC` | the sibling checkout on the authoring machine | platform repo root |
+| `PLATFORM_REF` | `origin/Akademiya-AI` | git ref to read; `WORKTREE` reads files off disk |
+| `REQUIRE_PLATFORM_CONTRACT` | unset | `1` turns **every skip in the file into a hard failure** |
+
+Absent platform checkout ⇒ skip (right for a laptop) unless
+`REQUIRE_PLATFORM_CONTRACT=1`, which makes it a **collection error** — louder
+than a failing test and impossible to mistake for a pass.
+`tests/conformance/test_gate_enforcement.py` holds that conversion in place by
+running the real thing in a subprocess and asserting on the exit code, so the
+gate cannot regress into skipping.
+
+The platform repo's CI is where this runs mandatorily: its job checks out the
+**public** HCGA repo alongside its own **private** source and runs
+
+```
+REQUIRE_PLATFORM_CONTRACT=1 PLATFORM_SRC=$GITHUB_WORKSPACE PLATFORM_REF=WORKTREE \
+  uv run python -m pytest tests/conformance -q
+```
+
+Direction matters: the private repo pulls the public one, so no secret is needed
+and no private source lands on a public repo's runner. `WORKTREE` means the job
+gates the platform revision *under review* rather than whatever
+`origin/Akademiya-AI` was when the runner cloned.
+
+It covers:
 
 1. **Serializer contract** — the built envelope satisfies
    `HomeworkImportIngestSerializer` field-for-field. The declarations are read

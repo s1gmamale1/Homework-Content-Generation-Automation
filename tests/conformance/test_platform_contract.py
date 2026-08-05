@@ -9,12 +9,26 @@ Everything here reads the platform's REAL source from
 ``origin/Akademiya-AI`` in the sibling checkout — no vendored copies, no
 hand-transcribed field lists — so the day the platform changes, this fails.
 
-Nothing here talks to a network, a database or a model. The whole suite skips
-when the platform checkout is absent (CI, other machines).
+Nothing here talks to a network, a database or a model.
+
+**Where the platform source comes from** is configurable, because a gate that
+only runs on one laptop is the gate that let those three defects through:
+
+- ``PLATFORM_SRC``  — path to the platform checkout. Defaults to the sibling
+  directory on the authoring machine.
+- ``PLATFORM_REF``  — git ref to read (default ``origin/Akademiya-AI``). The
+  literal ``WORKTREE`` reads the files off disk instead, which is what CI wants:
+  the job must gate the platform revision *under review*, not whatever
+  ``origin/Akademiya-AI`` happened to be when the runner cloned.
+- ``REQUIRE_PLATFORM_CONTRACT=1`` — **turns every skip in this file into a hard
+  failure.** Without it the suite skips when the platform is absent, which is
+  right for a laptop and catastrophic for CI: a silently-skipped cross-repo gate
+  reports green while gating nothing. The platform repo's CI sets it.
 """
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
 import subprocess
 import sys
@@ -26,8 +40,30 @@ from app.schemas.content_json import RlcConfig, SentenceFillConfig
 from app.services import phase_render
 from app.services.platform_payload import build_ingest_payload
 
-PLATFORM_ROOT = pathlib.Path("/Users/macmini5/Documents/Class-A-Education-Platform-Backend")
-PLATFORM_REF = "origin/Akademiya-AI"
+_DEFAULT_ROOT = "/Users/macmini5/Documents/Class-A-Education-Platform-Backend"
+
+PLATFORM_ROOT = pathlib.Path(os.environ.get("PLATFORM_SRC") or _DEFAULT_ROOT)
+PLATFORM_REF = os.environ.get("PLATFORM_REF") or "origin/Akademiya-AI"
+REQUIRED = os.environ.get("REQUIRE_PLATFORM_CONTRACT") == "1"
+
+
+def _unavailable(reason: str):
+    """Skip locally, FAIL when the caller declared this gate mandatory."""
+    if REQUIRED:
+        pytest.fail(
+            f"REQUIRE_PLATFORM_CONTRACT=1 but {reason}. This gate was asked to "
+            "run; skipping it would report green while checking nothing."
+        )
+    pytest.skip(reason)
+
+
+# A missing checkout under REQUIRE_PLATFORM_CONTRACT is a COLLECTION error on
+# purpose — louder than a failing test, and impossible to mistake for a pass.
+if REQUIRED and not PLATFORM_ROOT.exists():
+    raise RuntimeError(
+        f"REQUIRE_PLATFORM_CONTRACT=1 but no platform checkout at {PLATFORM_ROOT}. "
+        "Set PLATFORM_SRC to the platform repo root."
+    )
 
 pytestmark = pytest.mark.skipif(
     not PLATFORM_ROOT.exists(),
@@ -53,13 +89,24 @@ _SERIALIZER_PATH = "apps/library/serializers/homework_imports.py"
 
 
 def _show(repo_path: str) -> str:
-    """`git show <ref>:<path>` from the platform checkout, or skip."""
+    """Read a platform file at ``PLATFORM_REF``, or skip/fail if unreadable.
+
+    ``PLATFORM_REF=WORKTREE`` reads the checked-out file instead of a git ref.
+    CI uses it so the gate describes the revision under review; a laptop uses a
+    ref so an unrelated dirty tree cannot turn the gate red.
+    """
+    if PLATFORM_REF == "WORKTREE":
+        path = PLATFORM_ROOT / repo_path
+        if not path.is_file():
+            _unavailable(f"no such file in the platform worktree: {path}")
+        return path.read_text(encoding="utf-8")
+
     proc = subprocess.run(
         ["git", "-C", str(PLATFORM_ROOT), "show", f"{PLATFORM_REF}:{repo_path}"],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
-        pytest.skip(f"cannot read {PLATFORM_REF}:{repo_path} — {proc.stderr.strip()}")
+        _unavailable(f"cannot read {PLATFORM_REF}:{repo_path} — {proc.stderr.strip()}")
     return proc.stdout
 
 
