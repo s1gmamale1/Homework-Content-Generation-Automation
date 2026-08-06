@@ -19,7 +19,7 @@ def _job(archived=False, created_at=None):
 
 def _section(job, *, page_id=None, archived_job_id=None):
     return SimpleNamespace(
-        id=job.toc_entry_id, section_number="1", section_title="L",
+        id=job.toc_entry_id, section_number="1", section_title="L", page_start=7, order_index=0,
         notion_homework_page_id=page_id, notion_archived_job_id=archived_job_id,
     )
 
@@ -44,6 +44,7 @@ async def test_first_archive_stamps_producing_job(monkeypatch):
     book, phase = _wire(monkeypatch, job, section)
     with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \
@@ -66,6 +67,7 @@ async def test_regen_auto_replaces_own_older_output_and_restamps(monkeypatch):
     with patch.object(na.jobs_repo, "get",
                       AsyncMock(side_effect=lambda s, jid: job if jid == job.id else prior)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \
@@ -91,6 +93,7 @@ async def test_older_job_does_not_clobber_newer_stamp(monkeypatch):
     with patch.object(na.jobs_repo, "get",
                       AsyncMock(side_effect=lambda s, jid: old_job if jid == old_job.id else newer)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \
@@ -113,6 +116,7 @@ async def test_missing_stamped_job_row_keeps_skip(monkeypatch):
     with patch.object(na.jobs_repo, "get",
                       AsyncMock(side_effect=lambda s, jid: job if jid == job.id else None)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \
@@ -134,6 +138,7 @@ async def test_husk_no_stamp_no_replace(monkeypatch):
     book, phase = _wire(monkeypatch, job, section)
     with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \
