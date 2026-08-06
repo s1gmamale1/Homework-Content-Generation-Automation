@@ -1,11 +1,12 @@
 from datetime import datetime
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import PhaseOutput
+from app.models import HomeworkJob, PhaseOutput
+from app.services.lease import JobLease, LeaseLost
 
 
 async def create(
@@ -17,6 +18,7 @@ async def create(
     prompt_hash: str,
     model_name: str,
     status: str = "pending",
+    claim_token: Optional[UUID] = None,
 ) -> PhaseOutput:
     po = PhaseOutput(
         job_id=job_id,
@@ -25,6 +27,7 @@ async def create(
         prompt_hash=prompt_hash,
         model_name=model_name,
         status=status,
+        claim_token=claim_token,
     )
     session.add(po)
     await session.flush()
@@ -40,7 +43,8 @@ async def create_or_reset(
     prompt_hash: str,
     model_name: str,
     status: str = "pending",
-) -> PhaseOutput:
+    lease: Optional[JobLease] = None,
+) -> Union[PhaseOutput, object]:
     """Create a new phase_outputs row, or hard-reset an existing one for
     (job_id, phase_name).
 
@@ -53,7 +57,24 @@ async def create_or_reset(
     On reset, the audit trail is preserved (same row id, FK references
     survive) but all per-attempt fields are cleared so the phase looks
     identical to a fresh row in the ``pending`` state.
+
+    Transitional (fenced job leases, Task 6): with ``lease=None`` (every
+    caller until Task 7) this runs the legacy body UNCHANGED — no job-row
+    lock, no token stamped, ``PhaseOutput`` returned as always. When a
+    ``lease`` is given: the **job row is locked FIRST**
+    (``SELECT ... FOR UPDATE``, lock order job->phase everywhere) and its
+    ``claim_token`` verified against ``lease.claim_token``; a missing job or
+    a mismatched token means the lease is stale and this returns
+    ``lease.LeaseLost`` **without writing anything** — not even the phase
+    row. On a verified lease, the existing create-or-reset body runs and the
+    written row (both the reset/UPDATE branch and the insert branch) is
+    stamped with ``claim_token=lease.claim_token``.
     """
+    if lease is not None:
+        job = await session.get(HomeworkJob, job_id, with_for_update=True)
+        if job is None or job.claim_token != lease.claim_token:
+            return LeaseLost
+
     existing = await session.scalar(
         select(PhaseOutput).where(
             PhaseOutput.job_id == job_id,
@@ -79,6 +100,8 @@ async def create_or_reset(
         existing.authoring_mode = None
         existing.content_schema_version = None
         existing.renderer_version = None
+        if lease is not None:
+            existing.claim_token = lease.claim_token
         await session.flush()
         return existing
     return await create(
@@ -89,6 +112,7 @@ async def create_or_reset(
         prompt_hash=prompt_hash,
         model_name=model_name,
         status=status,
+        claim_token=(lease.claim_token if lease is not None else None),
     )
 
 
@@ -121,7 +145,8 @@ async def set_status(
     content_schema_version: Optional[str] = None,
     renderer_version: Optional[str] = None,
     guard: bool = True,
-) -> bool:
+    claim_token: Optional[UUID] = None,
+) -> Union[bool, object]:
     """Set a phase row's status. With ``guard`` (default), a ``done`` phase is
     frozen — protects the resumable set (``_done_phase_md``) from a
     cancel-race clobber. Returns True iff a row was updated.
@@ -131,7 +156,13 @@ async def set_status(
     stale JSON" rule because ``create_or_reset`` NULLs all four when the row is
     (re)opened and ``_execute_phase`` writes them exactly once, at the end —
     so a markdown-fallback artifact leaves them NULL rather than overwriting a
-    previously-persisted config."""
+    previously-persisted config.
+
+    Transitional (fenced job leases, Task 6): with ``claim_token=None`` (every
+    caller until Task 7) the legacy behavior is preserved UNCHANGED — no token
+    predicate, plain ``bool`` returned. When a token is given, the UPDATE also
+    requires ``claim_token = :token``; a 0-row match returns ``lease.LeaseLost``
+    (row left unmatched/unchanged) instead of ``False``."""
     values: dict = {"status": status}
     if started_at is not None:
         values["started_at"] = started_at
@@ -164,7 +195,11 @@ async def set_status(
     stmt = update(PhaseOutput).where(PhaseOutput.id == phase_output_id)
     if guard:
         stmt = stmt.where(PhaseOutput.status != "done")
+    if claim_token is not None:
+        stmt = stmt.where(PhaseOutput.claim_token == claim_token)
     result = await session.execute(stmt.values(**values))
+    if claim_token is not None and result.rowcount == 0:
+        return LeaseLost
     return result.rowcount > 0
 
 
