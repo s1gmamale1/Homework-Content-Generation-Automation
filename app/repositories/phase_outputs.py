@@ -161,8 +161,16 @@ async def set_status(
     Transitional (fenced job leases, Task 6): with ``claim_token=None`` (every
     caller until Task 7) the legacy behavior is preserved UNCHANGED — no token
     predicate, plain ``bool`` returned. When a token is given, the UPDATE also
-    requires ``claim_token = :token``; a 0-row match returns ``lease.LeaseLost``
-    (row left unmatched/unchanged) instead of ``False``."""
+    requires ``claim_token = :token``.
+
+    A 0-row match with a token is DISAMBIGUATED by a re-read (fenced job leases,
+    Task 7 forward-fix — mirrors ``jobs._fenced_update``): the write can miss
+    two ways and they must not be conflated. If the row's ``claim_token`` no
+    longer matches, the lease was genuinely lost → ``lease.LeaseLost``. If the
+    token STILL matches but the status guard blocked the write (the row is
+    already ``done`` — the pre-existing ``guard=True`` no-op), it is the LEGACY
+    benign no-op → returns ``False`` (the same value it returns today without a
+    token), NOT ``LeaseLost``."""
     values: dict = {"status": status}
     if started_at is not None:
         values["started_at"] = started_at
@@ -199,7 +207,14 @@ async def set_status(
         stmt = stmt.where(PhaseOutput.claim_token == claim_token)
     result = await session.execute(stmt.values(**values))
     if claim_token is not None and result.rowcount == 0:
-        return LeaseLost
+        # Disambiguate a real lease loss from the benign status-guard no-op
+        # (row already 'done') by re-reading the row (mirror
+        # jobs._fenced_update): token mismatch = lease lost; token still ours =
+        # the guard blocked a done row → the legacy no-op, NOT a lease loss.
+        row = await session.get(PhaseOutput, phase_output_id, populate_existing=True)
+        if row is None or row.claim_token != claim_token:
+            return LeaseLost
+        return False
     return result.rowcount > 0
 
 

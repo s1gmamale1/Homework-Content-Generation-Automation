@@ -21,12 +21,15 @@ from app.repositories import toc_entries as toc_repo
 from app.services import agent, book_fetch, content_lint, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, solver, storage
 from app.services.agent_models import resolve_role_transport, resolve_session_limit_strategy
 from app.services.errors import (
+    CancelWonSignal,
+    LeaseLostSignal,
     PhaseAttemptTimeout,
     SessionLimitPause,
     SlotSaturation,
     TransientPhaseError,
     is_slot_saturation,
 )
+from app.services.lease import CancelRequested, JobLease, LeaseLost
 from app.services.flows import (
     flow_for,
     file_needed_phases,
@@ -104,6 +107,29 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _token_of(lease: Optional[JobLease]):
+    """The claim token to fence a worker-owned write with, or None (legacy /
+    unfenced) when no lease is threaded — a fenced write with claim_token=None
+    keeps the exact pre-fencing behavior."""
+    return lease.claim_token if lease is not None else None
+
+
+def _raise_on_lease_signal(result) -> None:
+    """Convert a fenced-write sentinel into the matching CONTROL SIGNAL.
+
+    A fenced ``jobs_repo`` / ``phase_repo`` write returns the job/phase id (or a
+    plain bool) on success, or a ``lease.LeaseLost`` / ``lease.CancelRequested``
+    sentinel when the lease no longer owns the row. Those sentinels must NOT be
+    treated as content errors — they are raised here as ``LeaseLostSignal`` /
+    ``CancelWonSignal`` and re-raised through every broad ``except`` boundary
+    until ``worker._execute_job`` acts on them. A None/bool/id result is a no-op
+    (so this is safe to call after every fenced write, lease or not)."""
+    if result is LeaseLost:
+        raise LeaseLostSignal()
+    if result is CancelRequested:
+        raise CancelWonSignal()
+
+
 def _done_phase_md(rows) -> dict[str, str]:
     """Phase rows that are `done` with non-empty markdown — the resumable set."""
     return {
@@ -143,8 +169,19 @@ def _pending_phases(content_phases: list[str], prior_outputs: dict[str, str]) ->
     return {p for p in content_phases if p not in prior_outputs}
 
 
-async def run(job_id: UUID) -> None:
-    """Execute a homework job: extract → content phases → assemble."""
+async def run(job_id: UUID, lease: Optional[JobLease] = None) -> None:
+    """Execute a homework job: extract → content phases → assemble.
+
+    ``lease`` (fenced job leases, Task 7): the per-execution ``JobLease`` the
+    worker minted at claim time. Every worker-owned write (the ``running`` /
+    ``done`` / ``failed`` job-status writes and every phase write) is fenced
+    with ``lease.claim_token`` so a reclaimed-then-resumed obsolete worker can
+    never mutate a job that now belongs to another worker. A fenced write that
+    finds the lease gone raises ``LeaseLostSignal``; one that finds a user
+    cancel already finalized raises ``CancelWonSignal`` — both unwind cleanly
+    (never a content error / queue retry) up to ``worker._execute_job``.
+    ``lease=None`` keeps the exact pre-fencing behavior (every direct caller /
+    test path)."""
     resource_id = f"job:{job_id}"
     log = logger.bind(job_id=str(job_id))
     t_start = perf_counter()
@@ -269,8 +306,12 @@ async def run(job_id: UUID) -> None:
         log.info(f"[job {job_id}] sequence planned | phases={sequence}")
 
         async with SessionLocal() as session:
-            await jobs_repo.set_status(session, job_id, "running", started_at=_utcnow())
+            _r = await jobs_repo.set_status(
+                session, job_id, "running", started_at=_utcnow(),
+                claim_token=_token_of(lease),
+            )
             await session.commit()
+        _raise_on_lease_signal(_r)  # commit first (persist any lease/cancel event), then signal
 
         # pinned None — classify/easy-hard removed; kept in helper signatures to avoid wide surgery
         difficulty: Optional[str] = None
@@ -339,7 +380,10 @@ async def run(job_id: UUID) -> None:
                     extract_model=extract_model,
                     session_limit_strategy=session_limit_strategy,
                     output_language=job_output_language,
+                    lease=lease,
                 )
+            except (LeaseLostSignal, CancelWonSignal):
+                raise  # control signal — unwind to the worker, never a swallow
             except (SessionLimitPause, SlotSaturation, TransientPhaseError):
                 raise  # propagate to worker — requeue/park, not a swallow
             except Exception:
@@ -409,7 +453,10 @@ async def run(job_id: UUID) -> None:
                     extract_model=extract_model,
                     session_limit_strategy=session_limit_strategy,
                     output_language=job_output_language,
+                    lease=lease,
                 )
+            except (LeaseLostSignal, CancelWonSignal):
+                raise  # control signal — unwind to the worker, never a swallow
             except (SessionLimitPause, SlotSaturation, TransientPhaseError):
                 raise  # propagate to worker — requeue/park, not a swallow
             except RuntimeError as exc:
@@ -435,17 +482,29 @@ async def run(job_id: UUID) -> None:
                         _merged = _prev + [w for w in _cov if w not in _prev]
                         # guard=False: the extract row is already 'done' and the
                         # default guard (WHERE status != 'done') would no-op it.
+                        # Fenced with the lease token so a reclaimed job's extract
+                        # row (now owned by another worker) is never clobbered —
+                        # advisory, so the sentinel return is ignored (the `done`
+                        # write below is the one that raises the control signal).
                         await phase_repo.set_status(
                             session, _ex.id, _ex.status, validation_warnings=_merged,
-                            guard=False)
+                            guard=False, claim_token=_token_of(lease))
                         await session.commit()
         except Exception as exc:  # noqa: BLE001 — advisory only, must never fail the job
             logger.warning(f"coverage check skipped (fail-open): {exc!r}")
 
         # No assembly — per-phase markdown in phase_outputs is the deliverable.
+        # THE critical anti-double-completion fence: an obsolete worker whose job
+        # was reclaimed must NEVER be able to mark it `done`. The fenced write
+        # no-ops (LeaseLost) and the control signal unwinds before the completion
+        # event / archive fire.
         async with SessionLocal() as session:
-            await jobs_repo.set_status(session, job_id, "done", completed_at=_utcnow())
+            _r = await jobs_repo.set_status(
+                session, job_id, "done", completed_at=_utcnow(),
+                claim_token=_token_of(lease),
+            )
             await session.commit()
+        _raise_on_lease_signal(_r)
 
         await events_bus.publish(
             resource_id,
@@ -465,6 +524,11 @@ async def run(job_id: UUID) -> None:
         )
         await _log_token_summary(job_id, log)
 
+    except (LeaseLostSignal, CancelWonSignal):
+        # Control signal (fenced job leases): a fenced write found the lease
+        # lost or a cancel already finalized. NOT a content error — never mark
+        # the job failed. Unwind to worker._execute_job after closing the bus.
+        raise
     except (SessionLimitPause, SlotSaturation, TransientPhaseError):
         # Worker (Task 5) catches this and requeues/parks with a cooldown —
         # the job must NOT be marked failed here.  Propagate after closing
@@ -476,12 +540,17 @@ async def run(job_id: UUID) -> None:
             f"[job {job_id}] pipeline CRASHED after {total_s:.1f}s: {exc}"
         )
         async with SessionLocal() as session:
-            await jobs_repo.set_status(
+            _r = await jobs_repo.set_status(
                 session, job_id, "failed",
                 completed_at=_utcnow(),
                 error_message=str(exc),
+                claim_token=_token_of(lease),
             )
             await session.commit()
+        # A reclaim (LeaseLost) or a cancel-win (CancelRequested) during this
+        # terminal write means we no longer own the job — surface the control
+        # signal instead of a spurious failure; never publish an error event.
+        _raise_on_lease_signal(_r)
         await events_bus.publish(resource_id, "error", {"message": str(exc)})
     finally:
         await events_bus.close(resource_id)
@@ -557,6 +626,7 @@ async def _execute_one_phase(
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
     output_language: str = "uz",
+    lease: Optional[JobLease] = None,
 ) -> tuple[str, Optional[int], Optional[int], Optional[Any]]:
     """Run a single phase end-to-end with status tracking, SSE emit, and
     error handling. Wraps `_execute_phase` so both the sequential head loop
@@ -604,7 +674,10 @@ async def _execute_one_phase(
             extract_model=extract_model,
             session_limit_strategy=session_limit_strategy,
             output_language=output_language,
+            lease=lease,
         )
+    except (LeaseLostSignal, CancelWonSignal):
+        raise  # control signal — never a content failure / job-failed write
     except SessionLimitPause:
         raise  # worker requeues — job must NOT be marked failed
     except SlotSaturation:
@@ -632,12 +705,17 @@ async def _execute_one_phase(
         # Hard failure: DB write FIRST (the terminal mark is the contract),
         # event publish best-effort afterwards (gate correction 2).
         async with SessionLocal() as session:
-            await jobs_repo.set_status(
+            _r = await jobs_repo.set_status(
                 session, job_id, "failed",
                 completed_at=_utcnow(),
                 error_message=msg,
+                claim_token=_token_of(lease),
             )
             await session.commit()
+        # A reclaim / cancel-win during the fenced fail write means the job is
+        # no longer ours — raise the control signal instead of the content
+        # failure, and skip the error event.
+        _raise_on_lease_signal(_r)
         await _publish_error_event(
             resource_id, {"phase_name": phase_name, "message": msg}
         )
@@ -699,6 +777,7 @@ async def _run_content_phases_parallel(
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
     output_language: str = "uz",
+    lease: Optional[JobLease] = None,
 ) -> None:
     """Wave-based parallel scheduler for content phases.
 
@@ -763,6 +842,7 @@ async def _run_content_phases_parallel(
                             extract_model=extract_model,
                             session_limit_strategy=session_limit_strategy,
                             output_language=output_language,
+                            lease=lease,
                         ),
                         name=f"phase:{name}",
                     )
@@ -785,6 +865,19 @@ async def _run_content_phases_parallel(
                 del in_flight[phase_name]
                 try:
                     output_md, _tin, _tout, parsed_struct = task.result()
+                except (LeaseLostSignal, CancelWonSignal):
+                    # Control signal (fenced job leases): the lease was lost or a
+                    # cancel already finalized. Cancel + drain in-flight peers as
+                    # LOCAL cleanup only (NO phase-row writes — the job is no
+                    # longer ours to mutate, unlike the pause/failed branches
+                    # which call _abandon_inflight) and re-raise so pipeline.run
+                    # unwinds to the worker.
+                    for peer in in_flight.values():
+                        peer.cancel()
+                    if in_flight:
+                        await asyncio.gather(*in_flight.values(), return_exceptions=True)
+                        in_flight.clear()
+                    raise
                 except (SessionLimitPause, SlotSaturation, TransientPhaseError):
                     # Cancel in-flight peers, drain, then propagate so the worker
                     # can requeue with a cooldown.  Do NOT set failed=True — the
@@ -1256,7 +1349,9 @@ async def _execute_phase(
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
     output_language: str = "uz",
+    lease: Optional[JobLease] = None,
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
+    _token = _token_of(lease)
     _custom_md = _custom_for(phase_name, custom_prompts)
     if phase_name == "extract":
         prompt_hash = "builtin:extract:v3"
@@ -1287,11 +1382,22 @@ async def _execute_phase(
             phase_order=phase_order,
             prompt_hash=prompt_hash,
             model_name=phase_model_label,
+            lease=lease,
         )
-        await phase_repo.set_status(session, po.id, "running", started_at=_utcnow())
-        await jobs_repo.set_status(session, job_id, "running", current_phase=phase_name)
-        await session.commit()
+        # A stale lease returns LeaseLost WITHOUT writing (not even the phase
+        # row) — short-circuit before dereferencing po.id or writing `running`.
+        if po is LeaseLost:
+            raise LeaseLostSignal()
         po_id = po.id
+        _pr = await phase_repo.set_status(
+            session, po_id, "running", started_at=_utcnow(), claim_token=_token,
+        )
+        _jr = await jobs_repo.set_status(
+            session, job_id, "running", current_phase=phase_name, claim_token=_token,
+        )
+        await session.commit()
+        _raise_on_lease_signal(_pr)
+        _raise_on_lease_signal(_jr)
 
     logger.debug(
         f"[job {job_id}] phase row created | phase={phase_name} order={phase_order} "
@@ -1322,7 +1428,7 @@ async def _execute_phase(
                     f"po={cached_extract.id} (skipping agent call)"
                 )
                 async with SessionLocal() as session:
-                    await phase_repo.set_status(
+                    _cr = await phase_repo.set_status(
                         session,
                         po_id,
                         "done",
@@ -1336,8 +1442,10 @@ async def _execute_phase(
                         # `markdown_legacy`, which the contract reserves for
                         # pre-migration rows.
                         authoring_mode="markdown_builtin",
+                        claim_token=_token,
                     )
                     await session.commit()
+                _raise_on_lease_signal(_cr)
                 # Visibility: record a free agent_usages row
                 await agent.record_cached_lesson_extract(
                     homework_job_id=job_id,
@@ -1505,16 +1613,20 @@ async def _execute_phase(
             )
             output_md = artifact.output_md
             parsed_struct = None
+    except (LeaseLostSignal, CancelWonSignal):
+        raise  # control signal — never a phase-failed write (job is not ours)
     except SessionLimitPause:
         raise  # propagate to worker — phase must NOT be marked failed on a pause
     except Exception as exc:
         async with SessionLocal() as session:
-            await phase_repo.set_status(
+            _fr = await phase_repo.set_status(
                 session, po_id, "failed",
                 completed_at=_utcnow(),
                 error_message=_error_text(exc),
+                claim_token=_token,
             )
             await session.commit()
+        _raise_on_lease_signal(_fr)  # reclaim/cancel during the fail write → signal, not content failure
         raise
 
     warnings: list[str] = []
@@ -1608,6 +1720,8 @@ async def _execute_phase(
                     contract_override=_custom_md,
                     output_language=output_language,
                 )
+            except (LeaseLostSignal, CancelWonSignal):
+                raise  # control signal — never degrade into the soft-keep path
             except SessionLimitPause:
                 raise  # quota-pause during regen must propagate — not a content failure
             except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job (except api auth, below)
@@ -1697,6 +1811,8 @@ async def _execute_phase(
                         if not s_outcome.has_mismatch:
                             solver_status = "mismatch_regen"
                             break
+                    except (LeaseLostSignal, CancelWonSignal):
+                        raise  # control signal — never degrade into the soft-keep path
                     except SessionLimitPause:
                         raise
                     except Exception as exc:  # noqa: BLE001 — never fail a job except api auth
@@ -1731,7 +1847,7 @@ async def _execute_phase(
     # JSON, the schema version and the renderer version are always the SAME
     # attempt's. Never add an earlier write here.
     async with SessionLocal() as session:
-        await phase_repo.set_status(
+        _dr = await phase_repo.set_status(
             session, po_id, "done",
             completed_at=_utcnow(),
             output_md=output_md,
@@ -1745,8 +1861,13 @@ async def _execute_phase(
             authoring_mode=artifact.authoring_mode,
             content_schema_version=artifact.content_schema_version,
             renderer_version=artifact.renderer_version,
+            claim_token=_token,
         )
         await session.commit()
+    # If the job was reclaimed while this phase ran, the fenced done-write
+    # no-ops (LeaseLost) — surface the control signal so the pipeline unwinds
+    # instead of reporting a completed phase for a job we no longer own.
+    _raise_on_lease_signal(_dr)
 
     return output_md, tin, tout, prompt_hash, parsed_struct
 

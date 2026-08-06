@@ -426,3 +426,48 @@ async def test_set_status_no_token_legacy_unchanged(db_session, fenced_job_facto
     assert ok is True
 
     await db_session.commit()
+
+
+async def test_set_status_matching_token_row_already_done_is_benign_not_lease_lost(
+    db_session, fenced_job_factory
+):
+    """Forward-fix (Task 7 #8): a 0-row match with a token must be
+    DISAMBIGUATED. When the token STILL matches but the status guard blocked the
+    write (the row is already 'done'), that is the pre-existing benign no-op —
+    return the LEGACY result (``False``), NOT ``LeaseLost``. Only a genuine
+    token MISMATCH is a lease loss (covered by
+    ``test_set_status_stale_token_returns_lease_lost_row_unchanged``).
+
+    RED-proof: without the re-read, the 0-row match returns ``LeaseLost`` here,
+    conflating an already-done row with a real reclaim."""
+    from app.models.phase_output import PhaseOutput
+    from app.repositories import phase_outputs as phase_repo
+    from app.services import lease
+
+    # Seed the phase already 'done' (guard=True WHERE status != 'done' will match
+    # 0 rows) with the CORRECT (job) token.
+    row = await fenced_job_factory(
+        status="running", seed_phase={"phase_name": "preview", "status": "done"}
+    )
+    phase = (await _phase_rows(db_session, row.job_id))[0]
+    assert phase.status == "done"
+    assert phase.claim_token == row.claim_token
+
+    res = await phase_repo.set_status(
+        db_session, phase.id, "done", output_md="ignored", claim_token=phase.claim_token
+    )
+    # Benign no-op — the row was already done and the token is ours. NOT LeaseLost.
+    assert res is not lease.LeaseLost
+    assert res is False
+
+    reloaded = (
+        await db_session.execute(
+            select(PhaseOutput)
+            .where(PhaseOutput.id == phase.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    assert reloaded.status == "done"     # unchanged
+    assert reloaded.output_md is None    # the blocked write never applied
+
+    await db_session.commit()

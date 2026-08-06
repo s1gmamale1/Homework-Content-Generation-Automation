@@ -56,7 +56,13 @@ from app.services import (
     providers,
     sa_key_apply,
 )
-from app.services.errors import SessionLimitPause, SlotSaturation
+from app.services.errors import (
+    CancelWonSignal,
+    LeaseLostSignal,
+    SessionLimitPause,
+    SlotSaturation,
+)
+from app.services.lease import HeartbeatOutcome, JobLease
 from app.services.storage import sa_key_active_path
 
 # Throttle window for the version-gate STALE log — the poll loop runs every
@@ -237,6 +243,13 @@ class Worker:
         self._last_budget_check_at = 0.0
         self._cooldown_until: datetime | None = None
         self._stale_gate_logged_at: float | None = None
+        # Fenced job leases (Task 7): the per-claim JobLease is minted inside
+        # _claim_one but consumed in _execute_job (a separate task). _claim_one
+        # keeps returning the bare job id (its long-standing contract), so the
+        # lease is handed across via this stash, keyed by job id.
+        self._leases: dict[UUID, JobLease] = {}
+        # Dedup set so a LeaseLost unwind logs at most once per job id.
+        self._lease_lost_logged: set[UUID] = set()
 
     async def run(self) -> None:
         """Main loop. Runs until `stop()`."""
@@ -455,50 +468,134 @@ class Worker:
                 if claimed is None:
                     return None
                 job = claimed.job
+                # Hand the per-claim lease to _execute_job via the stash (the
+                # return value stays the bare job id — the long-standing
+                # contract asserted by the scrub-claim-gate tests).
+                self._leases[job.id] = claimed.lease
                 logger.info(
                     f"worker {self.id} claimed job={job.id} "
-                    f"attempt={job.attempts}/{self.max_attempts} priority={job.priority}"
+                    f"attempt={job.attempts}/{self.max_attempts} priority={job.priority} "
+                    f"token={claimed.lease.claim_token}"
                 )
                 return job.id
         except Exception:
             logger.exception(f"worker {self.id} claim failed")
             return None
 
-    async def _heartbeat(self, job_id: UUID) -> None:
-        """Refresh the job's claim while its pipeline runs, AND notice a
-        cross-process cancel: if the API (possibly in another pod) flipped the
-        job to `cancelling`, self-cancel the local task so its CLIs die."""
+    async def _heartbeat(self, job_id: UUID, lease: JobLease | None = None) -> None:
+        """Refresh the job's claim while its pipeline runs, and notice BOTH a
+        cross-process cancel AND a reclaim (fenced job leases, Task 7).
+
+        With a lease (the normal claim path) each beat calls the token-fenced
+        ``heartbeat_check(job_id, lease.claim_token)`` and acts on the enum:
+          - CANCELLING: a user/operator flipped the job to `cancelling` — cancel
+            the local task (its CLIs die) and stop beating; the task finalizes.
+          - LOST: the job was reclaimed under us (token rotated) — cancel the
+            local task AND stop heartbeating so we never renew a claim we no
+            longer own.
+          - RENEWED: keep going.
+        A DB/connection error is warn-and-continue — NEVER treated as a lease
+        loss (a transient DB blip must not abandon a job we still own).
+
+        Without a lease (defensive / legacy) it falls back to the pre-fencing
+        behavior: read status via ``get_status`` and refresh via ``touch_claim``
+        (no token), self-cancelling the local task on `cancelling`. The 30s
+        interval (``settings.heartbeat_seconds``) is unchanged either way.
+        """
         while True:
             await asyncio.sleep(settings.heartbeat_seconds)
+            if lease is None:
+                # Legacy/defensive path — no token to fence with.
+                try:
+                    async with SessionLocal() as session:
+                        status = await jobs_repo.get_status(session, job_id)
+                        if status == "cancelling":
+                            task = RUNNING_JOBS.get(job_id)
+                            if task is not None:
+                                task.cancel()
+                            return  # nothing more to do; the task will finalize
+                        await jobs_repo.touch_claim(session, job_id)
+                        await session.commit()
+                except Exception:
+                    logger.warning(
+                        f"worker {self.id} heartbeat failed for job={job_id} — continuing"
+                    )
+                continue
+
             try:
                 async with SessionLocal() as session:
-                    status = await jobs_repo.get_status(session, job_id)
-                    if status == "cancelling":
-                        task = RUNNING_JOBS.get(job_id)
-                        if task is not None:
-                            task.cancel()
-                        return  # nothing more to do; the task will finalize
-                    await jobs_repo.touch_claim(session, job_id)
+                    outcome = await jobs_repo.heartbeat_check(
+                        session, job_id, lease.claim_token
+                    )
                     await session.commit()
             except Exception:
-                logger.warning(f"worker {self.id} heartbeat failed for job={job_id}")
+                # DB/connection error is NOT a lease loss — warn and keep beating.
+                logger.warning(
+                    f"worker {self.id} heartbeat failed for job={job_id} — continuing"
+                )
+                continue
+
+            if outcome is HeartbeatOutcome.CANCELLING:
+                task = RUNNING_JOBS.get(job_id)
+                if task is not None:
+                    task.cancel()
+                return  # stop beating; the task finalizes the cancel
+            if outcome is HeartbeatOutcome.LOST:
+                logger.warning(
+                    f"worker {self.id} job={job_id} lease LOST (reclaimed) — "
+                    f"cancelling local task, stopping heartbeat"
+                )
+                task = RUNNING_JOBS.get(job_id)
+                if task is not None:
+                    task.cancel()
+                return  # stop heartbeating — we no longer own this job
+            # RENEWED — continue.
 
     async def _execute_job(self, job_id: UUID) -> None:
         """Run one pipeline. Releases the slot in `finally` so the next
         iteration of the main loop can claim another job."""
         RUNNING_JOBS[job_id] = asyncio.current_task()
-        hb = asyncio.create_task(self._heartbeat(job_id))
+        # Consume the per-claim lease handed over by _claim_one (None on the
+        # direct-call/test path). Every worker-owned write below is fenced with
+        # its token so a reclaimed-then-resumed job can never be mutated by us.
+        lease = self._leases.pop(job_id, None)
+        hb = asyncio.create_task(self._heartbeat(job_id, lease))
         try:
             try:
                 await asyncio.wait_for(
-                    pipeline.run(job_id), timeout=self.job_timeout
+                    pipeline.run(job_id, lease), timeout=self.job_timeout
                 )
             except asyncio.TimeoutError:
                 logger.error(
                     f"worker {self.id} job={job_id} TIMED OUT after "
                     f"{self.job_timeout}s"
                 )
-                await self._mark_failed(job_id, f"timeout after {self.job_timeout}s")
+                await self._mark_failed(job_id, f"timeout after {self.job_timeout}s", lease)
+            except LeaseLostSignal:
+                # A reclaim rotated the lease to a new owner. Mutate NOTHING —
+                # the job now belongs to the reclaiming worker. Cancel any
+                # lingering local task (defensive; in the direct-signal path
+                # this IS the current task, so we skip self-cancel) and log once.
+                if job_id not in self._lease_lost_logged:
+                    self._lease_lost_logged.add(job_id)
+                    logger.warning(
+                        f"worker {self.id} job={job_id} lease LOST (reclaimed) — "
+                        f"leaving it to the new owner, mutating nothing"
+                    )
+                task = RUNNING_JOBS.get(job_id)
+                if task is not None and task is not asyncio.current_task():
+                    task.cancel()
+                # return via finally (slot release + heartbeat cancel)
+            except CancelWonSignal:
+                # A user cancel won and the repo ALREADY finalized cancelled
+                # (single-finalize contract). Do NOT finalize again.
+                logger.warning(
+                    f"worker {self.id} job={job_id} cancel-wins "
+                    f"(repo already finalized cancelled)"
+                )
+                task = RUNNING_JOBS.get(job_id)
+                if task is not None and task is not asyncio.current_task():
+                    task.cancel()
             except asyncio.CancelledError:
                 # Distinguish a user-cancel from a worker-shutdown cancel.
                 cancelling = False
@@ -541,7 +638,8 @@ class Worker:
                 try:
                     async with SessionLocal() as session:
                         outcome = await jobs_repo.requeue_session_limited(
-                            session, job_id, error=str(e)
+                            session, job_id, error=str(e),
+                            claim_token=(lease.claim_token if lease else None),
                         )
                         await session.commit()
                 except Exception:
@@ -565,6 +663,7 @@ class Worker:
                         outcome = await jobs_repo.requeue_slot_saturated(
                             session, job_id, error=str(e),
                             cooldown_seconds=settings.slot_saturation_requeue_seconds,
+                            claim_token=(lease.claim_token if lease else None),
                         )
                         await session.commit()
                 except Exception:
@@ -579,15 +678,18 @@ class Worker:
                 logger.exception(
                     f"worker {self.id} job={job_id} CRASHED: {exc!r}"
                 )
-                await self._mark_failed(job_id, f"{type(exc).__name__}: {exc}")
+                await self._mark_failed(job_id, f"{type(exc).__name__}: {exc}", lease)
         finally:
             RUNNING_JOBS.pop(job_id, None)
+            self._lease_lost_logged.discard(job_id)
             hb.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await hb   # let the cancellation settle — avoids a stray "Task destroyed" warning
             self._slots.release()
 
-    async def _mark_failed(self, job_id: UUID, error_message: str) -> None:
+    async def _mark_failed(
+        self, job_id: UUID, error_message: str, lease: JobLease | None = None
+    ) -> None:
         try:
             async with SessionLocal() as session:
                 outcome = await jobs_repo.mark_failed_with_retry(
@@ -595,9 +697,28 @@ class Worker:
                     job_id,
                     error_message=error_message,
                     max_attempts=self.max_attempts,
+                    claim_token=(lease.claim_token if lease else None),
                 )
                 await session.commit()
-            if outcome == "failed":
+            # Fenced return (claim_token set): a job id (UUID) = the failure/retry
+            # was recorded; LeaseLost/CancelRequested = the job is no longer ours
+            # (reclaimed) or a cancel already finalized — nothing more to do.
+            from app.services import lease as _lease_mod  # noqa: PLC0415
+            if outcome is _lease_mod.LeaseLost:
+                logger.warning(
+                    f"worker {self.id} job={job_id} lease LOST during mark_failed — "
+                    f"not recording (job reclaimed): {error_message}"
+                )
+            elif outcome is _lease_mod.CancelRequested:
+                logger.warning(
+                    f"worker {self.id} job={job_id} cancel-wins during mark_failed "
+                    f"(repo finalized): {error_message}"
+                )
+            elif isinstance(outcome, UUID):
+                logger.warning(
+                    f"worker {self.id} job={job_id} failure recorded (fenced): {error_message}"
+                )
+            elif outcome == "failed":
                 logger.error(
                     f"worker {self.id} job={job_id} TERMINAL failure: {error_message}"
                 )
