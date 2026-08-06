@@ -16,7 +16,7 @@
 - **Identity from the DB beats identity from the title.** When `toc_entries.notion_homework_page_id` is already set, reuse it directly and skip title resolution entirely. This is what protects the 9 legitimate owner pages, whose titles *are* ambiguous and which would otherwise be re-keyed onto new suffixed pages.
 - **Ambiguity is scoped to `(subject, grade)` across ALL books — deliberately NOT language.** The container key is `{language}:{subject}|{grade}`, so this scope is a strict superset: distinctness within it implies distinctness within the container, which is the conservative direction. Filtering by language is not merely unnecessary but wrong — `Book` carries only `source_language`, never the job's `output_language`, so an RU-output job on a UZ book would be scoped incorrectly.
 - **Rejected: a `notion_lesson_page_id` column.** It would make ownership explicit but needs a migration and a backfill for rows we can already disambiguate from data in hand. Not worth it for pass 1.
-- **Data repair is separate from the code fix and runs second.** The 47 non-owner sections must have their false stamps cleared before they can re-archive; the 9 owners must keep theirs. Doing this before the code fix would let a re-archive collide all over again.
+- **Data repair is separate from the code fix and runs second.** The non-owner sections must have their false stamps cleared before they can re-archive; the proven owners must keep theirs. Scope is derived from the DB at run time (18 groups / 86 sections / 68 non-owners across 6 containers as measured), never from this document's constants. Doing this before the code fix would let a re-archive collide all over again.
 - **Order matters: fix → repair → map → re-archive.** Re-archiving before the fix reproduces the bug. Adding the `ru:matematika` mapping before the fix would archive the 6 pending jobs into colliding pages.
 
 ## Global Constraints
@@ -78,6 +78,8 @@
 
 For each group of `toc_entries` sharing a `notion_homework_page_id`: keep the section whose stamped job has the earliest `completed_at` (the proven content owner); for the rest, NULL `notion_homework_page_id` and `notion_archived_job_id`, and clear the job's `notion_archived_at` so it becomes re-archivable.
 
+**Derive the scope from the DB at run time — do NOT hardcode the numbers below.** The damage is not confined to the 2026-08-05 ru:matematika incident that prompted this plan. Measured on live `edu_copy`: **18 shared-page groups / 86 sections / 68 non-owners across 6 containers** — `matematika|5` (37 sections, 5 groups), `matematika|6` (31/7), `geometriya-g7-11|8` (7/2), `math-algebra|9` (5/1), `kimyo-g7-11|9` (4/2), `math-algebra|10` (2/1). By archive date: 58 on 2026-08-05, **28 across 2026-07-07…07-24**, 9 with no job stamp. A script written to the incident's numbers would silently leave sections broken in containers nobody is watching. Select every `notion_homework_page_id` with `count(*) > 1`, unfiltered by date or subject.
+
 - [ ] `--apply` required to write; default prints the exact plan.
 - [ ] Test with a seeded scratch DB (`RUN_DB_INTEGRATION=1`), asserting the owner is untouched and exactly the non-owners are cleared.
 - [ ] **Show the operator the dry-run output and get explicit approval before `--apply`.**
@@ -90,7 +92,7 @@ Add `ru:matematika|5` → `3b399838-1c76-8135-a4b3-eda1efefabf4` and `ru:matemat
 
 ### Task 6: Re-archive — OUTWARD-FACING, needs go-ahead
 
-- [ ] Re-archive the 47 repaired sections + the 6 never-pushed jobs, **sequentially** (concurrent Notion pushes hit rate limits).
+- [ ] Re-archive every repaired section (68 by current measurement — re-derive, don't hardcode) + the 6 never-pushed jobs, **sequentially** (concurrent Notion pushes hit rate limits).
 - [ ] **Never `--force`/`replace`** on this run: force clears and rewrites, which on a still-colliding page would destroy the owner's content. Plain re-archive is safe by construction.
 - [ ] Verify after: distinct Homework page ids == archived job count for 2026-08-05.
 

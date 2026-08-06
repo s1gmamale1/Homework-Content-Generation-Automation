@@ -290,3 +290,26 @@ async def test_archive_job_forwards_an_owned_page_id(monkeypatch):
         await na.archive_job(job.id)
 
     assert push.await_args.kwargs["homework_page_id"] == "existing-hw"
+
+
+def test_ambiguous_row_with_NO_page_start_escalates_to_the_row_id():
+    """The `page_start IS NULL` arm. No live row hits it today, but a mutation
+    to it was invisible — and a TOC re-extract can produce page-less rows."""
+    sec = _sec(None, "Вспомните", None, _A)
+    sibs = [_row(None, "Вспомните", None, _A), _row(None, "Вспомните", None, _B)]
+
+    got = na.resolve_lesson_title(sec, sibs)
+
+    assert got == "Вспомните · aaaaaaaa"
+    assert got != na.resolve_lesson_title(_sec(None, "Вспомните", None, _B), sibs)
+
+
+def test_TARGET_titled_from_chapter_title_matches_its_siblings():
+    """Symmetric half of the sibling fallback: when the TARGET's section_title is
+    empty it must also fall back to chapter_title, or it fails to match its own
+    row and the suffix is silently suppressed."""
+    sec = SimpleNamespace(section_number=None, section_title="",
+                          chapter_title="Повторение", page_start=10, id=UUID(_A))
+    sibs = [_row(None, "", 10, _A, ct="Повторение"), _row(None, "Повторение", 20, _B)]
+
+    assert na.resolve_lesson_title(sec, sibs) == "Повторение · p.10"
