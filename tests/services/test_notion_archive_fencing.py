@@ -58,6 +58,7 @@ async def test_obsolete_token_refused_no_publish_no_pointer(monkeypatch):
     with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()) as set_ptr, \
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
@@ -82,6 +83,7 @@ async def test_obsolete_token_refused_when_job_no_longer_done(monkeypatch):
     with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()) as set_ptr, \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
@@ -102,6 +104,7 @@ async def test_winning_token_archives_once(monkeypatch):
     with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()) as set_ptr, \
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
@@ -153,6 +156,7 @@ async def test_token_toctou_pointer_update_rechecked(monkeypatch):
     with patch.object(na.jobs_repo, "get", AsyncMock(side_effect=get_side_effect)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()) as set_ptr, \
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
@@ -179,6 +183,7 @@ async def test_token_less_call_archives_as_today(monkeypatch):
     with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()) as set_ptr, \
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
@@ -210,6 +215,7 @@ async def test_force_rearchive_token_less_bypasses_idempotency_guard(monkeypatch
     with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()) as set_ptr, \
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
