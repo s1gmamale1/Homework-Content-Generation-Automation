@@ -59,9 +59,11 @@ async def test_two_concurrent_claims_never_collide():
     try:
         # two sessions hold their claims open simultaneously
         async with SessionLocal() as sa, SessionLocal() as sb:
-            job_a = await jobs_repo.claim_next_job(sa, worker_id="A", max_attempts=3)
+            claimed_a = await jobs_repo.claim_next_job(sa, worker_id="A", max_attempts=3)
             # sa's row is locked-but-uncommitted; sb must SKIP it and take the other
-            job_b = await jobs_repo.claim_next_job(sb, worker_id="B", max_attempts=3)
+            claimed_b = await jobs_repo.claim_next_job(sb, worker_id="B", max_attempts=3)
+            job_a = claimed_a.job if claimed_a is not None else None
+            job_b = claimed_b.job if claimed_b is not None else None
             assert job_a is not None, "worker A claimed nothing"
             assert job_b is not None, "worker B claimed nothing"
             assert job_a.id != job_b.id, "two workers claimed the SAME job"
@@ -157,9 +159,10 @@ async def _claim_with(caps: dict, own_ids: set, worker_id: str = "W"):
     from app.repositories import jobs as jobs_repo
 
     async with SessionLocal() as s:
-        job = await jobs_repo.claim_next_job(
+        claimed = await jobs_repo.claim_next_job(
             s, worker_id=worker_id, max_attempts=_FENCE_MAX, capabilities=caps
         )
+        job = claimed.job if claimed is not None else None
         if job is not None and job.id not in own_ids:
             job_id = job.id
             await s.rollback()

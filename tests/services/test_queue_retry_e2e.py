@@ -268,12 +268,13 @@ async def test_e2e_chain_attempt_timeout_to_bounded_pending_then_terminal_failed
 
         # ── First pass: claim (attempts 0 -> 1), drive, expect delayed pending ──
         async with SessionLocal() as session:
-            job = await jobs_repo.claim_next_job(
+            claimed = await jobs_repo.claim_next_job(
                 session, worker_id="e2e-worker", max_attempts=3,
                 capabilities={"can_gemini_api": True, "can_claude_api": False,
                               "can_clodex_api": False},
             )
             await session.commit()
+        job = claimed.job if claimed is not None else None
         assert job is not None and job.status == "running" and job.attempts == 1
         assert job.id == job_id, (
             f"claimed unrelated job {job.id} instead of the seeded job {job_id} "
@@ -321,12 +322,13 @@ async def test_e2e_chain_attempt_timeout_to_bounded_pending_then_terminal_failed
             await session.commit()
 
         async with SessionLocal() as session:
-            job = await jobs_repo.claim_next_job(
+            claimed = await jobs_repo.claim_next_job(
                 session, worker_id="e2e-worker", max_attempts=3,
                 capabilities={"can_gemini_api": True, "can_claude_api": False,
                               "can_clodex_api": False},
             )
             await session.commit()
+        job = claimed.job if claimed is not None else None
         assert job is not None and job.status == "running" and job.attempts == 3
         assert job.id == job_id, (
             f"claimed unrelated job {job.id} instead of the seeded job {job_id} "

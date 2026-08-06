@@ -98,9 +98,10 @@ async def _claim(own_ids: set, worker_id: str = "W"):
     from app.repositories import jobs as jobs_repo
 
     async with SessionLocal() as s:
-        job = await jobs_repo.claim_next_job(
+        claimed = await jobs_repo.claim_next_job(
             s, worker_id=worker_id, max_attempts=_FENCE_MAX
         )
+        job = claimed.job if claimed is not None else None
         if job is not None and job.id not in own_ids:
             await s.rollback()
             return None  # foreign live row — ignored
