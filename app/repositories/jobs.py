@@ -655,6 +655,7 @@ async def _fenced_update(
     *,
     status_guard,
     release_event: Optional[str] = None,
+    finalize_on_cancel: bool = True,
 ) -> object:
     """Token-fenced worker write (fenced job leases, Task 5). Applies ``values``
     only when the row still carries ``claim_token`` AND satisfies
@@ -665,9 +666,14 @@ async def _fenced_update(
     fenced write can miss:
       * token gone/changed -> the lease was lost (returns ``lease.LeaseLost``,
         ledgered as ``lease_lost``);
-      * same token + status='cancelling' -> a user cancel won: this finalizes
+      * same token + status='cancelling' -> a user cancel won. With
+        ``finalize_on_cancel=True`` (the default, for TERMINAL writes —
+        ``set_status``/``mark_failed_with_retry``/``requeue_*``) this finalizes
         via ``finalize_cancelled`` (single-finalize contract) and returns
-        ``lease.CancelRequested``;
+        ``lease.CancelRequested``. With ``finalize_on_cancel=False`` (the
+        heartbeat refresh) it returns ``lease.CancelRequested`` as a PURE SIGNAL
+        — it does NOT finalize and does NOT mutate the row (a heartbeat must
+        never finalize; only the worker's terminal write does);
       * same token + some other terminal status -> ``lease.LeaseLost``.
 
     A DB/connectivity error propagates — it is NOT swallowed into a lease-loss.
@@ -702,7 +708,9 @@ async def _fenced_update(
         )
         return lease.LeaseLost
     if row.status == "cancelling":
-        return await finalize_cancelled(session, job_id, claim_token)
+        if finalize_on_cancel:
+            return await finalize_cancelled(session, job_id, claim_token)
+        return lease.CancelRequested  # pure signal — heartbeat must not finalize
     return lease.LeaseLost  # token matches but status moved terminal underneath us
 
 
@@ -714,15 +722,23 @@ async def heartbeat_check(
       * token gone/changed -> ``HeartbeatOutcome.LOST`` (reclaimed under us);
       * status='cancelling' -> ``HeartbeatOutcome.CANCELLING`` (user cancel);
       * otherwise refresh the claim (``touch_claim``) and ``RENEWED``.
-    It does NOT finalize — the worker's normal terminal write finalizes; the
-    heartbeat only signals. A DB/connectivity error propagates (it is NOT
-    swallowed into ``LOST``)."""
+    It NEVER finalizes — the worker's normal terminal write finalizes; the
+    heartbeat only signals. The renew path inspects the fenced ``touch_claim``
+    result so a cancel that commits in the refresh window (READ COMMITTED:
+    between this re-read and the UPDATE) is reported as CANCELLING, not a false
+    RENEWED — ``touch_claim`` runs with ``finalize_on_cancel=False`` so that
+    race can never finalize the job here. A DB/connectivity error propagates (it
+    is NOT swallowed into ``LOST``)."""
     row = await session.get(HomeworkJob, job_id, populate_existing=True)
     if row is None or row.claim_token != claim_token:
         return lease.HeartbeatOutcome.LOST
     if row.status == "cancelling":
         return lease.HeartbeatOutcome.CANCELLING
-    await touch_claim(session, job_id, claim_token=claim_token)
+    outcome = await touch_claim(session, job_id, claim_token=claim_token)
+    if outcome is lease.CancelRequested:
+        return lease.HeartbeatOutcome.CANCELLING
+    if outcome is lease.LeaseLost:
+        return lease.HeartbeatOutcome.LOST
     return lease.HeartbeatOutcome.RENEWED
 
 
@@ -735,8 +751,11 @@ async def touch_claim(
 
     Transitional (fenced job leases, Task 5): with ``claim_token=None`` the
     legacy behavior is preserved UNCHANGED (no token predicate). When a token is
-    given, the refresh is fenced — LeaseLost/CancelRequested when the lease no
-    longer matches."""
+    given, the refresh is fenced with ``finalize_on_cancel=False`` — a heartbeat
+    MUST NOT finalize a cancel-winning job (only the worker's terminal write
+    does); a cancel that lands in the refresh window returns
+    ``lease.CancelRequested`` as a pure signal, LeaseLost when the lease is
+    gone."""
     if claim_token is None:
         await session.execute(
             update(HomeworkJob)
@@ -751,6 +770,7 @@ async def touch_claim(
         claim_token,
         {"claimed_at": func.now()},
         status_guard=(HomeworkJob.status == "running"),
+        finalize_on_cancel=False,
     )
 
 

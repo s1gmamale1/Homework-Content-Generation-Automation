@@ -561,6 +561,53 @@ async def test_heartbeat_check_distinguishes_lost_from_cancelling(
     await db_session.commit()
 
 
+async def test_heartbeat_renew_race_never_finalizes(db_session, fenced_job_factory):
+    """READ COMMITTED race guard: a cancel that commits between heartbeat_check's
+    re-read (saw running) and touch_claim's fenced UPDATE must NOT be finalized
+    by the heartbeat. Deterministic form: run the fenced touch_claim / the whole
+    heartbeat_check against a job that is ALREADY `cancelling` (the window's end
+    state) and assert the heartbeat neither finalized the job nor swept phases
+    nor wrote a released_cancelled event — only the worker's terminal write may
+    finalize. RED-proof: the old always-RENEWED path routed through a finalizing
+    touch_claim, which would flip the job to `cancelled` and fail the phase."""
+    from app.models.phase_output import PhaseOutput
+    from app.repositories import jobs as jobs_repo
+    from app.services import lease
+    from app.services.lease import HeartbeatOutcome
+
+    row = await fenced_job_factory(status="cancelling", phases=["running"])
+
+    # 1) The fenced touch_claim itself must be a pure signal, never a finalize.
+    res = await jobs_repo.touch_claim(
+        db_session, row.job_id, claim_token=row.claim_token
+    )
+    assert res is lease.CancelRequested
+
+    job = await _reload(db_session, row.job_id)
+    assert job.status == "cancelling"          # NOT finalized to cancelled
+    assert job.claim_token == row.claim_token  # lease untouched
+
+    phase = (
+        await db_session.execute(
+            select(PhaseOutput).where(PhaseOutput.job_id == row.job_id)
+        )
+    ).scalar_one()
+    assert phase.status == "running"           # NOT swept to failed
+    assert not await _has_event(db_session, row.job_id, "released_cancelled")
+
+    # 2) And the full heartbeat_check reports CANCELLING (not a false RENEWED)
+    #    while STILL leaving the job un-finalized.
+    outcome = await jobs_repo.heartbeat_check(
+        db_session, row.job_id, row.claim_token
+    )
+    assert outcome is HeartbeatOutcome.CANCELLING
+    job2 = await _reload(db_session, row.job_id)
+    assert job2.status == "cancelling"
+    assert not await _has_event(db_session, row.job_id, "released_cancelled")
+
+    await db_session.commit()
+
+
 async def test_tokenless_calls_keep_legacy_behavior(db_session, fenced_job_factory):
     """Transitional guarantee: token-less callers (pipeline/worker pre-Tasks 6-7)
     get the EXACT pre-fencing behavior — no token predicate, bool/str returns."""
