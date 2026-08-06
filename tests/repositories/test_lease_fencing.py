@@ -130,3 +130,247 @@ async def test_claim_mints_token_and_records_event(db_session, seed_pending_job)
     # teardown tries to DELETE that same row — an open db_session rollback
     # racing an in-flight DELETE from a second connection self-deadlocks.
     await db_session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Task 4: reclaim/requeue rotate the token + registry-liveness cross-check
+# ---------------------------------------------------------------------------
+
+
+async def _reload(session, job_id):
+    """Re-read a job as a fresh row (bypass the identity map)."""
+    from app.models.homework_job import HomeworkJob
+
+    return (
+        await session.execute(
+            select(HomeworkJob)
+            .where(HomeworkJob.id == job_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+
+
+async def _has_event(session, job_id, event_type) -> bool:
+    from app.models.job_lease_event import JobLeaseEvent
+
+    rows = (
+        await session.execute(
+            select(JobLeaseEvent).where(
+                JobLeaseEvent.job_id == job_id,
+                JobLeaseEvent.event_type == event_type,
+            )
+        )
+    ).scalars().all()
+    return len(rows) > 0
+
+
+async def _has_event_with_token(session, job_id, event_type, token) -> bool:
+    from app.models.job_lease_event import JobLeaseEvent
+
+    rows = (
+        await session.execute(
+            select(JobLeaseEvent).where(
+                JobLeaseEvent.job_id == job_id,
+                JobLeaseEvent.event_type == event_type,
+            )
+        )
+    ).scalars().all()
+    return any(r.claim_token == token for r in rows)
+
+
+@pytest.fixture
+async def lease_reclaim_factory():
+    """Factory: build a committed `running` job with a stamped claim_token and
+    back-dated claimed_at/started_at, optionally with a live `workers` registry
+    row for its owner. Yields ``make(...)`` returning the job (with a fresh
+    ``.claim_token`` uuid). Cleans up jobs, events, workers, toc, and books.
+    """
+    import uuid as _uuid
+
+    from sqlalchemy import delete, text
+    from app.db import SessionLocal
+    from app.models.book import Book
+    from app.models.homework_job import HomeworkJob
+    from app.models.job_lease_event import JobLeaseEvent
+    from app.models.toc_entry import TOCEntry
+    from app.models.worker import WorkerNode
+    from app.repositories import jobs as jobs_repo
+    from app.repositories import workers as workers_repo
+
+    book_ids: list = []
+    worker_pc_ids: list = []
+
+    async def make(
+        *,
+        claimed_by: str,
+        claimed_at_age_seconds: int,
+        started_at_age_seconds: int,
+        live_owner: bool = False,
+    ):
+        token = _uuid.uuid4()
+        async with SessionLocal() as s:
+            if live_owner:
+                # Fresh heartbeat (func.now()) for this owner pc_id.
+                await workers_repo.upsert_heartbeat(s, claimed_by)
+                worker_pc_ids.append(claimed_by)
+
+            book = Book(
+                subject="math-algebra",
+                original_filename="lease-reclaim.pdf",
+                content_sha256=_uuid.uuid4().hex.ljust(64, "f"),
+                file_size_bytes=1,
+                status="toc_ready",
+            )
+            s.add(book)
+            await s.flush()
+            toc = TOCEntry(book_id=book.id, section_title="L1", order_index=0)
+            s.add(toc)
+            await s.flush()
+
+            job = await jobs_repo.create(
+                s,
+                book_id=book.id,
+                toc_entry_id=toc.id,
+                subject="math-algebra",
+                output_language="uz",
+            )
+            # Force running + back-dated claim/start + a stamped token, all in
+            # the DB clock so the reclaim predicates compare like-for-like.
+            await s.execute(
+                text(
+                    "UPDATE homework_jobs SET status='running', "
+                    "claimed_by=:cb, claim_token=:tok, "
+                    "claimed_at = now() - make_interval(secs => :ca), "
+                    "started_at = now() - make_interval(secs => :sa) "
+                    "WHERE id=:id"
+                ),
+                {
+                    "cb": claimed_by,
+                    "tok": token,
+                    "ca": claimed_at_age_seconds,
+                    "sa": started_at_age_seconds,
+                    "id": job.id,
+                },
+            )
+            await s.commit()
+            book_ids.append(book.id)
+            # Re-read bypassing the identity map — the raw SQL UPDATE above
+            # bypassed the ORM, so `s.get` would return the stale cached row
+            # (claim_token=None). populate_existing forces a fresh load.
+            return (
+                await s.execute(
+                    select(HomeworkJob)
+                    .where(HomeworkJob.id == job.id)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one()
+
+    yield make
+
+    async with SessionLocal() as s:
+        for bid in book_ids:
+            await s.execute(
+                delete(JobLeaseEvent).where(
+                    JobLeaseEvent.job_id.in_(
+                        select(HomeworkJob.id).where(HomeworkJob.book_id == bid)
+                    )
+                )
+            )
+            await s.execute(delete(HomeworkJob).where(HomeworkJob.book_id == bid))
+            await s.execute(delete(TOCEntry).where(TOCEntry.book_id == bid))
+            await s.execute(delete(Book).where(Book.id == bid))
+        for pc in worker_pc_ids:
+            await s.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc))
+        await s.commit()
+
+
+async def test_reclaim_clears_token_and_records_event_with_OLD_token(
+    db_session, lease_reclaim_factory
+):
+    """Normal reclaim: owner absent from the registry, claimed_at stale,
+    started_at recent (not past the hard deadline). The token is rotated to
+    NULL and the `reclaimed_stale` event carries the OLD (pre-reclaim) token."""
+    from app.repositories import jobs as jobs_repo
+
+    job = await lease_reclaim_factory(
+        claimed_by="dead-worker:1@sha",
+        claimed_at_age_seconds=9999,   # stale
+        started_at_age_seconds=10,     # nowhere near the hard deadline
+        live_owner=False,              # no workers row → owner absent
+    )
+    old_token = job.claim_token
+    assert old_token is not None
+
+    n = await jobs_repo.reclaim_stuck_jobs(db_session, stale_after_seconds=120)
+    assert n >= 1
+
+    reloaded = await _reload(db_session, job.id)
+    assert reloaded.status == "pending"
+    assert reloaded.claim_token is None
+    assert reloaded.claimed_at is None and reloaded.claimed_by is None
+    # The event must carry the OLD token, not the NULL post-update value.
+    assert await _has_event_with_token(
+        db_session, job.id, "reclaimed_stale", old_token
+    )
+
+    await db_session.commit()
+
+
+async def test_fresh_registry_owner_blocks_normal_reclaim(
+    db_session, lease_reclaim_factory
+):
+    """claimed_at is stale, BUT the owning pc_id still heartbeats the workers
+    registry → normal reclaim is blocked, the job stays running and keeps its
+    token."""
+    from app.repositories import jobs as jobs_repo
+
+    job = await lease_reclaim_factory(
+        claimed_by="live-worker:1@sha",
+        claimed_at_age_seconds=9999,   # stale claim
+        started_at_age_seconds=30,     # not past the hard deadline
+        live_owner=True,               # fresh workers heartbeat for this owner
+    )
+    old_token = job.claim_token
+
+    n = await jobs_repo.reclaim_stuck_jobs(db_session, stale_after_seconds=120)
+
+    reloaded = await _reload(db_session, job.id)
+    assert reloaded.status == "running", "live owner must block normal reclaim"
+    assert reloaded.claim_token == old_token, "token must be untouched"
+    assert not await _has_event(db_session, job.id, "reclaimed_stale")
+    assert not await _has_event(db_session, job.id, "reclaimed_forced")
+    del n  # count may include unrelated rows only if others exist; state is authoritative
+
+    await db_session.commit()
+
+
+async def test_hard_deadline_forces_reclaim_despite_live_owner(
+    db_session, lease_reclaim_factory
+):
+    """Past the hard deadline (started_at older than job_timeout + stale), a
+    live owner no longer protects the job — forced reclaim fires, rotates the
+    token, and records `reclaimed_forced` with the OLD token."""
+    from app.config import settings
+    from app.repositories import jobs as jobs_repo
+
+    # started_at older than job_timeout_seconds (1800) + stale (120) with margin.
+    started_age = settings.job_timeout_seconds + 120 + 300
+    job = await lease_reclaim_factory(
+        claimed_by="wedged-worker:1@sha",
+        claimed_at_age_seconds=5,      # claim looks fresh…
+        started_at_age_seconds=started_age,  # …but the job blew its hard deadline
+        live_owner=True,               # and the owner is still heartbeating
+    )
+    old_token = job.claim_token
+
+    n = await jobs_repo.reclaim_stuck_jobs(db_session, stale_after_seconds=120)
+    assert n >= 1
+
+    reloaded = await _reload(db_session, job.id)
+    assert reloaded.status == "pending"
+    assert reloaded.claim_token is None
+    assert await _has_event_with_token(
+        db_session, job.id, "reclaimed_forced", old_token
+    )
+
+    await db_session.commit()

@@ -220,7 +220,9 @@ async def reset_abandoned_phases(
     if phase_names is not None and not phase_names:
         return 0
     from sqlalchemy import func as sa_func, or_
-    values: dict = {"status": status}
+    # Rotate the phase lease token in the same reset (fenced job leases, Task 4):
+    # an abandoned phase row must not keep a live-looking claim_token.
+    values: dict = {"status": status, "claim_token": None}
     if status == "failed":
         values["error_message"] = error_message
         values["completed_at"] = sa_func.now()

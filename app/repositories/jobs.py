@@ -2,11 +2,12 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, case, func, literal, not_, or_, select, text, update
+from sqlalchemy import and_, case, exists, func, literal, not_, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Batch, HomeworkJob, PhaseOutput, TOCEntry
+from app.config import settings
+from app.models import Batch, HomeworkJob, PhaseOutput, TOCEntry, WorkerNode
 from app.repositories import lease_events
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import workers as workers_repo
@@ -250,6 +251,11 @@ async def reset_for_retry(
     job.started_at = None
     job.completed_at = None
     job.attempts = 0
+    # Rotate the lease: a retried-from-failed job must not keep a dead claim
+    # token or stale claim columns (fenced job leases, Task 4).
+    job.claim_token = None
+    job.claimed_at = None
+    job.claimed_by = None
     if batch_id is not None:
         job.batch_id = batch_id
     return job
@@ -584,15 +590,37 @@ async def touch_claim(session: AsyncSession, job_id: UUID) -> None:
 
 
 async def reclaim_stuck_jobs(
-    session: AsyncSession, *, stale_after_seconds: int
+    session: AsyncSession,
+    *,
+    stale_after_seconds: int,
+    registry_stale_seconds: Optional[int] = None,
+    job_timeout_seconds: Optional[int] = None,
 ) -> int:
-    """Promote `running` jobs whose claim is stale back to `pending`.
+    """Promote `running` jobs whose claim is stale back to `pending`, ROTATING
+    (clearing) the lease `claim_token` in the same UPDATE (fenced job leases,
+    Task 4). Returns the number of rows reclaimed.
 
     Triggered on worker startup (recovers jobs whose worker died mid-run)
     and periodically by the running worker (recovers jobs from peer crashes).
-    Returns the number of rows reclaimed.
 
-    Stuck = running and (claimed_at is NULL or claimed_at < now - stale).
+    Two matched sets, both fencing-aware:
+
+      NORMAL (stale): `running` AND (claimed_at is NULL OR claimed_at < now -
+      stale) AND the owning process is NOT live in the `workers` registry
+      (no `workers` row for `claimed_by` with a heartbeat within
+      `registry_stale_seconds`). A live owner blocks normal reclaim even when
+      claimed_at looks stale — the heartbeat, not just the claim age, is the
+      liveness signal. Event: `reclaimed_stale`.
+
+      FORCED (hard deadline): `running` AND started_at < now -
+      (`job_timeout_seconds` + stale). This ignores a live owner — past the
+      hard deadline a job is yanked regardless of heartbeat, so a wedged-but-
+      heartbeating worker can never pin a job forever. Event: `reclaimed_forced`.
+
+    Each reclaimed job's ledger event carries the OLD (pre-rotation) token,
+    captured by a `FOR UPDATE SKIP LOCKED` snapshot taken BEFORE the nulling
+    UPDATE — a plain `RETURNING claim_token` would return the NEW (NULL) value.
+
     The `attempts` counter persists, so a poison-pill job runs at most
     `max_attempts` times before being marked failed terminally.
 
@@ -600,24 +628,67 @@ async def reclaim_stuck_jobs(
     every reclaimed job's abandoned phase rows are reset to `pending` too, so
     a reclaimed job never shows a stale `running`/orphan-marked phase row.
     """
-    stmt = (
-        update(HomeworkJob)
+    if registry_stale_seconds is None:
+        registry_stale_seconds = settings.worker_registry_stale_seconds
+    if job_timeout_seconds is None:
+        job_timeout_seconds = settings.job_timeout_seconds
+
+    # Owner is live iff a workers row for this job's claimed_by heartbeat-ed
+    # within the registry window — the registry-liveness cross-check.
+    owner_live = exists(
+        select(WorkerNode.pc_id).where(
+            WorkerNode.pc_id == HomeworkJob.claimed_by,
+            WorkerNode.last_heartbeat
+            >= func.now() - func.make_interval(0, 0, 0, 0, 0, 0, registry_stale_seconds),
+        )
+    )
+
+    # NORMAL/stale snapshot — capture (id, OLD token) under a row lock BEFORE
+    # nulling. SKIP LOCKED so concurrent sweepers never collide on a row.
+    stale_snapshot = (
+        select(HomeworkJob.id, HomeworkJob.claim_token)
         .where(HomeworkJob.status == "running")
         .where(
             (HomeworkJob.claimed_at.is_(None))
             | (HomeworkJob.claimed_at < func.now() - func.make_interval(0, 0, 0, 0, 0, 0, stale_after_seconds))
         )
-        .values(
-            status="pending",
-            claimed_at=None,
-            claimed_by=None,
-            current_phase=None,
-        )
-        .returning(HomeworkJob.id)
+        .where(~owner_live)
+        .with_for_update(skip_locked=True)
     )
-    result = await session.execute(stmt)
-    reclaimed = [row[0] for row in result.fetchall()]
+    stale_rows = (await session.execute(stale_snapshot)).all()
+    stale_ids = [row[0] for row in stale_rows]
+
+    # FORCED snapshot — past the hard deadline, ignore a live owner. Exclude
+    # rows already claimed by the stale set so a job can't be double-counted /
+    # double-evented (the same-txn row lock would otherwise re-return them).
+    forced_conds = [
+        HomeworkJob.status == "running",
+        HomeworkJob.started_at
+        < func.now() - func.make_interval(0, 0, 0, 0, 0, 0, job_timeout_seconds + stale_after_seconds),
+    ]
+    if stale_ids:
+        forced_conds.append(HomeworkJob.id.not_in(stale_ids))
+    forced_snapshot = (
+        select(HomeworkJob.id, HomeworkJob.claim_token)
+        .where(*forced_conds)
+        .with_for_update(skip_locked=True)
+    )
+    forced_rows = (await session.execute(forced_snapshot)).all()
+    forced_ids = [row[0] for row in forced_rows]
+
+    reclaimed = stale_ids + forced_ids
     if reclaimed:
+        await session.execute(
+            update(HomeworkJob)
+            .where(HomeworkJob.id.in_(reclaimed))
+            .values(
+                status="pending",
+                claimed_at=None,
+                claimed_by=None,
+                claim_token=None,
+                current_phase=None,
+            )
+        )
         # Same-transaction phase reconciliation (orphan-phase-reconciliation-1):
         # a reclaimed job's in-flight rows go back to WAITING. Marker-aware
         # because main.lifespan's boot sweep pre-marks them failed/"orphaned:
@@ -628,6 +699,23 @@ async def reclaim_stuck_jobs(
             source_statuses=("running",),
             include_orphan_failed=True,
         )
+        # Ledger the OLD (pre-rotation) token per reclaimed id.
+        for job_id, old_token in stale_rows:
+            await lease_events.append_event(
+                session,
+                job_id=job_id,
+                claim_token=old_token,
+                event_type=lease.EVENT_RECLAIMED_STALE,
+                reason="stale claim reclaimed (owner absent from registry)",
+            )
+        for job_id, old_token in forced_rows:
+            await lease_events.append_event(
+                session,
+                job_id=job_id,
+                claim_token=old_token,
+                event_type=lease.EVENT_RECLAIMED_FORCED,
+                reason="forced reclaim past hard deadline",
+            )
     return len(reclaimed)
 
 
@@ -686,6 +774,7 @@ async def fail_exhausted_pending_jobs(session: AsyncSession, *, max_attempts: in
             last_error=_msg,
             claimed_at=None,
             claimed_by=None,
+            claim_token=None,
         )
         .returning(HomeworkJob.id)
     )
@@ -793,6 +882,7 @@ async def requeue_session_limited(
             attempts=func.greatest(HomeworkJob.attempts - 1, 0),
             claimed_at=None,
             claimed_by=None,
+            claim_token=None,
             current_phase=None,
             last_error=error,
             scheduled_at=func.now(),
@@ -849,6 +939,7 @@ async def requeue_slot_saturated(
             attempts=func.greatest(HomeworkJob.attempts - 1, 0),
             claimed_at=None,
             claimed_by=None,
+            claim_token=None,
             current_phase=None,
             last_error=error,
             scheduled_at=func.now()
@@ -1052,6 +1143,12 @@ async def reclaim_stale_cancelling(
         update(HomeworkJob)
         .where(HomeworkJob.status == "cancelling")
         .where(HomeworkJob.claimed_at < func.now() - func.make_interval(0, 0, 0, 0, 0, 0, stale_after_seconds))
-        .values(status="cancelled", completed_at=func.now())
+        .values(
+            status="cancelled",
+            completed_at=func.now(),
+            claimed_at=None,
+            claimed_by=None,
+            claim_token=None,
+        )
     )
     return result.rowcount or 0
