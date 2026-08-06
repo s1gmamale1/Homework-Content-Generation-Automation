@@ -11,7 +11,10 @@ def test_reclaim_uses_lease_ttl_not_job_timeout():
 
 
 def test_startup_resets_orphaned_running_jobs():
-    src = inspect.getsource(main.lifespan)
+    # The startup reconcile (books sweep + peer-aware reclaim) lives in
+    # main._reconcile_on_startup (fenced job leases, Task 8 — extracted out
+    # of main.lifespan so it's directly testable; lifespan just calls it).
+    src = inspect.getsource(main._reconcile_on_startup)
     # Startup flips orphaned running jobs back to pending via the PEER-AWARE
     # reclaim (fleet-restart-reclaim-1): it uses stale_after_seconds=0 only when
     # no live peer exists, else the lease window, so a peer's fresh-beat job is

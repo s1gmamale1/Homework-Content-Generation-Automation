@@ -1,7 +1,6 @@
 import asyncio
 import socket
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -27,50 +26,63 @@ from app.services.worker import Worker, build_worker_from_settings
 configure_logging()
 
 
+async def _reconcile_on_startup(session) -> None:
+    """Boot-time reconcile, scoped to reclaimed jobs (fenced job leases,
+    Task 8) — no longer a global force-fail of every pending/running phase
+    row.
+
+    - Sweep `books` rows stuck mid-flight when the API last died (unrelated
+      to phase/job leasing, kept as-is).
+    - Peer-aware startup reclaim (fleet-restart-reclaim-1): if any peer
+      worker has a fresh heartbeat, use the full lease window so its
+      recently-claimed jobs aren't yanked (avoids double-run + real $ on api
+      jobs). If no live peer exists (solo restart), window=0 resets every
+      orphaned `running` row immediately (instant single-host recovery
+      preserved). Best-effort caveat: on a sub-reclaim_stale_seconds restart
+      the old process's own heartbeat row may still read as a live peer ->
+      lease path fires, delaying reset by at most one window; this is safe
+      (correctness unaffected, recovery just isn't instant).
+
+      `reclaim_orphans_on_startup` already resets the phase rows of every
+      job it reclaims (via `reclaim_stuck_jobs` -> `reset_abandoned_phases`),
+      so no separate phase sweep is needed here. A job whose `claimed_at`
+      isn't stale yet — i.e. a live peer might still own it — is correctly
+      left untouched, phases included; it's reclaimed later once it goes
+      stale (<= `reclaim_stale_seconds`).
+    - Fail `pending` jobs whose attempts are exhausted (also reconciles
+      their remaining phase rows to `failed`, terminal).
+    """
+    for b in await books_repo.list_running_for_sweep(session):
+        await books_repo.set_status(
+            session, b.id, "failed",
+            error_message=phase_repo.ORPHANED_RESTART_MESSAGE,
+        )
+    n = await jobs_repo.reclaim_orphans_on_startup(
+        session, reclaim_stale_seconds=settings.reclaim_stale_seconds
+    )
+    if n:
+        log.info(f"Startup: reclaimed {n} orphaned running job(s) -> pending")
+    n_exhausted = await jobs_repo.fail_exhausted_pending_jobs(
+        session, max_attempts=settings.queue_max_attempts
+    )
+    if n_exhausted:
+        log.info(
+            f"Startup: failed {n_exhausted} attempts-exhausted pending job(s)"
+        )
+    await session.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_prompts()
     log.info("Prompts loaded")
 
-    # Sweep books / phase_outputs that were stuck mid-flight when the API
-    # last died. Jobs themselves are NOT marked failed here — the queue
-    # worker reclaims `running` jobs via its own `reclaim_stuck_jobs`
-    # sweep so they re-run on the next available worker instead of being
-    # silently dropped.
+    # Reconcile books/jobs/phases stuck mid-flight when the API last died.
+    # Scoped to reclaimed jobs only (fenced job leases, Task 8) — a fresh
+    # peer-owned job (and its phase rows) is left untouched, not globally
+    # force-failed.
     async with SessionLocal() as session:
-        for b in await books_repo.list_running_for_sweep(session):
-            await books_repo.set_status(
-                session, b.id, "failed",
-                error_message=phase_repo.ORPHANED_RESTART_MESSAGE,
-            )
-        for p in await phase_repo.list_running_for_sweep(session):
-            await phase_repo.set_status(
-                session, p.id, "failed",
-                completed_at=datetime.now(timezone.utc),
-                error_message=phase_repo.ORPHANED_RESTART_MESSAGE,
-            )
-        # Peer-aware startup reclaim (fleet-restart-reclaim-1): if any peer
-        # worker has a fresh heartbeat, use the full lease window so its
-        # recently-claimed jobs aren't yanked (avoids double-run + real $ on
-        # api jobs). If no live peer exists (solo restart), window=0 resets
-        # every orphaned `running` row immediately (instant single-host recovery
-        # preserved). Best-effort caveat: on a sub-reclaim_stale_seconds
-        # restart the old process's own heartbeat row may still read as a live
-        # peer → lease path fires, delaying reset by at most one window; this
-        # is safe (correctness unaffected, recovery just isn't instant).
-        n = await jobs_repo.reclaim_orphans_on_startup(
-            session, reclaim_stale_seconds=settings.reclaim_stale_seconds
-        )
-        if n:
-            log.info(f"Startup: reclaimed {n} orphaned running job(s) -> pending")
-        n_exhausted = await jobs_repo.fail_exhausted_pending_jobs(
-            session, max_attempts=settings.queue_max_attempts
-        )
-        if n_exhausted:
-            log.info(
-                f"Startup: failed {n_exhausted} attempts-exhausted pending job(s)"
-            )
-        await session.commit()
+        await _reconcile_on_startup(session)
     log.info("Orphan sweep complete (books + phase_outputs)")
 
     # Fleet version floor auto-stamp (fleet-worker-version-gate-1): raise-only —
