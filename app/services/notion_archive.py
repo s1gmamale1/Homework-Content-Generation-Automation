@@ -88,41 +88,15 @@ def _resolve_subject_page_id(
     return None
 
 
-def _lesson_title(
-    section_number: Optional[str],
-    section_title: str,
-    *,
-    page_start: Optional[int] = None,
-    ambiguous: bool = False,
-    order_index: Optional[int] = None,
-) -> str:
-    """The Notion lesson-page title.
+def _lesson_title(section_number: Optional[str], section_title: str) -> str:
+    """The base lesson-page title: `"{section_number} {section_title}"`.
 
-    `ambiguous` means another TOC entry under the same Generated-Homeworks
-    container normalizes to this same title. That is not rare: these textbooks
-    reuse rubric headings as section titles (`Вспомните` ×10 in one grade,
-    `Подумайте. Проблемное задание` ×13) and `section_number` is NULL for
-    exactly those rows. Since `find_or_create` matches on the normalized title,
-    an undisambiguated collision sends every one of them to the same page, where
-    all but the first are silently skipped by `page_has_content`.
-
-    The suffix is applied ONLY when ambiguous. Adding it unconditionally would
-    rename every lesson, so the next archive would no longer match the existing
-    pages and would create a duplicate beside each one.
-
-    `page_start` is the disambiguator because it is both sufficient (it
-    separates all 56 known colliding rows, where the chapter number still leaves
-    4 collisions) and meaningful to a human browsing Notion. `order_index` is
-    the fallback for the theoretical row with no page number.
+    Disambiguation deliberately does NOT live here — see `resolve_lesson_title`,
+    which is the only thing that decides whether a suffix is needed. Keeping the
+    suffix logic out of this function means a mutation to it cannot look like
+    coverage of the decision.
     """
-    base = f"{section_number} {section_title}".strip() if section_number else section_title.strip()
-    if not ambiguous:
-        return base
-    if page_start is not None:
-        return f"{base} · p.{page_start}"
-    if order_index is not None:
-        return f"{base} · #{order_index}"
-    return base
+    return f"{section_number} {section_title}".strip() if section_number else section_title.strip()
 
 
 def _sibling_title(row) -> str:

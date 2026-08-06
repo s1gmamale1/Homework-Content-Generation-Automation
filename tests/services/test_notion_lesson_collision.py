@@ -75,16 +75,21 @@ def _push(client, title):
 
 
 def test_two_lessons_sharing_a_title_get_two_pages():
-    """THE BUG, driven through the REAL title builder.
+    """THE BUG, driven through the REAL decision function.
 
     Two different lessons from one book, both titled `Вспомните` with a NULL
-    section_number — the live shape. The titles are NOT hardcoded here: they
-    come from `_lesson_title`, so this fails until that function disambiguates.
+    section_number — the live shape. The titles are NOT hardcoded: they come
+    from `resolve_lesson_title`, the function production actually calls.
     """
+    from uuid import UUID
     c = FakeNotion()
-    # Same raw title, different textbook pages — exactly the live rows.
-    t1 = na._lesson_title(None, "Вспомните", page_start=12, ambiguous=True)
-    t2 = na._lesson_title(None, "Вспомните", page_start=47, ambiguous=True)
+    a = UUID("aaaaaaaa-0000-0000-0000-000000000001")
+    b = UUID("bbbbbbbb-0000-0000-0000-000000000002")
+    sibs = [(None, "Вспомните", "", 12, a), (None, "Вспомните", "", 47, b)]
+    t1 = na.resolve_lesson_title(
+        SimpleNamespace(section_number=None, section_title="Вспомните", page_start=12, id=a), sibs)
+    t2 = na.resolve_lesson_title(
+        SimpleNamespace(section_number=None, section_title="Вспомните", page_start=47, id=b), sibs)
 
     first, second = _push(c, t1), _push(c, t2)
 
@@ -92,24 +97,6 @@ def test_two_lessons_sharing_a_title_get_two_pages():
     assert sorted(c.lesson_pages_under()) == ["Вспомните · p.12", "Вспомните · p.47"]
     # Both must actually receive content — a skipped write is the real damage.
     assert c.written_leaf_count() == 2
-
-
-def test_lesson_title_only_gets_a_suffix_when_ambiguous():
-    """Unconditional suffixing would rename every lesson, so the next archive
-    would stop matching the 135 good pages and duplicate all of them."""
-    assert na._lesson_title(None, "Проценты", page_start=12, ambiguous=False) == "Проценты"
-    assert na._lesson_title("1.1", "Burchaklar", page_start=9, ambiguous=False) == "1.1 Burchaklar"
-    assert na._lesson_title(None, "Вспомните", page_start=12, ambiguous=True) == "Вспомните · p.12"
-    # A numbered section that still collides keeps its number AND gets the page.
-    assert na._lesson_title("3", "Повторение", page_start=88, ambiguous=True) == "3 Повторение · p.88"
-
-
-def test_lesson_title_falls_back_when_page_start_is_missing():
-    """page_start is non-null for every colliding row today, but an ambiguous
-    title with no page number must still not collapse."""
-    a = na._lesson_title(None, "Вспомните", page_start=None, ambiguous=True, order_index=4)
-    b = na._lesson_title(None, "Вспомните", page_start=None, ambiguous=True, order_index=9)
-    assert a != b
 
 
 def test_identical_titles_still_collide_without_a_disambiguator():
@@ -222,3 +209,84 @@ def test_sibling_rows_falling_back_to_chapter_title_still_match():
 def test_a_lesson_alone_in_its_container_is_not_suffixed():
     sec = _sec("1.1", "Burchaklar", 5, _A)
     assert na.resolve_lesson_title(sec, [_row("1.1", "Burchaklar", 5, _A)]) == "1.1 Burchaklar"
+
+
+# --- archive_job WIRING -------------------------------------------------------
+# The decision function being correct is worth nothing if archive_job does not
+# call it. Reverting either wiring point left the suite fully green twice, so
+# these assert on the kwargs that actually reach the Notion push.
+
+import pytest
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
+
+
+def _wire_job(monkeypatch, *, section_page_id=None):
+    job = SimpleNamespace(
+        id=UUID(_C), book_id=UUID(_B), toc_entry_id=UUID(_A),
+        subject="matematika", output_language="ru",
+        created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        notion_archived_at=None,
+    )
+    section = SimpleNamespace(
+        id=UUID(_A), section_number=None, section_title="Вспомните",
+        chapter_title="", page_start=2, order_index=1,
+        notion_homework_page_id=section_page_id, notion_archived_job_id=None,
+    )
+    book = SimpleNamespace(id=job.book_id, grade="5", original_filename="m5.pdf")
+    monkeypatch.setattr(na.settings, "notion_enabled", True)
+    monkeypatch.setattr(na.settings, "notion_api_key", "ntn_x")
+    monkeypatch.setattr(na.settings, "notion_subject_pages", {"ru:matematika|5": "subj"})
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(na, "SessionLocal", MagicMock(return_value=session))
+    # A REALISTIC sibling list: this section's own row plus a Part-II row that
+    # shares both the title AND the page number. `[]` is not a state the DB can
+    # produce — a section always appears in its own container.
+    siblings = [(None, "Вспомните", "", 2, UUID(_A)), (None, "Вспомните", "", 2, UUID(_B))]
+    phase = SimpleNamespace(phase_name="case-based-preview", status="done", output_md="# CBP")
+    return job, section, book, siblings, phase
+
+
+@pytest.mark.asyncio
+async def test_archive_job_sends_the_DISAMBIGUATED_title_to_notion(monkeypatch):
+    """Reverting this wiring to the pre-fix `_lesson_title(...)` must go RED."""
+    job, section, book, siblings, phase = _wire_job(monkeypatch)
+    push = AsyncMock(return_value="hw1")
+    with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
+         patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=siblings)), \
+         patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \
+         patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()), \
+         patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()), \
+         patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
+         patch.object(na, "_push_with_retry", push):
+        await na.archive_job(job.id)
+
+    sent = push.await_args.kwargs["lesson_title"]
+    # Title AND page collide with the Part-II row, so level 3 must engage.
+    assert sent == "Вспомните · p.2 · aaaaaaaa", sent
+    assert sent != "Вспомните", "archive_job is not using resolve_lesson_title"
+
+
+@pytest.mark.asyncio
+async def test_archive_job_forwards_an_owned_page_id(monkeypatch):
+    """The 200 already-archived sections whose title CHANGES under this fix are
+    protected by this one argument. Dropping it re-keys them onto fresh pages
+    and orphans their content."""
+    job, section, book, siblings, phase = _wire_job(monkeypatch, section_page_id="existing-hw")
+    push = AsyncMock(return_value="existing-hw")
+    with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
+         patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=siblings)), \
+         patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \
+         patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()), \
+         patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()), \
+         patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
+         patch.object(na, "_push_with_retry", push):
+        await na.archive_job(job.id)
+
+    assert push.await_args.kwargs["homework_page_id"] == "existing-hw"
