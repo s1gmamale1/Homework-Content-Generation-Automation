@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, case, exists, func, literal, not_, or_, select, text, update
+from sqlalchemy import and_, case, exists, func, literal, not_, or_, select, text, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -178,13 +178,21 @@ async def set_status(
     error_message: Optional[str] = None,
     current_phase: Optional[str] = None,
     guard: bool = True,
-) -> bool:
+    claim_token: Optional[UUID] = None,
+) -> object:
     """Set a job's status. With ``guard`` (default), a guarded UPDATE refuses to
     overwrite a terminal status or resurrect a `cancelling` job (cancel-race-1):
     terminal {done,failed,cancelled} is frozen; from `cancelling` only
     `cancelled` is allowed. Mirrors ``status_write_allowed``. Returns True iff a
     row was updated. claim (pending->running) and reset_for_retry
-    (cancelled->pending) use their OWN updates and are unaffected."""
+    (cancelled->pending) use their OWN updates and are unaffected.
+
+    Transitional (fenced job leases, Task 5): with ``claim_token=None`` (every
+    caller until Tasks 6-7) the legacy behavior is preserved UNCHANGED and a
+    ``bool`` is returned. When a token is given, the write is fenced through
+    ``_fenced_update`` — the job id on success, ``lease.LeaseLost`` /
+    ``lease.CancelRequested`` when the lease no longer owns the row (a `done`
+    transition emits ``EVENT_RELEASED_DONE``)."""
     values: dict = {"status": status}
     if started_at is not None:
         values["started_at"] = started_at
@@ -194,6 +202,22 @@ async def set_status(
         values["error_message"] = error_message
     if current_phase is not None:
         values["current_phase"] = current_phase
+    if claim_token is not None:
+        if guard:
+            guards = [HomeworkJob.status.not_in(_TERMINAL_STATUSES)]
+            if status != "cancelled":
+                guards.append(HomeworkJob.status != "cancelling")
+            status_guard = and_(*guards)
+        else:
+            status_guard = true()
+        return await _fenced_update(
+            session,
+            job_id,
+            claim_token,
+            values,
+            status_guard=status_guard,
+            release_event=lease.EVENT_RELEASED_DONE if status == "done" else None,
+        )
     stmt = update(HomeworkJob).where(HomeworkJob.id == job_id)
     if guard:
         stmt = stmt.where(HomeworkJob.status.not_in(_TERMINAL_STATUSES))
@@ -577,15 +601,156 @@ async def claim_next_job(
     )
 
 
-async def touch_claim(session: AsyncSession, job_id: UUID) -> None:
-    """Heartbeat: refresh claimed_at on a still-running job so the lease-TTL
-    reclaim never treats a live worker's job as orphaned. No-ops once the job
-    leaves `running` (done/failed), so it can't resurrect a finished row."""
+async def finalize_cancelled(
+    session: AsyncSession, job_id: UUID, claim_token: UUID
+) -> object:
+    """Fenced `cancelling`->`cancelled` that ALSO fails every non-done phase row
+    (the shipped 0155 cancel contract — mirrors ``mark_cancelled``'s second
+    UPDATE) and clears the lease. This is the NEW fenced path the *worker* uses
+    to complete the flip that the admin/operator ``mark_cancelled`` used to do.
+
+    Single-finalize contract (fenced job leases, Task 5): ``_fenced_update``
+    calls this itself on same-token + `cancelling`, so the worker treats a
+    returned ``CancelRequested`` as a pure signal and never finalizes again.
+    Therefore this MUST be idempotent-silent: if the job is already `cancelled`
+    it returns ``lease.CancelRequested`` without a duplicate event or a spurious
+    lease-loss. Returns ``lease.LeaseLost`` if the token no longer matches."""
+    row = await session.get(HomeworkJob, job_id, populate_existing=True)
+    if row is None or row.status == "cancelled":
+        return lease.CancelRequested
+    if row.claim_token != claim_token:
+        return lease.LeaseLost
     await session.execute(
         update(HomeworkJob)
-        .where(HomeworkJob.id == job_id)
-        .where(HomeworkJob.status == "running")
-        .values(claimed_at=func.now())
+        .where(HomeworkJob.id == job_id, HomeworkJob.status == "cancelling")
+        .values(
+            status="cancelled",
+            completed_at=func.now(),
+            claim_token=None,
+            claimed_at=None,
+            claimed_by=None,
+        )
+    )
+    # Phase sweep — every non-done phase row is failed (the interrupted work),
+    # done phases preserved so a later /retry can resume (worklog 0031/0155).
+    await session.execute(
+        update(PhaseOutput)
+        .where(PhaseOutput.job_id == job_id, PhaseOutput.status != "done")
+        .values(status="failed", completed_at=func.now(), claim_token=None)
+    )
+    await lease_events.append_event(
+        session,
+        job_id=job_id,
+        claim_token=claim_token,
+        event_type=lease.EVENT_RELEASED_CANCELLED,
+    )
+    return lease.CancelRequested
+
+
+async def _fenced_update(
+    session: AsyncSession,
+    job_id: UUID,
+    claim_token: UUID,
+    values: dict,
+    *,
+    status_guard,
+    release_event: Optional[str] = None,
+) -> object:
+    """Token-fenced worker write (fenced job leases, Task 5). Applies ``values``
+    only when the row still carries ``claim_token`` AND satisfies
+    ``status_guard``. On a hit it optionally appends ``release_event`` and
+    returns the job id.
+
+    On a 0-row match it re-reads (never guesses) to distinguish the two ways a
+    fenced write can miss:
+      * token gone/changed -> the lease was lost (returns ``lease.LeaseLost``,
+        ledgered as ``lease_lost``);
+      * same token + status='cancelling' -> a user cancel won: this finalizes
+        via ``finalize_cancelled`` (single-finalize contract) and returns
+        ``lease.CancelRequested``;
+      * same token + some other terminal status -> ``lease.LeaseLost``.
+
+    A DB/connectivity error propagates — it is NOT swallowed into a lease-loss.
+    """
+    stmt = (
+        update(HomeworkJob)
+        .where(
+            HomeworkJob.id == job_id,
+            HomeworkJob.claim_token == claim_token,
+            status_guard,
+        )
+        .values(**values)
+        .returning(HomeworkJob.id)
+    )
+    hit = (await session.execute(stmt)).scalar_one_or_none()
+    if hit is not None:
+        if release_event:
+            await lease_events.append_event(
+                session,
+                job_id=job_id,
+                claim_token=claim_token,
+                event_type=release_event,
+            )
+        return hit
+    row = await session.get(HomeworkJob, job_id, populate_existing=True)
+    if row is None or row.claim_token != claim_token:
+        await lease_events.append_event(
+            session,
+            job_id=job_id,
+            claim_token=claim_token,
+            event_type=lease.EVENT_LEASE_LOST,
+        )
+        return lease.LeaseLost
+    if row.status == "cancelling":
+        return await finalize_cancelled(session, job_id, claim_token)
+    return lease.LeaseLost  # token matches but status moved terminal underneath us
+
+
+async def heartbeat_check(
+    session: AsyncSession, job_id: UUID, claim_token: UUID
+) -> lease.HeartbeatOutcome:
+    """Classify a running job's lease for the worker heartbeat (fenced job
+    leases, Task 5). Re-reads status+token:
+      * token gone/changed -> ``HeartbeatOutcome.LOST`` (reclaimed under us);
+      * status='cancelling' -> ``HeartbeatOutcome.CANCELLING`` (user cancel);
+      * otherwise refresh the claim (``touch_claim``) and ``RENEWED``.
+    It does NOT finalize — the worker's normal terminal write finalizes; the
+    heartbeat only signals. A DB/connectivity error propagates (it is NOT
+    swallowed into ``LOST``)."""
+    row = await session.get(HomeworkJob, job_id, populate_existing=True)
+    if row is None or row.claim_token != claim_token:
+        return lease.HeartbeatOutcome.LOST
+    if row.status == "cancelling":
+        return lease.HeartbeatOutcome.CANCELLING
+    await touch_claim(session, job_id, claim_token=claim_token)
+    return lease.HeartbeatOutcome.RENEWED
+
+
+async def touch_claim(
+    session: AsyncSession, job_id: UUID, claim_token: Optional[UUID] = None
+) -> object:
+    """Heartbeat: refresh claimed_at on a still-running job so the lease-TTL
+    reclaim never treats a live worker's job as orphaned. No-ops once the job
+    leaves `running` (done/failed), so it can't resurrect a finished row.
+
+    Transitional (fenced job leases, Task 5): with ``claim_token=None`` the
+    legacy behavior is preserved UNCHANGED (no token predicate). When a token is
+    given, the refresh is fenced — LeaseLost/CancelRequested when the lease no
+    longer matches."""
+    if claim_token is None:
+        await session.execute(
+            update(HomeworkJob)
+            .where(HomeworkJob.id == job_id)
+            .where(HomeworkJob.status == "running")
+            .values(claimed_at=func.now())
+        )
+        return None
+    return await _fenced_update(
+        session,
+        job_id,
+        claim_token,
+        {"claimed_at": func.now()},
+        status_guard=(HomeworkJob.status == "running"),
     )
 
 
@@ -802,13 +967,57 @@ async def mark_failed_with_retry(
     error_message: str,
     max_attempts: int,
     backoff_seconds: int = 30,
-) -> str:
+    claim_token: Optional[UUID] = None,
+) -> object:
     """Record a failed attempt. Either re-schedules with exponential backoff
     (status='pending', scheduled_at in the future) or marks terminal failure
     (status='failed') if attempts exhausted.
 
     Returns the resulting status ('pending' = will retry, 'failed' = terminal).
-    """
+
+    Transitional (fenced job leases, Task 5): with ``claim_token=None`` (every
+    caller until Tasks 6-7) the legacy path runs UNCHANGED. When a token is
+    given, the write is fenced: the job id on a retry/terminal hit,
+    ``lease.LeaseLost`` when the lease is gone, or ``lease.CancelRequested`` when
+    a user cancel won (the repo finalizes internally — single-finalize
+    contract). The retry path also CLEARS ``claim_token`` (a job going back to
+    `pending` must not carry a stale lease)."""
+    if claim_token is not None:
+        job = await session.get(HomeworkJob, job_id, populate_existing=True)
+        if job is None:
+            return lease.LeaseLost
+        if job.attempts >= max_attempts:
+            values = {
+                "status": "failed",
+                "completed_at": func.now(),
+                "error_message": error_message,
+                "last_error": error_message,
+                "claimed_at": None,
+                "claimed_by": None,
+            }
+            release_event = lease.EVENT_RELEASED_FAILED
+        else:
+            delay = backoff_seconds * (2 ** (job.attempts - 1))
+            values = {
+                "status": "pending",
+                "scheduled_at": func.now()
+                + func.make_interval(0, 0, 0, 0, 0, 0, delay),
+                "last_error": error_message,
+                "current_phase": None,
+                "claimed_at": None,
+                "claimed_by": None,
+                "claim_token": None,  # requeue-to-pending clears the stale lease
+            }
+            release_event = lease.EVENT_RELEASED_RETRY
+        return await _fenced_update(
+            session,
+            job_id,
+            claim_token,
+            values,
+            status_guard=(HomeworkJob.status == "running"),
+            release_event=release_event,
+        )
+
     job = await session.get(HomeworkJob, job_id)
     if job is None:
         return "missing"
@@ -858,7 +1067,8 @@ async def requeue_session_limited(
     job_id: UUID,
     *,
     error: str,
-) -> str:
+    claim_token: Optional[UUID] = None,
+) -> object:
     """Requeue a session-limited job without burning a retry attempt.
 
     Sets status='pending', decrements attempts by 1 (GREATEST to floor at 0),
@@ -873,20 +1083,35 @@ async def requeue_session_limited(
     requeue_slot_saturated): a concurrent user cancel must win — resurrecting
     a 'cancelling' job to 'pending' would let it run again after the user
     asked to stop it. Returns "requeued", "cancelled", or "skipped".
+
+    Transitional (fenced job leases, Task 5): with ``claim_token=None`` the
+    legacy path runs UNCHANGED. When a token is given, the requeue is fenced —
+    the job id on success, ``lease.LeaseLost`` / ``lease.CancelRequested`` when
+    the lease no longer owns the row (the requeue already clears claim_token).
     """
+    requeue_values = dict(
+        status="pending",
+        attempts=func.greatest(HomeworkJob.attempts - 1, 0),
+        claimed_at=None,
+        claimed_by=None,
+        claim_token=None,
+        current_phase=None,
+        last_error=error,
+        scheduled_at=func.now(),
+    )
+    if claim_token is not None:
+        return await _fenced_update(
+            session,
+            job_id,
+            claim_token,
+            requeue_values,
+            status_guard=(HomeworkJob.status == "running"),
+            release_event=lease.EVENT_RELEASED_RETRY,
+        )
     result = await session.execute(
         update(HomeworkJob)
         .where(HomeworkJob.id == job_id, HomeworkJob.status == "running")
-        .values(
-            status="pending",
-            attempts=func.greatest(HomeworkJob.attempts - 1, 0),
-            claimed_at=None,
-            claimed_by=None,
-            claim_token=None,
-            current_phase=None,
-            last_error=error,
-            scheduled_at=func.now(),
-        )
+        .values(**requeue_values)
     )
     if result.rowcount == 0:
         return await _finalize_if_cancelling(session, job_id)
@@ -921,7 +1146,8 @@ async def requeue_slot_saturated(
     *,
     error: str,
     cooldown_seconds: int,
-) -> str:
+    claim_token: Optional[UUID] = None,
+) -> object:
     """Park a job whose api call exhausted the fleet credential-slot wait.
 
     Like requeue_session_limited: attempt refunded (claim's increment is
@@ -930,21 +1156,36 @@ async def requeue_slot_saturated(
     off the saturated credential instead of thrashing re-claims.
 
     Guarded on status='running' (gate correction 6): a concurrent cancel
-    must win — returns "parked", "cancelled", or "skipped"."""
+    must win — returns "parked", "cancelled", or "skipped".
+
+    Transitional (fenced job leases, Task 5): with ``claim_token=None`` the
+    legacy path runs UNCHANGED. When a token is given, the park is fenced —
+    the job id on success, ``lease.LeaseLost`` / ``lease.CancelRequested`` when
+    the lease no longer owns the row (the park already clears claim_token)."""
+    park_values = dict(
+        status="pending",
+        attempts=func.greatest(HomeworkJob.attempts - 1, 0),
+        claimed_at=None,
+        claimed_by=None,
+        claim_token=None,
+        current_phase=None,
+        last_error=error,
+        scheduled_at=func.now()
+        + func.make_interval(0, 0, 0, 0, 0, 0, cooldown_seconds),
+    )
+    if claim_token is not None:
+        return await _fenced_update(
+            session,
+            job_id,
+            claim_token,
+            park_values,
+            status_guard=(HomeworkJob.status == "running"),
+            release_event=lease.EVENT_RELEASED_RETRY,
+        )
     result = await session.execute(
         update(HomeworkJob)
         .where(HomeworkJob.id == job_id, HomeworkJob.status == "running")
-        .values(
-            status="pending",
-            attempts=func.greatest(HomeworkJob.attempts - 1, 0),
-            claimed_at=None,
-            claimed_by=None,
-            claim_token=None,
-            current_phase=None,
-            last_error=error,
-            scheduled_at=func.now()
-            + func.make_interval(0, 0, 0, 0, 0, 0, cooldown_seconds),
-        )
+        .values(**park_values)
     )
     if result.rowcount > 0:
         return "parked"

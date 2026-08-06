@@ -374,3 +374,203 @@ async def test_hard_deadline_forces_reclaim_despite_live_owner(
     )
 
     await db_session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Task 5: fence worker-owned writes with the claim token + cancel-wins
+# reconciliation (single-finalize contract) + heartbeat_check.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def fenced_job_factory():
+    """Factory: build a committed job in a chosen status with a stamped
+    claim_token (and optional phase rows), seeded/committed in its OWN session
+    so the db_session under test never already holds it in its identity map.
+    Yields ``make(...)`` returning a namespace with ``job_id`` / ``claim_token``
+    / ``book_id``. Cleans up phases, events, jobs, toc, and books.
+    """
+    import uuid as _uuid
+    from types import SimpleNamespace
+
+    from sqlalchemy import delete, text
+    from app.db import SessionLocal
+    from app.models.book import Book
+    from app.models.homework_job import HomeworkJob
+    from app.models.job_lease_event import JobLeaseEvent
+    from app.models.phase_output import PhaseOutput
+    from app.models.toc_entry import TOCEntry
+    from app.repositories import jobs as jobs_repo
+
+    book_ids: list = []
+
+    async def make(*, status: str = "running", phases=None):
+        token = _uuid.uuid4()
+        async with SessionLocal() as s:
+            book = Book(
+                subject="math-algebra",
+                original_filename="fenced.pdf",
+                content_sha256=_uuid.uuid4().hex.ljust(64, "f"),
+                file_size_bytes=1,
+                status="toc_ready",
+            )
+            s.add(book)
+            await s.flush()
+            toc = TOCEntry(book_id=book.id, section_title="L1", order_index=0)
+            s.add(toc)
+            await s.flush()
+            job = await jobs_repo.create(
+                s,
+                book_id=book.id,
+                toc_entry_id=toc.id,
+                subject="math-algebra",
+                output_language="uz",
+            )
+            await s.execute(
+                text(
+                    "UPDATE homework_jobs SET status=:st, claimed_by='w:1@sha', "
+                    "claim_token=:tok, claimed_at=now(), started_at=now(), "
+                    "attempts=1 WHERE id=:id"
+                ),
+                {"st": status, "tok": token, "id": job.id},
+            )
+            for i, pstatus in enumerate(phases or []):
+                s.add(
+                    PhaseOutput(
+                        job_id=job.id,
+                        phase_name=f"p{i}",
+                        phase_order=i,
+                        prompt_hash="h",
+                        model_name="m",
+                        status=pstatus,
+                        claim_token=token,
+                    )
+                )
+            await s.commit()
+            book_ids.append(book.id)
+            return SimpleNamespace(job_id=job.id, claim_token=token, book_id=book.id)
+
+    yield make
+
+    async with SessionLocal() as s:
+        for bid in book_ids:
+            job_ids = select(HomeworkJob.id).where(HomeworkJob.book_id == bid)
+            await s.execute(delete(JobLeaseEvent).where(JobLeaseEvent.job_id.in_(job_ids)))
+            await s.execute(delete(PhaseOutput).where(PhaseOutput.job_id.in_(job_ids)))
+            await s.execute(delete(HomeworkJob).where(HomeworkJob.book_id == bid))
+            await s.execute(delete(TOCEntry).where(TOCEntry.book_id == bid))
+            await s.execute(delete(Book).where(Book.id == bid))
+        await s.commit()
+
+
+async def test_stale_token_write_is_noop(db_session, fenced_job_factory):
+    """A write presenting a token the row no longer carries returns LeaseLost
+    and does NOT mutate the job (an obsolete worker can't complete the job that
+    was reclaimed out from under it)."""
+    import uuid as _uuid
+
+    from app.repositories import jobs as jobs_repo
+    from app.services import lease
+
+    row = await fenced_job_factory(status="running")
+    stale = _uuid.uuid4()  # a token that never owned this row
+    assert stale != row.claim_token
+
+    res = await jobs_repo.set_status(db_session, row.job_id, "done", claim_token=stale)
+    assert res is lease.LeaseLost
+
+    job = await _reload(db_session, row.job_id)
+    assert job.status != "done"          # the obsolete worker did NOT complete it
+    assert job.claim_token == row.claim_token  # real lease untouched
+    assert await _has_event(db_session, row.job_id, "lease_lost")
+
+    await db_session.commit()
+
+
+async def test_cancel_still_wins_over_fenced_requeue(db_session, fenced_job_factory):
+    """A user cancel set status='cancelling' out of band. A fenced retry with
+    the CURRENT owner's token must resolve to CancelRequested (not a retry): the
+    repo finalizes cancelling->cancelled AND fails every non-done phase row (the
+    shipped 0155 cancel contract). done phases are preserved."""
+    from app.models.phase_output import PhaseOutput
+    from app.repositories import jobs as jobs_repo
+    from app.services import lease
+
+    row = await fenced_job_factory(status="cancelling", phases=["running", "done"])
+
+    res = await jobs_repo.mark_failed_with_retry(
+        db_session,
+        row.job_id,
+        error_message="boom",
+        max_attempts=5,
+        claim_token=row.claim_token,
+    )
+    assert res is lease.CancelRequested  # cancel wins, NOT a retry
+
+    job = await _reload(db_session, row.job_id)
+    assert job.status == "cancelled"     # the repo finalized internally
+    assert job.claim_token is None
+
+    phases = (
+        await db_session.execute(
+            select(PhaseOutput)
+            .where(PhaseOutput.job_id == row.job_id)
+            .order_by(PhaseOutput.phase_order)
+        )
+    ).scalars().all()
+    assert phases[0].status == "failed"  # non-done phase swept to failed
+    assert phases[1].status == "done"    # done phase preserved
+    assert await _has_event(db_session, row.job_id, "released_cancelled")
+
+    await db_session.commit()
+
+
+async def test_heartbeat_check_distinguishes_lost_from_cancelling(
+    db_session, fenced_job_factory
+):
+    """heartbeat_check re-reads and classifies: RENEWED for a live owned+running
+    job, CANCELLING when a user cancel is pending, LOST when the token no longer
+    matches (reclaimed under us). It never finalizes."""
+    import uuid as _uuid
+
+    from app.repositories import jobs as jobs_repo
+    from app.services.lease import HeartbeatOutcome
+
+    live = await fenced_job_factory(status="running")
+    cancelling = await fenced_job_factory(status="cancelling")
+    reclaimed = await fenced_job_factory(status="running")
+
+    assert (
+        await jobs_repo.heartbeat_check(db_session, live.job_id, live.claim_token)
+        is HeartbeatOutcome.RENEWED
+    )
+    assert (
+        await jobs_repo.heartbeat_check(
+            db_session, cancelling.job_id, cancelling.claim_token
+        )
+        is HeartbeatOutcome.CANCELLING
+    )
+    assert (
+        await jobs_repo.heartbeat_check(db_session, reclaimed.job_id, _uuid.uuid4())
+        is HeartbeatOutcome.LOST
+    )
+    # heartbeat does NOT finalize the cancelling job — it only signals.
+    still = await _reload(db_session, cancelling.job_id)
+    assert still.status == "cancelling"
+
+    await db_session.commit()
+
+
+async def test_tokenless_calls_keep_legacy_behavior(db_session, fenced_job_factory):
+    """Transitional guarantee: token-less callers (pipeline/worker pre-Tasks 6-7)
+    get the EXACT pre-fencing behavior — no token predicate, bool/str returns."""
+    from app.repositories import jobs as jobs_repo
+
+    row = await fenced_job_factory(status="running")
+    # set_status without a token still returns a bool and mutates the row.
+    ok = await jobs_repo.set_status(db_session, row.job_id, "done")
+    assert ok is True
+    job = await _reload(db_session, row.job_id)
+    assert job.status == "done"
+
+    await db_session.commit()
