@@ -38,7 +38,7 @@ async def test_archive_job_force_pushes_with_replace_on_already_archived(monkeyp
     job = _done_archived_job()
     book = SimpleNamespace(grade="8", original_filename="8-sinf.pdf", id=job.book_id)
     section = SimpleNamespace(
-        id=job.toc_entry_id, section_number="1", section_title="L",
+        id=job.toc_entry_id, section_number="1", section_title="L", page_start=7, order_index=0,
         notion_homework_page_id=None, notion_archived_job_id=None,
     )
     phase = SimpleNamespace(phase_name="case-based-preview", status="done", output_md="# CBP")
@@ -51,6 +51,7 @@ async def test_archive_job_force_pushes_with_replace_on_already_archived(monkeyp
 
     with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \

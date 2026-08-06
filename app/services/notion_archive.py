@@ -26,7 +26,7 @@ from app.repositories import toc_entries as toc_repo
 from app.repositories import phase_outputs as phase_repo
 from app.services.notion import blocks
 from app.services.notion.client import NotionClientWrapper
-from app.services.notion.page_creator import find_or_create
+from app.services.notion.page_creator import _normalize, find_or_create
 
 # All generated homeworks are filed under this container, created on demand
 # under the subject page. Human-page matching/adoption is not performed.
@@ -89,7 +89,70 @@ def _resolve_subject_page_id(
 
 
 def _lesson_title(section_number: Optional[str], section_title: str) -> str:
+    """The base lesson-page title: `"{section_number} {section_title}"`.
+
+    Disambiguation deliberately does NOT live here — see `resolve_lesson_title`,
+    which is the only thing that decides whether a suffix is needed. Keeping the
+    suffix logic out of this function means a mutation to it cannot look like
+    coverage of the decision.
+    """
     return f"{section_number} {section_title}".strip() if section_number else section_title.strip()
+
+
+def _sibling_title(row) -> str:
+    """Base title of a sibling TOC row, by the SAME rule as the target row.
+
+    Sibling and target must be computed identically or a row fails to match
+    itself and the collision count silently reads 0 — suppressing the very
+    suffix that prevents the collision.
+    """
+    section_number, section_title, chapter_title = row[0], row[1], row[2]
+    return _lesson_title(section_number, section_title or chapter_title)
+
+
+def resolve_lesson_title(section, siblings) -> str:
+    """The Notion lesson-page title, disambiguated only as far as necessary.
+
+    `siblings` is every TOC row sharing this lesson's Notion container —
+    `(section_number, section_title, chapter_title, page_start, id)` — and
+    INCLUDES this section's own row, so a count of 1 means "unique".
+
+    Three escalating levels, because each one is demonstrably insufficient
+    alone on live data:
+
+    1. **Plain title.** Correct for the overwhelming majority, and load-bearing:
+       suffixing unconditionally would rename every lesson, so the next archive
+       would stop matching the existing page and duplicate it.
+    2. **`· p.{page_start}`** when the title repeats. These textbooks reuse
+       rubric headings as section titles (`Вспомните` ×10 in one grade) with a
+       NULL section_number, so the bare title is not an identifier.
+    3. **`· {short id}`** when the page number ALSO repeats. Part I and Part II
+       of one textbook share a container and both restart pagination, so
+       `Вспомните` sits at page 2 in both — measured, not hypothesised. Neither
+       page_start nor order_index separates that pair, so the last resort is the
+       TOC row's own id, which is unique by construction.
+    """
+    # Target and siblings MUST be titled by the same rule (incl. the
+    # chapter_title fallback), or a row fails to match itself, the count reads
+    # 0, and the suffix that prevents the collision is silently suppressed.
+    base = _sibling_title((
+        section.section_number, section.section_title,
+        getattr(section, "chapter_title", "") or "", None, None,
+    ))
+    same_base = [r for r in siblings if _normalize(_sibling_title(r)) == _normalize(base)]
+    if len(same_base) <= 1:
+        return base
+
+    page_start = getattr(section, "page_start", None)
+    if page_start is not None:
+        candidate = f"{base} · p.{page_start}"
+        # Does the page number actually separate us from the others?
+        if sum(1 for r in same_base if r[3] == page_start) <= 1:
+            return candidate
+    else:
+        candidate = base
+
+    return f"{candidate} · {str(section.id)[:8]}"
 
 
 PHASE_TITLES: dict[str, str] = {
@@ -148,6 +211,7 @@ def _push_to_notion(
     phase_md: dict[str, str],  # phase_name -> markdown (only present/done phases)
     find_or_create: Callable = find_or_create,  # injectable for tests
     replace: bool = False,
+    homework_page_id: Optional[str] = None,
 ) -> str:
     """Synchronous Notion I/O. Unconditionally creates the path:
     Subject → 'Generated Homeworks' → <lesson_title> → 'Homework', then the
@@ -157,9 +221,16 @@ def _push_to_notion(
     content is skipped. When `replace` is True, a populated leaf page is
     cleared (`clear_content_blocks`) and rewritten instead of skipped — used
     by the operator force-refresh path. Returns the Homework page id."""
-    container_id, _ = find_or_create(client, subject_page_id, CONTAINER_TITLE)
-    lesson_id, _ = find_or_create(client, container_id, lesson_title)
-    homework_id, _ = find_or_create(client, lesson_id, "Homework")
+    if homework_page_id:
+        # Identity from the DB beats identity from the title. A section that
+        # already owns a page reuses it directly — this is what stops a lesson
+        # whose title IS ambiguous from being re-keyed onto a fresh suffixed
+        # page and orphaning the content already filed under the old one.
+        homework_id = homework_page_id
+    else:
+        container_id, _ = find_or_create(client, subject_page_id, CONTAINER_TITLE)
+        lesson_id, _ = find_or_create(client, container_id, lesson_title)
+        homework_id, _ = find_or_create(client, lesson_id, "Homework")
 
     def _write_leaf(parent_id: str, title: str, present: list[tuple[str, str]]) -> None:
         page_id, _ = find_or_create(client, parent_id, title)
@@ -184,7 +255,8 @@ def _push_to_notion(
     return homework_id
 
 
-async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md, replace: bool = False) -> str:
+async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md, replace: bool = False,
+                          homework_page_id: Optional[str] = None) -> str:
     """Run the idempotent Notion push in a worker thread, retrying transient
     failures with exponential backoff. Re-raises the last exception if every
     attempt fails, so the caller can record a skip reason."""
@@ -198,6 +270,7 @@ async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md, r
                 lesson_title=lesson_title,
                 phase_md=phase_md,
                 replace=replace,
+                homework_page_id=homework_page_id,
             )
         except Exception as exc:  # noqa: BLE001 - retried, then recorded as a skip
             last_exc = exc
@@ -261,7 +334,21 @@ async def archive_job(job_id: UUID, *, force: bool = False) -> None:
                 await session.commit()
                 return
             section_id = section.id
-            lesson_title = _lesson_title(section.section_number, section.section_title)
+            # Is this lesson's title repeated anywhere in the same Notion
+            # container? If so it MUST be disambiguated, or `find_or_create`
+            # sends it to another lesson's page where `page_has_content` will
+            # silently drop the write (the 2026-08-05 loss: 184 jobs stamped
+            # archived, 135 pages, 49 homeworks never written).
+            siblings = await toc_repo.titles_for_subject_grade(
+                session, subject=job.subject, grade=book.grade,
+            )
+            lesson_title = resolve_lesson_title(section, siblings)
+            if lesson_title != _lesson_title(section.section_number, section.section_title):
+                log.info(
+                    "notion: lesson title is repeated at %s|%s — filing as %r",
+                    job.subject, book.grade, lesson_title,
+                )
+
             # A leaf page under 'Generated Homeworks' is always our own output
             # (no human-page adoption — see module docstring), so a regen may
             # safely clear+rewrite it. first_archive: never filed this lesson
@@ -272,6 +359,8 @@ async def archive_job(job_id: UUID, *, force: bool = False) -> None:
             # newer page with stale content. force (operator override) is the
             # only direction-blind path.
             first_archive = section.notion_homework_page_id is None
+            # Captured inside the session: the push runs after it closes.
+            section_page_id = section.notion_homework_page_id
             prior_job_id = section.notion_archived_job_id
             auto_replace = False
             if prior_job_id is not None and prior_job_id != job_id:
@@ -297,6 +386,11 @@ async def archive_job(job_id: UUID, *, force: bool = False) -> None:
                 await session.commit()
             return
 
+        # FOOTGUN: `force` clears and rewrites the leaf pages it finds. If this
+        # section still carries a colliding `notion_homework_page_id` from before
+        # the disambiguation fix, that page belongs to ANOTHER lesson, and force
+        # would destroy its content. Repair the stamps before any forced
+        # re-archive of pre-fix rows.
         do_replace = force or auto_replace
 
         client = NotionClientWrapper(api_key=settings.notion_api_key)
@@ -307,6 +401,9 @@ async def archive_job(job_id: UUID, *, force: bool = False) -> None:
                 lesson_title=lesson_title,
                 phase_md=phase_md,
                 replace=do_replace,
+                # Reuse the page this section already owns, so an ambiguous
+                # title cannot re-key it onto a fresh suffixed page.
+                homework_page_id=section_page_id,
             )
         except Exception as exc:  # noqa: BLE001 - push exhausted retries; record + give up
             log.warning("notion: push failed for job %s after %d attempts (non-fatal)",

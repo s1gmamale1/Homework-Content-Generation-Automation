@@ -42,7 +42,7 @@ def test_archive_marks_skip_on_no_mapping():
                           output_language="uz", book_id=uuid4(), toc_entry_id=uuid4())
     book = SimpleNamespace(grade="5", original_filename="x.pdf")
     section = SimpleNamespace(
-        id=uuid4(), section_number="1", section_title="T",
+        id=uuid4(), section_number="1", section_title="T", page_start=7, order_index=0,
         notion_homework_page_id=None, notion_archived_job_id=None,
     )
     set_skip = AsyncMock()
@@ -52,6 +52,7 @@ def test_archive_marks_skip_on_no_mapping():
          patch.object(na, "SessionLocal", lambda: _FakeSession()), \
          patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
          patch.object(na.jobs_repo, "set_notion_skip_reason", set_skip):
         asyncio.run(na.archive_job(jid))
@@ -75,7 +76,7 @@ def test_archive_marks_skip_on_push_exception():
                           output_language="uz", book_id=uuid4(), toc_entry_id=uuid4())
     book = SimpleNamespace(grade="5", original_filename="x.pdf")
     section = SimpleNamespace(
-        id=uuid4(), section_number="1", section_title="T",
+        id=uuid4(), section_number="1", section_title="T", page_start=7, order_index=0,
         notion_homework_page_id=None, notion_archived_job_id=None,
     )
     done_phase = SimpleNamespace(phase_name="case-based-preview", output_md="# x", status="done")
@@ -91,6 +92,7 @@ def test_archive_marks_skip_on_push_exception():
          patch.object(na.asyncio, "sleep", sleeps), \
          patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[done_phase])), \
          patch.object(na.jobs_repo, "set_notion_skip_reason", set_skip):
