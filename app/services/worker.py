@@ -573,29 +573,25 @@ class Worker:
                 await self._mark_failed(job_id, f"timeout after {self.job_timeout}s", lease)
             except LeaseLostSignal:
                 # A reclaim rotated the lease to a new owner. Mutate NOTHING —
-                # the job now belongs to the reclaiming worker. Cancel any
-                # lingering local task (defensive; in the direct-signal path
-                # this IS the current task, so we skip self-cancel) and log once.
+                # the job now belongs to the reclaiming worker. The pipeline has
+                # already unwound; this task returns via `finally`, so there is
+                # nothing to cancel (RUNNING_JOBS[job_id] may already point at
+                # the NEW owner's task in a same-process reclaim — cancelling it
+                # would be the opposite of intent). Log once.
                 if job_id not in self._lease_lost_logged:
                     self._lease_lost_logged.add(job_id)
                     logger.warning(
                         f"worker {self.id} job={job_id} lease LOST (reclaimed) — "
                         f"leaving it to the new owner, mutating nothing"
                     )
-                task = RUNNING_JOBS.get(job_id)
-                if task is not None and task is not asyncio.current_task():
-                    task.cancel()
-                # return via finally (slot release + heartbeat cancel)
             except CancelWonSignal:
                 # A user cancel won and the repo ALREADY finalized cancelled
-                # (single-finalize contract). Do NOT finalize again.
+                # (single-finalize contract). Do NOT finalize again; just return
+                # via `finally` (nothing to cancel — see LeaseLost above).
                 logger.warning(
                     f"worker {self.id} job={job_id} cancel-wins "
                     f"(repo already finalized cancelled)"
                 )
-                task = RUNNING_JOBS.get(job_id)
-                if task is not None and task is not asyncio.current_task():
-                    task.cancel()
             except asyncio.CancelledError:
                 # Distinguish a user-cancel from a worker-shutdown cancel.
                 cancelling = False
