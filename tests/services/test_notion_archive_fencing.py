@@ -192,6 +192,37 @@ async def test_token_less_call_archives_as_today(monkeypatch):
     set_arch.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_force_rearchive_token_less_bypasses_idempotency_guard(monkeypatch):
+    """Task 10 gap: the operator re-archive path
+    (`POST /jobs/{id}/retry-archive?force=true` -> `_force_rearchive_one` ->
+    `archive_job(job_id, force=True)`, always token-less — app/api/v1/jobs.py)
+    must keep functioning alongside fencing. Two things must both hold:
+      * `force=True` bypasses the 0129 already-archived idempotency
+        short-circuit (contrast `test_winning_token_still_respects_0129_idempotency_guard`,
+        same archived=True setup but WITHOUT force — proves NO bypass there).
+      * the token-less path is fence-exempt (`_claim_token_ok(job, None)` is
+        always True), so this fires even though the job carries some
+        claim_token nobody currently owns (a long-since-completed job)."""
+    job = _job(status="done", claim_token=uuid4(), archived=True)  # already archived
+    section = _section(job)  # first_archive=True (no pointer filed yet)
+    book, phase = _wire(monkeypatch)
+    with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
+         patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
+         patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()) as set_ptr, \
+         patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
+         patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()) as set_arch, \
+         patch.object(na, "NotionClientWrapper", MagicMock()), \
+         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+        await na.archive_job(job.id, force=True)  # token-less, force
+    push.assert_awaited_once()
+    set_ptr.assert_awaited_once()
+    stamp.assert_awaited_once()
+    set_arch.assert_awaited_once()
+
+
 def test_claim_token_ok_helper():
     """Direct unit coverage of the fence predicate."""
     token = uuid4()
