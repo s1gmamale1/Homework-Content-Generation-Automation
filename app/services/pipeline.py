@@ -513,7 +513,10 @@ async def run(job_id: UUID, lease: Optional[JobLease] = None) -> None:
         )
 
         try:
-            await notion_archive.archive_job(job_id)
+            # Fence the automatic archive on THIS run's winning claim_token
+            # (Task 9): an obsolete worker whose job was reclaimed mid-flight
+            # must not publish/stamp — see notion_archive._claim_token_ok.
+            await notion_archive.archive_job(job_id, claim_token=_token_of(lease))
         except Exception:
             log.warning(f"[job {job_id}] notion archive hook failed (non-fatal)", exc_info=True)
 
