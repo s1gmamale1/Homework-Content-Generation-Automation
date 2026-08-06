@@ -149,3 +149,76 @@ def test_a_known_homework_page_is_reused_without_touching_titles():
     assert again == known
     # No new lesson page was invented despite the title not matching anything.
     assert c.lesson_pages_under() == ["Проценты"]
+
+
+# --- the DETECTION itself -----------------------------------------------------
+# The first version of this fix tested only `_lesson_title(ambiguous=True)` — a
+# hardcoded-correct input. The whole detection could be deleted with a green
+# suite. These drive `resolve_lesson_title` with realistic sibling rows, which
+# is what `archive_job` actually passes.
+
+from uuid import UUID
+
+def _row(sn, st, page_start, tid, ct=""):
+    return (sn, st, ct, page_start, UUID(tid))
+
+
+def _sec(sn, st, page_start, tid):
+    return SimpleNamespace(section_number=sn, section_title=st,
+                           page_start=page_start, id=UUID(tid))
+
+
+_A = "aaaaaaaa-0000-0000-0000-000000000001"
+_B = "bbbbbbbb-0000-0000-0000-000000000002"
+_C = "cccccccc-0000-0000-0000-000000000003"
+
+
+def test_unique_title_is_left_alone():
+    """The 135 currently-correct pages depend on this."""
+    sec = _sec(None, "Проценты", 30, _A)
+    siblings = [_row(None, "Проценты", 30, _A), _row(None, "Объём", 44, _B)]
+    assert na.resolve_lesson_title(sec, siblings) == "Проценты"
+
+
+def test_repeated_title_is_disambiguated_by_page():
+    sec = _sec(None, "Вспомните", 64, _A)
+    siblings = [_row(None, "Вспомните", 64, _A), _row(None, "Вспомните", 90, _B)]
+    assert na.resolve_lesson_title(sec, siblings) == "Вспомните · p.64"
+
+
+def test_same_title_AND_same_page_falls_back_to_the_row_id():
+    """The live Part I / Part II case.
+
+    Both books share a Notion container and both restart pagination, so
+    `Вспомните` is at page 2 in each. page_start does NOT separate them, and
+    order_index does not either (both are 1) — so the suffix must escalate.
+    """
+    sec = _sec(None, "Вспомните", 2, _A)
+    siblings = [_row(None, "Вспомните", 2, _A), _row(None, "Вспомните", 2, _B)]
+
+    got = na.resolve_lesson_title(sec, siblings)
+
+    assert got == "Вспомните · p.2 · aaaaaaaa"
+    other = na.resolve_lesson_title(_sec(None, "Вспомните", 2, _B), siblings)
+    assert got != other, "the two Part I/II lessons still collide"
+
+
+def test_case_and_whitespace_variants_count_as_the_same_title():
+    """`ПОВТОРЕНИЕ 2` and `Повторение 2` collided live — find_or_create folds case."""
+    sec = _sec(None, "ПОВТОРЕНИЕ 2", 88, _A)
+    siblings = [_row(None, "ПОВТОРЕНИЕ 2", 88, _A), _row(None, "  повторение 2 ", 91, _B)]
+    assert na.resolve_lesson_title(sec, siblings) == "ПОВТОРЕНИЕ 2 · p.88"
+
+
+def test_sibling_rows_falling_back_to_chapter_title_still_match():
+    """A sibling with an empty section_title is titled from chapter_title; if the
+    two sides disagreed, a row would fail to match itself and the count would
+    read 0 — silently suppressing the suffix."""
+    sec = _sec(None, "Повторение", 10, _A)
+    siblings = [_row(None, "Повторение", 10, _A), _row(None, "", 20, _B, ct="Повторение")]
+    assert na.resolve_lesson_title(sec, siblings).startswith("Повторение · p.10")
+
+
+def test_a_lesson_alone_in_its_container_is_not_suffixed():
+    sec = _sec("1.1", "Burchaklar", 5, _A)
+    assert na.resolve_lesson_title(sec, [_row("1.1", "Burchaklar", 5, _A)]) == "1.1 Burchaklar"

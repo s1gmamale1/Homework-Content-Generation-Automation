@@ -4,7 +4,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import TOCEntry
+from app.models import Book, TOCEntry
 from app.schemas import TOCEntryExtracted
 
 
@@ -106,8 +106,8 @@ async def get(session: AsyncSession, toc_entry_id: UUID) -> TOCEntry | None:
 
 
 async def titles_for_subject_grade(
-    session: AsyncSession, *, subject: str, grade: str
-) -> list[tuple[str | None, str, str]]:
+    session: AsyncSession, *, subject: str, grade: str | None
+) -> list[tuple[str | None, str, str, int | None, UUID]]:
     """Every TOC entry's (section_number, section_title, chapter_title) across
     ALL books of one subject+grade.
 
@@ -117,15 +117,20 @@ async def titles_for_subject_grade(
     Part I / Part II split of a single textbook, whose repeated rubric headings
     collide across the two books. Language is deliberately NOT a filter: it
     selects the container, not which TOC rows exist.
-    """
-    from app.models import Book  # local import — avoids a circular import
 
+    Returns `(section_number, section_title, chapter_title, page_start, id)` —
+    `page_start` and `id` are the tiebreakers the caller needs when a title is
+    repeated, so this must stay one query rather than a lookup per collision.
+    """
     rows = await session.execute(
-        select(TOCEntry.section_number, TOCEntry.section_title, TOCEntry.chapter_title)
+        select(
+            TOCEntry.section_number, TOCEntry.section_title, TOCEntry.chapter_title,
+            TOCEntry.page_start, TOCEntry.id,
+        )
         .join(Book, Book.id == TOCEntry.book_id)
         .where(Book.subject == subject, Book.grade == grade)
     )
-    return [(r[0], r[1] or "", r[2] or "") for r in rows.all()]
+    return [(r[0], r[1] or "", r[2] or "", r[3], r[4]) for r in rows.all()]
 
 
 async def set_notion_homework_page_id(
