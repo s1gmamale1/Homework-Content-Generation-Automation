@@ -445,15 +445,16 @@ class Worker:
                         self._log_stale_gate(floor)
                         return None
 
-                    job = await jobs_repo.claim_next_job(
+                    claimed = await jobs_repo.claim_next_job(
                         session,
                         worker_id=self.id,
                         max_attempts=self.max_attempts,
                         capabilities=CAPABILITIES,
                         fleet_api_paused=fleet_api_paused,
                     )
-                if job is None:
+                if claimed is None:
                     return None
+                job = claimed.job
                 logger.info(
                     f"worker {self.id} claimed job={job.id} "
                     f"attempt={job.attempts}/{self.max_attempts} priority={job.priority}"

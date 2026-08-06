@@ -1,14 +1,16 @@
 from datetime import datetime
 from typing import Any, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import and_, case, func, literal, not_, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Batch, HomeworkJob, PhaseOutput, TOCEntry
+from app.repositories import lease_events
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import workers as workers_repo
+from app.services import lease
 
 _TERMINAL_STATUSES = ("done", "failed", "cancelled")
 
@@ -358,13 +360,16 @@ async def claim_next_job(
     max_attempts: int,
     capabilities: Optional[dict] = None,
     fleet_api_paused: bool = False,
-) -> Optional[HomeworkJob]:
+) -> Optional[lease.ClaimedJob]:
     """Atomically claim the next pending job for this worker.
 
     Uses `FOR UPDATE SKIP LOCKED` so multiple workers polling concurrently
     never collide on the same row — Postgres serializes the dispatch.
-    Returns None if no claimable job is available (worker should sleep
-    and retry).
+    Mints a fresh per-claim `claim_token`, stamps it on the job row, and
+    records a `claimed` ledger event in the same transaction (fenced job
+    leases, Task 3). Returns a `lease.ClaimedJob(job, lease)` pairing the
+    claimed row with its `lease.JobLease`, or None if no claimable job is
+    available (worker should sleep and retry).
 
     Eligibility rules (claim gate v3 — job-column-based, Task 4):
       - status == 'pending'
@@ -537,6 +542,7 @@ async def claim_next_job(
     if job_id is None:
         return None
 
+    token = uuid4()
     await session.execute(
         update(HomeworkJob)
         .where(HomeworkJob.id == job_id)
@@ -544,13 +550,25 @@ async def claim_next_job(
             status="running",
             claimed_at=func.now(),
             claimed_by=worker_id,
+            claim_token=token,
             attempts=HomeworkJob.attempts + 1,
             last_attempt_at=func.now(),
             started_at=func.now(),
             error_message=None,  # clear stale message from prior attempt
         )
     )
-    return await session.get(HomeworkJob, job_id)
+    await lease_events.append_event(
+        session,
+        job_id=job_id,
+        claim_token=token,
+        event_type=lease.EVENT_CLAIMED,
+        owner=worker_id,
+    )
+    job = await session.get(HomeworkJob, job_id)
+    return lease.ClaimedJob(
+        job=job,
+        lease=lease.JobLease(job_id=job_id, claim_token=token, owner_id=worker_id),
+    )
 
 
 async def touch_claim(session: AsyncSession, job_id: UUID) -> None:
