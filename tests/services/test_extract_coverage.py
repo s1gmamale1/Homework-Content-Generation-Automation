@@ -31,10 +31,15 @@ def test_config_defaults_are_warn_only_and_inherit_the_extract_model():
 def test_shipped_default_is_independent_of_the_test_environment():
     """The suite forces the check OFF via env (tests/conftest.py) so no unit test
     can reach a real spawn — so assert the SHIPPED default on the class, not on
-    the env-resolved instance, or this test would silently stop meaning anything."""
+    the env-resolved instance, or this test would silently stop meaning anything.
+
+    The shipped default is False by MEASUREMENT: the 2026-08-07 calibration
+    (docs/research/2026-08-07-extract-coverage-calibration.md) failed both
+    pre-registered bars. Changing this assertion means changing that verdict —
+    do it only with a new calibration run behind it."""
     from app.config import Settings
 
-    assert Settings.model_fields["extract_coverage_check_enabled"].default is True
+    assert Settings.model_fields["extract_coverage_check_enabled"].default is False
 
 
 @pytest.mark.asyncio

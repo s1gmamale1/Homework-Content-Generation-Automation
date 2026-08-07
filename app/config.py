@@ -228,9 +228,15 @@ class Settings(BaseSettings):
     # Extract-completeness check (warn-only, plan 2026-08-07): one bounded call
     # per FRESH extract comparing the summary against the lesson's own source
     # pages. Advisory only — it never fails a job and never regens.
-    # NOTE: this default is provisional until Task 5's calibration lands; that
-    # task sets its final value from the measurement.
-    extract_coverage_check_enabled: bool = True
+    # DEFAULT OFF by measurement, not by taste: the 2026-08-07 calibration
+    # (docs/research/2026-08-07-extract-coverage-calibration.md) found neither
+    # candidate model passed both pre-registered bars — flash-lite missed the
+    # hand-verified worked-example case (recall 5/8), and flash caught 8/8 but
+    # fired on a known-complete compact extract, flagging items the extract
+    # states in prose. Measured cost is also 35x the plan's estimate on the
+    # model that works ($0.035/lesson, not $0.001). The code ships complete and
+    # tested; an operator enables it deliberately.
+    extract_coverage_check_enabled: bool = False
     # Advisory work must not stall the sequential head phase: the check runs
     # OUTSIDE _run_with_failover's per_attempt_timeout_seconds (600s) guard, so
     # it carries its own, much tighter bound.
