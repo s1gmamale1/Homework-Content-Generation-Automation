@@ -74,3 +74,37 @@ Rule 5's flag condition — "if all three specimens already carry a **full gloss
 - **Tasks 2 and 3 proceed unchanged**, with the mechanism statement corrected from "nothing to build from" to "the words without their meanings, and never the source sentences".
 - **Task 4's judge criteria drop**; its regression gate is moot. What remains is the extract before/after and the live language packet.
 - **The un-probed class stands as the honest residual:** plausible-but-invented content (idiomatically odd example sentences, defensible-but-not-source glosses) is still `minor`-only. The extract limb addresses it preventively; nothing detects it. This strengthens the case for the filed `language-drill-solver-gap-1`.
+
+---
+
+# AFTER run — extract limb
+
+Judge arms were not re-run (`--extract-only`): no judge change shipped, so they cannot move. The `before` judge rows are carried forward in the JSON and the file records `extract_only: true`.
+
+## Result: acceptance criterion 1 MET
+
+| specimen | before | after | headings gained |
+|---|---|---|---|
+| `english-g8-families` | 1,407 ch | 2,274 ch | Vocabulary & set phrases · Source sentences & passages |
+| `english-g8-vocab-list` | 5,558 ch | 1,720 ch | Vocabulary & set phrases (and now capped) |
+| `adabiyot-g9-alpomish` | 1,496 ch | 4,963 ch | Vocabulary & set phrases · Source sentences & passages |
+
+What the generator now receives that it did not before: a **glossed** family-vocabulary list *including the appearance adjectives the coverage contract had been silently dropping*, the reading text's actual sentences, and for the *doston* lesson the textbook's own footnote glossary plus verbatim verse lines.
+
+## Three defects the after-run exposed, all fixed and re-measured
+
+1. **Uncapped growth.** The end-of-book reference word-list produced **34,104 chars** — over the plan's 12,000 decision threshold, and injected ~22× per job. Capped at 40 bullets + `(+N further items in the source list)` → **1,720 chars**. Note the honest cost: on that specimen the "meanings" degrade to part-of-speech labels, because the source genuinely has none. A `Vocabulary List` TOC row is a reference appendix, not a lesson; this is a degenerate specimen and the cap is the right trade.
+2. **Duplicated glosses.** `item — meaning (uz. *meaning*)` doubled the section for no information. Format is now exact and the repeat forbidden.
+3. **Unmarked supplied meanings — the one that matters.** The model supplied dictionary definitions without marking them. This **inverts the fidelity guard**: `_FIDELITY_RULE` makes the judge treat LESSON CONTEXT as ground truth, so a gloss the *extract* invented is enforced against the generator as if the textbook had said it. The contract now requires `[not in source]`. Verified discriminating correctly on adabiyot — real textbook footnote glosses unmarked, the one supplied term marked. A live example of why this matters: the after-run glossed `dark` as *"reflect a lot of light"* (backwards). Marked, so it reads as supplied rather than textbook-authoritative.
+
+## A regression this lane introduced, caught by measurement
+
+The two new headings carried forceful `REQUIRED whenever` clauses; `## Key facts` carried none. On the literature specimen the model spent its budget on vocabulary + verse and **dropped `## Key facts` entirely — 3/3 runs, i.e. not variance**, losing the Alpomish lesson's dates, genealogy and the terms of the plot: its examinable content. `## Key facts` now carries the same REQUIRED clause; 3/3 runs restored it.
+
+Worth naming as a method point: with n=1 per condition I could not have told this from noise, and the natural reading ("the change also made adabiyot shorter and tighter") was wrong. Three repeats cost ~$0.08 and turned a guess into a fact.
+
+## Spend
+
+**$2.0727 for the whole lane** — 32 judge calls $1.4265 + 18 extract calls $0.6462. Over the plan's ~$0.35-per-run estimate: judge output tokens were ~2.4× what I assumed, and the extract contract needed three measured iterations rather than one shot.
+
+**Attribution caveat:** a naive "last 95 minutes" query over `agent_usages` also picks up `lesson.extract.coverage` rows emitting an `ExtractCoverageVerdict` schema that exists in **neither this worktree nor the main checkout** — another session is running its own lane against the same `edu_copy` database. Those rows are excluded above. Anyone re-deriving this figure must filter by operation, not by time window alone.
