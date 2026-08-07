@@ -2,12 +2,19 @@
 
 Pure only — no DB, no PDF, no network (repo bar: pass WITHOUT
 RUN_DB_INTEGRATION=1). `load_extract_audit_inputs` itself is exercised by a
-later task; it needs a real DB + PDF to test meaningfully.
+later task; it needs a real DB + PDF to test meaningfully. Task 3's
+`audit_one`/`audit_with_control` DO make an LLM call in production, but here
+`agent.run_phase` is always patched with `unittest.mock.AsyncMock` — zero
+real model calls, zero DB, zero PDF reads in this file.
 """
+import dataclasses
+from unittest.mock import AsyncMock
+
 import pytest
 from pydantic import ValidationError
 
 from app.services import extract_fidelity_audit as efa
+from app.services.agent import PhaseResult
 
 
 # ---------- ClaimVerdict ----------
@@ -504,3 +511,428 @@ def test_reground_returns_downgrade_count_matching_number_of_downgrades():
     assert len(new_claims) == 4
     statuses = [c.status for c in new_claims]
     assert statuses == ["ok", "unsupported", "unsupported", "ok"]
+
+
+# ============================================================================
+# Task 3 — audit_one / select_mutation / audit_with_control / summarize_runs
+# / select_sample. `agent.run_phase` is ALWAYS patched (AsyncMock) — zero
+# real model calls anywhere in this section.
+# ============================================================================
+
+
+def _phase_result(claims, usage=None):
+    return PhaseResult(
+        text="",
+        parsed=efa.Adjudication(claims=claims),
+        usage=usage if usage is not None else {"prompt_tokens": 100, "output_tokens": 20},
+    )
+
+
+# ---------- audit_one ----------
+
+
+async def test_audit_one_returns_report_and_appends_exactly_one_call(monkeypatch):
+    claims = [_verdict("ok"), _verdict("contradicts"), _verdict("unsupported", span="zzz")]
+    mock = AsyncMock(return_value=_phase_result(claims))
+    monkeypatch.setattr(efa.agent, "run_phase", mock)
+
+    inputs = _inputs(source_language="uz", output_language="uz")
+    calls: list[dict] = []
+    report = await efa.audit_one(
+        inputs, provider="gemini", model="gemini-3.5-flash", transport="api", calls=calls
+    )
+
+    assert isinstance(report, efa.ExtractFidelityReport)
+    assert report.ok_count == 1
+    assert report.contradicts_count == 1
+    assert report.unsupported_count == 1  # "zzz" too short to reground
+    assert len(calls) == 1
+    assert calls[0]["step"] == "audit"
+    assert calls[0]["provider"] == "gemini"
+    assert calls[0]["model"] == "gemini-3.5-flash"
+    assert calls[0]["usage"] == {"prompt_tokens": 100, "output_tokens": 20}
+
+
+async def test_audit_one_reports_lesson_metadata_and_cross_language_flag(monkeypatch):
+    monkeypatch.setattr(efa.agent, "run_phase", AsyncMock(return_value=_phase_result([])))
+    inputs = _inputs(
+        job_id="job-123", subject="history", family="humanities", grade="9",
+        source_language="ru", output_language="uz",
+    )
+    report = await efa.audit_one(
+        inputs, provider="gemini", model="gemini-3.5-flash", transport="api", calls=[]
+    )
+    assert report.job_id == "job-123"
+    assert report.subject == "history"
+    assert report.family == "humanities"
+    assert report.grade == "9"
+    assert report.source_language == "ru"
+    assert report.output_language == "uz"
+    assert report.cross_language is True
+
+
+async def test_audit_one_same_language_is_not_cross_language(monkeypatch):
+    monkeypatch.setattr(efa.agent, "run_phase", AsyncMock(return_value=_phase_result([])))
+    inputs = _inputs(source_language="uz", output_language="uz")
+    report = await efa.audit_one(
+        inputs, provider="gemini", model=None, transport="api", calls=[]
+    )
+    assert report.cross_language is False
+
+
+async def test_audit_one_passes_xfid_operation_and_no_production_attribution(monkeypatch):
+    mock = AsyncMock(return_value=_phase_result([]))
+    monkeypatch.setattr(efa.agent, "run_phase", mock)
+    inputs = _inputs()
+    await efa.audit_one(
+        inputs, provider="gemini", model="gemini-3.5-flash", transport="api", calls=[]
+    )
+    kwargs = mock.await_args.kwargs
+    assert kwargs["operation"] == "xfid:audit"
+    assert kwargs["homework_job_id"] is None
+    assert kwargs["phase_output_id"] is None
+    assert kwargs["schema"] is efa.Adjudication
+    assert kwargs["transport"] == "api"
+
+
+async def test_audit_one_runs_reground_and_reports_downgrade_count(monkeypatch):
+    # A long multi-word span that IS present in whole_book_text -> downgraded.
+    whole = "The treaty was signed in Versailles after long negotiation."
+    claims = [_verdict("unsupported", span="the treaty was signed in Versailles")]
+    monkeypatch.setattr(efa.agent, "run_phase", AsyncMock(return_value=_phase_result(claims)))
+    inputs = _inputs(whole_book_text=whole)
+    report = await efa.audit_one(
+        inputs, provider="gemini", model=None, transport="api", calls=[]
+    )
+    assert report.downgraded_count == 1
+    assert report.ok_count == 1
+    assert report.unsupported_count == 0
+
+
+async def test_audit_one_reports_claim_type_breakdown(monkeypatch):
+    claims = [
+        _verdict("ok", claim_type="name"),
+        _verdict("contradicts", claim_type="name"),
+        _verdict("unsupported", claim_type="date", span="zzz"),
+    ]
+    monkeypatch.setattr(efa.agent, "run_phase", AsyncMock(return_value=_phase_result(claims)))
+    report = await efa.audit_one(
+        _inputs(), provider="gemini", model=None, transport="api", calls=[]
+    )
+    assert report.claim_type_counts["name"] == {"ok": 1, "contradicts": 1, "unsupported": 0}
+    assert report.claim_type_counts["date"] == {"ok": 0, "contradicts": 0, "unsupported": 1}
+
+
+async def test_audit_one_raises_on_run_phase_exception_never_returns_clean_report(monkeypatch):
+    monkeypatch.setattr(
+        efa.agent, "run_phase", AsyncMock(side_effect=RuntimeError("subprocess died"))
+    )
+    calls: list[dict] = []
+    with pytest.raises(efa.ExtractFidelityAuditError):
+        await efa.audit_one(
+            _inputs(), provider="gemini", model=None, transport="api", calls=calls
+        )
+    assert calls == []  # no call recorded on failure
+
+
+async def test_audit_one_raises_on_unparsed_result(monkeypatch):
+    unparsed = PhaseResult(text="not json", parsed=None, usage={})
+    monkeypatch.setattr(efa.agent, "run_phase", AsyncMock(return_value=unparsed))
+    calls: list[dict] = []
+    with pytest.raises(efa.ExtractFidelityAuditError):
+        await efa.audit_one(
+            _inputs(), provider="gemini", model=None, transport="api", calls=calls
+        )
+    assert calls == []
+
+
+# ---------- select_mutation (pure, no LLM) ----------
+
+
+def test_select_mutation_falls_back_to_a_kind_that_can_plant():
+    # No years/capitalized-mid-sentence words present -> "date" and "name"
+    # cannot plant; a definition connector IS present -> "definition" must
+    # be the one that succeeds. Proves fallback across kinds, not pinning.
+    md = "a metaphor — a figure of speech. a simile – a comparison using like."
+    result = efa.select_mutation(md, seed=7, forbidden_text="")
+    assert result is not None
+    kind, mutated_md, mutation = result
+    assert kind == "definition"
+    assert mutated_md != md
+    assert isinstance(mutation, efa.Mutation)
+
+
+def test_select_mutation_returns_none_when_no_kind_can_plant():
+    md = "short plain text with nothing plantable at all here."
+    assert efa.select_mutation(md, seed=1, forbidden_text="") is None
+
+
+def test_select_mutation_is_deterministic_given_same_seed():
+    md = "Napoleon led the army. Later, Napoleon crossed the Alps with Wellington nearby."
+    r1 = efa.select_mutation(md, seed=42, forbidden_text="")
+    r2 = efa.select_mutation(md, seed=42, forbidden_text="")
+    assert r1 == r2
+
+
+# ---------- lesson_seed (pure) ----------
+
+
+def test_lesson_seed_is_deterministic():
+    assert efa.lesson_seed(1, "job-a") == efa.lesson_seed(1, "job-a")
+
+
+def test_lesson_seed_varies_by_job_id():
+    assert efa.lesson_seed(1, "job-a") != efa.lesson_seed(1, "job-b")
+
+
+def test_lesson_seed_is_an_int():
+    assert isinstance(efa.lesson_seed(5, "job-x"), int)
+
+
+# ---------- audit_with_control (paired) ----------
+
+
+_MUTABLE_MD = (
+    "Napoleon led the army. Later, Napoleon crossed the Alps with Wellington nearby."
+)
+
+
+def _plant(seed=11):
+    """Precompute what select_mutation would plant for _MUTABLE_MD, so
+    tests can craft mocked adjudicator claims that reference the actual
+    planted replacement text."""
+    result = efa.select_mutation(_MUTABLE_MD, seed, forbidden_text="")
+    assert result is not None
+    return result
+
+
+async def test_audit_with_control_detects_when_only_mutated_arm_flags_span(monkeypatch):
+    kind, mutated_md, mutation = _plant()
+    flagged_claim = _verdict("contradicts", span=f"a fact about {mutation.replacement} here")
+    mock = AsyncMock(return_value=_phase_result([flagged_claim]))
+    monkeypatch.setattr(efa.agent, "run_phase", mock)
+
+    inputs = _inputs(extract_md=_MUTABLE_MD, whole_book_text="")
+    pristine = efa.ExtractFidelityReport.from_claims([])  # pristine flags nothing
+
+    calls: list[dict] = []
+    paired = await efa.audit_with_control(
+        inputs, pristine, seed=11, provider="gemini", model=None, transport="api", calls=calls
+    )
+
+    assert paired is not None
+    assert paired.detected_planted is True
+    assert paired.kind == kind
+    assert paired.mutation == mutation
+    assert len(calls) == 1  # exactly one NEW call — the mutated arm
+
+
+async def test_audit_with_control_both_arms_flagging_is_a_false_positive_not_a_detection(
+    monkeypatch,
+):
+    kind, mutated_md, mutation = _plant()
+    flagged_claim = _verdict("contradicts", span=f"a fact about {mutation.replacement} here")
+    mock = AsyncMock(return_value=_phase_result([flagged_claim]))
+    monkeypatch.setattr(efa.agent, "run_phase", mock)
+
+    inputs = _inputs(extract_md=_MUTABLE_MD, whole_book_text="")
+    # Pristine ALSO flags the same replacement text (pre-existing bias,
+    # unrelated to the mutation) -> must NOT count as detected.
+    pristine = efa.ExtractFidelityReport.from_claims(
+        [_verdict("contradicts", span=f"already suspicious: {mutation.replacement}")]
+    )
+
+    paired = await efa.audit_with_control(
+        inputs, pristine, seed=11, provider="gemini", model=None, transport="api", calls=[]
+    )
+    assert paired is not None
+    assert paired.detected_planted is False
+
+
+async def test_audit_with_control_does_not_rerun_pristine_exactly_one_call(monkeypatch):
+    kind, mutated_md, mutation = _plant()
+    mock = AsyncMock(return_value=_phase_result([]))
+    monkeypatch.setattr(efa.agent, "run_phase", mock)
+
+    inputs = _inputs(extract_md=_MUTABLE_MD, whole_book_text="")
+    # Pristine built directly (never via a run_phase call) -> if
+    # audit_with_control re-ran the pristine audit, mock.call_count would
+    # be 2, not 1.
+    pristine = efa.ExtractFidelityReport.from_claims([])
+
+    await efa.audit_with_control(
+        inputs, pristine, seed=11, provider="gemini", model=None, transport="api", calls=[]
+    )
+    assert mock.call_count == 1
+
+
+async def test_audit_with_control_returns_none_and_makes_no_call_when_unplantable(monkeypatch):
+    mock = AsyncMock(return_value=_phase_result([]))
+    monkeypatch.setattr(efa.agent, "run_phase", mock)
+
+    unplantable_md = "short plain text with nothing plantable at all here."
+    inputs = _inputs(extract_md=unplantable_md, whole_book_text="")
+    pristine = efa.ExtractFidelityReport.from_claims([])
+    calls: list[dict] = []
+
+    result = await efa.audit_with_control(
+        inputs, pristine, seed=1, provider="gemini", model=None, transport="api", calls=calls
+    )
+    assert result is None
+    assert mock.call_count == 0
+    assert calls == []
+
+
+async def test_audit_with_control_raises_on_mutated_arm_call_failure(monkeypatch):
+    monkeypatch.setattr(
+        efa.agent, "run_phase", AsyncMock(side_effect=RuntimeError("dead"))
+    )
+    inputs = _inputs(extract_md=_MUTABLE_MD, whole_book_text="")
+    pristine = efa.ExtractFidelityReport.from_claims([])
+    with pytest.raises(efa.ExtractFidelityAuditError):
+        await efa.audit_with_control(
+            inputs, pristine, seed=11, provider="gemini", model=None, transport="api", calls=[]
+        )
+
+
+# ---------- summarize_runs ----------
+
+
+def _report(subject, cross_language, status_counts, claim_type_counts=None, downgraded=0):
+    return efa.ExtractFidelityReport(
+        job_id="j", subject=subject, family="humanities", grade="9",
+        source_language="ru" if cross_language else "uz", output_language="uz",
+        cross_language=cross_language,
+        ok_count=status_counts.get("ok", 0),
+        contradicts_count=status_counts.get("contradicts", 0),
+        unsupported_count=status_counts.get("unsupported", 0),
+        claim_type_counts=claim_type_counts or {},
+        downgraded_count=downgraded,
+    )
+
+
+def test_summarize_runs_aggregates_overall_and_per_subject():
+    reports = [
+        _report("history", False, {"ok": 2, "unsupported": 1}),
+        _report("history", False, {"ok": 1, "contradicts": 1}),
+        _report("geografiya", False, {"ok": 3}),
+    ]
+    summary = efa.summarize_runs(reports)
+    overall = summary["overall"]["combined"]
+    assert overall["lessons"] == 3
+    assert overall["ok_count"] == 6
+    assert overall["unsupported_count"] == 1
+    assert overall["contradicts_count"] == 1
+
+    history = summary["by_subject"]["history"]["combined"]
+    assert history["lessons"] == 2
+    assert history["ok_count"] == 3
+    geografiya = summary["by_subject"]["geografiya"]["combined"]
+    assert geografiya["lessons"] == 1
+
+
+def test_summarize_runs_splits_by_cross_language():
+    reports = [
+        _report("english", False, {"ok": 5}),  # same-language
+        _report("english", True, {"unsupported": 4}),  # cross-language, inflated
+    ]
+    summary = efa.summarize_runs(reports)
+    eng = summary["by_subject"]["english"]
+    assert eng["same_language"]["lessons"] == 1
+    assert eng["same_language"]["unsupported_count"] == 0
+    assert eng["cross_language"]["lessons"] == 1
+    assert eng["cross_language"]["unsupported_count"] == 4
+    # combined still has both
+    assert eng["combined"]["lessons"] == 2
+    assert eng["combined"]["unsupported_count"] == 4
+
+
+def test_summarize_runs_splits_claim_type_breakdown():
+    reports = [
+        _report("history", False, {"ok": 1}, claim_type_counts={"name": {"ok": 1, "contradicts": 0, "unsupported": 0}}),
+        _report("history", False, {"contradicts": 1}, claim_type_counts={"name": {"ok": 0, "contradicts": 1, "unsupported": 0}}),
+    ]
+    summary = efa.summarize_runs(reports)
+    breakdown = summary["by_subject"]["history"]["combined"]["claim_type_counts"]
+    assert breakdown["name"] == {"ok": 1, "contradicts": 1, "unsupported": 0}
+
+
+def test_summarize_runs_carries_downgraded_count():
+    reports = [_report("history", False, {"ok": 1}, downgraded=3)]
+    summary = efa.summarize_runs(reports)
+    assert summary["overall"]["combined"]["downgraded_count"] == 3
+
+
+def test_summarize_runs_empty_list_is_zero_not_an_error():
+    summary = efa.summarize_runs([])
+    assert summary["overall"]["combined"]["lessons"] == 0
+    assert summary["by_subject"] == {}
+
+
+# ---------- select_sample (pure) ----------
+
+
+def _candidate(job_id, grade="9", lang="uz", subject="history", book_id="book-1"):
+    return efa.LessonCandidate(
+        job_id=job_id, book_id=book_id, subject=subject, grade=grade, source_language=lang
+    )
+
+
+def test_select_sample_returns_all_when_n_is_none():
+    cands = [_candidate(f"j{i}") for i in range(5)]
+    result = efa.select_sample(cands, None, seed=1)
+    assert {c.job_id for c in result} == {c.job_id for c in cands}
+    assert len(result) == 5
+
+
+def test_select_sample_returns_all_when_n_exceeds_population():
+    cands = [_candidate(f"j{i}") for i in range(3)]
+    result = efa.select_sample(cands, 10, seed=1)
+    assert len(result) == 3
+
+
+def test_select_sample_caps_at_n():
+    cands = [_candidate(f"j{i}") for i in range(10)]
+    result = efa.select_sample(cands, 4, seed=1)
+    assert len(result) == 4
+    assert len(set(c.job_id for c in result)) == 4  # no duplicates
+
+
+def test_select_sample_is_deterministic_given_same_seed():
+    cands = [_candidate(f"j{i}", grade=str(i % 3), lang=("uz" if i % 2 else "ru")) for i in range(12)]
+    r1 = [c.job_id for c in efa.select_sample(cands, 5, seed=99)]
+    r2 = [c.job_id for c in efa.select_sample(cands, 5, seed=99)]
+    assert r1 == r2
+
+
+def test_select_sample_does_not_mutate_input_list():
+    cands = [_candidate(f"j{i}") for i in range(5)]
+    original_order = list(cands)
+    efa.select_sample(cands, 2, seed=1)
+    assert cands == original_order
+
+
+def test_select_sample_stratifies_across_cells_before_repeating_a_cell():
+    # Two distinct (grade, language) cells, 3 candidates each. n=2 with
+    # stratify=True must draw one from EACH cell, not two from one cell —
+    # proves round-robin-over-cells, not a plain random draw.
+    cell_a = [_candidate(f"a{i}", grade="5", lang="uz") for i in range(3)]
+    cell_b = [_candidate(f"b{i}", grade="9", lang="ru") for i in range(3)]
+    result = efa.select_sample(cell_a + cell_b, 2, seed=3, stratify=True)
+    cells_hit = {(c.grade, c.source_language) for c in result}
+    assert len(result) == 2
+    assert cells_hit == {("5", "uz"), ("9", "ru")}
+
+
+def test_select_sample_single_cell_degrades_to_plain_shuffle():
+    cands = [_candidate(f"j{i}", grade="8", lang="uz") for i in range(6)]
+    result = efa.select_sample(cands, 3, seed=1, stratify=True)
+    assert len(result) == 3
+    assert len(set(c.job_id for c in result)) == 3
+
+
+def test_select_sample_stratify_false_ignores_cells():
+    cell_a = [_candidate(f"a{i}", grade="5", lang="uz") for i in range(5)]
+    cell_b = [_candidate(f"b{i}", grade="9", lang="ru") for i in range(5)]
+    result = efa.select_sample(cell_a + cell_b, 3, seed=1, stratify=False)
+    assert len(result) == 3  # just needs to be a valid cap; no cell guarantee

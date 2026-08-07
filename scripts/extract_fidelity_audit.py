@@ -1,0 +1,344 @@
+"""Offline extract-fidelity audit CLI: grades already-generated `extract`
+phase outputs against the textbook pages they were written from, to measure
+how much factual drift occurs in language/humanities lessons (where the
+deterministic CQ-D pre-filter is largely blind).
+
+Usage:
+  # Plan only — selects the sample, prints per-subject counts + an estimated
+  # $, makes ZERO model calls. Always run this first.
+  uv run python scripts/extract_fidelity_audit.py \
+      --subject english --subject history:10 --subject geografiya:4 \
+      --subject tarbiya:2 --subject adabiyot:2 --limit 48 --dry-run
+
+  # Real run (bills transport=api gemini calls, hard-capped by --limit).
+  uv run python scripts/extract_fidelity_audit.py \
+      --subject english --subject history:10 --subject geografiya:4 \
+      --subject tarbiya:2 --subject adabiyot:2 --limit 48
+
+`--subject NAME` takes ALL completed-extract lessons for that subject.
+`--subject NAME:N` samples N of them (deterministic given `--sample-seed`,
+best-effort stratified across (grade, source_language) cells — see
+`extract_fidelity_audit.select_sample`). Repeat `--subject` for multiple
+subjects.
+
+`--limit` is a hard cap on BILLED MODEL CALLS, not on lessons: it is
+enforced before every single logical call (pristine audit or mutated arm),
+so the run stops mid-sample rather than overspending — never after the
+fact. `--mutations N` picks N lessons (deterministically, from across the
+WHOLE selected sample) to also run a paired sensitivity-calibration arm on;
+those lessons' pristine result is REUSED (not re-run) so a mutation arm
+costs exactly one extra call, not two.
+
+Read-only against production data: reads `homework_jobs` / `books` /
+`phase_outputs` and `var/books/<id>/source.pdf`; writes nothing except the
+`agent_usages` rows `agent.run_phase` itself records for this script's own
+calls (tagged `operation="xfid:audit"`, `homework_job_id=None` — never
+attributed to the production job whose extract is being graded) and the
+JSON report file.
+
+Cost note (carried from `teaching_audit._call`): the printed $ sums the
+successful attempt of each logical call; a structured-output validation
+retry logs an extra `agent_usages` row the printed total does not include,
+so real spend may be marginally higher than what's printed here.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import pathlib
+import sys
+from dataclasses import asdict
+from datetime import datetime, timezone
+from typing import Optional
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_REPO_ROOT))
+
+from app.services import agent, extract_fidelity_audit as efa, pricing, storage  # noqa: E402
+
+# Rough average $/call, derived from this instrument's own measured
+# calibration run (48 gemini-3.5-flash calls ~= $0.85, see the plan doc) —
+# NOT a substitute for the real `$` total printed after an actual run. Used
+# only to give --dry-run a ballpark before spending anything.
+_APPROX_COST_PER_CALL_USD = 0.018
+
+
+def _parse_subject_arg(raw: str) -> tuple[str, Optional[int]]:
+    """`"history"` -> (subject, None) meaning "take all"; `"history:10"` ->
+    (subject, 10)."""
+    name, sep, count = raw.partition(":")
+    if not sep:
+        return raw, None
+    if not count.strip().isdigit():
+        raise SystemExit(f"--subject {raw!r}: expected NAME or NAME:N (N an integer)")
+    return name, int(count)
+
+
+def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--subject", action="append", required=True, dest="subjects",
+                   help="repeatable; NAME or NAME:N (N = sample size, default 'all available')")
+    p.add_argument("--limit", type=int, required=True,
+                   help="hard cap on BILLED MODEL CALLS (not lessons)")
+    p.add_argument("--sample-seed", type=int, default=42)
+    p.add_argument("--provider", default="gemini")
+    p.add_argument("--model", default="gemini-3.5-flash")
+    p.add_argument("--transport", default="api", help="transport=cli is retired operationally")
+    p.add_argument("--mutations", type=int, default=8,
+                   help="number of selected lessons (across the whole sample) to also "
+                        "run a paired mutation-detection arm on")
+    p.add_argument("--out", default=None, help="JSON report path (default var/extract_fidelity_audit/<stamp>.json)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="select the sample and print the plan only — makes NO model call")
+    return p.parse_args(argv)
+
+
+async def _fetch_candidates(subjects: list[str]) -> dict[str, list[efa.LessonCandidate]]:
+    """One DB round-trip: every (job, book) pair with a completed, non-empty
+    `extract` phase output, for the requested subjects. Not unit-tested
+    (needs a real DB) — mirrors why `load_extract_audit_inputs` itself is
+    untested here; `efa.select_sample`, which consumes this function's
+    output, IS the tested/pure part."""
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Book, HomeworkJob, PhaseOutput
+
+    out: dict[str, list[efa.LessonCandidate]] = {s: [] for s in subjects}
+    stmt = (
+        select(
+            HomeworkJob.id, HomeworkJob.subject, HomeworkJob.output_language,
+            HomeworkJob.book_id, Book.grade, Book.source_language,
+        )
+        .join(Book, Book.id == HomeworkJob.book_id)
+        .join(PhaseOutput, PhaseOutput.job_id == HomeworkJob.id)
+        .where(
+            HomeworkJob.subject.in_(subjects),
+            PhaseOutput.phase_name == "extract",
+            PhaseOutput.status == "done",
+            PhaseOutput.output_md.isnot(None),
+            PhaseOutput.output_md != "",
+        )
+    )
+    async with SessionLocal() as session:
+        rows = (await session.execute(stmt)).all()
+    for job_id, subject, _output_language, book_id, grade, source_language in rows:
+        out.setdefault(subject, []).append(
+            efa.LessonCandidate(
+                job_id=str(job_id), book_id=str(book_id), subject=subject,
+                grade=grade, source_language=source_language,
+            )
+        )
+    return out
+
+
+def _plan(
+    subjects: list[tuple[str, Optional[int]]],
+    candidates_by_subject: dict[str, list[efa.LessonCandidate]],
+    seed: int,
+) -> dict[str, list[efa.LessonCandidate]]:
+    """Deterministic per-subject sample selection (pure `efa.select_sample`
+    underneath — this just loops subjects and prints nothing)."""
+    selected: dict[str, list[efa.LessonCandidate]] = {}
+    for subject, n in subjects:
+        cands = candidates_by_subject.get(subject, [])
+        selected[subject] = efa.select_sample(cands, n, seed, stratify=True)
+    return selected
+
+
+def _print_plan(
+    subjects: list[tuple[str, Optional[int]]],
+    candidates_by_subject: dict[str, list[efa.LessonCandidate]],
+    selected: dict[str, list[efa.LessonCandidate]],
+    mutation_targets: list[efa.LessonCandidate],
+    limit: int,
+) -> int:
+    total = 0
+    print("Sample plan (deterministic given --sample-seed):")
+    for subject, _n in subjects:
+        avail = len(candidates_by_subject.get(subject, []))
+        chosen = selected[subject]
+        cells = sorted({(c.grade, c.source_language) for c in chosen})
+        total += len(chosen)
+        print(f"  {subject}: {len(chosen)} of {avail} available "
+              f"(cells sampled: {cells if cells else '[]'})")
+    print(f"  TOTAL lessons: {total}")
+    print(f"  mutation arms: {len(mutation_targets)} "
+          f"(lessons: {[c.job_id[:8] for c in mutation_targets]})")
+    planned_calls = total + len(mutation_targets)
+    est_cost = planned_calls * _APPROX_COST_PER_CALL_USD
+    print(f"  planned billed calls (ceiling, before any mutation-plant skips): {planned_calls}")
+    print(f"  estimated cost: ~${est_cost:.2f} "
+          f"(rough, ~${_APPROX_COST_PER_CALL_USD:.4f}/call — NOT the real total)")
+    if planned_calls > limit:
+        print(f"  NOTE: planned calls ({planned_calls}) exceed --limit ({limit}) — "
+              f"the real run will stop early once the cap is hit.")
+    return planned_calls
+
+
+def _write_report(args: argparse.Namespace, payload: dict) -> None:
+    if args.out:
+        out = pathlib.Path(args.out)
+    else:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out = _REPO_ROOT / "var" / "extract_fidelity_audit" / f"{stamp}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"report: {out}")
+
+
+def _cost(calls: list[dict]) -> float:
+    return sum(
+        pricing.cost_usd(c["provider"], c["model"], c["usage"])
+        for c in calls
+        if c.get("usage")
+    )
+
+
+async def _run(args: argparse.Namespace) -> int:
+    subjects = [_parse_subject_arg(s) for s in args.subjects]
+    subject_names = [s for s, _n in subjects]
+
+    candidates_by_subject = await _fetch_candidates(subject_names)
+    selected = _plan(subjects, candidates_by_subject, args.sample_seed)
+    all_selected = [c for _s, _n in subjects for c in selected[_s]]
+
+    mutation_targets = efa.select_sample(
+        all_selected, min(args.mutations, len(all_selected)), args.sample_seed, stratify=False
+    )
+    mutation_job_ids = {c.job_id for c in mutation_targets}
+
+    planned_calls = _print_plan(subjects, candidates_by_subject, selected, mutation_targets, args.limit)
+
+    if not all_selected:
+        print("No candidate lessons found for the requested subjects — nothing to do.")
+        return 0
+
+    if args.dry_run:
+        _write_report(args, {
+            "dry_run": True,
+            "subjects": args.subjects,
+            "sample_seed": args.sample_seed,
+            "limit": args.limit,
+            "mutations": args.mutations,
+            "planned_lessons": len(all_selected),
+            "planned_mutation_arms": len(mutation_targets),
+            "planned_calls_ceiling": planned_calls,
+            "estimated_cost_usd": planned_calls * _APPROX_COST_PER_CALL_USD,
+            "sample": {s: [asdict(c) for c in selected[s]] for s, _n in subjects},
+            "mutation_targets": [c.job_id for c in mutation_targets],
+        })
+        return 0
+
+    calls: list[dict] = []
+    reports: list[efa.ExtractFidelityReport] = []
+    paired_results: list[efa.PairedFidelityResult] = []
+    skipped_load_errors: list[dict] = []
+    skipped_no_mutation: list[str] = []
+    book_text_cache: dict[str, str] = {}
+    stopped_early = False
+
+    for c in all_selected:
+        if len(calls) >= args.limit:
+            stopped_early = True
+            break
+
+        if c.book_id not in book_text_cache:
+            pdf_path = storage.book_pdf_path(c.book_id)
+            book_text_cache[c.book_id] = agent.read_whole_book_text(pdf_path)
+        whole_text = book_text_cache[c.book_id]
+
+        try:
+            inputs = await efa.load_extract_audit_inputs(c.job_id, whole_book_text=whole_text)
+        except efa.ExtractFidelityAuditError as exc:
+            print(f"SKIP {c.job_id} ({c.subject}): {exc}")
+            skipped_load_errors.append({"job_id": c.job_id, "subject": c.subject, "error": str(exc)})
+            continue
+
+        if len(calls) >= args.limit:
+            stopped_early = True
+            break
+        report = await efa.audit_one(
+            inputs, provider=args.provider, model=args.model, transport=args.transport, calls=calls
+        )
+        reports.append(report)
+        print(f"[{len(reports)}/{len(all_selected)}] {c.subject} {c.job_id[:8]} "
+              f"ok={report.ok_count} contradicts={report.contradicts_count} "
+              f"unsupported={report.unsupported_count} (downgraded {report.downgraded_count})")
+
+        if c.job_id in mutation_job_ids:
+            if len(calls) >= args.limit:
+                stopped_early = True
+                continue
+            seed = efa.lesson_seed(args.sample_seed, c.job_id)
+            paired = await efa.audit_with_control(
+                inputs, report, seed=seed, provider=args.provider, model=args.model,
+                transport=args.transport, calls=calls,
+            )
+            if paired is None:
+                skipped_no_mutation.append(c.job_id)
+                print(f"  mutation SKIP (no plantable kind): {c.job_id}")
+            else:
+                paired_results.append(paired)
+                print(f"  mutation[{paired.kind}]: detected_planted={paired.detected_planted}")
+
+    if stopped_early:
+        print(f"STOPPED EARLY: --limit {args.limit} reached before the full sample was audited.")
+
+    summary = efa.summarize_runs(reports)
+    detected = sum(1 for p in paired_results if p.detected_planted)
+    print(f"\ncalibration: {detected}/{len(paired_results)} planted mutations detected "
+          f"({len(skipped_no_mutation)} lessons had no plantable mutation)")
+    cost = _cost(calls)
+    print(f"cost: ${cost:.4f} across {len(calls)} logical calls "
+          f"({args.provider} {args.model}, {args.transport})")
+
+    payload = {
+        "dry_run": False,
+        "subjects": args.subjects,
+        "sample_seed": args.sample_seed,
+        "limit": args.limit,
+        "provider": args.provider,
+        "model": args.model,
+        "transport": args.transport,
+        "stopped_early": stopped_early,
+        "reports": [r.model_dump() for r in reports],
+        "paired_results": [
+            {
+                "kind": p.kind,
+                "mutation": {
+                    "kind": p.mutation.kind, "original": p.mutation.original,
+                    "replacement": p.mutation.replacement, "offset": p.mutation.offset,
+                },
+                "job_id": p.pristine.job_id,
+                "detected_planted": p.detected_planted,
+                "pristine": p.pristine.model_dump(),
+                "mutated": p.mutated.model_dump(),
+            }
+            for p in paired_results
+        ],
+        "calibration": {
+            "detected": detected, "total_pairs": len(paired_results),
+            "skipped_no_mutation": skipped_no_mutation,
+        },
+        "summary": summary,
+        "skipped_load_errors": skipped_load_errors,
+        "calls": [dict(c) for c in calls],
+        "cost_usd": cost,
+    }
+    _write_report(args, payload)
+    return 0
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = _parse_args(argv)
+    try:
+        return asyncio.run(_run(args))
+    except efa.ExtractFidelityAuditError as exc:
+        raise SystemExit(f"extract-fidelity-audit failed: {exc}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
