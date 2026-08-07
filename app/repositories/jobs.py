@@ -719,6 +719,14 @@ async def heartbeat_check(
 ) -> lease.HeartbeatOutcome:
     """Classify a running job's lease for the worker heartbeat (fenced job
     leases, Task 5). Re-reads status+token:
+      * row gone -> ``HeartbeatOutcome.LOST``;
+      * status terminal (done/failed/cancelled) -> ``HeartbeatOutcome.FINISHED``
+        — the job reached a terminal state (the worker's OWN just-completed
+        `done` write, or a peer's terminal write) so the heartbeat must STOP,
+        never cancel, regardless of whether the token still matches. Checked
+        BEFORE the token-mismatch test so a job we finished (still carrying our
+        token) is reported FINISHED, not LOST — a LOST would cancel the worker's
+        own post-done work (D1);
       * token gone/changed -> ``HeartbeatOutcome.LOST`` (reclaimed under us);
       * status='cancelling' -> ``HeartbeatOutcome.CANCELLING`` (user cancel);
       * otherwise refresh the claim (``touch_claim``) and ``RENEWED``.
@@ -730,7 +738,11 @@ async def heartbeat_check(
     race can never finalize the job here. A DB/connectivity error propagates (it
     is NOT swallowed into ``LOST``)."""
     row = await session.get(HomeworkJob, job_id, populate_existing=True)
-    if row is None or row.claim_token != claim_token:
+    if row is None:
+        return lease.HeartbeatOutcome.LOST
+    if row.status in _TERMINAL_STATUSES:
+        return lease.HeartbeatOutcome.FINISHED
+    if row.claim_token != claim_token:
         return lease.HeartbeatOutcome.LOST
     if row.status == "cancelling":
         return lease.HeartbeatOutcome.CANCELLING

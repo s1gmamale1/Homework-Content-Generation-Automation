@@ -14,7 +14,7 @@ import uuid as _uuid
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, update
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_DB_INTEGRATION") != "1", reason="real DB only"
@@ -408,6 +408,109 @@ async def test_set_status_current_token_applies(db_session, fenced_job_factory):
     ).scalar_one()
     assert reloaded.status == "done"
     assert reloaded.output_md == "hello"
+
+    await db_session.commit()
+
+
+# ---------------------------------------------------------------------------
+# reset_abandoned_phases fencing (D2) — an external cancel while holding a lease
+# must not clobber a phase row a NEW owner has since reclaimed.
+# ---------------------------------------------------------------------------
+
+
+async def test_abandon_inflight_stale_token_does_not_clobber_new_owner(
+    db_session, fenced_job_factory
+):
+    """D2: a lease-loss cancel (heartbeat LOST-cancels the pipeline task) triggers
+    _abandon_inflight, which resets phase rows. If unfenced, the OLD owner resets
+    the NEW owner's reclaimed phase row to failed/claim_token=None — discarding
+    paid API content. Threading the OLD token makes the reset no-op when the row
+    has since rotated to a new token.
+
+    RED-proof: call _abandon_inflight WITHOUT claim_token (or drop the token
+    WHERE clause in reset_abandoned_phases) and the running phase row is flipped
+    to failed and its token nulled — the new owner's fenced write then LeaseLosts."""
+    from types import SimpleNamespace
+
+    from app.models.phase_output import PhaseOutput
+    from app.services import pipeline
+
+    new_owner_token = _uuid.uuid4()
+    old_token = _uuid.uuid4()
+    assert new_owner_token != old_token
+
+    # The phase row is now owned by the NEW owner (reclaimed): status running,
+    # carrying new_owner_token — NOT the obsolete worker's old_token.
+    row = await fenced_job_factory(
+        status="running",
+        seed_phase={
+            "phase_name": "preview",
+            "status": "running",
+            "claim_token": new_owner_token,
+        },
+    )
+    phase = (await _phase_rows(db_session, row.job_id))[0]
+    assert phase.claim_token == new_owner_token
+
+    # The OBSOLETE worker (holding old_token) unwinds and abandon-resets.
+    await pipeline._abandon_inflight(
+        row.job_id, ["preview"], "failed", "abandoned: job cancelled",
+        claim_token=old_token,
+    )
+
+    reloaded = (
+        await db_session.execute(
+            select(PhaseOutput)
+            .where(PhaseOutput.id == phase.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    assert reloaded.status == "running"              # UNCHANGED — not clobbered
+    assert reloaded.claim_token == new_owner_token   # new owner's lease intact
+
+    await db_session.commit()
+
+
+async def test_abandon_inflight_own_token_resets_its_own_rows(
+    db_session, fenced_job_factory
+):
+    """The other half of the D2 contract: a worker that STILL owns the job (token
+    matches) resets its own abandoned rows normally — the fence only blocks a
+    stale owner, never a rightful one."""
+    from app.models.phase_output import PhaseOutput
+    from app.services import pipeline
+
+    row = await fenced_job_factory(
+        status="running",
+        seed_phase={
+            "phase_name": "preview",
+            "status": "running",
+            "claim_token": None,  # factory stamps the job token below
+        },
+    )
+    phase = (await _phase_rows(db_session, row.job_id))[0]
+    # Stamp the phase row with the job's OWN (live) token.
+    await db_session.execute(
+        update(PhaseOutput)
+        .where(PhaseOutput.id == phase.id)
+        .values(claim_token=row.claim_token)
+    )
+    await db_session.commit()
+
+    await pipeline._abandon_inflight(
+        row.job_id, ["preview"], "failed", "abandoned: job cancelled",
+        claim_token=row.claim_token,
+    )
+
+    reloaded = (
+        await db_session.execute(
+            select(PhaseOutput)
+            .where(PhaseOutput.id == phase.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    assert reloaded.status == "failed"        # reset applied
+    assert reloaded.claim_token is None       # lease cleared by the reset
 
     await db_session.commit()
 

@@ -239,6 +239,7 @@ async def reset_abandoned_phases(
     error_message: Optional[str] = None,
     source_statuses: Sequence[str] = ("pending", "running"),
     include_orphan_failed: bool = False,
+    claim_token: Optional[UUID] = None,
 ) -> int:
     """Reset a batch of jobs' abandoned phase rows (queue-correctness-1 +
     orphan-phase-reconciliation-1). 'done' rows are always untouched;
@@ -252,7 +253,16 @@ async def reset_abandoned_phases(
     scheduler contract). Empty job_ids is a no-op before any session use.
     source_statuses may only narrow within {'pending', 'running'} — 'done' is
     always frozen and 'failed' rows are reachable ONLY via
-    include_orphan_failed's marker equality, never wholesale."""
+    include_orphan_failed's marker equality, never wholesale.
+
+    Transitional (fenced job leases, D2): with ``claim_token`` given, the WHERE
+    is additionally fenced with ``claim_token = :token`` so ONLY phase rows this
+    lease still owns are reset — a lease-loss cancel by an obsolete owner then
+    no-ops instead of clobbering the NEW owner's reclaimed phase row (its token
+    has rotated). ``claim_token`` still SETS to None in ``.values()`` either way
+    (the reset always clears the lease). With ``claim_token=None`` (the
+    reclaim_stuck_jobs / lifespan-sweep callers, which reset ALL of a reclaimed
+    job's phases token-lessly) the behavior is exactly as before."""
     # Real raises, not asserts — python -O strips asserts, and these guards
     # ARE the preservation contract (PR #110 round-3; closes
     # reset-abandoned-status-assert-1).
@@ -293,6 +303,8 @@ async def reset_abandoned_phases(
     )
     if phase_names is not None:
         stmt = stmt.where(PhaseOutput.phase_name.in_(phase_names))
+    if claim_token is not None:
+        stmt = stmt.where(PhaseOutput.claim_token == claim_token)
     result = await session.execute(stmt)
     return result.rowcount
 

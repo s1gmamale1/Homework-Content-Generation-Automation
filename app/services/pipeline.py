@@ -482,13 +482,15 @@ async def run(job_id: UUID, lease: Optional[JobLease] = None) -> None:
                         _merged = _prev + [w for w in _cov if w not in _prev]
                         # guard=False: the extract row is already 'done' and the
                         # default guard (WHERE status != 'done') would no-op it.
-                        # Fenced with the lease token so a reclaimed job's extract
-                        # row (now owned by another worker) is never clobbered —
-                        # advisory, so the sentinel return is ignored (the `done`
-                        # write below is the one that raises the control signal).
+                        # Deliberately token-LESS (D3): on a resumed job the
+                        # extract row is a REUSED row carrying the PREVIOUS run's
+                        # token, so a fenced write would miss and silently drop
+                        # this advisory warning. This write is guard=False and
+                        # fail-open — a stale worker appending an advisory warning
+                        # is harmless, so fencing it buys no real safety.
                         await phase_repo.set_status(
                             session, _ex.id, _ex.status, validation_warnings=_merged,
-                            guard=False, claim_token=_token_of(lease))
+                            guard=False)
                         await session.commit()
         except Exception as exc:  # noqa: BLE001 — advisory only, must never fail the job
             logger.warning(f"coverage check skipped (fail-open): {exc!r}")
@@ -568,7 +570,8 @@ async def _emit_started(resource_id: str, phase_name: str, phase_order: int) -> 
 
 
 async def _abandon_inflight(
-    job_id: UUID, phase_names: list[str], status: str, reason: str
+    job_id: UUID, phase_names: list[str], status: str, reason: str,
+    *, claim_token: Optional[UUID] = None,
 ) -> None:
     """Best-effort, cancellation-shielded reset of orphaned phase rows.
     Mirrors worker.py's shielded cancel-finalize craft: a cancellation
@@ -576,7 +579,13 @@ async def _abandon_inflight(
 
     status='pending' when the JOB is being requeued/parked (transient /
     saturation / pause — rows are waiting); status='failed' on hard failure
-    or user cancel (gate correction 4)."""
+    or user cancel (gate correction 4).
+
+    ``claim_token`` fences the reset to phase rows THIS lease still owns (D2):
+    when the heartbeat LOST-cancels this task (a real reclaim, or D1's false
+    cancel), CancelledError propagates here — a token-less reset would clobber
+    the NEW owner's reclaimed phase row. Threaded through to
+    ``reset_abandoned_phases``; None keeps the legacy unfenced behavior."""
     if not phase_names:
         return
     async def _do() -> None:
@@ -586,6 +595,7 @@ async def _abandon_inflight(
                     session, [job_id],
                     phase_names=phase_names, status=status,
                     error_message=reason if status == "failed" else None,
+                    claim_token=claim_token,
                 )
                 await session.commit()
         except Exception:
@@ -892,7 +902,8 @@ async def _run_content_phases_parallel(
                         await asyncio.gather(*in_flight.values(), return_exceptions=True)
                         in_flight.clear()
                     await _abandon_inflight(
-                        job_id, abandoned, "pending", "abandoned: job requeued"
+                        job_id, abandoned, "pending", "abandoned: job requeued",
+                        claim_token=_token_of(lease),
                     )
                     raise
                 except Exception:
@@ -907,7 +918,8 @@ async def _run_content_phases_parallel(
                         await asyncio.gather(*in_flight.values(), return_exceptions=True)
                         in_flight.clear()
                     await _abandon_inflight(
-                        job_id, abandoned, "failed", "abandoned: sibling phase failed"
+                        job_id, abandoned, "failed", "abandoned: sibling phase failed",
+                        claim_token=_token_of(lease),
                     )
                     continue
 
@@ -924,7 +936,8 @@ async def _run_content_phases_parallel(
             await asyncio.gather(*in_flight.values(), return_exceptions=True)
             in_flight.clear()
         await _abandon_inflight(
-            job_id, abandoned, "failed", "abandoned: job cancelled"
+            job_id, abandoned, "failed", "abandoned: job cancelled",
+            claim_token=_token_of(lease),
         )
         raise
 

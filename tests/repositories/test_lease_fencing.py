@@ -608,6 +608,39 @@ async def test_heartbeat_renew_race_never_finalizes(db_session, fenced_job_facto
     await db_session.commit()
 
 
+@pytest.mark.parametrize("terminal", ["done", "failed", "cancelled"])
+async def test_heartbeat_on_just_completed_job_is_finished_not_lost(
+    db_session, fenced_job_factory, terminal
+):
+    """D1: a heartbeat firing on a job the worker just completed must NOT be
+    LOST. After pipeline.run's fenced `done`-write the job is terminal but still
+    carries the worker's OWN claim_token (the post-done archive work hasn't
+    cleared it). heartbeat_check must return FINISHED — a terminal branch checked
+    BEFORE the token match — so the worker stops beating instead of cancelling
+    its own post-done work.
+
+    RED-proof: without the terminal-status branch, a done+own-token job takes the
+    old path — token matches, status isn't cancelling, so touch_claim's
+    status='running' guard misses → LeaseLost → heartbeat_check returns LOST
+    (which cancels the worker's live task). The assertion below flips to LOST."""
+    from app.repositories import jobs as jobs_repo
+    from app.services.lease import HeartbeatOutcome
+
+    row = await fenced_job_factory(status=terminal)  # token still stamped
+
+    outcome = await jobs_repo.heartbeat_check(
+        db_session, row.job_id, row.claim_token
+    )
+    assert outcome is HeartbeatOutcome.FINISHED
+
+    # The heartbeat did NOT mutate the terminal job (no touch_claim, no rotation).
+    job = await _reload(db_session, row.job_id)
+    assert job.status == terminal
+    assert job.claim_token == row.claim_token
+
+    await db_session.commit()
+
+
 async def test_tokenless_calls_keep_legacy_behavior(db_session, fenced_job_factory):
     """Transitional guarantee: token-less callers (pipeline/worker pre-Tasks 6-7)
     get the EXACT pre-fencing behavior — no token predicate, bool/str returns."""

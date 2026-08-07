@@ -535,6 +535,13 @@ class Worker:
                 )
                 continue
 
+            if outcome is HeartbeatOutcome.FINISHED:
+                # The job reached a terminal status — normally our OWN
+                # just-completed `done` write, which still carries our token
+                # until the post-done work (job_completed publish + archive)
+                # finishes. Stop beating WITHOUT cancelling the task: cancelling
+                # here would kill our own post-done work mid-flight (D1).
+                return
             if outcome is HeartbeatOutcome.CANCELLING:
                 task = RUNNING_JOBS.get(job_id)
                 if task is not None:

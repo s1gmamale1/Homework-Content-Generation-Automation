@@ -36,6 +36,7 @@ class HeartbeatOutcome(enum.Enum):
     RENEWED = "renewed"
     CANCELLING = "cancelling"
     LOST = "lost"
+    FINISHED = "finished"
 
 
 EVENT_CLAIMED = "claimed"
