@@ -225,12 +225,24 @@ async def probe_judge() -> list[dict]:
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", required=True, choices=["before", "after"])
+    ap.add_argument(
+        "--extract-only", action="store_true",
+        help="Skip probe B. Use when iterating on the EXTRACT contract alone: the "
+             "judge arms cost ~5x the extracts and cannot move unless the judge "
+             "prompt changed. Carries the previous run's judge_probe forward so the "
+             "output file stays comparable, and records that it did.")
     args = ap.parse_args()
-    data = {"label": args.label,
-            "extract_probe": await probe_extract(),
-            "judge_probe": await probe_judge()}
     dest = Path(__file__).with_name(
         f"2026-08-07-language-fidelity-probe-data-{args.label}.json")
+    if args.extract_only:
+        prior = json.loads(dest.read_text(encoding="utf-8")) if dest.is_file() else {}
+        judge = prior.get("judge_probe", [])
+        print(f"[extract-only] carrying {len(judge)} judge rows forward, unchanged")
+    else:
+        judge = None
+    data = {"label": args.label, "extract_only": bool(args.extract_only),
+            "extract_probe": await probe_extract(),
+            "judge_probe": judge if judge is not None else await probe_judge()}
     dest.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\nwrote {dest}")
 
