@@ -111,6 +111,15 @@ def test_config_defaults_are_warn_only_and_inherit_the_extract_model():
     assert 0 < settings.extract_coverage_timeout_seconds < settings.per_attempt_timeout_seconds
 
 
+def test_shipped_default_is_independent_of_the_test_environment():
+    """The suite forces the check OFF via env (tests/conftest.py) so no unit test
+    can reach a real spawn — so assert the SHIPPED default on the class, not on
+    the env-resolved instance, or this test would silently stop meaning anything."""
+    from app.config import Settings
+
+    assert Settings.model_fields["extract_coverage_check_enabled"].default is True
+
+
 @pytest.mark.asyncio
 async def test_check_returns_missing_items_from_model():
     fake = agent_mod.PhaseResult(
@@ -680,6 +689,10 @@ def _install_harness(monkeypatch, *, cached_extract=None):
         return ("A normal whole-text lesson summary passing Gate B validation.", 5, 7)
 
     monkeypatch.setattr(pipeline.agent, "summarize_lesson", _normal)
+    # The suite defaults the check OFF (tests/conftest.py) so no OTHER test can
+    # reach a real spawn through the new call site. These tests are the ones
+    # that exercise it, so they turn it back on explicitly.
+    monkeypatch.setattr(settings, "extract_coverage_check_enabled", True)
     return writes
 
 
@@ -928,6 +941,17 @@ Three edits in `_execute_phase`:
     warnings: list[str] = list(extract_warnings)
 ```
 
+4. **`tests/conftest.py` — force the check OFF for the whole suite.** Without this, pre-existing tests reach a REAL spawn through the new call site: `test_pipeline_extract_dispatch.py` patches `read_page_range_text` to return Gate-A-passing text (`:120-124`, `_CLEAN_TEXT` at `:62-67`) but cannot patch `check_extract_coverage` (it does not exist at `2ebab53`), and `tests/conftest.py` has **no spawn guard** — only env sentinels and an events-bus loopback. `test_normal_book_unchanged` and `test_oversize_book_subsets_text` would each fire a real `gemini` CLI subprocess (installed on this host), then fail open and stay green — a money-rule violation that Step 6's "PASS" would actively mask.
+
+Add beside the existing sentinels (~line 33), *before* any app import:
+
+```python
+# The extract-completeness check makes a REAL model call. Default it OFF for the
+# suite so no test can reach a spawn through pipeline's extract branch; the tests
+# that exercise it re-enable it explicitly (test_pipeline_extract_coverage.py).
+os.environ.setdefault("EXTRACT_COVERAGE_CHECK_ENABLED", "false")
+```
+
 - [ ] **Step 5: Run the tests to verify they pass**
 
 ```bash
@@ -944,13 +968,20 @@ uv run python -m pytest tests/services/test_pipeline_extract_dispatch.py \
   tests/services/test_execute_phase_api_auth.py -q
 uv run python -m pytest tests/ -q
 ```
-Expected: PASS in both, with no edits to any pre-existing test file.
+Expected: PASS in both, with no edits to any pre-existing *behavior* test (the one-line `conftest.py` sentinel above is the only test-infra change).
+
+**Green is not sufficient here — prove no spawn happens.** These tests would also pass while silently shelling out to the `gemini` CLI (fail-open swallows the failure). Verify directly:
+
+```bash
+uv run python -m pytest tests/services/test_pipeline_extract_dispatch.py -q -p no:randomly --durations=5
+```
+Expected: sub-second durations. A multi-second `test_normal_book_unchanged` means the sentinel is not taking effect — stop and fix it before continuing. For certainty, temporarily add `raise AssertionError("spawn leaked")` at the top of `agent._spawn`, re-run the file, confirm it still passes, then revert.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 [ "$(git rev-parse --abbrev-ref HEAD)" = "feat/extract-coverage-check" ] || exit 1
-git add app/services/pipeline.py tests/services/test_pipeline_extract_coverage.py
+git add app/services/pipeline.py tests/services/test_pipeline_extract_coverage.py tests/conftest.py
 git commit -m "feat(extract): run the completeness check on the accepted extract
 
 Warn-only findings ride the extract row's existing validation_warnings and the
@@ -1023,27 +1054,27 @@ Expected: FAIL — `Cannot find module './phase-warnings'`.
 Create `web/src/lib/phase-warnings.ts`:
 
 ```ts
-import type { Phase } from "./types";
+import type { PhaseOut } from "./types";
 
 /** Warnings from the `extract` row — the ONLY place source-side checks land
  *  (`extract_coverage:` from the completeness check, `lint:coverage_thin` from
  *  the packet-vs-contract lint). The phase pager hides the extract row itself,
  *  so without this they render nowhere. */
-export function sourceCheckWarnings(phases: Phase[]): string[] {
+export function sourceCheckWarnings(phases: PhaseOut[]): string[] {
   return (phases ?? [])
     .filter((p) => p.phase_name === "extract" && p.status === "done")
     .flatMap((p) => p.validation_warnings ?? []);
 }
 
 /** Every done phase's warnings, extract included. */
-export function totalWarningCount(phases: Phase[]): number {
+export function totalWarningCount(phases: PhaseOut[]): number {
   return (phases ?? [])
     .filter((p) => p.status === "done")
     .reduce((n, p) => n + (p.validation_warnings?.length ?? 0), 0);
 }
 ```
 
-If the exported phase type in `web/src/lib/types.ts` is not named `Phase`, use the real name — check the file; `validation_warnings: string[] | null` is at `types.ts:210`.
+(`PhaseOut` is the real export — `types.ts:200`, with `validation_warnings: string[] | null` at `:210` and `Job.phases: PhaseOut[]` at `:223`. Note `npm test` would NOT catch a wrong type name, since `tsx` erases type-only imports — only Step 6's `tsc` would.)
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -1168,6 +1199,7 @@ this script writes land somewhere the cost query never looks):
   export GEMINI_API_KEY=...            # plain key, not Vertex SA
   export DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_copy
   export CALIBRATE_DSN=postgresql://edu:edu@127.0.0.1:5432/edu_copy
+  export VAR_DIR=/Users/macmini5/Documents/Homework-Content-Generation-Automation/var
   uv run python scripts/extract_coverage_calibrate.py gemini-3.5-flash-lite
 """
 import asyncio
@@ -1185,7 +1217,18 @@ from app.services import agent, content_lint
 MODEL = sys.argv[1] if len(sys.argv) > 1 else "gemini-3.5-flash-lite"
 DSN = os.environ.get("CALIBRATE_DSN", "postgresql://edu:edu@127.0.0.1:5432/edu_copy")
 DATA = Path("docs/research/2026-07-06-coverage-audit-data.json")
-BOOKS = Path("var/books")
+
+# The worktree has NO var/ — the host's book store lives in the main checkout.
+# Same trap the CQ-D smoke already had to code around (scripts/
+# cqd_extract_guards_smoke.py:33-41); resolve the first root that exists.
+_BOOK_ROOTS = [
+    Path(os.environ["VAR_DIR"]) / "books" if os.environ.get("VAR_DIR") else None,
+    Path.cwd() / "var" / "books",
+    Path("/Users/macmini5/Documents/Homework-Content-Generation-Automation/var/books"),
+]
+BOOKS = next((r for r in _BOOK_ROOTS if r and r.is_dir()), None)
+if BOOKS is None:
+    raise SystemExit("no book store found — set VAR_DIR to the checkout holding var/books")
 
 # Guard the worktree trap: this MUST be the worktree's code, not the main
 # checkout's (a -c script can silently import the other one → false all-clear).
@@ -1255,6 +1298,14 @@ async def main() -> None:
         await conn.close()
 
     print("\n".join(report))
+    skipped = [line for line in report if line.startswith("SKIP ")]
+    if skipped:
+        # A partial run fakes the gate: 0/0 recall reads like a pass. Abort loud.
+        raise SystemExit(
+            f"\nABORT: {len(skipped)} of {len(rows)} lessons could not be evaluated. "
+            "The calibration gate is only meaningful over the full labeled set — "
+            "fix the DSN / book store and re-run.\n" + "\n".join(skipped)
+        )
     print(f"\n=== MODEL {MODEL} ===")
     print(f"recall over labeled extract-losses: {total_hit}/{total_labeled}")
     print(f"items reported on the 4 CLEAN lessons (candidate FPs, hand-check each): "
@@ -1272,9 +1323,12 @@ if __name__ == "__main__":
 ```bash
 cd /Users/macmini5/Documents/HCGA-extract-coverage
 export GEMINI_API_KEY=<plain key>
+export DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_copy
+export CALIBRATE_DSN=postgresql://edu:edu@127.0.0.1:5432/edu_copy
+export VAR_DIR=/Users/macmini5/Documents/Homework-Content-Generation-Automation/var
 uv run python scripts/extract_coverage_calibrate.py gemini-3.5-flash-lite 2>&1 | tee /tmp/calib-lite.txt
 ```
-Expected: a per-lesson table plus recall and clean-lesson counts. **Do not proceed on a crash** — fix the harness first (a harness bug that silently skips lessons would fake the gate).
+Expected: all 9 lessons evaluated, then a per-lesson table plus recall and clean-lesson counts. **Do not proceed on a crash or on an ABORT** — the script refuses to print a score when any lesson was skipped, precisely because a partial run (0/0 recall) reads like a pass.
 
 - [ ] **Step 3: Evaluate the hard bars; run the stronger model only if needed**
 
@@ -1299,7 +1353,9 @@ A zero-row result means the DSNs disagree, **not** that nothing was billed — r
 
 - [ ] **Step 5: Write the calibration doc**
 
-Create `docs/research/2026-08-07-extract-coverage-calibration.md` containing: the method (one paragraph), the per-lesson table from the run, recall, the hand-check verdict on every item reported for a clean lesson (real miss vs false positive — say which, with the source evidence), the money-rule line (calls / tokens / `$`), and the resulting default decision under the Step-0 rule. State explicitly that the labels came from `gemini-3.1-pro` plus one hand-verified case, so this measures agreement, not truth.
+Create `docs/research/2026-08-07-extract-coverage-calibration.md` containing: the method (one paragraph), the per-lesson table from the run, recall, the hand-check verdict on every item reported for a clean lesson (real miss vs false positive — say which, with the source evidence), the money-rule line (calls / tokens / `$`), and the resulting default decision under the Step-0 rule.
+
+**Hand-confirm hard bar A explicitly.** `_matches` scores a hit when a *single* ≥4-char token appears in the other string, and generic Uzbek tokens (`qoidasi`, `massasi`, `hisoblash`, `misol…`) can bridge unrelated items — so an auto-scored bar-A pass is not sufficient evidence. Quote kimyo §13's two labeled items beside the checker's actual reported labels in the doc and state whether each is genuinely the same item. If the match is spurious, bar A **fails**. State explicitly that the labels came from `gemini-3.1-pro` plus one hand-verified case, so this measures agreement, not truth.
 
 - [ ] **Step 6: Apply the decided defaults**
 
@@ -1337,9 +1393,16 @@ cd /Users/macmini5/Documents/HCGA-extract-coverage
 export GEMINI_API_KEY=<plain key>
 export DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_copy
 export PSQL_DSN=postgresql://edu:edu@127.0.0.1:5432/edu_copy   # same server
-uv run python -c "import app.config as c, app.services.agent as a; print(a.__file__); print(c.settings.database_url)"
+# The worktree has no var/ — the book store lives in the main checkout, and
+# storage.book_pdf_path resolves it from settings.var_dir (default "var",
+# RELATIVE), so without this the job cannot find its PDF at all.
+export VAR_DIR=/Users/macmini5/Documents/Homework-Content-Generation-Automation/var
+uv run python -c "
+import app.config as c, app.services.agent as a, pathlib
+print(a.__file__); print(c.settings.database_url); print(c.settings.var_dir)
+assert (pathlib.Path(c.settings.var_dir) / 'books').is_dir(), 'book store not found'"
 ```
-Expected: the module path contains `HCGA-extract-coverage` **and** `database_url` matches the DSN you exported. If either is wrong, stop — the worktree walked up to `/Users/macmini5/Documents/.env` and every verification below would read a different database than the one being written.
+Expected: the module path contains `HCGA-extract-coverage`, `database_url` matches the DSN you exported, and the book-store assertion passes. If any is wrong, stop — the worktree walked up to `/Users/macmini5/Documents/.env` and every verification below would read a different database than the one being written.
 
 - [ ] **Step 1: Pick a lesson and launch one job in-process**
 
@@ -1424,7 +1487,7 @@ git mv docs/superpowers/plans/2026-08-07-extract-coverage-check.md docs/superpow
 ```bash
 uv run python -m pytest tests/ -q
 [ "$(git rev-parse --abbrev-ref HEAD)" = "feat/extract-coverage-check" ] || exit 1
-git add docs/memory/MASTER_MEMORY.md docs/memory/INDEX.md docs/memory/WISHLIST.md docs/memory/ROADMAP.md docs/HOW_IT_WORKS.md docs/CODE_MAP.md docs/superpowers/plans/
+git add docs/memory/MASTER_MEMORY.md docs/memory/INDEX.md docs/memory/WISHLIST.md docs/memory/ROADMAP.md docs/HOW_IT_WORKS.md docs/CODE_MAP.md docs/superpowers/plans/shipped/2026-08-07-extract-coverage-check.md
 git commit -m "docs: worklog + de-stale reference docs for the extract-completeness check"
 git show --stat HEAD          # verify the commit CONTENTS match the message
 ```
@@ -1450,5 +1513,12 @@ Invoke `superpowers:finishing-a-development-branch`. Default is push the branch 
 **Placeholder scan** — the only deliberately unresolved values are the worklog number (must be read from the INDEX tail at finish time, not guessed — a known staleness trap) and the calibration outcome, which Task 5 resolves by a mechanical decision rule stated before the run.
 
 **Type consistency** — `ExtractCoverageMiss(label, central)` / `ExtractCoverageVerdict(missing)` are defined in Task 1 and used with those exact field names in Tasks 3, 4, 5. `check_extract_coverage` is called with the same keyword set (`summary`, `source_text`, `section_title`, `section_number`, `provider`, `model`, `transport`, `homework_job_id`, `phase_output_id`) in Tasks 4 and 5 as defined in Task 1. `_lesson_source_or_none` / `_extract_coverage_warnings` / `_check_extract_coverage` keep one spelling throughout.
+
+**Corrections applied after the second review round (again, each verified against real code first):**
+7. **Blocker:** the new call site would have leaked REAL `gemini` CLI spawns into two pre-existing dispatch tests — that harness patches `read_page_range_text` to Gate-A-passing text but cannot patch a function that does not exist yet, and `tests/conftest.py` has no spawn guard. Fixed by defaulting the check OFF for the suite in `conftest.py`, re-enabling it explicitly in the new wiring harness, asserting the *shipped* default on the Settings class, and adding a durations/`_spawn`-sabotage proof that green really means "no spawn".
+8. The worktree has **no `var/`** — the book store lives in the main checkout (the CQ-D smoke already codes around this at `scripts/cqd_extract_guards_smoke.py:33-41`). Task 5 now resolves the book root with that idiom and **aborts loudly if any lesson is skipped** (a 0/0 run reads like a pass); Task 6 Step 0 exports and asserts `VAR_DIR`.
+9. `types.ts` exports **`PhaseOut`**, not `Phase` (`types.ts:200`) — the hedge is gone, and the plan notes that `npm test` alone would not have caught it since `tsx` erases type-only imports.
+10. Hard bar A must be **hand-confirmed** in the calibration doc: `_matches` can bridge unrelated items on one generic token, so an auto-scored pass is not sufficient evidence.
+11. Task 7 staged a whole directory (`docs/superpowers/plans/`) — narrowed to the explicit shipped path.
 
 **Deliberate non-goals** — no regen, no gating, no `lesson_context` shape change, no judge change, no migration, no new API endpoint, no batch/book-level rollup (that overlaps the unbuilt `judge-failure-rollup-1`).
