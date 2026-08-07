@@ -246,6 +246,18 @@ def _cost(calls: list[dict]) -> float:
     )
 
 
+def _target_subject_breakdown(targets: list) -> dict[str, int]:
+    """Per-subject counts of chosen calibration targets, sorted by subject
+    name for deterministic printing — the composition must be visible
+    BEFORE spending (dry-run) and recorded in the real run's report, so a
+    pool skewed toward one subject (e.g. all `english`) is caught before
+    or right after a run, not discovered later by re-reading job_ids."""
+    counts: dict[str, int] = {}
+    for _pristine, inputs in targets:
+        counts[inputs.subject] = counts.get(inputs.subject, 0) + 1
+    return dict(sorted(counts.items()))
+
+
 def _write_with_fallback(args: argparse.Namespace, payload: dict) -> Optional[pathlib.Path]:
     """Three-tier crash-safe write, shared by the full-audit run AND
     calibration-only mode: try the requested/default `--out` path first;
@@ -542,6 +554,9 @@ async def _run_calibrate_from(args: argparse.Namespace) -> int:
     for _pristine, inputs in targets:
         print(f"  TARGET {inputs.job_id[:8]} ({inputs.subject})")
 
+    subject_breakdown = _target_subject_breakdown(targets)
+    print(f"  per-subject breakdown: {', '.join(f'{s}={n}' for s, n in subject_breakdown.items()) or '(none)'}")
+
     planned_calls = len(targets)
     est_cost = planned_calls * _APPROX_COST_PER_CALL_USD
     print(f"  planned billed calls: {planned_calls}")
@@ -561,6 +576,7 @@ async def _run_calibrate_from(args: argparse.Namespace) -> int:
             "candidates_considered": len(candidate_reports),
             "targets_found": len(targets),
             "target_job_ids": [inputs.job_id for _p, inputs in targets],
+            "target_subject_breakdown": subject_breakdown,
             "rejected_load": rejected_load,
             "rejected_no_mutation": rejected_no_mutation,
             "planned_calls_ceiling": planned_calls,
@@ -639,6 +655,7 @@ async def _run_calibrate_from(args: argparse.Namespace) -> int:
                 "candidates_considered": len(candidate_reports),
                 "targets_found": len(targets),
                 "target_job_ids": [inputs.job_id for _p, inputs in targets],
+                "target_subject_breakdown": subject_breakdown,
                 "rejected_load": rejected_load,
                 "rejected_no_mutation": rejected_no_mutation,
                 "paired_results": [

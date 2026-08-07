@@ -1030,6 +1030,29 @@ async def test_select_calibration_targets_reuses_the_same_pristine_report_object
     assert rejected_no_mutation == []
 
 
+async def test_select_calibration_targets_round_robins_across_subjects_not_first_n(monkeypatch):
+    """Task 4b fix round 1: a pool skewed heavily toward one subject must
+    NOT fill the target list from that subject alone -- round-robin
+    across `subject` must surface at least 3 distinct subjects here,
+    including one of the under-represented ones."""
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _calib_fake_load)
+    candidates = (
+        [_calib_report(f"plantable-en-{i}", subject="english") for i in range(10)]
+        + [_calib_report(f"plantable-hist-{i}", subject="history") for i in range(2)]
+        + [_calib_report(f"plantable-geo-{i}", subject="geografiya") for i in range(2)]
+    )
+    targets, rejected_load, rejected_no_mutation = await efa.select_calibration_targets(
+        candidates, n=4, sample_seed=1
+    )
+    assert len(targets) == 4
+    subjects_hit = {t[0].subject for t in targets}
+    assert len(subjects_hit) >= 3
+    assert "history" in subjects_hit or "geografiya" in subjects_hit
+    # Determinism: same input -> same targets, same order.
+    targets2, _rl2, _rn2 = await efa.select_calibration_targets(candidates, n=4, sample_seed=1)
+    assert [t[0].job_id for t in targets] == [t[0].job_id for t in targets2]
+
+
 # ============================================================================
 # Fix round 1 — CLI crash-safe report persistence
 # (scripts/extract_fidelity_audit.py::_run). Everything below patches the

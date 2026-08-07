@@ -803,20 +803,37 @@ async def select_calibration_targets(
     """Task 4b: calibration-only target selection — feasibility BEFORE
     selection, fixing the round-1 defect where `--mutations N` picked N
     lessons up front, before it was known whether they could even load or
-    plant a mutation.
+    plant a mutation. Fix round 1 (this version) additionally ROUND-ROBINS
+    across `subject` instead of draining `candidates` in list order: a
+    report-order pool that happens to list one subject first (e.g. all of
+    `english`) would otherwise fill the whole target list from that one
+    subject, certifying the adjudicator against only its population —
+    worthless when that subject also happens to be the contaminated one
+    (a truncated-PDF book) and the base rate being certified is mostly
+    OTHER subjects.
 
     `candidates` is a pool of already-audited PRISTINE reports (typically
     a prior run's `reports[]`, each carrying `job_id` and a full `claims`
-    list — decision: never re-run the pristine audit, reuse it). Walks
-    `candidates` in the given order (the caller owns ordering — this
-    function does not shuffle) and, for each, reloads
+    list — decision: never re-run the pristine audit, reuse it). Grouped
+    by `subject` (`candidates.subject or "unknown"`), each group keeping
+    its members' relative input order; groups are then visited in a fixed
+    deterministic order — sorted alphabetically by subject name, not by
+    first appearance in `candidates` (so the result never depends on
+    which subject happened to be written first in an input file). One
+    full pass over the group order is a "turn": each turn, every
+    not-yet-exhausted subject contributes AT MOST ONE target — reloading
     `load_extract_audit_inputs` (free — DB + PDF only, no billed call) and
-    attempts `select_mutation` with `forbidden_text=inputs.whole_book_text`.
-    A candidate becomes a target ONLY when it both loads AND yields a
-    non-`None` mutation. Stops as soon as `n` targets are found, or when
-    `candidates` is exhausted — candidates past that point are never
-    examined (never loaded, never scored), so the pre-call cost stays
-    proportional to what was actually needed.
+    attempting `select_mutation` with `forbidden_text=inputs.whole_book_text`
+    for that subject's next untried candidate, skipping ahead within the
+    SAME subject (never borrowing another subject's turn) past any
+    candidate that fails to load or fails to plant, until either a viable
+    one is found (added as this turn's target for that subject) or the
+    subject's candidates are exhausted (subject drops out of rotation).
+    Turns repeat until `n` targets are found or every subject has been
+    exhausted. The feasibility rule itself is UNCHANGED — a candidate
+    still qualifies only if it loads AND `select_mutation` returns
+    non-`None`; round-robin only changes the ORDER candidates are
+    examined in, never the criterion.
 
     Returns `(targets, rejected_load, rejected_no_mutation)`:
     - `targets`: `[(pristine_report, inputs), ...]`, in the order found —
@@ -834,29 +851,50 @@ async def select_calibration_targets(
     Makes ZERO billed model calls — `load_extract_audit_inputs` and
     `select_mutation` are both free (DB/PDF reads + pure computation).
     """
+    groups: dict[str, list[ExtractFidelityReport]] = {}
+    for pristine in candidates:
+        groups.setdefault(pristine.subject or "unknown", []).append(pristine)
+    subject_order = sorted(groups.keys())
+    pointers = {subject: 0 for subject in subject_order}
+    active = set(subject_order)
+
     targets: list[tuple[ExtractFidelityReport, ExtractAuditInputs]] = []
     rejected_load: list[dict] = []
     rejected_no_mutation: list[str] = []
 
-    for pristine in candidates:
-        if len(targets) >= n:
-            break
+    while len(targets) < n and active:
+        for subject in subject_order:
+            if subject not in active:
+                continue
+            if len(targets) >= n:
+                break
 
-        try:
-            inputs = await load_extract_audit_inputs(pristine.job_id)
-        except ExtractFidelityAuditError as exc:
-            rejected_load.append(
-                {"job_id": pristine.job_id, "subject": pristine.subject, "error": str(exc)}
-            )
-            continue
+            group = groups[subject]
+            while pointers[subject] < len(group):
+                pristine = group[pointers[subject]]
+                pointers[subject] += 1
 
-        seed = lesson_seed(sample_seed, pristine.job_id)
-        planted = select_mutation(inputs.extract_md, seed, forbidden_text=inputs.whole_book_text)
-        if planted is None:
-            rejected_no_mutation.append(pristine.job_id)
-            continue
+                try:
+                    inputs = await load_extract_audit_inputs(pristine.job_id)
+                except ExtractFidelityAuditError as exc:
+                    rejected_load.append(
+                        {"job_id": pristine.job_id, "subject": pristine.subject, "error": str(exc)}
+                    )
+                    continue
 
-        targets.append((pristine, inputs))
+                seed = lesson_seed(sample_seed, pristine.job_id)
+                planted = select_mutation(
+                    inputs.extract_md, seed, forbidden_text=inputs.whole_book_text
+                )
+                if planted is None:
+                    rejected_no_mutation.append(pristine.job_id)
+                    continue
+
+                targets.append((pristine, inputs))
+                break  # at most one target per subject per turn
+
+            if pointers[subject] >= len(group):
+                active.discard(subject)
 
     return targets, rejected_load, rejected_no_mutation
 
