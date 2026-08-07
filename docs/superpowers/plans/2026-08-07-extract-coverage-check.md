@@ -6,7 +6,7 @@
 
 **Architecture:** Mirror CQ-D's fidelity guard, inverted. Fidelity asks *"did the extract invent something?"* (`extract_fidelity_candidates` → `verify_extract_fidelity` → regen-once); this asks *"did the extract drop something?"* (`_lesson_source_or_none` → `agent.check_extract_coverage` → warn-only). It runs inline in `pipeline._execute_phase`'s extract branch after the accepted output is chosen, appends to the existing `warnings` list, and rides the existing fenced done-write. No new write path, no migration, no change to `lesson_context`'s shape.
 
-**Tech Stack:** Python 3.12 · FastAPI · SQLAlchemy async · pydantic v2 structured output via `agent.run_phase(schema=…)` · `transport=api` over the plain Gemini API key · pytest / pytest-asyncio.
+**Tech Stack:** Python ≥3.13 (`pyproject.toml:5`) · FastAPI · SQLAlchemy async · pydantic v2 structured output via `agent.run_phase(schema=…)` · `transport=api` over the plain Gemini API key · pytest / pytest-asyncio.
 
 ---
 
@@ -33,7 +33,7 @@
 
 - **Warn-only. Non-negotiable.** This check must never fail a job, never park a job, never mutate the extract, and never gate a regen. Every failure path is fail-open.
 - **Transport:** all real calls run `transport=api` (the cli path is retired from operational use — CLAUDE.md standing decision 2026-07-01). Never benchmark or verify against cli.
-- **Money rule:** no mass generation. Calibration is 9 lessons × 2 models = 18 bounded calls; the live gate is ONE single-lesson generation. Every task that spends money reports tokens and `$`.
+- **Money rule:** no mass generation. Calibration is 9 lessons × up to 2 models = ≤18 bounded calls; the live gate is a **long lesson + a short negative control, plus one re-launch to prove the cache path is free** (three jobs, named explicitly in Task 6). Every task that spends money reports tokens and `$`.
 - **Gemini-only policy:** the check reuses the extract role's *provider*; only the *model* is overridable (`extract_coverage_model`), and only within that provider.
 - **Composition:** the CQ-D fidelity tests (`tests/services/test_extract_fidelity.py`) and the extract-dispatch tests (`tests/services/test_pipeline_extract_dispatch.py`) must stay green **unmodified**. If a task needs to edit either file, stop — the design is wrong.
 - **Staging discipline:** stage only the files each task lists. Never `git add -A` — other sessions commit to this branch's base.
@@ -627,7 +627,6 @@ Append to `tests/services/test_pipeline_extract_coverage.py`:
 # --- wiring on the real _execute_phase ---------------------------------------
 
 from contextlib import asynccontextmanager
-from typing import Optional
 from uuid import uuid4
 
 from app.config import settings
@@ -1211,6 +1210,12 @@ Read-only against edu_copy; the only writes are the agent_usages rows the check
 itself records. Bounded: 9 lessons x 1 call per model. Prints token + $ totals
 for the money-rule log.
 
+MUST be run as a MODULE (-m), not by path: this repo has no [build-system], so
+`app` is never installed into the venv and only resolves from the repo root —
+running `python scripts/<name>.py` puts scripts/ on sys.path[0] and dies with
+`ModuleNotFoundError: No module named 'app'` (verified empirically). Same idiom
+as scripts/cqd_extract_guards_smoke.py.
+
 Run (from the worktree, env exported EXPLICITLY — the worktree has no .env, so
 config.py walks up to /Users/macmini5/Documents/.env, whose DATABASE_URL points
 at a REMOTE host. Both DSNs below must name the same server, or the usage rows
@@ -1221,7 +1226,7 @@ this script writes land somewhere the cost query never looks):
   export DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_copy
   export CALIBRATE_DSN=postgresql://edu:edu@127.0.0.1:5432/edu_copy
   export VAR_DIR=/Users/macmini5/Documents/Homework-Content-Generation-Automation/var
-  uv run python scripts/extract_coverage_calibrate.py gemini-3.5-flash-lite
+  uv run python -m scripts.extract_coverage_calibrate gemini-3.5-flash-lite
 """
 import asyncio
 import json
@@ -1386,7 +1391,7 @@ export GEMINI_API_KEY=<plain key>
 export DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_copy
 export CALIBRATE_DSN=postgresql://edu:edu@127.0.0.1:5432/edu_copy
 export VAR_DIR=/Users/macmini5/Documents/Homework-Content-Generation-Automation/var
-uv run python scripts/extract_coverage_calibrate.py gemini-3.5-flash-lite 2>&1 | tee /tmp/calib-lite.txt
+uv run python -m scripts.extract_coverage_calibrate gemini-3.5-flash-lite 2>&1 | tee /tmp/calib-lite.txt
 ```
 Expected: all 9 lessons evaluated, then a per-lesson table plus recall and clean-lesson counts. **Do not proceed on a crash or on an ABORT** — the script refuses to print a score when any lesson was skipped, precisely because a partial run (0/0 recall) reads like a pass.
 
@@ -1395,7 +1400,7 @@ Expected: all 9 lessons evaluated, then a per-lesson table plus recall and clean
 Check hard bar A (kimyo §13 → both worked-example types) and hard bar B (math §5 and §2 → zero). If either fails:
 
 ```bash
-uv run python scripts/extract_coverage_calibrate.py gemini-3.5-flash 2>&1 | tee /tmp/calib-flash.txt
+uv run python -m scripts.extract_coverage_calibrate gemini-3.5-flash 2>&1 | tee /tmp/calib-flash.txt
 ```
 
 - [ ] **Step 4: Pull the real cost**
@@ -1598,5 +1603,10 @@ Invoke `superpowers:finishing-a-development-branch`. Default is push the branch 
 **Corrections applied after the fifth review round:**
 20. Correction 18's 60-second backward slack was pure downside: `started_at` is stamped by `run_phase` **in the script's own process** (`agent.py:998`), so no skew is possible — but the window would have counted the *previous* run's rows, and Step 3 mandates running a second model straight after the first. A healthy run would have aborted with `n_success > evaluated`. Now an unslacked host timestamp, both count queries also filtered by `model_name`, and the abort message reads correctly in both directions.
 21. `preview.tsx` called `sourceCheckWarnings(job.phases)` twice per render — hoisted to a local.
+
+**Corrections applied after the sixth review round:**
+22. The calibration script would have died at import under its own run command: this repo has no `[build-system]`, so `app` is never installed and only resolves from the repo root — `uv run python scripts/x.py` puts `scripts/` on `sys.path[0]` and raises `ModuleNotFoundError: No module named 'app'`. Verified empirically (by-path crashes, `-m` succeeds). All three run commands now use `uv run python -m scripts.extract_coverage_calibrate`, matching `scripts/cqd_extract_guards_smoke.py`'s documented form.
+23. The money-rule constraint said "ONE single-lesson generation" while Task 6 launches a long lesson, a short control, and a cache re-launch — constraint reworded to match the task (still bounded and cost-reported).
+24. Dead `from typing import Optional` in the Task 4 test append; Tech Stack said Python 3.12 where `pyproject.toml:5` requires ≥3.13.
 
 **Deliberate non-goals** — no regen, no gating, no `lesson_context` shape change, no judge change, no migration, no new API endpoint, no batch/book-level rollup (that overlaps the unbuilt `judge-failure-rollup-1`).
