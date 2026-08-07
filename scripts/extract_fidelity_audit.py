@@ -178,12 +178,31 @@ def _print_plan(
     return planned_calls
 
 
-def _write_report(args: argparse.Namespace, payload: dict) -> pathlib.Path:
-    if args.out:
-        out = pathlib.Path(args.out)
-    else:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        out = _REPO_ROOT / "var" / "extract_fidelity_audit" / f"{stamp}.json"
+def _default_report_path() -> pathlib.Path:
+    """The script's own default location — does NOT depend on `--out`, so
+    it's a safe fallback when a caller-supplied `--out` path is unwritable
+    (bad directory, permissions, full disk on that mount, ...)."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return _REPO_ROOT / "var" / "extract_fidelity_audit" / f"{stamp}.json"
+
+
+def _report_path(args: argparse.Namespace) -> pathlib.Path:
+    return pathlib.Path(args.out) if args.out else _default_report_path()
+
+
+def _write_report_to(out: pathlib.Path, payload: dict) -> pathlib.Path:
+    """Write `payload` to `out` as JSON. `payload` must be JSON-serializable
+    BY CONSTRUCTION (no Pydantic model / dataclass / `Path` / exception
+    object reaching this call — every field is converted to a plain
+    str/int/float/bool/list/dict/None where the payload is built) — this
+    function deliberately does NOT pass a `default=` fallback handler to
+    `json.dumps`, so a future field that forgets to convert fails LOUDLY
+    here (caught by the caller's crash-safety wrapper) rather than being
+    silently coerced into something that may not round-trip. Can raise
+    (missing directory permissions, full disk, ...) — callers on the
+    crash-safety path must catch this themselves; it is intentionally NOT
+    swallowed here so a normal (non-crash) write failure still surfaces
+    plainly."""
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"report: {out}")
@@ -218,7 +237,7 @@ async def _run(args: argparse.Namespace) -> int:
         return 0
 
     if args.dry_run:
-        _write_report(args, {
+        _write_report_to(_report_path(args), {
             "dry_run": True,
             "subjects": args.subjects,
             "sample_seed": args.sample_seed,
@@ -369,12 +388,56 @@ async def _run(args: argparse.Namespace) -> int:
             "calls": [dict(c) for c in calls],
             "cost_usd": cost,
         }
-        report_path = _write_report(args, payload)
-        if not completed:
+        # The write itself must NEVER propagate out of this `finally` — if it
+        # did, Python would replace the in-flight billed-call exception with
+        # the write error (main()'s `except efa.ExtractFidelityAuditError`
+        # would then miss it entirely), AND the partial report — the whole
+        # point of this crash-safety path — would never land on disk. So:
+        # try the requested/default path; on failure, print a loud stderr
+        # error, then try exactly ONE fallback write to the script's own
+        # default location (independent of any caller-supplied `--out`);
+        # if THAT also fails, dump the payload JSON straight to stderr as a
+        # last resort so the billed results are at least recoverable from
+        # the terminal. Every branch here is its own try/except so nothing
+        # in this block can itself escape `finally`.
+        primary_path = _report_path(args)
+        written_path: Optional[pathlib.Path] = None
+        try:
+            written_path = _write_report_to(primary_path, payload)
+        except Exception as write_exc:
             print(
-                f"WARNING: run did NOT complete ({error_str}) — wrote a PARTIAL report to "
-                f"{report_path} with {len(reports)} completed lesson(s) / ${cost:.4f} already "
-                f"billed across {len(calls)} call(s), so already-billed results are not lost. "
+                f"ERROR: failed to write report to {primary_path}: "
+                f"{type(write_exc).__name__}: {write_exc}",
+                file=sys.stderr,
+            )
+            fallback_path = _default_report_path()
+            try:
+                written_path = _write_report_to(fallback_path, payload)
+                print(f"Fell back to the default report path: {fallback_path}", file=sys.stderr)
+            except Exception as fallback_exc:
+                print(
+                    f"ERROR: fallback write to {fallback_path} ALSO failed: "
+                    f"{type(fallback_exc).__name__}: {fallback_exc} — dumping the payload JSON "
+                    f"to stderr as a last resort so the billed results are not lost.",
+                    file=sys.stderr,
+                )
+                try:
+                    print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+                except Exception as dump_exc:  # pragma: no cover - last-resort guard
+                    print(
+                        f"ERROR: could not even serialize the payload for a stderr dump: "
+                        f"{type(dump_exc).__name__}: {dump_exc}",
+                        file=sys.stderr,
+                    )
+
+        if not completed:
+            where = f"wrote a PARTIAL report to {written_path}" if written_path is not None else (
+                "FAILED TO WRITE ANY REPORT FILE — see the stderr dump above"
+            )
+            print(
+                f"WARNING: run did NOT complete ({error_str}) — {where}, with "
+                f"{len(reports)} completed lesson(s) / ${cost:.4f} already billed across "
+                f"{len(calls)} call(s), so already-billed results are not lost. "
                 f"A manual partial re-run can use `completed_job_ids` to see what already ran.",
                 file=sys.stderr,
             )

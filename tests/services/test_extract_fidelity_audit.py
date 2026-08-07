@@ -1094,3 +1094,142 @@ async def test_cli_run_records_mutation_targets_not_attempted_when_limit_truncat
     )
     assert accounted_for == 3  # all 3 mutation targets are accounted for somewhere
     assert len(not_attempted) >= 1  # the cap genuinely left at least one unattempted
+
+
+# ============================================================================
+# Fix round 2 — a write failure inside the crash-safety `finally` must NOT
+# replace the original billed-call exception, and must fall back to a
+# write that does not depend on operator input (`--out`).
+# ============================================================================
+
+
+async def test_cli_run_write_failure_does_not_mask_original_billed_call_exception(
+    monkeypatch, tmp_path
+):
+    """Reproduces the fix-round-2 probe: patch `_write_report_to` to raise
+    (simulating an unwritable `--out`, e.g. `PermissionError` from
+    `out.parent.mkdir(...)`) on its FIRST call, and trigger a mid-run
+    billed-call failure. Before this fix, Python would replace the
+    in-flight `ExtractFidelityAuditError` with the write error inside the
+    active-exception `finally` -- `main()`'s
+    `except efa.ExtractFidelityAuditError` would then miss it, AND the
+    partial report (the whole point of the round-1 fix) would never be
+    written. Asserts: (a) the exception surfacing from `_run` is the
+    ORIGINAL `ExtractFidelityAuditError`, not the write error; (b) the
+    fallback write path was attempted (and here, succeeds, so the billed
+    results genuinely survive); (c) nothing raises out of `finally` --
+    proven by `pytest.raises` catching exactly the expected type, not some
+    other exception that leaked from the write-guard logic itself."""
+    call_count = 0
+
+    async def fake_run_phase(**kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count > 2:
+            raise RuntimeError("simulated transient API 5xx")
+        return PhaseResult(
+            text="", parsed=efa.Adjudication(claims=[]),
+            usage={"prompt_tokens": 5, "output_tokens": 1},
+        )
+
+    monkeypatch.setattr(cli, "_fetch_candidates", _cli_fake_fetch)
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _cli_fake_load)
+    monkeypatch.setattr(cli.agent, "read_whole_book_text", lambda path: "whole book text")
+    monkeypatch.setattr(cli.agent, "run_phase", fake_run_phase)
+
+    # The fallback location must not depend on operator input (`--out`) --
+    # redirect it into tmp_path so this test never touches the real repo's
+    # var/ directory, while still exercising the exact code path `_run`
+    # uses (`_default_report_path()` computed fresh inside the write-guard).
+    monkeypatch.setattr(cli, "_default_report_path", lambda: tmp_path / "fallback_report.json")
+
+    real_write = cli._write_report_to
+    write_calls: list = []
+
+    def flaky_write(out, payload):
+        write_calls.append(out)
+        if len(write_calls) == 1:
+            raise PermissionError(f"simulated unwritable path: {out}")
+        return real_write(out, payload)
+
+    monkeypatch.setattr(cli, "_write_report_to", flaky_write)
+
+    bad_out = tmp_path / "unwritable" / "report.json"
+    args = cli._parse_args([
+        "--subject", "english:6", "--limit", "48", "--mutations", "0",
+        "--out", str(bad_out),
+    ])
+
+    with pytest.raises(efa.ExtractFidelityAuditError) as excinfo:
+        await cli._run(args)
+
+    # (a) the ORIGINAL billed-call exception surfaces, not the write error.
+    assert "simulated transient API 5xx" in str(excinfo.value)
+    assert not isinstance(excinfo.value, PermissionError)
+
+    # (b) the fallback path was attempted: two write attempts (primary then
+    # fallback), and the fallback target is NOT the caller-supplied --out.
+    assert len(write_calls) == 2
+    assert write_calls[0] == bad_out
+    fallback_path = write_calls[1]
+    assert fallback_path == tmp_path / "fallback_report.json"
+
+    # (c) nothing raised out of `finally` -- pytest.raises above caught
+    # exactly ExtractFidelityAuditError, and the fallback write genuinely
+    # landed with the partial (2-lesson) data, proving the results survive.
+    assert fallback_path.exists()
+    payload = json.loads(fallback_path.read_text())
+    assert payload["completed"] is False
+    assert len(payload["completed_job_ids"]) == 2
+    assert len(payload["reports"]) == 2
+
+
+async def test_cli_run_dumps_payload_to_stderr_when_both_writes_fail(
+    monkeypatch, tmp_path, capsys
+):
+    """Both the primary AND the fallback write fail -- the payload must be
+    dumped to stderr as a last resort (so the billed results are at least
+    recoverable from the terminal), and this must STILL not raise out of
+    `finally`: the original billed-call exception must still be the one
+    that surfaces."""
+    call_count = 0
+
+    async def fake_run_phase(**kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count > 1:
+            raise RuntimeError("dead adjudicator")
+        return PhaseResult(
+            text="", parsed=efa.Adjudication(claims=[]),
+            usage={"prompt_tokens": 5, "output_tokens": 1},
+        )
+
+    monkeypatch.setattr(cli, "_fetch_candidates", _cli_fake_fetch)
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _cli_fake_load)
+    monkeypatch.setattr(cli.agent, "read_whole_book_text", lambda path: "whole book text")
+    monkeypatch.setattr(cli.agent, "run_phase", fake_run_phase)
+
+    def always_fails(out, payload):
+        raise OSError(f"simulated disk-full writing {out}")
+
+    monkeypatch.setattr(cli, "_write_report_to", always_fails)
+
+    args = cli._parse_args([
+        "--subject", "english:6", "--limit", "48", "--mutations", "0",
+        "--out", str(tmp_path / "wherever.json"),
+    ])
+
+    with pytest.raises(efa.ExtractFidelityAuditError) as excinfo:
+        await cli._run(args)
+
+    # The original exception still wins, not the OSError from the writes.
+    assert "dead adjudicator" in str(excinfo.value)
+    assert not isinstance(excinfo.value, OSError)
+
+    captured = capsys.readouterr()
+    # The payload was dumped to stderr as a last resort -- it must contain
+    # the completed_job_ids / completed:false markers, proving the data is
+    # at least recoverable from the terminal even though nothing landed on
+    # disk.
+    assert '"completed": false' in captured.err
+    assert '"completed_job_ids"' in captured.err
