@@ -16,11 +16,13 @@
 - **Rejected — deterministic marker scan only** (`N-misol` / `masala` / `Пример` / `Задача` vs the contract's `## Worked-example types`): free, but blind to concept/fact omissions. Verified against the labeled data: of the 8 ground-truth extract-losses, only 3 are worked-example types — a marker scan structurally cannot see the other 5 (`Noqavariq ko'pburchak`, `Ion zaryadi miqdori qoidasi`, the two Crusades facts, …).
 - **Rejected — producer-side self-critique** (second pass inside the extract, no check): cannot be staged warn-only, cannot be calibrated against the labeled dataset, and yields no measurement for the deferred regen decision.
 - **Rejected — making the judge source-aware**: the judge runs per phase (×11), so shipping the source window into it multiplies tokens by an order of magnitude, and it re-opens `_FIDELITY_RULE`'s hard-won contradiction-vs-absence calibration (worklog 0159 / R25).
-- **Warn-only in v1, regen deliberately deferred.** Standing rule: never gate on a new check's first version (the validate_toc / solver lesson). The regen-once path is already shaped by CQ-D — `agent.summarize_lesson(correction_hint=…)` — and drops in at the same call site once live precision is measured. Every check call writes an `agent_usages` row (`operation="lesson.extract.coverage"`) whose `raw_envelope` carries the verdict, so that precision is queryable fleet-wide with no new plumbing.
+- **Warn-only in v1, regen deliberately deferred.** Standing rule: never gate on a new check's first version (the validate_toc / solver lesson). The regen-once path is already shaped by CQ-D — `agent.summarize_lesson(correction_hint=…)` — and drops in at the same call site once live precision is measured.
+- **Where that measurement actually lives (corrected at plan review):** `run_phase` records `extra_envelope={"phase_name", "difficulty", "schema", "attempt"}` only (`agent.py:1175-1192`), and the gemini api envelope is token counts (`api_transport.py:165-171`) — **the verdict never reaches `agent_usages.raw_envelope`.** So the deferred-regen decision is measured from `phase_outputs.validation_warnings` (join `agent_usages.phase_output_id` for cost), accepting that it is capped at `extract_coverage_max_items` and truncated to 80 chars per label. `agent_usages` still answers *how often* and *how much*; `validation_warnings` answers *what was flagged*. Do not repeat the raw_envelope claim anywhere.
 - **Load-bearing facts, each verified against real code at `2ebab53`:**
   - `pipeline.py:1648` initialises `warnings: list[str] = []` and `pipeline.py:1651` gates the judge/lint block behind `if phase_name != "extract"` — the done-write at `pipeline.py:1865-1882` (fenced with `claim_token`) is **common to both branches**, so the extract branch can contribute warnings with no signature change and no new write.
   - The cross-job extract cache **returns early** at `pipeline.py:1441-1472`, before the check's call site — a reused extract costs nothing, because the producing job already paid.
   - `agent.read_page_range_text(pdf, ps, pe, margin=1)` + `agent.validate_extract_text` already exist and are exactly what `_verify_source_for_section` (`pipeline.py:1290`) uses. The new helper deliberately **drops that function's whole-book fallback**: a whole-book "source" would make the checker enumerate *other* lessons' items and report them as omissions.
+  - **The extract row is invisible in the SPA today** (found at plan review): `preview.tsx:140`, `job.tsx:292` and `job.tsx:549-551` all filter `phase_name !== "extract"` before rendering or counting `validation_warnings`. So the already-shipped `lint:coverage_thin` has been landing in a column nobody can see. Task 4b fixes that for both warnings — without it, the surfacing decision this plan was built on is not actually delivered.
   - `lesson_context`'s shape does **not** change (the v3 enumerated contract shipped in worklog 0119) — so the coverage audit's heaviest composition constraint ("a shape change touches every content phase + judge + solver") is satisfied by construction. The regression surface is the extract phase only.
   - The 9 audited lessons are still live in `edu_copy` with their exact labeled extracts (`builtin:extract:v2`, char counts 440/693/1455/666/1452/704/4613/3110/2546 — byte-for-byte the artifacts the labels describe) and their books are on disk under `var/books/`. The acceptance gate is realizable today.
 - **Known limit, stated up front:** the checker is itself a cheap-tier model reading a page window. It narrows the blind spot; it does not close it. And the labels it is calibrated against came from `gemini-3.1-pro` plus one hand-verified case — calibration measures agreement with a strong model, not with truth.
@@ -39,7 +41,7 @@
   ```bash
   [ "$(git rev-parse --abbrev-ref HEAD)" = "feat/extract-coverage-check" ] || exit 1
   ```
-- **Worktree .env trap:** app code run from this worktree walks up and finds `/Users/macmini5/Documents/.env`, **not** the repo's. Any script that makes real calls must assert its module path and take credentials from explicitly exported env vars (Task 5 does this).
+- **Worktree .env trap (verified, and worse than it looks):** the worktree has **no `.env`**, so `config.py`'s `load_dotenv` walks up to `/Users/macmini5/Documents/.env`, whose `DATABASE_URL` is `postgresql+asyncpg://edu:edu@192.168.1.80:5432/edu_copy` — a **remote** host — while the repo's own `.env` says `localhost`. So an app-side write (`agent_usages`, `phase_outputs`) from this worktree lands on a *different server* than a bare `psql -d edu_copy` reads. Every task that makes real calls must (a) assert its module path, and (b) **export `DATABASE_URL` explicitly** and run its verification SQL against that same DSN. Otherwise the money-rule queries return empty and fake a "nothing billed" result.
 
 ---
 
@@ -52,6 +54,7 @@
 | `app/services/pipeline.py` (modify) | `_lesson_source_or_none` (strict lesson-scoped source, no whole-book fallback) · `_extract_coverage_warnings` (pure formatter) · `_check_extract_coverage` (orchestration + skips) · the call site in the extract branch. | 2, 3, 4 |
 | `tests/services/test_extract_coverage.py` (create) | Agent-boundary + config + pure-formatter tests. | 1, 3 |
 | `tests/services/test_pipeline_extract_coverage.py` (create) | Source-helper tests + wiring tests on the real `_execute_phase` via the DB-free harness. | 2, 4 |
+| `web/src/routes/preview.tsx`, `web/src/routes/job.tsx` (modify) | Surface extract-row `validation_warnings` — today both filter the extract phase out, so these warnings render nowhere. | 4b |
 | `scripts/extract_coverage_calibrate.py` (create) | Calibration harness against the 9-lesson labeled dataset. Read-only DB, real bounded calls. | 5 |
 | `docs/research/2026-08-07-extract-coverage-calibration.md` (create) | Calibration result: recall, noise, per-lesson table, the default-on/off decision. | 5 |
 | Docs: `docs/memory/MASTER_MEMORY.md`, `docs/memory/INDEX.md`, `docs/memory/WISHLIST.md`, `docs/memory/ROADMAP.md`, `docs/HOW_IT_WORKS.md`, `docs/CODE_MAP.md` | Worklog, index row, deferred-regen backlog item, live-doc de-staling. | 7 |
@@ -102,6 +105,10 @@ def test_config_defaults_are_warn_only_and_inherit_the_extract_model():
     assert isinstance(settings.extract_coverage_check_enabled, bool)
     assert settings.extract_coverage_model is None
     assert settings.extract_coverage_max_items >= 1
+    # The check runs outside the failover timeout guard — it must carry a bound
+    # of its own, and one far tighter than per_attempt_timeout_seconds (600s),
+    # because extract is the sequential head of the whole job.
+    assert 0 < settings.extract_coverage_timeout_seconds < settings.per_attempt_timeout_seconds
 
 
 @pytest.mark.asyncio
@@ -211,10 +218,16 @@ Expected: FAIL — `ImportError: cannot import name 'ExtractCoverageMiss' from '
 In `app/config.py`, immediately after the `extract_min_summary_chars` line (~227):
 
 ```python
-    # Extract-completeness check (warn-only, worklog TBD-plan 2026-08-07): one
-    # bounded call per FRESH extract comparing the summary against the lesson's
-    # own source pages. Advisory only — it never fails a job and never regens.
+    # Extract-completeness check (warn-only, plan 2026-08-07): one bounded call
+    # per FRESH extract comparing the summary against the lesson's own source
+    # pages. Advisory only — it never fails a job and never regens.
+    # NOTE: this default is provisional until Task 5's calibration lands; that
+    # task sets its final value from the measurement.
     extract_coverage_check_enabled: bool = True
+    # Advisory work must not stall the sequential head phase: the check runs
+    # OUTSIDE _run_with_failover's per_attempt_timeout_seconds (600s) guard, so
+    # it carries its own, much tighter bound.
+    extract_coverage_timeout_seconds: int = 120
     # None = inherit the extract role's model (the cheap pinned extractor).
     # Set to a stronger model only if calibration shows the pinned tier can't
     # see the omissions (see docs/research/2026-08-07-extract-coverage-calibration.md).
@@ -431,8 +444,13 @@ async def _lesson_source_or_none(pdf_path, section: dict) -> "str | None":
     A completeness check handed the whole book would enumerate every OTHER
     lesson's items and report them as omissions, so 'no usable window' must mean
     'do not run the check', never 'check against everything'. A window that
-    fails Gate A (scanned / garbled text layer) is likewise unusable — that is
-    also what keeps the check off the vision-extract path."""
+    fails Gate A (scanned / garbled text layer) is likewise unusable.
+
+    Note the vision-extract path is *usually*, not always, excluded by this:
+    the vision route triggers on WHOLE-BOOK Gate A / density (pipeline.py:1502),
+    while this re-applies Gate A to the lesson WINDOW. A mixed book whose window
+    does carry a real text layer will still be checked — which is correct, since
+    the window is then genuinely readable."""
     ps, pe = section.get("page_start"), section.get("page_end")
     if not ps or not pe:
         return None
@@ -784,6 +802,23 @@ def test_check_failure_is_fail_open_and_the_phase_still_completes(monkeypatch):
     assert _done_warnings(writes) is None
 
 
+def test_slow_check_is_bounded_and_fails_open(monkeypatch):
+    """extract is the sequential head of the job — a hung advisory call must not
+    stall it. The check sits outside _run_with_failover's wait_for, so it needs
+    its own bound."""
+    monkeypatch.setattr(settings, "extract_coverage_timeout_seconds", 0.01)
+    writes = _install_harness(monkeypatch)
+
+    async def _slow(**kwargs):
+        await asyncio.sleep(30)
+        return []
+
+    monkeypatch.setattr(pipeline.agent, "check_extract_coverage", _slow)
+    out_md, *_ = _run_extract_phase()
+    assert out_md                       # the extract itself still completed
+    assert _done_warnings(writes) is None
+
+
 def test_lease_and_cancel_signals_are_never_swallowed(monkeypatch):
     """A control signal means this worker no longer owns the job. Swallowing it
     inside an advisory check would let an obsolete worker keep writing."""
@@ -832,14 +867,21 @@ async def _check_extract_coverage(
                 f"[job {job_id}] extract coverage: skipped (no usable lesson source text)"
             )
             return []
-        misses = await agent.check_extract_coverage(
-            summary=output_md, source_text=source,
-            section_title=section.get("title") or "",
-            section_number=section.get("number") or "",
-            provider=provider,
-            model=settings.extract_coverage_model or model,
-            transport=transport,
-            homework_job_id=job_id, phase_output_id=po_id,
+        # Bounded independently: this call sits OUTSIDE _run_with_failover's
+        # asyncio.wait_for (pipeline.py:1013), so on a cli-transport extract
+        # nothing else would stop a hung subprocess from stalling the job's
+        # sequential head phase.
+        misses = await asyncio.wait_for(
+            agent.check_extract_coverage(
+                summary=output_md, source_text=source,
+                section_title=section.get("title") or "",
+                section_number=section.get("number") or "",
+                provider=provider,
+                model=settings.extract_coverage_model or model,
+                transport=transport,
+                homework_job_id=job_id, phase_output_id=po_id,
+            ),
+            timeout=settings.extract_coverage_timeout_seconds,
         )
     except (LeaseLostSignal, CancelWonSignal):
         raise
@@ -891,7 +933,7 @@ Three edits in `_execute_phase`:
 ```bash
 uv run python -m pytest tests/services/test_pipeline_extract_coverage.py -q
 ```
-Expected: PASS (12 tests).
+Expected: PASS (13 tests — 4 source-helper from Task 2, 9 wiring).
 
 - [ ] **Step 6: Prove the neighbours are untouched, then the whole suite**
 
@@ -912,9 +954,164 @@ git add app/services/pipeline.py tests/services/test_pipeline_extract_coverage.p
 git commit -m "feat(extract): run the completeness check on the accepted extract
 
 Warn-only findings ride the extract row's existing validation_warnings and the
-existing fenced done-write — so preview.tsx renders them and job.tsx counts
-them with no new API surface. Skips: kill switch, cache reuse, no page window,
-unusable text layer. Fail-open except lease/cancel control signals."
+existing fenced done-write — no new API surface. (The SPA filters the extract
+phase out of both warning surfaces today; Task 4b makes them visible.) Skips:
+kill switch, cache reuse, no page window, unusable text layer. Bounded by its
+own timeout. Fail-open except lease/cancel control signals."
+```
+
+---
+
+### Task 4b: Surface extract-row warnings in the SPA
+
+**Files:**
+- Create: `web/src/lib/phase-warnings.ts`
+- Create: `web/src/lib/phase-warnings.test.ts`
+- Modify: `web/src/routes/preview.tsx` (render a source-checks strip in `PreviewPage`, ~line 384)
+- Modify: `web/src/routes/job.tsx:545-556` (warning count)
+
+**Interfaces:**
+- Produces: `sourceCheckWarnings(phases): string[]` and `totalWarningCount(phases): number` from `web/src/lib/phase-warnings.ts`.
+
+**Why this task exists:** found at plan review. `preview.tsx:140`, `job.tsx:292` and `job.tsx:549-551` all filter `phase_name !== "extract"` before rendering or counting `validation_warnings`. Extract-row warnings therefore render **nowhere** — which also means the already-shipped `lint:coverage_thin` has been invisible since worklog 0119. Without this task the plan's surfacing decision is not delivered.
+
+**Deliberately NOT done:** the extract phase stays out of the phase pager and the phase timeline. It is internal scaffolding, not student content — only its *warnings* surface, in one compact strip.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `web/src/lib/phase-warnings.test.ts` (repo idiom: `node:assert`, run by `npm test`):
+
+```ts
+import assert from "node:assert";
+import { sourceCheckWarnings, totalWarningCount } from "./phase-warnings";
+
+const phases = [
+  { phase_name: "extract", status: "done", validation_warnings: ["extract_coverage: 2 item(s) …", "lint:coverage_thin: …"] },
+  { phase_name: "flashcards", status: "done", validation_warnings: ["lint:mixed_script: …"] },
+  { phase_name: "reflection", status: "done", validation_warnings: null },
+  { phase_name: "boss-arena", status: "running", validation_warnings: ["ignored — not done"] },
+] as any;
+
+// source-side checks live ONLY on the extract row; the pager hides that row.
+assert.deepStrictEqual(sourceCheckWarnings(phases), [
+  "extract_coverage: 2 item(s) …",
+  "lint:coverage_thin: …",
+]);
+
+// the job header count must include them — that is the whole point.
+assert.strictEqual(totalWarningCount(phases), 3);
+
+// empty / missing cases
+assert.deepStrictEqual(sourceCheckWarnings([] as any), []);
+assert.strictEqual(totalWarningCount([] as any), 0);
+assert.deepStrictEqual(
+  sourceCheckWarnings([{ phase_name: "extract", status: "done", validation_warnings: null }] as any),
+  [],
+);
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+```bash
+cd /Users/macmini5/Documents/HCGA-extract-coverage/web
+npm test
+```
+Expected: FAIL — `Cannot find module './phase-warnings'`.
+
+- [ ] **Step 3: Write the pure module**
+
+Create `web/src/lib/phase-warnings.ts`:
+
+```ts
+import type { Phase } from "./types";
+
+/** Warnings from the `extract` row — the ONLY place source-side checks land
+ *  (`extract_coverage:` from the completeness check, `lint:coverage_thin` from
+ *  the packet-vs-contract lint). The phase pager hides the extract row itself,
+ *  so without this they render nowhere. */
+export function sourceCheckWarnings(phases: Phase[]): string[] {
+  return (phases ?? [])
+    .filter((p) => p.phase_name === "extract" && p.status === "done")
+    .flatMap((p) => p.validation_warnings ?? []);
+}
+
+/** Every done phase's warnings, extract included. */
+export function totalWarningCount(phases: Phase[]): number {
+  return (phases ?? [])
+    .filter((p) => p.status === "done")
+    .reduce((n, p) => n + (p.validation_warnings?.length ?? 0), 0);
+}
+```
+
+If the exported phase type in `web/src/lib/types.ts` is not named `Phase`, use the real name — check the file; `validation_warnings: string[] | null` is at `types.ts:210`.
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+```bash
+npm test
+```
+Expected: PASS.
+
+- [ ] **Step 5: Wire both routes**
+
+In `web/src/routes/preview.tsx`, add the import and render the strip inside `PreviewPage`, immediately **before** `<PhasesPreview job={job} />` (~line 384) — outside `PhasesPreview` so it also shows when no content phase has finished:
+
+```tsx
+import { sourceCheckWarnings } from "../lib/phase-warnings";
+
+// … inside PreviewPage, just above <PhasesPreview job={job} />:
+{sourceCheckWarnings(job.phases).length > 0 && (
+  <section className="mt-6 rounded-2xl border border-amber-400/20 bg-amber-400/[0.06] px-5 py-3 backdrop-blur-xl">
+    <h2 className="text-xs font-medium uppercase tracking-wide text-amber-200/70">
+      Source checks
+    </h2>
+    <ul className="mt-2 list-disc pl-4 text-xs text-amber-200/80">
+      {sourceCheckWarnings(job.phases).map((w) => (
+        <li key={w}>{w}</li>
+      ))}
+    </ul>
+  </section>
+)}
+```
+
+In `web/src/routes/job.tsx:545-556`, keep the phase count content-only but count warnings across every done phase:
+
+```tsx
+  const stats = useMemo(() => {
+    const all = job?.phases ?? [];
+    const done = all.filter((p) => p.phase_name !== "extract" && p.status === "done");
+    // Warnings come from EVERY done phase, extract included — source-side
+    // checks (extract_coverage:, lint:coverage_thin) live only on that row.
+    const warnings = totalWarningCount(all);
+    return [
+      { label: "phases", value: done.length },
+      { label: "warnings", value: warnings },
+    ].filter((s) => s.value > 0 || s.label === "phases");
+  }, [job]);
+```
+
+…with `import { totalWarningCount } from "../lib/phase-warnings";` added at the top.
+
+- [ ] **Step 6: Typecheck and build**
+
+```bash
+cd /Users/macmini5/Documents/HCGA-extract-coverage/web
+npx tsc -p tsconfig.app.json --noEmit
+npm run build
+```
+Expected: both clean. (Do **not** run `biome check` as a gate — the repo is known repo-wide dirty on it, WISHLIST `fe-biome-clean-1`.)
+
+- [ ] **Step 7: Commit**
+
+```bash
+[ "$(git rev-parse --abbrev-ref HEAD)" = "feat/extract-coverage-check" ] || exit 1
+git add web/src/lib/phase-warnings.ts web/src/lib/phase-warnings.test.ts web/src/routes/preview.tsx web/src/routes/job.tsx
+git commit -m "fix(web): surface extract-row validation_warnings
+
+Both preview and the job header filtered the extract phase out before reading
+validation_warnings, so every source-side check landed in a column nobody could
+see — including lint:coverage_thin, invisible since worklog 0119. The extract
+row stays out of the pager and timeline; only its warnings surface."
 ```
 
 ---
@@ -962,11 +1159,14 @@ Read-only against edu_copy; the only writes are the agent_usages rows the check
 itself records. Bounded: 9 lessons x 1 call per model. Prints token + $ totals
 for the money-rule log.
 
-Run (from the worktree, credentials exported explicitly — the worktree's
-find_dotenv walks up to /Users/macmini5/Documents/.env, NOT the repo's):
+Run (from the worktree, env exported EXPLICITLY — the worktree has no .env, so
+config.py walks up to /Users/macmini5/Documents/.env, whose DATABASE_URL points
+at a REMOTE host. Both DSNs below must name the same server, or the usage rows
+this script writes land somewhere the cost query never looks):
 
   cd /Users/macmini5/Documents/HCGA-extract-coverage
   export GEMINI_API_KEY=...            # plain key, not Vertex SA
+  export DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_copy
   export CALIBRATE_DSN=postgresql://edu:edu@127.0.0.1:5432/edu_copy
   uv run python scripts/extract_coverage_calibrate.py gemini-3.5-flash-lite
 """
@@ -993,10 +1193,15 @@ assert "HCGA-extract-coverage" in agent.__file__, f"wrong agent module: {agent._
 
 
 def _matches(labeled: str, reported: str) -> bool:
-    """Cross-language fuzzy match: share a salient (>=4-char) token."""
-    a = set(content_lint._salient_tokens(labeled))
-    b = set(content_lint._salient_tokens(reported))
-    return bool(a & b)
+    """Cross-language fuzzy match: a salient (>=4-char) token of one appears
+    INSIDE the other. Substring, not exact-set intersection — Uzbek is
+    agglutinative ('izotop' / 'izotoplar' / 'izotoplarning' are three distinct
+    exact tokens), so exact matching would score a genuinely-caught omission as
+    a miss and could fail hard bar A for matcher reasons, not checker reasons.
+    Same containment idiom content_lint.lint_coverage itself uses."""
+    a, b = content_lint._norm(labeled), content_lint._norm(reported)
+    return (any(t in b for t in content_lint._salient_tokens(labeled))
+            or any(t in a for t in content_lint._salient_tokens(reported)))
 
 
 async def main() -> None:
@@ -1081,14 +1286,16 @@ uv run python scripts/extract_coverage_calibrate.py gemini-3.5-flash 2>&1 | tee 
 
 - [ ] **Step 4: Pull the real cost**
 
+Query the SAME server the script wrote to (the DSN exported in Step 2 — not a bare `psql -d edu_copy`, which may be a different host entirely):
+
 ```bash
-psql -U macmini5 -d edu_copy -Atc "
+psql "postgresql://edu:edu@127.0.0.1:5432/edu_copy" -Atc "
 select model_name, count(*), sum(prompt_tokens), sum(output_tokens)
 from agent_usages
 where operation='lesson.extract.coverage' and started_at > now() - interval '2 hours'
 group by model_name;"
 ```
-Record the numbers; convert with `app/services/pricing.py`'s map for the `$` line.
+A zero-row result means the DSNs disagree, **not** that nothing was billed — reconcile before believing it. Record the numbers; convert with `app/services/pricing.py`'s map for the `$` line.
 
 - [ ] **Step 5: Write the calibration doc**
 
@@ -1123,6 +1330,17 @@ from the measurement rather than from taste."
 
 **Why:** CLAUDE.md's acceptance gate — anything that affects generation is proven by a real generation smoke on the transport production uses. Task 5 proves the *checker*; this proves the *wiring* in a real job: the extract still completes, the warning lands on the row, and nothing regressed.
 
+- [ ] **Step 0: Pin the environment before anything else**
+
+```bash
+cd /Users/macmini5/Documents/HCGA-extract-coverage
+export GEMINI_API_KEY=<plain key>
+export DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_copy
+export PSQL_DSN=postgresql://edu:edu@127.0.0.1:5432/edu_copy   # same server
+uv run python -c "import app.config as c, app.services.agent as a; print(a.__file__); print(c.settings.database_url)"
+```
+Expected: the module path contains `HCGA-extract-coverage` **and** `database_url` matches the DSN you exported. If either is wrong, stop — the worktree walked up to `/Users/macmini5/Documents/.env` and every verification below would read a different database than the one being written.
+
 - [ ] **Step 1: Pick a lesson and launch one job in-process**
 
 Choose one **long, fact-dense** lesson (the class the audit shows leaks most) from a book already on disk, and one **short** lesson as the negative control. Launch a single job each over `transport=api` with `extract_coverage_check_enabled=True`. Use the existing single-lesson launch path (`scripts/smoke_per_role.py` is the closest working template for an in-process bounded call — read it before adapting; do not mass-generate).
@@ -1130,7 +1348,7 @@ Choose one **long, fact-dense** lesson (the class the audit shows leaks most) fr
 - [ ] **Step 2: Verify the extract row**
 
 ```bash
-psql -U macmini5 -d edu_copy -Atc "
+psql "$PSQL_DSN" -Atc "
 select p.job_id, p.status, p.validation_warnings
 from phase_outputs p where p.phase_name='extract'
 order by p.completed_at desc limit 5;"
@@ -1140,16 +1358,16 @@ Expected: both jobs `done`; the coverage warning (if any) present as an `extract
 - [ ] **Step 3: Verify the check billed correctly and once**
 
 ```bash
-psql -U macmini5 -d edu_copy -Atc "
+psql "$PSQL_DSN" -Atc "
 select operation, auth_mode, model_name, count(*), sum(prompt_tokens), sum(output_tokens)
 from agent_usages where started_at > now() - interval '1 hour'
 group by 1,2,3 order by 1;"
 ```
 Expected: exactly **one** `lesson.extract.coverage` row per fresh extract, `auth_mode='api'`, on the extract role's model (or the calibrated override) — **not** one per phase and **not** one per failover attempt.
 
-- [ ] **Step 4: Verify the FE surfaces it**
+- [ ] **Step 4: Verify the FE surfaces it (needs Task 4b — it does not render without it)**
 
-Open the job in the SPA (`/preview`), confirm the extract phase shows the warning text, and that `job.tsx`'s warning count includes it. Screenshot or quote the rendered string in the worklog.
+Rebuild the SPA (`cd web && npm run build`), open the job's `/preview`, and confirm the **Source checks** strip shows the `extract_coverage:` string, and that the job header's `warnings` stat includes it. Quote the rendered string in the worklog. If the smoke lesson produced no omissions, verify against a job that did — or temporarily point the strip at a job whose extract row carries a `lint:coverage_thin` warning (any pre-existing one works, and this is exactly the warning class that was invisible before Task 4b).
 
 - [ ] **Step 5: Re-run the same lesson to prove the cache path is free**
 
@@ -1185,7 +1403,7 @@ Append to `docs/memory/MASTER_MEMORY.md` (next free number — read the INDEX ta
 Add one line to `docs/memory/WISHLIST.md`:
 
 ```markdown
-- `extract-coverage-regen-1`: the warn-only completeness check (worklog TBD) records dropped items but never acts — once live precision is measured from `agent_usages` (`operation='lesson.extract.coverage'`, verdict in `raw_envelope`), decide whether a confirmed CENTRAL omission should drive one `summarize_lesson(correction_hint=…)` regen, exactly as CQ-D's fidelity guard does.
+- `extract-coverage-regen-1`: the warn-only completeness check (worklog TBD) records dropped items but never acts — once live precision is measured (fire rate + cost from `agent_usages` where `operation='lesson.extract.coverage'`; the flagged items themselves from `phase_outputs.validation_warnings` on the extract row, since `run_phase` does not persist the verdict into `raw_envelope`), decide whether a confirmed CENTRAL omission should drive one `summarize_lesson(correction_hint=…)` regen, exactly as CQ-D's fidelity guard does.
 ```
 
 Update the `docs/memory/ROADMAP.md` note on the coverage-audit residue: Finding 1 (extract-loss) now has a detector; Finding 3 (phase-loss) was already covered by `lint:coverage_thin`.
@@ -1219,7 +1437,15 @@ Invoke `superpowers:finishing-a-development-branch`. Default is push the branch 
 
 ## Self-review
 
-**Spec coverage** — every design decision maps to a task: cheap-LLM detector → Task 1; strict lesson-scoped source → Task 2; aggregated central-first warning → Task 3; inline placement, skip conditions, `validation_warnings` + phase-console surfacing → Task 4; calibration against the labeled dataset and the default-on/off decision → Task 5; real-generation acceptance and per-fresh-extract billing → Task 6; worklog, deferred-regen backlog item, live-doc de-staling → Task 7.
+**Spec coverage** — every design decision maps to a task: cheap-LLM detector → Task 1; strict lesson-scoped source → Task 2; aggregated central-first warning → Task 3; inline placement, skip conditions, timeout bound and `validation_warnings` → Task 4; actually making those warnings visible in the SPA → Task 4b; calibration against the labeled dataset and the default-on/off decision → Task 5; real-generation acceptance and per-fresh-extract billing → Task 6; worklog, deferred-regen backlog item, live-doc de-staling → Task 7.
+
+**Corrections applied after the plan review (all verified against real code before accepting):**
+1. The SPA filters the extract phase out of both warning surfaces (`preview.tsx:140`, `job.tsx:292`, `job.tsx:549-551`) — the surfacing claim was false, so **Task 4b** was added to deliver it (and it un-hides the already-shipped `lint:coverage_thin` as a side effect).
+2. `run_phase` records `extra_envelope={"phase_name","difficulty","schema","attempt"}` only (`agent.py:1175-1192`) — the verdict never reaches `agent_usages.raw_envelope`, so the deferred-regen measurement now points at `phase_outputs.validation_warnings`.
+3. The worktree has no `.env`; the walked-up one points `DATABASE_URL` at a **remote** host, so Tasks 5 and 6 now export it explicitly and run their verification SQL against that same DSN — otherwise the money-rule queries silently return empty.
+4. The check sits outside `_run_with_failover`'s `asyncio.wait_for` (`pipeline.py:1013`) — it now carries `extract_coverage_timeout_seconds` (120s) so a hung advisory call cannot stall the job's sequential head phase.
+5. The calibration matcher moved from exact token-set intersection to substring containment (the idiom `lint_coverage` itself uses) — Uzbek agglutination would otherwise fail hard bar A for matcher reasons rather than checker reasons.
+6. The vision-path exclusion claim was **softened, not coded around**: the vision route triggers on whole-book Gate A while this check re-applies Gate A to the lesson window, so a mixed book with a readable window is still checked — which is correct behavior, so the code stands and only the claim changed.
 
 **Placeholder scan** — the only deliberately unresolved values are the worklog number (must be read from the INDEX tail at finish time, not guessed — a known staleness trap) and the calibration outcome, which Task 5 resolves by a mechanical decision rule stated before the run.
 
