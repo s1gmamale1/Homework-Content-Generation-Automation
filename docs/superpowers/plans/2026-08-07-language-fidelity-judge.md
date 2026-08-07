@@ -69,6 +69,8 @@ This task writes an instrument and runs it. It is not TDD; its deliverable is a 
 
 **Arm design rule (load-bearing).** Every mutation replaces a **whole card block** (id/front/back/type/difficulty and every optional field) so no line of the original survives to contradict the injected claim, and each arm's verdict requires the judge's failure text to **cite the mutated card** — a bare `has_major` is not evidence, because the specimen may carry an unrelated major.
 
+**Two known impurities, recorded rather than papered over.** (1) The `contradiction` arm's injected card is also inconsistent with surviving cards 1 and 3, which both restate the correct when/while rule — so a major there may fire on intra-deck inconsistency rather than on the source contradiction. That only adds firing channels to an arm that must fire anyway (it is a STOP-check), so it cannot push the gate in the dangerous direction; **record which channel the failure text actually cites.** (2) Replacing `card_8` drops the "turn on / turn off" concept, which the extract enumerates — see gate rule 3 for why that omission major must not be counted as the arm firing. (3) Bonus signal in the `control` arm: card_9's `explanation` claims rescue dogs find people under rubble, which the extract never says and which is true of rescue dogs generally — a naturally-occurring absent-but-TRUE claim. After the change it must still NOT be a major; if it becomes one, the exception is over-firing on exactly the class 0159 protected.
+
 - [ ] **Step 1: Write the probe script**
 
 Create `docs/research/2026-08-07-language-fidelity-probe.py`:
@@ -159,7 +161,7 @@ JUDGE_ARMS = [
 **back:** Uzoq davom etgan fon harakatidan oldin keladi; o'zidan keyin Past Continuous ishlatiladi.
 **type:** grammar
 **difficulty:** easy
-**example:** *When the man was driving, a monkey jumped out of a tree.*""", ("when", "Past Continuous")),
+**example:** *When the man was driving, a monkey jumped out of a tree.*""", ("card_2", "Past Continuous")),
 ]
 
 _HEADING_RE = re.compile(r"(?m)^[ \t]*#{1,6}[ \t]*(?P<h>[^\n#].*?)[ \t]*$")
@@ -320,6 +322,7 @@ Read the JSON and record the verdict in `docs/research/2026-08-07-language-fidel
    - Fires in ≥2 of 3 replays → **limb 1 is already handled by the live system. SKIP Task 1 entirely**, record it in the findings doc, and continue from Task 2. This is a real possible outcome and the honest one to accept.
    - Does not fire in ≥2 of 3 → **limb 1 CONFIRMED**; Task 1 proceeds.
    - Majors that fire on something OTHER than the duck card count as "does not fire" for this rule, and get written down separately.
+   - **"Fires" here means specifically: a major asserting that the duck card's GLOSS IS FALSE** (a duck is not a rodent). It does **not** include a major complaining that the deck has *dropped* the "turn on / turn off" concept — the extract enumerates that phrasal verb, so removing its card is a legitimate omission the judge can major on today, under the unchanged rule, and such a major may well name the duck card as the thing that replaced it. Counting it would send the gate false-green into "SKIP Task 1" — the same failure direction as the first draft's contaminated arm, and the last remaining path into it. No clean victim card exists in this deck (all 10 map to extract-enumerated items), so this is resolved by definition, not by choosing a different card.
 4. **Regression baseline — the two `regression:*` arms.** Record `has_major` per replay. This is the `before` half of the 0159-preservation measurement; Task 4 compares against it. No gate action here — it only becomes a gate in Task 4.
 5. **Limb 2 (extract).** Record `has_vocabulary_heading` / `has_passages_heading` / `gloss_arrow_lines` / `chars` per specimen. Task 2 proceeds regardless (the heading is contractually absent — the probe measures how much vocabulary leaks through `## Concepts & terms` anyway, which is the baseline Task 4 must beat), but if all three specimens already carry a full glossed vocabulary inventory under the existing headings, say so plainly and flag it to the controller before Task 2.
 
@@ -773,7 +776,7 @@ uv run python docs/research/2026-08-07-language-fidelity-probe.py --label after
 Compare `-before.json` and `-after.json`:
 
 1. **Extract limb:** `has_vocabulary_heading` is `True` for the two english specimens in `after` (adabiyot G9 is a literature lesson and may legitimately have no vocabulary section — do not treat its absence as a failure), and `has_passages_heading` is `True` for at least the `english-g8-families` specimen (its source lesson contains a reading text). Record the per-specimen deltas.
-2. **Judge limb** (skip if Task 1 was skipped): the `absent_false` arm **fires** (majors *citing the duck card*, per Task 0's definition) in ≥2 of 3 replays, while the `control` arm does NOT gain a new major it did not have in `before`. A control that newly majors means the exception is over-firing — report it and stop rather than shipping.
+2. **Judge limb** (skip if Task 1 was skipped): the `absent_false` arm **fires** in ≥2 of 3 replays — using Task 0's exact definition, i.e. a major asserting the duck card's **gloss is false**, NOT a major about the dropped "turn on / turn off" concept even when its text names the duck card — while the `control` arm does NOT gain a new major it did not have in `before`. A control that newly majors means the exception is over-firing — report it and stop rather than shipping.
 3. **0159-preservation gate (the regen-tax check):** neither `regression:math-g11-prizma` nor `regression:geo-g10-braziliya` gains a major it did not have in `before` — 6 replays across two fact-dense subjects, unmutated. This is the only measurement in the plan that tests whether the "state the correction" brake actually holds against a judge willing to assert a correction it invented; the prompt-text unit tests cannot. **If either regression arm newly majors, do not ship.** Tighten the exception (e.g. require the contradicted claim to be one the OUTPUT presents as a definition or gloss, not any incidental statement) and re-run before proceeding.
 
 If criterion 1 fails, the heading text is not landing — inspect the returned `extract_md` in the JSON, tighten the REQUIRED-whenever wording in `_CONTRACT_INSTRUCTIONS`, re-run. Do not proceed on a failed criterion.
@@ -856,7 +859,9 @@ The last entry at plan-writing time was **0163**, so this is **0164** — but an
 
 - [ ] **Step 2: Write the worklog entry and INDEX row**
 
-The entry must state: the two limbs; that limb 1 is a gap between 0159's two probes (absent-TRUE and contradicting-FALSE) rather than a reversal of 0159; the before/after probe numbers from Task 4; the cache-key bump and its per-lesson re-extract cost; the actual $ spend; the suite count; "no migration"; and — if Task 0's gate skipped Task 1 — say so plainly rather than describing work that did not happen.
+The entry must state: the two limbs; that limb 1 is a gap between 0159's two probes (absent-TRUE and contradicting-FALSE) rather than a reversal of 0159; the before/after probe numbers from Task 4; the cache-key bump and its per-lesson re-extract cost; the measured extract-length delta on the `Vocabulary List` specimen; the actual $ spend; the suite count; "no migration"; and — if Task 0's gate skipped Task 1 — say so plainly rather than describing work that did not happen.
+
+It must also carry an explicit **post-deploy watch item**: after the fleet pulls and restarts, monitor the `flashcards` `major` / `major_shipped` rate for **math-algebra and geografiya** against the pre-change baseline (the R25 numbers, and the `judge_status` query used in this plan's exploration). The regression arms are 6 replays before and 6 after on two decks — enough to catch the exception grossly reopening R25's regen tax, **not** enough to catch a sub-threshold population-scale shift. 0159 itself measured across dozens of calls per arm. The live population is the backstop, and it only works if someone is told to look.
 
 - [ ] **Step 3: File the out-of-scope gap on WISHLIST**
 
