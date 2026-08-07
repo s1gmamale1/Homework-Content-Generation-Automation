@@ -1478,7 +1478,7 @@ async def _execute_phase(
     _token = _token_of(lease)
     _custom_md = _custom_for(phase_name, custom_prompts)
     if phase_name == "extract":
-        prompt_hash = "builtin:extract:v3"
+        prompt_hash = "builtin:extract:v4"
     elif _custom_md is not None:
         prompt_hash = "custom:sha256:" + hashlib.sha256(_custom_md.encode("utf-8")).hexdigest()
     else:

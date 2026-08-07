@@ -2482,12 +2482,27 @@ with the ITEMS written in the lesson's language:
 ## Formulas
 ## Worked-example types
 ## Key facts
+## Vocabulary & set phrases
+## Source sentences & passages
 
 Under each heading list one bullet ("- ") per item. OMIT a heading entirely if the \
 lesson has no such items (e.g. a history lesson usually has no Formulas). \
 "## Worked-example types" is REQUIRED whenever the lesson contains any worked example, \
 sample problem, or solved exercise — list the TYPE of each (what the student must be able \
-to solve), not the full worked solution. Be complete but concise: capture every distinct \
+to solve), not the full worked solution. \
+"## Vocabulary & set phrases" is REQUIRED whenever the lesson teaches words, phrases or set \
+expressions the student must be able to USE (a language lesson's word list, a science lesson's \
+new terms) — one bullet per item as `item — meaning`, taking the meaning from the source's own \
+gloss, translation or definition. If the lesson presents an item with NO meaning of its own (a \
+bare word list), write `item — (no gloss in source; used in: "<the phrase or sentence where it \
+appears>")` rather than inventing a definition. This heading differs from "## Concepts & terms", \
+which carries the IDEAS the lesson explains: a word the student must be able to USE belongs \
+here, not there. List every such item; do not sample. \
+"## Source sentences & passages" is REQUIRED whenever the lesson presents model sentences, \
+example dialogue, or a reading text the student learns from — quote them VERBATIM (up to 10 \
+sentences; for a long reading text quote its key sentences), never paraphrase them, and never \
+compose a sentence of your own here. \
+Be complete but concise: capture every distinct \
 teachable item, especially the problem/exercise types, and do not invent items absent \
 from the source."""
 

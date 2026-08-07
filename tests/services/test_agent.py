@@ -835,7 +835,10 @@ def test_gate_b_passes_unformatted_but_substantial_prose():
 
 from app.services.agent import _SUMMARIZE_LESSON_PROMPT, _SUMMARIZE_VISION_PROMPT
 
-_REQUIRED_HEADERS = ["## Concepts", "## Rules", "## Formulas", "## Worked-example types", "## Key facts"]
+_REQUIRED_HEADERS = [
+    "## Concepts", "## Rules", "## Formulas", "## Worked-example types", "## Key facts",
+    "## Vocabulary & set phrases", "## Source sentences & passages",
+]
 
 def test_extract_prompts_specify_the_contract_headers():
     for p in (_SUMMARIZE_LESSON_PROMPT, _SUMMARIZE_VISION_PROMPT):
@@ -844,3 +847,42 @@ def test_extract_prompts_specify_the_contract_headers():
         assert "worked-example" in p.lower()
         # headers stay English; items in the lesson language
         assert "lesson's language" in p.lower() or "same language" in p.lower()
+
+
+def test_extract_contract_requires_vocabulary_when_the_lesson_teaches_words():
+    """Plan 2026-08-07: the five original headings carry no lexical inventory with
+    MEANINGS. Measured 2026-08-07 (probe, before-run): a language lesson's words do
+    survive -- as a bare list under '## Concepts & terms' with no glosses -- so the
+    generator, whose flashcards contract demands `vocabulary` cards as L2 word -> L1
+    meaning, receives the left-hand side and must invent every right-hand side."""
+    c = agent_module._CONTRACT_INSTRUCTIONS
+    assert "## Vocabulary & set phrases" in c
+    low = c.lower()
+    assert "required whenever the lesson teaches words" in low
+    assert "source's own gloss" in low
+
+
+def test_extract_contract_marks_ungossed_items_instead_of_inventing_a_meaning():
+    """A language textbook often presents a bare word list and teaches the meanings
+    orally. 'Take the meaning from the source' would then yield nothing, and
+    'supply a meaning' would make the extract itself the fabricator. The contract
+    takes the third route: say the source gave none, and anchor the item to where
+    it is used."""
+    low = agent_module._CONTRACT_INSTRUCTIONS.lower()
+    assert "no gloss in source" in low
+    assert "rather than inventing a definition" in low
+
+
+def test_extract_contract_quotes_model_sentences_verbatim():
+    c = agent_module._CONTRACT_INSTRUCTIONS
+    assert "## Source sentences & passages" in c
+    low = c.lower()
+    assert "verbatim" in low
+    assert "never paraphrase" in low
+
+
+def test_extract_contract_disambiguates_vocabulary_from_concepts():
+    """Without this line the model files lexis under '## Concepts & terms' -- which
+    is exactly what all three probe specimens did in the before-run."""
+    low = agent_module._CONTRACT_INSTRUCTIONS.lower()
+    assert "must be able to use" in low
