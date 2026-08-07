@@ -105,6 +105,7 @@
   1. make the CBP concealment rule **subject-aware** — for mathematics allow the setup to state the task operationally, since what is being tested is the *method name*, not the task;
   2. relax term-coverage from "every term the student will encounter" to "every term the lesson defines".
 - **Do NOT:** regenerate the 101 shipped math packets — they are usable; the flag is a contract artifact, not a defect. Re-judging is the measurement, not re-generation.
+- **Cross-reference (worklog [0166], 2026-08-08):** a separate lane probed whether R25's re-anchored fidelity rule swallows *fabrication* as well as absence. It does not — a demonstrably-false claim absent from the source is majored 3/3 under the unchanged rule, because `_INSTRUCTIONS` §4 dominates the absence exemption. **No judge change was made**, so R25's measured win is untouched. What that lane did ship is extract-side: two new contract headings, which increase the text injected into every judge call — see the post-deploy watch item in [0166] on math/geo flashcards major-rates.
 - **Companion gap (blocks diagnosis generally):** judge failures are retrievable only by hand-querying `validation_warnings` — nothing in the UI or `/agent/stats` surfaces them, and `agent_usages.raw_envelope` for judge calls carries only token counts. A per-contract failure rollup would have answered this in seconds instead of a manual investigation. See WISHLIST `judge-failure-rollup-1`.
 
 ## R24 — Long fact-dense lessons produce packets that cover the material but don't teach it (fixed drill budget)

@@ -368,12 +368,22 @@ machine with two stages (a head and a parallel tail):
 1. **`extract`** — read the chosen lesson and produce an **enumerated coverage contract**
    of it ("lesson_context"): one short gist sentence, then fixed **English** section
    headings — `## Concepts & terms`, `## Rules & theorems`, `## Formulas`,
-   `## Worked-example types`, `## Key facts` — with the bullet *items* under each heading
+   `## Worked-example types`, `## Key facts`, `## Vocabulary & set phrases`,
+   `## Source sentences & passages` — with the bullet *items* under each heading
    written in the lesson's own language (a heading is omitted when the lesson has none of
    that kind). `## Worked-example types` is required whenever the lesson has any worked or
    solved problem, so every downstream phase can see the full inventory of problem *types*
    the lesson teaches, not just prose about it — this closed a measured gap where the old
-   free-form summary silently dropped a lesson's worked-example coverage. This step is
+   free-form summary silently dropped a lesson's worked-example coverage.
+   `## Vocabulary & set phrases` and `## Source sentences & passages` (worklog 0166) close
+   the same class of gap for language and literature lessons: the five-heading version
+   carried a lesson's words but **not their meanings**, and dropped its model sentences
+   entirely, so a generator contractually required to build `vocabulary` cards as
+   "L2 word → L1 meaning" received the words and invented every meaning. Vocabulary bullets
+   are `item — meaning`, capped at 40; a meaning the extract supplied itself rather than
+   taking from the source is marked `[not in source]`, because the judge treats this summary
+   as ground truth and would otherwise enforce an invented gloss as if the textbook had said
+   it. Source sentences are quoted verbatim, never paraphrased. This step is
    **pinned to a cheap model** (`gemini` / `gemini-3.5-flash-lite`) regardless of which provider
    the user picked, because it's a high-input / low-creativity task — paying premium rates
    here buys nothing. It has its own readability gates and fails over if the pinned provider
