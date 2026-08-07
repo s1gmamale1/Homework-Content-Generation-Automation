@@ -1108,13 +1108,17 @@ In `web/src/routes/preview.tsx`, add the import and render the strip inside `Pre
 import { sourceCheckWarnings } from "../lib/phase-warnings";
 
 // … inside PreviewPage, just above <PhasesPreview job={job} />:
-{sourceCheckWarnings(job.phases).length > 0 && (
+// …computed once, near the other derived values in PreviewPage:
+const sourceWarnings = sourceCheckWarnings(job.phases);
+
+// …then in the JSX, immediately above <PhasesPreview job={job} />:
+{sourceWarnings.length > 0 && (
   <section className="mt-6 rounded-2xl border border-amber-400/20 bg-amber-400/[0.06] px-5 py-3 backdrop-blur-xl">
     <h2 className="text-xs font-medium uppercase tracking-wide text-amber-200/70">
       Source checks
     </h2>
     <ul className="mt-2 list-disc pl-4 text-xs text-amber-200/80">
-      {sourceCheckWarnings(job.phases).map((w) => (
+      {sourceWarnings.map((w) => (
         <li key={w}>{w}</li>
       ))}
     </ul>
@@ -1223,7 +1227,7 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -1271,10 +1275,11 @@ async def main() -> None:
     total_hit = total_labeled = total_reported_clean = 0
     evaluated = 0
     report: list[str] = []
-    # HOST clock with slack: agent_usages.started_at is stamped host-side
-    # (run_phase → _record_usage), so a DB now() here would mix two clocks and
-    # could drop the first row below the cutoff. The slack absorbs small drift.
-    t0 = datetime.now(timezone.utc) - timedelta(seconds=60)
+    # started_at is stamped by run_phase in THIS process (agent.py:998), so this
+    # is the same clock — no skew, and no slack. Slack would only widen the
+    # window to the PREVIOUS run's rows: Step 3 runs a second model right after
+    # the first, so a backward window would count those and abort a healthy run.
+    t0 = datetime.now(timezone.utc)
     try:
         for r in rows:
             job_id = r["job"]
@@ -1322,10 +1327,12 @@ async def main() -> None:
         # failure returns [] and is indistinguishable from "clean extract". So a
         # broken environment would score zero misses everywhere and PASS hard
         # bar B. Count the successful calls the check actually recorded.
+        # model_name too, so a back-to-back second-model run can never count the
+        # first run's rows even if the clocks were to collide.
         n_success = await conn.fetchval(
             "select count(*) from agent_usages "
             "where operation = 'lesson.extract.coverage' "
-            "and success and started_at >= $1", t0)
+            "and success and started_at >= $1 and model_name = $2", t0, MODEL)
         # Informational ONLY — never an abort condition. run_phase's schema mode
         # records a success=False row under the SAME operation for a first
         # attempt that fails Pydantic validation, then retries and records a
@@ -1336,7 +1343,7 @@ async def main() -> None:
         n_failed = await conn.fetchval(
             "select count(*) from agent_usages "
             "where operation = 'lesson.extract.coverage' "
-            "and not success and started_at >= $1", t0)
+            "and not success and started_at >= $1 and model_name = $2", t0, MODEL)
     finally:
         await conn.close()
 
@@ -1346,9 +1353,10 @@ async def main() -> None:
               "occasionally in schema mode (first attempt retried).")
     if n_success != evaluated:
         raise SystemExit(
-            f"\nABORT: {evaluated} lessons evaluated but only {n_success} "
-            "successful check call(s) recorded. Fail-open makes a broken call "
-            "look like a clean extract — fix credentials/limits and re-run."
+            f"\nABORT: expected {evaluated} successful check call(s), found "
+            f"{n_success}. Fewer means fail-open hid a broken call (which then "
+            "scores as a clean extract); more means this count caught another "
+            "run's rows. Either way the score is not trustworthy — fix and re-run."
         )
     skipped = [line for line in report if line.startswith("SKIP ")]
     if skipped:
@@ -1586,5 +1594,9 @@ Invoke `superpowers:finishing-a-development-branch`. Default is push the branch 
 17. Correction 16 over-fired: it aborted on **any** `success=False` usage row, but `run_phase`'s schema mode records exactly such a row for a first attempt that fails validation and then retries successfully (`agent.py:1137-1156`) — so one JSON flake on the mandated flash-lite run would have killed a healthy calibration. The abort is now `n_success != evaluated` alone (which already catches every ultimately-failed call, since those write no success row); `n_failed` prints as a note.
 18. The success-count cutoff took the **DB** clock while `agent_usages.started_at` is stamped **host**-side — mixing clocks is what creates skew sensitivity, the opposite of the comment's claim. Now host clock minus 60s slack.
 19. Stale "six from Task 1" in Task 3 Step 2 (seven), and the spawn-leak list in Task 4 Step 4 now names the third affected dispatch test and is explicitly non-exhaustive.
+
+**Corrections applied after the fifth review round:**
+20. Correction 18's 60-second backward slack was pure downside: `started_at` is stamped by `run_phase` **in the script's own process** (`agent.py:998`), so no skew is possible — but the window would have counted the *previous* run's rows, and Step 3 mandates running a second model straight after the first. A healthy run would have aborted with `n_success > evaluated`. Now an unslacked host timestamp, both count queries also filtered by `model_name`, and the abort message reads correctly in both directions.
+21. `preview.tsx` called `sourceCheckWarnings(job.phases)` twice per render — hoisted to a local.
 
 **Deliberate non-goals** — no regen, no gating, no `lesson_context` shape change, no judge change, no migration, no new API endpoint, no batch/book-level rollup (that overlaps the unbuilt `judge-failure-rollup-1`).
