@@ -33,7 +33,7 @@
 
 - **Warn-only. Non-negotiable.** This check must never fail a job, never park a job, never mutate the extract, and never gate a regen. Every failure path is fail-open.
 - **Transport:** all real calls run `transport=api` (the cli path is retired from operational use — CLAUDE.md standing decision 2026-07-01). Never benchmark or verify against cli.
-- **Money rule:** no mass generation. Calibration is 9 lessons × up to 2 models = ≤18 bounded calls; the live gate is a **long lesson + a short negative control, plus one re-launch to prove the cache path is free** (three jobs, named explicitly in Task 6). Every task that spends money reports tokens and `$`.
+- **Money rule:** no mass generation. Calibration is 9 lessons × up to 2 models = ≤18 *logical* calls (≤36 spawns worst case — `run_phase` schema mode retries once on a validation failure, `agent.py:996`); the live gate is a **long lesson + a short negative control, plus one re-launch to prove the cache path is free** (three jobs, named explicitly in Task 6). Every task that spends money reports tokens and `$`.
 - **Gemini-only policy:** the check reuses the extract role's *provider*; only the *model* is overridable (`extract_coverage_model`), and only within that provider.
 - **Composition:** the CQ-D fidelity tests (`tests/services/test_extract_fidelity.py`) and the extract-dispatch tests (`tests/services/test_pipeline_extract_dispatch.py`) must stay green **unmodified**. If a task needs to edit either file, stop — the design is wrong.
 - **Staging discipline:** stage only the files each task lists. Never `git add -A` — other sessions commit to this branch's base.
@@ -1210,6 +1210,12 @@ Read-only against edu_copy; the only writes are the agent_usages rows the check
 itself records. Bounded: 9 lessons x 1 call per model. Prints token + $ totals
 for the money-rule log.
 
+If this aborts on the success-count check, suspect the app-side DB write path as
+well as the calls themselves: _record_usage is best-effort and SWALLOWS write
+failures (agent.py:814-815), so a wrong DATABASE_URL makes healthy calls look
+like missing ones. That is the fail-safe direction — it never turns a broken run
+into a passing score — but it is the first thing to check.
+
 MUST be run as a MODULE (-m), not by path: this repo has no [build-system], so
 `app` is never installed into the venv and only resolves from the repo root —
 running `python scripts/<name>.py` puts scripts/ on sys.path[0] and dies with
@@ -1583,7 +1589,7 @@ Invoke `superpowers:finishing-a-development-branch`. Default is push the branch 
 
 **Corrections applied after the second review round (again, each verified against real code first):**
 7. **Blocker:** the new call site would have leaked REAL `gemini` CLI spawns into two pre-existing dispatch tests — that harness patches `read_page_range_text` to Gate-A-passing text but cannot patch a function that does not exist yet, and `tests/conftest.py` has no spawn guard. Fixed by defaulting the check OFF for the suite in `conftest.py`, re-enabling it explicitly in the new wiring harness, asserting the *shipped* default on the Settings class, and adding a durations/`_spawn`-sabotage proof that green really means "no spawn".
-8. The worktree has **no `var/`** — the book store lives in the main checkout (the CQ-D smoke already codes around this at `scripts/cqd_extract_guards_smoke.py:33-41`). Task 5 now resolves the book root with that idiom and **aborts loudly if any lesson is skipped** (a 0/0 run reads like a pass); Task 6 Step 0 exports and asserts `VAR_DIR`.
+8. The worktree has **no `var/`** — the book store lives in the main checkout (the CQ-D smoke already codes around this at `scripts/cqd_extract_guards_smoke.py:37-45`). Task 5 now resolves the book root with that idiom and **aborts loudly if any lesson is skipped** (a 0/0 run reads like a pass); Task 6 Step 0 exports and asserts `VAR_DIR`.
 9. `types.ts` exports **`PhaseOut`**, not `Phase` (`types.ts:200`) — the hedge is gone, and the plan notes that `npm test` alone would not have caught it since `tsx` erases type-only imports.
 10. Hard bar A must be **hand-confirmed** in the calibration doc: `_matches` can bridge unrelated items on one generic token, so an auto-scored pass is not sufficient evidence.
 11. Task 7 staged a whole directory (`docs/superpowers/plans/`) — narrowed to the explicit shipped path.
