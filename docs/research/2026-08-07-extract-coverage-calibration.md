@@ -1,7 +1,7 @@
 # Extract-completeness check — calibration against the labeled coverage-audit dataset
 
 **Date:** 2026-08-07 · **Lane:** extract-completeness check (warn-only) · Task 5 of
-`docs/superpowers/plans/2026-08-07-extract-coverage-check.md`
+`docs/superpowers/plans/shipped/2026-08-07-extract-coverage-check.md`
 **Verdict: NEGATIVE — ships `extract_coverage_check_enabled=False` (default off).**
 
 ## Method
