@@ -1233,3 +1233,59 @@ async def test_cli_run_dumps_payload_to_stderr_when_both_writes_fail(
     # disk.
     assert '"completed": false' in captured.err
     assert '"completed_job_ids"' in captured.err
+
+
+# ============================================================================
+# Fix round 3 — the outer `finally` guard (payload construction, not just
+# the write tiers) must never let ANYTHING replace the original
+# billed-call exception.
+# ============================================================================
+
+
+async def test_cli_run_survives_payload_construction_failure_and_still_reraises_original(
+    monkeypatch, tmp_path
+):
+    """`finally`'s payload construction (summarize_runs, the
+    mutation_targets_not_attempted derivation, the model_dump() loop, ...)
+    must not be able to replace the original billed-call exception either
+    -- the same bug class round 2 fixed for the write tiers, one level
+    deeper. Patches `efa.summarize_runs` (called near the top of `finally`,
+    before the payload dict or any write is even attempted) to raise, and
+    triggers a mid-run billed-call failure. The exception surfacing from
+    `_run` must still be the ORIGINAL ExtractFidelityAuditError, not the
+    ValueError from the broken payload construction."""
+    call_count = 0
+
+    async def fake_run_phase(**kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count > 2:
+            raise RuntimeError("simulated transient API 5xx")
+        return PhaseResult(
+            text="", parsed=efa.Adjudication(claims=[]),
+            usage={"prompt_tokens": 5, "output_tokens": 1},
+        )
+
+    def broken_summarize(reports):
+        raise ValueError("summarize_runs blew up")
+
+    monkeypatch.setattr(cli, "_fetch_candidates", _cli_fake_fetch)
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _cli_fake_load)
+    monkeypatch.setattr(cli.agent, "read_whole_book_text", lambda path: "whole book text")
+    monkeypatch.setattr(cli.agent, "run_phase", fake_run_phase)
+    monkeypatch.setattr(efa, "summarize_runs", broken_summarize)
+
+    out_path = tmp_path / "report.json"
+    args = cli._parse_args([
+        "--subject", "english:6", "--limit", "48", "--mutations", "0",
+        "--out", str(out_path),
+    ])
+
+    with pytest.raises(efa.ExtractFidelityAuditError) as excinfo:
+        await cli._run(args)
+
+    # The ORIGINAL billed-call exception surfaces, not the payload-
+    # construction ValueError -- and nothing else leaked out of `finally`
+    # either (pytest.raises caught exactly this one type).
+    assert "simulated transient API 5xx" in str(excinfo.value)
+    assert not isinstance(excinfo.value, ValueError)

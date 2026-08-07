@@ -323,124 +323,142 @@ async def _run(args: argparse.Namespace) -> int:
         error_str = f"{type(exc).__name__}: {exc}"
         raise
     finally:
-        # Computed from whatever state exists at this point — correct
-        # whether the run completed normally, was truncated by --limit, or
-        # crashed mid-loop: a mutation-target lesson counts as "not
-        # attempted" unless it produced a paired result or an explicit
-        # no-plantable-kind skip. This is also how the calibration
-        # denominator stays honest under a --limit truncation (not just a
-        # crash) — Task 4's "≥6 of 8" gate needs to know if it was really
-        # out of 8 attempts or fewer.
-        attempted_or_skipped_mutation = {p.pristine.job_id for p in paired_results} | set(
-            skipped_no_mutation
-        )
-        mutation_targets_not_attempted = [
-            c.job_id for c in mutation_targets if c.job_id not in attempted_or_skipped_mutation
-        ]
-
-        summary = efa.summarize_runs(reports)
-        detected = sum(1 for p in paired_results if p.detected_planted)
-        cost = _cost(calls)
-
-        if completed and stopped_early:
-            print(f"STOPPED EARLY: --limit {args.limit} reached before the full sample was audited.")
-        if completed:
-            print(f"\ncalibration: {detected}/{len(paired_results)} planted mutations detected "
-                  f"({len(skipped_no_mutation)} lessons had no plantable mutation, "
-                  f"{len(mutation_targets_not_attempted)} not attempted)")
-            print(f"cost: ${cost:.4f} across {len(calls)} logical calls "
-                  f"({args.provider} {args.model}, {args.transport})")
-
-        payload = {
-            "dry_run": False,
-            "completed": completed,
-            "error": error_str,
-            "subjects": args.subjects,
-            "sample_seed": args.sample_seed,
-            "limit": args.limit,
-            "provider": args.provider,
-            "model": args.model,
-            "transport": args.transport,
-            "stopped_early": stopped_early,
-            "completed_job_ids": [r.job_id for r in reports],
-            "reports": [r.model_dump() for r in reports],
-            "paired_results": [
-                {
-                    "kind": p.kind,
-                    "mutation": {
-                        "kind": p.mutation.kind, "original": p.mutation.original,
-                        "replacement": p.mutation.replacement, "offset": p.mutation.offset,
-                    },
-                    "job_id": p.pristine.job_id,
-                    "detected_planted": p.detected_planted,
-                    "pristine": p.pristine.model_dump(),
-                    "mutated": p.mutated.model_dump(),
-                }
-                for p in paired_results
-            ],
-            "calibration": {
-                "detected": detected, "total_pairs": len(paired_results),
-                "skipped_no_mutation": skipped_no_mutation,
-                "mutation_targets_not_attempted": mutation_targets_not_attempted,
-            },
-            "summary": summary,
-            "skipped_load_errors": skipped_load_errors,
-            "calls": [dict(c) for c in calls],
-            "cost_usd": cost,
-        }
-        # The write itself must NEVER propagate out of this `finally` — if it
-        # did, Python would replace the in-flight billed-call exception with
-        # the write error (main()'s `except efa.ExtractFidelityAuditError`
-        # would then miss it entirely), AND the partial report — the whole
-        # point of this crash-safety path — would never land on disk. So:
-        # try the requested/default path; on failure, print a loud stderr
-        # error, then try exactly ONE fallback write to the script's own
-        # default location (independent of any caller-supplied `--out`);
-        # if THAT also fails, dump the payload JSON straight to stderr as a
-        # last resort so the billed results are at least recoverable from
-        # the terminal. Every branch here is its own try/except so nothing
-        # in this block can itself escape `finally`.
-        primary_path = _report_path(args)
-        written_path: Optional[pathlib.Path] = None
+        # EVERYTHING in this block — payload construction, all three write
+        # tiers, every diagnostic print — is wrapped in one outer
+        # `try/except BaseException` (deliberately broader than `Exception`:
+        # this is the one place where masking the original billed-call
+        # error is worse than any alternative). Any statement here raising
+        # while that error is in flight would otherwise REPLACE it (the
+        # same bug class the three-tier write guard fixes for the write
+        # itself, one level deeper — e.g. `summarize_runs`, a `model_dump()`
+        # call, or even a `print(..., file=sys.stderr)` against a closed
+        # stream). Nothing may propagate out of `finally`, ever.
         try:
-            written_path = _write_report_to(primary_path, payload)
-        except Exception as write_exc:
-            print(
-                f"ERROR: failed to write report to {primary_path}: "
-                f"{type(write_exc).__name__}: {write_exc}",
-                file=sys.stderr,
+            # Computed from whatever state exists at this point — correct
+            # whether the run completed normally, was truncated by --limit,
+            # or crashed mid-loop: a mutation-target lesson counts as "not
+            # attempted" unless it produced a paired result or an explicit
+            # no-plantable-kind skip. This is also how the calibration
+            # denominator stays honest under a --limit truncation (not just
+            # a crash) — Task 4's "≥6 of 8" gate needs to know if it was
+            # really out of 8 attempts or fewer.
+            attempted_or_skipped_mutation = {p.pristine.job_id for p in paired_results} | set(
+                skipped_no_mutation
             )
-            fallback_path = _default_report_path()
+            mutation_targets_not_attempted = [
+                c.job_id for c in mutation_targets if c.job_id not in attempted_or_skipped_mutation
+            ]
+
+            summary = efa.summarize_runs(reports)
+            detected = sum(1 for p in paired_results if p.detected_planted)
+            cost = _cost(calls)
+
+            if completed and stopped_early:
+                print(f"STOPPED EARLY: --limit {args.limit} reached before the full sample was audited.")
+            if completed:
+                print(f"\ncalibration: {detected}/{len(paired_results)} planted mutations detected "
+                      f"({len(skipped_no_mutation)} lessons had no plantable mutation, "
+                      f"{len(mutation_targets_not_attempted)} not attempted)")
+                print(f"cost: ${cost:.4f} across {len(calls)} logical calls "
+                      f"({args.provider} {args.model}, {args.transport})")
+
+            payload = {
+                "dry_run": False,
+                "completed": completed,
+                "error": error_str,
+                "subjects": args.subjects,
+                "sample_seed": args.sample_seed,
+                "limit": args.limit,
+                "provider": args.provider,
+                "model": args.model,
+                "transport": args.transport,
+                "stopped_early": stopped_early,
+                "completed_job_ids": [r.job_id for r in reports],
+                "reports": [r.model_dump() for r in reports],
+                "paired_results": [
+                    {
+                        "kind": p.kind,
+                        "mutation": {
+                            "kind": p.mutation.kind, "original": p.mutation.original,
+                            "replacement": p.mutation.replacement, "offset": p.mutation.offset,
+                        },
+                        "job_id": p.pristine.job_id,
+                        "detected_planted": p.detected_planted,
+                        "pristine": p.pristine.model_dump(),
+                        "mutated": p.mutated.model_dump(),
+                    }
+                    for p in paired_results
+                ],
+                "calibration": {
+                    "detected": detected, "total_pairs": len(paired_results),
+                    "skipped_no_mutation": skipped_no_mutation,
+                    "mutation_targets_not_attempted": mutation_targets_not_attempted,
+                },
+                "summary": summary,
+                "skipped_load_errors": skipped_load_errors,
+                "calls": [dict(c) for c in calls],
+                "cost_usd": cost,
+            }
+
+            # The write itself must NEVER propagate out of this block —
+            # try the requested/default path; on failure, print a loud
+            # stderr error, then try exactly ONE fallback write to the
+            # script's own default location (independent of any
+            # caller-supplied `--out`); if THAT also fails, dump the
+            # payload JSON straight to stderr as a last resort so the
+            # billed results are at least recoverable from the terminal.
+            primary_path = _report_path(args)
+            written_path: Optional[pathlib.Path] = None
             try:
-                written_path = _write_report_to(fallback_path, payload)
-                print(f"Fell back to the default report path: {fallback_path}", file=sys.stderr)
-            except Exception as fallback_exc:
+                written_path = _write_report_to(primary_path, payload)
+            except Exception as write_exc:
                 print(
-                    f"ERROR: fallback write to {fallback_path} ALSO failed: "
-                    f"{type(fallback_exc).__name__}: {fallback_exc} — dumping the payload JSON "
-                    f"to stderr as a last resort so the billed results are not lost.",
+                    f"ERROR: failed to write report to {primary_path}: "
+                    f"{type(write_exc).__name__}: {write_exc}",
                     file=sys.stderr,
                 )
+                fallback_path = _default_report_path()
                 try:
-                    print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
-                except Exception as dump_exc:  # pragma: no cover - last-resort guard
+                    written_path = _write_report_to(fallback_path, payload)
+                    print(f"Fell back to the default report path: {fallback_path}", file=sys.stderr)
+                except Exception as fallback_exc:
                     print(
-                        f"ERROR: could not even serialize the payload for a stderr dump: "
-                        f"{type(dump_exc).__name__}: {dump_exc}",
+                        f"ERROR: fallback write to {fallback_path} ALSO failed: "
+                        f"{type(fallback_exc).__name__}: {fallback_exc} — dumping the payload JSON "
+                        f"to stderr as a last resort so the billed results are not lost.",
                         file=sys.stderr,
                     )
+                    try:
+                        print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+                    except Exception as dump_exc:  # pragma: no cover - last-resort guard
+                        print(
+                            f"ERROR: could not even serialize the payload for a stderr dump: "
+                            f"{type(dump_exc).__name__}: {dump_exc}",
+                            file=sys.stderr,
+                        )
 
-        if not completed:
-            where = f"wrote a PARTIAL report to {written_path}" if written_path is not None else (
-                "FAILED TO WRITE ANY REPORT FILE — see the stderr dump above"
-            )
-            print(
-                f"WARNING: run did NOT complete ({error_str}) — {where}, with "
-                f"{len(reports)} completed lesson(s) / ${cost:.4f} already billed across "
-                f"{len(calls)} call(s), so already-billed results are not lost. "
-                f"A manual partial re-run can use `completed_job_ids` to see what already ran.",
-                file=sys.stderr,
-            )
+            if not completed:
+                where = f"wrote a PARTIAL report to {written_path}" if written_path is not None else (
+                    "FAILED TO WRITE ANY REPORT FILE — see the stderr dump above"
+                )
+                print(
+                    f"WARNING: run did NOT complete ({error_str}) — {where}, with "
+                    f"{len(reports)} completed lesson(s) / ${cost:.4f} already billed across "
+                    f"{len(calls)} call(s), so already-billed results are not lost. "
+                    f"A manual partial re-run can use `completed_job_ids` to see what already ran.",
+                    file=sys.stderr,
+                )
+        except BaseException as guard_exc:  # noqa: BLE001 - deliberate: see comment above
+            try:
+                print(
+                    f"ERROR: extract-fidelity-audit report persistence itself failed "
+                    f"({type(guard_exc).__name__}: {guard_exc}) — billed results may not "
+                    f"have been saved; this is a bug in the report-writing path, not the "
+                    f"audit itself.",
+                    file=sys.stderr,
+                )
+            except BaseException:
+                pass
 
     return 0
 
