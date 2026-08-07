@@ -36,6 +36,16 @@ sampling logic is unit-testable without a DB. No LLM calls, no network, no
 DB, no PDF reads happen in this module except inside `audit_one` /
 `audit_with_control`'s single `agent.run_phase` call each; `load_extract_
 audit_inputs` and the CLI's DB query remain the only DB/PDF touchpoints.
+
+Task 4b adds `select_calibration_targets`: calibration-ONLY target
+selection that reloads a prior run's already-audited (pristine) reports
+and screens each for load+plant feasibility BEFORE choosing it as a
+target — fixing a real defect where `--mutations N` picked N lessons
+before knowing whether they could load or plant at all, so most of the N
+never produced a usable pair. Still zero LLM calls; the only new billed
+call site is the CLI's calibration-only run loop, which reuses
+`audit_with_control` unchanged (one call per target, pristine never
+re-run).
 """
 
 from __future__ import annotations
@@ -782,6 +792,73 @@ async def audit_with_control(
         mutated=mutated_report,
         detected_planted=detected,
     )
+
+
+async def select_calibration_targets(
+    candidates: list[ExtractFidelityReport],
+    *,
+    n: int,
+    sample_seed: int,
+) -> tuple[list[tuple[ExtractFidelityReport, ExtractAuditInputs]], list[dict], list[str]]:
+    """Task 4b: calibration-only target selection — feasibility BEFORE
+    selection, fixing the round-1 defect where `--mutations N` picked N
+    lessons up front, before it was known whether they could even load or
+    plant a mutation.
+
+    `candidates` is a pool of already-audited PRISTINE reports (typically
+    a prior run's `reports[]`, each carrying `job_id` and a full `claims`
+    list — decision: never re-run the pristine audit, reuse it). Walks
+    `candidates` in the given order (the caller owns ordering — this
+    function does not shuffle) and, for each, reloads
+    `load_extract_audit_inputs` (free — DB + PDF only, no billed call) and
+    attempts `select_mutation` with `forbidden_text=inputs.whole_book_text`.
+    A candidate becomes a target ONLY when it both loads AND yields a
+    non-`None` mutation. Stops as soon as `n` targets are found, or when
+    `candidates` is exhausted — candidates past that point are never
+    examined (never loaded, never scored), so the pre-call cost stays
+    proportional to what was actually needed.
+
+    Returns `(targets, rejected_load, rejected_no_mutation)`:
+    - `targets`: `[(pristine_report, inputs), ...]`, in the order found —
+      each pair is ready to hand straight to `audit_with_control` (the
+      `inputs.extract_md` already loaded, the `pristine` report already
+      the one to pair against, no second load needed).
+    - `rejected_load`: `[{"job_id", "subject", "error"}, ...]` — one entry
+      per candidate whose `load_extract_audit_inputs` raised
+      `ExtractFidelityAuditError` (TOC page range beyond a truncated PDF,
+      missing PDF, etc.).
+    - `rejected_no_mutation`: `[job_id, ...]` — candidates that loaded
+      fine but had no plantable mutation kind (every candidate pair
+      collided with `forbidden_text`, or too little material of any kind).
+
+    Makes ZERO billed model calls — `load_extract_audit_inputs` and
+    `select_mutation` are both free (DB/PDF reads + pure computation).
+    """
+    targets: list[tuple[ExtractFidelityReport, ExtractAuditInputs]] = []
+    rejected_load: list[dict] = []
+    rejected_no_mutation: list[str] = []
+
+    for pristine in candidates:
+        if len(targets) >= n:
+            break
+
+        try:
+            inputs = await load_extract_audit_inputs(pristine.job_id)
+        except ExtractFidelityAuditError as exc:
+            rejected_load.append(
+                {"job_id": pristine.job_id, "subject": pristine.subject, "error": str(exc)}
+            )
+            continue
+
+        seed = lesson_seed(sample_seed, pristine.job_id)
+        planted = select_mutation(inputs.extract_md, seed, forbidden_text=inputs.whole_book_text)
+        if planted is None:
+            rejected_no_mutation.append(pristine.job_id)
+            continue
+
+        targets.append((pristine, inputs))
+
+    return targets, rejected_load, rejected_no_mutation
 
 
 def _empty_bucket() -> dict:

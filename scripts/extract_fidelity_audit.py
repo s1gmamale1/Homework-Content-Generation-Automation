@@ -15,6 +15,14 @@ Usage:
       --subject english --subject history:10 --subject geografiya:4 \
       --subject tarbiya:2 --subject adabiyot:2 --limit 48
 
+  # Calibration-only mode: reuse an already-paid-for report's pristine
+  # results and run ONLY the mutated arm, on lessons pre-screened to
+  # actually load and plant (fixes the "N picked before feasibility is
+  # known" defect). --subject is not used in this mode.
+  uv run python scripts/extract_fidelity_audit.py \
+      --calibrate-from var/extract_fidelity_audit/task4-baseline.json \
+      --mutations 8 --limit 16 --dry-run
+
 `--subject NAME` takes ALL completed-extract lessons for that subject.
 `--subject NAME:N` samples N of them (deterministic given `--sample-seed`,
 best-effort stratified across (grade, source_language) cells — see
@@ -28,6 +36,16 @@ fact. `--mutations N` picks N lessons (deterministically, from across the
 WHOLE selected sample) to also run a paired sensitivity-calibration arm on;
 those lessons' pristine result is REUSED (not re-run) so a mutation arm
 costs exactly one extra call, not two.
+
+`--calibrate-from <report.json>` switches to calibration-ONLY mode (Task
+4b): candidates are that report's `reports[]` (already-audited pristine
+lessons) instead of a fresh DB sample, `--subject` is unused, and
+`efa.select_calibration_targets` screens each candidate for load+plant
+feasibility BEFORE it is chosen as one of the `--mutations` targets — the
+fix for a real run where 3/8 upfront-picked lessons failed to load and
+2/8 had no plantable kind, so only 3 pairs were ever attempted. Exactly
+one billed call per target (the mutated arm only); the pristine arm is
+never re-run.
 
 Read-only against production data: reads `homework_jobs` / `books` /
 `phase_outputs` and `var/books/<id>/source.pdf`; writes nothing except the
@@ -78,8 +96,13 @@ def _parse_subject_arg(raw: str) -> tuple[str, Optional[int]]:
 
 def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--subject", action="append", required=True, dest="subjects",
-                   help="repeatable; NAME or NAME:N (N = sample size, default 'all available')")
+    p.add_argument("--subject", action="append", dest="subjects", default=None,
+                   help="repeatable; NAME or NAME:N (N = sample size, default 'all available'). "
+                        "Mutually exclusive with --calibrate-from.")
+    p.add_argument("--calibrate-from", default=None,
+                   help="path to a prior run's report.json; enables calibration-ONLY mode "
+                        "(reuses that report's pristine reports[], runs only the mutated arm "
+                        "on up to --mutations feasible targets). Mutually exclusive with --subject.")
     p.add_argument("--limit", type=int, required=True,
                    help="hard cap on BILLED MODEL CALLS (not lessons)")
     p.add_argument("--sample-seed", type=int, default=42)
@@ -88,11 +111,17 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--transport", default="api", help="transport=cli is retired operationally")
     p.add_argument("--mutations", type=int, default=8,
                    help="number of selected lessons (across the whole sample) to also "
-                        "run a paired mutation-detection arm on")
+                        "run a paired mutation-detection arm on; in --calibrate-from mode, "
+                        "the number of feasible calibration targets to find")
     p.add_argument("--out", default=None, help="JSON report path (default var/extract_fidelity_audit/<stamp>.json)")
     p.add_argument("--dry-run", action="store_true",
                    help="select the sample and print the plan only — makes NO model call")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if bool(args.subjects) == bool(args.calibrate_from):
+        raise SystemExit(
+            "exactly one of --subject (repeatable) or --calibrate-from <report.json> is required"
+        )
+    return args
 
 
 async def _fetch_candidates(subjects: list[str]) -> dict[str, list[efa.LessonCandidate]]:
@@ -217,7 +246,52 @@ def _cost(calls: list[dict]) -> float:
     )
 
 
+def _write_with_fallback(args: argparse.Namespace, payload: dict) -> Optional[pathlib.Path]:
+    """Three-tier crash-safe write, shared by the full-audit run AND
+    calibration-only mode: try the requested/default `--out` path first;
+    on failure, print a loud stderr error and fall back to exactly ONE
+    write at `_default_report_path()` (independent of any caller-supplied
+    `--out`); if THAT also fails, dump the payload JSON straight to stderr
+    as a last resort so billed results are at least recoverable from the
+    terminal. NEVER raises — always returns the path actually written to,
+    or `None` if all three tiers failed."""
+    primary_path = _report_path(args)
+    written_path: Optional[pathlib.Path] = None
+    try:
+        written_path = _write_report_to(primary_path, payload)
+    except Exception as write_exc:
+        print(
+            f"ERROR: failed to write report to {primary_path}: "
+            f"{type(write_exc).__name__}: {write_exc}",
+            file=sys.stderr,
+        )
+        fallback_path = _default_report_path()
+        try:
+            written_path = _write_report_to(fallback_path, payload)
+            print(f"Fell back to the default report path: {fallback_path}", file=sys.stderr)
+        except Exception as fallback_exc:
+            print(
+                f"ERROR: fallback write to {fallback_path} ALSO failed: "
+                f"{type(fallback_exc).__name__}: {fallback_exc} — dumping the payload JSON "
+                f"to stderr as a last resort so the billed results are not lost.",
+                file=sys.stderr,
+            )
+            try:
+                print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+            except Exception as dump_exc:  # pragma: no cover - last-resort guard
+                print(
+                    f"ERROR: could not even serialize the payload for a stderr dump: "
+                    f"{type(dump_exc).__name__}: {dump_exc}",
+                    file=sys.stderr,
+                )
+    return written_path
+
+
 async def _run(args: argparse.Namespace) -> int:
+    if args.calibrate_from:
+        return await _run_calibrate_from(args)
+
+
     subjects = [_parse_subject_arg(s) for s in args.subjects]
     subject_names = [s for s, _n in subjects]
 
@@ -400,42 +474,7 @@ async def _run(args: argparse.Namespace) -> int:
                 "cost_usd": cost,
             }
 
-            # The write itself must NEVER propagate out of this block —
-            # try the requested/default path; on failure, print a loud
-            # stderr error, then try exactly ONE fallback write to the
-            # script's own default location (independent of any
-            # caller-supplied `--out`); if THAT also fails, dump the
-            # payload JSON straight to stderr as a last resort so the
-            # billed results are at least recoverable from the terminal.
-            primary_path = _report_path(args)
-            written_path: Optional[pathlib.Path] = None
-            try:
-                written_path = _write_report_to(primary_path, payload)
-            except Exception as write_exc:
-                print(
-                    f"ERROR: failed to write report to {primary_path}: "
-                    f"{type(write_exc).__name__}: {write_exc}",
-                    file=sys.stderr,
-                )
-                fallback_path = _default_report_path()
-                try:
-                    written_path = _write_report_to(fallback_path, payload)
-                    print(f"Fell back to the default report path: {fallback_path}", file=sys.stderr)
-                except Exception as fallback_exc:
-                    print(
-                        f"ERROR: fallback write to {fallback_path} ALSO failed: "
-                        f"{type(fallback_exc).__name__}: {fallback_exc} — dumping the payload JSON "
-                        f"to stderr as a last resort so the billed results are not lost.",
-                        file=sys.stderr,
-                    )
-                    try:
-                        print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
-                    except Exception as dump_exc:  # pragma: no cover - last-resort guard
-                        print(
-                            f"ERROR: could not even serialize the payload for a stderr dump: "
-                            f"{type(dump_exc).__name__}: {dump_exc}",
-                            file=sys.stderr,
-                        )
+            written_path = _write_with_fallback(args, payload)
 
             if not completed:
                 where = f"wrote a PARTIAL report to {written_path}" if written_path is not None else (
@@ -452,6 +491,196 @@ async def _run(args: argparse.Namespace) -> int:
             try:
                 print(
                     f"ERROR: extract-fidelity-audit report persistence itself failed "
+                    f"({type(guard_exc).__name__}: {guard_exc}) — billed results may not "
+                    f"have been saved; this is a bug in the report-writing path, not the "
+                    f"audit itself.",
+                    file=sys.stderr,
+                )
+            except BaseException:
+                pass
+
+    return 0
+
+
+async def _run_calibrate_from(args: argparse.Namespace) -> int:
+    """Task 4b: calibration-ONLY mode. Candidates are a prior run's
+    already-audited pristine `reports[]` (loaded from `--calibrate-from`),
+    never a fresh DB sample — `--subject` is unused in this mode.
+    `efa.select_calibration_targets` screens each candidate for
+    load+plant feasibility BEFORE it is chosen as one of the
+    `--mutations` targets (the round-1 fix: selection used to happen
+    before feasibility was known, so most upfront-picked lessons never
+    produced a usable pair). For each target found, runs ONLY the mutated
+    arm via `efa.audit_with_control` — exactly one billed call per pair,
+    the pristine arm is reused from the loaded report and never re-run.
+
+    Mirrors `_run`'s crash-safe `finally` persistence (own report file,
+    same three-tier `_write_with_fallback`, same outer `except
+    BaseException` guard) — a billed-call failure partway through must
+    not discard results already paid for, same as the full-audit path.
+    """
+    report_path = pathlib.Path(args.calibrate_from)
+    payload_in = json.loads(report_path.read_text(encoding="utf-8"))
+    candidate_reports = [
+        efa.ExtractFidelityReport.model_validate(r) for r in payload_in.get("reports", [])
+    ]
+    print(f"Calibration-only mode: {len(candidate_reports)} candidate lesson(s) loaded from {report_path}")
+
+    targets, rejected_load, rejected_no_mutation = await efa.select_calibration_targets(
+        candidate_reports, n=args.mutations, sample_seed=args.sample_seed,
+    )
+
+    examined = len(targets) + len(rejected_load) + len(rejected_no_mutation)
+    print(f"targets found: {len(targets)}/{args.mutations} requested "
+          f"(examined {examined}/{len(candidate_reports)} candidates: "
+          f"{len(rejected_load)} rejected [load failure], "
+          f"{len(rejected_no_mutation)} rejected [no plantable kind])")
+    for rej in rejected_load:
+        print(f"  REJECT load-failure {rej['job_id']} ({rej['subject']}): {rej['error']}")
+    for job_id in rejected_no_mutation:
+        print(f"  REJECT no-plantable-kind {job_id}")
+    for _pristine, inputs in targets:
+        print(f"  TARGET {inputs.job_id[:8]} ({inputs.subject})")
+
+    planned_calls = len(targets)
+    est_cost = planned_calls * _APPROX_COST_PER_CALL_USD
+    print(f"  planned billed calls: {planned_calls}")
+    print(f"  estimated cost: ~${est_cost:.4f} "
+          f"(rough, ~${_APPROX_COST_PER_CALL_USD:.4f}/call — NOT the real total)")
+    if planned_calls > args.limit:
+        print(f"  NOTE: planned calls ({planned_calls}) exceed --limit ({args.limit}) — "
+              f"the real run will stop early once the cap is hit.")
+
+    if args.dry_run:
+        _write_report_to(_report_path(args), {
+            "dry_run": True,
+            "calibrate_from": str(report_path),
+            "sample_seed": args.sample_seed,
+            "limit": args.limit,
+            "mutations_requested": args.mutations,
+            "candidates_considered": len(candidate_reports),
+            "targets_found": len(targets),
+            "target_job_ids": [inputs.job_id for _p, inputs in targets],
+            "rejected_load": rejected_load,
+            "rejected_no_mutation": rejected_no_mutation,
+            "planned_calls_ceiling": planned_calls,
+            "estimated_cost_usd": est_cost,
+        })
+        return 0
+
+    if not targets:
+        print("No viable calibration targets found — nothing to do.")
+        return 0
+
+    calls: list[dict] = []
+    paired_results: list[efa.PairedFidelityResult] = []
+    unexpected_no_plant: list[str] = []
+    stopped_early = False
+    completed = False
+    error_str: Optional[str] = None
+
+    # Same crash-safety contract as `_run`: a billed-call failure partway
+    # through must not discard results already paid for.
+    try:
+        for pristine, inputs in targets:
+            if len(calls) >= args.limit:
+                stopped_early = True
+                break
+            seed = efa.lesson_seed(args.sample_seed, inputs.job_id)
+            paired = await efa.audit_with_control(
+                inputs, pristine, seed=seed, provider=args.provider, model=args.model,
+                transport=args.transport, calls=calls,
+            )
+            if paired is None:
+                # Defensive only — targets were pre-screened as plantable
+                # with this exact (extract_md, seed), so this should not
+                # happen. Logged and counted, never silently dropped.
+                unexpected_no_plant.append(inputs.job_id)
+                print(f"  mutation SKIP at run time (unexpected): {inputs.job_id}")
+            else:
+                paired_results.append(paired)
+                print(f"  mutation[{paired.kind}] {inputs.job_id[:8]}: "
+                      f"detected_planted={paired.detected_planted}")
+
+        completed = True
+    except Exception as exc:
+        error_str = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        try:
+            detected = sum(1 for p in paired_results if p.detected_planted)
+            cost = _cost(calls)
+            attempted = {p.pristine.job_id for p in paired_results} | set(unexpected_no_plant)
+            targets_not_attempted = [
+                inputs.job_id for _p, inputs in targets if inputs.job_id not in attempted
+            ]
+
+            if completed and stopped_early:
+                print(f"STOPPED EARLY: --limit {args.limit} reached before all targets were audited.")
+            if completed:
+                print(f"\ncalibration: {detected}/{len(paired_results)} planted mutations detected "
+                      f"({len(unexpected_no_plant)} unexpected no-plant at run time, "
+                      f"{len(targets_not_attempted)} not attempted)")
+                print(f"cost: ${cost:.4f} across {len(calls)} logical calls "
+                      f"({args.provider} {args.model}, {args.transport})")
+
+            payload = {
+                "dry_run": False,
+                "calibrate_from": str(report_path),
+                "completed": completed,
+                "error": error_str,
+                "sample_seed": args.sample_seed,
+                "limit": args.limit,
+                "mutations_requested": args.mutations,
+                "provider": args.provider,
+                "model": args.model,
+                "transport": args.transport,
+                "stopped_early": stopped_early,
+                "candidates_considered": len(candidate_reports),
+                "targets_found": len(targets),
+                "target_job_ids": [inputs.job_id for _p, inputs in targets],
+                "rejected_load": rejected_load,
+                "rejected_no_mutation": rejected_no_mutation,
+                "paired_results": [
+                    {
+                        "kind": p.kind,
+                        "mutation": {
+                            "kind": p.mutation.kind, "original": p.mutation.original,
+                            "replacement": p.mutation.replacement, "offset": p.mutation.offset,
+                        },
+                        "job_id": p.pristine.job_id,
+                        "detected_planted": p.detected_planted,
+                        "pristine": p.pristine.model_dump(),
+                        "mutated": p.mutated.model_dump(),
+                    }
+                    for p in paired_results
+                ],
+                "calibration": {
+                    "detected": detected,
+                    "total_pairs": len(paired_results),
+                    "unexpected_no_plant_at_run": unexpected_no_plant,
+                    "targets_not_attempted": targets_not_attempted,
+                },
+                "calls": [dict(c) for c in calls],
+                "cost_usd": cost,
+            }
+
+            written_path = _write_with_fallback(args, payload)
+
+            if not completed:
+                where = f"wrote a PARTIAL report to {written_path}" if written_path is not None else (
+                    "FAILED TO WRITE ANY REPORT FILE — see the stderr dump above"
+                )
+                print(
+                    f"WARNING: calibration run did NOT complete ({error_str}) — {where}, with "
+                    f"{len(paired_results)} completed pair(s) / ${cost:.4f} already billed across "
+                    f"{len(calls)} call(s), so already-billed results are not lost.",
+                    file=sys.stderr,
+                )
+        except BaseException as guard_exc:  # noqa: BLE001 - deliberate: see comment above `_run`
+            try:
+                print(
+                    f"ERROR: extract-fidelity-audit calibration report persistence itself failed "
                     f"({type(guard_exc).__name__}: {guard_exc}) — billed results may not "
                     f"have been saved; this is a bug in the report-writing path, not the "
                     f"audit itself.",

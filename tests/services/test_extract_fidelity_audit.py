@@ -943,6 +943,94 @@ def test_select_sample_stratify_false_ignores_cells():
 
 
 # ============================================================================
+# Task 4b — select_calibration_targets (calibration-only target selection:
+# feasibility BEFORE selection is chosen, not after). `efa.load_extract_
+# audit_inputs` is always patched directly here -- zero DB, zero PDF reads.
+# `agent.run_phase` is also patched (to raise if ever called) in the test
+# that must prove this function makes NO billed call whatsoever.
+# ============================================================================
+
+_CALIB_PLANTABLE_MD = _MUTABLE_MD  # "Napoleon led the army..." -- known plantable
+_CALIB_UNPLANTABLE_MD = "short plain text with nothing plantable at all here."
+
+
+def _calib_report(job_id, subject="english", claims=None):
+    return efa.ExtractFidelityReport(job_id=job_id, subject=subject, claims=claims or [])
+
+
+async def _calib_fake_load(job_id, *, whole_book_text=None):
+    if job_id.startswith("loadfail"):
+        raise efa.ExtractFidelityAuditError(f"simulated load failure for {job_id}")
+    extract_md = _CALIB_UNPLANTABLE_MD if job_id.startswith("unplantable") else _CALIB_PLANTABLE_MD
+    return efa.ExtractAuditInputs(
+        job_id=job_id, book_id="b", subject="english", family="languages", grade="8",
+        source_language="en", output_language="uz", lesson_title="L",
+        page_start=1, page_end=2, extract_md=extract_md,
+        source_text="source", whole_book_text=whole_book_text or "whole book text",
+    )
+
+
+async def test_select_calibration_targets_screens_load_failure_and_unplantable_separately(
+    monkeypatch,
+):
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _calib_fake_load)
+    candidates = [
+        _calib_report("loadfail-1"),
+        _calib_report("unplantable-1"),
+        _calib_report("plantable-1"),
+    ]
+    targets, rejected_load, rejected_no_mutation = await efa.select_calibration_targets(
+        candidates, n=5, sample_seed=1
+    )
+    assert [t[0].job_id for t in targets] == ["plantable-1"]
+    assert [r["job_id"] for r in rejected_load] == ["loadfail-1"]
+    assert rejected_no_mutation == ["unplantable-1"]
+
+
+async def test_select_calibration_targets_stops_once_n_found_never_examines_the_rest(
+    monkeypatch,
+):
+    examined: list[str] = []
+
+    async def counting_load(job_id, *, whole_book_text=None):
+        examined.append(job_id)
+        return await _calib_fake_load(job_id, whole_book_text=whole_book_text)
+
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", counting_load)
+    candidates = [_calib_report(f"plantable-{i}") for i in range(5)]
+    targets, rejected_load, rejected_no_mutation = await efa.select_calibration_targets(
+        candidates, n=2, sample_seed=1
+    )
+    assert len(targets) == 2
+    assert examined == ["plantable-0", "plantable-1"]  # the rest never loaded at all
+    assert rejected_load == []
+    assert rejected_no_mutation == []
+
+
+async def test_select_calibration_targets_makes_zero_billed_calls(monkeypatch):
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _calib_fake_load)
+    mock = AsyncMock(
+        side_effect=AssertionError("select_calibration_targets must never call run_phase")
+    )
+    monkeypatch.setattr(efa.agent, "run_phase", mock)
+    candidates = [_calib_report("plantable-1"), _calib_report("unplantable-1")]
+    await efa.select_calibration_targets(candidates, n=5, sample_seed=1)
+    assert mock.call_count == 0
+
+
+async def test_select_calibration_targets_reuses_the_same_pristine_report_object(monkeypatch):
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _calib_fake_load)
+    report = _calib_report("plantable-1", claims=[_verdict("ok", span="already graded")])
+    targets, rejected_load, rejected_no_mutation = await efa.select_calibration_targets(
+        [report], n=1, sample_seed=1
+    )
+    assert len(targets) == 1
+    assert targets[0][0] is report  # the exact object, never rebuilt or re-audited
+    assert rejected_load == []
+    assert rejected_no_mutation == []
+
+
+# ============================================================================
 # Fix round 1 — CLI crash-safe report persistence
 # (scripts/extract_fidelity_audit.py::_run). Everything below patches the
 # CLI's own DB fetch, PDF read, and `agent.run_phase` — zero DB, zero PDF,
@@ -1289,3 +1377,212 @@ async def test_cli_run_survives_payload_construction_failure_and_still_reraises_
     # either (pytest.raises caught exactly this one type).
     assert "simulated transient API 5xx" in str(excinfo.value)
     assert not isinstance(excinfo.value, ValueError)
+
+
+# ============================================================================
+# Task 4b — `--calibrate-from` CLI calibration-only mode. Everything here
+# patches the CLI's own `efa.load_extract_audit_inputs` and
+# `efa.agent.run_phase` -- zero DB, zero PDF, zero real model calls.
+# ============================================================================
+
+
+def _calib_report_payload(job_ids, subject="english"):
+    return {
+        "reports": [
+            efa.ExtractFidelityReport(job_id=jid, subject=subject).model_dump() for jid in job_ids
+        ]
+    }
+
+
+def test_calibrate_from_and_subject_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        cli._parse_args(["--limit", "5"])  # neither given
+    with pytest.raises(SystemExit):
+        cli._parse_args(
+            ["--subject", "english", "--calibrate-from", "whatever.json", "--limit", "5"]
+        )  # both given
+
+
+async def test_cli_calibrate_from_dry_run_makes_zero_billed_calls(monkeypatch, tmp_path):
+    report_in = tmp_path / "prior_report.json"
+    report_in.write_text(
+        json.dumps(_calib_report_payload(["loadfail-1", "unplantable-1", "plantable-1", "plantable-2"])),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _calib_fake_load)
+    mock = AsyncMock(side_effect=AssertionError("dry-run must never call run_phase"))
+    monkeypatch.setattr(efa.agent, "run_phase", mock)
+
+    out_path = tmp_path / "calib_dry_run.json"
+    args = cli._parse_args([
+        "--calibrate-from", str(report_in), "--mutations", "2", "--limit", "10",
+        "--out", str(out_path), "--dry-run",
+    ])
+    rc = await cli._run(args)
+    assert rc == 0
+    assert mock.call_count == 0
+
+    payload = json.loads(out_path.read_text())
+    assert payload["dry_run"] is True
+    assert payload["calibrate_from"] == str(report_in)
+    assert payload["candidates_considered"] == 4
+    assert payload["targets_found"] == 2
+    assert payload["target_job_ids"] == ["plantable-1", "plantable-2"]
+    assert payload["rejected_load"][0]["job_id"] == "loadfail-1"
+    assert payload["rejected_no_mutation"] == ["unplantable-1"]
+
+
+async def test_cli_calibrate_from_real_run_bills_exactly_the_target_count_and_never_reruns_pristine(
+    monkeypatch, tmp_path
+):
+    """The whole point of the feature: a pristine lesson already in the
+    report is NEVER re-run (no run_phase call for it, it's loaded via
+    `model_validate` from the JSON file), and the mutated arm is billed
+    EXACTLY once per target found -- not once per candidate examined."""
+    report_in = tmp_path / "prior_report.json"
+    report_in.write_text(
+        json.dumps(_calib_report_payload(["unplantable-1", "plantable-1", "plantable-2", "plantable-3"])),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _calib_fake_load)
+
+    call_count = 0
+
+    async def fake_run_phase(**kw):
+        nonlocal call_count
+        call_count += 1
+        return PhaseResult(
+            text="", parsed=efa.Adjudication(claims=[]),
+            usage={"prompt_tokens": 5, "output_tokens": 1},
+        )
+
+    monkeypatch.setattr(efa.agent, "run_phase", fake_run_phase)
+
+    out_path = tmp_path / "calib_report.json"
+    args = cli._parse_args([
+        "--calibrate-from", str(report_in), "--mutations", "2", "--limit", "10",
+        "--out", str(out_path),
+    ])
+    rc = await cli._run(args)
+    assert rc == 0
+    assert call_count == 2  # exactly the number of targets found -- pristine never re-run
+
+    payload = json.loads(out_path.read_text())
+    assert payload["completed"] is True
+    assert payload["targets_found"] == 2
+    assert payload["target_job_ids"] == ["plantable-1", "plantable-2"]
+    assert len(payload["paired_results"]) == 2
+    assert payload["calibration"]["total_pairs"] == 2
+    assert payload["rejected_no_mutation"] == ["unplantable-1"]
+    # plantable-3 was never examined -- n=2 was already satisfied by 1/2.
+    assert "plantable-3" not in payload["target_job_ids"]
+
+
+async def test_cli_calibrate_from_skips_unplantable_lesson_without_billing(monkeypatch, tmp_path):
+    """A lesson that loads fine but yields no plantable mutation must be
+    skipped WITHOUT consuming a billed call."""
+    report_in = tmp_path / "prior_report.json"
+    report_in.write_text(
+        json.dumps(_calib_report_payload(["unplantable-1", "plantable-1"])), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _calib_fake_load)
+    mock = AsyncMock(
+        return_value=PhaseResult(
+            text="", parsed=efa.Adjudication(claims=[]),
+            usage={"prompt_tokens": 5, "output_tokens": 1},
+        )
+    )
+    monkeypatch.setattr(efa.agent, "run_phase", mock)
+
+    out_path = tmp_path / "calib_report.json"
+    args = cli._parse_args([
+        "--calibrate-from", str(report_in), "--mutations", "5", "--limit", "10",
+        "--out", str(out_path),
+    ])
+    rc = await cli._run(args)
+    assert rc == 0
+    assert mock.call_count == 1  # only the ONE plantable lesson is billed
+    payload = json.loads(out_path.read_text())
+    assert payload["rejected_no_mutation"] == ["unplantable-1"]
+    assert payload["targets_found"] == 1
+
+
+async def test_cli_calibrate_from_respects_limit_and_records_targets_not_attempted(
+    monkeypatch, tmp_path
+):
+    report_in = tmp_path / "prior_report.json"
+    report_in.write_text(
+        json.dumps(_calib_report_payload([f"plantable-{i}" for i in range(4)])), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _calib_fake_load)
+
+    async def fake_run_phase(**kw):
+        return PhaseResult(
+            text="", parsed=efa.Adjudication(claims=[]),
+            usage={"prompt_tokens": 5, "output_tokens": 1},
+        )
+
+    monkeypatch.setattr(efa.agent, "run_phase", fake_run_phase)
+
+    out_path = tmp_path / "calib_report.json"
+    args = cli._parse_args([
+        "--calibrate-from", str(report_in), "--mutations", "4", "--limit", "2",
+        "--out", str(out_path),
+    ])
+    rc = await cli._run(args)
+    assert rc == 0
+
+    payload = json.loads(out_path.read_text())
+    assert payload["completed"] is True
+    assert payload["stopped_early"] is True
+    assert payload["targets_found"] == 4
+    assert payload["calibration"]["total_pairs"] == 2
+    assert len(payload["calibration"]["targets_not_attempted"]) == 2
+
+
+async def test_cli_calibrate_from_writes_partial_report_and_reraises_on_mid_run_failure(
+    monkeypatch, tmp_path
+):
+    """Mirrors the full-audit path's crash-safety guarantee: a billed-call
+    failure partway through calibration-only mode must not discard the
+    pairs already paid for."""
+    report_in = tmp_path / "prior_report.json"
+    report_in.write_text(
+        json.dumps(_calib_report_payload([f"plantable-{i}" for i in range(3)])), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _calib_fake_load)
+    call_count = 0
+
+    async def fake_run_phase(**kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count > 1:
+            raise RuntimeError("simulated transient API 5xx")
+        return PhaseResult(
+            text="", parsed=efa.Adjudication(claims=[]),
+            usage={"prompt_tokens": 5, "output_tokens": 1},
+        )
+
+    monkeypatch.setattr(efa.agent, "run_phase", fake_run_phase)
+
+    out_path = tmp_path / "calib_report.json"
+    args = cli._parse_args([
+        "--calibrate-from", str(report_in), "--mutations", "3", "--limit", "10",
+        "--out", str(out_path),
+    ])
+    with pytest.raises(efa.ExtractFidelityAuditError) as excinfo:
+        await cli._run(args)
+
+    assert "simulated transient API 5xx" in str(excinfo.value)
+    assert out_path.exists()
+    payload = json.loads(out_path.read_text())
+    assert payload["completed"] is False
+    assert payload["error"] is not None
+    assert "simulated transient API 5xx" in payload["error"]
+    assert len(payload["paired_results"]) == 1
+    assert payload["calibration"]["total_pairs"] == 1
