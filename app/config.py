@@ -225,6 +225,21 @@ class Settings(BaseSettings):
     # >=0.999; the RU-mojibake book scores 0.07. 0.70 leaves a huge margin.
     extract_min_alpha_ratio: float = 0.70
     extract_min_summary_chars: int = 120  # fallback floor when NO contract parses; structural parse is primary
+    # Extract-completeness check (warn-only, plan 2026-08-07): one bounded call
+    # per FRESH extract comparing the summary against the lesson's own source
+    # pages. Advisory only — it never fails a job and never regens.
+    # NOTE: this default is provisional until Task 5's calibration lands; that
+    # task sets its final value from the measurement.
+    extract_coverage_check_enabled: bool = True
+    # Advisory work must not stall the sequential head phase: the check runs
+    # OUTSIDE _run_with_failover's per_attempt_timeout_seconds (600s) guard, so
+    # it carries its own, much tighter bound.
+    extract_coverage_timeout_seconds: int = 120
+    # None = inherit the extract role's model (the cheap pinned extractor).
+    # Set to a stronger model only if calibration shows the pinned tier can't
+    # see the omissions (see docs/research/2026-08-07-extract-coverage-calibration.md).
+    extract_coverage_model: str | None = None
+    extract_coverage_max_items: int = 8   # cap on items named in one warning
     # TOC vision validator: runs after extract_toc, before persisting status.
     # Disabled → toc_validation DB column stays NULL (distinct from "skipped").
     toc_validation_enabled: bool = True

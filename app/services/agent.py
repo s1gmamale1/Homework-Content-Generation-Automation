@@ -1402,6 +1402,80 @@ async def verify_extract_fidelity(
     return []
 
 
+class ExtractCoverageMiss(BaseModel):
+    """One core teachable item the SOURCE lesson has and the extract dropped."""
+    label: str
+    central: bool = False
+
+
+class ExtractCoverageVerdict(BaseModel):
+    """Model verdict for the extract-completeness check. `missing` is empty when
+    the extract captures everything the lesson teaches."""
+    missing: list[ExtractCoverageMiss] = Field(default_factory=list)
+
+
+_CHECK_COVERAGE_PROMPT = (
+    "You are checking whether a LESSON SUMMARY is COMPLETE with respect to the "
+    "SOURCE textbook text it was written from. Downstream homework generators "
+    "read ONLY the summary — they never see the source — so anything the "
+    "summary omits can never be taught.\n\n"
+    "The SOURCE below is a printed page window containing the lesson titled "
+    '"{title}" (section {number}). The window may also contain fragments of the '
+    "NEIGHBOURING lessons — ignore anything that is not part of that lesson.\n\n"
+    "List the CORE teachable items of THAT lesson that the SUMMARY does NOT "
+    "capture — what a student is expected to learn, recall or apply:\n"
+    "- concepts / terms the lesson defines\n"
+    "- rules / theorems / formulas the lesson states\n"
+    "- WORKED-EXAMPLE and problem TYPES the lesson demonstrates (what the "
+    "student must be able to solve) — these are dropped most often, so check "
+    "them explicitly\n"
+    "- key facts (dates, names, classifications) the lesson teaches\n\n"
+    "Rules:\n"
+    "- Report an item ONLY if it is genuinely absent from the SUMMARY. Different "
+    "wording, a shorter phrasing, or a more general statement that still covers "
+    "the item is NOT a miss.\n"
+    "- Do NOT report items belonging to a neighbouring lesson, nor background "
+    "the lesson only mentions in passing.\n"
+    "- Set `central` true ONLY for primary teaching points; secondary or "
+    "supporting details are false.\n"
+    "- `label` is a short name for the item, in the lesson's language.\n"
+    "- If the summary captures everything, return an empty list.\n\n"
+    "===== LESSON SUMMARY =====\n{summary}\n===== END SUMMARY =====\n\n"
+    "===== SOURCE TEXTBOOK TEXT =====\n{source}\n===== END SOURCE ====="
+)
+
+
+async def check_extract_coverage(
+    *, summary: str, source_text: str, section_title: str, section_number: str,
+    provider: str, model: Optional[str], transport: str,
+    homework_job_id: Optional[UUID], phase_output_id: Optional[UUID],
+) -> list[ExtractCoverageMiss]:
+    """One structured call: which core items of the SOURCE lesson are absent
+    from the extract SUMMARY. WARN-ONLY — the caller records the result and
+    never acts on it. Never raises: on any failure returns [] (fail-open, the
+    same contract as verify_extract_fidelity)."""
+    if not (summary or "").strip() or not (source_text or "").strip():
+        return []
+    prompt = _CHECK_COVERAGE_PROMPT.format(
+        title=section_title, number=section_number,
+        summary=summary, source=source_text,
+    )
+    try:
+        result = await run_phase(
+            provider=provider, model=model, phase_prompt=prompt,
+            phase_name="lesson.extract.coverage", schema=ExtractCoverageVerdict,
+            homework_job_id=homework_job_id, phase_output_id=phase_output_id,
+            operation="lesson.extract.coverage", transport=transport,
+        )
+    except Exception as exc:  # noqa: BLE001 — advisory: must never fail a job
+        logger.warning(f"agent.check_extract_coverage failed (fail-open): {exc!r}")
+        return []
+    parsed = result.parsed
+    if isinstance(parsed, ExtractCoverageVerdict):
+        return [m for m in parsed.missing if (m.label or "").strip()]
+    return []
+
+
 def validate_extract_text(text: str) -> Optional[str]:
     """Gate A — deterministic check on the RAW local PDF text. Returns a failure
     reason string, or None if the text looks like real, readable content. A
