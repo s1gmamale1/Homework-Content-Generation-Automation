@@ -330,7 +330,7 @@ async def check_extract_coverage(
 ```bash
 uv run python -m pytest tests/services/test_extract_coverage.py -q
 ```
-Expected: PASS (6 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 6: Prove the CQ-D neighbour is untouched**
 
@@ -592,7 +592,7 @@ def _extract_coverage_warnings(misses: list) -> list[str]:
 ```bash
 uv run python -m pytest tests/services/test_extract_coverage.py -q
 ```
-Expected: PASS (10 tests).
+Expected: PASS (11 tests — 7 from Task 1, 4 formatter).
 
 - [ ] **Step 5: Commit**
 
@@ -754,8 +754,11 @@ def test_clean_extract_writes_no_warnings(monkeypatch):
 
 
 def test_kill_switch_makes_no_call(monkeypatch):
-    monkeypatch.setattr(settings, "extract_coverage_check_enabled", False)
+    # Order matters: _install_harness ENABLES the check (the suite defaults it
+    # off), so the disable must come AFTER it or the harness wins and this test
+    # fails against a correct implementation.
     writes = _install_harness(monkeypatch)
+    monkeypatch.setattr(settings, "extract_coverage_check_enabled", False)
     calls = _install_coverage_spy(monkeypatch, misses=[
         agent_mod.ExtractCoverageMiss(label="x", central=True)])
     _run_extract_phase()
@@ -818,17 +821,31 @@ def test_check_failure_is_fail_open_and_the_phase_still_completes(monkeypatch):
 def test_slow_check_is_bounded_and_fails_open(monkeypatch):
     """extract is the sequential head of the job — a hung advisory call must not
     stall it. The check sits outside _run_with_failover's wait_for, so it needs
-    its own bound."""
+    its own bound.
+
+    The elapsed assertion is what gives this test teeth: without asyncio.wait_for
+    the phase still completes and still writes no warnings, so asserting only
+    those two things would pass against an implementation with NO timeout at all
+    — it would merely take 30 seconds."""
+    import time
+
     monkeypatch.setattr(settings, "extract_coverage_timeout_seconds", 0.01)
     writes = _install_harness(monkeypatch)
+    calls = {"n": 0}
 
     async def _slow(**kwargs):
+        calls["n"] += 1
         await asyncio.sleep(30)
         return []
 
     monkeypatch.setattr(pipeline.agent, "check_extract_coverage", _slow)
+    t0 = time.monotonic()
     out_md, *_ = _run_extract_phase()
-    assert out_md                       # the extract itself still completed
+    elapsed = time.monotonic() - t0
+
+    assert calls["n"] == 1               # RED before the wiring exists
+    assert elapsed < 5                   # RED without the timeout (would be ~30s)
+    assert out_md                        # the extract itself still completed
     assert _done_warnings(writes) is None
 
 
@@ -1251,7 +1268,10 @@ async def main() -> None:
     rows = json.loads(DATA.read_text())
     conn = await asyncpg.connect(DSN)
     total_hit = total_labeled = total_reported_clean = 0
+    evaluated = 0
     report: list[str] = []
+    # DB clock, so the success-count guard below is immune to host clock skew.
+    t0 = await conn.fetchval("select now()")
     try:
         for r in rows:
             job_id = r["job"]
@@ -1283,6 +1303,7 @@ async def main() -> None:
             extra = [rep for rep in reported
                      if not any(_matches(lab, rep) for lab in labeled)]
 
+            evaluated += 1
             total_labeled += len(labeled)
             total_hit += len(hit)
             if not labeled:
@@ -1294,10 +1315,28 @@ async def main() -> None:
                 f"\n  reported ({len(reported)}): " + (" | ".join(reported) or "(none)") +
                 f"\n  caught {len(hit)}/{len(labeled)}; unlabeled-reported {len(extra)}"
             )
+        # check_extract_coverage is fail-open BY CONTRACT: an auth/429/limiter
+        # failure returns [] and is indistinguishable from "clean extract". So a
+        # broken environment would score zero misses everywhere and PASS hard
+        # bar B. Count the successful calls the check actually recorded.
+        n_success = await conn.fetchval(
+            "select count(*) from agent_usages "
+            "where operation = 'lesson.extract.coverage' "
+            "and success and started_at >= $1", t0)
+        n_failed = await conn.fetchval(
+            "select count(*) from agent_usages "
+            "where operation = 'lesson.extract.coverage' "
+            "and not success and started_at >= $1", t0)
     finally:
         await conn.close()
 
     print("\n".join(report))
+    if n_success != evaluated or n_failed:
+        raise SystemExit(
+            f"\nABORT: {evaluated} lessons evaluated but {n_success} successful "
+            f"check calls recorded ({n_failed} failed). Fail-open makes a broken "
+            "call look like a clean extract — fix credentials/limits and re-run."
+        )
     skipped = [line for line in report if line.startswith("SKIP ")]
     if skipped:
         # A partial run fakes the gate: 0/0 recall reads like a pass. Abort loud.
@@ -1364,7 +1403,9 @@ Edit `app/config.py` per the decision rule (only if the measurement calls for it
 ```bash
 uv run python -m pytest tests/services/test_extract_coverage.py -q
 ```
-Expected: PASS — `test_config_defaults_are_warn_only_and_inherit_the_extract_model` asserts only *types* and the `None` model default, so a flipped enable-default keeps it green. If the decision sets `extract_coverage_model`, update that one assertion to the decided value in the same commit.
+Expected: PASS. Two assertions may need updating **in this same commit**, depending on what the measurement decided:
+- If the decision sets `extract_coverage_model`, update that assertion in `test_config_defaults_are_warn_only_and_inherit_the_extract_model` to the decided value.
+- If the decision flips the default to `False`, update `test_shipped_default_is_independent_of_the_test_environment` to assert `is False`. That test exists to pin the *shipped* default against the suite's env override — its purpose survives either value, but it will fail loudly until you change it, which is the point.
 
 - [ ] **Step 7: Commit**
 
@@ -1520,5 +1561,12 @@ Invoke `superpowers:finishing-a-development-branch`. Default is push the branch 
 9. `types.ts` exports **`PhaseOut`**, not `Phase` (`types.ts:200`) — the hedge is gone, and the plan notes that `npm test` alone would not have caught it since `tsx` erases type-only imports.
 10. Hard bar A must be **hand-confirmed** in the calibration doc: `_matches` can bridge unrelated items on one generic token, so an auto-scored pass is not sufficient evidence.
 11. Task 7 staged a whole directory (`docs/superpowers/plans/`) — narrowed to the explicit shipped path.
+
+**Corrections applied after the third review round (all in the plan's own test code — the design was clean):**
+12. `test_kill_switch_makes_no_call` disabled the switch *before* `_install_harness` re-enabled it — the harness won and the test would have failed against a correct implementation. Reordered, with the ordering hazard called out in-test. (A defect introduced by correction 7 — the round-2 fix.)
+13. The timeout test asserted nothing that distinguished "timeout present" from "timeout absent": with no `asyncio.wait_for` the phase still completes and still writes no warnings, so it would merely have taken 30s and passed. Now asserts the call happened (RED before wiring) **and** elapsed < 5s (RED without the bound).
+14. Task 5 Step 6 claimed a flipped enable-default keeps the config tests green — it does not, since correction 7 added a test pinning the shipped default to `True`. Step 6 now names both assertions that may need updating in that commit.
+15. Stale expected-test counts in Task 1 (6→7) and Task 3 (10→11) after correction 7 added a test.
+16. The calibration script could not tell a *clean verdict* from a *failed call* — `check_extract_coverage` returns `[]` for both by contract, so a broken environment would have scored zero misses everywhere and passed hard bar B. It now counts the successful `lesson.extract.coverage` usage rows against the number of lessons evaluated and aborts on any shortfall or failure.
 
 **Deliberate non-goals** — no regen, no gating, no `lesson_context` shape change, no judge change, no migration, no new API endpoint, no batch/book-level rollup (that overlaps the unbuilt `judge-failure-rollup-1`).
