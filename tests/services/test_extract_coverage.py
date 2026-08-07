@@ -129,3 +129,44 @@ async def test_empty_summary_or_source_makes_no_paid_call():
             homework_job_id=None, phase_output_id=None,
         ) == []
     rp.assert_not_awaited()
+
+
+# --- warning formatter (pure) ------------------------------------------------
+
+from app.services import pipeline as pipeline_mod
+
+
+def _miss(label, central=False):
+    return ExtractCoverageMiss(label=label, central=central)
+
+
+def test_no_misses_formats_to_no_warning():
+    assert pipeline_mod._extract_coverage_warnings([]) == []
+
+
+def test_one_aggregated_warning_lists_central_items_first():
+    out = pipeline_mod._extract_coverage_warnings([
+        _miss("secondary detail"),
+        _miss("isotope mass-fraction problem", central=True),
+        _miss("valence → unknown element problem", central=True),
+    ])
+    assert len(out) == 1
+    msg = out[0]
+    assert msg.startswith("extract_coverage:")
+    assert "3 item(s)" in msg and "2 central" in msg
+    # central first, so a truncated read still shows what matters most
+    assert msg.index("isotope mass-fraction problem") < msg.index("secondary detail")
+
+
+def test_warning_caps_the_item_list(monkeypatch):
+    monkeypatch.setattr(settings, "extract_coverage_max_items", 2)
+    out = pipeline_mod._extract_coverage_warnings([_miss(f"item {i}") for i in range(5)])
+    assert len(out) == 1
+    assert "(+3 more)" in out[0]
+    assert "item 4" not in out[0]
+
+
+def test_blank_labels_are_dropped_and_long_labels_truncated():
+    assert pipeline_mod._extract_coverage_warnings([_miss("  "), _miss("")]) == []
+    out = pipeline_mod._extract_coverage_warnings([_miss("L" * 400)])
+    assert len(out[0]) < 300

@@ -1334,6 +1334,29 @@ async def _lesson_source_or_none(pdf_path, section: dict) -> "str | None":
     return text
 
 
+def _extract_coverage_warnings(misses: list) -> list[str]:
+    """Format completeness findings as ONE advisory warning string (or none).
+
+    Central items come first so a truncated read still shows what matters. The
+    `extract_coverage:` prefix is deliberately distinct from `lint:` (which
+    marks deterministic checks) — this one costs a model call."""
+    labels = [(m.label or "").strip()[:80] for m in misses if (m.label or "").strip()]
+    if not labels:
+        return []
+    ordered = (
+        [(m.label or "").strip()[:80] for m in misses if m.central and (m.label or "").strip()]
+        + [(m.label or "").strip()[:80] for m in misses if not m.central and (m.label or "").strip()]
+    )
+    n_central = sum(1 for m in misses if m.central and (m.label or "").strip())
+    cap = max(1, settings.extract_coverage_max_items)
+    shown = "; ".join(ordered[:cap])
+    more = f" (+{len(ordered) - cap} more)" if len(ordered) > cap else ""
+    return [
+        f"extract_coverage: {len(ordered)} item(s) the lesson teaches are absent "
+        f"from the extract ({n_central} central): {shown}{more}"
+    ]
+
+
 async def _verify_and_maybe_regen_extract(
     *, out: str, book_text: str, pdf_path, prov: str, mdl, transport: str,
     section: dict, job_id, po_id,
