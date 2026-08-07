@@ -178,7 +178,7 @@ def _print_plan(
     return planned_calls
 
 
-def _write_report(args: argparse.Namespace, payload: dict) -> None:
+def _write_report(args: argparse.Namespace, payload: dict) -> pathlib.Path:
     if args.out:
         out = pathlib.Path(args.out)
     else:
@@ -187,6 +187,7 @@ def _write_report(args: argparse.Namespace, payload: dict) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"report: {out}")
+    return out
 
 
 def _cost(calls: list[dict]) -> float:
@@ -239,96 +240,145 @@ async def _run(args: argparse.Namespace) -> int:
     skipped_no_mutation: list[str] = []
     book_text_cache: dict[str, str] = {}
     stopped_early = False
+    completed = False
+    error_str: Optional[str] = None
 
-    for c in all_selected:
-        if len(calls) >= args.limit:
-            stopped_early = True
-            break
-
-        if c.book_id not in book_text_cache:
-            pdf_path = storage.book_pdf_path(c.book_id)
-            book_text_cache[c.book_id] = agent.read_whole_book_text(pdf_path)
-        whole_text = book_text_cache[c.book_id]
-
-        try:
-            inputs = await efa.load_extract_audit_inputs(c.job_id, whole_book_text=whole_text)
-        except efa.ExtractFidelityAuditError as exc:
-            print(f"SKIP {c.job_id} ({c.subject}): {exc}")
-            skipped_load_errors.append({"job_id": c.job_id, "subject": c.subject, "error": str(exc)})
-            continue
-
-        if len(calls) >= args.limit:
-            stopped_early = True
-            break
-        report = await efa.audit_one(
-            inputs, provider=args.provider, model=args.model, transport=args.transport, calls=calls
-        )
-        reports.append(report)
-        print(f"[{len(reports)}/{len(all_selected)}] {c.subject} {c.job_id[:8]} "
-              f"ok={report.ok_count} contradicts={report.contradicts_count} "
-              f"unsupported={report.unsupported_count} (downgraded {report.downgraded_count})")
-
-        if c.job_id in mutation_job_ids:
+    # Every iteration below can make a BILLED call (audit_one /
+    # audit_with_control). If any of them raises — a dead adjudicator, an
+    # exhausted-retries API error, a transient 5xx — the exception must
+    # still surface (audit_one/audit_with_control stay fail-loud, unchanged)
+    # but the results already paid for must NOT be thrown away: sample
+    # selection is fully deterministic given --sample-seed, so the obvious
+    # "just re-run the same command" recovery would silently re-bill every
+    # lesson that already succeeded. try/finally makes report persistence
+    # crash-safe: the `finally` block always runs, `completed`/`error_str`
+    # record whether the run actually finished, and the exception is
+    # re-raised unchanged after the report is written.
+    try:
+        for c in all_selected:
             if len(calls) >= args.limit:
                 stopped_early = True
+                break
+
+            if c.book_id not in book_text_cache:
+                pdf_path = storage.book_pdf_path(c.book_id)
+                book_text_cache[c.book_id] = agent.read_whole_book_text(pdf_path)
+            whole_text = book_text_cache[c.book_id]
+
+            try:
+                inputs = await efa.load_extract_audit_inputs(c.job_id, whole_book_text=whole_text)
+            except efa.ExtractFidelityAuditError as exc:
+                print(f"SKIP {c.job_id} ({c.subject}): {exc}")
+                skipped_load_errors.append({"job_id": c.job_id, "subject": c.subject, "error": str(exc)})
                 continue
-            seed = efa.lesson_seed(args.sample_seed, c.job_id)
-            paired = await efa.audit_with_control(
-                inputs, report, seed=seed, provider=args.provider, model=args.model,
-                transport=args.transport, calls=calls,
+
+            if len(calls) >= args.limit:
+                stopped_early = True
+                break
+            report = await efa.audit_one(
+                inputs, provider=args.provider, model=args.model, transport=args.transport, calls=calls
             )
-            if paired is None:
-                skipped_no_mutation.append(c.job_id)
-                print(f"  mutation SKIP (no plantable kind): {c.job_id}")
-            else:
-                paired_results.append(paired)
-                print(f"  mutation[{paired.kind}]: detected_planted={paired.detected_planted}")
+            reports.append(report)
+            print(f"[{len(reports)}/{len(all_selected)}] {c.subject} {c.job_id[:8]} "
+                  f"ok={report.ok_count} contradicts={report.contradicts_count} "
+                  f"unsupported={report.unsupported_count} (downgraded {report.downgraded_count})")
 
-    if stopped_early:
-        print(f"STOPPED EARLY: --limit {args.limit} reached before the full sample was audited.")
+            if c.job_id in mutation_job_ids:
+                if len(calls) >= args.limit:
+                    stopped_early = True
+                    break
+                seed = efa.lesson_seed(args.sample_seed, c.job_id)
+                paired = await efa.audit_with_control(
+                    inputs, report, seed=seed, provider=args.provider, model=args.model,
+                    transport=args.transport, calls=calls,
+                )
+                if paired is None:
+                    skipped_no_mutation.append(c.job_id)
+                    print(f"  mutation SKIP (no plantable kind): {c.job_id}")
+                else:
+                    paired_results.append(paired)
+                    print(f"  mutation[{paired.kind}]: detected_planted={paired.detected_planted}")
 
-    summary = efa.summarize_runs(reports)
-    detected = sum(1 for p in paired_results if p.detected_planted)
-    print(f"\ncalibration: {detected}/{len(paired_results)} planted mutations detected "
-          f"({len(skipped_no_mutation)} lessons had no plantable mutation)")
-    cost = _cost(calls)
-    print(f"cost: ${cost:.4f} across {len(calls)} logical calls "
-          f"({args.provider} {args.model}, {args.transport})")
+        completed = True
+    except Exception as exc:
+        error_str = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        # Computed from whatever state exists at this point — correct
+        # whether the run completed normally, was truncated by --limit, or
+        # crashed mid-loop: a mutation-target lesson counts as "not
+        # attempted" unless it produced a paired result or an explicit
+        # no-plantable-kind skip. This is also how the calibration
+        # denominator stays honest under a --limit truncation (not just a
+        # crash) — Task 4's "≥6 of 8" gate needs to know if it was really
+        # out of 8 attempts or fewer.
+        attempted_or_skipped_mutation = {p.pristine.job_id for p in paired_results} | set(
+            skipped_no_mutation
+        )
+        mutation_targets_not_attempted = [
+            c.job_id for c in mutation_targets if c.job_id not in attempted_or_skipped_mutation
+        ]
 
-    payload = {
-        "dry_run": False,
-        "subjects": args.subjects,
-        "sample_seed": args.sample_seed,
-        "limit": args.limit,
-        "provider": args.provider,
-        "model": args.model,
-        "transport": args.transport,
-        "stopped_early": stopped_early,
-        "reports": [r.model_dump() for r in reports],
-        "paired_results": [
-            {
-                "kind": p.kind,
-                "mutation": {
-                    "kind": p.mutation.kind, "original": p.mutation.original,
-                    "replacement": p.mutation.replacement, "offset": p.mutation.offset,
-                },
-                "job_id": p.pristine.job_id,
-                "detected_planted": p.detected_planted,
-                "pristine": p.pristine.model_dump(),
-                "mutated": p.mutated.model_dump(),
-            }
-            for p in paired_results
-        ],
-        "calibration": {
-            "detected": detected, "total_pairs": len(paired_results),
-            "skipped_no_mutation": skipped_no_mutation,
-        },
-        "summary": summary,
-        "skipped_load_errors": skipped_load_errors,
-        "calls": [dict(c) for c in calls],
-        "cost_usd": cost,
-    }
-    _write_report(args, payload)
+        summary = efa.summarize_runs(reports)
+        detected = sum(1 for p in paired_results if p.detected_planted)
+        cost = _cost(calls)
+
+        if completed and stopped_early:
+            print(f"STOPPED EARLY: --limit {args.limit} reached before the full sample was audited.")
+        if completed:
+            print(f"\ncalibration: {detected}/{len(paired_results)} planted mutations detected "
+                  f"({len(skipped_no_mutation)} lessons had no plantable mutation, "
+                  f"{len(mutation_targets_not_attempted)} not attempted)")
+            print(f"cost: ${cost:.4f} across {len(calls)} logical calls "
+                  f"({args.provider} {args.model}, {args.transport})")
+
+        payload = {
+            "dry_run": False,
+            "completed": completed,
+            "error": error_str,
+            "subjects": args.subjects,
+            "sample_seed": args.sample_seed,
+            "limit": args.limit,
+            "provider": args.provider,
+            "model": args.model,
+            "transport": args.transport,
+            "stopped_early": stopped_early,
+            "completed_job_ids": [r.job_id for r in reports],
+            "reports": [r.model_dump() for r in reports],
+            "paired_results": [
+                {
+                    "kind": p.kind,
+                    "mutation": {
+                        "kind": p.mutation.kind, "original": p.mutation.original,
+                        "replacement": p.mutation.replacement, "offset": p.mutation.offset,
+                    },
+                    "job_id": p.pristine.job_id,
+                    "detected_planted": p.detected_planted,
+                    "pristine": p.pristine.model_dump(),
+                    "mutated": p.mutated.model_dump(),
+                }
+                for p in paired_results
+            ],
+            "calibration": {
+                "detected": detected, "total_pairs": len(paired_results),
+                "skipped_no_mutation": skipped_no_mutation,
+                "mutation_targets_not_attempted": mutation_targets_not_attempted,
+            },
+            "summary": summary,
+            "skipped_load_errors": skipped_load_errors,
+            "calls": [dict(c) for c in calls],
+            "cost_usd": cost,
+        }
+        report_path = _write_report(args, payload)
+        if not completed:
+            print(
+                f"WARNING: run did NOT complete ({error_str}) — wrote a PARTIAL report to "
+                f"{report_path} with {len(reports)} completed lesson(s) / ${cost:.4f} already "
+                f"billed across {len(calls)} call(s), so already-billed results are not lost. "
+                f"A manual partial re-run can use `completed_job_ids` to see what already ran.",
+                file=sys.stderr,
+            )
+
     return 0
 
 

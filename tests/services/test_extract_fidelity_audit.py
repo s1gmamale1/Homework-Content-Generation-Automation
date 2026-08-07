@@ -5,9 +5,12 @@ RUN_DB_INTEGRATION=1). `load_extract_audit_inputs` itself is exercised by a
 later task; it needs a real DB + PDF to test meaningfully. Task 3's
 `audit_one`/`audit_with_control` DO make an LLM call in production, but here
 `agent.run_phase` is always patched with `unittest.mock.AsyncMock` — zero
-real model calls, zero DB, zero PDF reads in this file.
+real model calls, zero DB, zero PDF reads in this file. The CLI
+crash-safety tests near the end patch `scripts.extract_fidelity_audit`'s DB
+fetch / PDF read / `run_phase` the same way — still zero DB/PDF/model calls.
 """
 import dataclasses
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -15,6 +18,7 @@ from pydantic import ValidationError
 
 from app.services import extract_fidelity_audit as efa
 from app.services.agent import PhaseResult
+from scripts import extract_fidelity_audit as cli
 
 
 # ---------- ClaimVerdict ----------
@@ -936,3 +940,157 @@ def test_select_sample_stratify_false_ignores_cells():
     cell_b = [_candidate(f"b{i}", grade="9", lang="ru") for i in range(5)]
     result = efa.select_sample(cell_a + cell_b, 3, seed=1, stratify=False)
     assert len(result) == 3  # just needs to be a valid cap; no cell guarantee
+
+
+# ============================================================================
+# Fix round 1 — CLI crash-safe report persistence
+# (scripts/extract_fidelity_audit.py::_run). Everything below patches the
+# CLI's own DB fetch, PDF read, and `agent.run_phase` — zero DB, zero PDF,
+# zero real model calls.
+# ============================================================================
+
+_CLI_MUTABLE_MD = (
+    "Napoleon led the army. Later, Napoleon crossed the Alps with Wellington nearby."
+)
+
+
+async def _cli_fake_fetch(subjects):
+    return {
+        s: [
+            efa.LessonCandidate(
+                job_id=f"{s}-job-{i}", book_id=f"{s}-book", subject=s,
+                grade="8", source_language="en",
+            )
+            for i in range(6)
+        ]
+        for s in subjects
+    }
+
+
+async def _cli_fake_load(job_id, *, whole_book_text=None):
+    return efa.ExtractAuditInputs(
+        job_id=job_id, book_id="b", subject="english", family="languages", grade="8",
+        source_language="en", output_language="uz", lesson_title="L",
+        page_start=1, page_end=2, extract_md=_CLI_MUTABLE_MD,
+        source_text="source", whole_book_text=whole_book_text or "whole",
+    )
+
+
+async def test_cli_run_writes_partial_report_and_reraises_on_mid_run_failure(
+    monkeypatch, tmp_path
+):
+    """A billed-call failure partway through a run must NOT discard results
+    already paid for: sample selection is deterministic given
+    --sample-seed, so the obvious recovery (re-run the same command) would
+    silently re-bill every lesson that already succeeded unless the partial
+    results are persisted first. Asserts (a) the exception still surfaces,
+    (b) the JSON report file exists, (c) it contains exactly the lessons
+    completed before the failure, (d) `completed` is False."""
+    call_count = 0
+
+    async def fake_run_phase(**kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count > 2:
+            raise RuntimeError("simulated transient API 5xx")
+        return PhaseResult(
+            text="", parsed=efa.Adjudication(claims=[]),
+            usage={"prompt_tokens": 5, "output_tokens": 1},
+        )
+
+    monkeypatch.setattr(cli, "_fetch_candidates", _cli_fake_fetch)
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _cli_fake_load)
+    monkeypatch.setattr(cli.agent, "read_whole_book_text", lambda path: "whole book text")
+    monkeypatch.setattr(cli.agent, "run_phase", fake_run_phase)
+
+    out_path = tmp_path / "report.json"
+    args = cli._parse_args([
+        "--subject", "english:6", "--limit", "48", "--mutations", "0",
+        "--out", str(out_path),
+    ])
+
+    with pytest.raises(efa.ExtractFidelityAuditError):
+        await cli._run(args)
+
+    # (a) exception surfaced -- proven by pytest.raises above not failing.
+    # (b) the report file exists.
+    assert out_path.exists()
+    payload = json.loads(out_path.read_text())
+    # (d) completed is False, with the error recorded.
+    assert payload["completed"] is False
+    assert payload["error"] is not None
+    assert "simulated transient API 5xx" in payload["error"]
+    # (c) exactly the lessons completed before the failure (2 successful
+    # audit_one calls; the 3rd raised before appending to `reports`).
+    assert len(payload["completed_job_ids"]) == 2
+    assert len(payload["reports"]) == 2
+    assert len(payload["calls"]) == 2
+    assert set(payload["completed_job_ids"]) == {r["job_id"] for r in payload["reports"]}
+
+
+async def test_cli_run_partial_report_never_looks_like_a_complete_run(monkeypatch, tmp_path):
+    """A partial report must be legible as partial, not silently pass for a
+    complete one — completed=False plus a non-None error is the signal a
+    downstream reader (or a human) must be able to check without diffing
+    call counts."""
+    async def dead_run_phase(**kw):
+        raise RuntimeError("dead adjudicator")
+
+    monkeypatch.setattr(cli, "_fetch_candidates", _cli_fake_fetch)
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _cli_fake_load)
+    monkeypatch.setattr(cli.agent, "read_whole_book_text", lambda path: "whole book text")
+    monkeypatch.setattr(cli.agent, "run_phase", dead_run_phase)
+
+    out_path = tmp_path / "report_dead.json"
+    args = cli._parse_args([
+        "--subject", "english:6", "--limit", "48", "--mutations", "0",
+        "--out", str(out_path),
+    ])
+    with pytest.raises(efa.ExtractFidelityAuditError):
+        await cli._run(args)
+
+    payload = json.loads(out_path.read_text())
+    assert payload["completed"] is False
+    assert payload["error"]
+    assert payload["completed_job_ids"] == []
+    assert payload["reports"] == []
+
+
+async def test_cli_run_records_mutation_targets_not_attempted_when_limit_truncates(
+    monkeypatch, tmp_path
+):
+    """When --limit truncates the run mid-way through the mutation arms,
+    the JSON must record explicitly which mutation targets were never
+    attempted -- so a later calibration read (e.g. Task 4's >=6/8
+    sensitivity gate) can't silently under-count the denominator."""
+    async def fake_run_phase(**kw):
+        return PhaseResult(
+            text="", parsed=efa.Adjudication(claims=[]),
+            usage={"prompt_tokens": 5, "output_tokens": 1},
+        )
+
+    monkeypatch.setattr(cli, "_fetch_candidates", _cli_fake_fetch)
+    monkeypatch.setattr(efa, "load_extract_audit_inputs", _cli_fake_load)
+    monkeypatch.setattr(cli.agent, "read_whole_book_text", lambda path: "whole book text")
+    monkeypatch.setattr(cli.agent, "run_phase", fake_run_phase)
+
+    out_path = tmp_path / "report_truncated.json"
+    # 6 candidates, 3 mutation targets -> ceiling 9 calls; --limit 4 forces
+    # the run to stop before all 3 mutation arms are attempted.
+    args = cli._parse_args([
+        "--subject", "english:6", "--limit", "4", "--mutations", "3",
+        "--out", str(out_path),
+    ])
+    rc = await cli._run(args)
+    assert rc == 0
+
+    payload = json.loads(out_path.read_text())
+    assert payload["completed"] is True
+    assert payload["stopped_early"] is True
+    calibration = payload["calibration"]
+    not_attempted = calibration["mutation_targets_not_attempted"]
+    accounted_for = (
+        len(not_attempted) + calibration["total_pairs"] + len(calibration["skipped_no_mutation"])
+    )
+    assert accounted_for == 3  # all 3 mutation targets are accounted for somewhere
+    assert len(not_attempted) >= 1  # the cap genuinely left at least one unattempted
