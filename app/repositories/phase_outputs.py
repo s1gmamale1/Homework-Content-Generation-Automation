@@ -1,11 +1,12 @@
 from datetime import datetime
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import PhaseOutput
+from app.models import HomeworkJob, PhaseOutput
+from app.services.lease import JobLease, LeaseLost
 
 
 async def create(
@@ -17,6 +18,7 @@ async def create(
     prompt_hash: str,
     model_name: str,
     status: str = "pending",
+    claim_token: Optional[UUID] = None,
 ) -> PhaseOutput:
     po = PhaseOutput(
         job_id=job_id,
@@ -25,6 +27,7 @@ async def create(
         prompt_hash=prompt_hash,
         model_name=model_name,
         status=status,
+        claim_token=claim_token,
     )
     session.add(po)
     await session.flush()
@@ -40,7 +43,8 @@ async def create_or_reset(
     prompt_hash: str,
     model_name: str,
     status: str = "pending",
-) -> PhaseOutput:
+    lease: Optional[JobLease] = None,
+) -> Union[PhaseOutput, object]:
     """Create a new phase_outputs row, or hard-reset an existing one for
     (job_id, phase_name).
 
@@ -53,7 +57,24 @@ async def create_or_reset(
     On reset, the audit trail is preserved (same row id, FK references
     survive) but all per-attempt fields are cleared so the phase looks
     identical to a fresh row in the ``pending`` state.
+
+    Transitional (fenced job leases, Task 6): with ``lease=None`` (every
+    caller until Task 7) this runs the legacy body UNCHANGED — no job-row
+    lock, no token stamped, ``PhaseOutput`` returned as always. When a
+    ``lease`` is given: the **job row is locked FIRST**
+    (``SELECT ... FOR UPDATE``, lock order job->phase everywhere) and its
+    ``claim_token`` verified against ``lease.claim_token``; a missing job or
+    a mismatched token means the lease is stale and this returns
+    ``lease.LeaseLost`` **without writing anything** — not even the phase
+    row. On a verified lease, the existing create-or-reset body runs and the
+    written row (both the reset/UPDATE branch and the insert branch) is
+    stamped with ``claim_token=lease.claim_token``.
     """
+    if lease is not None:
+        job = await session.get(HomeworkJob, job_id, with_for_update=True)
+        if job is None or job.claim_token != lease.claim_token:
+            return LeaseLost
+
     existing = await session.scalar(
         select(PhaseOutput).where(
             PhaseOutput.job_id == job_id,
@@ -79,6 +100,8 @@ async def create_or_reset(
         existing.authoring_mode = None
         existing.content_schema_version = None
         existing.renderer_version = None
+        if lease is not None:
+            existing.claim_token = lease.claim_token
         await session.flush()
         return existing
     return await create(
@@ -89,6 +112,7 @@ async def create_or_reset(
         prompt_hash=prompt_hash,
         model_name=model_name,
         status=status,
+        claim_token=(lease.claim_token if lease is not None else None),
     )
 
 
@@ -121,7 +145,8 @@ async def set_status(
     content_schema_version: Optional[str] = None,
     renderer_version: Optional[str] = None,
     guard: bool = True,
-) -> bool:
+    claim_token: Optional[UUID] = None,
+) -> Union[bool, object]:
     """Set a phase row's status. With ``guard`` (default), a ``done`` phase is
     frozen — protects the resumable set (``_done_phase_md``) from a
     cancel-race clobber. Returns True iff a row was updated.
@@ -131,7 +156,21 @@ async def set_status(
     stale JSON" rule because ``create_or_reset`` NULLs all four when the row is
     (re)opened and ``_execute_phase`` writes them exactly once, at the end —
     so a markdown-fallback artifact leaves them NULL rather than overwriting a
-    previously-persisted config."""
+    previously-persisted config.
+
+    Transitional (fenced job leases, Task 6): with ``claim_token=None`` (every
+    caller until Task 7) the legacy behavior is preserved UNCHANGED — no token
+    predicate, plain ``bool`` returned. When a token is given, the UPDATE also
+    requires ``claim_token = :token``.
+
+    A 0-row match with a token is DISAMBIGUATED by a re-read (fenced job leases,
+    Task 7 forward-fix — mirrors ``jobs._fenced_update``): the write can miss
+    two ways and they must not be conflated. If the row's ``claim_token`` no
+    longer matches, the lease was genuinely lost → ``lease.LeaseLost``. If the
+    token STILL matches but the status guard blocked the write (the row is
+    already ``done`` — the pre-existing ``guard=True`` no-op), it is the LEGACY
+    benign no-op → returns ``False`` (the same value it returns today without a
+    token), NOT ``LeaseLost``."""
     values: dict = {"status": status}
     if started_at is not None:
         values["started_at"] = started_at
@@ -164,7 +203,18 @@ async def set_status(
     stmt = update(PhaseOutput).where(PhaseOutput.id == phase_output_id)
     if guard:
         stmt = stmt.where(PhaseOutput.status != "done")
+    if claim_token is not None:
+        stmt = stmt.where(PhaseOutput.claim_token == claim_token)
     result = await session.execute(stmt.values(**values))
+    if claim_token is not None and result.rowcount == 0:
+        # Disambiguate a real lease loss from the benign status-guard no-op
+        # (row already 'done') by re-reading the row (mirror
+        # jobs._fenced_update): token mismatch = lease lost; token still ours =
+        # the guard blocked a done row → the legacy no-op, NOT a lease loss.
+        row = await session.get(PhaseOutput, phase_output_id, populate_existing=True)
+        if row is None or row.claim_token != claim_token:
+            return LeaseLost
+        return False
     return result.rowcount > 0
 
 
@@ -189,6 +239,7 @@ async def reset_abandoned_phases(
     error_message: Optional[str] = None,
     source_statuses: Sequence[str] = ("pending", "running"),
     include_orphan_failed: bool = False,
+    claim_token: Optional[UUID] = None,
 ) -> int:
     """Reset a batch of jobs' abandoned phase rows (queue-correctness-1 +
     orphan-phase-reconciliation-1). 'done' rows are always untouched;
@@ -202,7 +253,16 @@ async def reset_abandoned_phases(
     scheduler contract). Empty job_ids is a no-op before any session use.
     source_statuses may only narrow within {'pending', 'running'} — 'done' is
     always frozen and 'failed' rows are reachable ONLY via
-    include_orphan_failed's marker equality, never wholesale."""
+    include_orphan_failed's marker equality, never wholesale.
+
+    Transitional (fenced job leases, D2): with ``claim_token`` given, the WHERE
+    is additionally fenced with ``claim_token = :token`` so ONLY phase rows this
+    lease still owns are reset — a lease-loss cancel by an obsolete owner then
+    no-ops instead of clobbering the NEW owner's reclaimed phase row (its token
+    has rotated). ``claim_token`` still SETS to None in ``.values()`` either way
+    (the reset always clears the lease). With ``claim_token=None`` (the
+    reclaim_stuck_jobs / lifespan-sweep callers, which reset ALL of a reclaimed
+    job's phases token-lessly) the behavior is exactly as before."""
     # Real raises, not asserts — python -O strips asserts, and these guards
     # ARE the preservation contract (PR #110 round-3; closes
     # reset-abandoned-status-assert-1).
@@ -220,7 +280,9 @@ async def reset_abandoned_phases(
     if phase_names is not None and not phase_names:
         return 0
     from sqlalchemy import func as sa_func, or_
-    values: dict = {"status": status}
+    # Rotate the phase lease token in the same reset (fenced job leases, Task 4):
+    # an abandoned phase row must not keep a live-looking claim_token.
+    values: dict = {"status": status, "claim_token": None}
     if status == "failed":
         values["error_message"] = error_message
         values["completed_at"] = sa_func.now()
@@ -241,6 +303,8 @@ async def reset_abandoned_phases(
     )
     if phase_names is not None:
         stmt = stmt.where(PhaseOutput.phase_name.in_(phase_names))
+    if claim_token is not None:
+        stmt = stmt.where(PhaseOutput.claim_token == claim_token)
     result = await session.execute(stmt)
     return result.rowcount
 

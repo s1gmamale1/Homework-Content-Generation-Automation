@@ -47,7 +47,8 @@ also runs it on deploy). Current head: **`0051_launch_defaults_3x`** (0028 = enu
 0045 = `toc_entries.notion_archived_job_id` UUID NULL (worklog 0129),
 0046 = `budget_state` worker-version-floor columns `min_worker_version`/`min_worker_version_stamped_by`/`min_worker_version_stamped_at` (fleet-worker-version-gate, worklog 0133),
 0047 = credential slots + per-key concurrency, 0048 = Notion source links + `toc_ready_at`,
-0050 = structured phase-output columns, 0051 = 3.x model launch defaults).
+0050 = structured phase-output columns, 0051 = 3.x model launch defaults,
+0052 = `claim_token` fencing cols on `homework_jobs`+`phase_outputs` + `job_lease_events` ledger (fenced job leases, worklog 0163)).
 Full chain in §7. (Revision IDs stay ≤32 chars — `alembic_version.version_num` is VARCHAR(32).)
 
 ---
@@ -170,7 +171,8 @@ perspective; a pushed Notion archive (if any) is the only surviving copy of the 
 |---|---|---|
 | `priority` | Integer NOT NULL, server_default `0` | higher first |
 | `scheduled_at` | NOT NULL, **server_default `NOW()`** (DB clock) | claim eligibility + backoff re-scheduling |
-| `claimed_at` / `claimed_by` | NULL | lease timestamp (DB clock) + `"hostname:pid"` of the worker |
+| `claimed_at` / `claimed_by` | NULL | lease timestamp (DB clock) + `"hostname:pid@sha"` of the worker. **`claimed_by` is provenance only — never in a mutating WHERE clause** (the `claim_token` below is the actual fence). |
+| `claim_token` | UUID NULL | **per-claim fencing token** (migration 0052, worklog 0163). Minted fresh on every `claim_next_job`; every worker-owned write is guarded `AND claim_token = :token` (via `jobs._fenced_update`) so a job that was reclaimed and re-claimed by another worker cannot be mutated/completed/archived by the obsolete worker. Rotated (cleared) on every reclaim/requeue; a reclaim snapshots the OLD token first for the `job_lease_events` ledger. |
 | `attempts` | Integer NOT NULL, server_default `0` | incremented on every claim |
 | `last_attempt_at` / `last_error` | NULL | |
 
@@ -198,11 +200,30 @@ UUIDPK only — **no** `created_at`/`updated_at`; it has `started_at`/`completed
 | `validation_warnings` | JSONB NULL | LLM-judge warnings (migration 0017) |
 | `judge_status` | String(24) NULL | judge outcome (migration 0029): `ok` / `major_shipped` / `major_regen_failed` / `unavailable` / NULL (pre-0029 rows or extract phase) |
 | `solver_status` | String(24) NULL | answer-key solver outcome (migration 0043, CQ-C/worklog 0112): `ok` / `mismatch_regen` / `mismatch_shipped` / `mismatch_regen_failed` / `unavailable` / `refused` / NULL (non-solver phase or solver disabled). CHECK-constrained. |
+| `claim_token` | UUID NULL | per-phase fencing token (migration 0052, worklog 0163). Stamped when `create_or_reset` runs under a verified lease; phase writes are guarded `AND claim_token = :token`. `create_or_reset` takes the job-row `FOR UPDATE` first (lock order **job → phase** everywhere) and verifies the job's token before touching phase rows. Cleared by `reset_abandoned_phases` on reclaim. |
 | `started_at` / `completed_at` | NULL | |
 
 **`uq_phase_output_job_order (job_id, phase_order)`** — and the reason the pipeline must use
 `phase_repo.create_or_reset`, never raw `create`: the startup sweep only marks stale phase
 rows `failed`, it doesn't delete them, so a retried job re-INSERTing would trip this constraint.
+
+### 3.4a `job_lease_events` — append-only lease audit ledger (migration 0052)
+
+One row per lease lifecycle event (fenced job leases, worklog 0163). **No FK on `job_id`** — the
+ledger deliberately survives job deletion for operational audit.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | `server_default gen_random_uuid()` |
+| `job_id` | UUID NOT NULL (no FK) | the job the event is about |
+| `claim_token` | UUID NULL | the token the event concerns — the NEW token on `claimed`, the OLD (pre-rotation) token on `reclaimed_*`, the presented token on `lease_lost`/`released_*` |
+| `event_type` | String(32) NOT NULL | `claimed` · `reclaimed_stale` · `reclaimed_forced` · `released_done` · `released_retry` · `released_failed` · `released_cancelled` · `lease_lost` |
+| `owner` / `actor` / `reason` | String NULL | worker id / operator / free-text reason |
+| `created_at` | timestamptz NOT NULL | `server_default now()` |
+
+**`uq_job_lease_events_job_token_event (job_id, claim_token, event_type)`** — makes `append_event`
+idempotent (`ON CONFLICT DO NOTHING`); every event carries a non-null token so NULLS-DISTINCT
+never defeats the key. Indexes on `job_id` and `created_at`.
 
 ### 3.5 `agent_usages` — one row per CLI subprocess call
 

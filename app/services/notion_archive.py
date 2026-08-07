@@ -292,10 +292,30 @@ async def _record_skip(job_id: UUID, reason: str) -> None:
         log.warning("notion: could not record skip reason for job %s", job_id, exc_info=True)
 
 
-async def archive_job(job_id: UUID, *, force: bool = False) -> None:
+def _claim_token_ok(job, claim_token: Optional[UUID]) -> bool:
+    """Fenced-lease precondition for the AUTOMATIC (pipeline) archive path,
+    layered ON TOP OF the 0129 idempotency/direction guards below — it never
+    replaces them. ``claim_token is None`` means a token-less caller (the
+    operator/batch re-archive endpoints): always ok, behavior unchanged.
+    A presented token is only honored while the job is still `done` under
+    THAT exact token — an obsolete worker whose job was reclaimed (new
+    claim_token minted, or status no longer `done`) must not publish or
+    stamp a pointer."""
+    return claim_token is None or (job.status == "done" and job.claim_token == claim_token)
+
+
+async def archive_job(
+    job_id: UUID, *, claim_token: Optional[UUID] = None, force: bool = False
+) -> None:
     """Best-effort entry point called from the pipeline after job is `done`.
     With `force=True` (operator re-archive), an already-archived job is NOT
-    short-circuited and its leaf pages are cleared and rewritten (replace mode)."""
+    short-circuited and its leaf pages are cleared and rewritten (replace mode).
+
+    ``claim_token``: optional winning-lease fence for the automatic pipeline
+    call site (threaded from the run's ``lease``). When present, publish +
+    pointer-update proceed only while the job is still `done` under that exact
+    token — see ``_claim_token_ok``. Token-less callers (operator/batch
+    re-archive) are unaffected."""
     global _warned_unconfigured
     if not settings.notion_enabled:
         return
@@ -310,6 +330,12 @@ async def archive_job(job_id: UUID, *, force: bool = False) -> None:
             job = await jobs_repo.get(session, job_id)
             if job is None:
                 return  # gone
+            if not _claim_token_ok(job, claim_token):
+                log.info(
+                    "notion: job %s claim_token stale (status=%s) — obsolete worker, "
+                    "skipping auto-archive", job_id, job.status,
+                )
+                return
             if job.notion_archived_at is not None and not force:
                 return  # already archived (idempotent on retry) unless forced
             book = await books_repo.get(session, job.book_id)
@@ -412,6 +438,21 @@ async def archive_job(job_id: UUID, *, force: bool = False) -> None:
             return
 
         async with SessionLocal() as session:
+            # Re-check the token fence in THIS (pointer-update) session too —
+            # a check only in the first session leaves a TOCTOU window (the
+            # job can be reclaimed by another worker during the Notion push,
+            # which runs with no DB session held) before the pointer write.
+            # Token-less callers (claim_token is None) skip the extra fetch —
+            # behavior stays exactly today's.
+            if claim_token is not None:
+                fresh_job = await jobs_repo.get(session, job_id)
+                if fresh_job is None or not _claim_token_ok(fresh_job, claim_token):
+                    log.info(
+                        "notion: job %s claim_token stale at pointer-update (status=%s) — "
+                        "obsolete worker, discarding push result, writing no pointer",
+                        job_id, fresh_job.status if fresh_job is not None else "gone",
+                    )
+                    return
             await toc_repo.set_notion_homework_page_id(session, section_id, homework_id)
             if first_archive or do_replace:
                 await toc_repo.set_notion_archived_job(session, section_id, job_id)

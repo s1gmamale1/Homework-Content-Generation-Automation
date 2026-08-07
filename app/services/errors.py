@@ -60,3 +60,33 @@ class TransientPhaseError(Exception):
 class PhaseAttemptTimeout(Exception):
     """An attempt exceeded settings.per_attempt_timeout_seconds. Replaces the
     raw asyncio.TimeoutError whose str() is '' (blank error_message bug)."""
+
+
+# ── Fenced-lease control signals (fenced job leases, Task 7) ─────────────────
+#
+# These are CONTROL SIGNALS, not content errors. A fenced worker write
+# (jobs_repo / phase_repo with a claim_token) returns a ``lease.LeaseLost`` /
+# ``lease.CancelRequested`` sentinel; pipeline converts that sentinel into one
+# of these signals and lets it unwind ``pipeline.run`` WITHOUT being turned into
+# a TransientPhaseError, a content-error job-failure, a judge failure, or a queue
+# retry. Every broad ``except (SessionLimitPause, SlotSaturation,
+# TransientPhaseError)`` / bare ``except Exception`` boundary in the pipeline
+# re-raises them (like the code already re-raises around CancelledError), so no
+# handler can swallow them. The worker (``_execute_job``) is the only place that
+# acts on them: LeaseLost → cancel this execution's local task, mutate nothing;
+# CancelWon → the repo ALREADY finalized cancelled (single-finalize contract),
+# so just stop — never finalize again.
+
+
+class LeaseLostSignal(Exception):
+    """A fenced worker write found the lease no longer owns the job — a reclaim
+    rotated the claim_token to a new owner. Unwinds pipeline.run; the worker
+    cancels this execution's local task and mutates NOTHING (the job now belongs
+    to the reclaiming worker)."""
+
+
+class CancelWonSignal(Exception):
+    """A fenced worker write found a user cancel won and the repo has ALREADY
+    finalized the job (cancelled + phase sweep + released_cancelled — the
+    single-finalize contract). Unwinds pipeline.run; the worker cancels its
+    local task and does NOT finalize again."""

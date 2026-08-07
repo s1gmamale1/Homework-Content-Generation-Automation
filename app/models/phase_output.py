@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, UUIDPK
@@ -51,6 +52,10 @@ class PhaseOutput(Base, UUIDPK):
     authoring_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     content_schema_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     renderer_version: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # Fencing token of the claim that produced/is producing this phase row —
+    # mirrors HomeworkJob.claim_token so a stale worker's write can be
+    # rejected even at phase-row granularity.
+    claim_token: Mapped[Optional[UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True)
 
     job: Mapped["HomeworkJob"] = relationship(back_populates="phase_outputs")
 

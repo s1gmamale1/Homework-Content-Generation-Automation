@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, Timestamps, UUIDPK
@@ -75,6 +76,10 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # promoted back to `pending` for another worker to retry.
     claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     claimed_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # Per-claim fencing token: a fresh UUID minted on every successful claim.
+    # A worker that was reclaimed (stale lease) presents an old token and gets
+    # fenced out instead of mutating a job another worker now owns.
+    claim_token: Mapped[Optional[UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     # Retry bookkeeping. Incremented on every claim. After
     # `settings.queue_max_attempts` the worker marks the job as failed
     # terminally instead of retrying.
