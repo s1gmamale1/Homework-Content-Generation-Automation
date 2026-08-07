@@ -17,6 +17,7 @@
 - **Chosen judge shape: truth-vs-silence split, subject-agnostic** (user-selected). Math's invented practice values, student names and hypothetical scenarios are not "demonstrably false", so they stay exempt by construction — no subject branch needed. Rejected: a `languages`-family-only relaxation (leaves the identical hole in the other 20 subjects and adds a second subject-conditional axis to a prompt R25 already wants to branch for CBP concealment).
 - **Chosen extract shape: two conditional headings, subject-agnostic** (user-selected). Verified load-bearing facts: `_CONTRACT_INSTRUCTIONS` (`agent.py:2400-2418`) has exactly five headings and no vocabulary/passage inventory; `summarize_lesson` is entirely subject-blind (`rules=_NO_PREAMBLE`, no subject argument); yet the generation prompts *are* family-aware — `_FC_LANGUAGES` (`prompts.py:372`) mandates `vocabulary` cards (L2 word → L1 meaning) and example sentences, and `_CBP_LANGUAGES` forbids "authoring a fresh passage when the textbook has one". The system asks for source vocabulary from an extract with no vocabulary section. Rejected: threading `subject` into `summarize_lesson`/`summarize_lesson_vision` (first subject-varying extract prompt, touches the vision fallback and the pipeline extract branch, for no gain the conditional headings don't already give).
 - **The cache bump is not optional.** `pipeline.py:1373` hardcodes `prompt_hash = "builtin:extract:v3"` and `phase_outputs.find_latest_extract` keys cross-job reuse on it. Changing the contract text without bumping the key means every already-extracted section (3,208 done lessons) silently serves a pre-change extract forever. Bumping to `v4` invalidates the cache — each re-launched section pays one fresh extract at ~57k input tokens on `gemini-3.5-flash-lite` ≈ **$0.006**, organically per-job. Accepted.
+- **Accepted risk, measured not assumed — extract growth.** "List every such item; do not sample" has no ceiling, and the extract is injected as LESSON CONTEXT into all 11 content phases *and* every judge call — roughly 22 injections per job. A vocabulary-inventory-shaped section can therefore multiply per-job input tokens, not just the one-off re-extract. This is why the probe records `chars` per specimen and why one of the three is deliberately the 10-page `Vocabulary List` section — the worst realistic case. **Decision rule:** if that specimen's `after` extract exceeds ~12,000 characters (roughly 3× the current typical extract), add an explicit cap to the vocabulary heading before shipping and re-run; below that, accept the growth and record the measured delta in the worklog.
 - **Out of scope, filed not fixed:** `_SOLVER_PHASES` (`pipeline.py:52`) covers only the 4 key-bearing phases — `flashcards`, `practice-sentence`, `practice-jigsaw`, `practice-memory-match`, where language content actually lives, get *no* independent correctness check. That is a per-job cost/architecture change (4 extra solver calls), not a prompt fix. Goes to WISHLIST as `language-drill-solver-gap-1` (Task 5).
 - **Scope call — this is ONE plan, on an assumption.** The brief flagged a probable coupling with a separately-raised "language-fidelity gap". Nothing in this repo records that item — no spec, plan, branch, worklog or WISHLIST line — so it was raised in another session and its text was never supplied. This plan therefore covers the coupling **as the code shows it**: the judge-severity limb and the extract-starvation limb are the same defect seen from two ends, and shipping the judge alone would let it escalate fabrications the generator was never given the material to avoid. If the other item turns out to be about something else — the `languages`-family generation prompts, the L2 bridge, or output-language leakage — it is a separate plan and nothing here needs to change.
 - **Honest caveat, addressed by Task 0:** every claim above is read from code, not measured — no language subject has ever been audited. The 24 done language packets (english 22, adabiyot 2) all date from 2026-06-17/24, i.e. before the coverage-contract extract (0119), before the 0159 re-anchor and before the 3.x models, and stored judge stats cannot measure fabrication anyway (english sits mid-pack at 14% `major_shipped`) because the judge is blind to it *by construction*. **Task 0 is a hard gate:** it probes the two load-bearing claims on the live system before a line of production code changes, and can kill limb 1.
@@ -46,21 +47,27 @@ This task writes an instrument and runs it. It is not TDD; its deliverable is a 
 
 **Files:**
 - Create: `docs/research/2026-08-07-language-fidelity-probe.py`
-- Create (generated): `docs/research/2026-08-07-language-fidelity-probe-data.json`
+- Create (generated): `docs/research/2026-08-07-language-fidelity-probe-data-before.json`
 - Create: `docs/research/2026-08-07-language-fidelity-probe.md` (the written findings)
 
 **Interfaces:**
-- Consumes: `app.services.agent.summarize_lesson`, `app.services.agent.read_whole_book_text`, `app.services.phase_judge.judge`, `app.services.storage.book_pdf_path`.
-- Produces: `docs/research/2026-08-07-language-fidelity-probe-data.json` with keys `extract_probe` (list of per-section results) and `judge_probe` (list of per-arm-per-replay results). Task 4 re-runs the same script with `--after` and diffs against this file.
+- Consumes: `app.services.agent.summarize_lesson`, `app.services.agent.read_whole_book_text`, `app.services.phase_judge.judge`, `app.services.storage.book_pdf_path`, `app.db.SessionLocal`.
+- Produces: `docs/research/2026-08-07-language-fidelity-probe-data-<label>.json` with keys `label`, `extract_probe` (per-section results) and `judge_probe` (per-arm-per-replay results, including the `regression:*` arms). Task 4 re-runs the same script with `--label after` and diffs the two files.
 
-**Fixed specimens (verified present on this machine):**
+**Fixed specimens.** Every value below was read from `edu_copy` / the filesystem. The probe looks the TOC title and page range up **at runtime** rather than hardcoding them — an earlier draft of this plan carried invented page numbers, which is exactly the failure this repo's memory warns about.
 
-| what | id | note |
+| what | id | verified |
 |---|---|---|
-| english G8 book | `d463c690-08ce-4fd1-ba27-fa51f39961b5` | `var/books/<id>/source.pdf` present, 15.7 MB |
-| adabiyot G9 book | `e585a5f3-f8c4-4fc9-a68f-a7c0bc21f209` | `var/books/<id>/source.pdf` present, 10.6 MB |
-| english job "Families" | `f10d2475-9347-4852-bdc9-0ed29ce135db` | done; has `extract` + `flashcards` rows |
-| adabiyot job "Alpomish" | `98ce9dad-ff43-4f17-a86b-10c7d717f70d` | done |
+| english G8 book | `d463c690-08ce-4fd1-ba27-fa51f39961b5` | `var/books/<id>/source.pdf`, 15.7 MB |
+| adabiyot G9 book | `e585a5f3-f8c4-4fc9-a68f-a7c0bc21f209` | `var/books/<id>/source.pdf`, 10.6 MB |
+| extract sections | looked up by `section_title` at runtime | `Families` (pp.116-119), `Vocabulary List` (pp.127-136), `Alpomish` (pp.8-44); `section_number` is **empty** in the DB for all three |
+| judge specimen — english | job `a334b3cf-e258-436d-89e1-dbe05741dd1a` ("Amazing Animals") | done; `flashcards` = **10 cards** (in G8's 8-10 band) with `judge_status='ok'`, and a `extract` row |
+| regression specimen — math | job `a2b9f9f3-42e1-418c-8f01-c0299952aa04` (G11 "Prizmaning hajmi") | done; 12 cards (in G9-11 band), `judge_status='ok'` |
+| regression specimen — geo | job `bfe00182-9460-470f-b7a4-1012be960c96` (G10 "Braziliya") | done; 12 cards, `judge_status='ok'` |
+
+**Why not the obvious specimen.** Job `f10d2475` ("Families") was the first choice and is *unusable*: its deck has **7 cards** against G8's 8-10 band (a structural count the judge can major on its own), and its `nephew` card cannot be cleanly mutated — the Uzbek parenthetical sits on the same line as the English gloss, and the `hint` and `example` lines independently restate the correct meaning, so any wrong-gloss mutation leaves three self-contradictions inside one card. Worse, the source extract sorts `nephew` under "male (uncle, nephew, grandfather, grandson)", so a female gloss **contradicts the lesson context** — the arm would measure the contradiction clause that already works, not the absent-and-false hole. `a334b3cf` avoids all four problems.
+
+**Arm design rule (load-bearing).** Every mutation replaces a **whole card block** (id/front/back/type/difficulty and every optional field) so no line of the original survives to contradict the injected claim, and each arm's verdict requires the judge's failure text to **cite the mutated card** — a bare `has_major` is not evidence, because the specimen may carry an unrelated major.
 
 - [ ] **Step 1: Write the probe script**
 
@@ -76,8 +83,14 @@ A. EXTRACT — does the current 5-heading coverage contract carry a language
 B. JUDGE  — does the current _FIDELITY_RULE cap an ABSENT-and-FALSE claim
    (a wrong gloss) at `minor`, while still majoring a CONTRADICTION?
 
+Probe B also carries two UNMUTATED fact-dense decks (math + geography) as
+regression arms: R25's regen tax lived there, so they answer the question the
+english arms cannot -- does the new exception make the judge major things it
+used to leave alone?
+
 Run BEFORE the fix (`--label before`) and again after (`--label after`); the
-two JSON files are the before/after evidence. Real model calls: ~$0.25 total.
+two JSON files are the before/after evidence. Real model calls per run:
+3 extracts + 15 judge calls, ~$0.35.
 
     set -a; . /path/to/main-checkout/.env; set +a
     export VAR_DIR=/path/to/main-checkout/var
@@ -101,34 +114,73 @@ EXTRACT_PROVIDER, EXTRACT_MODEL = "gemini", "gemini-3.5-flash-lite"
 JUDGE_PROVIDER, JUDGE_MODEL = "gemini", "gemini-3.5-flash"
 REPLAYS = 3
 
-# (book_id, section_title, section_number, page_start, page_end, label)
+# (book_id, section_title, label) — the page range and section number are read
+# from toc_entries at runtime; never hardcode them.
 EXTRACT_SPECIMENS = [
-    ("d463c690-08ce-4fd1-ba27-fa51f39961b5", "Families", "20", 118, 123, "english-g8-families"),
-    ("d463c690-08ce-4fd1-ba27-fa51f39961b5", "Vocabulary List", "V", 156, 163, "english-g8-vocab-list"),
-    ("e585a5f3-f8c4-4fc9-a68f-a7c0bc21f209", "Alpomish", "1", 8, 20, "adabiyot-g9-alpomish"),
+    ("d463c690-08ce-4fd1-ba27-fa51f39961b5", "Families", "english-g8-families"),
+    ("d463c690-08ce-4fd1-ba27-fa51f39961b5", "Vocabulary List", "english-g8-vocab-list"),
+    ("e585a5f3-f8c4-4fc9-a68f-a7c0bc21f209", "Alpomish", "adabiyot-g9-alpomish"),
 ]
 
-FLASHCARDS_JOB = UUID("f10d2475-9347-4852-bdc9-0ed29ce135db")
+# 10 cards (in G8's 8-10 band), judge_status='ok' — no pre-existing major to
+# confound the arms. Its extract lists 'duck' among the unit's animals with NO
+# gloss, and states the when/while rule explicitly: one word the source is
+# SILENT about, one rule it SPEAKS to. That pairing is what makes the two arms
+# separable.
+JUDGE_SPECIMEN = UUID("a334b3cf-e258-436d-89e1-dbe05741dd1a")
 
-# Probe B arms. Each is (arm, find, replace).
-#   control      — untouched output; expect pass / at most minor.
-#   absent_false — 'nephew' IS named in the source's relationship-noun list but
-#                  the source gives it NO gloss, so a WRONG gloss is absent-and-
-#                  not-contradicted, yet demonstrably false. THE CASE UNDER TEST.
-#   contradiction— the source states the irregular adverb of 'good' is 'well';
-#                  asserting 'goodly' contradicts it. Positive control: this must
-#                  already be `major` today, or the instrument is broken.
+# Unmutated fact-dense decks. R25's regen tax lived here, so these answer the
+# question the english arms cannot: does the new exception make the judge major
+# things it used to leave alone? Both are judge_status='ok' and in-band today.
+REGRESSION_SPECIMENS = [
+    ("math-g11-prizma", UUID("a2b9f9f3-42e1-418c-8f01-c0299952aa04"), "math-algebra"),
+    ("geo-g10-braziliya", UUID("bfe00182-9460-470f-b7a4-1012be960c96"), "geografiya"),
+]
+
+# Probe B arms: (arm, card_id, new_block, cite_needles). Each mutation replaces
+# a WHOLE card block, so no original line survives to contradict the injected
+# claim -- the failure mode that made the first specimen unusable.
+#   control       — untouched deck.
+#   absent_false  — 'duck' is NAMED in the source's animal list but never
+#                   glossed, so a wrong gloss is absent-and-not-contradicted yet
+#                   demonstrably false. THE CASE UNDER TEST.
+#   contradiction — the source states 'when' precedes the past simple; this card
+#                   asserts the opposite. Positive control: must already major.
 JUDGE_ARMS = [
-    ("control", None, None),
-    ("absent_false",
-     "**back:** The son of your brother or sister.",
-     "**back:** The wife of your brother."),
-    ("contradiction",
-     '**back:** well',
-     '**back:** goodly'),
+    ("control", None, None, ()),
+    ("absent_false", "card_8", """**id:** card_8
+**front:** duck
+**back:** Yer ostida in qazib yashaydigan mayda kemiruvchi hayvon.
+**type:** vocabulary
+**difficulty:** easy
+**example:** *The duck ran into its hole under the ground.*""", ("duck", "kemiruvchi")),
+    ("contradiction", "card_2", """**id:** card_2
+**front:** when
+**back:** Uzoq davom etgan fon harakatidan oldin keladi; o'zidan keyin Past Continuous ishlatiladi.
+**type:** grammar
+**difficulty:** easy
+**example:** *When the man was driving, a monkey jumped out of a tree.*""", ("when", "Past Continuous")),
 ]
 
 _HEADING_RE = re.compile(r"(?m)^[ \t]*#{1,6}[ \t]*(?P<h>[^\n#].*?)[ \t]*$")
+_CARD_RE = re.compile(r"(?ms)^\*\*id:\*\* *(?P<id>card_\d+).*?(?=^\*\*id:\*\*|\Z)")
+
+
+def _replace_card(md: str, card_id: str, new_block: str) -> str:
+    """Swap a whole card block by id. Matching by id (not by quoting the card's
+    text) keeps the probe robust against the typographic apostrophes and Uzbek
+    parentheticals in real output."""
+    for m in _CARD_RE.finditer(md):
+        if m.group("id") == card_id:
+            return md[:m.start()] + new_block.rstrip() + "\n\n" + md[m.end():]
+    raise SystemExit(f"card {card_id} not found in specimen")
+
+
+def _cites(warnings: list[str], needles: tuple[str, ...]) -> bool:
+    """Heuristic only: did the judge's failure text mention the injected card?
+    Recorded as a hint; the full `warnings` are stored so a human adjudicates."""
+    blob = " ".join(warnings).lower()
+    return any(n.lower() in blob for n in needles)
 
 
 def _headings(md: str) -> list[str]:
@@ -146,9 +198,21 @@ async def _fetch_phase(job_id: UUID, phase_name: str) -> str:
     return row
 
 
+async def _toc_row(book_id: str, title: str) -> tuple[str, int, int]:
+    async with SessionLocal() as s:
+        row = (await s.execute(text(
+            "SELECT COALESCE(section_number, ''), page_start, page_end FROM toc_entries "
+            "WHERE book_id = CAST(:b AS uuid) AND section_title = :t LIMIT 1"
+        ), {"b": book_id, "t": title})).first()
+    if row is None:
+        raise SystemExit(f"toc entry not found: {book_id} {title!r}")
+    return row[0], row[1], row[2]
+
+
 async def probe_extract() -> list[dict]:
     out = []
-    for book_id, title, number, ps, pe, label in EXTRACT_SPECIMENS:
+    for book_id, title, label in EXTRACT_SPECIMENS:
+        number, ps, pe = await _toc_row(book_id, title)
         pdf = storage.book_pdf_path(UUID(book_id))
         if not pdf.exists():
             raise SystemExit(f"PDF missing for {label}: {pdf}")
@@ -174,31 +238,43 @@ async def probe_extract() -> list[dict]:
     return out
 
 
-async def probe_judge() -> list[dict]:
-    lesson_context = await _fetch_phase(FLASHCARDS_JOB, "extract")
-    base = await _fetch_phase(FLASHCARDS_JOB, "flashcards")
+async def _judge_replays(*, label: str, subject: str, output_md: str,
+                         lesson_context: str, needles: tuple[str, ...]) -> list[dict]:
     out = []
-    for arm, find, repl in JUDGE_ARMS:
-        if find is None:
-            output_md = base
-        else:
-            if find not in base:
-                raise SystemExit(f"arm {arm}: anchor not found in specimen: {find!r}")
-            output_md = base.replace(find, repl, 1)
-        for i in range(REPLAYS):
-            v = await phase_judge.judge(
-                subject="english", phase_name="flashcards", output_md=output_md,
-                lesson_context=lesson_context, prior_outputs={},
-                gen_provider="gemini", gen_model="gemini-3.6-flash",
-                judge_provider=JUDGE_PROVIDER, judge_model=JUDGE_MODEL,
-                transport="api", output_language="uz",
-            )
-            out.append({
-                "arm": arm, "replay": i, "available": v.available,
-                "passed": v.passed, "has_major": v.has_major, "warnings": v.warnings,
-            })
-            print(f"[judge:{arm}#{i}] available={v.available} major={v.has_major} "
-                  f"warnings={v.warnings}")
+    for i in range(REPLAYS):
+        v = await phase_judge.judge(
+            subject=subject, phase_name="flashcards", output_md=output_md,
+            lesson_context=lesson_context, prior_outputs={},
+            gen_provider="gemini", gen_model="gemini-3.6-flash",
+            judge_provider=JUDGE_PROVIDER, judge_model=JUDGE_MODEL,
+            transport="api", output_language="uz",
+        )
+        out.append({
+            "arm": label, "replay": i, "available": v.available, "passed": v.passed,
+            "has_major": v.has_major, "cites_mutation": _cites(v.warnings, needles),
+            "warnings": v.warnings,
+        })
+        print(f"[judge:{label}#{i}] available={v.available} major={v.has_major} "
+              f"cites={_cites(v.warnings, needles)} warnings={v.warnings}")
+    return out
+
+
+async def probe_judge() -> list[dict]:
+    lesson_context = await _fetch_phase(JUDGE_SPECIMEN, "extract")
+    base = await _fetch_phase(JUDGE_SPECIMEN, "flashcards")
+    out = []
+    for arm, card_id, new_block, needles in JUDGE_ARMS:
+        output_md = base if card_id is None else _replace_card(base, card_id, new_block)
+        out += await _judge_replays(label=arm, subject="english", output_md=output_md,
+                                    lesson_context=lesson_context, needles=needles)
+    # Regression arms: fact-dense decks, UNMUTATED. New majors here would mean
+    # the exception reopened the tax 0159 closed.
+    for label, job_id, subject in REGRESSION_SPECIMENS:
+        out += await _judge_replays(
+            label=f"regression:{label}", subject=subject,
+            output_md=await _fetch_phase(job_id, "flashcards"),
+            lesson_context=await _fetch_phase(job_id, "extract"), needles=(),
+        )
     return out
 
 
@@ -228,20 +304,24 @@ export VAR_DIR=/Users/macmini5/Documents/Homework-Content-Generation-Automation/
 uv run python docs/research/2026-08-07-language-fidelity-probe.py --label before
 ```
 
-Expected: 3 extract calls + 9 judge calls complete, one JSON file written. If an anchor string is not found in a specimen (`arm …: anchor not found`), read the real `flashcards` output from the DB and update the arm's `find` literal to a string that IS present with the same semantics — do not weaken the arm's meaning.
+Expected: 3 extract calls + 15 judge calls complete, one JSON file written. If the script exits with `card … not found in specimen`, read the real deck (`psql -U macmini5 -d edu_copy -tAc "SELECT output_md FROM phase_outputs WHERE job_id='a334b3cf-e258-436d-89e1-dbe05741dd1a' AND phase_name='flashcards';"`) and point the arm at a card id that exists — keep the whole-block replacement and the arm's meaning; do not fall back to a partial-line edit.
 
 - [ ] **Step 3: Evaluate the gate and write the findings**
 
 Read the JSON and record the verdict in `docs/research/2026-08-07-language-fidelity-probe.md` — the two questions, the raw per-arm counts, and the decision.
 
-**Gate rules (apply in order):**
+**Definition used by every rule below.** An arm "fires" when a replay has `has_major=True` **and** the failure text is about the injected card. `cites_mutation` is a keyword hint, not the decision — read the `warnings` strings yourself and judge whether the major names the mutation or something unrelated. A bare `has_major` is never sufficient evidence: a real deck can carry an unrelated major, and a gate that cannot tell the two apart is what made the first draft's specimen unusable.
 
-1. **Instrument check — `contradiction` arm.** If it is NOT `has_major=True` in ≥2 of 3 replays, the probe is not measuring what it claims. **STOP.** Do not proceed to any task. Report to the controller: the judge is not majoring even a plain source contradiction on this specimen, which invalidates the plan's premise and needs its own diagnosis.
-2. **Limb 1 (judge) — `absent_false` arm.**
-   - `has_major=True` in ≥2 of 3 replays → **limb 1 is already handled by the live system. SKIP Task 1 entirely**, record it in the findings doc, and continue from Task 2. This is a real possible outcome and the honest one to accept.
-   - Otherwise (`has_major=False` in ≥2 of 3) → **limb 1 CONFIRMED**; Task 1 proceeds.
-3. **Limb 2 (extract).** Record `has_vocabulary_heading` / `has_passages_heading` / `gloss_arrow_lines` per specimen. Task 2 proceeds regardless of this result (the heading is contractually absent — the probe measures how much vocabulary leaks through `## Concepts & terms` anyway, which is the baseline Task 4 must beat), but if all three specimens already carry a full glossed vocabulary inventory under the existing headings, say so plainly in the findings and flag it to the controller before Task 2.
-4. **`control` arm.** If it shows `has_major=True` in ≥2 of 3, note it: the specimen carries a pre-existing major and the arms' deltas are confounded — say so in the findings rather than reading the other arms as clean.
+**Gate rules (apply in this order — the confound check comes FIRST):**
+
+1. **Confound check — `control` arm.** If the untouched deck majors in ≥2 of 3 replays, the specimen carries a pre-existing major. Record what it is. If that major is about a card an arm also mutates, the specimen is unusable: pick another `judge_status='ok'`, in-band english deck (query in Step 2's note) and re-run. Do not proceed on a confounded specimen.
+2. **Instrument check — `contradiction` arm.** If it does not fire in ≥2 of 3 replays, the probe is not measuring what it claims. **STOP.** Do not proceed to any task. Report to the controller: the judge is not majoring even a plain source contradiction, which invalidates the plan's premise and needs its own diagnosis.
+3. **Limb 1 (judge) — `absent_false` arm.**
+   - Fires in ≥2 of 3 replays → **limb 1 is already handled by the live system. SKIP Task 1 entirely**, record it in the findings doc, and continue from Task 2. This is a real possible outcome and the honest one to accept.
+   - Does not fire in ≥2 of 3 → **limb 1 CONFIRMED**; Task 1 proceeds.
+   - Majors that fire on something OTHER than the duck card count as "does not fire" for this rule, and get written down separately.
+4. **Regression baseline — the two `regression:*` arms.** Record `has_major` per replay. This is the `before` half of the 0159-preservation measurement; Task 4 compares against it. No gate action here — it only becomes a gate in Task 4.
+5. **Limb 2 (extract).** Record `has_vocabulary_heading` / `has_passages_heading` / `gloss_arrow_lines` / `chars` per specimen. Task 2 proceeds regardless (the heading is contractually absent — the probe measures how much vocabulary leaks through `## Concepts & terms` anyway, which is the baseline Task 4 must beat), but if all three specimens already carry a full glossed vocabulary inventory under the existing headings, say so plainly and flag it to the controller before Task 2.
 
 - [ ] **Step 4: Commit**
 
@@ -250,7 +330,11 @@ test "$(git branch --show-current)" = "feat/language-fidelity-judge" || exit 1
 git add docs/research/2026-08-07-language-fidelity-probe.py \
         docs/research/2026-08-07-language-fidelity-probe-data-before.json \
         docs/research/2026-08-07-language-fidelity-probe.md
-git commit -m "research: mechanism probe for the language-fidelity gap (before)"
+git commit -m "research: mechanism probe for the language-fidelity gap (before)
+
+Whole-card mutations on an in-band judge_status=ok specimen, verdicts keyed to
+the failure text citing the injected card, plus unmutated math+geo regression
+arms so the 0159 regen-tax question is measured rather than asserted."
 ```
 
 ---
@@ -329,8 +413,8 @@ _FIDELITY_RULE = (
     "`major` failure for any factual claim ABOUT THE WORLD in the OUTPUT that CONTRADICTS "
     "the LESSON CONTEXT (a changed date, number, name, definition, rule, or causal claim). "
     "A world claim that is merely ABSENT from the LESSON CONTEXT but not contradicted by it "
-    "(supporting context, standard curriculum facts) is at most `minor` — never `major`, "
-    "never a reason to regenerate. "
+    "(supporting context, standard curriculum facts) is at most `minor` — its absence alone is "
+    "never `major`, never a reason to regenerate. "
     "EXCEPTION — absent AND demonstrably FALSE: source silence is not a licence to be wrong. "
     "When the OUTPUT states something the LESSON CONTEXT does not mention and you can show it "
     "is FALSE on its own terms — a wrong translation or gloss, a word that does not mean what "
@@ -614,7 +698,7 @@ def test_coverage_lint_ignores_source_sentences():
 uv run python -m pytest tests/services/test_content_lint.py -q -k "vocabulary or source_sentences"
 ```
 
-Expected: FAIL with `KeyError: 'vocabulary'` — the needles do not exist yet.
+Expected: the first three FAIL with `KeyError: 'vocabulary'` (the needles do not exist yet). `test_coverage_lint_ignores_source_sentences` **passes already** — with no needle, the contract parses to `{}` and `lint_coverage` short-circuits to `[]` for the right answer by the wrong route. It is a pin against a future needle being added to `_COVERAGE_SECTIONS`, not a RED test; do not treat its early green as a problem.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -689,7 +773,8 @@ uv run python docs/research/2026-08-07-language-fidelity-probe.py --label after
 Compare `-before.json` and `-after.json`:
 
 1. **Extract limb:** `has_vocabulary_heading` is `True` for the two english specimens in `after` (adabiyot G9 is a literature lesson and may legitimately have no vocabulary section — do not treat its absence as a failure), and `has_passages_heading` is `True` for at least the `english-g8-families` specimen (its source lesson contains a reading text). Record the per-specimen deltas.
-2. **Judge limb** (skip if Task 1 was skipped): the `absent_false` arm flips to `has_major=True` in ≥2 of 3 replays, while the `control` arm does NOT gain a new major it did not have in `before`. A control that newly majors means the exception is over-firing — report it and stop rather than shipping.
+2. **Judge limb** (skip if Task 1 was skipped): the `absent_false` arm **fires** (majors *citing the duck card*, per Task 0's definition) in ≥2 of 3 replays, while the `control` arm does NOT gain a new major it did not have in `before`. A control that newly majors means the exception is over-firing — report it and stop rather than shipping.
+3. **0159-preservation gate (the regen-tax check):** neither `regression:math-g11-prizma` nor `regression:geo-g10-braziliya` gains a major it did not have in `before` — 6 replays across two fact-dense subjects, unmutated. This is the only measurement in the plan that tests whether the "state the correction" brake actually holds against a judge willing to assert a correction it invented; the prompt-text unit tests cannot. **If either regression arm newly majors, do not ship.** Tighten the exception (e.g. require the contradicted claim to be one the OUTPUT presents as a definition or gloss, not any incidental statement) and re-run before proceeding.
 
 If criterion 1 fails, the heading text is not landing — inspect the returned `extract_md` in the JSON, tighten the REQUIRED-whenever wording in `_CONTRACT_INSTRUCTIONS`, re-run. Do not proceed on a failed criterion.
 
@@ -788,6 +873,7 @@ Append to `docs/memory/WISHLIST.md`:
 - `docs/CODE_MAP.md:31` — the `agent.py` bullet enumerates the five headings; make it seven.
 - `docs/CODE_MAP.md:38` — the `pipeline.py` bullet says the cache key is `"builtin:extract:v3"` and explains the v2→v3 bump; update to `v4` and say what invalidating it costs.
 - `docs/CODE_MAP.md:42` — the `phase_judge.py` bullet describes `_FIDELITY_RULE`; add the third case.
+- `docs/CODE_MAP.md:46` — the `content_lint.py` bullet enumerates the same five headings for `parse_extract_contract` and says "Formulas excluded" for `lint_coverage`. Both go stale: seven headings, and the coverage exclusions become Formulas **and** source-sentences.
 
 - [ ] **Step 5: Move the plan and commit**
 
