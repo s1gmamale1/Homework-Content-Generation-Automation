@@ -557,7 +557,7 @@ def test_blank_labels_are_dropped_and_long_labels_truncated():
 ```bash
 uv run python -m pytest tests/services/test_extract_coverage.py -q
 ```
-Expected: FAIL — `AttributeError: module 'app.services.pipeline' has no attribute '_extract_coverage_warnings'` (the four new formatter tests fail; the six from Task 1 still pass).
+Expected: FAIL — `AttributeError: module 'app.services.pipeline' has no attribute '_extract_coverage_warnings'` (the four new formatter tests fail; the seven from Task 1 still pass).
 
 - [ ] **Step 3: Implement the formatter**
 
@@ -958,7 +958,7 @@ Three edits in `_execute_phase`:
     warnings: list[str] = list(extract_warnings)
 ```
 
-4. **`tests/conftest.py` — force the check OFF for the whole suite.** Without this, pre-existing tests reach a REAL spawn through the new call site: `test_pipeline_extract_dispatch.py` patches `read_page_range_text` to return Gate-A-passing text (`:120-124`, `_CLEAN_TEXT` at `:62-67`) but cannot patch `check_extract_coverage` (it does not exist at `2ebab53`), and `tests/conftest.py` has **no spawn guard** — only env sentinels and an events-bus loopback. `test_normal_book_unchanged` and `test_oversize_book_subsets_text` would each fire a real `gemini` CLI subprocess (installed on this host), then fail open and stay green — a money-rule violation that Step 6's "PASS" would actively mask.
+4. **`tests/conftest.py` — force the check OFF for the whole suite.** Without this, pre-existing tests reach a REAL spawn through the new call site: `test_pipeline_extract_dispatch.py` patches `read_page_range_text` to return Gate-A-passing text (`:120-124`, `_CLEAN_TEXT` at `:62-67`) but cannot patch `check_extract_coverage` (it does not exist at `2ebab53`), and `tests/conftest.py` has **no spawn guard** — only env sentinels and an events-bus loopback. At least three of its tests — `test_normal_book_unchanged`, `test_oversize_book_subsets_text` and `test_sparse_scanned_routes_to_vision` (whose `"h" * 17000` window also clears Gate A) — would each fire a real `gemini` CLI subprocess (installed on this host), then fail open and stay green: a money-rule violation that Step 6's "PASS" would actively mask. The sentinel below fixes all of them identically, so treat the list as "at least these", not an exhaustive audit.
 
 Add beside the existing sentinels (~line 33), *before* any app import:
 
@@ -1223,6 +1223,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -1270,8 +1271,10 @@ async def main() -> None:
     total_hit = total_labeled = total_reported_clean = 0
     evaluated = 0
     report: list[str] = []
-    # DB clock, so the success-count guard below is immune to host clock skew.
-    t0 = await conn.fetchval("select now()")
+    # HOST clock with slack: agent_usages.started_at is stamped host-side
+    # (run_phase → _record_usage), so a DB now() here would mix two clocks and
+    # could drop the first row below the cutoff. The slack absorbs small drift.
+    t0 = datetime.now(timezone.utc) - timedelta(seconds=60)
     try:
         for r in rows:
             job_id = r["job"]
@@ -1323,6 +1326,13 @@ async def main() -> None:
             "select count(*) from agent_usages "
             "where operation = 'lesson.extract.coverage' "
             "and success and started_at >= $1", t0)
+        # Informational ONLY — never an abort condition. run_phase's schema mode
+        # records a success=False row under the SAME operation for a first
+        # attempt that fails Pydantic validation, then retries and records a
+        # success row (agent.py:1137-1156). Aborting on this would fail a
+        # perfectly healthy run on one JSON flake — and it buys nothing: a call
+        # that ULTIMATELY failed writes no success row, so n_success already
+        # catches it.
         n_failed = await conn.fetchval(
             "select count(*) from agent_usages "
             "where operation = 'lesson.extract.coverage' "
@@ -1331,11 +1341,14 @@ async def main() -> None:
         await conn.close()
 
     print("\n".join(report))
-    if n_success != evaluated or n_failed:
+    if n_failed:
+        print(f"\nnote: {n_failed} failed check attempt(s) recorded — expected "
+              "occasionally in schema mode (first attempt retried).")
+    if n_success != evaluated:
         raise SystemExit(
-            f"\nABORT: {evaluated} lessons evaluated but {n_success} successful "
-            f"check calls recorded ({n_failed} failed). Fail-open makes a broken "
-            "call look like a clean extract — fix credentials/limits and re-run."
+            f"\nABORT: {evaluated} lessons evaluated but only {n_success} "
+            "successful check call(s) recorded. Fail-open makes a broken call "
+            "look like a clean extract — fix credentials/limits and re-run."
         )
     skipped = [line for line in report if line.startswith("SKIP ")]
     if skipped:
@@ -1567,6 +1580,11 @@ Invoke `superpowers:finishing-a-development-branch`. Default is push the branch 
 13. The timeout test asserted nothing that distinguished "timeout present" from "timeout absent": with no `asyncio.wait_for` the phase still completes and still writes no warnings, so it would merely have taken 30s and passed. Now asserts the call happened (RED before wiring) **and** elapsed < 5s (RED without the bound).
 14. Task 5 Step 6 claimed a flipped enable-default keeps the config tests green — it does not, since correction 7 added a test pinning the shipped default to `True`. Step 6 now names both assertions that may need updating in that commit.
 15. Stale expected-test counts in Task 1 (6→7) and Task 3 (10→11) after correction 7 added a test.
-16. The calibration script could not tell a *clean verdict* from a *failed call* — `check_extract_coverage` returns `[]` for both by contract, so a broken environment would have scored zero misses everywhere and passed hard bar B. It now counts the successful `lesson.extract.coverage` usage rows against the number of lessons evaluated and aborts on any shortfall or failure.
+16. The calibration script could not tell a *clean verdict* from a *failed call* — `check_extract_coverage` returns `[]` for both by contract, so a broken environment would have scored zero misses everywhere and passed hard bar B. It now counts the successful `lesson.extract.coverage` usage rows against the number of lessons evaluated and aborts on a shortfall.
+
+**Corrections applied after the fourth review round:**
+17. Correction 16 over-fired: it aborted on **any** `success=False` usage row, but `run_phase`'s schema mode records exactly such a row for a first attempt that fails validation and then retries successfully (`agent.py:1137-1156`) — so one JSON flake on the mandated flash-lite run would have killed a healthy calibration. The abort is now `n_success != evaluated` alone (which already catches every ultimately-failed call, since those write no success row); `n_failed` prints as a note.
+18. The success-count cutoff took the **DB** clock while `agent_usages.started_at` is stamped **host**-side — mixing clocks is what creates skew sensitivity, the opposite of the comment's claim. Now host clock minus 60s slack.
+19. Stale "six from Task 1" in Task 3 Step 2 (seven), and the spawn-leak list in Task 4 Step 4 now names the third affected dispatch test and is explicitly non-exhaustive.
 
 **Deliberate non-goals** — no regen, no gating, no `lesson_context` shape change, no judge change, no migration, no new API endpoint, no batch/book-level rollup (that overlaps the unbuilt `judge-failure-rollup-1`).
