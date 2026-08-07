@@ -173,6 +173,8 @@ _CONTRACT_SECTION_NEEDLES = [
     ("key_facts", ("key fact",)),                     # "Key facts"
     ("concepts", ("concept", "term")),                # "Concepts & terms"
     ("formulas", ("formula",)),                       # "Formulas"
+    ("source_sentences", ("source sentence", "passage")),  # "Source sentences & passages"
+    ("vocabulary", ("vocabular", "set phrase")),      # "Vocabulary & set phrases"
 ]
 _HEADER_RE = re.compile(r"(?m)^[ \t]*#{1,6}[ \t]*(?P<h>[^\n#].*?)[ \t]*$")
 _BULLET_RE = re.compile(r"(?m)^[ \t]*[-*][ \t]+(?P<item>\S.*?)[ \t]*$")
@@ -443,7 +445,11 @@ def findings_to_warnings(findings: list[LintFinding]) -> list[str]:
 
 # --- coverage check (contract items vs assembled packet, warn-only) ----------
 
-_COVERAGE_SECTIONS = ("concepts", "rules_theorems", "worked_example_types", "key_facts")
+# `source_sentences` is deliberately EXCLUDED: verbatim source sentences are
+# material the packet builds FROM, not items it must echo back, so counting them
+# would flood coverage_thin with false warnings.
+_COVERAGE_SECTIONS = ("concepts", "rules_theorems", "worked_example_types", "key_facts",
+                      "vocabulary")
 _APOS_CLASS = "['ʻʼ‘’`]"
 # NOTE: _APOS_CLASS is already a complete bracketed character class (for _norm's
 # re.sub below). Re-embedding it inside ANOTHER [...] class here would nest
