@@ -1304,6 +1304,36 @@ async def _verify_source_for_section(pdf_path, book_text: str, section: dict) ->
     return scoped or book_text
 
 
+async def _lesson_source_or_none(pdf_path, section: dict) -> "str | None":
+    """STRICT lesson-scoped source text for the completeness check: the lesson's
+    own printed pages (±1), or None.
+
+    Deliberately has NO whole-book fallback — unlike _verify_source_for_section.
+    A completeness check handed the whole book would enumerate every OTHER
+    lesson's items and report them as omissions, so 'no usable window' must mean
+    'do not run the check', never 'check against everything'. A window that
+    fails Gate A (scanned / garbled text layer) is likewise unusable.
+
+    Note the vision-extract path is *usually*, not always, excluded by this:
+    the vision route triggers on WHOLE-BOOK Gate A / density (pipeline.py:1502),
+    while this re-applies Gate A to the lesson WINDOW. A mixed book whose window
+    does carry a real text layer will still be checked — which is correct, since
+    the window is then genuinely readable."""
+    ps, pe = section.get("page_start"), section.get("page_end")
+    if not ps or not pe:
+        return None
+    try:
+        text = await asyncio.to_thread(
+            agent.read_page_range_text, pdf_path, ps, pe, margin=1
+        )
+    except Exception as exc:  # noqa: BLE001 — advisory path, never fail a job
+        logger.warning(f"extract coverage: source read failed (fail-open): {exc!r}")
+        return None
+    if not (text or "").strip() or agent.validate_extract_text(text) is not None:
+        return None
+    return text
+
+
 async def _verify_and_maybe_regen_extract(
     *, out: str, book_text: str, pdf_path, prov: str, mdl, transport: str,
     section: dict, job_id, po_id,
