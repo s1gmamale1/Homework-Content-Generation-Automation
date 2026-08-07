@@ -395,12 +395,37 @@ machine with two stages (a head and a parallel tail):
    *(Also: results are cached across jobs. If the same section was already extracted, the
    prior output is reused for free — the fidelity guard runs only on first production.)*
 
+   A second, separate guard runs right after the accepted extract is produced:
+   the **extract-completeness check** (worklog 0164, `agent.check_extract_coverage` +
+   `pipeline._check_extract_coverage`) is the **only check in the whole stack that reads
+   the lesson's SOURCE rather than trusting the extract** — every other guard, including
+   the fidelity check above and the judge itself, grades against the extract as ground
+   truth and so cannot see what the extract silently dropped. It feeds the model the
+   accepted extract plus a STRICT lesson-scoped source window (the lesson's own printed
+   pages ±1, re-run through Gate A; deliberately **no** whole-book fallback, or a
+   readable window would enumerate every other lesson's items as false omissions) and
+   asks which core teachable items — concepts, rules, formulas, worked-example/problem
+   types, key facts — are present in the source but absent from the extract. Findings
+   land as one aggregated `extract_coverage:` warning on the extract row's
+   `validation_warnings`, central items first. It is **advisory only** (never fails a
+   job, never regenerates) and **ships default-off** (`extract_coverage_check_enabled`):
+   the 2026-08-07 calibration against the labeled coverage-audit dataset found the cheap
+   model missed the audit's hand-verified worked-example gap while the stronger model
+   caught it but also flagged items the extract already states in prose — neither passed
+   both pre-registered precision bars, and the working model costs ~$0.035/lesson
+   (~$113 across the corpus), not the ~$0.001 originally assumed. See
+   `docs/research/2026-08-07-extract-coverage-calibration.md` for the full record.
+
    After a job finishes, a separate **warn-only coverage check**
    (`content_lint.lint_coverage`, wired in via `pipeline._coverage_warnings_for_job`) parses
    the extract's contract and checks whether each item's salient vocabulary shows up
    anywhere in the assembled packet; anything wholly absent appends a `lint:coverage_thin`
    finding to the extract row's `validation_warnings`. This is advisory only — it never
-   fails a job or forces a regen.
+   fails a job or forces a regen. Both this and the completeness check above write to the
+   same extract row, but the SPA filtered the extract phase out of every warning surface
+   until worklog 0164 fixed it — `lint:coverage_thin` had been invisible to operators
+   since it shipped (worklog 0119). A "Source checks" strip on the preview page
+   (`web/src/lib/phase-warnings.ts`) now renders both.
 
    *(Two steps that used to live here are gone: a `classify` step that decided EASY vs HARD,
    and a `source-map` step that built a concept list for injection. Flow v2 runs one sequence
