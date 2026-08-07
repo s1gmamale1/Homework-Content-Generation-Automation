@@ -189,19 +189,39 @@ def test_prompt_names_the_actual_source_and_output_languages():
     assert "OUT_LANG_MARKER" in prompt
 
 
+def _clause_paragraph(prompt: str, heading_marker: str) -> str:
+    """Locate the (lowercased) paragraph whose text contains
+    `heading_marker`, splitting on blank lines ("\n\n"). Fails loudly if
+    zero or more-than-one paragraph matches, so a deleted clause fails
+    THIS lookup rather than silently falling through to some other
+    paragraph that happens to share vocabulary (e.g. "translation" also
+    appears in the status-definitions bullet list, not just in the
+    dedicated Translation-tolerance clause paragraph)."""
+    paragraphs = prompt.split("\n\n")
+    matches = [p for p in paragraphs if heading_marker in p.lower()]
+    assert len(matches) == 1, (
+        f"expected exactly one paragraph containing {heading_marker!r}, "
+        f"found {len(matches)}"
+    )
+    return matches[0].lower()
+
+
 def test_prompt_has_translation_tolerance_clause():
+    # Locate the dedicated clause paragraph by its own heading (not just
+    # any "translat" occurrence — that word also appears in the
+    # status-definitions bullets) so a deletion of THIS clause fails THIS
+    # test, not a coincidental match elsewhere.
     prompt = efa.build_adjudicator_prompt(_inputs())
-    lowered = prompt.lower()
-    assert "translat" in lowered
-    # Must explicitly say translation (etc.) is NOT drift / is ok.
-    assert "not drift" in lowered or "is ok" in lowered or "is `ok`" in lowered
+    para = _clause_paragraph(prompt, "translation-tolerance clause")
+    # Must explicitly say translation (etc.) is NOT drift / is ok, WITHIN
+    # this clause's own paragraph.
+    assert "not drift" in para or "is ok" in para or "is `ok`" in para
 
 
 def test_prompt_has_omission_is_not_drift_clause():
     prompt = efa.build_adjudicator_prompt(_inputs())
-    lowered = prompt.lower()
-    assert "omission" in lowered
-    assert "not drift" in lowered
+    para = _clause_paragraph(prompt, "omission-is-not-drift clause")
+    assert "not drift" in para
 
 
 def test_prompt_describes_the_three_statuses():
@@ -216,6 +236,20 @@ def test_prompt_describes_claims_json_shape():
     assert "claim_span" in prompt
     assert "claim_type" in prompt
     assert '"claims"' in prompt or "'claims'" in prompt
+
+
+# ---------- Mutation ----------
+
+
+def test_mutation_is_frozen_with_expected_fields():
+    import dataclasses
+
+    assert dataclasses.is_dataclass(efa.Mutation)
+    field_names = {f.name for f in dataclasses.fields(efa.Mutation)}
+    assert field_names == {"kind", "original", "replacement", "offset"}
+    mutation = efa.Mutation(kind="date", original="1799", replacement="1815", offset=3)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        mutation.kind = "name"
 
 
 # ---------- inject_mutation ----------
@@ -294,6 +328,73 @@ def test_inject_mutation_definition_with_only_one_connector_returns_none():
     assert efa.inject_mutation(md, "definition", seed=1, forbidden_text="") is None
 
 
+# Production-shaped fixtures: a `## heading` plus `- Term: definition`
+# bullets, the dominant real definitional markup (round-1 fix). The
+# original em/en-dash-only regex yields ZERO candidates on these — that
+# gap (prose fixtures passing while realistic bulleted extract markdown
+# silently produced nothing) is what the round-1 review caught.
+_DEF_BULLET_MD_UZ = (
+    "## Bargli o'simliklar\n"
+    "- Tashqi belgilari: keng bargli, yashil rangli, tuksiz shakl.\n"
+    "- Ichki tuzilishi: mayda hujayralardan tashkil topgan to'qima.\n"
+)
+_DEF_BULLET_MD_RU = (
+    "## Заголовок раздела\n"
+    "- Термин: короткое определение данного понятия.\n"
+    "- Другой термин: совершенно иное определение здесь.\n"
+)
+_DEF_BOLD_MD = (
+    "## Voqealar\n"
+    "**486-yil**: Bu davrda muhim voqealar yuz berdi.\n"
+    "**1204-yil**: Boshqa muhim voqea shu yili sodir bo'ldi.\n"
+)
+
+
+def test_definition_candidates_finds_bullet_colon_form_uzbek():
+    candidates = efa._definition_candidates(_DEF_BULLET_MD_UZ)
+    assert len(candidates) >= 2
+    assert len({c[0] for c in candidates}) >= 2  # distinct predicate texts
+
+
+def test_definition_candidates_finds_bullet_colon_form_russian():
+    candidates = efa._definition_candidates(_DEF_BULLET_MD_RU)
+    assert len(candidates) >= 2
+    assert len({c[0] for c in candidates}) >= 2
+
+
+def test_definition_candidates_finds_bold_colon_form():
+    candidates = efa._definition_candidates(_DEF_BOLD_MD)
+    assert len(candidates) >= 2
+    assert len({c[0] for c in candidates}) >= 2
+
+
+def test_inject_mutation_definition_finds_uzbek_bullet_colon_candidates():
+    result = efa.inject_mutation(_DEF_BULLET_MD_UZ, "definition", seed=1, forbidden_text="")
+    assert result is not None
+    mutated, mutation = result
+    assert mutated != _DEF_BULLET_MD_UZ
+    assert mutation.kind == "definition"
+    assert mutation.original != mutation.replacement
+
+
+def test_inject_mutation_definition_finds_russian_bullet_colon_candidates():
+    result = efa.inject_mutation(_DEF_BULLET_MD_RU, "definition", seed=1, forbidden_text="")
+    assert result is not None
+    mutated, mutation = result
+    assert mutated != _DEF_BULLET_MD_RU
+    assert mutation.kind == "definition"
+    assert mutation.original != mutation.replacement
+
+
+def test_inject_mutation_definition_finds_bold_colon_candidates():
+    result = efa.inject_mutation(_DEF_BOLD_MD, "definition", seed=1, forbidden_text="")
+    assert result is not None
+    mutated, mutation = result
+    assert mutated != _DEF_BOLD_MD
+    assert mutation.kind == "definition"
+    assert mutation.original != mutation.replacement
+
+
 def test_inject_mutation_unknown_kind_raises():
     with pytest.raises(ValueError):
         efa.inject_mutation(_DATE_MD, "bogus", seed=1, forbidden_text="")
@@ -352,6 +453,32 @@ def test_reground_short_span_is_not_downgraded_even_if_it_matches():
     # token/char threshold -> must NOT be downgraded (a bare token matching
     # a 200KB book is chance, not grounding).
     claims = [_verdict("unsupported", span="1917")]
+    new_claims, downgraded = efa.reground_unsupported(claims, _WHOLE_BOOK)
+    assert downgraded == 0
+    assert new_claims[0].status == "unsupported"
+
+
+def test_reground_and_gate_rejects_high_char_low_token_span():
+    # "internationalization" is 21 chars (>= _REGROUND_MIN_CHARS) but a
+    # SINGLE token (< _REGROUND_MIN_TOKENS). Under a correct AND-gate this
+    # must NOT downgrade; a buggy OR-gate would downgrade it purely on the
+    # char-length condition. Must actually be present in whole_book_text so
+    # the char-length arm alone is genuinely satisfied.
+    whole = "The reconstruction required extensive internationalization efforts."
+    claims = [_verdict("unsupported", span="internationalization")]
+    assert len("internationalization") >= 12  # sanity: char condition alone is true
+    new_claims, downgraded = efa.reground_unsupported(claims, whole)
+    assert downgraded == 0
+    assert new_claims[0].status == "unsupported"
+
+
+def test_reground_and_gate_rejects_high_token_low_char_span():
+    # "was signed" is 10 chars (< _REGROUND_MIN_CHARS) but TWO tokens
+    # (>= _REGROUND_MIN_TOKENS). Under a correct AND-gate this must NOT
+    # downgrade; a buggy OR-gate would downgrade it purely on the
+    # token-count condition. Present verbatim in _WHOLE_BOOK.
+    claims = [_verdict("unsupported", span="was signed")]
+    assert len("was signed") < 12  # sanity: char condition alone is false
     new_claims, downgraded = efa.reground_unsupported(claims, _WHOLE_BOOK)
     assert downgraded == 0
     assert new_claims[0].status == "unsupported"

@@ -312,8 +312,22 @@ _YEAR_RE = re.compile(r"\b(1[0-9]{3}|20[0-9]{2})\b")
 # enough to plausibly be a proper noun rather than an abbreviation.
 _WORD_RE = re.compile(r"\b\w{4,}\b", re.UNICODE)
 
-# Definitional connectors: em dash, en dash, or an "is"/"are" copula.
-_DEF_CONNECTOR_RE = re.compile(r" — | – |\bis\b|\bare\b", re.IGNORECASE)
+# Definitional connectors, in the shapes actually observed across a
+# 3,427-extract corpus measurement (round-1 fix): em/en dash prose
+# (" — "/" – "), an "is"/"are" copula (English-biased — only a 3-8% hit
+# rate outside the english subject, kept because it's near-universal
+# THERE), a markdown bullet with an inline colon ("- Term: predicate"),
+# and a bold term followed by a colon ("**Term**:"). The colon-bullet form
+# is nearly as common as the dash form across most subjects and was
+# MISSED entirely before this fix — realistic bulleted extract markdown
+# (the dominant real shape) produced zero definition candidates.
+_DEF_CONNECTOR_RE = re.compile(
+    r" — | – "
+    r"|\bis\b|\bare\b"
+    r"|^[ \t]*[-*][ \t]+[^\n:]+?:[ \t]+"
+    r"|\*\*[^\n*]+?\*\*:[ \t]*",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 # Characters that, on their own, don't count as "real" content before a word
 # on its line — markdown heading/list/number markers and plain whitespace.
@@ -397,12 +411,25 @@ def inject_mutation(
     document).
 
     Deterministic given `(md, kind, seed)`: candidate discovery is a pure
-    scan of `md` (fixed order), and the only choice — which valid
-    candidate pair to use — is made via a seeded `random.Random(seed)`,
-    never the module-level `random` and never time-based entropy.
+    scan of `md` (fixed order), and the only choice — enumerate every valid
+    `(original, replacement)` pair up front, then pick one via a seeded
+    `random.Random(seed).choice` — never the module-level `random` and
+    never time-based entropy. Determinism holds across processes: pair
+    enumeration is a plain list built by nested `enumerate` loops, with no
+    `set`/`dict` iteration order in the path.
 
     Returns `(mutated_md, Mutation)`, or `None` when fewer than two
-    distinct-text candidates exist for `kind`, or `kind` is unknown.
+    distinct-text candidates exist for `kind` (including when every
+    surviving candidate pair collides with `forbidden_text`) — this is the
+    "skip this lesson" case and is safe to check with `is None`.
+
+    Raises `ValueError` if `kind` is not one of the known kinds
+    (`date`/`name`/`definition`). This is NOT part of the `None`-means-skip
+    contract — an unrecognized `kind` is a caller bug (e.g. a typo), not a
+    data gap, so it is never silently treated as "skip this lesson". A
+    caller that only checks `if inject_mutation(...) is None: skip()` will
+    get an uncaught `ValueError` for a bad `kind`; validate `kind` against
+    `{"date", "name", "definition"}` first if that's undesired.
     """
     finder = _CANDIDATE_FINDERS.get(kind)
     if finder is None:
