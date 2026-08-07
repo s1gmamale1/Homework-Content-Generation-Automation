@@ -633,6 +633,34 @@ async def test_heartbeat_on_just_completed_job_is_finished_not_lost(
     )
     assert outcome is HeartbeatOutcome.FINISHED
 
+
+@pytest.mark.parametrize("terminal", ["done", "failed", "cancelled"])
+async def test_heartbeat_on_terminal_job_with_foreign_token_is_lost(
+    db_session, fenced_job_factory, terminal
+):
+    """D1 gate re-review: a heartbeat firing on a TERMINAL job that no longer
+    carries OUR token — a peer reclaimed it and finished/failed/cancelled it —
+    must be LOST, not FINISHED. FINISHED is only for the worker's OWN terminal
+    job (token still matches); a foreign/cleared token means we lost the lease
+    and the worker must be cancelled off a job it no longer owns.
+
+    RED-proof: order the terminal check before the token check in
+    heartbeat_check and this returns FINISHED — the obsolete worker is never
+    cancelled and keeps spending on the reclaimed job. The assertion flips."""
+    import uuid as _uuid
+
+    from app.repositories import jobs as jobs_repo
+    from app.services.lease import HeartbeatOutcome
+
+    row = await fenced_job_factory(status=terminal)  # row carries the peer's token
+    foreign_token = _uuid.uuid4()
+    assert foreign_token != row.claim_token
+
+    outcome = await jobs_repo.heartbeat_check(
+        db_session, row.job_id, foreign_token
+    )
+    assert outcome is HeartbeatOutcome.LOST
+
     # The heartbeat did NOT mutate the terminal job (no touch_claim, no rotation).
     job = await _reload(db_session, row.job_id)
     assert job.status == terminal

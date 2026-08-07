@@ -720,14 +720,13 @@ async def heartbeat_check(
     """Classify a running job's lease for the worker heartbeat (fenced job
     leases, Task 5). Re-reads status+token:
       * row gone -> ``HeartbeatOutcome.LOST``;
-      * status terminal (done/failed/cancelled) -> ``HeartbeatOutcome.FINISHED``
-        — the job reached a terminal state (the worker's OWN just-completed
-        `done` write, or a peer's terminal write) so the heartbeat must STOP,
-        never cancel, regardless of whether the token still matches. Checked
-        BEFORE the token-mismatch test so a job we finished (still carrying our
-        token) is reported FINISHED, not LOST — a LOST would cancel the worker's
-        own post-done work (D1);
-      * token gone/changed -> ``HeartbeatOutcome.LOST`` (reclaimed under us);
+      * token gone/changed -> ``HeartbeatOutcome.LOST`` (reclaimed under us, or a
+        peer took over and finished/cleared it) — checked FIRST;
+      * status terminal (done/failed/cancelled) WITH our token ->
+        ``HeartbeatOutcome.FINISHED`` — the worker finished its OWN job (a
+        terminal transition by the owner keeps the token) so the heartbeat must
+        STOP without cancelling its post-done work (D1). A terminal row under a
+        foreign/cleared token already returned LOST above;
       * status='cancelling' -> ``HeartbeatOutcome.CANCELLING`` (user cancel);
       * otherwise refresh the claim (``touch_claim``) and ``RENEWED``.
     It NEVER finalizes — the worker's normal terminal write finalizes; the
@@ -738,12 +737,18 @@ async def heartbeat_check(
     race can never finalize the job here. A DB/connectivity error propagates (it
     is NOT swallowed into ``LOST``)."""
     row = await session.get(HomeworkJob, job_id, populate_existing=True)
-    if row is None:
+    # Token check FIRST, terminal SECOND. A terminal row under a FOREIGN or
+    # cleared token means a peer finished/reclaimed the job — we lost the lease
+    # and must be cancelled (LOST), never reported FINISHED. FINISHED is only for
+    # OUR own terminal job (token still matches). This relies on a terminal
+    # transition by the owner NOT clearing the token — see the note at
+    # mark_failed_with_retry / the pipeline `done`-write. Ordering these the
+    # other way returns FINISHED for a peer's terminal job and leaves this worker
+    # running on a job it no longer owns (D1, gate re-review).
+    if row is None or row.claim_token != claim_token:
         return lease.HeartbeatOutcome.LOST
     if row.status in _TERMINAL_STATUSES:
         return lease.HeartbeatOutcome.FINISHED
-    if row.claim_token != claim_token:
-        return lease.HeartbeatOutcome.LOST
     if row.status == "cancelling":
         return lease.HeartbeatOutcome.CANCELLING
     outcome = await touch_claim(session, job_id, claim_token=claim_token)
@@ -1019,6 +1024,12 @@ async def mark_failed_with_retry(
         if job is None:
             return lease.LeaseLost
         if job.attempts >= max_attempts:
+            # NB: this terminal transition deliberately does NOT clear
+            # `claim_token` (unlike the retry->pending branch below). That is
+            # load-bearing for heartbeat_check's FINISHED path: a worker that
+            # just failed its OWN job must still carry the token so the beat
+            # reports FINISHED (own terminal), not LOST — clearing it here would
+            # regress that case and cancel the worker mid-cleanup (D1 gate review).
             values = {
                 "status": "failed",
                 "completed_at": func.now(),

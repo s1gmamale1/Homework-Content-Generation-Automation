@@ -11,8 +11,15 @@ def test_sentinels_are_distinct_singletons():
     assert lease.LeaseLost is not lease.CancelRequested
 
 def test_heartbeat_outcomes_exist():
-    assert {lease.HeartbeatOutcome.RENEWED, lease.HeartbeatOutcome.CANCELLING,
-            lease.HeartbeatOutcome.LOST}
+    # Real equality against the enum's full membership — a truthiness check on a
+    # set literal (the old form) passes no matter what and never notices a new
+    # member (FINISHED slipped in unnoticed once already).
+    assert set(lease.HeartbeatOutcome) == {
+        lease.HeartbeatOutcome.RENEWED,
+        lease.HeartbeatOutcome.CANCELLING,
+        lease.HeartbeatOutcome.LOST,
+        lease.HeartbeatOutcome.FINISHED,
+    }
 
 def test_event_constants():
     assert lease.EVENT_CLAIMED == "claimed"
