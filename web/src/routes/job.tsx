@@ -22,6 +22,7 @@ import { SpaceBackdrop } from "@/components/space-backdrop";
 import { useEventSource } from "@/hooks/use-event-source";
 import { api } from "@/lib/api";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
+import { totalWarningCount } from "@/lib/phase-warnings";
 import { ApiBadge } from "@/components/fleet/launcher";
 import type { JobStatus, Transport } from "@/lib/types";
 import { BACK_PILL, GLASS_BTN, PRIMARY_BTN } from "@/lib/ui";
@@ -545,10 +546,11 @@ function DonePanel({ jobId, downloadUrl }: { jobId: string; downloadUrl: string 
   });
 
   const stats = useMemo(() => {
-    const done = (job?.phases ?? []).filter(
-      (p) => p.phase_name !== "extract" && p.status === "done",
-    );
-    const warnings = done.reduce((n, p) => n + (p.validation_warnings?.length ?? 0), 0);
+    const all = job?.phases ?? [];
+    const done = all.filter((p) => p.phase_name !== "extract" && p.status === "done");
+    // Warnings come from EVERY done phase, extract included — source-side
+    // checks (extract_coverage:, lint:coverage_thin) live only on that row.
+    const warnings = totalWarningCount(all);
     return [
       { label: "phases", value: done.length },
       { label: "warnings", value: warnings },

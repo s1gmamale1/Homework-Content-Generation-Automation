@@ -8,6 +8,7 @@ import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import { api } from "@/lib/api";
+import { sourceCheckWarnings } from "@/lib/phase-warnings";
 import { subjectLabel } from "@/lib/subjects";
 import type { Job } from "@/lib/types";
 import { springSoft } from "@/lib/motion";
@@ -357,6 +358,8 @@ export function PreviewPage() {
     );
   }
 
+  const sourceWarnings = sourceCheckWarnings(job.phases);
+
   return (
     <div className="relative min-h-[calc(100vh-9rem)]">
       <SpaceBackdrop />
@@ -380,6 +383,19 @@ export function PreviewPage() {
           {job.provider && <span className="text-white/25">·</span>}
           {job.provider && <span>{job.provider}</span>}
         </p>
+
+        {sourceWarnings.length > 0 && (
+          <section className="mt-6 rounded-2xl border border-amber-400/20 bg-amber-400/[0.06] px-5 py-3 backdrop-blur-xl">
+            <h2 className="text-xs font-medium uppercase tracking-wide text-amber-200/70">
+              Source checks
+            </h2>
+            <ul className="mt-2 list-disc pl-4 text-xs text-amber-200/80">
+              {sourceWarnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <PhasesPreview job={job} />
       </div>
