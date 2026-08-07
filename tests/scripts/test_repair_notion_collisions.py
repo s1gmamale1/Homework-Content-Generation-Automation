@@ -167,20 +167,23 @@ async def _snapshot() -> tuple:
 async def _seed_standard_group():
     """PAGE_A shared by three sections. All three carry a stamped job, so the
     owner comes from step 1 (`stamped_push`): S2 pushed at +1h, before S1
-    (+2h) and S3 (+3h)."""
+    (+2h) and S3 (+3h). `completed_at` is ordered the SAME way here so the
+    naive rule agrees — this group must report ordering_disagreement=false
+    deterministically (equal completed_at would make the naive rule fall
+    through to its section-id tiebreak, i.e. random UUID order)."""
     from app.db import SessionLocal
 
     async with SessionLocal() as s:
         book = await _seed_book(s)
         s1, j1 = await _seed_section(
             s, book, title="Matnli masalalar", page_id=PAGE_A, order_index=0,
-            page_start=10, jobs=[(_h(2), _h(0), "done")], stamped=0)
+            page_start=10, jobs=[(_h(2), _h(1), "done")], stamped=0)
         s2, j2 = await _seed_section(
             s, book, title="Matnli masalalar", page_id=PAGE_A, order_index=1,
             page_start=20, jobs=[(_h(1), _h(0), "done")], stamped=0)
         s3, j3 = await _seed_section(
             s, book, title="Matnli masalalar", page_id=PAGE_A, order_index=2,
-            page_start=30, jobs=[(_h(3), _h(0), "done")], stamped=0)
+            page_start=30, jobs=[(_h(3), _h(2), "done")], stamped=0)
         await s.commit()
         return {
             "book_id": book.id,
