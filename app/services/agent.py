@@ -2488,8 +2488,11 @@ with the ITEMS written in the lesson's language:
 Under each heading list one bullet ("- ") per item. OMIT a heading entirely if the \
 lesson has no such items (e.g. a history lesson usually has no Formulas). \
 "## Worked-example types" is REQUIRED whenever the lesson contains any worked example, \
-sample problem, or solved exercise — list the TYPE of each (what the student must be able \
-to solve), not the full worked solution. \
+sample problem, solved exercise, OR any task the lesson trains the student to carry out — \
+list the TYPE of each (what the student must be able to do), not the full worked solution. \
+This is NOT only for calculation subjects: a history, literature or geography lesson has \
+task types too (define a term, date an event, trace a cause, compare two cases, answer a \
+comprehension question about the text), and they belong here. \
 "## Vocabulary & set phrases" is REQUIRED whenever the lesson teaches words, phrases or set \
 expressions the student must be able to USE (a language lesson's word list, a science lesson's \
 new terms). Format each bullet EXACTLY as `item — meaning` and nothing more — never repeat the \

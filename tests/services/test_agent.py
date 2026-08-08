@@ -885,6 +885,20 @@ def test_extract_contract_caps_the_vocabulary_section():
     assert "further items in the source list" in c
 
 
+def test_extract_contract_keeps_worked_example_types_on_non_calculation_subjects():
+    """Second regression of the same class, caught at the merge gate: with the two
+    new headings competing, the model read 'worked example / sample problem /
+    solved exercise' literally and omitted the heading on history -- 0/6 v4 runs
+    against a 67.8% v3 base rate (782 stored history extracts), p ~ 0.001. That
+    regresses worklog 0119, which added the heading precisely because free-form
+    summaries dropped a lesson's exercise coverage, and history is the largest
+    subject in the corpus. Math was unaffected (2/2, 99.1% v3 base)."""
+    c = agent_module._CONTRACT_INSTRUCTIONS
+    low = c.lower()
+    assert "not only for calculation subjects" in low
+    assert "date an event" in low or "trace a cause" in low
+
+
 def test_extract_contract_keeps_key_facts_required_alongside_vocabulary():
     """Regression introduced and caught 2026-08-07: the two NEW headings carried
     forceful `REQUIRED whenever` clauses while `## Key facts` carried none, so on a
