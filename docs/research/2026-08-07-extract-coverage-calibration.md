@@ -98,6 +98,35 @@ Neither passes → `extract_coverage_check_enabled` ships `False`.**
 The bars were fixed before the run and were not moved afterwards. The code ships complete,
 tested and wired; it simply does not run until an operator enables it.
 
+## Is this verdict itself trustworthy? (added at the merge gate)
+
+**The verdict is conservative but NOT proven.** Two challenges were raised at the gate; one is
+now ruled out by measurement, the other stands.
+
+**Ruled out — page-offset did not confound this run.** `_lesson_source_or_none` reads
+`toc_entries.page_start/end` with `margin=1` while `teaching_audit.py:127-144` documents a
+measured **−3..+2** printed-vs-physical spread on other books, which would hand the check a
+neighbouring lesson and produce confident *false* omissions. Probed deterministically (no
+model calls) across all 9 calibration lessons: **9/9 windows contain their own lesson's
+title** (title-token match ≥ half, most 100%). So on these four books printed and physical
+pages align within the ±1 margin, and the precision numbers above are not an offset artefact.
+**This does not clear the hazard generally** — it clears it for this dataset only, which is
+exactly why the fix stays a precondition on enabling.
+
+**Stands — bar B's ground truth is not exhaustive.** Spot-probed the two most suspicious
+clean-lesson reports: on history §10 the window genuinely contains `Kayxusrav` (a Rum Seljuk
+sultan — legitimately *this* lesson's content, absent from the extract), and biology's lichen
+items sit inside the Fungi lesson's own page range, not the next lesson's. So a material
+share of what bar B counted as over-firing looks like **real, finer-grained omissions the
+audit's judge never enumerated as core** — not noise.
+
+**Consequence for the reader:** treat "flash fails precision" as **unproven**, not
+established. What is established is that flash's recall is 8/8 and that the pre-registered
+bar fired. The honest state is *"we do not yet know this check's precision"*, and the
+default-off decision is the conservative response to that uncertainty rather than a measured
+indictment. Re-deriving clean-lesson ground truth (`extract-coverage-precision-1`) is what
+would settle it.
+
 ## What this measured, honestly
 
 The negative result is narrower than "the idea doesn't work":
