@@ -1304,6 +1304,114 @@ async def _verify_source_for_section(pdf_path, book_text: str, section: dict) ->
     return scoped or book_text
 
 
+async def _lesson_source_or_none(pdf_path, section: dict) -> "str | None":
+    """STRICT lesson-scoped source text for the completeness check: the lesson's
+    own printed pages (±1), or None.
+
+    Deliberately has NO whole-book fallback — unlike _verify_source_for_section.
+    A completeness check handed the whole book would enumerate every OTHER
+    lesson's items and report them as omissions, so 'no usable window' must mean
+    'do not run the check', never 'check against everything'. A window that
+    fails Gate A (scanned / garbled text layer) is likewise unusable.
+
+    Note the vision-extract path is *usually*, not always, excluded by this:
+    the vision route triggers on WHOLE-BOOK Gate A / density (pipeline.py:1502),
+    while this re-applies Gate A to the lesson WINDOW. A mixed book whose window
+    does carry a real text layer will still be checked — which is correct, since
+    the window is then genuinely readable."""
+    ps, pe = section.get("page_start"), section.get("page_end")
+    if not ps or not pe:
+        return None
+    try:
+        text = await asyncio.to_thread(
+            agent.read_page_range_text, pdf_path, ps, pe, margin=1
+        )
+    except Exception as exc:  # noqa: BLE001 — advisory path, never fail a job
+        logger.warning(f"extract coverage: source read failed (fail-open): {exc!r}")
+        return None
+    if not (text or "").strip() or agent.validate_extract_text(text) is not None:
+        return None
+    return text
+
+
+def _extract_coverage_warnings(misses: list) -> list[str]:
+    """Format completeness findings as ONE advisory warning string (or none).
+
+    Central items come first so a truncated read still shows what matters. The
+    `extract_coverage:` prefix is deliberately distinct from `lint:` (which
+    marks deterministic checks) — this one costs a model call."""
+    labels = [(m.label or "").strip()[:80] for m in misses if (m.label or "").strip()]
+    if not labels:
+        return []
+    ordered = (
+        [(m.label or "").strip()[:80] for m in misses if m.central and (m.label or "").strip()]
+        + [(m.label or "").strip()[:80] for m in misses if not m.central and (m.label or "").strip()]
+    )
+    n_central = sum(1 for m in misses if m.central and (m.label or "").strip())
+    cap = max(1, settings.extract_coverage_max_items)
+    shown = "; ".join(ordered[:cap])
+    more = f" (+{len(ordered) - cap} more)" if len(ordered) > cap else ""
+    return [
+        f"extract_coverage: {len(ordered)} item(s) the lesson teaches are absent "
+        f"from the extract ({n_central} central): {shown}{more}"
+    ]
+
+
+async def _check_extract_coverage(
+    *, output_md: str, pdf_path, section: dict, provider: str, model,
+    transport: str, job_id, po_id,
+) -> list[str]:
+    """WARN-ONLY completeness check: does the produced extract capture what the
+    SOURCE lesson teaches? Returns advisory warning strings (possibly empty).
+
+    This is the ONLY check in the stack that reads the source rather than
+    trusting the extract — the judge grades every packet against the extract as
+    ground truth (`phase_judge._FIDELITY_RULE`), so an under-summarizing extract
+    is otherwise invisible to every downstream check.
+
+    Fail-open on everything EXCEPT the lease/cancel control signals: those mean
+    this worker no longer owns the job, and swallowing one would let an obsolete
+    worker carry on writing. Slot saturation and session-limit pauses ARE
+    swallowed here — parking a job whose extract already succeeded, over an
+    advisory check, would cost more than the check is worth."""
+    if not settings.extract_coverage_check_enabled:
+        return []
+    try:
+        source = await _lesson_source_or_none(pdf_path, section)
+        if source is None:
+            logger.info(
+                f"[job {job_id}] extract coverage: skipped (no usable lesson source text)"
+            )
+            return []
+        # Bounded independently: this call sits OUTSIDE _run_with_failover's
+        # asyncio.wait_for (pipeline.py:1013), so on a cli-transport extract
+        # nothing else would stop a hung subprocess from stalling the job's
+        # sequential head phase.
+        misses = await asyncio.wait_for(
+            agent.check_extract_coverage(
+                summary=output_md, source_text=source,
+                section_title=section.get("title") or "",
+                section_number=section.get("number") or "",
+                provider=provider,
+                model=settings.extract_coverage_model or model,
+                transport=transport,
+                homework_job_id=job_id, phase_output_id=po_id,
+            ),
+            timeout=settings.extract_coverage_timeout_seconds,
+        )
+    except (LeaseLostSignal, CancelWonSignal):
+        raise
+    except Exception as exc:  # noqa: BLE001 — advisory: never fail/park a job
+        logger.warning(
+            f"[job {job_id}] extract coverage check skipped (fail-open): {exc!r}"
+        )
+        return []
+    out = _extract_coverage_warnings(misses)
+    if out:
+        logger.warning(f"[job {job_id}] {out[0]}")
+    return out
+
+
 async def _verify_and_maybe_regen_extract(
     *, out: str, book_text: str, pdf_path, prov: str, mdl, transport: str,
     section: dict, job_id, po_id,
@@ -1420,6 +1528,7 @@ async def _execute_phase(
         f"prompt_hash={prompt_hash[:12]} provider={provider} model={phase_model_label}"
     )
 
+    extract_warnings: list[str] = []
     try:
         if phase_name == "extract":
             # Cross-job cache: if we've already extracted this section under
@@ -1566,6 +1675,16 @@ async def _execute_phase(
                     session_limit_strategy=session_limit_strategy,
                 )
                 parsed_struct = None
+            # Extract-completeness (warn-only): the only check that reads the
+            # SOURCE instead of trusting the extract. Runs on the ACCEPTED
+            # output — once per job, not once per failover attempt — and never
+            # mutates it. The cross-job cache path returns above, so a reused
+            # extract never re-pays.
+            extract_warnings = await _check_extract_coverage(
+                output_md=output_md, pdf_path=pdf_path, section=section,
+                provider=extract_provider, model=extract_model,
+                transport=extract_transport, job_id=job_id, po_id=po_id,
+            )
             # extract is a builtin-prompt markdown phase — no structured lane.
             artifact = artifact_from_markdown(output_md, mode="markdown_builtin")
         else:
@@ -1645,7 +1764,7 @@ async def _execute_phase(
         _raise_on_lease_signal(_fr)  # reclaim/cancel during the fail write → signal, not content failure
         raise
 
-    warnings: list[str] = []
+    warnings: list[str] = list(extract_warnings)
     judge_status: Optional[str] = None
     solver_status: Optional[str] = None
     if phase_name != "extract":

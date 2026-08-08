@@ -32,6 +32,10 @@ os.environ.setdefault(
 )
 os.environ.setdefault("GEMINI_API_KEY", "test-key-not-used")
 os.environ.setdefault("AUTH_TOKEN", "")
+# The extract-completeness check makes a REAL model call. Default it OFF for the
+# suite so no test can reach a spawn through pipeline's extract branch; the tests
+# that exercise it re-enable it explicitly (test_pipeline_extract_coverage.py).
+os.environ.setdefault("EXTRACT_COVERAGE_CHECK_ENABLED", "false")
 
 
 @pytest.fixture(autouse=True)
