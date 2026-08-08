@@ -109,6 +109,13 @@
 
 ## R24 — Long fact-dense lessons produce packets that cover the material but don't teach it (fixed drill budget)
 
+> **PARKED 2026-08-08 (brainstorm gate, user decision — priority, not feasibility).** The live shape (chunk long lessons into full-budget pieces) was designed to the point of a scope reality-check against `edu_copy`, then parked. Findings worth keeping:
+> - **Long lessons are a minority tail.** Of ~3,180 launched lessons: **67% ≤3pp, 92% ≤6pp; only ~8% are 7+pp and 2% are 10+pp.** The 15pp specimens are real but rare.
+> - **The true target is small and subject-specific: ~105 fact-dense long lessons** (history 91 + biology 14). The *measured-failing* 10+pp severe set is just **21** (history 19 + biology 2). Math/geometry "long" lessons are exercise-heavy (verified in-PDF: G11 "Silindrning sirti va hajmi" = ~3pp theory + ~8pp problems) and already teach fine — **exclude them.**
+> - **DB spans are accurate, not a TOC-merge artifact** — cross-checked three books' actual PDF pages (history 6129e3df, biology 9751fcb6, math 9bc1ad5e): each lesson's title sits at `page_start` and the next lesson begins right after `page_end`.
+> - **The case for revisiting** is forward-looking, not the 105 backlog: every future history/biology book in the Oct/Mar campaign carries its own long tail, and the student-app (LMS) migration may make a first-class "part N of M" chunk unit worth building regardless. Revisit then, or if long lessons prove more common than 8%.
+> - Chunking design notes (where-to-cut = simple page cuts first / natural sub-headings exist in these lessons as a smart-cut upgrade; validate cheaply on the pinned `docs/research/2026-07-20-r24-baseline/` specimens before any data-model work) live in this session's history; no spec was written.
+
 > Filed straight to ROADMAP (worked-up on arrival — issue, root cause and evidence all established before filing); the WISHLIST line is a pointer, not a prior entry.
 
 > **Evidence is durable and re-runnable:** `docs/research/2026-07-20-teaching-audit-drill-density.py` (deterministic, no model calls, $0) + its 1,362-packet dataset `docs/research/2026-07-20-teaching-audit-drill-density-data.json`. The teaching-audit side is `app/services/teaching_audit.py` (worklog 0148/0152).
