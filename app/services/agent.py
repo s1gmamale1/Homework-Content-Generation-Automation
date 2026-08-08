@@ -1338,13 +1338,26 @@ def extract_math_expressions(text: str) -> set[str]:
     return {e for e in found if len(e) >= 3}
 
 
-def extract_fidelity_candidates(summary: str, book_text: str) -> list[str]:
+def extract_fidelity_candidates(summary: str, book_text: str, strict: bool = False) -> list[str]:
     """Worked-example expressions in the extract SUMMARY that do not appear in the
     source BOOK_TEXT — candidate transcription drift. Free (no model call).
     Grounds against the FULL book_text (conservative → fewer wasted verify calls).
-    An empty list means the deterministic pass found nothing to verify."""
+    An empty list means the deterministic pass found nothing to verify.
+
+    `strict=True` (languages/humanities subjects — see pipeline._STRICT_FIDELITY_FAMILIES)
+    additionally requires a digit OR an '=' — the bare parenthesis arm that
+    exists to catch digitless algebra like (a−b)/(a+b) also catches prose
+    glosses like (likes/dislikes) on those subjects, which are pure noise.
+    Measured: every dropped gloss across the corpus contains '/' and none
+    contains '=', so keeping '=' costs nothing on measured data while still
+    covering a digitless '='-formula in a humanities subject with no corpus
+    data today (economics/law/pre-conscription). Applied BEFORE the
+    _FIDELITY_MAX_CANDIDATES slice so a flood of glosses cannot crowd a real
+    digit-bearing hit out of the capped list."""
     norm_book = _normalize_expr(book_text or "")
     cands = sorted(e for e in extract_math_expressions(summary) if e not in norm_book)
+    if strict:
+        cands = [c for c in cands if any(ch.isdigit() for ch in c) or "=" in c]
     return cands[:_FIDELITY_MAX_CANDIDATES]
 
 

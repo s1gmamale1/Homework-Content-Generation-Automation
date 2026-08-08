@@ -84,3 +84,81 @@ async def test_verify_clean_returns_empty():
             homework_job_id=None, phase_output_id=None,
         )
     assert out == []
+
+
+# --- Task 5: strict predicate (language/humanities family gate) --------------
+
+def test_strict_drops_english_prose_glosses():
+    book = "Neutral source text with no relation to the summary examples at all."
+    summary = (
+        "Ular sinonimlarni bilishadi: (likes/dislikes), (cycling/bikes), "
+        "(*was/were*), tanlang shall/should)."
+    )
+    cands = extract_fidelity_candidates(summary, book, strict=True)
+    assert not any("likes/dislikes" in c for c in cands)
+    assert not any("cycling/bikes" in c for c in cands)
+    assert not any("was/were" in c for c in cands)
+    assert not any("shall/should" in c for c in cands)
+
+
+def test_strict_drops_history_prose_glosses():
+    book = "Neutral source text unrelated to the drifted summary content below."
+    summary = "Bu yerda (tale/narration) va (kompyuter/hisoblagich) haqida gap bor."
+    cands = extract_fidelity_candidates(summary, book, strict=True)
+    assert not any("tale/narration" in c for c in cands)
+    assert not any("kompyuter/hisoblagich" in c for c in cands)
+
+
+def test_strict_keeps_digit_bearing_real_hits():
+    book = "Neutral source text unrelated to the drifted fractions below."
+    summary = "Natijalar: 1/3, 9/10, 3/4 va (2h/g) koʻrinishida."
+    cands = extract_fidelity_candidates(summary, book, strict=True)
+    assert any("1/3" in c for c in cands)
+    assert any("9/10" in c for c in cands)
+    assert any("3/4" in c for c in cands)
+    assert any("2h/g" in c for c in cands)
+
+
+def test_strict_keeps_digitless_equals_formula():
+    # No digit, but has '=' — humanities subjects (iqtisodiyot/huquq/chqbt)
+    # have zero corpus data and could carry digitless '=' formulas.
+    book = "Neutral source text unrelated to the drifted formula below."
+    summary = "Formula: (yaim=c+i+g) tarzida ifodalanadi."
+    cands = extract_fidelity_candidates(summary, book, strict=True)
+    assert any("yaim=c+i+g" in c for c in cands)
+
+
+def test_strict_keeps_superscript_unit_because_isdigit_true():
+    # '²'.isdigit() is True ('.isdecimal()' is False) — deliberate, matches
+    # extract_math_expressions's own use of isdigit. Real geografiya data
+    # depends on this: kishi/km²) survives strict only because of it.
+    assert "²".isdigit() is True
+    assert "²".isdecimal() is False
+    book = "Neutral source text unrelated to the drifted density figure below."
+    summary = "Zichlik: (120 kishi/km²) koʻrsatkichida."
+    cands = extract_fidelity_candidates(summary, book, strict=True)
+    assert any("kishi/km" in c and "²" in c for c in cands)
+
+
+def test_strict_default_is_unchanged_digitless_algebra_still_captured():
+    # strict=False (default) must remain byte-identical: the digitless algebra
+    # arm that strict=True narrows must still work when strict is not passed.
+    book = "Kasrlarni qoʻshamiz. Namuna: a/b + c/d."
+    summary = "Ishlangan misol: (a−b)/(a+b) + (a−b)²/(a+b)."
+    cands = extract_fidelity_candidates(summary, book)
+    assert any("(a-b)/(a+b)" in c for c in cands)
+
+
+def test_strict_applied_before_cap_real_hit_survives_gloss_flood():
+    # 15 digitless glosses (more than _FIDELITY_MAX_CANDIDATES=12), each
+    # normalized to a "(...)" token that sorts BEFORE the digit-leading real
+    # hit '9/10' (ASCII '(' < '9' < 'a'). If strict were applied AFTER the
+    # slice, the cap would keep only the first 12 (all glosses) and '9/10'
+    # would never make the list — pinning that strict must run BEFORE the cap.
+    letters = "abcdefghijklmno"  # 15 distinct, digit-free suffixes
+    glosses = [f"(al{ch}word/be{ch}word)" for ch in letters]
+    summary = " ".join(glosses) + " Natija 9/10 boʻladi."
+    book = "Neutral source text unrelated to any of the drifted content above."
+    cands = extract_fidelity_candidates(summary, book, strict=True)
+    assert any("9/10" in c for c in cands)
+    assert len(cands) <= 12
