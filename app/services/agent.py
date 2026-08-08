@@ -2482,12 +2482,40 @@ with the ITEMS written in the lesson's language:
 ## Formulas
 ## Worked-example types
 ## Key facts
+## Vocabulary & set phrases
+## Source sentences & passages
 
 Under each heading list one bullet ("- ") per item. OMIT a heading entirely if the \
 lesson has no such items (e.g. a history lesson usually has no Formulas). \
 "## Worked-example types" is REQUIRED whenever the lesson contains any worked example, \
-sample problem, or solved exercise — list the TYPE of each (what the student must be able \
-to solve), not the full worked solution. Be complete but concise: capture every distinct \
+sample problem, solved exercise, OR any task the lesson trains the student to carry out — \
+list the TYPE of each (what the student must be able to do), not the full worked solution. \
+This is NOT only for calculation subjects: a history, literature or geography lesson has \
+task types too (define a term, date an event, trace a cause, compare two cases, answer a \
+comprehension question about the text), and they belong here. \
+"## Vocabulary & set phrases" is REQUIRED whenever the lesson teaches words, phrases or set \
+expressions the student must be able to USE (a language lesson's word list, a science lesson's \
+new terms). Format each bullet EXACTLY as `item — meaning` and nothing more — never repeat the \
+meaning in a trailing parenthetical. Take the meaning from the source's own gloss, translation \
+or definition whenever it gives one. When the source gives NO meaning (a bare word list), still \
+supply the standard meaning but MARK it: `item — meaning [not in source]`. That marker matters: \
+downstream generators and the reviewer treat this summary as the lesson's ground truth, so an \
+unmarked meaning you supplied yourself would be enforced as if the textbook had said it. \
+This heading differs from "## Concepts & terms", which carries the IDEAS the lesson explains: \
+a word the student must be able to USE belongs here, not there. List every such item, up to a \
+MAXIMUM of 40 bullets; if the source list is longer (a reference word-list or end-of-book \
+glossary), list the 40 most central and add one final bullet `- (+N further items in the \
+source list)`. \
+"## Source sentences & passages" is REQUIRED whenever the lesson presents model sentences, \
+example dialogue, or a reading text the student learns from — quote them VERBATIM (up to 10 \
+sentences; for a long reading text quote its key sentences), never paraphrase them, and never \
+compose a sentence of your own here. \
+"## Key facts" is REQUIRED whenever the lesson states facts the student must recall — dates, \
+names, quantities, events, or causal claims. Emit it even when the lesson ALSO teaches \
+vocabulary or contains a reading text: a language or literature lesson still carries facts \
+(who wrote it, when, what happens, what the terms of the plot are), and those belong here, \
+not in the vocabulary list. \
+Be complete but concise: capture every distinct \
 teachable item, especially the problem/exercise types, and do not invent items absent \
 from the source."""
 

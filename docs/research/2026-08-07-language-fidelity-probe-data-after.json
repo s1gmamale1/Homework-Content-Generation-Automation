@@ -1,0 +1,224 @@
+{
+  "label": "after",
+  "extract_only": true,
+  "extract_probe": [
+    {
+      "label": "english-g8-families",
+      "headings": [
+        "Concepts & terms",
+        "Rules & theorems",
+        "Worked-example types",
+        "Key facts",
+        "Vocabulary & set phrases",
+        "Source sentences & passages"
+      ],
+      "has_vocabulary_heading": true,
+      "has_passages_heading": true,
+      "gloss_arrow_lines": 30,
+      "quoted_sentences": 0,
+      "chars": 3245,
+      "tokens_in": 69316,
+      "tokens_out": 769,
+      "extract_md": "This lesson teaches students about family members, family trees, adverbs of manner, adverbs of degree, and the experience of growing up in a large family.\n\n## Concepts & terms\n- Adverbs of manner — words that describe how we do things\n- Adverbs of degree — words that modify adjectives and adverbs to show intensity or degree (e.g., nearly, probably, quite, really, certainly)\n- Family tree — a diagram showing the relationships between people in a family over several generations\n\n## Rules & theorems\n- Adverbs of manner describe how actions are performed.\n- Many adverbs of manner are formed by adding -ly to the adjective.\n- For adjectives ending in -l, we double the l and add -y in the adverb form (e.g., beautifully).\n- For adjectives ending in a consonant + -y, we remove the -y and add -ily (e.g., easily).\n- Irregular adverb forms include good turning to well, fast staying fast, and hard staying hard.\n\n## Worked-example types\n- Complete a family tree based on a listening description\n- Describe family members using adjectives of physical appearance and personality\n- Form adverbs of manner from given adjectives and use them in sentences\n- Complete advice sentences by changing adjectives into adverbs where necessary\n- Answer reading comprehension questions about a personal text on growing up in a big family\n- Match adverbs of degree to their correct meanings\n- Write and share true and false sentences about one's family using adverbs of degree\n- Write a description of one's own family using correct grammar and vocabulary\n\n## Key facts\n- Ella Blackstone is the oldest of eight children and describes what it is like to grow up in a big family.\n- Sharing bedrooms, toys, and parents' time is common in large families, and moving quickly is necessary.\n- Families often have rich and interesting stories in their past, and knowing birth dates of family members is important for tracing family history.\n\n## Vocabulary & set phrases\n- aunt — noun [not in source]\n- beautiful — beautiful\n- blonde — blonde\n- cousin — noun [not in source]\n- dark — dark\n- fair — fair\n- good-looking — good-looking\n- grandchild — noun [not in source]\n- granddaughter — noun [not in source]\n- grandfather — noun [not in source]\n- grandmother — noun [not in source]\n- grandparent — noun [not in source]\n- grandson — noun [not in source]\n- nephew — noun [not in source]\n- niece — noun [not in source]\n- old — old\n- pretty — pretty\n- short — short\n- slim — slim\n- tall — tall\n- uncle — noun [not in source]\n- young — young\n- certainly — adverb\n- nearly — adverb\n- probably — adverb\n- quite — adverb\n- really — adverb\n\n## Source sentences & passages\n- I am the oldest of eight children.\n- To me, my family is completely normal, but other people find it amazing.\n- Remembering the names, ages and birthdays of all your family members is really difficult.\n- In our house, the dishwasher is on nearly all the time, there are always clothes to wash or put away, and the tidying up never ends.\n- Being slow is not a good thing in a big family.\n- You have to move quickly to get into the shower or to get the best seat in the minibus.\n- Sharing is not always easy, but we are quite good at it, luckily.\n- Life in a big family has its ups and downs, but I love it."
+    },
+    {
+      "label": "english-g8-vocab-list",
+      "headings": [
+        "Vocabulary & set phrases"
+      ],
+      "has_vocabulary_heading": true,
+      "has_passages_heading": false,
+      "gloss_arrow_lines": 32,
+      "quoted_sentences": 0,
+      "chars": 1517,
+      "tokens_in": 69317,
+      "tokens_out": 412,
+      "extract_md": "This lesson provides an end-of-book alphabetical reference list of vocabulary and phrases taught across the units, categorized by topic and part of speech with phonetic transcriptions.\n\n## Vocabulary & set phrases\n- ball — ball [not in source]\n- bat — bat [not in source]\n- board — board [not in source]\n- racket — racket [not in source]\n- stick — stick [not in source]\n- brush your hair — brush your hair [not in source]\n- check your messages — check your messages [not in source]\n- clean your teeth — clean your teeth [not in source]\n- get dressed — get dressed [not in source]\n- have breakfast — have breakfast [not in source]\n- leave the house — leave the house [not in source]\n- prepare your school bag — prepare your school bag [not in source]\n- put on your shoes — put on your shoes [not in source]\n- tidy your room — tidy your room [not in source]\n- wake up — wake up [not in source]\n- avocado — avocado [not in source]\n- bread — bread [not in source]\n- cabbage — cabbage [not in source]\n- cereal — cereal [not in source]\n- cheese — cheese [not in source]\n- cucumber — cucumber [not in source]\n- fish — fish [not in source]\n- fruit — fruit [not in source]\n- honey — honey [not in source]\n- hot chocolate — hot chocolate [not in source]\n- jam — jam [not in source]\n- mango — mango [not in source]\n- pasta — pasta [not in source]\n- rice — rice [not in source]\n- toast — toast [not in source]\n- vegetables — vegetables [not in source]\n- yoghurt — yoghurt [not in source]\n- (+393 further items in the source list)"
+    },
+    {
+      "label": "adabiyot-g9-alpomish",
+      "headings": [
+        "Concepts & terms",
+        "Key facts",
+        "Vocabulary & set phrases",
+        "Source sentences & passages"
+      ],
+      "has_vocabulary_heading": true,
+      "has_passages_heading": true,
+      "gloss_arrow_lines": 76,
+      "quoted_sentences": 0,
+      "chars": 5916,
+      "tokens_in": 278640,
+      "tokens_out": 2434,
+      "extract_md": "“Alpomish” dostoni o‘zbek xalq og‘zaki ijodining eng yuksak va mukammal namunalaridan biri bo‘lib, unda xalqimizning iymon-e’tiqod, or-nomus, do‘stlik va vatanparvarlik kabi ezgu fazilatlari haqqoniy hamda ta’sirchan aks ettirilgan.\n\n## Concepts & terms\n- Chupronto‘y — sunnat to‘yi\n- Elatiya — chorva bilan shug‘ullanadigan qavmlar\n- Biy — bek\n- Ravza — maqbara\n- Turbat — bu yerda ostona ma’nosida\n- Birinj — bronza\n- Bеsohib — egasiz\n- Juz’ya — g‘ayridinlarga solinadigan katta miqdordagi soliq\n- Lo‘k — yuk tashiydigan tuya\n- Norcha — yosh erkak tuya\n- Eliboylar — chorvadorlar\n- Qaba — tartibsiz, o‘zgaruvchan\n- Burumi — soch o‘rimi\n- Do‘g‘ilib — yig‘ilib, to‘dalashib\n- Shabgir tortish — tinmaslik, dam olmaslik\n- Shobir — xabar, ovoza, belgi\n- Narmoda — erkak-urg‘ochiligi noma’lum odam, xunasa, gey\n- Qayqi — egilgan, qiyshiq\n- Shamiyon qaytarib — gerdayib, hovliqib, vahima qilib\n- Zinkiyib — qaqqayib, qayqayib\n- Nimish — nima ish?\n- Qo‘riqi — sirtmoq\n- Yo‘lli — yo‘li ochiq, omadli\n- O‘nik imom — o‘n ikki imom\n- Chilton — qirq avliyo\n- Suqsur — makiyon o‘rdak\n- Moya — urg‘ochi tuya\n- Tangqa taylab — tog‘ni egallab\n- Quyonchiq — tutqanoq\n- Banot — baxmal\n- Tomoshamon — tomoshabin\n- Kulaband — yechilmaydigan qilib boylash\n- Shumg‘ut — buzuqi, shum\n- Qutbi zamon — zamon avliyosi\n- To‘sat-to‘sat — to‘da-to‘da, guruh-guruh\n- Jodirim — jabr ko‘rgan\n\n## Key facts\n- «Alpomish» dostonining o‘nlab nusxalari mavjud bo‘lib, ular orasida buyuk baxshisi Fozil Yo‘ldosh o‘g‘li ijro etgan nusxa voqealarning qiziqarliligi va ta’sirchanligi bilan eng yuksak turadi.\n- Fozil Yo‘ldosh o‘g‘li 1872-yilda Jizzax viloyatining Baxmal tumaniga qarashli Loyqa qishlog‘ida tug‘ilgan.\n- 1999-yilda «Alpomish» dostoni yaratilganining ming yilligi O‘zbekistonda keng bayram qilindi.\n- Doston boshida Dobonbiydan Alpinbiy, undan Boybo‘ri va Boysari tug‘ilganligi, ularning farzandsiz o‘tishi va keyinchalik Shohimardon pir ravzasini tunab farzand tilagani hikoya qilinadi.\n- Shohimardon pir Boybo‘rining o‘g‘liga Hakimbek (Alpomish), qiziga Qaldirg‘ochoyim, Boysarining qiziga Oybarchin deb ot qo‘yib, Hakimbek bilan Oybarchinni beshikkerti qiladi.\n- Yetti yoshida o‘n to‘rt botmon bronza yoyni tortgan Hakimbek alp deb tan olinib, Alpomish otini ko‘tardi.\n- Boybo‘rining zakot talab qilishi natijasida Boysari o‘n ming uyli qo‘ng‘irot elini boshlab Qalmoq yurtiga (Kashal eliga) ko‘chib ketadi.\n- Qalmoqda Oybarchin bo‘y yetgach, Surxayil kampirning o‘g‘illari — to‘qson qalmoq alpi unga uylanish uchun og‘iz soladi, ammo Barchin ularni yengib, olti oy muhlat so‘rab Alpomishga xabar yuboradi.\n- Alpomish Qultoydan dastlab qiyinchilik ko‘rsa-da, Chibar (Boychibor) otni minib, pirlar ko‘magida Qalmoq yurtiga yo‘l oladi.\n- Yo‘lda Qorajon bilan tanishib do‘stlashadi, Qorajon musulmon bo‘lib Alpomishga do‘st bo‘ladi.\n- Qalmoq alplari poygada yutolmasligini bilib, Qorajonni toshga bog‘lab, Boychiborning tuyog‘iga gulmixlar qoqib nomardlik qiladilar, biroq Rajabxo‘ja pirning madadi bilan ular ozod bo‘ladilar.\n- Alpomish yoy tortish, miltiq otish va kurash shartlarida to‘qson alpni va bosh polvon Ko‘kaldoshni yengib, Oybarchinga uylanadi va eliga qaytadi.\n\n## Vocabulary & set phrases\n- Chupronto‘y — sunnat to‘yi [not in source]\n- Elatiya — chorva bilan shug‘ullanadigan qavmlar\n- Biy — bek\n- Ravza — maqbara\n- Turbat — bu yerda ostona ma’nosi\n- Shoy — shoh\n- Pâygâbêt — bo‘sag‘a, eshikka yaqin joy\n- Bêsоhib — egasiz\n- Juz’ya — g‘ayridinlarga solinadigan katta miqdordagi soliq\n- Lo‘k — yuk tashiydigan tuya\n- Norcha — yosh erkak tuya\n- Qaba — tartibsiz, o‘zgaruvchan\n- Eliboylar — chorvadorlar\n- Burumi — soch o‘rimi\n- Do‘g‘ilib — yig‘ilib, to‘dalashib\n- Shobir — xabar, ovoza, belgi\n- Narmoda — erkak-urg‘ochiligi noma’lum odam, xunasa, gey\n- Qayqi — egilgan, qiyshiq\n- Shamiyon qaytarib — gerdayib, hovliqib, vahima qilib\n- Zinkiyib — qaqqayib, qayqayib\n- Nimish — nima ish?\n- Qo‘riqi — sirtmoq\n- Yo‘lli — yo‘li ochiq, omadli\n- O‘nik imom — o‘n ikki imom\n- Chilton — qirq avliyo\n- Suqsur — makiyon o‘rdak\n- Moya — urg‘ochi tuya\n- Tangqa taylab — tog‘ni egallab\n- Quyonchiq — tutqanoq\n- Banot — baxmal\n- Tomoshamon — tomoshabin\n- Kulaband — yechilmaydigan qilib boylash\n- Shumg‘ut — buzuqi, shum\n- Qutbi zamon — zamon avliyosi\n- To‘sat-to‘sat — to‘da-to‘da, guruh-guruh\n- Anday — juda zo‘r\n- Jodirim — jabr ko‘rgan\n\n## Source sentences & passages\n- «Ey, Boy bo‘ri bilan Boysari! Bu to‘y o‘g‘illining o‘g‘lidan qaytadi, qizlining qizidan qaytadi, sеning nimangdan qaytadi?! O‘zing o‘lsang, molingga har mеrosxo‘r chiqadi, og‘ziga odam kirib kеtadi».\n- «Oh urganda ko‘zdan oqar sеlob yosh, Maslahat bеr, o‘n ming uyli qarindosh, Qo‘ng‘irot eldan molga zakot kеlibdi, Maslahat bеr, o‘n ming uyli qarindosh!»\n- «Eshitgin, qalmoqlar, aytgan tilimnan, Mеni olar kеlmas sеning qo‘lingnan. Badbaxt qalmoq, qolma kеlgan yo‘lingnan, Mеni olmoqqa hadding bormi, qalmoqlar».\n- «Ot chopsa, gumburlar tog‘ning darasi, Botirni ingratar nayza yarasi. Kеlgan bo‘lsa qo‘ng‘irot elning to‘rasi, Qirq kunlik yo‘l Boboxonning orasi».\n- «Aka, sеnga aytadigan arzim bor, Talash bo‘pti biyning qizi — zulfakdor... Mard yigitning yori talash bo‘lami, Er yigitning yorin qalmoq olami?»\n- «Bobongning so‘zini hazil bilasan, Sеn g‘arbachcha, nеga aynalib kеlasan. Sеn enag‘ar, bildim tayin o‘lasan, Nimishing bor, tag‘i nеga kеlasan?»\n- «Qurruyo-qur, hayt-a, to‘ramning oti, Oq to‘shim — yayloving, sochim shibirtki. Kuyganimdan gapni gapga ulayin, To o‘lgancha sayising bo‘p yurayin».\n- «Har kim o‘z eliga bеkmi, to‘rami, O‘zi o‘lmay, kishi yorin bеrami? Buncha so‘zni lof urmagin, sеn qalmoq, Kеl endi, maydonda turgin, ey ahmoq».\n- «Sayding qo‘yaber, sayyod, sayyora ekan mendek, Ol domini bo‘ynidin, bechora ekan mendek, O‘z yorini topmasdan ovora ekan mendek, Iqboli nigun, baxti ham qora ekan mendek...»\n- «Ilohi, har kuning navro‘z bo‘lsun, Hamisha tole’ying feruz bo‘lsun. Bo‘lub ayyomi navro‘zing muborak, Zamiring inbisotanduz bo‘lsun»."
+    }
+  ],
+  "judge_probe": [
+    {
+      "arm": "control",
+      "replay": 0,
+      "available": true,
+      "passed": false,
+      "has_major": false,
+      "cites_mutation": false,
+      "warnings": [
+        "[minor] The phase title and section headings must be translated into Uzbek, as required by the Language instructions. Only machine-facing keys and enum values are allowed to remain in English. — # Flash Cards — English\n\n## Unit 16: Amazing Animals\n\n### Mode: Hard",
+        "[minor] The misconception field must mark its provenance explicitly using [source] or [inferred]. — **misconception:** Bu fe'l \"ko'z bilan qarash\" (look at) degani emas, balki \"g'amxo'rlik qilish\" ma'nosini anglatadi."
+      ]
+    },
+    {
+      "arm": "control",
+      "replay": 1,
+      "available": true,
+      "passed": false,
+      "has_major": false,
+      "cites_mutation": false,
+      "warnings": [
+        "[minor] EVERY label the student READS is part of the output language: render section headings, the phase title, and labels in Uzbek — never leave them in English. — # Flash Cards — English\n\n## Unit 16: Amazing Animals\n\n### Mode: Hard",
+        "[minor] Mark the misconception's provenance: `source` when the textbook itself states the mistake, `inferred` when you derived it. — **misconception:** Bu fe'l \"ko'z bilan qarash\" (look at) degani emas, balki \"g'amxo'rlik qilish\" ma'nosini anglatadi.",
+        "[minor] One retrievable atom/concept per card (do not bundle multiple target items together). — **front:** turn on / turn off\n**back:** Elektr qurilmasini yoqmoq / o'chirmoq."
+      ]
+    },
+    {
+      "arm": "control",
+      "replay": 2,
+      "available": true,
+      "passed": false,
+      "has_major": false,
+      "cites_mutation": false,
+      "warnings": [
+        "[minor] The output must mark the provenance of any misconception ('source' or 'inferred') rather than stating it without origin tracking. — misconception: Bu fe'l \"ko'z bilan qarash\" (look at) degani emas, balki \"g'amxo'rlik qilish\" ma'nosini anglatadi.",
+        "[minor] The pipeline must inject the grade band instead of a mode ('The pipeline injects the grade, never a mode'), and all student-facing scaffolding labels and headings must be translated into Uzbek rather than left in English. — ### Mode: Hard"
+      ]
+    },
+    {
+      "arm": "absent_false",
+      "replay": 0,
+      "available": true,
+      "passed": false,
+      "has_major": true,
+      "cites_mutation": true,
+      "warnings": [
+        "[major] Factual accuracy and source-fidelity: The output must not make false claims about the world or misrepresent vocabulary terms from the lesson. A duck is a bird (waterfowl), not an underground-burrowing rodent. — id: card_8\nfront: duck\nback: Yer ostida in qazib yashaydigan mayda kemiruvchi hayvon.\nexample: *The duck ran into its hole under the ground.*"
+      ]
+    },
+    {
+      "arm": "absent_false",
+      "replay": 1,
+      "available": true,
+      "passed": false,
+      "has_major": true,
+      "cites_mutation": true,
+      "warnings": [
+        "[major] Any factual claim about the world in the output must not contradict the lesson context or basic correctness. A duck is a waterbird, but the output translates/defines 'duck' in Uzbek as a small underground-dwelling rodent ('Yer ostida in qazib yashaydigan mayda kemiruvchi hayvon'). — **front:** duck\n**back:** Yer ostida in qazib yashaydigan mayda kemiruvchi hayvon.",
+        "[minor] Each misconception must have its provenance explicitly marked as either `source` or `inferred`. — **misconception:** Bu fe'l \"ko'z bilan qarash\" (look at) degani emas, balki \"g'amxo'rlik qilish\" ma'nosini anglatadi."
+      ]
+    },
+    {
+      "arm": "absent_false",
+      "replay": 2,
+      "available": true,
+      "passed": false,
+      "has_major": true,
+      "cites_mutation": true,
+      "warnings": [
+        "[major] Factual accuracy and source-fidelity: The definition of vocabulary words must be accurate. A 'duck' is a bird/farm animal, not an underground burrowing rodent. — In card_8:\n**front:** duck\n**back:** Yer ostida in qazib yashaydigan mayda kemiruvchi hayvon. (Translates to: A small rodent that digs burrows and lives underground)\n**example:** *The duck ran into its hole under the ground.*",
+        "[minor] Each misconception must have its provenance marked as either `source` or `inferred`. — In card_4:\n**misconception:** Bu fe'l \"ko'z bilan qarash\" (look at) degani emas, balki \"g'amxo'rlik qilish\" ma'nosini anglatadi.",
+        "[minor] All section headings, the phase title, and other labels must be in Uzbek, leaving only machine-facing keys in English. — # Flash Cards — English\n### Mode: Hard"
+      ]
+    },
+    {
+      "arm": "contradiction",
+      "replay": 0,
+      "available": true,
+      "passed": false,
+      "has_major": true,
+      "cites_mutation": true,
+      "warnings": [
+        "[major] Source-fidelity: Factual claims about rules in the output must not contradict the lesson context. The lesson context states that 'when' comes before the past simple and 'while' comes before the past continuous. — Card 2 states: 'back: Uzoq davom etgan fon harakatidan oldin keladi; o'zidan keyin Past Continuous ishlatiladi.' (It comes before a long background action; Past Continuous is used after it) and provides the example 'When the man was driving...'.",
+        "[minor] Misconception provenance tag: Every misconception card must be tagged 'source' or 'inferred' to mark its provenance. — Card 4 contains a `misconception` field ('Bu fe'l \"ko'z bilan qarash\" (look at) degani emas...') but completely lacks a 'source' or 'inferred' tag indicating its provenance."
+      ]
+    },
+    {
+      "arm": "contradiction",
+      "replay": 1,
+      "available": true,
+      "passed": false,
+      "has_major": true,
+      "cites_mutation": true,
+      "warnings": [
+        "[major] Source-fidelity (CRITICAL): A factual claim in the output must not contradict the lesson context. The lesson context states that 'when' goes before the past simple, and 'while' goes before the past continuous. Card 2 contradicts this by stating that 'when' is followed by the Past Continuous. — **id:** card_2\n**front:** when\n**back:** Uzoq davom etgan fon harakatidan oldin keladi; o'zidan keyin Past Continuous ishlatiladi.\n**type:** grammar\n**difficulty:** easy\n**example:** *When the man was driving, a monkey jumped out of a tree.*",
+        "[minor] Every card with a misconception must mark its provenance: 'source' when the textbook itself states the mistake, 'inferred' when you derived it. — **id:** card_4\n**front:** look after\n...\n**misconception:** Bu fe'l \"ko'z bilan qarash\" (look at) degani emas, balki \"g'amxo'rlik qilish\" ma'nosini anglatadi."
+      ]
+    },
+    {
+      "arm": "contradiction",
+      "replay": 2,
+      "available": true,
+      "passed": false,
+      "has_major": true,
+      "cites_mutation": true,
+      "warnings": [
+        "[major] A factual claim in the output contradicts the lesson context. The grammar rules for 'when' and 'while' are swapped. The lesson context specifies that 'when' comes before past simple and 'while' comes before past continuous. The output incorrectly claims that 'when' is followed by the past continuous, and provides an incorrect example ('When the man was driving...'). — id: card_2\nfront: when\nback: Uzoq davom etgan fon harakatidan oldin keladi; o'zidan keyin Past Continuous ishlatiladi.\ntype: grammar\ndifficulty: easy\nexample: *When the man was driving, a monkey jumped out of a tree.*",
+        "[minor] Section headings, phase titles, and re-usable labels must be rendered in Uzbek, not left in English. — # Flash Cards — English\n\n## Unit 16: Amazing Animals\n\n### Mode: Hard",
+        "[minor] The misconception field must explicitly mark its provenance as either 'source' or 'inferred'. — id: card_4\nfront: look after\nback: G'amxo'rlik qilmoq, qaramоq.\ntype: vocabulary\ndifficulty: medium\nexplanation: Bu fe'l kimnidir yoki nimadir xavfsiz va sog'lom bo'lishini ta'minlashni anglatadi.\nexample: *Children learn a lot from looking after a pet.*\nmisconception: Bu fe'l \"ko'z bilan qarash\" (look at) degani emas, balki \"g'amxo'rlik qilish\" ma'nosini anglatadi."
+      ]
+    },
+    {
+      "arm": "regression:math-g11-prizma",
+      "replay": 0,
+      "available": true,
+      "passed": true,
+      "has_major": false,
+      "cites_mutation": false,
+      "warnings": []
+    },
+    {
+      "arm": "regression:math-g11-prizma",
+      "replay": 1,
+      "available": true,
+      "passed": true,
+      "has_major": false,
+      "cites_mutation": false,
+      "warnings": []
+    },
+    {
+      "arm": "regression:math-g11-prizma",
+      "replay": 2,
+      "available": true,
+      "passed": true,
+      "has_major": false,
+      "cites_mutation": false,
+      "warnings": []
+    },
+    {
+      "arm": "regression:geo-g10-braziliya",
+      "replay": 0,
+      "available": true,
+      "passed": true,
+      "has_major": false,
+      "cites_mutation": false,
+      "warnings": []
+    },
+    {
+      "arm": "regression:geo-g10-braziliya",
+      "replay": 1,
+      "available": true,
+      "passed": false,
+      "has_major": false,
+      "cites_mutation": false,
+      "warnings": [
+        "[minor] never mix apostrophe styles within one homework — pick one and stay consistent. — The output inconsistently mixes the curly modifier apostrophe (e.g., 'o‘rni' in card_1, 'yassi tog‘ligi' in card_3, 'kambag‘al' in card_4, and 'bioyoqilg‘i' in card_9) with the straight typewriter apostrophe (e.g., '5-o'rin' in card_1, 'tog'ligi' in card_3, 'ko'rinishi' in card_4, and 'bioyoqilg'i' in card_9) across the deck."
+      ]
+    },
+    {
+      "arm": "regression:geo-g10-braziliya",
+      "replay": 2,
+      "available": true,
+      "passed": true,
+      "has_major": false,
+      "cites_mutation": false,
+      "warnings": []
+    }
+  ]
+}

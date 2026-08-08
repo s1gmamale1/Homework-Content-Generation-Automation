@@ -1,9 +1,9 @@
-def test_extract_prompt_hash_is_v3():
+def test_extract_prompt_hash_is_v4():
     import inspect
     from app.services import pipeline
     src = inspect.getsource(pipeline)
-    assert '"builtin:extract:v3"' in src
-    assert '"builtin:extract:v2"' not in src
+    assert '"builtin:extract:v4"' in src
+    assert '"builtin:extract:v3"' not in src
 
 
 from app.services.pipeline import _coverage_warnings_for_job

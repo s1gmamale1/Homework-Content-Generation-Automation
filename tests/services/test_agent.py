@@ -835,7 +835,10 @@ def test_gate_b_passes_unformatted_but_substantial_prose():
 
 from app.services.agent import _SUMMARIZE_LESSON_PROMPT, _SUMMARIZE_VISION_PROMPT
 
-_REQUIRED_HEADERS = ["## Concepts", "## Rules", "## Formulas", "## Worked-example types", "## Key facts"]
+_REQUIRED_HEADERS = [
+    "## Concepts", "## Rules", "## Formulas", "## Worked-example types", "## Key facts",
+    "## Vocabulary & set phrases", "## Source sentences & passages",
+]
 
 def test_extract_prompts_specify_the_contract_headers():
     for p in (_SUMMARIZE_LESSON_PROMPT, _SUMMARIZE_VISION_PROMPT):
@@ -844,3 +847,87 @@ def test_extract_prompts_specify_the_contract_headers():
         assert "worked-example" in p.lower()
         # headers stay English; items in the lesson language
         assert "lesson's language" in p.lower() or "same language" in p.lower()
+
+
+def test_extract_contract_requires_vocabulary_when_the_lesson_teaches_words():
+    """Plan 2026-08-07: the five original headings carry no lexical inventory with
+    MEANINGS. Measured 2026-08-07 (probe, before-run): a language lesson's words do
+    survive -- as a bare list under '## Concepts & terms' with no glosses -- so the
+    generator, whose flashcards contract demands `vocabulary` cards as L2 word -> L1
+    meaning, receives the left-hand side and must invent every right-hand side."""
+    c = agent_module._CONTRACT_INSTRUCTIONS
+    assert "## Vocabulary & set phrases" in c
+    low = c.lower()
+    assert "required whenever the lesson teaches words" in low
+    assert "source's own gloss" in low
+
+
+def test_extract_contract_marks_meanings_it_supplied_itself():
+    """A language textbook often ships a bare word list and teaches meanings orally,
+    so 'source gloss only' would emit nothing usable. The extract may supply the
+    meaning, but it MUST mark it: the judge treats this summary as ground truth
+    (`_FIDELITY_RULE`), so an unmarked supplied gloss would be enforced against the
+    generator as if the textbook had said it -- inverting the fidelity guard.
+    Measured 2026-08-07 (after-run): the model supplied dictionary glosses unmarked."""
+    c = agent_module._CONTRACT_INSTRUCTIONS
+    assert "[not in source]" in c
+    low = c.lower()
+    assert "ground truth" in low
+
+
+def test_extract_contract_caps_the_vocabulary_section():
+    """Measured 2026-08-07 (after-run): the uncapped contract turned an end-of-book
+    reference word-list into a 34,104-char extract -- injected ~22x per job (11
+    content phases + judge/solver calls), which is a token-cost problem, not a
+    quality one."""
+    c = agent_module._CONTRACT_INSTRUCTIONS
+    assert "MAXIMUM of 40 bullets" in c
+    assert "further items in the source list" in c
+
+
+def test_extract_contract_keeps_worked_example_types_on_non_calculation_subjects():
+    """Second regression of the same class, caught at the merge gate: with the two
+    new headings competing, the model read 'worked example / sample problem /
+    solved exercise' literally and omitted the heading on history -- 0/6 v4 runs
+    against a 67.8% v3 base rate (782 stored history extracts), p ~ 0.001. That
+    regresses worklog 0119, which added the heading precisely because free-form
+    summaries dropped a lesson's exercise coverage, and history is the largest
+    subject in the corpus. Math was unaffected (2/2, 99.1% v3 base)."""
+    c = agent_module._CONTRACT_INSTRUCTIONS
+    low = c.lower()
+    assert "not only for calculation subjects" in low
+    assert "date an event" in low or "trace a cause" in low
+
+
+def test_extract_contract_keeps_key_facts_required_alongside_vocabulary():
+    """Regression introduced and caught 2026-08-07: the two NEW headings carried
+    forceful `REQUIRED whenever` clauses while `## Key facts` carried none, so on a
+    literature lesson the model spent its budget on vocabulary + verse and dropped
+    Key facts entirely -- 3/3 runs, i.e. not variance. The Alpomish lesson lost its
+    dates, genealogy and plot terms, which are exactly its examinable content."""
+    c = agent_module._CONTRACT_INSTRUCTIONS
+    assert '"## Key facts" is REQUIRED whenever' in c
+    low = c.lower()
+    assert "a language or literature lesson still carries facts" in low
+
+
+def test_extract_contract_forbids_duplicating_the_meaning():
+    """Measured 2026-08-07 (after-run): adabiyot glosses came back as
+    `item — meaning (uz. *meaning*)`, doubling the section for no information."""
+    low = agent_module._CONTRACT_INSTRUCTIONS.lower()
+    assert "never repeat the meaning in a trailing parenthetical" in low
+
+
+def test_extract_contract_quotes_model_sentences_verbatim():
+    c = agent_module._CONTRACT_INSTRUCTIONS
+    assert "## Source sentences & passages" in c
+    low = c.lower()
+    assert "verbatim" in low
+    assert "never paraphrase" in low
+
+
+def test_extract_contract_disambiguates_vocabulary_from_concepts():
+    """Without this line the model files lexis under '## Concepts & terms' -- which
+    is exactly what all three probe specimens did in the before-run."""
+    low = agent_module._CONTRACT_INSTRUCTIONS.lower()
+    assert "must be able to use" in low

@@ -543,3 +543,45 @@ def test_english_heading_leak_silent_on_colon_tail():
     md = "# Rolga kirish: Task boshqaruvchisi\nMatn.\n"
     findings = cl.lint_phase("boss-arena", md, subject="matematika", output_language="uz")
     assert "english_heading_leak" not in _codes(findings)
+
+
+# ─── vocabulary / source-sentence contract sections (plan 2026-08-07) ──────────
+
+_LANG_CONTRACT = """## Concepts & terms
+- Adverbs of manner
+## Vocabulary & set phrases
+- nephew — the son of your brother or sister
+- niece — the daughter of your brother or sister
+## Source sentences & passages
+- "Jana plays the piano really well."
+"""
+
+
+def test_parse_extract_contract_recognizes_vocabulary_and_source_sentences():
+    parsed = cl.parse_extract_contract(_LANG_CONTRACT)
+    assert len(parsed["vocabulary"]) == 2
+    assert parsed["source_sentences"] == ['"Jana plays the piano really well."']
+    assert parsed["concepts"] == ["Adverbs of manner"]
+
+
+def test_vocabulary_only_extract_is_a_parseable_contract():
+    """Gate B (agent.validate_extract_summary) passes any output that parses to >=1
+    recognized section; a language lesson may legitimately be vocabulary-only."""
+    assert cl.contract_has_items(
+        "## Vocabulary & set phrases\n- nephew — the son of your brother or sister\n"
+    ) is True
+
+
+def test_coverage_lint_flags_a_dropped_vocabulary_item():
+    packet = "Flash cards about nephews and adverbs."
+    findings = cl.lint_coverage(_LANG_CONTRACT, packet)
+    assert len(findings) == 1
+    assert findings[0].code == "coverage_thin"
+    assert "niece" in findings[0].message
+
+
+def test_coverage_lint_ignores_source_sentences():
+    """Verbatim source sentences are material to build FROM, not items the packet
+    must echo -- counting them would flood coverage_thin with false warnings."""
+    contract = '## Source sentences & passages\n- "Jana plays the piano really well."\n'
+    assert cl.lint_coverage(contract, "A packet that quotes nothing verbatim.") == []
