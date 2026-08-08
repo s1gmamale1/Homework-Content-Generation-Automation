@@ -108,3 +108,22 @@ Worth naming as a method point: with n=1 per condition I could not have told thi
 **$2.0727 for the whole lane** — 32 judge calls $1.4265 + 18 extract calls $0.6462. Over the plan's ~$0.35-per-run estimate: judge output tokens were ~2.4× what I assumed, and the extract contract needed three measured iterations rather than one shot.
 
 **Attribution caveat:** a naive "last 95 minutes" query over `agent_usages` also picks up `lesson.extract.coverage` rows emitting an `ExtractCoverageVerdict` schema that exists in **neither this worktree nor the main checkout** — another session is running its own lane against the same `edu_copy` database. Those rows are excluded above. Anyone re-deriving this figure must filter by operation, not by time window alone.
+
+---
+
+# Merge-gate follow-up — non-language subjects under v4
+
+The gate reviewer's residual finding: the `v3`→`v4` bump re-extracts every book, but the after-run only measured the three language specimens. Measured it (~$0.15).
+
+| subject | v3 base rate for `## Worked-example types` | v4 before fix | v4 after fix |
+|---|---|---|---|
+| history | **67.8%** (530 / 782 stored extracts) | **0 / 6** | **4 / 6** |
+| math-algebra | 99.1% (340 / 343) | 2 / 2 | 2 / 2 |
+
+0/6 against a 67.8% base rate is p ~ 0.001 — a real regression, not noise, so it blocked the merge rather than becoming a watch item. Mechanism: with two new headings competing, the model applied the clause's literal wording ("worked example, sample problem, or solved exercise") and concluded a history lesson has none. The v3 contract, with fewer competing sections, read it loosely and emitted genuine task types ("define the concept", "identify the date and content of an event"). Math never wavered because its worked examples are literal.
+
+Fix: the clause now states the heading is not only for calculation subjects and names humanities task types. History returns to parity with its own v3 base rate.
+
+Spurious-section check: math emitted **no** `Vocabulary & set phrases` or `Source sentences & passages` in either run — the conditional-omit idiom holds. History does emit `Vocabulary & set phrases` (terms with meanings), which is legitimate rather than spurious.
+
+**Method note, second occurrence in this lane:** the same "a new REQUIRED clause out-competes an existing heading" effect hit `## Key facts` on literature and `## Worked-example types` on history. A contract change is a change to *every* subject; the subjects you did not target are exactly the ones nobody measures. Using the stored corpus as the v3 baseline made this free to establish — no before-run re-execution needed.
