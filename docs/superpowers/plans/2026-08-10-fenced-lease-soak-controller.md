@@ -4,7 +4,7 @@
 
 **Goal:** Build a fail-closed, stage-scoped controller that proves fenced job leases under real fleet load without launching work itself, and make abandoned database transactions self-terminate before they can consume PostgreSQL capacity or retain advisory locks.
 
-**Architecture:** A single CLI, `scripts/fenced_lease_soak.py`, consumes two explicit JSON contracts: an immutable stage scope (the exact batches, jobs, start instant, expected models, target concurrency, expected code vintage, and approved cost limits) and a fresh out-of-band fleet attestation (the exact worker process configuration, credential fingerprint, PDFs, and Notion mapping absence). Its default `preflight` and `watch` commands open PostgreSQL transactions as `READ ONLY`, evaluate pure finding rules over scoped snapshots, and append redacted JSONL evidence. The only write path is an optional, two-gesture `--arm-stop --confirm-arm lease-soak-stop:<run-id>` circuit breaker that may pause the named soak batches plus the fleet API gate, never cancel jobs, never alter unrelated batches, and never clear a pause.
+**Architecture:** A single CLI, `scripts/fenced_lease_soak.py`, consumes two explicit JSON contracts: an immutable stage scope (the exact batches, jobs, start instant, expected models, target concurrency, expected code vintage, expected Alembic revision, and approved cost limits) and a fresh out-of-band fleet attestation (the exact worker process configuration, credential fingerprint, PDFs, and Notion mapping absence). Its default `preflight` and `watch` commands open PostgreSQL transactions as `READ ONLY`, evaluate pure finding rules over scoped snapshots, and append redacted JSONL evidence. The only write path is an optional, two-gesture `--arm-stop --confirm-arm lease-soak-stop:<run-id>` circuit breaker that may pause the named soak batches plus the fleet API gate, never cancel jobs, never alter unrelated batches, and never clear a pause.
 
 **Tech Stack:** Python 3.13+, argparse, asyncio, Pydantic v2, SQLAlchemy asyncio/asyncpg, PostgreSQL 16, pytest/pytest-asyncio.
 
@@ -13,7 +13,7 @@
 - The controller does **not** launch, retry, resume, cancel, archive, or regenerate a homework. It observes work created by a separately approved operator action.
 - `preflight` and unarmed `watch` must execute `SET TRANSACTION READ ONLY` before every database snapshot. A regression that issues `INSERT`, `UPDATE`, or `DELETE` in either path is a release blocker.
 - Scope is never inferred from “recent” rows alone. Every run requires non-empty `batch_ids`, non-empty `job_ids`, and an aware UTC `since` instant in the scope file. Every queried job, usage row, phase row, and lease event is filtered by those job IDs, with `since` as an additional lower bound for time-series tables.
-- The first soak requires one exact, caller-supplied **final deployed** Git SHA and code version, derived from the controller's externally gated merge commit immediately before deployment. Every participating process, heartbeat, attestation, `claimed_by` suffix, and the fleet version floor must match that pair. `d6b1c9f` / v987 is only the pre-plan audit baseline; it is never a runtime default because merging this lane necessarily creates a newer identity. The remaining production configuration is exactly `WORKER_CONCURRENCY=2`, `AGENT_MAX_CONCURRENCY=4`, `CREDENTIAL_MAX_CONCURRENT_GEMINI=32`, `CREDENTIAL_SLOT_WAIT_SECONDS=120`, no `GEMINI_MAX_CONCURRENCY`, one worker process per host, one shared plain-key fingerprint, and `STRUCTURED_OUTPUT_ENABLED=false`. All values live in the scope file, not as hidden code defaults.
+- The first soak requires one exact, caller-supplied **final deployed** Git SHA, code version, and Alembic revision, derived from the externally gated merge/deployment immediately before the run. Every participating process, heartbeat, attestation, `claimed_by` suffix, and the fleet version floor must match the code pair; the live database must match the caller-supplied revision exactly while still proving the 0052 ledger/token primitives exist. `d6b1c9f` / v987 / `0052_job_lease_fencing` are only the pre-plan audit baseline; they are never runtime defaults because later gated lanes create newer identities. The remaining production configuration is exactly `WORKER_CONCURRENCY=2`, `AGENT_MAX_CONCURRENCY=4`, `CREDENTIAL_MAX_CONCURRENT_GEMINI=32`, `CREDENTIAL_SLOT_WAIT_SECONDS=120`, no `GEMINI_MAX_CONCURRENCY`, one worker process per host, one shared plain-key fingerprint, and `STRUCTURED_OUTPUT_ENABLED=false`. All values live in the scope file, not as hidden code defaults.
 - The first production sequence is `4 -> 8 -> 12 -> 20 -> 40` independent fresh jobs. A level advances only after its jobs reach terminal state and a 60-second quiet-settle window passes all gates.
 - The 40-job level is two 20-job batches so each remains below the configured `$50` per-batch cap. It is still one stage and one exact scope.
 - The tooling lane is `$0`: unit tests, fake-store acceptance, and optional scratch-Postgres integration only. No provider call and no production job launch is authorized by this plan.
@@ -24,14 +24,14 @@
 - Fleet attestation is never hand-authored. Each participating host runs `attest-local` from the final deployed checkout; it reads effective settings/environment, discovers the one live worker process, derives its registry `pc_id`, fingerprints the effective Gemini credential without exposing it, hashes required PDFs, and emits only sanitized canonical JSON to stdout. `attest-aggregate` deterministically validates and combines those exact per-host artifacts; preflight then cross-checks them against live registry rows.
 - Attestation trust terminates at the authenticated fleet-management channel that executes the command and captures stdout. The JSON is not a cryptographic remote-attestation claim; copying or editing it by hand is prohibited. Canonical input digests make accidental substitution/reordering visible, while the live registry cross-check detects stale/restarted worker processes.
 - Never serialize the API key, database URL, environment values, or a reversible credential. Evidence may contain only the plain-key, non-reversible credential fingerprint already used by the limiter; a Vertex project identity is ineligible for this particular soak, not deleted or reassigned.
-- PostgreSQL hardening is process-local: asyncpg `server_settings`, not `ALTER SYSTEM`, not `ALTER ROLE`, and no migration. Use `application_name` plus `idle_in_transaction_session_timeout=300000` (five minutes) on each newly opened head/worker connection.
+- PostgreSQL hardening is process-local: asyncpg `server_settings`, not `ALTER SYSTEM`, not `ALTER ROLE`, and no migration. Use `application_name` plus `idle_in_transaction_session_timeout=300000` (five minutes) on each newly opened head, worker, and soak-controller connection.
 - Tests that need PostgreSQL are opt-in with `RUN_DB_INTEGRATION=1` and must point at a scratch database. Canonical unit tests must exercise every decision rule without that flag.
 - Work proceeds test-first, one commit per task, with an independent review after each task. No implementation branch self-merges.
 
 ## Branch-Collision Gate Record (2026-08-10)
 
 - Fetched all refs with `git fetch --all --prune` before creating this plan.
-- Planning base/audit baseline: `origin/Nggaev-v2@d6b1c9f65e13ea5a6c2abd21b8a592303ece784b`. This ref records what was reviewed; the eventual controller merge's SHA/version must replace it in every paid-run scope and attestation.
+- Planning base/audit baseline: `origin/Nggaev-v2@d6b1c9f65e13ea5a6c2abd21b8a592303ece784b`, schema `0052_job_lease_fencing`. These record what was reviewed; the eventual final SHA/version/revision must replace all three in every paid-run scope and attestation.
 - Existing `scripts/soak_watch_leases.sql@595911d` is a read-only 24-hour/7-day historical snapshot. It has no exact run scope, preflight, fleet attestation, cost cap, JSON evidence, or stop action. It remains useful as a human fallback and is not replaced in this lane.
 - `origin/feat/fenced-job-leases@3253bb9` contains the already-merged fencing implementation and tests. It supplies the event vocabulary and invariants; it does not contain a controller.
 - `origin/feat/model-config-3x-flash-exec@d62dc1f` changes old `stress_concurrency.py` / `stress_multimodel.py` probes and model configuration. Those probes make provider calls and do not overlap this controller.
@@ -39,6 +39,7 @@
 - No local/remote branch or worktree contains `scripts/fenced_lease_soak.py` or any planned test path.
 - The scope amendment for DB session hardening triggered a second fetch/scan. No active branch or open PR modifies `app/db.py` or `tests/test_db_pool_config.py`. Several stale/active branches change `app/config.py`; this plan deliberately adds no setting there, avoiding ownership overlap.
 - The attestation amendment triggered a third fetch/scan. No branch or open PR contains `scripts/fenced_lease_soak.py` or `tests/scripts/test_fenced_lease_soak_attestation.py`; the helper reads `app.config.Settings` field metadata and reuses `app.services.code_version`, `app.services.credential_id`, and the documented `storage.book_pdf_path` layout without modifying their actively shared paths. It explicitly does not trust module-global `settings` for a different process.
+- The Task-3 correction triggered a fourth fetch/scan at `origin/Nggaev-v2@d6b1c9f`. No open PR owns the soak paths. The active solver/source worktrees reserve later schema revisions 0053/0054 without touching this controller, so the scope now carries the exact final revision instead of hardcoding the audit baseline.
 - Isolated planning worktree: `/Users/macmini5/Documents/HCGA-fenced-soak-plan`, branch `plan/fenced-lease-soak-controller`. The shared checkout's untracked files are untouched.
 - Baseline: `13 passed` for `tests/services/test_lease_types.py`, `tests/services/test_worker_version_gate.py`, and `tests/test_db_pool_config.py`.
 
@@ -262,7 +263,7 @@ git commit -m "fix(db): bound and identify idle transactions"
 - Produces `load_scope(source: Path | Literal["-"], *, stdin: TextIO = sys.stdin) -> SoakScope`, `load_attestation(path: Path) -> FleetAttestation`, `redacted_model_dump(model: BaseModel) -> dict`, and `parse_args(argv: Sequence[str]) -> argparse.Namespace`.
 - Produces a narrow `ProcessView` protocol (`pid`, `status()`, `cmdline()`, `environ()`, `cwd()`), `discover_worker_processes(processes: Iterable[ProcessView]) -> list[ProcessView]`, `effective_worker_contract(worker_env: Mapping[str, str]) -> EffectiveWorkerContract`, `build_local_attestation(scope, *, hostname, processes, now, git_identity=None) -> WorkerAttestation`, `canonical_json(model) -> str`, and `aggregate_attestations(scope, workers, *, now) -> FleetAttestation`.
 - Produces injectable `main(argv, *, process_source=None, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr, hostname=None, now=None, git_identity=None) -> int`; production defaults use `psutil`, `socket`, the real clock, and git, while tests inject all of them and prove the command never opens a database or network client.
-- `SoakScope` fields: `run_id`, aware-UTC `since`, exact `batch_ids`, exact `job_ids`, exact `participant_hosts`, `target_running`, `expected_git_sha`, `expected_code_version`, expected four concurrency knobs, `legacy_gemini_var_must_be_absent`, `structured_output_enabled`, `required_book_sha256`, `forbidden_notion_mapping_keys`, `expected_models_by_operation_prefix`, `approved_incremental_cost_usd`, `fleet_cost_limit_usd`, `db_preflight_connection_limit`, `db_hard_stop_connection_limit`, `heartbeat_max_age_seconds`, `attestation_max_age_seconds`, and `settle_seconds`.
+- `SoakScope` fields: `run_id`, aware-UTC `since`, exact `batch_ids`, exact `job_ids`, exact `participant_hosts`, `target_running`, `expected_git_sha`, `expected_code_version`, `expected_db_revision`, expected four concurrency knobs, `legacy_gemini_var_must_be_absent`, `structured_output_enabled`, `required_book_sha256`, `forbidden_notion_mapping_keys`, `expected_models_by_operation_prefix`, `approved_incremental_cost_usd`, `fleet_cost_limit_usd`, `db_preflight_connection_limit`, `db_hard_stop_connection_limit`, `heartbeat_max_age_seconds`, `attestation_max_age_seconds`, and `settle_seconds`.
 - `FleetAttestation` fields: `scope_sha256`, `observed_at`, `credential_fingerprint`, ordered `input_artifact_sha256`, and non-empty ordered `workers`.
 - Each `WorkerAttestation` fields: `scope_sha256`, exact `pc_id`, `hostname`, `observed_at`, `git_sha`, `code_version`, `worker_concurrency`, `agent_max_concurrency`, `credential_max_concurrent_gemini`, `credential_slot_wait_seconds`, `gemini_max_concurrency_present`, `structured_output_enabled`, `process_count_for_host`, `credential_fingerprint`, `pdf_sha256_by_book: dict[str, str | None]`, and `notion_mapping_keys`.
 
@@ -296,9 +297,11 @@ def test_final_deployed_identity_is_caller_supplied_not_baked_in():
     raw = valid_scope_dict()
     raw["expected_git_sha"] = "fedcba9"
     raw["expected_code_version"] = 1001
+    raw["expected_db_revision"] = "0054_source_integrity"
     scope = soak.SoakScope.model_validate(raw)
     assert scope.expected_git_sha == "fedcba9"
     assert scope.expected_code_version == 1001
+    assert scope.expected_db_revision == "0054_source_integrity"
 
 
 def test_scope_pins_exact_participating_hosts():
@@ -540,7 +543,7 @@ Expected: failures because the contracts and attestation helpers do not exist.
 
 - [ ] **Step 5: Implement exact models and four-command CLI**
 
-Use `extra="forbid"` on every persisted model. Normalize all UUID lists by rejecting duplicates, not silently deduplicating them. Validate `run_id` against `^[a-z0-9][a-z0-9-]{0,44}$` (45 characters keeps both pause reasons inside `String(64)`), `expected_git_sha` against `^[0-9a-f]{7,40}$`, `expected_code_version > 0`, validate `since.tzinfo`, convert to UTC, require `target_running > 0`, require `db_preflight_connection_limit < db_hard_stop_connection_limit`, require `approved_incremental_cost_usd > 0`, and require all PDF SHA-256 values to match `^[0-9a-f]{64}$`. The module must not define a baked-in expected SHA or code-version constant; both come only from `SoakScope`. `redacted_model_dump` recursively removes values whose field names match secret-bearing names (`gemini_api_key`, `api_key`, `token`, `secret`, `password`, `database_url`) while explicitly retaining the safe contract fields `credential_fingerprint`, `forbidden_notion_mapping_keys`, and `claim_token`.
+Use `extra="forbid"` on every persisted model. Normalize all UUID lists by rejecting duplicates, not silently deduplicating them. Validate `run_id` against `^[a-z0-9][a-z0-9-]{0,44}$` (45 characters keeps both pause reasons inside `String(64)`), `expected_git_sha` against `^[0-9a-f]{7,40}$`, `expected_code_version > 0`, `expected_db_revision` against `^[0-9a-z][0-9a-z_]{0,127}$`, validate `since.tzinfo`, convert to UTC, require `target_running > 0`, require `db_preflight_connection_limit < db_hard_stop_connection_limit`, require `approved_incremental_cost_usd > 0`, and require all PDF SHA-256 values to match `^[0-9a-f]{64}$`. The module must not define a baked-in expected SHA, code-version, or database-revision constant; all three come only from `SoakScope`. `redacted_model_dump` recursively removes values whose field names match secret-bearing names (`gemini_api_key`, `api_key`, `token`, `secret`, `password`, `database_url`) while explicitly retaining the safe contract fields `credential_fingerprint`, `forbidden_notion_mapping_keys`, and `claim_token`.
 
 The CLI surface is exact:
 
@@ -657,6 +660,7 @@ book_checksum_scope_mismatch
 notion_mapping_present
 db_connection_baseline_high
 db_idle_in_transaction
+db_idle_in_transaction_timeout_unsafe
 db_server_wait
 credential_slot_baseline_nonzero
 fleet_cost_envelope_exceeded
@@ -698,6 +702,22 @@ def test_preflight_requires_zero_idle_in_transaction_even_below_pool_limit():
     ]
     findings = soak.evaluate_preflight(valid_scope(), valid_attestation(), raw)
     assert "db_idle_in_transaction" in hard_codes(findings)
+
+
+@pytest.mark.parametrize("timeout_ms", [0, 300_001, 900_000])
+def test_preflight_rejects_disabled_or_over_five_minute_idle_timeout(timeout_ms):
+    raw = healthy_raw_snapshot()
+    raw.db.idle_in_transaction_timeout_ms = timeout_ms
+    findings = soak.evaluate_preflight(valid_scope(), valid_attestation(), raw)
+    assert "db_idle_in_transaction_timeout_unsafe" in hard_codes(findings)
+
+
+def test_preflight_uses_caller_supplied_exact_database_revision():
+    scope = valid_scope(expected_db_revision="0054_source_integrity")
+    raw = healthy_raw_snapshot()
+    raw.schema.revision = "0054_source_integrity"
+    findings = soak.evaluate_preflight(scope, attestation_for(scope), raw)
+    assert "schema_revision_mismatch" not in hard_codes(findings)
 
 
 def test_preflight_rejects_non_pristine_scoped_job():
@@ -744,7 +764,7 @@ The store must issue bound-parameter queries, never interpolate UUIDs or timesta
 3. Exact scoped jobs joined to batches and books (including authoritative `books.content_sha256`); count of `pending`, `running`, or `cancelling` jobs outside the scope. Scoped freshly-created `pending` jobs are the expected staged state and are not counted as unrelated queue activity.
 4. Workers fresh by the configured registry stale window, including `pc_id`, heartbeat age, status, capability `git_sha`, `code_version`, and Gemini API capability.
 5. SA scrub tombstones needed to distinguish a technically online but parked hostname.
-6. `pg_settings` values for `max_connections`, `superuser_reserved_connections`, and `idle_in_transaction_session_timeout`.
+6. `pg_settings` values for `max_connections` and `superuser_reserved_connections`, plus the controller connection's effective `idle_in_transaction_session_timeout` normalized to integer milliseconds with `extract(epoch from current_setting(...)::interval)`. PostgreSQL cannot inspect another backend's per-session GUC; exact deployed SHA plus Task 1's hardcoded engine settings prove the worker-side contract, while this runtime read proves the controller's own connection is protected.
 7. `pg_stat_activity`: total sessions, `idle in transaction` rows with PID/application/client/age/query prefix, and non-client wait events. Exclude the controller's own PID only from the idle/wait offender lists, not from the total count.
 8. Fresh and stale `credential_slots`, grouped by credential fingerprint and holder process.
 9. Scoped `job_lease_events`, `phase_outputs`, and `agent_usages` since `scope.since`.
@@ -756,7 +776,7 @@ Do not query worker `.env` values from PostgreSQL; exact configuration comes fro
 
 The healthy gate requires:
 
-- schema revision `0052_job_lease_fencing`, both token columns, and ledger table present;
+- schema revision exactly equals caller-supplied `scope.expected_db_revision`, both token columns and the ledger table are present, and no revision value is baked into the controller;
 - every scope job exists once, belongs to one of the scope batches, was created at/after `since`, is pending with attempts 0 / null token, and has zero phase, usage, or lease rows;
 - every `required_book_sha256` value equals the corresponding scoped book's persisted `content_sha256`, so an operator cannot accidentally bless a uniformly wrong local file hash;
 - scoped jobs may be `pending` under the exact staging pause; zero **unrelated** `pending`, `running`, or `cancelling` jobs may exist;
@@ -767,7 +787,7 @@ The healthy gate requires:
 - attested hostnames equal `scope.participant_hosts`, and each attested `(hostname, pc_id)` exactly matches one live registry row; a locally correct config with a stale/restarted PID therefore fails instead of being silently accepted;
 - at least `ceil(target_running / expected_worker_concurrency)` distinct worker processes and hosts;
 - exact SHA/config/credential/PDF/Notion values match the scope;
-- DB total is at most `db_preflight_connection_limit`, zero idle-in-transaction, zero non-client waits;
+- DB total is at most `db_preflight_connection_limit`, zero idle-in-transaction, zero non-client waits, and the controller's effective idle-in-transaction timeout is nonzero and at most 300,000 ms;
 - zero fresh or stale credential slots;
 - priced trailing-24h fleet cost plus the approved incremental cap is at most `fleet_cost_limit_usd`.
 
@@ -781,6 +801,7 @@ async def test_collect_starts_a_read_only_transaction(store, seeded_scope):
     raw = await store.collect(seeded_scope)
     assert raw.scope_job_ids == seeded_scope.job_ids
     assert raw.transaction_read_only == "on"
+    assert raw.db.idle_in_transaction_timeout_ms == 300_000
 
 
 @pytest.mark.asyncio

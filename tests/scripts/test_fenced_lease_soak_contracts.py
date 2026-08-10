@@ -25,6 +25,7 @@ def valid_scope_dict() -> dict:
         "target_running": 4,
         "expected_git_sha": "fedcba9",
         "expected_code_version": 1001,
+        "expected_db_revision": "0052_job_lease_fencing",
         "worker_concurrency": 2,
         "agent_max_concurrency": 4,
         "credential_max_concurrent_gemini": 32,
@@ -142,9 +143,19 @@ def test_final_deployed_identity_is_caller_supplied_not_baked_in():
     raw = valid_scope_dict()
     raw["expected_git_sha"] = "abcdef0123456789"
     raw["expected_code_version"] = 1001
+    raw["expected_db_revision"] = "0054_source_integrity"
     scope = soak.SoakScope.model_validate(raw)
     assert scope.expected_git_sha == "abcdef0123456789"
     assert scope.expected_code_version == 1001
+    assert scope.expected_db_revision == "0054_source_integrity"
+
+
+@pytest.mark.parametrize("value", ["", " 0054_source_integrity", "0054;drop", "UPPER"])
+def test_scope_rejects_blank_or_unsafe_database_revision(value):
+    raw = valid_scope_dict()
+    raw["expected_db_revision"] = value
+    with pytest.raises(ValidationError):
+        soak.SoakScope.model_validate(raw)
 
 
 def test_attestation_rejects_raw_secret_fields():

@@ -133,6 +133,7 @@ async def seeded_scope(database_url):
         target_running=1,
         expected_git_sha="fedcba9",
         expected_code_version=1001,
+        expected_db_revision="0052_job_lease_fencing",
         worker_concurrency=1,
         agent_max_concurrency=1,
         credential_max_concurrent_gemini=1,
@@ -175,6 +176,7 @@ async def test_collect_starts_a_read_only_transaction(database_url, seeded_scope
         await store.dispose()
     assert raw.scope_job_ids == scope.job_ids
     assert raw.transaction_read_only == "on"
+    assert raw.db.idle_in_transaction_timeout_ms == 300_000
 
 
 @pytest.mark.asyncio

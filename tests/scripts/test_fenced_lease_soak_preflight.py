@@ -109,7 +109,7 @@ def healthy_raw_snapshot() -> soak.RawSnapshot:
             total_connections=20,
             max_connections=100,
             superuser_reserved_connections=3,
-            idle_in_transaction_timeout="5min",
+            idle_in_transaction_timeout_ms=300_000,
             idle_in_transaction=[],
             server_waits=[],
         ),
@@ -148,6 +148,25 @@ def test_healthy_preflight_has_no_findings():
     assert soak.evaluate_preflight(
         valid_scope(), valid_attestation(), healthy_raw_snapshot()
     ) == []
+
+
+def test_preflight_uses_caller_supplied_exact_database_revision():
+    scope = valid_scope(expected_db_revision="0054_source_integrity")
+    attestation = valid_attestation().model_copy(deep=True)
+    attestation.scope_sha256 = soak.sha256_canonical(scope)
+    attestation.workers[0].scope_sha256 = attestation.scope_sha256
+    raw = healthy_raw_snapshot()
+    raw.schema_state.revision = "0054_source_integrity"
+    assert "schema_revision_mismatch" not in hard_codes(
+        soak.evaluate_preflight(scope, attestation, raw)
+    )
+
+
+@pytest.mark.parametrize("timeout_ms", [0, 300_001, 900_000])
+def test_preflight_rejects_disabled_or_over_five_minute_idle_timeout(timeout_ms):
+    raw = healthy_raw_snapshot()
+    raw.db.idle_in_transaction_timeout_ms = timeout_ms
+    assert_hard("db_idle_in_transaction_timeout_unsafe", raw)
 
 
 @pytest.mark.parametrize(

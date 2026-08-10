@@ -43,6 +43,7 @@ from app.services import code_version, credential_id, pricing
 
 _RUN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,44}$")
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+_DB_REVISION_RE = re.compile(r"^[0-9a-z][0-9a-z_]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PLAIN_GEMINI_FP_RE = re.compile(r"^gemini:[0-9a-f]{16}$")
 _SAFE_REDACTED_FIELDS = {
@@ -98,6 +99,7 @@ class SoakScope(PersistedModel):
     target_running: int = Field(gt=0)
     expected_git_sha: str
     expected_code_version: int = Field(gt=0)
+    expected_db_revision: str
     worker_concurrency: int = Field(ge=0)
     agent_max_concurrency: int = Field(gt=0)
     credential_max_concurrent_gemini: int = Field(ge=0)
@@ -127,6 +129,13 @@ class SoakScope(PersistedModel):
     def _valid_git_sha(cls, value: str) -> str:
         if not _GIT_SHA_RE.fullmatch(value):
             raise ValueError("expected_git_sha must be a 7-40 character lowercase hex SHA")
+        return value
+
+    @field_validator("expected_db_revision")
+    @classmethod
+    def _valid_db_revision(cls, value: str) -> str:
+        if not _DB_REVISION_RE.fullmatch(value):
+            raise ValueError("expected_db_revision must be a lowercase Alembic revision")
         return value
 
     @field_validator("since")
@@ -351,7 +360,7 @@ class DatabaseSnapshot(PersistedModel):
     total_connections: int
     max_connections: int
     superuser_reserved_connections: int
-    idle_in_transaction_timeout: str
+    idle_in_transaction_timeout_ms: int
     idle_in_transaction: list[dict[str, Any]]
     server_waits: list[dict[str, Any]]
 
@@ -455,7 +464,7 @@ def evaluate_preflight(
     findings: list[Finding] = []
     schema_ok = (
         raw.transaction_read_only == "on"
-        and raw.schema_state.revision == "0052_job_lease_fencing"
+        and raw.schema_state.revision == scope.expected_db_revision
         and raw.schema_state.ledger_table
         and raw.schema_state.job_claim_token
         and raw.schema_state.phase_claim_token
@@ -463,7 +472,8 @@ def evaluate_preflight(
     if not schema_ok:
         findings.append(_finding(
             "schema_revision_mismatch",
-            "database is not exactly on the fenced-lease schema contract",
+            "database revision or fenced-lease schema primitives differ from scope",
+            expected_revision=scope.expected_db_revision,
             revision=raw.schema_state.revision,
             ledger_table=raw.schema_state.ledger_table,
             job_claim_token=raw.schema_state.job_claim_token,
@@ -695,6 +705,13 @@ def evaluate_preflight(
             "db_idle_in_transaction", "idle-in-transaction sessions exist",
             sessions=raw.db.idle_in_transaction,
         ))
+    if not 0 < raw.db.idle_in_transaction_timeout_ms <= 300_000:
+        findings.append(_finding(
+            "db_idle_in_transaction_timeout_unsafe",
+            "effective idle-in-transaction timeout is disabled or exceeds five minutes",
+            observed_ms=raw.db.idle_in_transaction_timeout_ms,
+            maximum_ms=300_000,
+        ))
     if raw.db.server_waits:
         findings.append(_finding(
             "db_server_wait", "non-client database waits exist", waits=raw.db.server_waits,
@@ -789,6 +806,7 @@ class SqlSoakReadStore:
             connect_args={
                 "server_settings": {
                     "application_name": f"hcga-soak:{os.getpid()}",
+                    "idle_in_transaction_session_timeout": "300000",
                 }
             },
         )
@@ -882,11 +900,17 @@ class SqlSoakReadStore:
             settings_rows = _mapping_dicts(await conn.execute(text("""
                 SELECT name, setting FROM pg_settings
                 WHERE name IN (
-                  'max_connections', 'superuser_reserved_connections',
-                  'idle_in_transaction_session_timeout'
+                  'max_connections', 'superuser_reserved_connections'
                 )
             """)))
             settings_map = {row["name"]: row["setting"] for row in settings_rows}
+            effective_idle_timeout_ms = int(await conn.scalar(text("""
+                SELECT (
+                  EXTRACT(epoch FROM current_setting(
+                    'idle_in_transaction_session_timeout'
+                  )::interval) * 1000
+                )::bigint
+            """)))
             backend_pid = await conn.scalar(text("SELECT pg_backend_pid()"))
             total_connections = int(await conn.scalar(text("SELECT count(*) FROM pg_stat_activity")))
             activity_params = {"controller_pid": backend_pid}
@@ -973,9 +997,7 @@ class SqlSoakReadStore:
                 superuser_reserved_connections=int(
                     settings_map.get("superuser_reserved_connections", 0)
                 ),
-                idle_in_transaction_timeout=str(
-                    settings_map.get("idle_in_transaction_session_timeout", "")
-                ),
+                idle_in_transaction_timeout_ms=effective_idle_timeout_ms,
                 idle_in_transaction=idle_rows,
                 server_waits=wait_rows,
             ),
