@@ -86,7 +86,9 @@ async def test_requeue_slot_saturated_parks_with_refund_and_future_schedule():
 
     from app.db import SessionLocal
     from app.models.homework_job import HomeworkJob
+    from app.models.phase_output import PhaseOutput
     from app.repositories import jobs as jobs_repo
+    from app.repositories import phase_outputs as phase_outputs_repo
 
     book_id: uuid.UUID | None = None
     try:
@@ -112,6 +114,24 @@ async def test_requeue_slot_saturated_parks_with_refund_and_future_schedule():
                     claimed_at=datetime.now(timezone.utc),
                     current_phase="flashcards",
                 )
+            )
+            await phase_outputs_repo.create_or_reset(
+                session,
+                job_id=job_id,
+                phase_name="memory-check",
+                phase_order=0,
+                prompt_hash="test-running",
+                model_name="test-model",
+                status="running",
+            )
+            await phase_outputs_repo.create_or_reset(
+                session,
+                job_id=job_id,
+                phase_name="extract",
+                phase_order=1,
+                prompt_hash="test-done",
+                model_name="test-model",
+                status="done",
             )
             await session.commit()
 
@@ -147,6 +167,17 @@ async def test_requeue_slot_saturated_parks_with_refund_and_future_schedule():
                 f"scheduled_at must be pushed well into the future by the "
                 f"90s cooldown; scheduled={scheduled}, now={now}"
             )
+            phases = {
+                row.phase_name: row
+                for row in (
+                    await session.execute(
+                        select(PhaseOutput).where(PhaseOutput.job_id == job_id)
+                    )
+                ).scalars()
+            }
+            assert phases["memory-check"].status == "pending"
+            assert phases["memory-check"].claim_token is None
+            assert phases["extract"].status == "done"
     finally:
         await _cleanup(book_id)
 
