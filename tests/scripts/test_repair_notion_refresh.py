@@ -740,3 +740,37 @@ async def test_prune_failure_is_fail_open(db_clean, tmp_path):
         if p["parent"] == healthy_page and p["title"] == "Case-Based Preview"
     )
     assert client.content[healthy_leaf], "second owner must still be processed"
+
+
+@_needs_db
+async def test_unreadable_classification_is_incomplete_and_never_prunes(db_clean, tmp_path, monkeypatch):
+    """A successful rewrite is not a completed refresh if page inspection is unreadable."""
+    page_id, section_id, job_id = await _seed_owner(
+        page_id="hw-unreadable", phase_md={"case-based-preview": "# Preview"},
+    )
+    manifest_path = _write_manifest(tmp_path, [(page_id, section_id, job_id)])
+    client = FakeNotionArchiveClient()
+    extra_id = client.seed_extra_leaf(
+        homework_page_id=page_id, leaf_title="Boss Arena", phase_file="boss-arena.md",
+    )
+    from scripts import repair_notion_collisions as repair
+    monkeypatch.setattr(
+        repair, "classify_page",
+        lambda *_args, **_kwargs: repair.PageClassification(
+            verdict="unreadable", page_phases=frozenset(), extra_phases=frozenset(),
+            extra_child_page_ids=(), error="read failed",
+        ),
+    )
+    from sqlalchemy.ext.asyncio import create_async_engine
+    engine = create_async_engine(os.environ["DATABASE_URL"], future=True)
+    try:
+        async with engine.connect() as conn:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            report = await repair.refresh_owner_pages(client, manifest, conn)
+    finally:
+        await engine.dispose()
+    outcome = report.outcomes[0]
+    assert outcome.outcome == "classification_failed"
+    assert not report.all_rewritten
+    assert client.deleted == []
+    assert extra_id not in client.deleted

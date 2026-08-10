@@ -982,7 +982,7 @@ class OwnerRefreshOutcome:
     job_id: str | None
     outcome: Literal[
         "rewritten", "owner_pointer_drift", "rewrite_failed", "no_owner_job",
-        "owner_no_phases", "prune_failed",
+        "owner_no_phases", "classification_failed", "prune_failed",
     ]
     verdict: str | None = None  # classify_page verdict — set only when outcome == "rewritten"
     pruned: int = 0
@@ -1007,7 +1007,7 @@ class RefreshReport:
 
     @property
     def failed(self) -> int:
-        return sum(1 for o in self.outcomes if o.outcome == "rewrite_failed")
+        return sum(1 for o in self.outcomes if o.outcome in {"rewrite_failed", "classification_failed"})
 
     @property
     def skipped_no_phases(self) -> int:
@@ -1108,6 +1108,12 @@ async def refresh_owner_pages(
         pruned = 0
         try:
             classification = classify_page(client, page_id, owner_phase_set)
+            if classification.verdict == "unreadable":
+                outcomes.append(OwnerRefreshOutcome(
+                    page_id=page_id, section_id=section_id, job_id=job_id,
+                    outcome="classification_failed", error="page classification unreadable",
+                ))
+                continue
             for extra_id in classification.extra_child_page_ids:
                 client.delete_block(extra_id)
                 pruned += 1
@@ -1171,6 +1177,11 @@ def format_refresh_report(report: RefreshReport) -> list[str]:
                 f"  OWNER page={o.page_id} section={o.section_id} "
                 "SKIPPED (owner_no_phases — zero done non-extract phases, "
                 "nothing rewritten or pruned)"
+            )
+        elif o.outcome == "classification_failed":
+            lines.append(
+                f"  OWNER page={o.page_id} section={o.section_id} "
+                f"REWRITTEN but CLASSIFICATION_FAILED error={o.error}"
             )
         elif o.outcome == "prune_failed":
             lines.append(
