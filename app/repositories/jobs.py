@@ -1064,15 +1064,22 @@ async def mark_failed_with_retry(
             release_event=release_event,
         )
         if outcome == job_id:
+            terminal = job.attempts >= max_attempts
             await phase_repo.reset_abandoned_phases(
                 session,
                 [job_id],
-                status="failed" if job.attempts >= max_attempts else "pending",
+                status="failed" if terminal else "pending",
                 error_message=(
-                    error_message if job.attempts >= max_attempts else None
+                    error_message if terminal else None
                 ),
                 source_statuses=("pending", "running"),
-                claim_token=claim_token,
+                # The scheduler already reset cancelled siblings to pending
+                # and cleared their phase tokens before this worker-level
+                # terminal write.  Once the fenced parent transition wins the
+                # job is failed and cannot be reclaimed, so terminal cleanup
+                # must include those same-run tokenless siblings.  Retriable
+                # transitions remain token-filtered to protect a new owner.
+                claim_token=None if terminal else claim_token,
             )
         return outcome
 

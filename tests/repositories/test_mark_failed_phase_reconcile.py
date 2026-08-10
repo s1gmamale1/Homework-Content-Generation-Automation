@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select, text, update
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_DB_INTEGRATION") != "1", reason="real DB only"
@@ -226,6 +226,44 @@ async def test_exhausted_retry_fails_every_non_done_phase_with_same_error(
         assert phases[name].error_message == message
         assert phases[name].completed_at is not None
         assert phases[name].claim_token is None
+    await db_session.commit()
+
+
+async def test_fenced_exhaustion_fails_scheduler_abandoned_sibling_without_token(
+    db_session, reconcile_job_factory
+):
+    """The scheduler clears a cancelled sibling's token before the worker's
+    terminal queue write.  Once the fenced parent transition wins, that same
+    run's tokenless pending sibling must still become visibly failed."""
+    from app.models.phase_output import PhaseOutput
+    from app.repositories import jobs as jobs_repo
+
+    row = await reconcile_job_factory(attempts=3, fenced=True)
+    await db_session.execute(
+        update(PhaseOutput)
+        .where(
+            PhaseOutput.job_id == row.job_id,
+            PhaseOutput.phase_name == "boss-arena",
+        )
+        .values(status="pending", claim_token=None, error_message=None)
+    )
+    message = "memory-check: connection reset"
+
+    outcome = await jobs_repo.mark_failed_with_retry(
+        db_session,
+        row.job_id,
+        error_message=message,
+        max_attempts=3,
+        claim_token=row.claim_token,
+    )
+
+    assert outcome == row.job_id
+    job, phases = await _state(db_session, row.job_id)
+    assert job.status == "failed"
+    assert phases["memory-check"].status == "failed"
+    assert phases["boss-arena"].status == "failed"
+    assert phases["boss-arena"].error_message == message
+    assert phases["extract"].status == "done"
     await db_session.commit()
 
 
