@@ -89,7 +89,7 @@ import hashlib
 import json
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -800,12 +800,216 @@ async def apply_plan(conn, plans: Sequence[GroupPlan]) -> tuple[int, int]:
     return sections_updated, jobs_updated
 
 
+# ─── refresh-notion (gesture 2: rewrite each owner's page authoritatively
+# from a manifest, then prune contaminating leaves) ────────────────────────
+#
+# Gesture 1 (`--apply --expect-plan-hash --manifest-out`) clears the
+# non-owner DB pointers and persists a manifest. Once that has run, the
+# collision query above returns nothing — there is no plan left to
+# re-derive — so this step reads the persisted manifest instead.
+#
+# EVERY owner in the manifest is rewritten, not just ones that would
+# classify "mixed": a newer non-owner section may have `auto_replace`d a
+# shared leaf (see `notion_archive.archive_job`) since the manifest was
+# written, so only a fresh authoritative rewrite can be trusted. Pruning of
+# contaminating leaves (`classify_page`'s `extra_child_page_ids`) happens
+# ONLY after that rewrite succeeds — a page whose rewrite raised must not
+# lose leaves it never got a chance to replace.
+#
+# GATE INVARIANT: before rewriting, each owner's LIVE `toc_entries` pointers
+# (re-read fresh, not the manifest's own pre-apply `expected` snapshot) must
+# still match what the manifest recorded for it. `manifest_load` already
+# checked the manifest's OWN internal integrity (hash over its `expected`
+# content); this is a SEPARATE check, against the current DB, so a section
+# that changed owner-identity after the manifest was written (e.g. reset by
+# a later repair run) is skipped rather than clobbered.
+
+_OWNER_PHASE_MD_SQL = """
+SELECT phase_name, output_md
+FROM phase_outputs
+WHERE job_id = :job_id AND status = 'done' AND phase_name != 'extract'
+ORDER BY phase_order
+"""
+
+_OWNER_POINTER_SQL = """
+SELECT notion_homework_page_id, notion_archived_job_id
+FROM toc_entries
+WHERE id = :section_id
+"""
+
+
+async def load_owner_phase_md(conn, job_id) -> dict[str, str]:
+    """Done, non-`extract` `phase_outputs` for one job as
+    `{phase_name: output_md}` — mirrors `notion_archive.archive_job`'s own
+    collection (blank/whitespace-only markdown is dropped, same rule the
+    live archive path uses)."""
+    from sqlalchemy import text
+
+    rows = (await conn.execute(text(_OWNER_PHASE_MD_SQL), {"job_id": job_id})).all()
+    return {r.phase_name: r.output_md for r in rows if (r.output_md or "").strip()}
+
+
+@dataclass(frozen=True)
+class OwnerRefreshOutcome:
+    page_id: str
+    section_id: str
+    job_id: str | None
+    outcome: Literal["rewritten", "owner_pointer_drift", "rewrite_failed", "no_owner_job"]
+    verdict: str | None = None  # classify_page verdict — set only when outcome == "rewritten"
+    pruned: int = 0
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class RefreshReport:
+    outcomes: tuple[OwnerRefreshOutcome, ...]
+
+    @property
+    def rewritten(self) -> int:
+        return sum(1 for o in self.outcomes if o.outcome == "rewritten")
+
+    @property
+    def pruned_total(self) -> int:
+        return sum(o.pruned for o in self.outcomes)
+
+    @property
+    def skipped_drift(self) -> int:
+        return sum(1 for o in self.outcomes if o.outcome == "owner_pointer_drift")
+
+    @property
+    def failed(self) -> int:
+        return sum(1 for o in self.outcomes if o.outcome == "rewrite_failed")
+
+
+async def refresh_owner_pages(
+    client,
+    manifest: Mapping,
+    conn,
+    load_owner_phase_md: Callable = load_owner_phase_md,
+) -> RefreshReport:
+    """Rewrite EVERY owner in `manifest["owners"]` authoritatively, then
+    prune leaves belonging to some other lesson — see the module comment
+    above for why every owner is rewritten (not just "mixed" ones) and why
+    pruning only happens after a successful rewrite. Never raises: one
+    owner's failure is recorded and the loop continues (fail-open per
+    page — see step (d) of the plan)."""
+    from sqlalchemy import text
+
+    from app.services.notion_archive import _push_with_retry
+
+    outcomes: list[OwnerRefreshOutcome] = []
+    for owner in manifest["owners"]:
+        page_id = owner["page_id"]
+        section_id = owner["section_id"]
+        job_id = owner["job_id"]
+
+        # The manifest persists ids as JSON strings; bind real UUID objects
+        # (like every other query in this module) rather than relying on
+        # the driver to infer a uuid cast from a bare string parameter.
+        row = (await conn.execute(
+            text(_OWNER_POINTER_SQL), {"section_id": UUID(section_id)},
+        )).first()
+        live_page_id = row.notion_homework_page_id if row is not None else None
+        live_job_id = (
+            str(row.notion_archived_job_id)
+            if row is not None and row.notion_archived_job_id is not None
+            else None
+        )
+        if row is None or live_page_id != page_id or live_job_id != job_id:
+            outcomes.append(OwnerRefreshOutcome(
+                page_id=page_id, section_id=section_id, job_id=job_id,
+                outcome="owner_pointer_drift",
+            ))
+            continue
+
+        if job_id is None:
+            # A tier-2/3 owner (picked on completion evidence, never
+            # actually stamped a job) has no phase_outputs to rewrite from.
+            # Nothing to push, nothing to prune — skip, don't crash.
+            outcomes.append(OwnerRefreshOutcome(
+                page_id=page_id, section_id=section_id, job_id=job_id,
+                outcome="no_owner_job",
+            ))
+            continue
+
+        phase_md = await load_owner_phase_md(conn, UUID(job_id))
+        owner_phase_set = set(phase_md)
+
+        try:
+            await _push_with_retry(
+                client=client, subject_page_id="", lesson_title="",
+                phase_md=phase_md, replace=True, homework_page_id=page_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail-open per page, see docstring
+            outcomes.append(OwnerRefreshOutcome(
+                page_id=page_id, section_id=section_id, job_id=job_id,
+                outcome="rewrite_failed", error=str(exc),
+            ))
+            continue
+
+        classification = classify_page(client, page_id, owner_phase_set)
+        pruned = 0
+        for extra_id in classification.extra_child_page_ids:
+            client.delete_block(extra_id)
+            pruned += 1
+
+        outcomes.append(OwnerRefreshOutcome(
+            page_id=page_id, section_id=section_id, job_id=job_id,
+            outcome="rewritten", verdict=classification.verdict, pruned=pruned,
+        ))
+
+    return RefreshReport(outcomes=tuple(outcomes))
+
+
+def format_refresh_report(report: RefreshReport) -> list[str]:
+    lines = [
+        f"refresh: rewritten={report.rewritten} pruned={report.pruned_total} "
+        f"skipped_drift={report.skipped_drift} rewrite_failed={report.failed}"
+    ]
+    for o in report.outcomes:
+        if o.outcome == "rewritten":
+            lines.append(
+                f"  OWNER page={o.page_id} section={o.section_id} "
+                f"REWRITTEN verdict={o.verdict} pruned={o.pruned}"
+            )
+        elif o.outcome == "owner_pointer_drift":
+            lines.append(
+                f"  OWNER page={o.page_id} section={o.section_id} "
+                "SKIPPED (owner_pointer_drift)"
+            )
+        elif o.outcome == "no_owner_job":
+            lines.append(
+                f"  OWNER page={o.page_id} section={o.section_id} "
+                "SKIPPED (no_owner_job)"
+            )
+        else:
+            lines.append(
+                f"  OWNER page={o.page_id} section={o.section_id} "
+                f"REWRITE_FAILED error={o.error}"
+            )
+    return lines
+
+
+def _default_client():
+    """The real Notion client. Deferred import — see the module docstring:
+    nothing app-adjacent may be imported before main()'s DATABASE_URL
+    preflight. Tests inject a fake via `client_factory` instead of ever
+    calling this."""
+    from app.config import settings
+    from app.services.notion.client import NotionClientWrapper
+
+    return NotionClientWrapper(api_key=settings.notion_api_key)
+
+
 async def run(
     *,
     database_url: str,
     apply: bool,
     expect_plan_hash: str | None = None,
     manifest_out: str | Path | None = None,
+    refresh_notion: bool = False,
+    plan_file: str | Path | None = None,
+    client_factory: Callable[[], object] = _default_client,
 ) -> int:
     if apply:
         if not expect_plan_hash:
@@ -823,12 +1027,34 @@ async def run(
             )
             return 2
 
+    if refresh_notion:
+        if not plan_file:
+            print(
+                "ERROR: --refresh-notion requires --plan-file (the manifest "
+                "written by a prior --apply run) — refusing to start",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            manifest = manifest_load(plan_file)
+        except (ValueError, OSError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+
     # Deferred import: see the module docstring — nothing app-adjacent may be
     # imported before main()'s DATABASE_URL preflight.
     from sqlalchemy.ext.asyncio import create_async_engine
 
     engine = create_async_engine(database_url, future=True)
     try:
+        if refresh_notion:
+            client = client_factory()
+            async with engine.connect() as conn:
+                report = await refresh_owner_pages(client, manifest, conn)
+            for line in format_refresh_report(report):
+                print(line)
+            return 0
+
         if apply:
             print(APPLY_BANNER)
         # Dry-run stays on a plain (read-only) connection — `engine.begin()`
@@ -912,14 +1138,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--plan-file", type=Path, default=None,
-        help="Path to a previously persisted plan manifest. Not yet wired "
-             "— wiring lands in a later task.",
+        help="Path to the manifest persisted by a prior --apply run. "
+             "Required by --refresh-notion.",
     )
     parser.add_argument(
         "--refresh-notion", action="store_true",
-        help="Rewrite the owner's Notion page for a manifest's groups after "
-             "--apply has already run. Not yet wired — wiring lands in a "
-             "later task.",
+        help="Rewrite every owner's Notion page from --plan-file "
+             "authoritatively, then prune leaves belonging to another "
+             "lesson. Run AFTER --apply has already cleared the DB "
+             "pointers. Requires --plan-file.",
     )
     return parser.parse_args(argv)
 
@@ -933,6 +1160,8 @@ def main(argv: list[str] | None = None) -> int:
             apply=args.apply,
             expect_plan_hash=args.expect_plan_hash,
             manifest_out=args.manifest_out,
+            refresh_notion=args.refresh_notion,
+            plan_file=args.plan_file,
         ))
     except PreflightError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

@@ -180,3 +180,404 @@ def test_page_classification_is_frozen_dataclass():
         pass
     else:
         raise AssertionError("PageClassification must be frozen")
+
+
+# ─── gesture 2: --refresh-notion --plan-file (real-DB + fake Notion) ──────
+#
+# After --apply clears the non-owner DB pointers (gesture 1), the collision
+# query returns nothing, so this step reads the manifest --apply wrote
+# instead of re-deriving a plan. For EVERY owner in the manifest — including
+# ones that will classify "clean" — the page is rewritten authoritatively
+# (a newer non-owner may have `auto_replace`d a shared leaf since the
+# manifest was written), and only a SUCCESSFUL rewrite is followed by
+# pruning the leaves `classify_page` flags as belonging to another lesson.
+#
+# Real scratch Postgres (RUN_DB_INTEGRATION=1 + DATABASE_URL) + a hand-built,
+# simulation-based fake Notion client (unlike the canned-response
+# `FakeNotionClient` above) — NEVER real Notion, NEVER production DB.
+#
+# Run:
+#   export DATABASE_URL="postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_scratch_notionrepair"
+#   RUN_DB_INTEGRATION=1 uv run python -m pytest \
+#     tests/scripts/test_repair_notion_refresh.py -q
+
+import json
+import os
+
+import pytest
+
+_needs_db = pytest.mark.skipif(
+    os.environ.get("RUN_DB_INTEGRATION") != "1",
+    reason="needs a real Postgres; set RUN_DB_INTEGRATION=1 + DATABASE_URL",
+)
+
+
+class FakeNotionArchiveClient:
+    """A SIMULATION-based fake (unlike `FakeNotionClient` above, which
+    replays canned dict responses): pages are actually created/removed as
+    the real `_push_to_notion` and `classify_page` would see them, so a
+    rewrite's *effects* are what the prune step reads. Mirrors `FakeNotion`
+    in tests/services/test_notion_lesson_collision.py, extended with
+    `get_block_children`/`delete_block` for the classify + prune step.
+
+    `raise_on_push`: a set of homework-page ids whose very first
+    `get_child_pages` call raises — simulates the whole push failing for
+    that page (the first client call `_push_to_notion` makes once
+    `homework_page_id` is already known)."""
+
+    def __init__(self, *, raise_on_push: set[str] | None = None) -> None:
+        self.pages: dict[str, dict] = {}      # id -> {"title", "parent"}
+        self.content: dict[str, list] = {}    # id -> appended blocks
+        self.deleted: list[str] = []
+        self._raise_on_push = raise_on_push or set()
+        self._n = 0
+
+    # -- the subset of NotionClientWrapper that _push_to_notion + classify_page touch --
+    def get_child_pages(self, parent_id):
+        if parent_id in self._raise_on_push:
+            raise RuntimeError(f"fake notion push failure: {parent_id}")
+        return [{"id": pid, "title": p["title"]}
+                for pid, p in self.pages.items() if p["parent"] == parent_id]
+
+    def get_block_children(self, block_id):
+        return self.content.get(block_id, [])
+
+    def create_page(self, parent_id, title, children=None):
+        self._n += 1
+        pid = f"pg{self._n}"
+        self.pages[pid] = {"title": title, "parent": parent_id}
+        return {"id": pid}
+
+    def page_has_content(self, page_id):
+        return bool(self.content.get(page_id))
+
+    def append_block_children(self, block_id, children):
+        self.content.setdefault(block_id, []).extend(children)
+
+    def clear_content_blocks(self, page_id):
+        self.content.pop(page_id, None)
+
+    def upload_bytes(self, data, file_name, content_type):
+        return "file-upload-id"
+
+    def delete_block(self, block_id):
+        self.deleted.append(block_id)
+        self.pages.pop(block_id, None)
+        self.content.pop(block_id, None)
+
+    # -- test helpers --
+    def seed_extra_leaf(self, *, homework_page_id, leaf_title, phase_file):
+        """Pre-seed a contaminating leaf directly under the homework page —
+        simulating pre-existing Notion content from BEFORE this refresh that
+        the rewrite (which only touches phases the owner actually has) will
+        leave untouched."""
+        self._n += 1
+        leaf_id = f"pg{self._n}"
+        self.pages[leaf_id] = {"title": leaf_title, "parent": homework_page_id}
+        self.content[leaf_id] = [{"type": "file", "file": {"name": phase_file}}]
+        return leaf_id
+
+
+async def _truncate() -> None:
+    from sqlalchemy import text
+
+    from app.db import SessionLocal
+
+    async with SessionLocal() as s:
+        await s.execute(text(
+            "TRUNCATE phase_outputs, homework_jobs, toc_entries, books "
+            "RESTART IDENTITY CASCADE"
+        ))
+        await s.commit()
+
+
+@pytest.fixture
+async def db_clean():
+    await _truncate()
+    yield
+    await _truncate()
+
+
+async def _seed_owner(*, page_id: str, phase_md: dict[str, str], drift: bool = False):
+    """Seed one toc_entries + homework_jobs + phase_outputs row representing
+    a manifest owner's LIVE state. `drift=True` seeds the live
+    notion_homework_page_id as something OTHER than `page_id`, simulating a
+    pointer that changed since the manifest was written."""
+    from app.db import SessionLocal
+    from app.models.book import Book
+    from app.models.homework_job import HomeworkJob
+    from app.models.phase_output import PhaseOutput
+    from app.models.toc_entry import TOCEntry
+
+    async with SessionLocal() as s:
+        book = Book(
+            subject="matematika", grade="5", original_filename="t.pdf",
+            content_sha256="a" * 64, file_size_bytes=1, status="toc_ready",
+        )
+        s.add(book)
+        await s.flush()
+
+        entry = TOCEntry(
+            book_id=book.id, section_title="Owner section", order_index=0,
+            page_start=1,
+            notion_homework_page_id="drifted-elsewhere" if drift else page_id,
+        )
+        s.add(entry)
+        await s.flush()
+
+        job = HomeworkJob(
+            book_id=book.id, toc_entry_id=entry.id, subject=book.subject,
+            status="done", provider="gemini", model="gemini-3.6-flash",
+            transport="api", output_language="uz",
+        )
+        s.add(job)
+        await s.flush()
+
+        entry.notion_archived_job_id = job.id
+        await s.flush()
+
+        for i, (phase_name, md) in enumerate(phase_md.items()):
+            s.add(PhaseOutput(
+                job_id=job.id, phase_name=phase_name, phase_order=i,
+                prompt_hash="h", model_name="gemini-3.6-flash",
+                status="done", output_md=md,
+            ))
+        await s.commit()
+        return entry.id, job.id
+
+
+def _write_manifest(tmp_path, owners):
+    """`owners`: list of (page_id, section_id, job_id). Builds real
+    `GroupPlan`/`SectionRow` objects and writes them through
+    `manifest_from_plans`, so the file matches exactly what `--apply` would
+    have produced."""
+    from scripts.repair_notion_collisions import (
+        GroupPlan, SectionRow, manifest_from_plans,
+    )
+
+    plans = []
+    for page_id, section_id, job_id in owners:
+        section = SectionRow(
+            section_id=section_id, page_id=page_id, section_title="t",
+            page_start=1, subject="matematika", grade="5",
+            stamped_job_id=job_id, jobs=(),
+        )
+        plans.append(GroupPlan(
+            page_id=page_id, sections=(section,), owner=section,
+            owner_source="stamped_push", owner_push=None,
+            ordering_disagreement=False,
+        ))
+    manifest = manifest_from_plans(plans)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return path
+
+
+async def _refresh(*, database_url, plan_file, client_factory):
+    from scripts.repair_notion_collisions import run
+
+    return await run(
+        database_url=database_url, apply=False,
+        refresh_notion=True, plan_file=plan_file, client_factory=client_factory,
+    )
+
+
+@_needs_db
+async def test_refresh_rewrites_every_owner_including_clean(db_clean, tmp_path):
+    """Both a 'clean' owner (nothing extra on the page) and a 'mixed' owner
+    (an extra pre-existing leaf) must get a `replace=True` rewrite — no
+    owner is skipped just because it would classify clean."""
+    clean_page = "hw-clean"
+    mixed_page = "hw-mixed"
+    clean_section, clean_job = await _seed_owner(
+        page_id=clean_page, phase_md={"case-based-preview": "# Preview"},
+    )
+    mixed_section, mixed_job = await _seed_owner(
+        page_id=mixed_page, phase_md={"case-based-preview": "# Preview"},
+    )
+    manifest_path = _write_manifest(tmp_path, [
+        (clean_page, clean_section, clean_job),
+        (mixed_page, mixed_section, mixed_job),
+    ])
+    client = FakeNotionArchiveClient()
+
+    rc = await _refresh(
+        database_url=os.environ["DATABASE_URL"],
+        plan_file=manifest_path, client_factory=lambda: client,
+    )
+
+    assert rc == 0
+    # Both pages actually received a leaf write — the fake only records a
+    # page as having content once append_block_children ran on it.
+    clean_leaf = next(
+        pid for pid, p in client.pages.items()
+        if p["parent"] == clean_page and p["title"] == "Case-Based Preview"
+    )
+    mixed_leaf = next(
+        pid for pid, p in client.pages.items()
+        if p["parent"] == mixed_page and p["title"] == "Case-Based Preview"
+    )
+    assert client.content[clean_leaf], "clean owner's page was not rewritten"
+    assert client.content[mixed_leaf], "mixed owner's page was not rewritten"
+
+
+@_needs_db
+async def test_refresh_prunes_extras_after_success(db_clean, tmp_path):
+    """A mixed owner's pre-existing extra leaf (belonging to some OTHER
+    lesson) must be pruned via `delete_block` after the rewrite succeeds —
+    and ONLY that extra leaf, not the owner's own rewritten leaf."""
+    page_id = "hw-mixed-2"
+    section_id, job_id = await _seed_owner(
+        page_id=page_id, phase_md={"case-based-preview": "# Preview"},
+    )
+    manifest_path = _write_manifest(tmp_path, [(page_id, section_id, job_id)])
+    client = FakeNotionArchiveClient()
+    extra_leaf_id = client.seed_extra_leaf(
+        homework_page_id=page_id, leaf_title="Boss Arena",
+        phase_file="boss-arena.md",
+    )
+
+    rc = await _refresh(
+        database_url=os.environ["DATABASE_URL"],
+        plan_file=manifest_path, client_factory=lambda: client,
+    )
+
+    assert rc == 0
+    assert client.deleted == [extra_leaf_id]
+    owner_leaf = next(
+        pid for pid, p in client.pages.items()
+        if p["parent"] == page_id and p["title"] == "Case-Based Preview"
+    )
+    assert owner_leaf not in client.deleted
+
+
+@_needs_db
+async def test_failed_rewrite_prunes_nothing(db_clean, tmp_path, monkeypatch):
+    """A page whose rewrite raises (every retry attempt) must be recorded as
+    a failure and prune NOTHING for it — but a second, healthy owner must
+    still be processed."""
+    import app.services.notion_archive as na
+    monkeypatch.setattr(na, "_PUSH_BACKOFF_BASE_SECONDS", 0.0)
+
+    failing_page = "hw-failing"
+    healthy_page = "hw-healthy"
+    failing_section, failing_job = await _seed_owner(
+        page_id=failing_page, phase_md={"case-based-preview": "# Preview"},
+    )
+    healthy_section, healthy_job = await _seed_owner(
+        page_id=healthy_page, phase_md={"case-based-preview": "# Preview"},
+    )
+    manifest_path = _write_manifest(tmp_path, [
+        (failing_page, failing_section, failing_job),
+        (healthy_page, healthy_section, healthy_job),
+    ])
+    client = FakeNotionArchiveClient(raise_on_push={failing_page})
+    extra_leaf_id = client.seed_extra_leaf(
+        homework_page_id=failing_page, leaf_title="Boss Arena",
+        phase_file="boss-arena.md",
+    )
+
+    from scripts.repair_notion_collisions import refresh_owner_pages
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(os.environ["DATABASE_URL"], future=True)
+    try:
+        async with engine.connect() as conn:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            report = await refresh_owner_pages(client, manifest, conn)
+    finally:
+        await engine.dispose()
+
+    outcomes = {o.page_id: o for o in report.outcomes}
+    assert outcomes[failing_page].outcome == "rewrite_failed"
+    assert extra_leaf_id not in client.deleted, "a failed rewrite must prune NOTHING"
+    assert outcomes[healthy_page].outcome == "rewritten"
+    healthy_leaf = next(
+        pid for pid, p in client.pages.items()
+        if p["parent"] == healthy_page and p["title"] == "Case-Based Preview"
+    )
+    assert client.content[healthy_leaf]
+
+
+# These two gate checks (`run()` returns before ever creating a DB engine —
+# see `scripts/repair_notion_collisions.run`) genuinely need no database at
+# all, so they run unconditionally (no `_needs_db`, no scratch Postgres) —
+# a bogus `database_url` proves the point: it is never dialed.
+_UNUSED_DATABASE_URL = "postgresql+asyncpg://unused:unused@127.0.0.1:5432/unused_no_such_db"
+
+
+async def test_refresh_requires_plan_file(tmp_path):
+    """`--refresh-notion` without `--plan-file`: clear error, non-zero exit,
+    zero side effects (no engine, no Notion client)."""
+    calls = []
+
+    rc = await _refresh(
+        database_url=_UNUSED_DATABASE_URL,
+        plan_file=None, client_factory=lambda: calls.append(1),
+    )
+
+    assert rc != 0
+    assert calls == [], "the client must never be constructed"
+
+
+async def test_refresh_rejects_tampered_manifest(tmp_path):
+    """A hand-edited manifest (its `expected` content no longer matches the
+    stored hash) must fail `manifest_load`'s internal integrity check —
+    refresh exits non-zero and never touches Notion. No DB row needs to be
+    real for this: `manifest_load`'s hash check is pure, over the manifest
+    file's own content, and `run()` returns before ever opening a DB
+    connection — arbitrary ids are enough."""
+    from uuid import uuid4
+
+    manifest_path = _write_manifest(
+        tmp_path, [("hw-tampered", uuid4(), uuid4())],
+    )
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["expected"]["groups"][0]["owner_source"] = "TAMPERED"
+    manifest_path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    calls = []
+
+    rc = await _refresh(
+        database_url=_UNUSED_DATABASE_URL,
+        plan_file=manifest_path, client_factory=lambda: calls.append(1),
+    )
+
+    assert rc != 0
+    assert calls == [], "a tampered manifest must never reach the Notion client"
+
+
+@_needs_db
+async def test_refresh_skips_owner_whose_pointer_drifted(db_clean, tmp_path):
+    """The manifest says owner -> pageX, but the DB now has that owner's
+    live `notion_homework_page_id` pointing elsewhere (drifted since the
+    manifest was written) — SKIP that owner (`owner_pointer_drift`), no
+    rewrite, and a healthy owner in the same manifest is still processed."""
+    drifted_page = "hw-was-pagex"
+    drifted_section, drifted_job = await _seed_owner(
+        page_id=drifted_page, phase_md={"case-based-preview": "# Preview"},
+        drift=True,
+    )
+    healthy_page = "hw-still-good"
+    healthy_section, healthy_job = await _seed_owner(
+        page_id=healthy_page, phase_md={"case-based-preview": "# Preview"},
+    )
+    manifest_path = _write_manifest(tmp_path, [
+        (drifted_page, drifted_section, drifted_job),
+        (healthy_page, healthy_section, healthy_job),
+    ])
+    client = FakeNotionArchiveClient()
+
+    rc = await _refresh(
+        database_url=os.environ["DATABASE_URL"],
+        plan_file=manifest_path, client_factory=lambda: client,
+    )
+
+    assert rc == 0
+    assert not any(
+        p["parent"] == drifted_page for p in client.pages.values()
+    ), "the drifted owner must not have been rewritten"
+    healthy_leaf = next(
+        pid for pid, p in client.pages.items()
+        if p["parent"] == healthy_page and p["title"] == "Case-Based Preview"
+    )
+    assert client.content[healthy_leaf], "the healthy owner must still be processed"
