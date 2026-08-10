@@ -1202,3 +1202,11 @@ DATABASE_URL=postgresql+asyncpg://edu:edu@localhost:5433/edu_homework `
 ### Dashboard viewer port (read-only, worklog 0153)
 
 `uv run uvicorn viewer_main:app --host 0.0.0.0 --port 8001` serves ONLY the coverage dashboard: a trimmed SPA build (`web/dist-viewer`, `npm run build:viewer`) and the single GET aggregate, gated by `DASHBOARD_TOKEN` (header-only; strictly disjoint from `AUTH_TOKEN` — either overlap or an empty token refuses startup). No worker, no sweeps, no mutating route exists in the process — hand the URL+token to a non-technical viewer; it is useless against the operator app. Rows are non-clickable in viewer mode (the viewer router has no /book pages).
+### Legacy Notion collision repair
+
+The one-time R26 repair is deliberately staged: a dry-run computes a full-state
+plan hash; after archivers are drained, `--apply` clears only expected non-owner
+database pointers and writes a manifest; `--refresh-notion --plan-file` then
+rewrites each retained owner's page and prunes extra leaves only after a
+successful rewrite. Production execution remains an operator action, never an
+automatic generation step.
