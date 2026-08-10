@@ -21,7 +21,9 @@
 - `--arm-stop` is not permission to spend. It only changes how the already-running watcher responds to a proven hard violation.
 - A hard stop pauses exact soak batches and, if no foreign fleet pause exists, sets the fleet API pause. The run's own `lease-soak-staging:<run-id>` pause is not foreign and may be replaced by `lease-soak-stop:<run-id>`. It never mass-cancels running jobs, never deletes evidence, and never auto-unpauses.
 - Notion safety is fail-closed. The scope lists forbidden English mapping keys and each attested worker must prove those keys absent. The expected terminal outcome is `notion_archived_at IS NULL` plus a non-empty `notion_skip_reason` for every scoped job.
-- Never serialize the API key, database URL, environment values, or a reversible credential. Evidence may contain only the shared, non-reversible credential fingerprint already used by the limiter.
+- Fleet attestation is never hand-authored. Each participating host runs `attest-local` from the final deployed checkout; it reads effective settings/environment, discovers the one live worker process, derives its registry `pc_id`, fingerprints the effective Gemini credential without exposing it, hashes required PDFs, and emits only sanitized canonical JSON to stdout. `attest-aggregate` deterministically validates and combines those exact per-host artifacts; preflight then cross-checks them against live registry rows.
+- Attestation trust terminates at the authenticated fleet-management channel that executes the command and captures stdout. The JSON is not a cryptographic remote-attestation claim; copying or editing it by hand is prohibited. Canonical input digests make accidental substitution/reordering visible, while the live registry cross-check detects stale/restarted worker processes.
+- Never serialize the API key, database URL, environment values, or a reversible credential. Evidence may contain only the plain-key, non-reversible credential fingerprint already used by the limiter; a Vertex project identity is ineligible for this particular soak, not deleted or reassigned.
 - PostgreSQL hardening is process-local: asyncpg `server_settings`, not `ALTER SYSTEM`, not `ALTER ROLE`, and no migration. Use `application_name` plus `idle_in_transaction_session_timeout=300000` (five minutes) on each newly opened head/worker connection.
 - Tests that need PostgreSQL are opt-in with `RUN_DB_INTEGRATION=1` and must point at a scratch database. Canonical unit tests must exercise every decision rule without that flag.
 - Work proceeds test-first, one commit per task, with an independent review after each task. No implementation branch self-merges.
@@ -36,6 +38,7 @@
 - Open PRs `#108`, `#117`, and `#118` do not touch `scripts/fenced_lease_soak.py`, the planned tests, or `app/db.py`. Their authors are not `s1gmamale1`, but this lane still treats all PRs as read-only.
 - No local/remote branch or worktree contains `scripts/fenced_lease_soak.py` or any planned test path.
 - The scope amendment for DB session hardening triggered a second fetch/scan. No active branch or open PR modifies `app/db.py` or `tests/test_db_pool_config.py`. Several stale/active branches change `app/config.py`; this plan deliberately adds no setting there, avoiding ownership overlap.
+- The attestation amendment triggered a third fetch/scan. No branch or open PR contains `scripts/fenced_lease_soak.py` or `tests/scripts/test_fenced_lease_soak_attestation.py`; the helper reads `app.config.Settings` field metadata and reuses `app.services.code_version`, `app.services.credential_id`, and the documented `storage.book_pdf_path` layout without modifying their actively shared paths. It explicitly does not trust module-global `settings` for a different process.
 - Isolated planning worktree: `/Users/macmini5/Documents/HCGA-fenced-soak-plan`, branch `plan/fenced-lease-soak-controller`. The shared checkout's untracked files are untouched.
 - Baseline: `13 passed` for `tests/services/test_lease_types.py`, `tests/services/test_worker_version_gate.py`, and `tests/test_db_pool_config.py`.
 
@@ -46,6 +49,7 @@
 - Create `tests/integration/test_db_session_settings.py`: prove asyncpg applies the application name and idle-transaction timeout on a scratch PostgreSQL connection.
 - Create `scripts/fenced_lease_soak.py`: contracts, read-only store, preflight rules, runtime snapshot rules, JSON evidence, watch loop, and armed stop writer. Keep this as one script because it is an operator tool with one CLI and one evidence format; pure functions and protocols provide test boundaries.
 - Create `tests/scripts/test_fenced_lease_soak_contracts.py`: JSON contract validation, redaction, scope exactness, CLI write-gate tests.
+- Create `tests/scripts/test_fenced_lease_soak_attestation.py`: hermetic effective-setting, process discovery, credential fingerprint, PDF hash, secret-absence, and deterministic aggregation tests.
 - Create `tests/scripts/test_fenced_lease_soak_preflight.py`: migration, fleet, queue, DB, credential, PDF, Notion, and budget preflight bite tests.
 - Create `tests/scripts/test_fenced_lease_soak_snapshot.py`: lease/token/phase/error/cost/quality decision-rule bite tests.
 - Create `tests/scripts/test_fenced_lease_soak_watch.py`: deterministic watch/settle/JSONL/pass/fail tests.
@@ -246,18 +250,21 @@ git commit -m "fix(db): bound and identify idle transactions"
 
 ---
 
-### Task 2: Pin immutable scope, attestation, findings, and CLI write gates
+### Task 2: Pin immutable contracts and derive trusted local attestations
 
 **Files:**
 - Create: `scripts/fenced_lease_soak.py`
 - Create: `tests/scripts/test_fenced_lease_soak_contracts.py`
+- Create: `tests/scripts/test_fenced_lease_soak_attestation.py`
 
 **Interfaces:**
 - Produces Pydantic models `SoakScope`, `FleetAttestation`, `WorkerAttestation`, `Finding`, `SoakSnapshot`, and `StopReceipt`.
-- Produces `load_scope(path: Path) -> SoakScope`, `load_attestation(path: Path) -> FleetAttestation`, `redacted_model_dump(model: BaseModel) -> dict`, and `parse_args(argv: Sequence[str]) -> argparse.Namespace`.
-- `SoakScope` fields: `run_id`, aware-UTC `since`, exact `batch_ids`, exact `job_ids`, `target_running`, `expected_git_sha`, `expected_code_version`, expected four concurrency knobs, `legacy_gemini_var_must_be_absent`, `structured_output_enabled`, `required_book_sha256`, `forbidden_notion_mapping_keys`, `expected_models_by_operation_prefix`, `approved_incremental_cost_usd`, `fleet_cost_limit_usd`, `db_preflight_connection_limit`, `db_hard_stop_connection_limit`, `heartbeat_max_age_seconds`, `attestation_max_age_seconds`, and `settle_seconds`.
-- `FleetAttestation` fields: `observed_at`, `credential_fingerprint`, and non-empty `workers`.
-- Each `WorkerAttestation` fields: exact `pc_id`, `hostname`, `observed_at`, `git_sha`, `code_version`, `worker_concurrency`, `agent_max_concurrency`, `credential_max_concurrent_gemini`, `credential_slot_wait_seconds`, `gemini_max_concurrency_present`, `structured_output_enabled`, `process_count_for_host`, `credential_fingerprint`, `pdf_sha256_by_book`, and `notion_mapping_keys`.
+- Produces `load_scope(source: Path | Literal["-"], *, stdin: TextIO = sys.stdin) -> SoakScope`, `load_attestation(path: Path) -> FleetAttestation`, `redacted_model_dump(model: BaseModel) -> dict`, and `parse_args(argv: Sequence[str]) -> argparse.Namespace`.
+- Produces a narrow `ProcessView` protocol (`pid`, `status()`, `cmdline()`, `environ()`, `cwd()`), `discover_worker_processes(processes: Iterable[ProcessView]) -> list[ProcessView]`, `effective_worker_contract(worker_env: Mapping[str, str]) -> EffectiveWorkerContract`, `build_local_attestation(scope, *, hostname, processes, now, git_identity=None) -> WorkerAttestation`, `canonical_json(model) -> str`, and `aggregate_attestations(scope, workers, *, now) -> FleetAttestation`.
+- Produces injectable `main(argv, *, process_source=None, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr, hostname=None, now=None, git_identity=None) -> int`; production defaults use `psutil`, `socket`, the real clock, and git, while tests inject all of them and prove the command never opens a database or network client.
+- `SoakScope` fields: `run_id`, aware-UTC `since`, exact `batch_ids`, exact `job_ids`, exact `participant_hosts`, `target_running`, `expected_git_sha`, `expected_code_version`, expected four concurrency knobs, `legacy_gemini_var_must_be_absent`, `structured_output_enabled`, `required_book_sha256`, `forbidden_notion_mapping_keys`, `expected_models_by_operation_prefix`, `approved_incremental_cost_usd`, `fleet_cost_limit_usd`, `db_preflight_connection_limit`, `db_hard_stop_connection_limit`, `heartbeat_max_age_seconds`, `attestation_max_age_seconds`, and `settle_seconds`.
+- `FleetAttestation` fields: `scope_sha256`, `observed_at`, `credential_fingerprint`, ordered `input_artifact_sha256`, and non-empty ordered `workers`.
+- Each `WorkerAttestation` fields: `scope_sha256`, exact `pc_id`, `hostname`, `observed_at`, `git_sha`, `code_version`, `worker_concurrency`, `agent_max_concurrency`, `credential_max_concurrent_gemini`, `credential_slot_wait_seconds`, `gemini_max_concurrency_present`, `structured_output_enabled`, `process_count_for_host`, `credential_fingerprint`, `pdf_sha256_by_book: dict[str, str | None]`, and `notion_mapping_keys`.
 
 - [ ] **Step 1: Write contract RED tests**
 
@@ -294,6 +301,13 @@ def test_final_deployed_identity_is_caller_supplied_not_baked_in():
     assert scope.expected_code_version == 1001
 
 
+def test_scope_pins_exact_participating_hosts():
+    raw = valid_scope_dict()
+    raw["participant_hosts"] = ["Host-02", "Host-02"]
+    with pytest.raises(ValidationError, match="duplicate participant host"):
+        soak.SoakScope.model_validate(raw)
+
+
 def test_unarmed_watch_is_read_only_by_construction():
     args = soak.parse_args([
         "watch", "--scope", "scope.json", "--attestation", "fleet.json",
@@ -327,13 +341,212 @@ uv run pytest tests/scripts/test_fenced_lease_soak_contracts.py -q
 
 Expected: import fails because the script does not exist.
 
-- [ ] **Step 3: Implement exact models and CLI**
+- [ ] **Step 3: Write local-attestation and aggregation RED tests**
+
+Create `tests/scripts/test_fenced_lease_soak_attestation.py` with injected settings, environment, clock, processes, and temporary PDFs. Do not read the developer machine's real `.env` or process table in tests.
+
+```python
+def test_local_attestation_reports_effective_config_and_registry_identity(tmp_path):
+    scope = valid_scope(
+        participant_hosts=["Host-02"],
+        expected_git_sha="fedcba9",
+        expected_code_version=1001,
+        required_book_sha256={str(BOOK): sha256_bytes(b"pdf")},
+    )
+    pdf = tmp_path / "books" / str(BOOK) / "source.pdf"
+    pdf.parent.mkdir(parents=True)
+    pdf.write_bytes(b"pdf")
+    worker_env = {
+        "DATABASE_URL": "postgresql+asyncpg://not-emitted@db/test",
+        "GEMINI_API_KEY": "plain-secret-key",
+        "WORKER_CONCURRENCY": "2",
+        "AGENT_MAX_CONCURRENCY": "4",
+        "CREDENTIAL_MAX_CONCURRENT_GEMINI": "32",
+        "CREDENTIAL_SLOT_WAIT_SECONDS": "120",
+        "STRUCTURED_OUTPUT_ENABLED": "false",
+        "VAR_DIR": str(tmp_path),
+        "NOTION_SUBJECT_PAGES": '{"matematika|5":"page-secret"}',
+    }
+    worker = soak.build_local_attestation(
+        scope,
+        hostname="Host-02",
+        processes=[process(
+            pid=4242,
+            cmdline=["python", "-m", "app.services.worker"],
+            environ=worker_env,
+            cwd=tmp_path,
+        )],
+        now=UTC_NOW,
+        git_identity=(1001, "fedcba9"),
+    )
+    assert worker.pc_id == "Host-02:4242@fedcba9"
+    assert worker.process_count_for_host == 1
+    assert worker.worker_concurrency == 2
+    assert worker.agent_max_concurrency == 4
+    assert worker.credential_max_concurrent_gemini == 32
+    assert worker.credential_slot_wait_seconds == 120
+    assert worker.pdf_sha256_by_book[str(BOOK)] == sha256_bytes(b"pdf")
+    assert worker.notion_mapping_keys == ["matematika|5"]
+    assert worker.scope_sha256 == soak.sha256_canonical(scope)
+
+
+def test_target_worker_environment_wins_over_helper_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_MAX_CONCURRENCY", "99")
+    worker = build_valid_local_attestation(
+        tmp_path, worker_environ={"AGENT_MAX_CONCURRENCY": "4"}
+    )
+    assert worker.agent_max_concurrency == 4
+
+
+def test_effective_contract_defaults_and_constraints_match_settings():
+    contract = soak.effective_worker_contract({})
+    assert contract.worker_concurrency == Settings.model_fields["worker_concurrency"].default
+    assert contract.agent_max_concurrency == Settings.model_fields["agent_max_concurrency"].default
+    assert contract.credential_max_concurrent_gemini == Settings.model_fields[
+        "credential_max_concurrent_gemini"
+    ].default
+    assert contract.credential_slot_wait_seconds == Settings.model_fields[
+        "credential_slot_wait_seconds"
+    ].default
+    assert contract.structured_output_enabled is Settings.model_fields[
+        "structured_output_enabled"
+    ].default
+    with pytest.raises(ValidationError):
+        soak.effective_worker_contract({"CREDENTIAL_SLOT_WAIT_SECONDS": "0"})
+
+
+def test_local_attestation_never_emits_secrets_or_notion_values(tmp_path):
+    env = {
+        "GEMINI_API_KEY": "plain-secret-key",
+        "DATABASE_URL": "postgresql+asyncpg://secret@db/edu_copy",
+        "AUTH_TOKEN": "operator-secret",
+    }
+    worker = build_valid_local_attestation(
+        tmp_path, worker_environ=env, notion_pages={"matematika|5": "page-secret"}
+    )
+    encoded = soak.canonical_json(worker)
+    assert "plain-secret-key" not in encoded
+    assert "postgresql" not in encoded
+    assert "operator-secret" not in encoded
+    assert "page-secret" not in encoded
+    assert worker.credential_fingerprint == credential_id.credential_for("gemini", env)
+
+
+def test_local_attestation_rejects_vertex_project_identity(tmp_path):
+    env = {
+        "GOOGLE_APPLICATION_CREDENTIALS": "/private/sa.json",
+        "GOOGLE_CLOUD_PROJECT": "project-visible-name",
+    }
+    with pytest.raises(soak.AttestationError, match="plain Gemini API key"):
+        build_valid_local_attestation(tmp_path, worker_environ=env)
+
+
+@pytest.mark.parametrize(
+    "processes",
+    [
+        [],
+        [
+            process(pid=1, cmdline=["python", "-m", "app.services.worker"]),
+            process(pid=2, cmdline=["python", "-m", "app.services.worker"]),
+        ],
+    ],
+)
+def test_local_attestation_fails_unless_exactly_one_worker_process(processes):
+    with pytest.raises(soak.AttestationError, match="exactly one worker process"):
+        build_valid_local_attestation(processes=processes)
+
+
+def test_local_attestation_fails_when_target_environment_is_unreadable():
+    worker = process(
+        pid=1,
+        cmdline=["python", "-m", "app.services.worker"],
+        environ_error=psutil.AccessDenied(pid=1),
+    )
+    with pytest.raises(soak.AttestationError, match="worker environment"):
+        build_valid_local_attestation(processes=[worker])
+
+
+def test_uv_wrapper_is_not_counted_as_a_second_worker_process():
+    processes = [
+        process(pid=10, cmdline=["uv", "run", "python", "-m", "app.services.worker"]),
+        process(pid=11, cmdline=["python", "-m", "app.services.worker"]),
+    ]
+    assert [p.pid for p in soak.discover_worker_processes(processes)] == [11]
+
+
+def test_attest_local_cli_emits_one_sanitized_json_line_without_io(tmp_path):
+    stdout, stderr = io.StringIO(), io.StringIO()
+    rc = soak.main(
+        ["attest-local", "--scope", "-"],
+        process_source=lambda: [valid_worker_process(tmp_path)],
+        stdin=io.StringIO(canonical_scope_json()),
+        stdout=stdout,
+        stderr=stderr,
+        hostname="Host-02",
+        now=lambda: UTC_NOW,
+        git_identity=lambda env: (1001, "fedcba9"),
+    )
+    assert rc == 0
+    assert stdout.getvalue().count("\n") == 1
+    assert stderr.getvalue() == ""
+    assert "plain-secret-key" not in stdout.getvalue()
+
+
+def test_aggregation_is_order_independent_and_canonical(tmp_path):
+    scope = valid_scope(participant_hosts=["Host-02", "Host-03"])
+    h2 = valid_worker(hostname="Host-02", pid=2)
+    h3 = valid_worker(hostname="Host-03", pid=3)
+    a = soak.aggregate_attestations(scope, [h3, h2], now=UTC_NOW)
+    b = soak.aggregate_attestations(scope, [h2, h3], now=UTC_NOW)
+    assert soak.canonical_json(a) == soak.canonical_json(b)
+    assert [w.hostname for w in a.workers] == ["Host-02", "Host-03"]
+    assert a.input_artifact_sha256 == sorted(a.input_artifact_sha256)
+
+
+def test_aggregation_rejects_missing_duplicate_or_unexpected_hosts():
+    scope = valid_scope(participant_hosts=["Host-02", "Host-03"])
+    with pytest.raises(soak.AttestationError, match="participant host set mismatch"):
+        soak.aggregate_attestations(
+            scope, [valid_worker(hostname="Host-02")], now=UTC_NOW
+        )
+    with pytest.raises(soak.AttestationError, match="duplicate hostname"):
+        soak.aggregate_attestations(
+            scope,
+            [valid_worker(hostname="Host-02", pid=1), valid_worker(hostname="Host-02", pid=2)],
+            now=UTC_NOW,
+        )
+
+
+def test_aggregation_rejects_artifact_from_another_scope():
+    scope = valid_scope(participant_hosts=["Host-02"])
+    other = valid_scope(participant_hosts=["Host-02"], job_ids=[uuid4()])
+    worker = valid_worker(
+        hostname="Host-02", scope_sha256=soak.sha256_canonical(other)
+    )
+    with pytest.raises(soak.AttestationError, match="scope digest"):
+        soak.aggregate_attestations(scope, [worker], now=UTC_NOW)
+```
+
+- [ ] **Step 4: Run all Task 2 RED tests**
+
+Run:
+
+```bash
+uv run pytest tests/scripts/test_fenced_lease_soak_contracts.py \
+  tests/scripts/test_fenced_lease_soak_attestation.py -q
+```
+
+Expected: failures because the contracts and attestation helpers do not exist.
+
+- [ ] **Step 5: Implement exact models and four-command CLI**
 
 Use `extra="forbid"` on every persisted model. Normalize all UUID lists by rejecting duplicates, not silently deduplicating them. Validate `run_id` against `^[a-z0-9][a-z0-9-]{0,44}$` (45 characters keeps both pause reasons inside `String(64)`), `expected_git_sha` against `^[0-9a-f]{7,40}$`, `expected_code_version > 0`, validate `since.tzinfo`, convert to UTC, require `target_running > 0`, require `db_preflight_connection_limit < db_hard_stop_connection_limit`, require `approved_incremental_cost_usd > 0`, and require all PDF SHA-256 values to match `^[0-9a-f]{64}$`. The module must not define a baked-in expected SHA or code-version constant; both come only from `SoakScope`. `redacted_model_dump` recursively removes values whose field names match secret-bearing names (`gemini_api_key`, `api_key`, `token`, `secret`, `password`, `database_url`) while explicitly retaining the safe contract fields `credential_fingerprint`, `forbidden_notion_mapping_keys`, and `claim_token`.
 
 The CLI surface is exact:
 
 ```text
+fenced_lease_soak.py attest-local --scope PATH|-
+fenced_lease_soak.py attest-aggregate --scope PATH|- --input PATH [--input PATH ...]
 fenced_lease_soak.py preflight --scope PATH --attestation PATH --artifact-dir DIR
 fenced_lease_soak.py watch --scope PATH --attestation PATH --artifact-dir DIR
                               [--interval-seconds 2]
@@ -354,21 +567,55 @@ class ExitCode(IntEnum):
 
 The parser must reject `--confirm-arm` without `--arm-stop`. `watch` with `--arm-stop` must reject unless `--confirm-arm` equals `f"lease-soak-stop:{scope.run_id}"` after the scope is loaded.
 
-- [ ] **Step 4: Run green contract tests**
+- [ ] **Step 6: Implement the local attestation without a network or database dependency**
+
+`attest-local` does not assume the helper process inherited the worker's environment. After identifying the one live worker PID, read that process's environment and cwd through `psutil.Process.environ()` / `.cwd()`; fail closed on access denial. Build `EffectiveWorkerContract` from those target-process values, never from module-global `settings`. Define the contract as a dedicated Pydantic model whose aliases are the uppercase environment names, whose defaults are taken from the corresponding `Settings.model_fields`, and whose constraints/types mirror `Settings` for `worker_concurrency`, `agent_max_concurrency`, `credential_max_concurrent_gemini`, `credential_slot_wait_seconds`, `structured_output_enabled`, `var_dir`, and `notion_subject_pages`. A drift test pins those shared defaults and constraints. This catches a scheduled-task/export override that differs from the helper shell.
+
+Derive credential identity with the existing pure `credential_id.credential_for("gemini", worker_env)`; never inspect or emit the key. This soak is specifically the shared plain-API-key deployment: require `GEMINI_API_KEY` to be non-empty and the resulting identity to match `^gemini:[0-9a-f]{16}$`. Reject a Vertex-only identity such as `gemini:<project-id>` rather than publishing a reversible project identifier or silently mixing billing pools. This does not remove or mutate any preserved Vertex assignment; it only makes a Vertex-backed host ineligible for this soak scope. Call `code_version.detect(env=worker_env)` so a worker's explicit version override is included, while git SHA comes from the deployed checkout running the command. The later exact registry `pc_id` cross-check rejects a running process that has not restarted onto that checkout.
+
+Resolve `VAR_DIR` from the target worker environment/default. If relative, anchor it at the target worker's cwd, then use `<var_dir>/books/<book-id>/source.pdf` (the same contract as `storage.book_pdf_path`) and stream SHA-256 in 1 MiB chunks. Missing files are represented as `null` hashes so aggregation/preflight fail closed.
+
+Discover worker processes with `psutil.process_iter(["pid", "status", "cmdline"])`. Exclude zombies, the attestation command itself, and wrapper parents such as `uv`: the executable basename must be `python`, `python3`, `python.exe`, or start with `python3.`. A live process matches only when its normalized argv contains the adjacent module pair `-m`, `app.services.worker`; do not substring-match arbitrary command text. Require exactly one matching Python PID. Construct `pc_id = f"{hostname}:{worker_pid}@{git_sha}"`, which is the same shape published by `worker._worker_id`. Do not emit command lines or environment values.
+
+`gemini_max_concurrency_present` is derived from key presence in the target worker environment; it does not emit the deprecated value. Parse `NOTION_SUBJECT_PAGES` through `EffectiveWorkerContract` and emit only sorted top-level subject/grade keys, never page IDs or nested selector values. Bind every local artifact to the exact canonical `SoakScope` with `scope_sha256 = sha256(canonical_json(scope))`; this prevents an otherwise-valid artifact from a different stage/job/PDF scope being reused accidentally. Validate the produced model shape and require the local hostname to be in `scope.participant_hosts` before writing canonical JSON to stdout; cross-host/scope equality is enforced by aggregation so a missing PDF can remain explicit as `null` evidence instead of disappearing behind a generic local error. Diagnostics go to stderr. The command has no output-file flag, opens no database engine, imports no transport/provider client, and makes no HTTP request. `main(...)` receives injectable process/stdin/stdout/clock/hostname/git providers so the CLI path itself—not only helpers—is RED/GREEN tested without reading the developer machine.
+
+- [ ] **Step 7: Implement deterministic aggregation**
+
+`attest-aggregate` reads one or more per-host JSON artifacts, validates each as `WorkerAttestation`, and rejects:
+
+- any worker `scope_sha256` different from the canonical input scope digest;
+- a host set different from `scope.participant_hosts`;
+- duplicate hostname or `pc_id`;
+- any `process_count_for_host != 1`;
+- stale `observed_at`;
+- mixed/final-identity mismatch;
+- config mismatch against scope;
+- mixed/missing credential fingerprints;
+- missing or wrong PDF hash;
+- any forbidden Notion mapping key.
+
+Compute each input digest over its parsed canonical `WorkerAttestation` JSON, not original whitespace. Sort workers by `(hostname, pc_id)` and digests lexicographically. Set the fleet `scope_sha256` to the canonical input scope digest and `observed_at` to the maximum worker timestamp. Emit only `canonical_json(FleetAttestation) + "\n"` to stdout. Reversing input argument order must be byte-identical.
+
+Preflight's registry cross-check is exact and deterministic: aggregated hostname/`pc_id` pairs must equal `scope.participant_hosts` plus the live claimable registry rows. The DB remains the authority for heartbeat freshness/status/capability; the local artifact is the authority for process configuration, filesystem hashes, and environment-derived fingerprint/mapping keys. Neither alone is sufficient.
+
+- [ ] **Step 8: Run green Task 2 tests**
 
 Run:
 
 ```bash
-uv run pytest tests/scripts/test_fenced_lease_soak_contracts.py -q
+uv run pytest tests/scripts/test_fenced_lease_soak_contracts.py \
+  tests/scripts/test_fenced_lease_soak_attestation.py -q
 ```
 
-Expected: all tests pass with no network or database access.
+Expected: all tests pass with no network, provider call, or database access. Captured stdout contains only canonical sanitized JSON.
 
-- [ ] **Step 5: Commit Task 2**
+- [ ] **Step 9: Commit Task 2**
 
 ```bash
-git add scripts/fenced_lease_soak.py tests/scripts/test_fenced_lease_soak_contracts.py
-git commit -m "feat(soak): pin scope and fleet attestation contracts"
+git add scripts/fenced_lease_soak.py \
+  tests/scripts/test_fenced_lease_soak_contracts.py \
+  tests/scripts/test_fenced_lease_soak_attestation.py
+git commit -m "feat(soak): derive trusted fleet attestations"
 ```
 
 ---
@@ -406,6 +653,7 @@ worker_config_mismatch
 unattested_claimable_worker
 credential_fingerprint_mismatch
 pdf_missing_or_mismatch
+book_checksum_scope_mismatch
 notion_mapping_present
 db_connection_baseline_high
 db_idle_in_transaction
@@ -458,6 +706,14 @@ def test_preflight_rejects_non_pristine_scoped_job():
     raw.jobs[0].claim_token = uuid4()
     findings = soak.evaluate_preflight(valid_scope(), valid_attestation(), raw)
     assert "scope_job_not_pristine" in hard_codes(findings)
+
+
+def test_preflight_rejects_scope_pdf_hash_that_disagrees_with_book_row():
+    scope = valid_scope(required_book_sha256={str(BOOK): "a" * 64})
+    raw = healthy_raw_snapshot()
+    raw.books[BOOK].content_sha256 = "b" * 64
+    findings = soak.evaluate_preflight(scope, valid_attestation(), raw)
+    assert "book_checksum_scope_mismatch" in hard_codes(findings)
 ```
 
 - [ ] **Step 2: Run pure preflight RED tests**
@@ -485,7 +741,7 @@ The store must issue bound-parameter queries, never interpolate UUIDs or timesta
 
 1. `alembic_version.version_num`, existence of `job_lease_events`, and `claim_token` columns on both tables.
 2. `budget_state` pause and exact version floor.
-3. Exact scoped jobs joined to batches; count of `pending`, `running`, or `cancelling` jobs outside the scope. Scoped freshly-created `pending` jobs are the expected staged state and are not counted as unrelated queue activity.
+3. Exact scoped jobs joined to batches and books (including authoritative `books.content_sha256`); count of `pending`, `running`, or `cancelling` jobs outside the scope. Scoped freshly-created `pending` jobs are the expected staged state and are not counted as unrelated queue activity.
 4. Workers fresh by the configured registry stale window, including `pc_id`, heartbeat age, status, capability `git_sha`, `code_version`, and Gemini API capability.
 5. SA scrub tombstones needed to distinguish a technically online but parked hostname.
 6. `pg_settings` values for `max_connections`, `superuser_reserved_connections`, and `idle_in_transaction_session_timeout`.
@@ -494,7 +750,7 @@ The store must issue bound-parameter queries, never interpolate UUIDs or timesta
 9. Scoped `job_lease_events`, `phase_outputs`, and `agent_usages` since `scope.since`.
 10. Fleet API usage rows in the trailing 24 hours for the global envelope check.
 
-Do not query worker `.env` values from PostgreSQL; exact configuration comes from the signed-off attestation and is cross-checked against the same `pc_id` heartbeat row. A worker is “claimable” for this gate only when heartbeat is fresh, status is `online`, Gemini API capability is true, its code version is at/above the floor, and its hostname has no scrub tombstone.
+Do not query worker `.env` values from PostgreSQL; exact configuration comes from the authenticated-channel-captured attestation and is cross-checked against the same `pc_id` heartbeat row. A worker is “claimable” for this gate only when heartbeat is fresh, status is `online`, Gemini API capability is true, its code version is at/above the floor, and its hostname has no scrub tombstone.
 
 - [ ] **Step 4: Implement pure preflight evaluation**
 
@@ -502,11 +758,13 @@ The healthy gate requires:
 
 - schema revision `0052_job_lease_fencing`, both token columns, and ledger table present;
 - every scope job exists once, belongs to one of the scope batches, was created at/after `since`, is pending with attempts 0 / null token, and has zero phase, usage, or lease rows;
+- every `required_book_sha256` value equals the corresponding scoped book's persisted `content_sha256`, so an operator cannot accidentally bless a uniformly wrong local file hash;
 - scoped jobs may be `pending` under the exact staging pause; zero **unrelated** `pending`, `running`, or `cancelling` jobs may exist;
 - fleet API pause is exactly `lease-soak-staging:<run-id>` for the initial preflight; a null pause is accepted only after the already-running watcher has emitted `READY_TO_RELEASE` and observed the operator clear that exact reason. Any other pause reason is preserved and is a hard preflight failure;
 - floor equals expected code version;
 - attestation is at most `attestation_max_age_seconds` old (300 seconds in the first scope) and heartbeats are at most `heartbeat_max_age_seconds` old (60 seconds in the first scope);
 - every claimable worker appears in the attestation, and every attested worker appears claimable;
+- attested hostnames equal `scope.participant_hosts`, and each attested `(hostname, pc_id)` exactly matches one live registry row; a locally correct config with a stale/restarted PID therefore fails instead of being silently accepted;
 - at least `ceil(target_running / expected_worker_concurrency)` distinct worker processes and hosts;
 - exact SHA/config/credential/PDF/Notion values match the scope;
 - DB total is at most `db_preflight_connection_limit`, zero idle-in-transaction, zero non-client waits;
@@ -995,6 +1253,7 @@ uv run pytest \
   tests/test_db_pool_config.py \
   tests/integration/test_db_session_settings.py \
   tests/scripts/test_fenced_lease_soak_contracts.py \
+  tests/scripts/test_fenced_lease_soak_attestation.py \
   tests/scripts/test_fenced_lease_soak_preflight.py \
   tests/scripts/test_fenced_lease_soak_snapshot.py \
   tests/scripts/test_fenced_lease_soak_watch.py \
@@ -1104,8 +1363,8 @@ PY
 
 Expected: the head prints `hcga-head:...` and `5min`; the worker prints `hcga-worker:...` and `5min`. Before any paid launch require zero `idle in transaction` rows and DB total connections `<=70`.
 
-6. Produce the fleet attestation out-of-band from each process after restart. It must contain only fingerprints/checksums/config values, never secrets, and every row must carry the final caller-supplied SHA/version pair.
-7. Run the controller's `preflight` against a scratch/fake scope first. This remains `$0`.
+6. Verify the authenticated fleet-management channel can execute `uv run python scripts/fenced_lease_soak.py --help` and capture stdout from every participant. No remote filesystem read is required by the attestation flow.
+7. Run `attest-local`, `attest-aggregate`, and `preflight` against hermetic fixture scopes in the focused/canonical tests. This remains `$0`; real fleet artifacts are produced only after a real staged scope exists.
 
 Rollback: revert the PR, deploy the revert to head/workers, and restart so new connections stop receiving the settings. Existing connections retain their old per-session settings until closed. The controller creates no migration and no persistent application state unless explicitly armed during a later soak. If an armed stop fired, rollback does **not** clear it; the operator must inspect the evidence and separately clear only the exact pause reason after deciding it is safe.
 
@@ -1125,12 +1384,33 @@ returning id, api_paused_reason;
 SQL
 ```
 
-If the command returns zero rows, stop: a foreign pause already exists and must not be overwritten. With staging active, create fresh jobs through the normal batch API, then capture exact resolved batch and job IDs into `scope-<level>.json` and run:
+If the command returns zero rows, stop: a foreign pause already exists and must not be overwritten. With staging active, create fresh jobs through the normal batch API, then capture exact resolved batch and job IDs plus the exact participant hostname list into `scope-<level>.json`.
+
+On each listed participant, use the authenticated fleet-management channel to execute this command from the final deployed checkout. Feed the identical scope bytes on stdin and capture stdout centrally; the worker needs neither a copied scope file nor a writable artifact directory:
+
+```bash
+uv run python scripts/fenced_lease_soak.py attest-local --scope - \
+  < scope-04.json > Host-02.attestation.json
+```
+
+The `Host-02` filename is central bookkeeping only; the artifact's hostname/`pc_id` comes from the worker itself. Repeat for every `participant_hosts` entry. Any stderr, nonzero exit, missing host, or second worker process blocks the stage.
+
+Aggregate the collected artifacts in any input order; canonical sorting makes the output byte-identical:
+
+```bash
+uv run python scripts/fenced_lease_soak.py attest-aggregate \
+  --scope scope-04.json \
+  --input Host-03.attestation.json \
+  --input Host-02.attestation.json \
+  > fleet-attestation-04.json
+```
+
+Pass that generated artifact—not hand-authored JSON—to preflight:
 
 ```bash
 uv run python scripts/fenced_lease_soak.py preflight \
   --scope ops/soak/scope-04.json \
-  --attestation ops/soak/fleet-attestation.json \
+  --attestation ops/soak/fleet-attestation-04.json \
   --artifact-dir ops/soak/evidence
 ```
 
@@ -1139,7 +1419,7 @@ After `preflight` exits 0, start the watcher **while the staging pause is still 
 ```bash
 uv run python scripts/fenced_lease_soak.py watch \
   --scope ops/soak/scope-04.json \
-  --attestation ops/soak/fleet-attestation.json \
+  --attestation ops/soak/fleet-attestation-04.json \
   --artifact-dir ops/soak/evidence \
   --interval-seconds 2 \
   --arm-stop \
@@ -1191,8 +1471,8 @@ Stage pass: target concurrency observed; every job claimed once/released done on
 
 ## Self-Review Record
 
-- **Spec coverage:** DB recurring-risk hardening is Task 1; exact immutable scope and two-gesture mutation gate Task 2; migration/floor/config/DB/slot/queue preflight Task 3; fencing/error/pricing/phase/Notion gates Task 4; JSON evidence and settle Task 5; exact stop writes Task 6; synthetic 4→40 and scratch-DB acceptance Task 7. `$0` and paid gates are separated in Global Constraints and the operator handoff.
+- **Spec coverage:** DB recurring-risk hardening is Task 1; exact immutable scope, executable secret-free local attestation, deterministic aggregation, and two-gesture mutation gate are Task 2; migration/floor/config/registry-attestation/DB/slot/queue preflight is Task 3; fencing/error/pricing/phase/Notion gates Task 4; JSON evidence and settle Task 5; exact stop writes Task 6; synthetic 4→40 and scratch-DB acceptance Task 7. `$0` and paid gates are separated in Global Constraints and the operator handoff.
 - **Placeholder scan:** no `TBD`, `TODO`, “implement later”, “similar to”, or unspecified error-handling steps remain. Every task names files, interfaces, failing tests, implementation shape, commands, and expected outcomes.
 - **Type consistency:** `SoakScope`, `FleetAttestation`, `RawSnapshot`, `Finding`, `ArtifactWriter`, `SoakReadStore`, `SoakStopper`, `StopReceipt`, and `ExitCode` keep the same names/signatures across all tasks. The only DB writer is `SqlSoakStopper`; the default store is read-only.
-- **Safety correction:** exact worker configuration cannot be truthfully inferred from today's heartbeat blob. The plan requires a fresh out-of-band process attestation and cross-checks its `pc_id`/SHA/version against PostgreSQL; it does not manufacture confidence from incomplete registry data.
+- **Safety correction:** exact worker configuration cannot be truthfully inferred from today's heartbeat blob or trusted when hand-authored. The plan requires `attest-local` to derive a fresh sanitized artifact from each process, deterministic aggregation over the exact host set, and a live `pc_id`/SHA/version cross-check against PostgreSQL; it does not manufacture confidence from incomplete registry data.
 - **Cost correction:** the historical `$135` proposal is a stop limit, not granted authority. The implementation and acceptance lane remain `$0`.
