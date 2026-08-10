@@ -2337,3 +2337,83 @@ markdown hash — so this is a #118-only rebase condition, not a bug in this bra
 ## 0167 — 2026-08-10 — fix/notion-collision-repair-correction
 
 **R26 follow-up: safe Notion collision repair.** The merged #122 DB-only repair was frozen before execution because it could leave mixed pages, apply a stale plan, and choose completion time over proven archive time. This follow-up adds group-level archive precedence, a full expected-state plan hash, persisted manifests, in-transaction re-read plus expected-state predicates/row-count guards, and a separate `--refresh-notion --plan-file` gesture. Refresh authoritatively rewrites every retained owner and prunes extra leaves only after successful rewrite; owner-pointer drift and per-page failures are reported without destructive pruning. Tests use scratch DBs and fake Notion clients only; no production DB or Notion writes occurred. `--apply` remains an operator-gated action after fleet archivers are drained.
+
+## 0168 — Extract-fidelity: subject-family gate (preventive precision) + a NEGATIVE measurement
+
+**Branch** `feat/extract-fidelity-language` · **no migration** · plan → `docs/superpowers/plans/shipped/`
+
+### What shipped
+
+`agent.extract_fidelity_candidates` gains `strict: bool = False`; when set it keeps only
+expressions containing a **digit or an `=`**, applied **before** the `_FIDELITY_MAX_CANDIDATES`
+slice. `pipeline._verify_and_maybe_regen_extract` derives it from
+`subjects.REGISTRY[subject].family in _STRICT_FIDELITY_FAMILIES` (`{"languages","humanities"}`).
+`subject` was already in lexical scope via the enclosing `_execute_phase` — no signature change.
+
+**Why:** the pre-filter's parenthesis arm exists to catch digitless algebra like `(a−b)/(a+b)`.
+On language/humanities extracts it instead matches prose glosses — `(likes/dislikes)`,
+`(catapult/trebuchet)`, `(*was/were*)`, `(kompyuter/hisoblagich)`.
+
+**Measured, all 3,429 done extracts** (`scripts/extract_candidate_corpus_diff.py`, $0):
+
+| | english | history | geografiya | biology | physics | kimyo | math-alg | matematika | geometriya |
+|---|---|---|---|---|---|---|---|---|---|
+| lessons before→after | **8→0** | 19→6 | 9→2 | 18→18 | 66→66 | 25→25 | 210→210 | 21→21 | 69→69 |
+| exprs before→after | **26→0** | 34→7 | 10→2 | 23→23 | 127→127 | 56→56 | 715→715 | 44→44 | 153→153 |
+
+Math/sciences are byte-identical **by construction** (strict is never `True` there, so the
+post-filter is never reached) and that was then confirmed against the corpus. `tarbiya`/`adabiyot`
+were already 0. Kept in strict families: `(2h/g)`, `1/3`, `(2/3`, `750/760-taxminan`,
+`kishi/km²)` — the last only because `'²'.isdigit()` is `True` (pinned by test; `isdecimal()`
+is `False` and would silently drop it).
+
+**This is PREVENTIVE, not remediation.** The affected english extracts ran 2026-06-24, *before*
+the CQ-D guard shipped 2026-07-02; `agent_usages` holds **zero** `lesson.extract.verify` rows for
+english. The noise has never billed. The 36.4% is a prediction for the next english launch.
+Checked against [0166]'s v4 style: all 61 dropped candidates sit in `Concepts & terms`/`Key facts`/
+unheaded body prose, **none** in a vocabulary section — v4's `item — meaning` rule governs only the
+new vocabulary section, so the noise-producing construct is unregulated by it and the prediction
+most likely survives (unconfirmable until v4-era extracts exist).
+
+**Acceptance smoke ($0.0170, real api):** Leg A (gate forced off) billed exactly 1 verify call and
+the model **confirmed the gloss `(dogs/cats/music)` as drift** — pre-gate that would have triggered
+a whole-book regen (~$0.17) of a good extract under a false correction hint. Leg B (shipped): 0
+calls, `$0`, extract byte-identical. The regen was stubbed, which is why the budget held.
+
+### What did NOT ship: the measurement (negative result)
+
+Built a reusable extract-fidelity audit (`app/services/extract_fidelity_audit.py` +
+`scripts/extract_fidelity_audit.py`) and ran it over 40 language/humanities lessons. **The
+calibration gate failed at 5/8** (required ≥6/8), so **no drift base rate is quotable** — the plan's
+own stop-rule. Report: `docs/memory/reports/2026-08-07-extract-fidelity-language-baseline.md`.
+Specificity passed (3 `contradicts` / 31 lessons). Cost **$3.2483**; the main pass overran (~$2.55
+vs ~$2.20 approved) because a per-call rate was extrapolated from one english probe and history
+lessons carry more source pages.
+
+The failure is **structured, and is the real finding**: `name` plants detected **4/4**, `definition`
+plants **1/4**. Filed as `judge-definition-misattachment-blind-1` — if it generalises, production
+`phase_judge` shares it, which matters now that [0166] makes the extract carry `item — meaning`
+pairs the judge enforces as ground truth.
+
+### Found incidentally, filed as their own (more urgent) items
+
+- **ROADMAP R27** — English G8 PDF is **truncated**: 104 pages, TOC to 157. **10 `done` jobs** have
+  `page_start > 104`, i.e. packets built from pages absent from the file. Same class as G10-physics.
+  Suggested ingest guard: reject/flag `max(page_end) > pdf_page_count`.
+- **ROADMAP R28** — `books.source_language='uz'` on an English-language textbook; it silently zeroed
+  the audit's cross-language split.
+
+### Lessons
+
+- **Raw ≠ production.** The first plan draft quoted raw `extract_math_expressions` yield as
+  production behaviour, overstating humanities activity 2–5×. Grounded numbers require
+  `extract_fidelity_candidates(md, whole_book_text)`. The committed harness now enforces the
+  distinction.
+- **A stop-gate must be a within-run invariant, not a frozen constant** — the corpus is live (3427→3429
+  during this lane alone).
+- **The loud failure can be the wrong one.** The harness printed `INVARIANT VIOLATED` for all six
+  math/science subjects while its own table showed them identical: my spec said "before vs under-strict"
+  when the meaningful comparison is "production vs strict-off". Read both before believing either.
+- **Crash-safety earned itself immediately**: the first paid attempt died on call 1 (the worktree loads
+  the PARENT `.env`, whose `GOOGLE_APPLICATION_CREDENTIALS` is a Windows path from the fleet host) and
+  lost nothing, at $0.00.

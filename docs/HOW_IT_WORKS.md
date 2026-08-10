@@ -402,6 +402,18 @@ machine with two stages (a head and a parallel tail):
    gemini-flash verify (over the lesson's own pages) and, on confirmed drift, regenerates the
    extract once with a correction hint. The judge can't catch extract drift (it grades later
    phases against the extract, not the book), so it's guarded here.
+   **The scan is subject-family gated (worklog 0167).** Its parenthesis arm exists to catch
+   digitless algebra like `(a−b)/(a+b)`, but on `languages`/`humanities` subjects that same
+   arm matches ordinary prose glosses — `(likes/dislikes)`, `(catapult/trebuchet)`,
+   `(*was/were*)` — which are pure noise. For those two families the candidate must therefore
+   contain a **digit or an `=`**; `math`/`sciences` (and `default`, and any unknown subject
+   code) are untouched, because the filter is never applied to them at all. Measured over all
+   3,429 done extracts: english 8 candidate lessons → 0, history 19 → 6, geografiya 9 → 2,
+   while biology/physics/kimyo/math-algebra/matematika/geometriya are byte-identical. This is
+   **preventive** — the affected english extracts predate the guard, so the noise never
+   actually billed — but a live smoke confirmed the mechanism is real: the verify model
+   accepted the gloss `(dogs/cats/music)` as genuine drift, which pre-gate would have
+   regenerated a perfectly good extract from a false correction hint.
    *(Also: results are cached across jobs. If the same section was already extracted, the
    prior output is reused for free — the fidelity guard runs only on first production.)*
 

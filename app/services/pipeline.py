@@ -18,7 +18,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
-from app.services import agent, book_fetch, content_lint, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, solver, storage
+from app.services import agent, book_fetch, content_lint, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, solver, storage, subjects
 from app.services.agent_models import resolve_role_transport, resolve_session_limit_strategy
 from app.services.errors import (
     CancelWonSignal,
@@ -1412,15 +1412,32 @@ async def _check_extract_coverage(
     return out
 
 
+# Subject families where the fidelity guard's bare-parenthesis arm mostly
+# catches prose glosses — (likes/dislikes), (*was/were*), (tale/narration) —
+# rather than digitless algebra, so the strict predicate (digit OR '=') is
+# applied to cut that noise. Measured on the corpus: english = 26 gloss
+# candidates / 8 lessons, history = 27, geografiya = 8 — all pure noise, zero
+# billed (these ran 2026-06-24, before the guard shipped 2026-07-02, so no
+# agent_usages rows exist to have wasted spend). Family `default` (musiqa,
+# tasviriy-sanat, texnologiya, informatika) deliberately stays OUT — it keeps
+# today's noisy behavior. `informatika` is legitimately non-strict (code
+# tokens are genuine '/'+paren content); music/fine-arts/technology are as
+# gloss-prone as humanities but have no corpus data yet — fail toward current
+# behavior rather than guess.
+_STRICT_FIDELITY_FAMILIES = frozenset({"languages", "humanities"})
+
+
 async def _verify_and_maybe_regen_extract(
     *, out: str, book_text: str, pdf_path, prov: str, mdl, transport: str,
-    section: dict, job_id, po_id,
+    section: dict, job_id, po_id, subject: str = "",
 ) -> tuple[str, int, int]:
     """Item 1 guard: free candidate scan → flash verify (lesson-scoped source) on
     hits → one regen on confirmed drift. Returns
     (text, extra_prompt_tokens, extra_output_tokens). Fail-open: any problem
     keeps the original extract."""
-    candidates = agent.extract_fidelity_candidates(out, book_text)
+    family = getattr(subjects.REGISTRY.get(subject), "family", "default")
+    strict = family in _STRICT_FIDELITY_FAMILIES
+    candidates = agent.extract_fidelity_candidates(out, book_text, strict=strict)
     if not candidates:
         return out, 0, 0                                   # no paid call
     source = await _verify_source_for_section(pdf_path, book_text, section)
@@ -1663,7 +1680,7 @@ async def _execute_phase(
                     out, xin, xout = await _verify_and_maybe_regen_extract(
                         out=out, book_text=book_text, pdf_path=pdf_path,
                         prov=prov, mdl=mdl, transport=extract_transport,
-                        section=section, job_id=job_id, po_id=po_id,
+                        section=section, job_id=job_id, po_id=po_id, subject=subject,
                     )
                     return out, tin_ + xin, tout_ + xout
 
