@@ -42,7 +42,9 @@ class PhaseOutput(Base, UUIDPK):
     validation_warnings: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     # LLM-judge verdict for this phase: ok | major_shipped | major_regen_failed | unavailable | None (not judged).
     judge_status: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
-    # LLM-solver verdict for this phase's answer key (CQ-C): ok | ... | None (not solved).
+    # LLM-solver verdict for this phase's answer key (CQ-C):
+    # ok | mismatch_regen | mismatch_shipped | mismatch_regen_failed |
+    # mismatch_blocked | unavailable | refused | None (not solved).
     solver_status: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
