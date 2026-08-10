@@ -662,20 +662,27 @@ def main(
         except (ValidationError, json.JSONDecodeError, OSError):
             stderr.write("attestation failed: scope is invalid\n")
             return int(ExitCode.OPERATIONAL_ERROR)
-        processes = list((process_source or _default_process_source)())
-        workers = discover_worker_processes(processes)
-        identity: tuple[int | None, str | None] | None = None
-        if git_identity is not None:
-            if len(workers) != 1:
-                raise AttestationError(
-                    f"expected exactly one worker process; discovered {len(workers)}"
-                )
-            try:
-                env = dict(workers[0].environ())
-            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess) as exc:
-                raise AttestationError("cannot read target worker environment") from exc
-            identity = git_identity(env)
         try:
+            processes = list((process_source or _default_process_source)())
+            workers = discover_worker_processes(processes)
+            identity: tuple[int | None, str | None] | None = None
+            if git_identity is not None:
+                if len(workers) != 1:
+                    raise AttestationError(
+                        "expected exactly one worker process; "
+                        f"discovered {len(workers)}"
+                    )
+                try:
+                    env = dict(workers[0].environ())
+                except (
+                    psutil.AccessDenied,
+                    psutil.NoSuchProcess,
+                    psutil.ZombieProcess,
+                ) as exc:
+                    raise AttestationError(
+                        "cannot read target worker environment"
+                    ) from exc
+                identity = git_identity(env)
             worker = build_local_attestation(
                 scope,
                 hostname=hostname or socket.gethostname(),

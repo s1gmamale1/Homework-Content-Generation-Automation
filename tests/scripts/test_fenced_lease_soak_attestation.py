@@ -302,6 +302,53 @@ def test_attest_local_cli_emits_one_sanitized_json_line_without_io(tmp_path):
     assert soak.WorkerAttestation.model_validate_json(stdout.getvalue())
 
 
+@pytest.mark.parametrize("count", [0, 2])
+def test_attest_local_cli_sanitizes_invalid_worker_count_with_git_provider(
+    tmp_path, count
+):
+    make_pdf(tmp_path)
+    stdout, stderr = io.StringIO(), io.StringIO()
+    rc = soak.main(
+        ["attest-local", "--scope", "-"],
+        process_source=lambda: [
+            process(tmp_path, pid=index + 1) for index in range(count)
+        ],
+        stdin=io.StringIO(soak.canonical_json(scope_for(tmp_path))),
+        stdout=stdout,
+        stderr=stderr,
+        hostname="Host-02",
+        now=lambda: UTC_NOW,
+        git_identity=lambda target_env: (1001, "fedcba9"),
+    )
+    assert rc == soak.ExitCode.OPERATIONAL_ERROR
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == (
+        f"attestation failed: expected exactly one worker process; discovered {count}\n"
+    )
+
+
+def test_attest_local_cli_sanitizes_unreadable_target_env_with_git_provider(tmp_path):
+    make_pdf(tmp_path)
+    stdout, stderr = io.StringIO(), io.StringIO()
+    rc = soak.main(
+        ["attest-local", "--scope", "-"],
+        process_source=lambda: [
+            process(tmp_path, environ_error=psutil.AccessDenied(pid=4242))
+        ],
+        stdin=io.StringIO(soak.canonical_json(scope_for(tmp_path))),
+        stdout=stdout,
+        stderr=stderr,
+        hostname="Host-02",
+        now=lambda: UTC_NOW,
+        git_identity=lambda target_env: (1001, "fedcba9"),
+    )
+    assert rc == soak.ExitCode.OPERATIONAL_ERROR
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == (
+        "attestation failed: cannot read target worker environment\n"
+    )
+
+
 def test_attest_local_cli_fails_without_echoing_invalid_target_secrets(tmp_path):
     make_pdf(tmp_path)
     env = worker_env(
