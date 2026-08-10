@@ -27,16 +27,22 @@ page — and clears the other members:
   - the OWNER row and the owner's job are left COMPLETELY untouched.
 
 Owner = the section that PUSHED FIRST (everyone after it hit
-`page_has_content` and skipped). The *effective push timestamp* per section
-is the first non-NULL of:
-  1. `stamped_push`      the stamped job's (toc_entries.notion_archived_job_id)
-                         homework_jobs.notion_archived_at
-  2. `stamped_completed` that same stamped job's completed_at
-  3. `row_push`          min(notion_archived_at) over the row's own jobs
-  4. `row_completed`     min(completed_at) over the row's own `done` jobs
-Ties break on section id, so the plan is fully deterministic. Steps 3-4 exist
+`page_has_content` and skipped) — decided by GROUP-level evidence tiers, not
+a per-section ladder. A section that never archived at all can NEVER
+outrank one that did, no matter how much earlier it merely completed
+generation:
+  1. `row_push`/`stamped_push`  the earliest REAL `notion_archived_at` across
+                                 EVERY member's jobs (stamped or not) — proven
+                                 push. Only reached if at least one member of
+                                 the group has ANY archive timestamp.
+  2. `stamped_completed`        else the earliest stamped job's completed_at,
+                                 across the whole group.
+  3. `row_completed`            else the earliest row-level `done`
+                                 completed_at, across the whole group.
+  4. unresolvable (owner=None)  else no member has any usable timestamp.
+Ties break on section id, so the plan is fully deterministic. Tiers 2-3 exist
 for pre-0129 husks (`notion_archived_job_id IS NULL`), including whole groups
-with no stamped member at all.
+with no stamped member at all — and for groups where NO member ever pushed.
 
 The naive rule "earliest completed_at of the stamped job" is WRONG and was
 disproved against live data (a section that completed first was pushed last);
@@ -202,6 +208,52 @@ def _earliest(
     return min(dated, key=lambda s: (key(s), str(s.section_id)))
 
 
+def _section_push(section: SectionRow) -> tuple[datetime, str] | None:
+    """(timestamp, source) for the earliest REAL `notion_archived_at` across
+    this section's own jobs — stamped or not — or None when this section has
+    no archive evidence at all. `source` is "stamped_push" when that earliest
+    timestamp is the stamped job's, else "row_push"."""
+    pushes = [j.notion_archived_at for j in section.jobs if j.notion_archived_at is not None]
+    if not pushes:
+        return None
+    ts = min(pushes)
+    stamped = section.stamped_job
+    source = "stamped_push" if stamped is not None and stamped.notion_archived_at == ts else "row_push"
+    return ts, source
+
+
+def _group_owner(
+    sections: Sequence[SectionRow],
+) -> tuple[SectionRow | None, str | None, datetime | None]:
+    """(owner, owner_source, owner_push) via GROUP-level evidence tiers (see
+    module docstring): a section that never archived can never outrank one
+    that did, so tier 1 is evaluated across EVERY member before any
+    completion-based fallback is considered."""
+    pushes = {s.section_id: _section_push(s) for s in sections}
+    if any(v is not None for v in pushes.values()):
+        candidates = [s for s in sections if pushes[s.section_id] is not None]
+        winner = min(candidates, key=lambda s: (pushes[s.section_id][0], str(s.section_id)))
+        ts, source = pushes[winner.section_id]
+        return winner, source, ts
+
+    winner = _earliest(sections, naive_completed)
+    if winner is not None:
+        return winner, "stamped_completed", naive_completed(winner)
+
+    def _row_completed(s: SectionRow) -> datetime | None:
+        completions = [
+            j.completed_at for j in s.jobs
+            if j.status == "done" and j.completed_at is not None
+        ]
+        return min(completions) if completions else None
+
+    winner = _earliest(sections, _row_completed)
+    if winner is not None:
+        return winner, "row_completed", _row_completed(winner)
+
+    return None, None, None
+
+
 @dataclass(frozen=True)
 class GroupPlan:
     page_id: str
@@ -225,8 +277,7 @@ class GroupPlan:
 def plan_group(page_id: str, sections: Sequence[SectionRow]) -> GroupPlan:
     """Pick the owner of one shared page and classify the decision."""
     ordered = sorted(sections, key=lambda s: str(s.section_id))
-    pushes = {s.section_id: effective_push(s) for s in ordered}
-    owner = _earliest(ordered, lambda s: pushes[s.section_id][0])
+    owner, source, push = _group_owner(ordered)
     naive_owner = _earliest(ordered, naive_completed)
     # "Different owner", not "undefined owner": a group the naive rule could
     # not resolve at all (no stamped member) is not a disagreement.
@@ -235,7 +286,6 @@ def plan_group(page_id: str, sections: Sequence[SectionRow]) -> GroupPlan:
         and naive_owner is not None
         and naive_owner.section_id != owner.section_id
     )
-    push, source = pushes[owner.section_id] if owner is not None else (None, None)
     return GroupPlan(
         page_id=page_id,
         sections=tuple(ordered),

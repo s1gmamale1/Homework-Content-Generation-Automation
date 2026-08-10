@@ -274,9 +274,12 @@ async def test_apply_is_idempotent(capsys):
 
 
 async def test_group_with_no_stamped_job_still_resolves_an_owner(capsys):
-    """Pre-0129 husks: `notion_archived_job_id IS NULL` on every member. The
-    owner then comes from the row-level fallbacks — S2's own `completed_at`
-    (+1h, step 4) beats S1's own `notion_archived_at` (+5h, step 3)."""
+    """Pre-0129 husks: `notion_archived_job_id IS NULL` on every member. S1
+    carries a REAL `notion_archived_at` (+5h) — proven evidence it actually
+    pushed to Notion. S2 never archived at all; it only completed generation
+    early (+1h). A section that never archived can NEVER own the page over
+    one that did, no matter how much earlier it completed — group tier 1
+    (earliest real archive timestamp across every member's jobs) picks S1."""
     from app.db import SessionLocal
 
     async with SessionLocal() as s:
@@ -288,21 +291,54 @@ async def test_group_with_no_stamped_job_still_resolves_an_owner(capsys):
             s, book, title="Husk", page_id=PAGE_B, order_index=1,
             jobs=[(None, _h(1), "done")], stamped=None)
         await s.commit()
+        owner, owner_job = s1.id, j1[0].id
+        loser, loser_job = s2.id, j2[0].id
+
+    assert await _run(apply=True) == 0
+
+    toc = await _toc_state()
+    assert toc[owner] == (PAGE_B, None), "owner keeps its page (husk: no stamped job id)"
+    assert toc[loser] == (None, None)
+    stamps = await _job_stamps()
+    assert stamps[owner_job] == _h(5), "owner's real push stamp survives"
+    assert stamps[loser_job] is None, "loser had no push stamp to begin with"
+
+    out = capsys.readouterr().out
+    assert "owner_source=row_push" in out
+    assert "groups=1 sections=2 owners=1 non_owners=1 jobs_to_unstamp=0" in out
+
+
+async def test_group_where_nobody_ever_archived_falls_to_earliest_completion(capsys):
+    """Neither member ever pushed to Notion (both `notion_archived_at` NULL
+    on every job, both `stamped=None`) — group tier 1 has NO evidence at all,
+    so ownership falls through to tier 3 (earliest row-level `done`
+    `completed_at`): S2 completed at +1h, before S1's +4h."""
+    from app.db import SessionLocal
+
+    async with SessionLocal() as s:
+        book = await _seed_book(s)
+        s1, j1 = await _seed_section(
+            s, book, title="Never archived", page_id=PAGE_B, order_index=0,
+            jobs=[(None, _h(4), "done")], stamped=None)
+        s2, j2 = await _seed_section(
+            s, book, title="Never archived", page_id=PAGE_B, order_index=1,
+            jobs=[(None, _h(1), "done")], stamped=None)
+        await s.commit()
         owner, owner_job = s2.id, j2[0].id
         loser, loser_job = s1.id, j1[0].id
 
     assert await _run(apply=True) == 0
 
     toc = await _toc_state()
-    assert toc[owner] == (PAGE_B, None), "owner keeps its page (and its NULL husk stamp)"
+    assert toc[owner] == (PAGE_B, None)
     assert toc[loser] == (None, None)
     stamps = await _job_stamps()
-    assert stamps[owner_job] is None, "owner's job never had a push stamp — unchanged"
-    assert stamps[loser_job] is None, "non-owner's push stamp is cleared"
+    assert stamps[owner_job] is None
+    assert stamps[loser_job] is None
 
     out = capsys.readouterr().out
     assert "owner_source=row_completed" in out
-    assert "groups=1 sections=2 owners=1 non_owners=1 jobs_to_unstamp=1" in out
+    assert "groups=1 sections=2 owners=1 non_owners=1 jobs_to_unstamp=0" in out
 
 
 # ─── 6. push time beats completed_at, and the disagreement is reported ────
