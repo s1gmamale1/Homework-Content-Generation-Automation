@@ -3,8 +3,7 @@
   - a HIGH-confidence key mismatch triggers a capped regen loop (bounded by
     settings.max_solve_regens)
   - agreement (no mismatch) short-circuits with solver_status='ok', no regen
-  - a non-auth regen exception soft-degrades to 'mismatch_regen_failed'
-    without failing the job
+  - a proven mismatch that survives regeneration is terminal and never writes done
   - solver_status is threaded into phase_repo.set_status's final 'done' call
 
 Mirrors the harness in tests/services/test_pipeline_judge_status.py: stubs
@@ -20,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services import pipeline
+from app.services.errors import PersistentSolverMismatch
 from app.services.phase_judge import JudgeOutcome
 from app.services.solver import SolveOutcome
 from app.config import settings as _settings
@@ -168,11 +168,11 @@ def patch_io(monkeypatch):
 
 
 # ===========================================================================
-# Test 1: target phase + HIGH-confidence mismatch → regen runner CALLED,
-# solver_status in {"mismatch_regen", "mismatch_shipped"}
+# Test 1: target phase + persistent HIGH-confidence mismatch → terminal
+# failed phase with the regenerated artifact; never a done write.
 # ===========================================================================
 
-async def test_target_phase_mismatch_triggers_regen(patch_io):
+async def test_persistent_mismatch_fails_phase_and_never_writes_done(patch_io):
     patch_io.failover_outputs = [
         ("# initial output", 100, 50, "claude"),   # initial generation
         ("# regenned output", 110, 55, "claude"),  # solver-triggered regen
@@ -180,17 +180,24 @@ async def test_target_phase_mismatch_triggers_regen(patch_io):
     patch_io.solve_outputs = [_mismatch(), _mismatch()]  # still mismatched after regen
 
     kw = _make_kwargs(phase_name="memory-check")
-    await pipeline._execute_phase(**kw)
+    with pytest.raises(PersistentSolverMismatch):
+        await pipeline._execute_phase(**kw)
 
     # Bite: the regen runner (_run_with_failover) was invoked a SECOND time
     # (once for content generation, once for the solver-triggered regen).
     assert len(patch_io.failover_calls) == 2, (
         f"expected 2 failover calls (gen + solver-regen), got {len(patch_io.failover_calls)}"
     )
-    assert patch_io.solver_status in ("mismatch_regen", "mismatch_shipped"), (
-        f"got {patch_io.solver_status!r}"
-    )
     assert len(patch_io.solve_calls) == 2, f"expected 2 solve() calls, got {len(patch_io.solve_calls)}"
+    assert not [c for c in patch_io.set_status_calls if c[0] == "done"]
+    failed = [c for c in patch_io.set_status_calls if c[0] == "failed"][-1][1]
+    assert failed["solver_status"] == "mismatch_blocked"
+    assert failed["output_md"] == "# regenned output"
+    assert failed["tokens_input"] == 110
+    assert failed["tokens_output"] == 55
+    assert failed["provider"] == "claude"
+    assert failed["authoring_mode"] == "markdown_builtin"
+    assert "persistent answer-key mismatch" in failed["error_message"]
 
 
 async def test_target_phase_mismatch_regen_agrees(patch_io):
@@ -260,11 +267,10 @@ async def test_solver_disabled_skips_solver(monkeypatch, patch_io):
 
 
 # ===========================================================================
-# Test 5: regen raises a non-auth Exception → job NOT failed,
-# solver_status == "mismatch_regen_failed"
+# Test 5: a hard regeneration failure after a proven mismatch is terminal.
 # ===========================================================================
 
-async def test_solver_regen_raises_non_auth_soft_degrades(monkeypatch, patch_io):
+async def test_solver_regen_hard_failure_blocks_original_artifact(monkeypatch, patch_io):
     patch_io.failover_outputs = [("# initial output", 100, 50, "claude")]
     patch_io.solve_outputs = [_mismatch()]
 
@@ -277,13 +283,14 @@ async def test_solver_regen_raises_non_auth_soft_degrades(monkeypatch, patch_io)
     monkeypatch.setattr(pipeline, "_run_with_failover", failing_failover)
 
     kw = _make_kwargs(phase_name="memory-check")
-    # Should NOT raise; soft-degrade keeps original output.
-    result = await pipeline._execute_phase(**kw)
-    assert result is not None
+    with pytest.raises(PersistentSolverMismatch) as caught:
+        await pipeline._execute_phase(**kw)
 
-    assert patch_io.solver_status == "mismatch_regen_failed", f"got {patch_io.solver_status!r}"
-    done_call = next(c for c in patch_io.set_status_calls if c[0] == "done")
-    assert done_call[1]["output_md"] == "# initial output", "original output must be kept on regen failure"
+    assert isinstance(caught.value.repair_error, RuntimeError)
+    assert not [c for c in patch_io.set_status_calls if c[0] == "done"]
+    failed = [c for c in patch_io.set_status_calls if c[0] == "failed"][-1][1]
+    assert failed["solver_status"] == "mismatch_blocked"
+    assert failed["output_md"] == "# initial output"
 
 
 # ===========================================================================
