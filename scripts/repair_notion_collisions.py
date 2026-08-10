@@ -72,9 +72,13 @@ Run (dry-run — prints the plan, writes nothing):
   DATABASE_URL=postgresql+asyncpg://edu:edu@localhost:5433/edu_homework \\
   uv run python -m scripts.repair_notion_collisions
 
-Apply (clears the false stamps):
+Apply (clears the false stamps — requires the hash printed by a prior dry
+run AND a manifest output path; the write transaction re-reads the plan and
+refuses to write if either the plan or a targeted row has drifted since):
   DATABASE_URL=postgresql+asyncpg://edu:edu@localhost:5433/edu_homework \\
-  uv run python -m scripts.repair_notion_collisions --apply
+  uv run python -m scripts.repair_notion_collisions --apply \\
+    --expect-plan-hash=<hash printed by the dry run> \\
+    --manifest-out=/path/to/manifest.json
 """
 from __future__ import annotations
 
@@ -388,7 +392,10 @@ def format_group(plan: GroupPlan) -> list[str]:
 
 
 APPLY_BANNER = (
-    "!!! APPLYING — this run WRITES to the database named by DATABASE_URL !!!"
+    "!!! APPLYING — this run WRITES to the database named by DATABASE_URL !!!\n"
+    "!!! Drain any running Notion-archive workers first — a concurrent "
+    "archive push during --apply can race the guarded UPDATEs and trip the "
+    "state-drift abort !!!"
 )
 
 DRY_RUN_FOOTER = (
@@ -536,6 +543,25 @@ def manifest_load(path: str | Path) -> dict:
     return manifest
 
 
+# ─── apply-time safety errors ─────────────────────────────────────────────
+#
+# Both are raised INSIDE the `--apply` write transaction (`engine.begin()`),
+# so the transaction rolls back before either propagates out of `run()`.
+
+
+class PlanChangedError(Exception):
+    """Raised when the plan re-read at the START of the write transaction no
+    longer hashes to the caller's `--expect-plan-hash` — the DB changed
+    between the reviewed dry run and this `--apply`."""
+
+
+class ApplyStateDriftError(Exception):
+    """Raised by `apply_plan` itself when a guarded UPDATE's rowcount doesn't
+    match the number of rows it expected to touch — a row changed AFTER the
+    in-transaction re-read but before the UPDATE ran. Defense in depth,
+    independent of the `PlanChangedError` re-read check in `run()`."""
+
+
 # ─── DB I/O ──────────────────────────────────────────────────────────────
 
 # Every toc row whose notion_homework_page_id is shared with at least one
@@ -609,34 +635,89 @@ async def load_colliding_sections(conn) -> list[SectionRow]:
 
 
 async def apply_plan(conn, plans: Sequence[GroupPlan]) -> tuple[int, int]:
-    """Clear the false stamps. Owner rows and owner jobs are never in either
-    id list, so they cannot be touched. Returns (sections, jobs) written."""
-    from sqlalchemy import bindparam, text
-    from sqlalchemy.dialects.postgresql import UUID as PgUUID
-    from sqlalchemy.types import ARRAY
+    """Clear the false stamps with per-row EXPECTED-STATE guards: each UPDATE
+    only touches a row that still holds the exact value the plan expects
+    (`notion_homework_page_id` for a section, `notion_archived_at` for a
+    job) — a plain `id = ANY(:ids)` would happily overwrite a row that
+    changed after planning. Owner rows and owner jobs are never in either
+    list, so they cannot be touched.
 
-    section_ids = [s.section_id for p in plans for s in p.non_owners]
-    job_ids = [j.job_id for p in plans for s in p.non_owners for j in s.jobs_to_unstamp]
-    if section_ids:
-        await conn.execute(
-            text(
-                "UPDATE toc_entries SET notion_homework_page_id = NULL, "
-                "notion_archived_job_id = NULL WHERE id = ANY(:ids)"
-            ).bindparams(bindparam("ids", type_=ARRAY(PgUUID(as_uuid=True)))),
-            {"ids": section_ids},
+    Raises `ApplyStateDriftError` (the caller's transaction rolls back) if
+    any UPDATE's rowcount comes up short — defense in depth independent of
+    `run()`'s in-transaction plan-hash re-read. Returns (sections, jobs)
+    actually written."""
+    from sqlalchemy import text
+
+    section_updates = [
+        {"sid": s.section_id, "expected_page_id": s.page_id}
+        for p in plans for s in p.non_owners
+    ]
+    job_updates = [
+        {"jid": j.job_id, "expected_archived_at": j.notion_archived_at}
+        for p in plans for s in p.non_owners for j in s.jobs_to_unstamp
+    ]
+
+    sections_updated = 0
+    if section_updates:
+        stmt = text(
+            "UPDATE toc_entries SET notion_homework_page_id = NULL, "
+            "notion_archived_job_id = NULL "
+            "WHERE id = :sid AND notion_homework_page_id = :expected_page_id"
         )
-    if job_ids:
-        await conn.execute(
-            text(
-                "UPDATE homework_jobs SET notion_archived_at = NULL "
-                "WHERE id = ANY(:ids)"
-            ).bindparams(bindparam("ids", type_=ARRAY(PgUUID(as_uuid=True)))),
-            {"ids": job_ids},
+        for params in section_updates:
+            result = await conn.execute(stmt, params)
+            sections_updated += result.rowcount
+        if sections_updated != len(section_updates):
+            raise ApplyStateDriftError(
+                f"apply_plan: expected to clear {len(section_updates)} "
+                f"toc_entries row(s) but only {sections_updated} still held "
+                "the expected notion_homework_page_id — a row drifted since "
+                "planning; aborting"
+            )
+
+    jobs_updated = 0
+    if job_updates:
+        stmt = text(
+            "UPDATE homework_jobs SET notion_archived_at = NULL "
+            "WHERE id = :jid AND notion_archived_at = :expected_archived_at"
         )
-    return len(section_ids), len(job_ids)
+        for params in job_updates:
+            result = await conn.execute(stmt, params)
+            jobs_updated += result.rowcount
+        if jobs_updated != len(job_updates):
+            raise ApplyStateDriftError(
+                f"apply_plan: expected to un-stamp {len(job_updates)} "
+                f"homework_jobs row(s) but only {jobs_updated} still held "
+                "the expected notion_archived_at — a row drifted since "
+                "planning; aborting"
+            )
+
+    return sections_updated, jobs_updated
 
 
-async def run(*, database_url: str, apply: bool) -> int:
+async def run(
+    *,
+    database_url: str,
+    apply: bool,
+    expect_plan_hash: str | None = None,
+    manifest_out: str | Path | None = None,
+) -> int:
+    if apply:
+        if not expect_plan_hash:
+            print(
+                "ERROR: --apply requires --expect-plan-hash (the hash "
+                "printed by a prior dry run) — refusing to write",
+                file=sys.stderr,
+            )
+            return 2
+        if not manifest_out:
+            print(
+                "ERROR: --apply requires --manifest-out (a path to persist "
+                "the plan manifest) — refusing to write",
+                file=sys.stderr,
+            )
+            return 2
+
     # Deferred import: see the module docstring — nothing app-adjacent may be
     # imported before main()'s DATABASE_URL preflight.
     from sqlalchemy.ext.asyncio import create_async_engine
@@ -658,8 +739,33 @@ async def run(*, database_url: str, apply: bool) -> int:
             print("")
 
         if apply:
-            async with engine.begin() as conn:
-                cleared, unstamped = await apply_plan(conn, plans)
+            try:
+                async with engine.begin() as conn:
+                    # Re-read + rebuild the plan from INSIDE the write
+                    # transaction, immediately before the UPDATEs, and
+                    # compare its hash to the one the operator reviewed in
+                    # dry-run — closes the TOCTOU window between the dry
+                    # run and this --apply. Use the FRESH plan for the
+                    # writes, not the one read above.
+                    fresh_sections = await load_colliding_sections(conn)
+                    fresh_plans = build_plan(fresh_sections)
+                    fresh_hash = plan_hash(fresh_plans)
+                    if fresh_hash != expect_plan_hash:
+                        raise PlanChangedError(
+                            "plan changed since dry-run: "
+                            f"--expect-plan-hash={expect_plan_hash} but the "
+                            f"current plan hashes to {fresh_hash} — re-run "
+                            "without --apply to review the new plan before "
+                            "trying again"
+                        )
+                    cleared, unstamped = await apply_plan(conn, fresh_plans)
+            except (PlanChangedError, ApplyStateDriftError) as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 3
+            Path(manifest_out).write_text(
+                json.dumps(manifest_from_plans(fresh_plans), indent=2),
+                encoding="utf-8",
+            )
             print(format_applied(cleared, unstamped))
         else:
             for line in dry_run_footer_lines(plans):
@@ -690,13 +796,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--expect-plan-hash", type=str, default=None,
-        help="The plan-hash printed by a prior dry run. Not yet enforced — "
-             "wiring lands in a later task.",
+        help="The plan-hash printed by a prior dry run. Required by --apply "
+             "— the write transaction re-reads the plan and refuses to "
+             "write if it no longer matches this hash.",
     )
     parser.add_argument(
         "--manifest-out", type=Path, default=None,
-        help="Path to write the persisted plan manifest to. Not yet wired "
-             "— wiring lands in a later task.",
+        help="Path to write the persisted plan manifest to. Required by "
+             "--apply — written only after a successful apply.",
     )
     parser.add_argument(
         "--plan-file", type=Path, default=None,
@@ -716,7 +823,12 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
         database_url = preflight_database_url(os.environ)
-        return asyncio.run(run(database_url=database_url, apply=args.apply))
+        return asyncio.run(run(
+            database_url=database_url,
+            apply=args.apply,
+            expect_plan_hash=args.expect_plan_hash,
+            manifest_out=args.manifest_out,
+        ))
     except PreflightError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

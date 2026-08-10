@@ -9,6 +9,11 @@ owner) and clears the stamps on all the others so they become re-archivable.
 Owner selection walks a 4-step effective-push ladder; these tests pin the
 whole ladder, the dry-run/apply split, idempotency and the blast radius.
 
+`--apply` is TOCTOU-guarded: it requires `--expect-plan-hash` (from a prior
+dry run) and `--manifest-out`; inside the write transaction it re-reads the
+plan and aborts if the hash no longer matches, and `apply_plan` itself only
+writes rows that still hold the exact expected value.
+
 Run:
   createdb -h 127.0.0.1 -p 5432 -U macmini5 -O edu edu_scratch_repair_a
   DATABASE_URL=postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_scratch_repair_a \\
@@ -113,10 +118,33 @@ async def _seed_section(
     return entry, created
 
 
-async def _run(*, apply: bool) -> int:
+async def _run(
+    *, apply: bool, expect_plan_hash: str | None = None, manifest_out=None,
+) -> int:
     from scripts.repair_notion_collisions import run
 
-    return await run(database_url=os.environ["DATABASE_URL"], apply=apply)
+    return await run(
+        database_url=os.environ["DATABASE_URL"], apply=apply,
+        expect_plan_hash=expect_plan_hash, manifest_out=manifest_out,
+    )
+
+
+async def _current_plan_hash() -> str:
+    """The hash a dry run would print for the CURRENT DB state — used by
+    apply tests to construct a valid `--expect-plan-hash`."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from scripts.repair_notion_collisions import (
+        build_plan, load_colliding_sections, plan_hash,
+    )
+
+    engine = create_async_engine(os.environ["DATABASE_URL"], future=True)
+    try:
+        async with engine.connect() as conn:
+            sections = await load_colliding_sections(conn)
+        return plan_hash(build_plan(sections))
+    finally:
+        await engine.dispose()
 
 
 async def _toc_state() -> dict:
@@ -196,10 +224,13 @@ async def _seed_standard_group():
 # ─── 1. the owner is preserved exactly ────────────────────────────────────
 
 
-async def test_owner_row_and_its_job_are_left_completely_untouched(capsys):
+async def test_owner_row_and_its_job_are_left_completely_untouched(capsys, tmp_path):
     seeded = await _seed_standard_group()
+    h = await _current_plan_hash()
 
-    assert await _run(apply=True) == 0
+    assert await _run(
+        apply=True, expect_plan_hash=h, manifest_out=tmp_path / "manifest.json",
+    ) == 0
 
     toc = await _toc_state()
     page_id, archived_job_id = toc[seeded["owner"]]
@@ -216,10 +247,13 @@ async def test_owner_row_and_its_job_are_left_completely_untouched(capsys):
 # ─── 2. exactly the non-owners are cleared ────────────────────────────────
 
 
-async def test_exactly_the_non_owners_are_cleared(capsys):
+async def test_exactly_the_non_owners_are_cleared(capsys, tmp_path):
     seeded = await _seed_standard_group()
+    h = await _current_plan_hash()
 
-    assert await _run(apply=True) == 0
+    assert await _run(
+        apply=True, expect_plan_hash=h, manifest_out=tmp_path / "manifest.json",
+    ) == 0
 
     toc = await _toc_state()
     cleared = {sid for sid, (page, _job) in toc.items() if page is None}
@@ -256,14 +290,20 @@ async def test_dry_run_changes_nothing_at_all(capsys):
 # ─── 4. idempotent ────────────────────────────────────────────────────────
 
 
-async def test_apply_is_idempotent(capsys):
+async def test_apply_is_idempotent(capsys, tmp_path):
     await _seed_standard_group()
+    h = await _current_plan_hash()
 
-    assert await _run(apply=True) == 0
+    assert await _run(
+        apply=True, expect_plan_hash=h, manifest_out=tmp_path / "manifest.json",
+    ) == 0
     after_first = await _snapshot()
     capsys.readouterr()
 
-    assert await _run(apply=True) == 0
+    h2 = await _current_plan_hash()
+    assert await _run(
+        apply=True, expect_plan_hash=h2, manifest_out=tmp_path / "manifest2.json",
+    ) == 0
 
     assert await _snapshot() == after_first, "a second apply must be a no-op"
     out = capsys.readouterr().out
@@ -273,7 +313,7 @@ async def test_apply_is_idempotent(capsys):
 # ─── 5. the fallback ladder (no stamped job anywhere in the group) ────────
 
 
-async def test_group_with_no_stamped_job_still_resolves_an_owner(capsys):
+async def test_group_with_no_stamped_job_still_resolves_an_owner(capsys, tmp_path):
     """Pre-0129 husks: `notion_archived_job_id IS NULL` on every member. S1
     carries a REAL `notion_archived_at` (+5h) — proven evidence it actually
     pushed to Notion. S2 never archived at all; it only completed generation
@@ -294,7 +334,10 @@ async def test_group_with_no_stamped_job_still_resolves_an_owner(capsys):
         owner, owner_job = s1.id, j1[0].id
         loser, loser_job = s2.id, j2[0].id
 
-    assert await _run(apply=True) == 0
+    h = await _current_plan_hash()
+    assert await _run(
+        apply=True, expect_plan_hash=h, manifest_out=tmp_path / "manifest.json",
+    ) == 0
 
     toc = await _toc_state()
     assert toc[owner] == (PAGE_B, None), "owner keeps its page (husk: no stamped job id)"
@@ -308,7 +351,7 @@ async def test_group_with_no_stamped_job_still_resolves_an_owner(capsys):
     assert "groups=1 sections=2 owners=1 non_owners=1 jobs_to_unstamp=0" in out
 
 
-async def test_group_where_nobody_ever_archived_falls_to_earliest_completion(capsys):
+async def test_group_where_nobody_ever_archived_falls_to_earliest_completion(capsys, tmp_path):
     """Neither member ever pushed to Notion (both `notion_archived_at` NULL
     on every job, both `stamped=None`) — group tier 1 has NO evidence at all,
     so ownership falls through to tier 3 (earliest row-level `done`
@@ -327,7 +370,10 @@ async def test_group_where_nobody_ever_archived_falls_to_earliest_completion(cap
         owner, owner_job = s2.id, j2[0].id
         loser, loser_job = s1.id, j1[0].id
 
-    assert await _run(apply=True) == 0
+    h = await _current_plan_hash()
+    assert await _run(
+        apply=True, expect_plan_hash=h, manifest_out=tmp_path / "manifest.json",
+    ) == 0
 
     toc = await _toc_state()
     assert toc[owner] == (PAGE_B, None)
@@ -344,7 +390,7 @@ async def test_group_where_nobody_ever_archived_falls_to_earliest_completion(cap
 # ─── 6. push time beats completed_at, and the disagreement is reported ────
 
 
-async def test_push_time_wins_over_completed_at_and_is_flagged(capsys):
+async def test_push_time_wins_over_completed_at_and_is_flagged(capsys, tmp_path):
     """The live counter-example (group 3a499838…): the section that COMPLETED
     first was pushed LAST. Owner = earliest actual push; the group must be
     flagged `ordering_disagreement=true` so a reviewer sees the judgement."""
@@ -362,7 +408,10 @@ async def test_push_time_wins_over_completed_at_and_is_flagged(capsys):
         owner, owner_job = early_push.id, ep_jobs[0].id
         loser, loser_job = early_complete.id, ec_jobs[0].id
 
-    assert await _run(apply=True) == 0
+    h = await _current_plan_hash()
+    assert await _run(
+        apply=True, expect_plan_hash=h, manifest_out=tmp_path / "manifest.json",
+    ) == 0
 
     toc = await _toc_state()
     assert toc[owner] == (PAGE_A, owner_job), "earliest PUSH owns the page"
@@ -379,7 +428,7 @@ async def test_push_time_wins_over_completed_at_and_is_flagged(capsys):
 # ─── 7. a page id held by exactly one row is never a group ────────────────
 
 
-async def test_unique_page_id_is_never_touched(capsys):
+async def test_unique_page_id_is_never_touched(capsys, tmp_path):
     from app.db import SessionLocal
 
     async with SessionLocal() as s:
@@ -395,7 +444,10 @@ async def test_unique_page_id_is_never_touched(capsys):
         unarchived_id = unarchived.id
 
     before = await _snapshot()
-    assert await _run(apply=True) == 0
+    h = await _current_plan_hash()
+    assert await _run(
+        apply=True, expect_plan_hash=h, manifest_out=tmp_path / "manifest.json",
+    ) == 0
     assert await _snapshot() == before, "no duplicated page id -> nothing to repair"
 
     toc = await _toc_state()
@@ -405,3 +457,147 @@ async def test_unique_page_id_is_never_touched(capsys):
     out = capsys.readouterr().out
     assert "groups=0 sections=0 owners=0 non_owners=0 jobs_to_unstamp=0" in out
     assert PAGE_SOLO not in out
+
+
+# ─── 8. --apply requires --expect-plan-hash and --manifest-out ────────────
+
+
+async def test_apply_requires_expect_plan_hash(tmp_path):
+    await _seed_standard_group()
+    before = await _snapshot()
+
+    rc = await _run(
+        apply=True, expect_plan_hash=None, manifest_out=tmp_path / "manifest.json",
+    )
+
+    assert rc != 0, "missing --expect-plan-hash must be refused"
+    assert await _snapshot() == before, "missing --expect-plan-hash must write nothing"
+    assert not (tmp_path / "manifest.json").exists()
+
+
+async def test_apply_requires_manifest_out(tmp_path):
+    await _seed_standard_group()
+    h = await _current_plan_hash()
+    before = await _snapshot()
+
+    rc = await _run(apply=True, expect_plan_hash=h, manifest_out=None)
+
+    assert rc != 0, "missing --manifest-out must be refused"
+    assert await _snapshot() == before, "missing --manifest-out must write nothing"
+
+
+# ─── 9. the in-transaction re-read guard ───────────────────────────────────
+
+
+async def test_apply_rejects_wrong_expect_hash(tmp_path):
+    await _seed_standard_group()
+    before = await _snapshot()
+
+    rc = await _run(
+        apply=True, expect_plan_hash="0" * 64,
+        manifest_out=tmp_path / "manifest.json",
+    )
+
+    assert rc != 0, "a hash that never matches must be refused"
+    assert await _snapshot() == before, "wrong hash must write nothing"
+    assert not (tmp_path / "manifest.json").exists()
+
+
+async def test_apply_aborts_on_stale_plan(tmp_path):
+    """Capture the dry-run hash, then mutate a non-owner's page id out from
+    under the plan (it no longer collides with PAGE_A at all) before
+    --apply runs with the STALE hash. The in-transaction re-read must catch
+    this and abort with zero writes."""
+    from sqlalchemy import text
+
+    from app.db import SessionLocal
+
+    seeded = await _seed_standard_group()
+    old_hash = await _current_plan_hash()
+
+    drifted_section = next(iter(seeded["non_owners"]))
+    async with SessionLocal() as s:
+        await s.execute(
+            text("UPDATE toc_entries SET notion_homework_page_id = :new WHERE id = :sid"),
+            {"new": PAGE_SOLO, "sid": drifted_section},
+        )
+        await s.commit()
+
+    before = await _snapshot()
+    rc = await _run(
+        apply=True, expect_plan_hash=old_hash,
+        manifest_out=tmp_path / "manifest.json",
+    )
+
+    assert rc != 0, "a plan that changed since the dry run must be refused"
+    assert await _snapshot() == before, "stale-plan abort must write nothing further"
+    assert not (tmp_path / "manifest.json").exists()
+
+
+# ─── 10. apply_plan's own expected-state predicate (defense in depth) ─────
+
+
+async def test_apply_expected_state_predicate_blocks_drifted_row(tmp_path):
+    """Build a plan, then drift a non-owner job's `notion_archived_at` out
+    from under it, then call `apply_plan` directly against that now-stale
+    plan (bypassing `run()`'s hash re-check entirely) — the per-row expected
+    -value guard inside `apply_plan` itself must still refuse to write and
+    roll back the whole transaction."""
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.db import SessionLocal
+    from scripts.repair_notion_collisions import (
+        apply_plan, build_plan, load_colliding_sections,
+    )
+
+    seeded = await _seed_standard_group()
+
+    engine = create_async_engine(os.environ["DATABASE_URL"], future=True)
+    try:
+        async with engine.connect() as conn:
+            sections = await load_colliding_sections(conn)
+        stale_plans = build_plan(sections)
+
+        drifted_job_id = next(iter(seeded["non_owner_jobs"]))
+        async with SessionLocal() as s:
+            await s.execute(
+                text("UPDATE homework_jobs SET notion_archived_at = :new WHERE id = :jid"),
+                {"new": _h(99), "jid": drifted_job_id},
+            )
+            await s.commit()
+
+        before = await _snapshot()
+        with pytest.raises(Exception):
+            async with engine.begin() as conn:
+                await apply_plan(conn, stale_plans)
+        assert await _snapshot() == before, "a drifted row must roll back with zero writes"
+    finally:
+        await engine.dispose()
+
+
+# ─── 11. happy path: writes + manifest emitted + loadable ─────────────────
+
+
+async def test_apply_happy_path_writes_and_emits_manifest(tmp_path):
+    from scripts.repair_notion_collisions import manifest_load
+
+    seeded = await _seed_standard_group()
+    h = await _current_plan_hash()
+    manifest_path = tmp_path / "manifest.json"
+
+    rc = await _run(apply=True, expect_plan_hash=h, manifest_out=manifest_path)
+
+    assert rc == 0
+    toc = await _toc_state()
+    for sid in seeded["non_owners"]:
+        assert toc[sid] == (None, None)
+    assert toc[seeded["owner"]][0] == PAGE_A, "owner untouched"
+
+    assert manifest_path.exists(), "--manifest-out must be written on success"
+    manifest = manifest_load(manifest_path)
+    assert manifest["owners"] == [{
+        "page_id": PAGE_A,
+        "section_id": str(seeded["owner"]),
+        "job_id": str(seeded["owner_job"]),
+    }]
