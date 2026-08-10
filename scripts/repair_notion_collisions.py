@@ -80,6 +80,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -401,6 +403,139 @@ def format_applied(sections_cleared: int, jobs_unstamped: int) -> str:
     )
 
 
+# ─── plan hash + manifest (pure — no DB, no Notion) ───────────────────────
+#
+# `--apply` must only be allowed to run against the EXACT plan an operator
+# reviewed in dry-run, and a later `--refresh-notion` step needs enough of
+# that plan's expected state to act on it AFTER `--apply` has already
+# changed the DB (at which point the collision query returns nothing, so the
+# plan can no longer be re-derived). `plan_hash` covers the full expected
+# state the guarded UPDATEs depend on — not just ids — so a plan that
+# resolves to the same ids but different expected values (a different
+# `notion_archived_at` to clear, a different page id to null out) hashes
+# differently.
+
+
+def _expected_state(plans: Sequence[GroupPlan]) -> dict:
+    """The full expected-state structure `plan_hash` covers, and the same
+    structure persisted verbatim as the manifest's `expected` field. Every
+    collection is sorted by its own id so the result — and therefore the
+    hash — is independent of the order `plans` (or a section's/job's own
+    tuple) happens to be in."""
+    groups = sorted(
+        (
+            {
+                "page_id": plan.page_id,
+                "owner_section_id": (
+                    str(plan.owner.section_id) if plan.owner is not None else None
+                ),
+                "owner_page_id": plan.page_id if plan.owner is not None else None,
+                "owner_source": plan.owner_source,
+            }
+            for plan in plans
+        ),
+        key=lambda g: g["page_id"],
+    )
+    sections = sorted(
+        (
+            {
+                "section_id": str(section.section_id),
+                # Expected post-apply state: every non-owner's page pointer
+                # collapses onto the group's own page_id -> NULL.
+                "notion_homework_page_id": plan.page_id,
+                "notion_archived_job_id": (
+                    str(section.stamped_job_id)
+                    if section.stamped_job_id is not None
+                    else None
+                ),
+            }
+            for plan in plans
+            for section in plan.non_owners
+        ),
+        key=lambda d: d["section_id"],
+    )
+    jobs = sorted(
+        (
+            {
+                "job_id": str(job.job_id),
+                "notion_archived_at": _ts(job.notion_archived_at),
+            }
+            for plan in plans
+            for section in plan.non_owners
+            for job in section.jobs_to_unstamp
+        ),
+        key=lambda d: d["job_id"],
+    )
+    return {"groups": groups, "sections": sections, "jobs": jobs}
+
+
+def _hash_expected(expected: Mapping) -> str:
+    canonical = json.dumps(expected, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def plan_hash(plans: Sequence[GroupPlan]) -> str:
+    """Stable, order-independent digest over the FULL expected state the
+    guarded UPDATEs will depend on (ids AND expected values) — see the
+    section docstring above."""
+    return _hash_expected(_expected_state(plans))
+
+
+def dry_run_footer_lines(plans: Sequence[GroupPlan]) -> list[str]:
+    """The dry-run footer, plus the plan hash the operator must pass back
+    via `--expect-plan-hash` for a later `--apply` to be honored."""
+    return [DRY_RUN_FOOTER, f"plan-hash={plan_hash(plans)}"]
+
+
+def manifest_from_plans(plans: Sequence[GroupPlan]) -> dict:
+    """The persisted manifest a later `--refresh-notion` step reads once the
+    collision query can no longer re-derive the plan (`--apply` has already
+    cleared the rows it was querying). Deliberately does NOT store phase
+    content — a later task loads owner phases fresh from `job_id`."""
+    expected = _expected_state(plans)
+    owners = sorted(
+        (
+            {
+                "page_id": plan.page_id,
+                "section_id": str(plan.owner.section_id),
+                "job_id": (
+                    str(plan.owner.stamped_job_id)
+                    if plan.owner.stamped_job_id is not None
+                    else None
+                ),
+            }
+            for plan in plans
+            if plan.owner is not None
+        ),
+        key=lambda o: o["page_id"],
+    )
+    return {
+        "version": 1,
+        "hash": _hash_expected(expected),
+        "owners": owners,
+        "expected": expected,
+    }
+
+
+def manifest_load(path: str | Path) -> dict:
+    """Read + parse a persisted manifest, then RECOMPUTE the hash over its
+    own `expected` content and assert it matches the stored `hash`. This is
+    the manifest's INTERNAL integrity check (detects a hand-edited or
+    corrupted file) — it does NOT compare against the DB or the live plan;
+    that verification happens wherever the manifest is later consulted."""
+    manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+    recomputed = _hash_expected(manifest.get("expected"))
+    stored = manifest.get("hash")
+    if recomputed != stored:
+        raise ValueError(
+            f"manifest integrity check failed: stored hash {stored!r} does "
+            f"not match the hash recomputed over its own 'expected' content "
+            f"({recomputed!r}) — the manifest file may be corrupted or "
+            "hand-edited"
+        )
+    return manifest
+
+
 # ─── DB I/O ──────────────────────────────────────────────────────────────
 
 # Every toc row whose notion_homework_page_id is shared with at least one
@@ -527,7 +662,8 @@ async def run(*, database_url: str, apply: bool) -> int:
                 cleared, unstamped = await apply_plan(conn, plans)
             print(format_applied(cleared, unstamped))
         else:
-            print(DRY_RUN_FOOTER)
+            for line in dry_run_footer_lines(plans):
+                print(line)
 
         print(format_summary(counts))
     finally:
@@ -551,6 +687,27 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--apply", action="store_true",
         help="Actually clear the stamps. Without this flag the script only "
              "prints the plan and writes nothing.",
+    )
+    parser.add_argument(
+        "--expect-plan-hash", type=str, default=None,
+        help="The plan-hash printed by a prior dry run. Not yet enforced — "
+             "wiring lands in a later task.",
+    )
+    parser.add_argument(
+        "--manifest-out", type=Path, default=None,
+        help="Path to write the persisted plan manifest to. Not yet wired "
+             "— wiring lands in a later task.",
+    )
+    parser.add_argument(
+        "--plan-file", type=Path, default=None,
+        help="Path to a previously persisted plan manifest. Not yet wired "
+             "— wiring lands in a later task.",
+    )
+    parser.add_argument(
+        "--refresh-notion", action="store_true",
+        help="Rewrite the owner's Notion page for a manifest's groups after "
+             "--apply has already run. Not yet wired — wiring lands in a "
+             "later task.",
     )
     return parser.parse_args(argv)
 
