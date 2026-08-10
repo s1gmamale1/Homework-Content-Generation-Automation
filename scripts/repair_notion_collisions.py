@@ -1,4 +1,4 @@
-"""Repair the FALSE Notion archive stamps left behind by the pre-#120 lesson
+"""Clear the FALSE Notion archive stamps left behind by the pre-#120 lesson
 title collision.
 
 Before commit 3945b83, `notion_archive` resolved a lesson's Notion page by
@@ -6,11 +6,11 @@ TITLE alone. Distinct lessons that happened to share a title therefore
 collapsed onto ONE page: the first job to push populated it; every later job
 hit `page_has_content` and silently returned WITHOUT writing — yet still got
 stamped `notion_archived_at` (and had `toc_entries.notion_homework_page_id`
-pointed at that other lesson's page). Some pages are mixed: later jobs may have
-added leaves or replaced a shared phase leaf. The repair clears false DB
-pointers first, then authoritatively rewrites the retained owner and prunes
-non-owner leaves. Rewriting is prohibited before the DB clear and required
-after it for every retained owner.
+pointed at that other lesson's page). In the COMMON case nothing in Notion
+was overwritten — the later job simply never wrote (a SKIP). But NOT always:
+some pages are MIXED, where a later job appended its own leaves or replaced a
+shared phase leaf via `auto_replace`. Those need the Notion rewrite described
+below, not just a DB clear — a plain "SKIP, not a clobber" is false for them.
 
 The code fix is deployed, so NEW archives no longer collide. But the damaged
 rows still carry those false stamps and will re-skip forever until they are
@@ -53,11 +53,57 @@ where the two rules disagree the group is flagged
 `ordering_disagreement=true` so a reviewer can see the judgement call.
 
 **Dry-run by default** — it prints a full, reviewable plan and opens no write
-transaction whatsoever. The repair is a two-gesture operation: first run
-`--apply --expect-plan-hash=<hash> --manifest-out=<path>` after draining all
-archivers; then run `--refresh-notion --plan-file=<path>` to rewrite owners and
-prune contaminating leaves. A refresh is safe to rerun after a partial Notion
-failure; a bare refresh without a manifest is rejected.
+transaction whatsoever. Pass --apply to write (one transaction, loud banner).
+A second --apply run finds nothing to do: each page id then has exactly one
+row, so no group remains.
+
+Clearing the DB pointers is only half the repair. Some collided pages are
+MIXED: a later, now-orphaned job appended its own leaves (or replaced a
+shared phase leaf via `auto_replace`) onto the owner's page before the
+collision was caught, so a DB-only clear leaves that contamination sitting
+in Notion even though the DB now points cleanly at the true owner.
+`--refresh-notion` is the second gesture that fixes this: it rewrites every
+retained owner's Notion page authoritatively from its own `phase_outputs`
+(`replace=True`, so it fully overwrites rather than appends) and then
+prunes any leaf `classify_page` identifies as belonging to some other
+lesson.
+
+The rewrite is PROHIBITED before the DB clear and REQUIRED after it, for
+every retained owner. Before the clear, a non-owner `toc_entries` row can
+still point at the SAME page id the owner uses — rewriting a page while
+ownership is still ambiguous risks a non-owner's own repair pass
+overwriting content another section still legitimately owns, which is why
+`--refresh-notion` is unreachable until a manifest exists, and only
+`--apply` produces one (after the DB has already been resolved to a single
+owner per page). After the clear, skipping the rewrite leaves stale or
+contaminated Notion content behind even though the DB is now correct — so
+EVERY retained owner gets rewritten, not just the ones that would classify
+"mixed": a non-owner section can have appended content to a page since the
+plan was captured, so only a fresh, authoritative rewrite (not a read
+against the OLD plan) can be trusted.
+
+**Two-gesture operator flow.** After draining all archivers (so nothing new
+writes to Notion mid-repair):
+  1. `--apply --expect-plan-hash=<hash> --manifest-out=<path>` — clears the
+     non-owner DB pointers (as above) and persists the resolved plan (every
+     owner's page id, section id, job id) to `--manifest-out`.
+  2. `--refresh-notion --plan-file=<path>` — reads that manifest (its own
+     internal hash is re-verified; a hand-edited manifest is rejected) and,
+     for every owner in it, re-reads the LIVE `toc_entries` pointer,
+     refuses to touch a page whose pointer drifted since the manifest was
+     written (`owner_pointer_drift`), and otherwise rewrites the page from
+     the owner's own done, non-`extract` `phase_outputs` before pruning
+     contaminating leaves. A bare `--refresh-notion` with no `--plan-file`
+     is rejected outright (exit 2, no engine or Notion client ever
+     created) — there is no fallback that re-derives a plan from the
+     collision query, because by the time step 2 runs the DB has already
+     been cleared and that query returns nothing.
+
+Step 2 is safe to re-run after a partial Notion failure: each owner's
+rewrite is idempotent (`replace=True`, never appended), and any owner that
+failed a rewrite or a prune on a prior attempt (`rewrite_failed` /
+`prune_failed`) is simply retried from scratch on the next run, same as
+one that already succeeded.
 
 DATABASE_URL is read directly from the environment and MUST be set
 explicitly — this script refuses to start otherwise (one clear error line,
@@ -81,6 +127,12 @@ refuses to write if either the plan or a targeted row has drifted since):
   uv run python -m scripts.repair_notion_collisions --apply \\
     --expect-plan-hash=<hash printed by the dry run> \\
     --manifest-out=/path/to/manifest.json
+
+Refresh Notion (gesture 2 — run only AFTER the --apply above; rewrites +
+prunes every retained owner's page from the manifest --apply just wrote):
+  DATABASE_URL=postgresql+asyncpg://edu:edu@localhost:5433/edu_homework \\
+  uv run python -m scripts.repair_notion_collisions --refresh-notion \\
+    --plan-file=/path/to/manifest.json
 """
 from __future__ import annotations
 

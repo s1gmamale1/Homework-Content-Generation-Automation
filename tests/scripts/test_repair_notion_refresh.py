@@ -20,7 +20,13 @@ Run:
 """
 from __future__ import annotations
 
-from scripts.repair_notion_collisions import PageClassification, classify_page
+from scripts.repair_notion_collisions import (
+    OwnerRefreshOutcome,
+    PageClassification,
+    RefreshReport,
+    classify_page,
+    format_refresh_report,
+)
 
 
 class FakeNotionClient:
@@ -180,6 +186,54 @@ def test_page_classification_is_frozen_dataclass():
         pass
     else:
         raise AssertionError("PageClassification must be frozen")
+
+
+def test_format_refresh_report():
+    """Pure formatter, no DB/Notion: one outcome of each kind must produce a
+    labeled per-owner line AND be tallied into the summary line's counts."""
+    report = RefreshReport(outcomes=(
+        OwnerRefreshOutcome(
+            page_id="pg-rewritten", section_id="sec-1", job_id="job-1",
+            outcome="rewritten", verdict="mixed", pruned=2,
+        ),
+        OwnerRefreshOutcome(
+            page_id="pg-drift", section_id="sec-2", job_id="job-2",
+            outcome="owner_pointer_drift",
+        ),
+        OwnerRefreshOutcome(
+            page_id="pg-no-owner-job", section_id="sec-3", job_id=None,
+            outcome="no_owner_job",
+        ),
+        OwnerRefreshOutcome(
+            page_id="pg-no-phases", section_id="sec-4", job_id="job-4",
+            outcome="owner_no_phases",
+        ),
+        OwnerRefreshOutcome(
+            page_id="pg-rewrite-failed", section_id="sec-5", job_id="job-5",
+            outcome="rewrite_failed", error="boom",
+        ),
+        OwnerRefreshOutcome(
+            page_id="pg-prune-failed", section_id="sec-6", job_id="job-6",
+            outcome="prune_failed", pruned=1, error="delete boom",
+        ),
+    ))
+
+    lines = format_refresh_report(report)
+
+    assert lines[0] == (
+        "refresh: rewritten=1 pruned=3 skipped_drift=1 skipped_no_phases=1 "
+        "rewrite_failed=1 prune_failed=1"
+    )
+    body = "\n".join(lines[1:])
+    assert "pg-rewritten" in body and "REWRITTEN verdict=mixed pruned=2" in body
+    assert "pg-drift" in body and "SKIPPED (owner_pointer_drift)" in body
+    assert "pg-no-owner-job" in body and "SKIPPED (no_owner_job)" in body
+    assert "pg-no-phases" in body and "SKIPPED (owner_no_phases" in body
+    assert "pg-rewrite-failed" in body and "REWRITE_FAILED error=boom" in body
+    assert (
+        "pg-prune-failed" in body
+        and "REWRITTEN but PRUNE_FAILED pruned=1 error=delete boom" in body
+    )
 
 
 # ─── gesture 2: --refresh-notion --plan-file (real-DB + fake Notion) ──────
