@@ -91,6 +91,24 @@ def test_apply_requires_both_reviewed_hash_and_manifest_path(capsys):
     assert "--manifest-out" in capsys.readouterr().err
 
 
+def test_manifest_target_rejects_missing_parent_and_existing_destination(tmp_path):
+    """Destination mistakes must be caught before a write transaction starts."""
+    import pytest
+
+    from scripts.quarantine_solver_mismatches import (
+        PreflightError,
+        validate_manifest_target,
+    )
+
+    with pytest.raises(PreflightError, match="parent directory"):
+        validate_manifest_target(tmp_path / "missing" / "manifest.json")
+
+    existing = tmp_path / "existing.json"
+    existing.write_text("do not overwrite", encoding="utf-8")
+    with pytest.raises(PreflightError, match="already exists"):
+        validate_manifest_target(existing)
+
+
 def test_plan_hash_is_deterministic_and_covers_every_expected_state_field():
     """Dropping any guarded field from the snapshot must change this test."""
     phase = _phase()

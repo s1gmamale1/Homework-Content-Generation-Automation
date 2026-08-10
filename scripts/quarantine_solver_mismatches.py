@@ -29,7 +29,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
@@ -53,6 +53,18 @@ class PlanChangedError(RuntimeError):
 
 class ApplyStateDriftError(RuntimeError):
     """A guarded row did not retain the expected state."""
+
+
+@dataclass(frozen=True)
+class ManifestTarget:
+    target: Path
+    parent: Path
+
+
+@dataclass(frozen=True)
+class StagedManifest:
+    target: Path
+    temporary: Path
 
 
 @dataclass(frozen=True)
@@ -174,19 +186,68 @@ def manifest_for_plan(plan: Sequence[RemediationJob]) -> dict:
     }
 
 
-def write_manifest_durable(path: str | Path, manifest: Mapping) -> None:
+def validate_manifest_target(path: str | Path) -> ManifestTarget:
+    """Validate destination semantics before opening a write transaction."""
     target = Path(path)
-    temporary = target.with_name(f".{target.name}.tmp")
+    parent = target.parent
+    if not target.name or target.name in {".", ".."}:
+        raise PreflightError("--manifest-out must name a file")
+    if not parent.exists() or not parent.is_dir():
+        raise PreflightError(
+            f"--manifest-out parent directory does not exist: {parent}"
+        )
+    if target.exists() or target.is_symlink():
+        raise PreflightError(
+            f"--manifest-out already exists; refusing to overwrite: {target}"
+        )
+    if not os.access(parent, os.W_OK | os.X_OK):
+        raise PreflightError(
+            f"--manifest-out parent directory is not writable: {parent}"
+        )
+    return ManifestTarget(target=target, parent=parent)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def stage_manifest_durable(
+    target: ManifestTarget, manifest: Mapping
+) -> StagedManifest:
+    """Write+fsync a hidden artifact without publishing the final path."""
+    temporary = target.parent / f".{target.target.name}.{uuid4().hex}.staged"
     payload = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     try:
-        with temporary.open("w", encoding="utf-8") as handle:
+        with temporary.open("x", encoding="utf-8") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
-    finally:
+        _fsync_directory(target.parent)
+    except BaseException:
         if temporary.exists():
             temporary.unlink()
+        raise
+    return StagedManifest(target=target.target, temporary=temporary)
+
+
+def discard_staged_manifest(staged: StagedManifest | None) -> None:
+    if staged is None or not staged.temporary.exists():
+        return
+    staged.temporary.unlink()
+    _fsync_directory(staged.temporary.parent)
+
+
+async def publish_staged_manifest(staged: StagedManifest) -> None:
+    """Publish only after commit; an error deliberately retains the temp."""
+    # Hard-link publication is atomic and refuses to overwrite a destination
+    # created after preflight.  Both names point to the already-fsynced inode.
+    os.link(staged.temporary, staged.target)
+    _fsync_directory(staged.target.parent)
+    staged.temporary.unlink()
 
 
 async def load_plan(
@@ -361,8 +422,17 @@ async def run(
         )
         return 2
 
+    manifest_target: ManifestTarget | None = None
+    if apply:
+        try:
+            manifest_target = validate_manifest_target(manifest_out)
+        except PreflightError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+
     engine = create_async_engine(database_url, future=True)
     committed_plan: tuple[RemediationJob, ...] | None = None
+    staged_manifest: StagedManifest | None = None
     try:
         if not apply:
             async with engine.connect() as conn:
@@ -384,14 +454,38 @@ async def run(
                         f"expected {expect_plan_hash}, current {fresh_hash}"
                     )
                 await apply_plan(conn, plan)
+                assert manifest_target is not None
+                staged_manifest = stage_manifest_durable(
+                    manifest_target, manifest_for_plan(plan)
+                )
                 committed_plan = plan
         except (PlanChangedError, ApplyStateDriftError) as exc:
+            discard_staged_manifest(staged_manifest)
             print(f"ERROR: {exc}", file=sys.stderr)
             return 3
+        except OSError as exc:
+            discard_staged_manifest(staged_manifest)
+            print(
+                f"ERROR: manifest staging failed; database rolled back: {exc}",
+                file=sys.stderr,
+            )
+            return 3
+        except BaseException:
+            discard_staged_manifest(staged_manifest)
+            raise
 
-        # Deliberately after engine.begin() exits: the manifest records only
-        # a transaction PostgreSQL has already committed successfully.
-        write_manifest_durable(manifest_out, manifest_for_plan(committed_plan or ()))
+        # Deliberately after engine.begin() exits: the final path becomes
+        # visible only after PostgreSQL has committed successfully.
+        assert staged_manifest is not None
+        try:
+            await publish_staged_manifest(staged_manifest)
+        except OSError as exc:
+            print(
+                "ERROR: DATABASE COMMITTED but manifest publication failed; "
+                f"the durable manifest remains at {staged_manifest.temporary}: {exc}",
+                file=sys.stderr,
+            )
+            return 4
         print(
             f"applied: quarantined {sum(len(j.phases) for j in committed_plan or ())} "
             f"phase(s) across {len(committed_plan or ())} job(s)"

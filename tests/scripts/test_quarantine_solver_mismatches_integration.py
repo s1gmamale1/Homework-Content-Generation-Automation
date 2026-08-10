@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy.engine import make_url
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_DB_INTEGRATION") != "1",
@@ -21,6 +23,7 @@ NOW = datetime.now(timezone.utc)
 
 
 async def _truncate() -> None:
+    _require_disposable_database_url(os.environ["DATABASE_URL"])
     from sqlalchemy import text
 
     from app.db import SessionLocal
@@ -35,11 +38,49 @@ async def _truncate() -> None:
         await session.commit()
 
 
+def _require_disposable_database_url(database_url: str) -> None:
+    """Fail before a session exists unless the DB name is visibly disposable."""
+    database = (make_url(database_url).database or "").lower()
+    if not (
+        "scratch" in database
+        or database.startswith("test_")
+        or re.search(r"(?:^|_)test(?:$|_)", database)
+    ):
+        raise RuntimeError(
+            f"refusing destructive integration cleanup on non-test database {database!r}"
+        )
+
+
 @pytest.fixture(autouse=True)
 async def _clean_db():
     await _truncate()
     yield
     await _truncate()
+
+
+async def test_cleanup_guard_refuses_production_like_url_before_truncate(
+    monkeypatch,
+):
+    called = False
+
+    def _record_session_open():
+        nonlocal called
+        called = True
+        raise AssertionError("SessionLocal opened before the scratch-DB guard")
+
+    # Scope the patches inside the test body so the autouse fixture's
+    # teardown sees the original scratch URL and cleanup function.
+    with monkeypatch.context() as scoped:
+        scoped.setenv(
+            "DATABASE_URL", "postgresql+asyncpg://edu:secret@db.internal/edu_copy"
+        )
+        scoped.setattr(
+            "app.db.SessionLocal",
+            _record_session_open,
+        )
+        with pytest.raises(RuntimeError, match="non-test database 'edu_copy'"):
+            await _truncate()
+    assert called is False
 
 
 async def _seed_job(
@@ -345,3 +386,87 @@ async def test_expected_state_predicates_roll_back_earlier_job_updates():
         await engine.dispose()
 
     assert await _snapshot() == before
+
+
+async def test_invalid_manifest_destination_causes_zero_database_writes(tmp_path):
+    from scripts.quarantine_solver_mismatches import plan_hash, run
+
+    await _seed_job()
+    reviewed_hash = plan_hash(await _load_plan())
+    before = await _snapshot()
+    invalid = tmp_path / "missing-parent" / "manifest.json"
+
+    assert await run(
+        database_url=os.environ["DATABASE_URL"],
+        apply=True,
+        expect_plan_hash=reviewed_hash,
+        manifest_out=invalid,
+    ) == 2
+    assert await _snapshot() == before
+    assert not invalid.exists()
+
+
+async def test_manifest_staging_failure_rolls_back_database(monkeypatch, tmp_path):
+    from scripts import quarantine_solver_mismatches as script
+
+    await _seed_job()
+    reviewed_hash = script.plan_hash(await _load_plan())
+    before = await _snapshot()
+
+    def _fail_stage(*args, **kwargs):
+        raise OSError("disk full while staging")
+
+    monkeypatch.setattr(script, "stage_manifest_durable", _fail_stage)
+    assert await script.run(
+        database_url=os.environ["DATABASE_URL"],
+        apply=True,
+        expect_plan_hash=reviewed_hash,
+        manifest_out=tmp_path / "manifest.json",
+    ) == 3
+    assert await _snapshot() == before
+    assert not (tmp_path / "manifest.json").exists()
+
+
+async def test_post_commit_publish_failure_keeps_and_reports_durable_temp(
+    monkeypatch, tmp_path, capsys
+):
+    from sqlalchemy import text
+
+    from app.db import SessionLocal
+    from scripts import quarantine_solver_mismatches as script
+
+    job_id, _toc, _phases = await _seed_job()
+    reviewed_hash = script.plan_hash(await _load_plan())
+    final_path = tmp_path / "manifest.json"
+    seen_temp = None
+
+    async def _fail_publish(staged):
+        nonlocal seen_temp
+        seen_temp = staged.temporary
+        assert staged.temporary.exists()
+        assert not staged.target.exists()
+        # A separate session sees `failed`, proving publication starts only
+        # after the write transaction committed.
+        async with SessionLocal() as session:
+            status = await session.scalar(
+                text("SELECT status FROM homework_jobs WHERE id=:id"),
+                {"id": job_id},
+            )
+        assert status == "failed"
+        raise OSError("simulated post-commit publish failure")
+
+    monkeypatch.setattr(script, "publish_staged_manifest", _fail_publish)
+    assert await script.run(
+        database_url=os.environ["DATABASE_URL"],
+        apply=True,
+        expect_plan_hash=reviewed_hash,
+        manifest_out=final_path,
+    ) == 4
+
+    assert seen_temp is not None and seen_temp.exists()
+    assert not final_path.exists()
+    staged_payload = json.loads(seen_temp.read_text(encoding="utf-8"))
+    assert staged_payload["plan_hash"] == reviewed_hash
+    error = capsys.readouterr().err
+    assert "DATABASE COMMITTED" in error
+    assert str(seen_temp) in error
