@@ -10,7 +10,7 @@ import { SpaceBackdrop } from "@/components/space-backdrop";
 import { api } from "@/lib/api";
 import { sourceCheckWarnings } from "@/lib/phase-warnings";
 import { subjectLabel } from "@/lib/subjects";
-import type { Job } from "@/lib/types";
+import type { Job, SolverStatus } from "@/lib/types";
 import { springSoft } from "@/lib/motion";
 import { BACK_PILL, GLASS_BTN, PRIMARY_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
@@ -119,19 +119,23 @@ const JUDGE_STATUS_LABEL: Record<string, string> = {
 
 // Solver states. mismatch_regen is a SUCCESS (the solver caught a wrong key and
 // the phase was regenerated) — render it green, not amber.
-const SOLVER_STATUS_LABEL: Record<string, string> = {
+const SOLVER_STATUS_LABEL: Record<SolverStatus, string> = {
+  ok: "",
   mismatch_regen: "answer-key fixed",
   mismatch_shipped: "key mismatch shipped",
   mismatch_regen_failed: "key regen failed",
+  mismatch_blocked: "answer-key blocked",
   unavailable: "solver unavailable",
   refused: "solver declined",
   // `ok` is the clean case — no chip (mirrors judge, which shows nothing on ok).
 };
 
-const SOLVER_STATUS_CLASS: Record<string, string> = {
+const SOLVER_STATUS_CLASS: Record<SolverStatus, string> = {
+  ok: "",
   mismatch_regen: "border-emerald-400/30 bg-emerald-400/10 text-emerald-300/90",
   mismatch_shipped: "border-rose-400/30 bg-rose-400/10 text-rose-300/90",
   mismatch_regen_failed: "border-rose-400/30 bg-rose-400/10 text-rose-300/90",
+  mismatch_blocked: "border-rose-400/30 bg-rose-400/10 text-rose-300/90",
   unavailable: "border-amber-400/30 bg-amber-400/10 text-amber-300/90",
   refused: "border-amber-400/30 bg-amber-400/10 text-amber-300/90",
 };
