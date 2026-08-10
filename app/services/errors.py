@@ -69,6 +69,15 @@ class PersistentSolverMismatch(Exception):
     phase and job must fail and must never be archived/distributed.
     """
 
+    _MAX_MESSAGE_CHARS = 900
+
+    @staticmethod
+    def _clip(value: str, limit: int) -> str:
+        value = value.strip()
+        if len(value) <= limit:
+            return value
+        return f"{value[: limit - 3].rstrip()}..."
+
     def __init__(
         self,
         phase_name: str,
@@ -78,12 +87,19 @@ class PersistentSolverMismatch(Exception):
         self.phase_name = phase_name
         self.warnings = tuple(warnings)
         self.repair_error = repair_error
-        shown = "; ".join(self.warnings[:3]) or "solver supplied no detail"
-        suffix = f"; repair failed: {repair_error}" if repair_error else ""
-        super().__init__(
-            f"{phase_name}: persistent answer-key mismatch after regeneration: "
+        phase_context = self._clip(phase_name or "unknown phase", 80)
+        warning_text = "; ".join(self.warnings[:3]) or "solver supplied no detail"
+        shown = self._clip(warning_text, 400)
+        suffix = ""
+        if repair_error is not None:
+            cause_type = self._clip(type(repair_error).__name__, 80)
+            cause_text = str(repair_error).strip() or repr(repair_error)
+            suffix = f"; repair failed ({cause_type}): {self._clip(cause_text, 220)}"
+        message = (
+            f"{phase_context}: persistent answer-key mismatch after regeneration: "
             f"{shown}{suffix}"
         )
+        super().__init__(self._clip(message, self._MAX_MESSAGE_CHARS))
 
 
 # ── Fenced-lease control signals (fenced job leases, Task 7) ─────────────────

@@ -21,6 +21,26 @@ def test_persistent_solver_mismatch_keeps_repair_cause():
     assert "solver recheck disconnected" in str(exc)
 
 
+def test_persistent_solver_mismatch_bounds_oversized_warning_text():
+    warning = "[high] q1: " + ("wrong key detail " * 500)
+    exc = PersistentSolverMismatch("memory-check", [warning])
+
+    assert exc.warnings == (warning,)
+    assert "memory-check" in str(exc)
+    assert "persistent answer-key mismatch" in str(exc)
+    assert len(str(exc)) < 1000
+
+
+def test_persistent_solver_mismatch_bounds_oversized_repair_error_text():
+    cause = ConnectionError("solver recheck disconnected " + ("network detail " * 500))
+    exc = PersistentSolverMismatch("practice-rlc", ["[high] step 2"], cause)
+
+    assert exc.repair_error is cause
+    assert "practice-rlc" in str(exc)
+    assert "solver recheck disconnected" in str(exc)
+    assert len(str(exc)) < 1000
+
+
 def test_persistent_mismatch_is_not_queue_retry_worthy():
     exc = PersistentSolverMismatch("memory-check", ["[high] q1"])
     assert pipeline._requeue_worthy(exc) is False
