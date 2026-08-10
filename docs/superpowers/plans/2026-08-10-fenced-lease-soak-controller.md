@@ -13,7 +13,7 @@
 - The controller does **not** launch, retry, resume, cancel, archive, or regenerate a homework. It observes work created by a separately approved operator action.
 - `preflight` and unarmed `watch` must execute `SET TRANSACTION READ ONLY` before every database snapshot. A regression that issues `INSERT`, `UPDATE`, or `DELETE` in either path is a release blocker.
 - Scope is never inferred from “recent” rows alone. Every run requires non-empty `batch_ids`, non-empty `job_ids`, and an aware UTC `since` instant in the scope file. Every queried job, usage row, phase row, and lease event is filtered by those job IDs, with `since` as an additional lower bound for time-series tables.
-- The expected production configuration for the first soak is exactly: worker code `d6b1c9f` / code version `987`, `WORKER_CONCURRENCY=2`, `AGENT_MAX_CONCURRENCY=4`, `CREDENTIAL_MAX_CONCURRENT_GEMINI=32`, `CREDENTIAL_SLOT_WAIT_SECONDS=120`, no `GEMINI_MAX_CONCURRENCY`, one worker process per host, one shared plain-key fingerprint, and `STRUCTURED_OUTPUT_ENABLED=false`. These values live in the scope file, not as hidden CLI defaults.
+- The first soak requires one exact, caller-supplied **final deployed** Git SHA and code version, derived from the controller's externally gated merge commit immediately before deployment. Every participating process, heartbeat, attestation, `claimed_by` suffix, and the fleet version floor must match that pair. `d6b1c9f` / v987 is only the pre-plan audit baseline; it is never a runtime default because merging this lane necessarily creates a newer identity. The remaining production configuration is exactly `WORKER_CONCURRENCY=2`, `AGENT_MAX_CONCURRENCY=4`, `CREDENTIAL_MAX_CONCURRENT_GEMINI=32`, `CREDENTIAL_SLOT_WAIT_SECONDS=120`, no `GEMINI_MAX_CONCURRENCY`, one worker process per host, one shared plain-key fingerprint, and `STRUCTURED_OUTPUT_ENABLED=false`. All values live in the scope file, not as hidden code defaults.
 - The first production sequence is `4 -> 8 -> 12 -> 20 -> 40` independent fresh jobs. A level advances only after its jobs reach terminal state and a 60-second quiet-settle window passes all gates.
 - The 40-job level is two 20-job batches so each remains below the configured `$50` per-batch cap. It is still one stage and one exact scope.
 - The tooling lane is `$0`: unit tests, fake-store acceptance, and optional scratch-Postgres integration only. No provider call and no production job launch is authorized by this plan.
@@ -29,7 +29,7 @@
 ## Branch-Collision Gate Record (2026-08-10)
 
 - Fetched all refs with `git fetch --all --prune` before creating this plan.
-- Base: `origin/Nggaev-v2@d6b1c9f65e13ea5a6c2abd21b8a592303ece784b`.
+- Planning base/audit baseline: `origin/Nggaev-v2@d6b1c9f65e13ea5a6c2abd21b8a592303ece784b`. This ref records what was reviewed; the eventual controller merge's SHA/version must replace it in every paid-run scope and attestation.
 - Existing `scripts/soak_watch_leases.sql@595911d` is a read-only 24-hour/7-day historical snapshot. It has no exact run scope, preflight, fleet attestation, cost cap, JSON evidence, or stop action. It remains useful as a human fallback and is not replaced in this lane.
 - `origin/feat/fenced-job-leases@3253bb9` contains the already-merged fencing implementation and tests. It supplies the event vocabulary and invariants; it does not contain a controller.
 - `origin/feat/model-config-3x-flash-exec@d62dc1f` changes old `stress_concurrency.py` / `stress_multimodel.py` probes and model configuration. Those probes make provider calls and do not overlap this controller.
@@ -285,6 +285,15 @@ def test_attestation_rejects_raw_secret_fields():
         soak.FleetAttestation.model_validate(raw)
 
 
+def test_final_deployed_identity_is_caller_supplied_not_baked_in():
+    raw = valid_scope_dict()
+    raw["expected_git_sha"] = "fedcba9"
+    raw["expected_code_version"] = 1001
+    scope = soak.SoakScope.model_validate(raw)
+    assert scope.expected_git_sha == "fedcba9"
+    assert scope.expected_code_version == 1001
+
+
 def test_unarmed_watch_is_read_only_by_construction():
     args = soak.parse_args([
         "watch", "--scope", "scope.json", "--attestation", "fleet.json",
@@ -320,7 +329,7 @@ Expected: import fails because the script does not exist.
 
 - [ ] **Step 3: Implement exact models and CLI**
 
-Use `extra="forbid"` on every persisted model. Normalize all UUID lists by rejecting duplicates, not silently deduplicating them. Validate `run_id` against `^[a-z0-9][a-z0-9-]{0,44}$` (45 characters keeps both pause reasons inside `String(64)`), validate `since.tzinfo`, convert to UTC, require `target_running > 0`, require `db_preflight_connection_limit < db_hard_stop_connection_limit`, require `approved_incremental_cost_usd > 0`, and require all PDF SHA-256 values to match `^[0-9a-f]{64}$`. `redacted_model_dump` recursively removes values whose field names match secret-bearing names (`gemini_api_key`, `api_key`, `token`, `secret`, `password`, `database_url`) while explicitly retaining the safe contract fields `credential_fingerprint`, `forbidden_notion_mapping_keys`, and `claim_token`.
+Use `extra="forbid"` on every persisted model. Normalize all UUID lists by rejecting duplicates, not silently deduplicating them. Validate `run_id` against `^[a-z0-9][a-z0-9-]{0,44}$` (45 characters keeps both pause reasons inside `String(64)`), `expected_git_sha` against `^[0-9a-f]{7,40}$`, `expected_code_version > 0`, validate `since.tzinfo`, convert to UTC, require `target_running > 0`, require `db_preflight_connection_limit < db_hard_stop_connection_limit`, require `approved_incremental_cost_usd > 0`, and require all PDF SHA-256 values to match `^[0-9a-f]{64}$`. The module must not define a baked-in expected SHA or code-version constant; both come only from `SoakScope`. `redacted_model_dump` recursively removes values whose field names match secret-bearing names (`gemini_api_key`, `api_key`, `token`, `secret`, `password`, `database_url`) while explicitly retaining the safe contract fields `credential_fingerprint`, `forbidden_notion_mapping_keys`, and `claim_token`.
 
 The CLI surface is exact:
 
@@ -387,7 +396,7 @@ schema_revision_mismatch
 scope_job_missing
 scope_job_wrong_batch
 scope_job_not_pristine
-outside_queue_not_empty
+unrelated_active_queue_not_empty
 staging_pause_missing_or_foreign
 version_floor_mismatch
 worker_attestation_stale
@@ -409,10 +418,29 @@ Representative bite tests:
 
 ```python
 def test_preflight_fails_when_a_same_version_unattested_worker_can_claim():
+    scope = valid_scope(expected_git_sha="fedcba9", expected_code_version=1001)
     raw = healthy_raw_snapshot()
-    raw.workers.append(claimable_worker(pc_id="rogue:9@d6b1c9f"))
-    findings = soak.evaluate_preflight(valid_scope(), valid_attestation(), raw)
+    raw.workers.append(claimable_worker(
+        pc_id="rogue:9@fedcba9", git_sha="fedcba9", code_version=1001
+    ))
+    findings = soak.evaluate_preflight(scope, valid_attestation(), raw)
     assert "unattested_claimable_worker" in hard_codes(findings)
+
+
+@pytest.mark.parametrize("status", ["pending", "running", "cancelling"])
+def test_preflight_rejects_unrelated_active_queue_rows(status):
+    raw = healthy_raw_snapshot()
+    raw.unrelated_jobs.append(job_row(status=status))
+    findings = soak.evaluate_preflight(valid_scope(), valid_attestation(), raw)
+    assert "unrelated_active_queue_not_empty" in hard_codes(findings)
+
+
+def test_scoped_fresh_pending_jobs_are_expected_under_staging_pause():
+    raw = healthy_raw_snapshot()
+    assert {job.status for job in raw.jobs} == {"pending"}
+    findings = soak.evaluate_preflight(valid_scope(), valid_attestation(), raw)
+    assert "unrelated_active_queue_not_empty" not in hard_codes(findings)
+    assert "scope_job_not_pristine" not in hard_codes(findings)
 
 
 def test_preflight_requires_zero_idle_in_transaction_even_below_pool_limit():
@@ -457,7 +485,7 @@ The store must issue bound-parameter queries, never interpolate UUIDs or timesta
 
 1. `alembic_version.version_num`, existence of `job_lease_events`, and `claim_token` columns on both tables.
 2. `budget_state` pause and exact version floor.
-3. Exact scoped jobs joined to batches; count of pending/running jobs outside the scope.
+3. Exact scoped jobs joined to batches; count of `pending`, `running`, or `cancelling` jobs outside the scope. Scoped freshly-created `pending` jobs are the expected staged state and are not counted as unrelated queue activity.
 4. Workers fresh by the configured registry stale window, including `pc_id`, heartbeat age, status, capability `git_sha`, `code_version`, and Gemini API capability.
 5. SA scrub tombstones needed to distinguish a technically online but parked hostname.
 6. `pg_settings` values for `max_connections`, `superuser_reserved_connections`, and `idle_in_transaction_session_timeout`.
@@ -474,7 +502,7 @@ The healthy gate requires:
 
 - schema revision `0052_job_lease_fencing`, both token columns, and ledger table present;
 - every scope job exists once, belongs to one of the scope batches, was created at/after `since`, is pending with attempts 0 / null token, and has zero phase, usage, or lease rows;
-- no other pending or running job exists;
+- scoped jobs may be `pending` under the exact staging pause; zero **unrelated** `pending`, `running`, or `cancelling` jobs may exist;
 - fleet API pause is exactly `lease-soak-staging:<run-id>` for the initial preflight; a null pause is accepted only after the already-running watcher has emitted `READY_TO_RELEASE` and observed the operator clear that exact reason. Any other pause reason is preserved and is a hard preflight failure;
 - floor equals expected code version;
 - attestation is at most `attestation_max_age_seconds` old (300 seconds in the first scope) and heartbeats are at most `heartbeat_max_age_seconds` old (60 seconds in the first scope);
@@ -1027,9 +1055,33 @@ git commit -m "test(soak): prove staged lease controller end to end"
 ### `$0` code deployment
 
 1. Merge the externally gated controller PR.
-2. Pull the same merge on the head and every participating worker.
-3. Restart the head and workers so new physical connections receive `application_name` and the five-minute idle-transaction timeout.
-4. Verify the restarted process settings on the head and on one worker host using that host's real `.env`:
+2. From a fully fetched, non-shallow checkout of the final merged `Nggaev-v2`, derive the only identity allowed in this soak:
+
+```bash
+git fetch origin Nggaev-v2
+git switch Nggaev-v2
+git pull --ff-only origin Nggaev-v2
+test "$(git rev-parse --is-shallow-repository)" = false
+FINAL_GIT_SHA="$(git rev-parse --short HEAD)"
+FINAL_CODE_VERSION="$(git rev-list --count HEAD)"
+printf 'FINAL_GIT_SHA=%s\nFINAL_CODE_VERSION=%s\n' \
+  "$FINAL_GIT_SHA" "$FINAL_CODE_VERSION"
+```
+
+Write those exact caller-supplied values into every stage scope and fleet attestation. Do not copy the planning baseline `d6b1c9f`/987.
+
+3. Pull that same final merge on the head and every participating worker. Verify each checkout reports exactly `$FINAL_GIT_SHA` and `$FINAL_CODE_VERSION`; then set the fleet floor to exactly `$FINAL_CODE_VERSION`:
+
+```bash
+curl --fail-with-body -X PUT "$HEAD_URL/api/v1/workers/version-floor" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data "{\"value\":$FINAL_CODE_VERSION}"
+```
+
+A same-version/different-SHA worker is not eligible even though the numeric claim gate would admit it.
+4. Restart the head and workers so new physical connections receive `application_name` and the five-minute idle-transaction timeout.
+5. Verify the restarted process settings on the head and on one worker host using that host's real `.env`:
 
 ```bash
 uv run python - <<'PY'
@@ -1052,8 +1104,8 @@ PY
 
 Expected: the head prints `hcga-head:...` and `5min`; the worker prints `hcga-worker:...` and `5min`. Before any paid launch require zero `idle in transaction` rows and DB total connections `<=70`.
 
-5. Produce the fleet attestation out-of-band from each process after restart. It must contain only fingerprints/checksums/config values, never secrets.
-6. Run the controller's `preflight` against a scratch/fake scope first. This remains `$0`.
+6. Produce the fleet attestation out-of-band from each process after restart. It must contain only fingerprints/checksums/config values, never secrets, and every row must carry the final caller-supplied SHA/version pair.
+7. Run the controller's `preflight` against a scratch/fake scope first. This remains `$0`.
 
 Rollback: revert the PR, deploy the revert to head/workers, and restart so new connections stop receiving the settings. Existing connections retain their old per-session settings until closed. The controller creates no migration and no persistent application state unless explicitly armed during a later soak. If an armed stop fired, rollback does **not** clear it; the operator must inspect the evidence and separately clear only the exact pause reason after deciding it is safe.
 
