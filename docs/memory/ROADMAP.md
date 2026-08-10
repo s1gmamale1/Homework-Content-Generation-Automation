@@ -12,6 +12,23 @@
 
 ---
 
+## R26 — Notion-collision repair script (#122, merged) is unsafe to RUN as-is — `--apply` FROZEN
+
+> **`--apply` MUST NOT RUN** until the follow-up correction below ships and is GK-gated. Current safe state (2026-08-10): PR #122 merged as `10f92d4`; **zero production DB or Notion writes have occurred**; dry-run stable at **18 groups / 86 sections / 68 non-owners**. The harm is entirely in *running* the script, not in the merge.
+
+- **Issue:** `scripts/repair_notion_collisions.py` (worklog 0165, #122) clears the false `notion_homework_page_id`/`notion_archived_job_id` pointers left by the pre-#120 collision bug. Merged without three defects being addressed; independently re-verified against the merged code + `edu_copy` (2026-08-10):
+- **Root cause / the three defects:**
+  1. **Mixed-page contamination (important).** The script's premise — docstring: *"Nothing in Notion was overwritten… it never talks to Notion"* — is FALSE for at least two legacy Chemistry pages. On page `37799838-1c76-…`, owner job `297908c2` supplied 8 leaves; a later non-owner `0c907894` append-archived the 3 leaf types added to the layout afterwards (`practice-jigsaw`/`practice-memory-match`/`practice-sentence` — confirmed in `phase_outputs`). Clearing the DB pointer leaves the retained page **physically contaminated** with the other lesson's content; the DB-only repair cannot fix it.
+  2. **Unguarded stale apply / TOCTOU (important).** `run()` loads the plan on a read-only connection, builds it outside any transaction, then on `--apply` opens a *separate* `engine.begin()` and `apply_plan` fires unconditional `UPDATE … SET …=NULL WHERE id = ANY(:ids)` with **no** predicate on expected page-id / stamped-job / timestamp. A concurrent archiver between load and apply is silently clobbered from the stale plan.
+  3. **Fallback precedence compares facts with guesses (moderate, latent).** `effective_push` (`repair_notion_collisions.py`) lets a section's `completed_at` (generation finished — a guess about push order) beat another section's `notion_archived_at` (a proven Notion push), because both are compared on one timeline. `tests/scripts/test_repair_notion_collisions.py:276` codifies the wrong result. Doesn't change today's 18 groups (all have real archive timestamps) but breaks the general safety contract.
+- **Deliverable (a NEW follow-up PR — must NOT modify the merged #122 state; GK-gated before any run):**
+  1. **Mixed-page recovery:** fingerprint all 18 live pages → `single_owner`/`mixed`/`unresolved`; after clearing non-owner pointers, **force clear-and-rewrite each mixed page from its retained owner** (force is safe ONLY after the false pointers are cleared — ordering load-bearing). Requires adding the Notion-writing path the script deliberately omitted, and correcting the docstring's false "nothing mixed / no `--force` needed" premise to **prohibited-before, required-after**.
+  2. **Apply safety:** deterministic plan-hash printed in dry-run + required for `--apply`; re-read and compare the plan *inside* the writing transaction; expected-state predicates in the `WHERE`; abort on any row-count mismatch; operationally **drain archivers** before apply (no shared lock structurally excludes the race).
+  3. **Fallback precedence:** group-level evidence tiers — earliest real `notion_archived_at` across the whole group → only then stamped-job completion → row-level done completion → else `unresolvable`; **fix the mis-asserting test at :276**.
+  4. **Revalidate the live 18-group snapshot immediately before execution** (corpus is live — don't trust a stale count).
+
+---
+
 ## R9 — Notion push: markdown tables + code fences render as plain paragraphs (SVG half MOOT)
 
 > **NARROWED 2026-06-11 (staleness audit):** the inline-`<svg>` half is **architecturally moot** — content phases now emit described placeholders (`![visual: … ](placeholder)`, `agent._PLACEHOLDER_RULES`), and `markdown_to_notion_blocks` renders those as callouts (`notion/blocks.py:127-137`); no new content carries inline SVG. What remains: **markdown tables and ``` code fences have no branch** in `blocks.py` (verified — zero table/fence handling) and fall through as escaped paragraph text. Deliverable shrinks to (b)+(c) of the original below; (a) SVG-rasterize is dead unless legacy pre-placeholder packets are re-pushed.
