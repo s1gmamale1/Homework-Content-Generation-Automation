@@ -572,7 +572,10 @@ async def test_refresh_skips_owner_whose_pointer_drifted(db_clean, tmp_path):
         plan_file=manifest_path, client_factory=lambda: client,
     )
 
-    assert rc == 0
+    # A drifted owner is a "didn't cleanly rewrite" outcome — run() must
+    # surface that on the exit code even though a sibling owner in the same
+    # manifest was rewritten fine.
+    assert rc != 0
     assert not any(
         p["parent"] == drifted_page for p in client.pages.values()
     ), "the drifted owner must not have been rewritten"
@@ -581,3 +584,105 @@ async def test_refresh_skips_owner_whose_pointer_drifted(db_clean, tmp_path):
         if p["parent"] == healthy_page and p["title"] == "Case-Based Preview"
     )
     assert client.content[healthy_leaf], "the healthy owner must still be processed"
+
+
+@_needs_db
+async def test_owner_with_no_done_phases_prunes_nothing(db_clean, tmp_path):
+    """Bug A regression guard (mass-deletion): an owner whose stamped job
+    produced ZERO done non-`extract` phase_outputs must be recorded as
+    `owner_no_phases` and must NOT trigger a prune. Against the buggy code,
+    `owner_phase_set` collapses to the empty set, `classify_page` computes
+    `extra_phases = page_phases - set() = ALL page phases`, and EVERY
+    existing leaf on the page — including ones belonging to other lessons —
+    gets `delete_block`'d."""
+    page_id = "hw-no-phases"
+    # Only an `extract` phase_output exists (or none at all) — no done,
+    # non-extract phase for `load_owner_phase_md` to return.
+    section_id, job_id = await _seed_owner(
+        page_id=page_id, phase_md={"extract": "# raw extract text"},
+    )
+    manifest_path = _write_manifest(tmp_path, [(page_id, section_id, job_id)])
+    client = FakeNotionArchiveClient()
+    # Pre-existing leaves that must survive untouched — this is exactly the
+    # "other lessons' content" a mass-delete would destroy.
+    other_leaf_id = client.seed_extra_leaf(
+        homework_page_id=page_id, leaf_title="Boss Arena",
+        phase_file="boss-arena.md",
+    )
+    another_leaf_id = client.seed_extra_leaf(
+        homework_page_id=page_id, leaf_title="Reflection",
+        phase_file="reflection.md",
+    )
+
+    from scripts.repair_notion_collisions import refresh_owner_pages
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(os.environ["DATABASE_URL"], future=True)
+    try:
+        async with engine.connect() as conn:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            report = await refresh_owner_pages(client, manifest, conn)
+    finally:
+        await engine.dispose()
+
+    outcomes = {o.page_id: o for o in report.outcomes}
+    assert outcomes[page_id].outcome == "owner_no_phases"
+    assert client.deleted == [], "an owner with zero done phases must prune NOTHING"
+    assert other_leaf_id not in client.deleted
+    assert another_leaf_id not in client.deleted
+
+
+@_needs_db
+async def test_prune_failure_is_fail_open(db_clean, tmp_path):
+    """Bug B regression guard: a `delete_block` failure during the prune
+    step must be caught (recorded as `prune_failed`), never propagate out of
+    `refresh_owner_pages`, and must not stop a second owner in the same
+    manifest from being processed. Against the buggy code the classify+prune
+    block runs outside any try/except, so this exception would crash the
+    whole batch."""
+    failing_page = "hw-prune-fails"
+    healthy_page = "hw-prune-healthy"
+    failing_section, failing_job = await _seed_owner(
+        page_id=failing_page, phase_md={"case-based-preview": "# Preview"},
+    )
+    healthy_section, healthy_job = await _seed_owner(
+        page_id=healthy_page, phase_md={"case-based-preview": "# Preview"},
+    )
+    manifest_path = _write_manifest(tmp_path, [
+        (failing_page, failing_section, failing_job),
+        (healthy_page, healthy_section, healthy_job),
+    ])
+
+    class PruneFailingClient(FakeNotionArchiveClient):
+        def delete_block(self, block_id):
+            if self.pages.get(block_id, {}).get("parent") == failing_page:
+                raise RuntimeError("fake notion delete_block failure")
+            super().delete_block(block_id)
+
+    client = PruneFailingClient()
+    extra_leaf_id = client.seed_extra_leaf(
+        homework_page_id=failing_page, leaf_title="Boss Arena",
+        phase_file="boss-arena.md",
+    )
+
+    from scripts.repair_notion_collisions import refresh_owner_pages
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(os.environ["DATABASE_URL"], future=True)
+    try:
+        async with engine.connect() as conn:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            # Must not raise — fail-open per page.
+            report = await refresh_owner_pages(client, manifest, conn)
+    finally:
+        await engine.dispose()
+
+    outcomes = {o.page_id: o for o in report.outcomes}
+    assert outcomes[failing_page].outcome == "prune_failed"
+    assert extra_leaf_id not in client.deleted
+    assert outcomes[healthy_page].outcome == "rewritten"
+    healthy_leaf = next(
+        pid for pid, p in client.pages.items()
+        if p["parent"] == healthy_page and p["title"] == "Case-Based Preview"
+    )
+    assert client.content[healthy_leaf], "second owner must still be processed"

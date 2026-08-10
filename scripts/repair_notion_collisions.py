@@ -856,7 +856,10 @@ class OwnerRefreshOutcome:
     page_id: str
     section_id: str
     job_id: str | None
-    outcome: Literal["rewritten", "owner_pointer_drift", "rewrite_failed", "no_owner_job"]
+    outcome: Literal[
+        "rewritten", "owner_pointer_drift", "rewrite_failed", "no_owner_job",
+        "owner_no_phases", "prune_failed",
+    ]
     verdict: str | None = None  # classify_page verdict — set only when outcome == "rewritten"
     pruned: int = 0
     error: str | None = None
@@ -881,6 +884,21 @@ class RefreshReport:
     @property
     def failed(self) -> int:
         return sum(1 for o in self.outcomes if o.outcome == "rewrite_failed")
+
+    @property
+    def skipped_no_phases(self) -> int:
+        return sum(1 for o in self.outcomes if o.outcome == "owner_no_phases")
+
+    @property
+    def prune_failed(self) -> int:
+        return sum(1 for o in self.outcomes if o.outcome == "prune_failed")
+
+    @property
+    def all_rewritten(self) -> bool:
+        """True only if EVERY owner cleanly rewrote — the exit-code gate:
+        any drift/no_owner_job/owner_no_phases/rewrite_failed/prune_failed
+        outcome means an operator should notice via a non-zero exit code."""
+        return all(o.outcome == "rewritten" for o in self.outcomes)
 
 
 async def refresh_owner_pages(
@@ -937,6 +955,20 @@ async def refresh_owner_pages(
         phase_md = await load_owner_phase_md(conn, UUID(job_id))
         owner_phase_set = set(phase_md)
 
+        if not owner_phase_set:
+            # A tier-2 (`stamped_completed`) owner can be a FAILED job (jobs
+            # sets completed_at on failure too) with zero done non-extract
+            # phases. Without this guard, classify_page's
+            # `extra_phases = page_phases - owner_phase_set` collapses to
+            # `page_phases - set() == page_phases` — EVERY leaf on the page,
+            # including other lessons' content, would classify as "extra"
+            # and get pruned. Skip both the rewrite and the prune.
+            outcomes.append(OwnerRefreshOutcome(
+                page_id=page_id, section_id=section_id, job_id=job_id,
+                outcome="owner_no_phases",
+            ))
+            continue
+
         try:
             await _push_with_retry(
                 client=client, subject_page_id="", lesson_title="",
@@ -949,11 +981,22 @@ async def refresh_owner_pages(
             ))
             continue
 
-        classification = classify_page(client, page_id, owner_phase_set)
         pruned = 0
-        for extra_id in classification.extra_child_page_ids:
-            client.delete_block(extra_id)
-            pruned += 1
+        try:
+            classification = classify_page(client, page_id, owner_phase_set)
+            for extra_id in classification.extra_child_page_ids:
+                client.delete_block(extra_id)
+                pruned += 1
+        except Exception as exc:  # noqa: BLE001 - fail-open per page, see
+            # docstring. The rewrite above already succeeded (the page IS
+            # rewritten) — only the prune that was meant to follow it did
+            # not complete; `pruned` reflects any deletions that landed
+            # before the failure.
+            outcomes.append(OwnerRefreshOutcome(
+                page_id=page_id, section_id=section_id, job_id=job_id,
+                outcome="prune_failed", pruned=pruned, error=str(exc),
+            ))
+            continue
 
         outcomes.append(OwnerRefreshOutcome(
             page_id=page_id, section_id=section_id, job_id=job_id,
@@ -966,7 +1009,9 @@ async def refresh_owner_pages(
 def format_refresh_report(report: RefreshReport) -> list[str]:
     lines = [
         f"refresh: rewritten={report.rewritten} pruned={report.pruned_total} "
-        f"skipped_drift={report.skipped_drift} rewrite_failed={report.failed}"
+        f"skipped_drift={report.skipped_drift} "
+        f"skipped_no_phases={report.skipped_no_phases} "
+        f"rewrite_failed={report.failed} prune_failed={report.prune_failed}"
     ]
     for o in report.outcomes:
         if o.outcome == "rewritten":
@@ -983,6 +1028,17 @@ def format_refresh_report(report: RefreshReport) -> list[str]:
             lines.append(
                 f"  OWNER page={o.page_id} section={o.section_id} "
                 "SKIPPED (no_owner_job)"
+            )
+        elif o.outcome == "owner_no_phases":
+            lines.append(
+                f"  OWNER page={o.page_id} section={o.section_id} "
+                "SKIPPED (owner_no_phases — zero done non-extract phases, "
+                "nothing rewritten or pruned)"
+            )
+        elif o.outcome == "prune_failed":
+            lines.append(
+                f"  OWNER page={o.page_id} section={o.section_id} "
+                f"REWRITTEN but PRUNE_FAILED pruned={o.pruned} error={o.error}"
             )
         else:
             lines.append(
@@ -1055,7 +1111,7 @@ async def run(
                 report = await refresh_owner_pages(client, manifest, conn)
             for line in format_refresh_report(report):
                 print(line)
-            return 0
+            return 0 if report.all_rewritten else 1
 
         if apply:
             print(APPLY_BANNER)
