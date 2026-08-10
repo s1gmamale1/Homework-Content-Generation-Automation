@@ -10,11 +10,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+import os
 import re
 import socket
 import sys
+from contextlib import asynccontextmanager
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import IntEnum
 from pathlib import Path
@@ -22,6 +25,9 @@ from typing import Any, Literal, Protocol, TextIO
 from uuid import UUID
 
 import psutil
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -32,7 +38,7 @@ from pydantic import (
 )
 
 from app.config import Settings
-from app.services import code_version, credential_id
+from app.services import code_version, credential_id, pricing
 
 
 _RUN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,44}$")
@@ -293,6 +299,692 @@ class StopReceipt(PersistedModel):
     @classmethod
     def _valid_observed_at(cls, value: datetime) -> datetime:
         return _aware_utc(value, field_name="observed_at")
+
+
+class SchemaSnapshot(PersistedModel):
+    revision: str | None
+    ledger_table: bool
+    job_claim_token: bool
+    phase_claim_token: bool
+
+
+class BudgetSnapshot(PersistedModel):
+    api_paused_reason: str | None
+    min_worker_version: int | None
+
+
+class JobSnapshot(PersistedModel):
+    id: UUID
+    batch_id: UUID | None
+    book_id: UUID
+    batch_book_id: UUID | None
+    status: str
+    attempts: int
+    claim_token: UUID | None
+    created_at: datetime
+    phase_count: int = 0
+    usage_count: int = 0
+    lease_count: int = 0
+
+
+class BookSnapshot(PersistedModel):
+    id: UUID
+    content_sha256: str
+
+
+class ActiveJobSnapshot(PersistedModel):
+    id: UUID
+    status: str
+
+
+class RegistryWorkerSnapshot(PersistedModel):
+    pc_id: str
+    hostname: str
+    last_heartbeat: datetime
+    status: str
+    git_sha: str | None
+    code_version: int | None
+    can_gemini_api: bool
+
+
+class DatabaseSnapshot(PersistedModel):
+    total_connections: int
+    max_connections: int
+    superuser_reserved_connections: int
+    idle_in_transaction_timeout: str
+    idle_in_transaction: list[dict[str, Any]]
+    server_waits: list[dict[str, Any]]
+
+
+class CredentialSlotSnapshot(PersistedModel):
+    credential: str
+    pc_id: str
+    acquired_at: datetime
+    slot_count: int = 1
+
+
+class LeaseEventSnapshot(PersistedModel):
+    job_id: UUID
+    claim_token: UUID | None
+    event_type: str
+    owner: str | None = None
+    created_at: datetime
+
+
+class PhaseSnapshot(PersistedModel):
+    job_id: UUID
+    phase_name: str
+    status: str
+    claim_token: UUID | None
+
+
+class UsageSnapshot(PersistedModel):
+    job_id: UUID | None
+    provider: str
+    model_name: str | None
+    auth_mode: str
+    prompt_tokens: int
+    output_tokens: int
+    cached_tokens: int
+    cache_creation_tokens: int
+    success: bool
+
+
+class RawSnapshot(PersistedModel):
+    observed_at: datetime
+    transaction_read_only: str
+    schema_state: SchemaSnapshot = Field(alias="schema")
+    budget: BudgetSnapshot
+    jobs: list[JobSnapshot]
+    books: dict[str, BookSnapshot]
+    unrelated_active_jobs: list[ActiveJobSnapshot]
+    workers: list[RegistryWorkerSnapshot]
+    scrub_tombstones: list[str]
+    db: DatabaseSnapshot
+    credential_slots: list[CredentialSlotSnapshot]
+    lease_events: list[LeaseEventSnapshot]
+    phases: list[PhaseSnapshot]
+    usages: list[UsageSnapshot]
+    fleet_usages_24h: list[UsageSnapshot]
+
+    @property
+    def scope_job_ids(self) -> list[UUID]:
+        return [job.id for job in self.jobs]
+
+
+class SoakReadStore(Protocol):
+    async def collect(self, scope: SoakScope) -> RawSnapshot: ...
+
+
+def _finding(code: str, message: str, **evidence: Any) -> Finding:
+    return Finding(code=code, hard=True, message=message[:500], evidence=evidence)
+
+
+def _age_seconds(now: datetime, then: datetime) -> float:
+    return (_aware_utc(now, field_name="observed_at") - then).total_seconds()
+
+
+def _fleet_cost(rows: Sequence[UsageSnapshot]) -> Decimal:
+    total = Decimal("0")
+    for row in rows:
+        if row.auth_mode != "api":
+            continue
+        total += Decimal(
+            str(
+                pricing.cost_usd(
+                    row.provider,
+                    row.model_name,
+                    {
+                        "prompt_tokens": row.prompt_tokens,
+                        "output_tokens": row.output_tokens,
+                        "cached_tokens": row.cached_tokens,
+                        "cache_creation_tokens": row.cache_creation_tokens,
+                    },
+                )
+            )
+        )
+    return total
+
+
+def evaluate_preflight(
+    scope: SoakScope,
+    attestation: FleetAttestation,
+    raw: RawSnapshot,
+) -> list[Finding]:
+    """Evaluate the entire initial gate without I/O; every drift fails closed."""
+    findings: list[Finding] = []
+    schema_ok = (
+        raw.transaction_read_only == "on"
+        and raw.schema_state.revision == "0052_job_lease_fencing"
+        and raw.schema_state.ledger_table
+        and raw.schema_state.job_claim_token
+        and raw.schema_state.phase_claim_token
+    )
+    if not schema_ok:
+        findings.append(_finding(
+            "schema_revision_mismatch",
+            "database is not exactly on the fenced-lease schema contract",
+            revision=raw.schema_state.revision,
+            ledger_table=raw.schema_state.ledger_table,
+            job_claim_token=raw.schema_state.job_claim_token,
+            phase_claim_token=raw.schema_state.phase_claim_token,
+            transaction_read_only=raw.transaction_read_only,
+        ))
+
+    expected_jobs = set(scope.job_ids)
+    jobs_by_id: dict[UUID, list[JobSnapshot]] = {}
+    for job in raw.jobs:
+        jobs_by_id.setdefault(job.id, []).append(job)
+    missing = sorted(str(job_id) for job_id in expected_jobs if job_id not in jobs_by_id)
+    duplicates = sorted(str(job_id) for job_id, rows in jobs_by_id.items() if len(rows) != 1)
+    if missing or duplicates or set(jobs_by_id) - expected_jobs:
+        findings.append(_finding(
+            "scope_job_missing", "scoped jobs are missing, duplicated, or unexpected",
+            missing=missing, duplicates=duplicates,
+            unexpected=sorted(str(item) for item in set(jobs_by_id) - expected_jobs),
+        ))
+    allowed_batches = set(scope.batch_ids)
+    wrong_batch = sorted(str(job.id) for job in raw.jobs if (
+        job.batch_id not in allowed_batches
+        or job.batch_book_id != job.book_id
+        or str(job.book_id) not in scope.required_book_sha256
+    ))
+    observed_batches = {job.batch_id for job in raw.jobs if job.batch_id is not None}
+    if observed_batches != allowed_batches and not wrong_batch:
+        wrong_batch = sorted(str(item) for item in allowed_batches ^ observed_batches)
+    if wrong_batch:
+        findings.append(_finding(
+            "scope_job_wrong_batch", "scoped job belongs to a foreign batch",
+            job_ids=wrong_batch,
+        ))
+    non_pristine = sorted(
+        str(job.id)
+        for job in raw.jobs
+        if job.status != "pending"
+        or job.attempts != 0
+        or job.claim_token is not None
+        or job.created_at < scope.since
+        or job.phase_count != 0
+        or job.usage_count != 0
+        or job.lease_count != 0
+    )
+    if non_pristine:
+        findings.append(_finding(
+            "scope_job_not_pristine", "scoped jobs already carry execution state",
+            job_ids=non_pristine,
+        ))
+    if raw.unrelated_active_jobs:
+        findings.append(_finding(
+            "unrelated_active_queue_not_empty",
+            "unrelated pending/running/cancelling jobs exist",
+            jobs=[job.model_dump(mode="json") for job in raw.unrelated_active_jobs],
+        ))
+
+    expected_pause = f"lease-soak-staging:{scope.run_id}"
+    if raw.budget.api_paused_reason != expected_pause:
+        findings.append(_finding(
+            "staging_pause_missing_or_foreign",
+            "fleet pause is missing or belongs to another operation",
+            expected=expected_pause, observed=raw.budget.api_paused_reason,
+        ))
+    if raw.budget.min_worker_version != scope.expected_code_version:
+        findings.append(_finding(
+            "version_floor_mismatch", "worker version floor does not match soak identity",
+            expected=scope.expected_code_version,
+            observed=raw.budget.min_worker_version,
+        ))
+
+    expected_scope_hash = sha256_canonical(scope)
+    attestation_age = _age_seconds(raw.observed_at, attestation.observed_at)
+    stale_workers = sorted(
+        worker.hostname
+        for worker in attestation.workers
+        if worker.scope_sha256 != expected_scope_hash
+        or _age_seconds(raw.observed_at, worker.observed_at) < 0
+        or _age_seconds(raw.observed_at, worker.observed_at)
+        > scope.attestation_max_age_seconds
+    )
+    if (
+        attestation.scope_sha256 != expected_scope_hash
+        or attestation_age < 0
+        or attestation_age > scope.attestation_max_age_seconds
+        or stale_workers
+    ):
+        findings.append(_finding(
+            "worker_attestation_stale", "fleet attestation is stale or for another scope",
+            age_seconds=attestation_age,
+            scope_matches=attestation.scope_sha256 == expected_scope_hash,
+            stale_workers=stale_workers,
+        ))
+
+    tombstones = set(raw.scrub_tombstones)
+    claimable: dict[str, RegistryWorkerSnapshot] = {}
+    for worker in raw.workers:
+        age = _age_seconds(raw.observed_at, worker.last_heartbeat)
+        if (
+            0 <= age <= scope.heartbeat_max_age_seconds
+            and worker.status == "online"
+            and worker.can_gemini_api
+            and worker.code_version is not None
+            and worker.code_version >= (raw.budget.min_worker_version or 2**31)
+            and worker.hostname not in tombstones
+        ):
+            claimable[worker.pc_id] = worker
+
+    attested_by_pc = {worker.pc_id: worker for worker in attestation.workers}
+    rogue = sorted(set(claimable) - set(attested_by_pc))
+    if rogue:
+        findings.append(_finding(
+            "unattested_claimable_worker", "claimable workers exist outside attestation",
+            pc_ids=rogue,
+        ))
+    missing_registry = sorted(set(attested_by_pc) - set(claimable))
+    registry_by_pc = {worker.pc_id: worker for worker in raw.workers}
+    missing_registry.extend(
+        sorted(
+            worker.pc_id
+            for worker in attestation.workers
+            if worker.pc_id in registry_by_pc
+            and registry_by_pc[worker.pc_id].hostname != worker.hostname
+        )
+    )
+    missing_registry = sorted(set(missing_registry))
+    if missing_registry:
+        findings.append(_finding(
+            "worker_registry_missing", "attested worker is absent, stale, parked, or not claimable",
+            pc_ids=missing_registry,
+        ))
+    if set(scope.participant_hosts) != {worker.hostname for worker in attestation.workers}:
+        findings.append(_finding(
+            "worker_registry_missing", "attested hostname set differs from the scope",
+            expected=sorted(scope.participant_hosts),
+            observed=sorted(worker.hostname for worker in attestation.workers),
+        ))
+
+    wrong_sha: list[str] = []
+    wrong_config: list[str] = []
+    wrong_credential: list[str] = []
+    wrong_pdf: list[str] = []
+    notion_present: list[str] = []
+    expected_config = (
+        scope.worker_concurrency,
+        scope.agent_max_concurrency,
+        scope.credential_max_concurrent_gemini,
+        scope.credential_slot_wait_seconds,
+        scope.structured_output_enabled,
+        1,
+    )
+    for worker in attestation.workers:
+        registry = raw.workers and next(
+            (row for row in raw.workers if row.pc_id == worker.pc_id), None
+        )
+        if (
+            worker.git_sha != scope.expected_git_sha
+            or worker.code_version != scope.expected_code_version
+            or (registry is not None and registry.git_sha != scope.expected_git_sha)
+        ):
+            wrong_sha.append(worker.hostname)
+        observed_config = (
+            worker.worker_concurrency,
+            worker.agent_max_concurrency,
+            worker.credential_max_concurrent_gemini,
+            worker.credential_slot_wait_seconds,
+            worker.structured_output_enabled,
+            worker.process_count_for_host,
+        )
+        if (
+            observed_config != expected_config
+            or (
+                scope.legacy_gemini_var_must_be_absent
+                and worker.gemini_max_concurrency_present
+            )
+        ):
+            wrong_config.append(worker.hostname)
+        if (
+            worker.credential_fingerprint != attestation.credential_fingerprint
+            or worker.credential_fingerprint != attestation.workers[0].credential_fingerprint
+        ):
+            wrong_credential.append(worker.hostname)
+        for book_id, expected_hash in scope.required_book_sha256.items():
+            if worker.pdf_sha256_by_book.get(book_id) != expected_hash:
+                wrong_pdf.append(f"{worker.hostname}:{book_id}")
+        if set(worker.notion_mapping_keys) & set(scope.forbidden_notion_mapping_keys):
+            notion_present.append(worker.hostname)
+    if wrong_sha:
+        findings.append(_finding("worker_sha_mismatch", "worker code identity differs", hosts=wrong_sha))
+    if wrong_config:
+        findings.append(_finding("worker_config_mismatch", "worker process contract differs", hosts=wrong_config))
+    if wrong_credential:
+        findings.append(_finding("credential_fingerprint_mismatch", "credential fingerprints differ", hosts=wrong_credential))
+    if wrong_pdf:
+        findings.append(_finding("pdf_missing_or_mismatch", "worker PDF is absent or differs", entries=wrong_pdf))
+    if notion_present:
+        findings.append(_finding("notion_mapping_present", "forbidden Notion mappings are present", hosts=notion_present))
+
+    required_processes = (
+        math.ceil(scope.target_running / scope.worker_concurrency)
+        if scope.worker_concurrency > 0
+        else scope.target_running + 1
+    )
+    attested_hosts = {worker.hostname for worker in attestation.workers}
+    if len(attested_by_pc) < required_processes or len(attested_hosts) < required_processes:
+        findings.append(_finding(
+            "worker_config_mismatch", "insufficient distinct worker processes for target",
+            required=required_processes, processes=len(attested_by_pc), hosts=len(attested_hosts),
+        ))
+
+    checksum_drift: list[str] = []
+    for book_id, expected_hash in scope.required_book_sha256.items():
+        row = raw.books.get(book_id)
+        if row is None or row.content_sha256 != expected_hash:
+            checksum_drift.append(book_id)
+    if checksum_drift:
+        findings.append(_finding(
+            "book_checksum_scope_mismatch", "authoritative book checksum differs from scope",
+            book_ids=checksum_drift,
+        ))
+
+    if raw.db.total_connections > scope.db_preflight_connection_limit:
+        findings.append(_finding(
+            "db_connection_baseline_high", "database connection baseline exceeds preflight cap",
+            observed=raw.db.total_connections,
+            limit=scope.db_preflight_connection_limit,
+        ))
+    if raw.db.idle_in_transaction:
+        findings.append(_finding(
+            "db_idle_in_transaction", "idle-in-transaction sessions exist",
+            sessions=raw.db.idle_in_transaction,
+        ))
+    if raw.db.server_waits:
+        findings.append(_finding(
+            "db_server_wait", "non-client database waits exist", waits=raw.db.server_waits,
+        ))
+    if raw.credential_slots:
+        findings.append(_finding(
+            "credential_slot_baseline_nonzero", "credential slots are not empty",
+            slots=[slot.model_dump(mode="json") for slot in raw.credential_slots],
+        ))
+    prior_cost = _fleet_cost(raw.fleet_usages_24h)
+    projected = prior_cost + scope.approved_incremental_cost_usd
+    unpriced = []
+    for row in raw.fleet_usages_24h:
+        if row.auth_mode != "api":
+            continue
+        resolved = row.model_name or pricing.agent_models.default_model(row.provider)
+        if row.provider != "clodex" and (row.provider, resolved) not in pricing.PRICE_MAP:
+            unpriced.append(f"{row.provider}:{resolved}")
+    if projected > scope.fleet_cost_limit_usd or unpriced:
+        findings.append(_finding(
+            "fleet_cost_envelope_exceeded", "trailing fleet cost plus approved spend exceeds cap",
+            trailing_24h_usd=str(prior_cost), projected_usd=str(projected),
+            limit_usd=str(scope.fleet_cost_limit_usd),
+            unpriced=sorted(set(unpriced)),
+        ))
+    return findings
+
+
+def assert_scratch_database_url(database_url: str) -> None:
+    """Fail before any test fixture can connect to a non-disposable database."""
+    try:
+        database = make_url(database_url).database or ""
+    except Exception as exc:
+        raise RuntimeError("scratch database required") from exc
+    normalized = database.lower()
+    if not normalized or ("scratch" not in normalized and not normalized.endswith("_test")):
+        raise RuntimeError("scratch database required")
+
+
+def _mapping_dicts(result: Any) -> list[dict[str, Any]]:
+    return [dict(row) for row in result.mappings().all()]
+
+
+def sanitize_query_prefix(value: str | None) -> str:
+    """Keep SQL shape for diagnosis while removing literal-bearing evidence."""
+    if not value:
+        return ""
+    sanitized = re.sub(r"'(?:''|[^'])*'", "'?'", value)
+    sanitized = re.sub(r"(?i)\bbearer\s+\S+", "Bearer ?", sanitized)
+    sanitized = re.sub(
+        r"(?i)\b(?:postgres(?:ql)?|https?)://\S+", "<redacted-url>", sanitized
+    )
+    return sanitized[:160]
+
+
+def sanitize_credential_identity(value: str) -> str:
+    if _PLAIN_GEMINI_FP_RE.fullmatch(value):
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    return f"credential:sha256:{digest}"
+
+
+def _sanitize_activity_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for row in rows:
+        row["query_prefix"] = sanitize_query_prefix(row.get("query_prefix"))
+    return rows
+
+
+def _usage_from_row(row: Mapping[str, Any]) -> UsageSnapshot:
+    return UsageSnapshot(
+        job_id=row.get("job_id"),
+        provider=row["provider"],
+        model_name=row.get("model_name"),
+        auth_mode=row["auth_mode"],
+        prompt_tokens=int(row.get("prompt_tokens") or 0),
+        output_tokens=int(row.get("output_tokens") or 0),
+        cached_tokens=int(row.get("cached_tokens") or 0),
+        cache_creation_tokens=int(row.get("cache_creation_tokens") or 0),
+        success=bool(row.get("success")),
+    )
+
+
+class SqlSoakReadStore:
+    """One-connection PostgreSQL snapshot store; all exposed connections are read-only."""
+
+    def __init__(self, database_url: str):
+        self.engine: AsyncEngine = create_async_engine(
+            database_url,
+            pool_size=1,
+            max_overflow=0,
+            pool_pre_ping=True,
+            connect_args={
+                "server_settings": {
+                    "application_name": f"hcga-soak:{os.getpid()}",
+                }
+            },
+        )
+
+    @asynccontextmanager
+    async def read_connection(self):
+        async with self.engine.connect() as conn:
+            async with conn.begin():
+                await conn.execute(text("SET TRANSACTION READ ONLY"))
+                yield conn
+
+    async def dispose(self) -> None:
+        await self.engine.dispose()
+
+    async def collect(self, scope: SoakScope) -> RawSnapshot:
+        params = {
+            "job_ids": list(scope.job_ids),
+            "book_ids": [UUID(item) for item in scope.required_book_sha256],
+            "since": scope.since,
+        }
+        async with self.read_connection() as conn:
+            observed_at = await conn.scalar(text("SELECT clock_timestamp()"))
+            transaction_read_only = await conn.scalar(
+                text("SELECT current_setting('transaction_read_only')")
+            )
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            schema_row = (
+                await conn.execute(text("""
+                    SELECT
+                      to_regclass('public.job_lease_events') IS NOT NULL AS ledger_table,
+                      EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema='public' AND table_name='homework_jobs'
+                          AND column_name='claim_token'
+                      ) AS job_claim_token,
+                      EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema='public' AND table_name='phase_outputs'
+                          AND column_name='claim_token'
+                      ) AS phase_claim_token
+                """))
+            ).mappings().one()
+            budget_row = (
+                await conn.execute(text("""
+                    SELECT api_paused_reason, min_worker_version
+                    FROM budget_state WHERE id = 1
+                """))
+            ).mappings().one_or_none()
+
+            job_rows = _mapping_dicts(await conn.execute(text("""
+                SELECT j.id, j.batch_id, j.book_id, b.book_id AS batch_book_id,
+                       j.status, j.attempts,
+                       j.claim_token, j.created_at,
+                       (SELECT count(*) FROM phase_outputs p WHERE p.job_id=j.id) AS phase_count,
+                       (SELECT count(*) FROM agent_usages u WHERE u.homework_job_id=j.id) AS usage_count,
+                       (SELECT count(*) FROM job_lease_events e WHERE e.job_id=j.id) AS lease_count
+                FROM homework_jobs j
+                LEFT JOIN batches b ON b.id = j.batch_id
+                WHERE j.id = ANY(CAST(:job_ids AS uuid[]))
+                ORDER BY j.id
+            """), params))
+            book_rows = _mapping_dicts(await conn.execute(text("""
+                SELECT id, content_sha256 FROM books
+                WHERE id = ANY(CAST(:book_ids AS uuid[]))
+                ORDER BY id
+            """), params))
+            unrelated = _mapping_dicts(await conn.execute(text("""
+                SELECT id, status FROM homework_jobs
+                WHERE status IN ('pending','running','cancelling')
+                  AND NOT (id = ANY(CAST(:job_ids AS uuid[])))
+                ORDER BY id
+            """), params))
+            worker_rows = _mapping_dicts(await conn.execute(text("""
+                SELECT pc_id,
+                       split_part(pc_id, ':', 1) AS hostname,
+                       last_heartbeat, status,
+                       capabilities->>'git_sha' AS git_sha,
+                       CASE WHEN (capabilities->>'code_version') ~ '^[0-9]+$'
+                            THEN (capabilities->>'code_version')::integer END AS code_version,
+                       COALESCE((capabilities->'api'->>'gemini')::boolean, false)
+                         AS can_gemini_api
+                FROM workers
+                ORDER BY pc_id
+            """)))
+            tombstone_rows = _mapping_dicts(await conn.execute(text("""
+                SELECT hostname FROM sa_key_assignments
+                WHERE scrub_requested_at IS NOT NULL
+                ORDER BY hostname
+            """)))
+
+            settings_rows = _mapping_dicts(await conn.execute(text("""
+                SELECT name, setting FROM pg_settings
+                WHERE name IN (
+                  'max_connections', 'superuser_reserved_connections',
+                  'idle_in_transaction_session_timeout'
+                )
+            """)))
+            settings_map = {row["name"]: row["setting"] for row in settings_rows}
+            backend_pid = await conn.scalar(text("SELECT pg_backend_pid()"))
+            total_connections = int(await conn.scalar(text("SELECT count(*) FROM pg_stat_activity")))
+            activity_params = {"controller_pid": backend_pid}
+            idle_rows = _sanitize_activity_rows(_mapping_dicts(await conn.execute(text("""
+                SELECT pid, application_name, client_addr::text AS client_addr,
+                       EXTRACT(epoch FROM clock_timestamp()-state_change)::double precision AS age_s,
+                       left(query, 160) AS query_prefix
+                FROM pg_stat_activity
+                WHERE pid <> :controller_pid AND state = 'idle in transaction'
+                ORDER BY pid
+            """), activity_params)))
+            wait_rows = _sanitize_activity_rows(_mapping_dicts(await conn.execute(text("""
+                SELECT pid, application_name, client_addr::text AS client_addr,
+                       wait_event_type, wait_event,
+                       left(query, 160) AS query_prefix
+                FROM pg_stat_activity
+                WHERE pid <> :controller_pid
+                  AND wait_event_type IS NOT NULL
+                  AND wait_event_type <> 'Client'
+                ORDER BY pid
+            """), activity_params)))
+            slot_rows = _mapping_dicts(await conn.execute(text("""
+                SELECT credential, pc_id, min(acquired_at) AS acquired_at,
+                       count(*)::integer AS slot_count
+                FROM credential_slots
+                GROUP BY credential, pc_id
+                ORDER BY credential, pc_id
+            """)))
+            for row in slot_rows:
+                row["credential"] = sanitize_credential_identity(row["credential"])
+
+            lease_rows = _mapping_dicts(await conn.execute(text("""
+                SELECT job_id, claim_token, event_type, owner, created_at
+                FROM job_lease_events
+                WHERE job_id = ANY(CAST(:job_ids AS uuid[])) AND created_at >= :since
+                ORDER BY created_at, id
+            """), params))
+            phase_rows = _mapping_dicts(await conn.execute(text("""
+                SELECT job_id, phase_name, status, claim_token
+                FROM phase_outputs
+                WHERE job_id = ANY(CAST(:job_ids AS uuid[]))
+                ORDER BY job_id, phase_order
+            """), params))
+            usage_rows = _mapping_dicts(await conn.execute(text("""
+                SELECT homework_job_id AS job_id, provider, model_name, auth_mode,
+                       prompt_tokens, output_tokens, cached_tokens,
+                       cache_creation_tokens, success
+                FROM agent_usages
+                WHERE homework_job_id = ANY(CAST(:job_ids AS uuid[]))
+                  AND created_at >= :since
+                ORDER BY created_at, id
+            """), params))
+            fleet_params = {"cutoff": observed_at - timedelta(hours=24)}
+            fleet_usage_rows = _mapping_dicts(await conn.execute(text("""
+                SELECT homework_job_id AS job_id, provider, model_name, auth_mode,
+                       prompt_tokens, output_tokens, cached_tokens,
+                       cache_creation_tokens, success
+                FROM agent_usages
+                WHERE auth_mode = 'api' AND started_at >= :cutoff
+                ORDER BY started_at, id
+            """), fleet_params))
+
+        return RawSnapshot(
+            observed_at=observed_at,
+            transaction_read_only=transaction_read_only,
+            schema=SchemaSnapshot(
+                revision=revision,
+                ledger_table=bool(schema_row["ledger_table"]),
+                job_claim_token=bool(schema_row["job_claim_token"]),
+                phase_claim_token=bool(schema_row["phase_claim_token"]),
+            ),
+            budget=BudgetSnapshot(
+                api_paused_reason=(budget_row or {}).get("api_paused_reason"),
+                min_worker_version=(budget_row or {}).get("min_worker_version"),
+            ),
+            jobs=[JobSnapshot.model_validate(row) for row in job_rows],
+            books={str(row["id"]): BookSnapshot.model_validate(row) for row in book_rows},
+            unrelated_active_jobs=[ActiveJobSnapshot.model_validate(row) for row in unrelated],
+            workers=[RegistryWorkerSnapshot.model_validate(row) for row in worker_rows],
+            scrub_tombstones=[str(row["hostname"]) for row in tombstone_rows],
+            db=DatabaseSnapshot(
+                total_connections=total_connections,
+                max_connections=int(settings_map.get("max_connections", 0)),
+                superuser_reserved_connections=int(
+                    settings_map.get("superuser_reserved_connections", 0)
+                ),
+                idle_in_transaction_timeout=str(
+                    settings_map.get("idle_in_transaction_session_timeout", "")
+                ),
+                idle_in_transaction=idle_rows,
+                server_waits=wait_rows,
+            ),
+            credential_slots=[CredentialSlotSnapshot.model_validate(row) for row in slot_rows],
+            lease_events=[LeaseEventSnapshot.model_validate(row) for row in lease_rows],
+            phases=[PhaseSnapshot.model_validate(row) for row in phase_rows],
+            usages=[_usage_from_row(row) for row in usage_rows],
+            fleet_usages_24h=[_usage_from_row(row) for row in fleet_usage_rows],
+        )
 
 
 class EffectiveWorkerContract(BaseModel):
