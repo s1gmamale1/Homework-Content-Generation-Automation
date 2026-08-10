@@ -99,3 +99,4 @@ What each source file does, grouped by layer. `transport=cli` (default) shells o
 ## `tests/`
 - Mirrors `app/` — `tests/schemas/`, `tests/services/` (flows, prompts, pipeline, agent router, judge, failover), etc. Run `uv run python -m pytest tests/ -q` (~500 tests).
 - **Repair correction note (R26):** `scripts/repair_notion_collisions.py` now uses group-level archive precedence, full-snapshot plan hashes, expected-state guarded DB updates, persisted manifests, and a separate mocked/injectable `--refresh-notion --plan-file` gesture that rewrites retained owners and prunes mixed-page leaves only after successful rewrite. Production `--apply`/refresh remains operator-gated.
+- **R26 operator note:** the legacy DB-only/never-Notion description for `repair_notion_collisions.py` is superseded. Use the guarded full-snapshot manifest apply followed by `--refresh-notion --plan-file`; production execution remains operator-gated.
