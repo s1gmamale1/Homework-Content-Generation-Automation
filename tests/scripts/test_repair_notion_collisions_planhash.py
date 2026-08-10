@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -216,6 +216,25 @@ def test_manifest_roundtrips(tmp_path):
     assert loaded["owners"] == manifest["owners"]
     owner_page_ids = {o["page_id"] for o in loaded["owners"]}
     assert owner_page_ids == {PAGE_A, PAGE_B}
+
+
+def test_manifest_preserves_row_push_winning_job():
+    """A row-level push can predate the stamped job; refresh must use it."""
+    from scripts.repair_notion_collisions import (
+        GroupPlan, JobRow, SectionRow, manifest_from_plans,
+    )
+    early = uuid4()
+    stamped = uuid4()
+    section = SectionRow(
+        section_id=uuid4(), page_id="page", section_title="x", page_start=None,
+        subject="math", grade="5", stamped_job_id=stamped,
+        jobs=(
+            JobRow(early, datetime(2026, 1, 1), datetime(2026, 1, 3), "done", "uz"),
+            JobRow(stamped, datetime(2026, 1, 2), datetime(2026, 1, 2), "done", "uz"),
+        ),
+    )
+    plan = GroupPlan("page", (section,), section, "row_push", datetime(2026, 1, 1), False)
+    assert manifest_from_plans([plan])["owners"][0]["job_id"] == str(early)
 
 
 def test_dry_run_footer_includes_plan_hash():

@@ -316,6 +316,24 @@ def _group_owner(
     return None, None, None
 
 
+def _owner_job_id(section: SectionRow, source: str | None) -> UUID | None:
+    """Return the job whose evidence selected the winning section.
+
+    This is intentionally not always ``stamped_job_id``: a row-level push can
+    be earlier than the section's stamped job, and the refresh must rewrite
+    from the actual winning job rather than an arbitrary stamp.
+    """
+    if source in {"stamped_push", "stamped_completed"}:
+        return section.stamped_job_id
+    if source == "row_push":
+        pushed = [j for j in section.jobs if j.notion_archived_at is not None]
+        return min(pushed, key=lambda j: (j.notion_archived_at, str(j.job_id))).job_id if pushed else None
+    if source == "row_completed":
+        done = [j for j in section.jobs if j.status == "done" and j.completed_at is not None]
+        return min(done, key=lambda j: (j.completed_at, str(j.job_id))).job_id if done else None
+    return None
+
+
 @dataclass(frozen=True)
 class GroupPlan:
     page_id: str
@@ -494,6 +512,12 @@ def _expected_state(plans: Sequence[GroupPlan]) -> dict:
                 ),
                 "owner_page_id": plan.page_id if plan.owner is not None else None,
                 "owner_source": plan.owner_source,
+                "owner_job_id": (
+                    str(_owner_job_id(plan.owner, plan.owner_source))
+                    if plan.owner is not None
+                    and _owner_job_id(plan.owner, plan.owner_source) is not None
+                    else None
+                ),
             }
             for plan in plans
         ),
@@ -537,11 +561,38 @@ def _hash_expected(expected: Mapping) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _owners_from_plans(plans: Sequence[GroupPlan]) -> list[dict]:
+    return sorted(
+        (
+            {
+                "page_id": plan.page_id,
+                "section_id": str(plan.owner.section_id),
+                "job_id": (
+                    str(_owner_job_id(plan.owner, plan.owner_source))
+                    if _owner_job_id(plan.owner, plan.owner_source) is not None
+                    else None
+                ),
+            }
+            for plan in plans
+            if plan.owner is not None
+        ),
+        key=lambda o: o["page_id"],
+    )
+
+
+def _manifest_payload(plans: Sequence[GroupPlan]) -> dict:
+    return {"version": 2, "owners": _owners_from_plans(plans), "expected": _expected_state(plans)}
+
+
+def _hash_manifest_payload(payload: Mapping) -> str:
+    return _hash_expected(payload)
+
+
 def plan_hash(plans: Sequence[GroupPlan]) -> str:
     """Stable, order-independent digest over the FULL expected state the
     guarded UPDATEs will depend on (ids AND expected values) — see the
     section docstring above."""
-    return _hash_expected(_expected_state(plans))
+    return _hash_manifest_payload(_manifest_payload(plans))
 
 
 def dry_run_footer_lines(plans: Sequence[GroupPlan]) -> list[str]:
@@ -555,29 +606,8 @@ def manifest_from_plans(plans: Sequence[GroupPlan]) -> dict:
     collision query can no longer re-derive the plan (`--apply` has already
     cleared the rows it was querying). Deliberately does NOT store phase
     content — a later task loads owner phases fresh from `job_id`."""
-    expected = _expected_state(plans)
-    owners = sorted(
-        (
-            {
-                "page_id": plan.page_id,
-                "section_id": str(plan.owner.section_id),
-                "job_id": (
-                    str(plan.owner.stamped_job_id)
-                    if plan.owner.stamped_job_id is not None
-                    else None
-                ),
-            }
-            for plan in plans
-            if plan.owner is not None
-        ),
-        key=lambda o: o["page_id"],
-    )
-    return {
-        "version": 1,
-        "hash": _hash_expected(expected),
-        "owners": owners,
-        "expected": expected,
-    }
+    payload = _manifest_payload(plans)
+    return {**payload, "hash": _hash_manifest_payload(payload)}
 
 
 def manifest_load(path: str | Path) -> dict:
@@ -587,7 +617,20 @@ def manifest_load(path: str | Path) -> dict:
     corrupted file) — it does NOT compare against the DB or the live plan;
     that verification happens wherever the manifest is later consulted."""
     manifest = json.loads(Path(path).read_text(encoding="utf-8"))
-    recomputed = _hash_expected(manifest.get("expected"))
+    if manifest.get("version") != 2 or not isinstance(manifest.get("owners"), list):
+        raise ValueError("manifest version/owners envelope is invalid")
+    expected = manifest.get("expected")
+    if not isinstance(expected, dict) or set(expected) != {"groups", "sections", "jobs"}:
+        raise ValueError("manifest expected-state envelope is invalid")
+    for owner in manifest["owners"]:
+        if not isinstance(owner, dict) or not all(k in owner for k in ("page_id", "section_id", "job_id")):
+            raise ValueError("manifest owner envelope is invalid")
+        if not isinstance(owner["page_id"], str) or not isinstance(owner["section_id"], str):
+            raise ValueError("manifest owner ids must be strings")
+        if owner["job_id"] is not None and not isinstance(owner["job_id"], str):
+            raise ValueError("manifest owner job_id must be a string or null")
+    payload = {"version": manifest["version"], "owners": manifest["owners"], "expected": expected}
+    recomputed = _hash_manifest_payload(payload)
     stored = manifest.get("hash")
     if recomputed != stored:
         raise ValueError(
@@ -597,6 +640,33 @@ def manifest_load(path: str | Path) -> dict:
             "hand-edited"
         )
     return manifest
+
+
+def write_manifest_durable(path: str | Path, manifest: Mapping) -> None:
+    """Atomically persist a manifest before its DB transaction may commit."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, target)
+        try:
+            dir_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+    except Exception:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 # ─── apply-time safety errors ─────────────────────────────────────────────
@@ -808,7 +878,8 @@ async def apply_plan(conn, plans: Sequence[GroupPlan]) -> tuple[int, int]:
     from sqlalchemy import text
 
     section_updates = [
-        {"sid": s.section_id, "expected_page_id": s.page_id}
+        {"sid": s.section_id, "expected_page_id": s.page_id,
+         "expected_job_id": s.stamped_job_id}
         for p in plans for s in p.non_owners
     ]
     job_updates = [
@@ -821,7 +892,8 @@ async def apply_plan(conn, plans: Sequence[GroupPlan]) -> tuple[int, int]:
         stmt = text(
             "UPDATE toc_entries SET notion_homework_page_id = NULL, "
             "notion_archived_job_id = NULL "
-            "WHERE id = :sid AND notion_homework_page_id = :expected_page_id"
+            "WHERE id = :sid AND notion_homework_page_id = :expected_page_id "
+            "AND notion_archived_job_id IS NOT DISTINCT FROM :expected_job_id"
         )
         for params in section_updates:
             result = await conn.execute(stmt, params)
@@ -1058,6 +1130,19 @@ async def refresh_owner_pages(
     return RefreshReport(outcomes=tuple(outcomes))
 
 
+async def _manifest_nonowners_cleared(conn, manifest: Mapping) -> bool:
+    """Verify the DB-clear gesture completed before any Notion call."""
+    from sqlalchemy import text
+    for row in manifest.get("expected", {}).get("sections", []):
+        live = (await conn.execute(text(
+            "SELECT notion_homework_page_id, notion_archived_job_id "
+            "FROM toc_entries WHERE id = :id"
+        ), {"id": UUID(row["section_id"])})).first()
+        if live is None or live.notion_homework_page_id is not None or live.notion_archived_job_id is not None:
+            return False
+    return True
+
+
 def format_refresh_report(report: RefreshReport) -> list[str]:
     lines = [
         f"refresh: rewritten={report.rewritten} pruned={report.pruned_total} "
@@ -1121,6 +1206,9 @@ async def run(
     plan_file: str | Path | None = None,
     client_factory: Callable[[], object] = _default_client,
 ) -> int:
+    if apply and refresh_notion:
+        print("ERROR: --apply and --refresh-notion are mutually exclusive", file=sys.stderr)
+        return 2
     if apply:
         if not expect_plan_hash:
             print(
@@ -1158,6 +1246,10 @@ async def run(
     engine = create_async_engine(database_url, future=True)
     try:
         if refresh_notion:
+            async with engine.connect() as conn:
+                if not await _manifest_nonowners_cleared(conn, manifest):
+                    print("ERROR: manifest non-owner pointers are not cleared; refusing refresh", file=sys.stderr)
+                    return 3
             client = client_factory()
             async with engine.connect() as conn:
                 report = await refresh_owner_pages(client, manifest, conn)
@@ -1200,13 +1292,10 @@ async def run(
                             "trying again"
                         )
                     cleared, unstamped = await apply_plan(conn, fresh_plans)
+                    write_manifest_durable(manifest_out, manifest_from_plans(fresh_plans))
             except (PlanChangedError, ApplyStateDriftError) as exc:
                 print(f"ERROR: {exc}", file=sys.stderr)
                 return 3
-            Path(manifest_out).write_text(
-                json.dumps(manifest_from_plans(fresh_plans), indent=2),
-                encoding="utf-8",
-            )
             print(format_applied(cleared, unstamped))
         else:
             for line in dry_run_footer_lines(plans):
