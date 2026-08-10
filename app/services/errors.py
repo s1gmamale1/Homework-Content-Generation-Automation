@@ -62,6 +62,30 @@ class PhaseAttemptTimeout(Exception):
     raw asyncio.TimeoutError whose str() is '' (blank error_message bug)."""
 
 
+class PersistentSolverMismatch(Exception):
+    """A solver-confirmed answer-key defect survived the bounded regen.
+
+    This is a hard content-quality failure, not a provider transient. The
+    phase and job must fail and must never be archived/distributed.
+    """
+
+    def __init__(
+        self,
+        phase_name: str,
+        warnings: list[str],
+        repair_error: BaseException | None = None,
+    ) -> None:
+        self.phase_name = phase_name
+        self.warnings = tuple(warnings)
+        self.repair_error = repair_error
+        shown = "; ".join(self.warnings[:3]) or "solver supplied no detail"
+        suffix = f"; repair failed: {repair_error}" if repair_error else ""
+        super().__init__(
+            f"{phase_name}: persistent answer-key mismatch after regeneration: "
+            f"{shown}{suffix}"
+        )
+
+
 # ── Fenced-lease control signals (fenced job leases, Task 7) ─────────────────
 #
 # These are CONTROL SIGNALS, not content errors. A fenced worker write

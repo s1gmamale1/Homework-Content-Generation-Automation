@@ -52,6 +52,19 @@ async def test_exception_degrades_never_blocks(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unavailable_outcome_retains_failure_for_post_mismatch_policy(monkeypatch):
+    failure = ConnectionError("temporary resolver failure")
+
+    async def _boom(**kw):
+        raise failure
+
+    monkeypatch.setattr("app.services.agent.run_phase", _boom)
+    out = await solver.solve(**COMMON)
+    assert out.available is False
+    assert out.failure is failure
+
+
+@pytest.mark.asyncio
 async def test_api_auth_error_reraises(monkeypatch):
     async def _auth(**kw):
         raise __import__("app.services.agent", fromlist=["AuthEnvError"]).AuthEnvError("no key")

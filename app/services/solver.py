@@ -31,6 +31,7 @@ class SolveOutcome:
     feedback: str = ""        # regen prompt addendum (empty when agrees/unavailable)
     has_mismatch: bool = False  # any HIGH-confidence discrepancy -> triggers the one regen
     refused: bool = False     # solver declined on content policy
+    failure: BaseException | None = None  # degraded real exception, for post-mismatch policy
 
 
 _INSTRUCTIONS = (
@@ -164,12 +165,12 @@ async def solve(
             logger.warning(f"solver refused (content policy) for {phase_name}: {exc!r}")
             return SolveOutcome(
                 available=False, refused=True, agrees=True,
-                warnings=["solver-refused: content policy"], feedback="",
+                warnings=["solver-refused: content policy"], feedback="", failure=exc,
             )
         logger.warning(f"solver unavailable for {phase_name}: {exc!r}")
         return SolveOutcome(
             available=False, agrees=True,
-            warnings=[f"solver-unavailable: {type(exc).__name__}"], feedback="",
+            warnings=[f"solver-unavailable: {type(exc).__name__}"], feedback="", failure=exc,
         )
 
     if verdict.agrees or not verdict.discrepancies:
