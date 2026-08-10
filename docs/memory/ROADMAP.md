@@ -12,7 +12,9 @@
 
 ---
 
-## R26 — Notion-collision repair script (#122, merged) is unsafe to RUN as-is — `--apply` FROZEN
+## R26 — Notion-collision repair correction — SHIPPED; `--apply` remains operator-gated
+
+> **Status (2026-08-10):** Follow-up correction is implemented and tested on `fix/notion-collision-repair-correction`. The production `--apply` and `--refresh-notion` gestures remain frozen until this branch is reviewed/merged and archivers are drained; no production writes have occurred.
 
 > **`--apply` MUST NOT RUN** until the follow-up correction below ships and is GK-gated. Current safe state (2026-08-10): PR #122 merged as `10f92d4`; **zero production DB or Notion writes have occurred**; dry-run stable at **18 groups / 86 sections / 68 non-owners**. The harm is entirely in *running* the script, not in the merge.
 

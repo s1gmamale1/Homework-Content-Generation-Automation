@@ -1,4 +1,4 @@
-"""Clear the FALSE Notion archive stamps left behind by the pre-#120 lesson
+"""Repair the FALSE Notion archive stamps left behind by the pre-#120 lesson
 title collision.
 
 Before commit 3945b83, `notion_archive` resolved a lesson's Notion page by
@@ -6,8 +6,11 @@ TITLE alone. Distinct lessons that happened to share a title therefore
 collapsed onto ONE page: the first job to push populated it; every later job
 hit `page_has_content` and silently returned WITHOUT writing — yet still got
 stamped `notion_archived_at` (and had `toc_entries.notion_homework_page_id`
-pointed at that other lesson's page). Nothing in Notion was overwritten; the
-content was simply never written. It is a SKIP, not a clobber.
+pointed at that other lesson's page). Some pages are mixed: later jobs may have
+added leaves or replaced a shared phase leaf. The repair clears false DB
+pointers first, then authoritatively rewrites the retained owner and prunes
+non-owner leaves. Rewriting is prohibited before the DB clear and required
+after it for every retained owner.
 
 The code fix is deployed, so NEW archives no longer collide. But the damaged
 rows still carry those false stamps and will re-skip forever until they are
@@ -50,12 +53,11 @@ where the two rules disagree the group is flagged
 `ordering_disagreement=true` so a reviewer can see the judgement call.
 
 **Dry-run by default** — it prints a full, reviewable plan and opens no write
-transaction whatsoever. Pass --apply to write (one transaction, loud banner).
-A second --apply run finds nothing to do: each page id then has exactly one
-row, so no group remains.
-
-There is deliberately NO --force / Notion-writing path here. This script only
-touches Postgres; it never talks to Notion.
+transaction whatsoever. The repair is a two-gesture operation: first run
+`--apply --expect-plan-hash=<hash> --manifest-out=<path>` after draining all
+archivers; then run `--refresh-notion --plan-file=<path>` to rewrite owners and
+prune contaminating leaves. A refresh is safe to rerun after a partial Notion
+failure; a bare refresh without a manifest is rejected.
 
 DATABASE_URL is read directly from the environment and MUST be set
 explicitly — this script refuses to start otherwise (one clear error line,
