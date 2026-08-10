@@ -84,6 +84,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import hashlib
 import json
 import os
@@ -92,6 +93,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 # Make BOTH documented invocations work: `python -m scripts.repair_notion_collisions`
@@ -560,6 +562,109 @@ class ApplyStateDriftError(Exception):
     match the number of rows it expected to touch — a row changed AFTER the
     in-transaction re-read but before the UPDATE ran. Defense in depth,
     independent of the `PlanChangedError` re-read check in `run()`."""
+
+
+# ─── read-only Notion page classifier ─────────────────────────────────────
+#
+# After --apply clears the DB pointers above, a "mixed" homework page may
+# still carry leaves (child pages / attachments) authored by MORE THAN ONE
+# lesson — a non-owner appended `practice-*` leaves the true owner never
+# produced. Before anything is rewritten or pruned (a LATER task), the
+# actual Notion page must be read and classified: which phases does it
+# host, and which of those belong to some OTHER lesson (the owner's own
+# `phase_outputs`, i.e. `owner_phase_set`)?
+#
+# `classify_page` is STRICTLY read-only: it only calls `get_child_pages` /
+# `get_block_children`, never a write method, and NEVER raises — any client
+# error is captured as an `unreadable` verdict instead of propagating, so a
+# batch classification run can't be aborted by one bad page.
+
+
+@dataclass(frozen=True)
+class PageClassification:
+    verdict: Literal["clean", "mixed", "unreadable"]
+    page_phases: frozenset[str]
+    extra_phases: frozenset[str]
+    extra_child_page_ids: tuple[str, ...]
+    error: str | None = None
+
+
+@functools.lru_cache(maxsize=1)
+def _layout_lookup() -> tuple[str, dict[str, str]]:
+    """(Gamified Practices container title, title->phase reverse map).
+
+    Lazy import of `app.services.notion_archive` — see the module docstring:
+    nothing app-adjacent may be imported before `main()`'s DATABASE_URL
+    preflight, and this classifier is called from contexts (including unit
+    tests with a fake client) that never touch the DB at all."""
+    from app.services.notion_archive import _CONTAINER, _HOMEWORK_LAYOUT, PHASE_TITLES
+
+    container_title = next(
+        entry["title"] for entry in _HOMEWORK_LAYOUT if entry["kind"] == _CONTAINER
+    )
+    title_to_phase = {title: phase for phase, title in PHASE_TITLES.items()}
+    return container_title, title_to_phase
+
+
+def _resolve_leaf_phase(client, leaf_id: str, leaf_title: str, title_to_phase: dict[str, str]) -> str | None:
+    """A leaf's phase: the first `type=="file"` block's `file.name` with the
+    trailing `.md` stripped, else a fallback lookup of the leaf's own title
+    against the reverse `PHASE_TITLES` map."""
+    for block in client.get_block_children(leaf_id):
+        if block.get("type") == "file":
+            name = block.get("file", {}).get("name") or ""
+            return name[: -len(".md")] if name.endswith(".md") else (name or None)
+    return title_to_phase.get(leaf_title)
+
+
+def classify_page(client, page_id: str, owner_phase_set: set[str]) -> PageClassification:
+    """Walk `page_id`'s children (recursing one level into the Gamified
+    Practices container, if present) and classify which phases the page
+    actually hosts vs. which belong to some lesson other than the owner.
+
+    Read-only. Never raises — any client error collapses to an `unreadable`
+    verdict with the error captured, never propagated. Never decides whether
+    to rewrite anything; a later task consumes `extra_child_page_ids` to
+    prune."""
+    try:
+        container_title, title_to_phase = _layout_lookup()
+
+        leaves: list[tuple[str, str]] = []  # (leaf_page_id, leaf_title)
+        for child in client.get_child_pages(page_id):
+            if child.get("title") == container_title:
+                leaves.extend(
+                    (grandchild["id"], grandchild.get("title", ""))
+                    for grandchild in client.get_child_pages(child["id"])
+                )
+            else:
+                leaves.append((child["id"], child.get("title", "")))
+
+        resolved: dict[str, str] = {}  # leaf_page_id -> phase
+        for leaf_id, leaf_title in leaves:
+            phase = _resolve_leaf_phase(client, leaf_id, leaf_title, title_to_phase)
+            if phase is not None:
+                resolved[leaf_id] = phase
+
+        page_phases = frozenset(resolved.values())
+        extra_phases = frozenset(page_phases - owner_phase_set)
+        extra_child_page_ids = tuple(
+            leaf_id for leaf_id, phase in resolved.items() if phase in extra_phases
+        )
+        return PageClassification(
+            verdict="mixed" if extra_phases else "clean",
+            page_phases=page_phases,
+            extra_phases=extra_phases,
+            extra_child_page_ids=extra_child_page_ids,
+            error=None,
+        )
+    except Exception as exc:  # noqa: BLE001 - read-only classifier never raises
+        return PageClassification(
+            verdict="unreadable",
+            page_phases=frozenset(),
+            extra_phases=frozenset(),
+            extra_child_page_ids=(),
+            error=str(exc),
+        )
 
 
 # ─── DB I/O ──────────────────────────────────────────────────────────────
