@@ -350,6 +350,57 @@ def test_restore_discards_only_a_byte_identical_duplicate(monkeypatch, tmp_path)
     assert not (path.parent / ticket.quarantine_name).exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="dir-fd anchoring is POSIX")
+def test_restore_keeps_quarantine_when_duplicate_canonical_name_is_swapped(
+    monkeypatch, tmp_path
+):
+    _point_vault(monkeypatch, tmp_path)
+    key_id, body = _seed_uuid_file()
+    path = storage.sa_key_path(key_id)
+    sa_key_vault.atomic_write(path, body)
+    ticket = sa_key_vault.quarantine_for_delete(path, expected_sha256=_sha(body))
+    sa_key_vault.atomic_write(path, body)
+    moved = path.parent / "canonical-held.json"
+    replacement = b"replacement"
+    fired = False
+
+    def swap(
+        canonical_name: str,
+        _canonical_fd: int,
+        _quarantine_name: str,
+        _quarantine_fd: int,
+        vault_fd: int,
+    ) -> None:
+        nonlocal fired
+        fired = True
+        os.rename(canonical_name, moved.name, src_dir_fd=vault_fd, dst_dir_fd=vault_fd)
+        replacement_fd = os.open(
+            canonical_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=vault_fd,
+        )
+        try:
+            os.write(replacement_fd, replacement)
+        finally:
+            os.close(replacement_fd)
+
+    monkeypatch.setattr(
+        sa_key_vault,
+        "_posix_before_duplicate_restore_delete",
+        swap,
+        raising=False,
+    )
+
+    with pytest.raises(sa_key_vault.SAKeyVaultError):
+        sa_key_vault.restore_quarantined_delete(ticket)
+
+    assert fired
+    assert path.read_bytes() == replacement
+    assert moved.read_bytes() == body
+    assert (path.parent / ticket.quarantine_name).read_bytes() == body
+
+
 def test_discard_rejects_tampered_ticket_or_bytes(monkeypatch, tmp_path):
     _point_vault(monkeypatch, tmp_path)
     key_id, body = _seed_uuid_file()
@@ -644,6 +695,146 @@ def test_windows_access_denied_never_falls_back_to_path_io(monkeypatch, tmp_path
     monkeypatch.setattr(Path, "write_bytes", lambda *_a, **_kw: pytest.fail("path fallback"))
     with pytest.raises(sa_key_vault.SAKeyVaultError):
         sa_key_vault.read_bytes(path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real Windows missing-ok denial acceptance")
+def test_windows_remove_missing_ok_never_treats_access_denied_as_absent(
+    monkeypatch, tmp_path
+):
+    import win32con
+    import win32security
+
+    vault = _point_vault(monkeypatch, tmp_path)
+    key_id, body = _seed_uuid_file()
+    path = storage.sa_key_path(key_id)
+    sa_key_vault.atomic_write(path, body)
+    original = win32security.GetFileSecurity(
+        str(path), win32security.DACL_SECURITY_INFORMATION
+    )
+    sid = sa_key_vault._windows_process_sid()
+    denied = win32security.ACL()
+    denied.AddAccessDeniedAce(
+        win32security.ACL_REVISION, win32con.DELETE, sid
+    )
+    denied.AddAccessAllowedAce(
+        win32security.ACL_REVISION, win32con.FILE_ALL_ACCESS, sid
+    )
+    descriptor = win32security.GetFileSecurity(
+        str(path), win32security.DACL_SECURITY_INFORMATION
+    )
+    descriptor.SetSecurityDescriptorDacl(1, denied, 0)
+    win32security.SetFileSecurity(
+        str(path), win32security.DACL_SECURITY_INFORMATION, descriptor
+    )
+    monkeypatch.setattr(
+        Path,
+        "exists",
+        lambda *_args, **_kwargs: pytest.fail("Path.exists fail-open"),
+    )
+    try:
+        with pytest.raises(sa_key_vault.SAKeyVaultError):
+            sa_key_vault._remove_windows_verified(
+                vault, path.name, missing_ok=True
+            )
+    finally:
+        win32security.SetFileSecurity(
+            str(path), win32security.DACL_SECURITY_INFORMATION, original
+        )
+    assert path.read_bytes() == body
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real Windows inventory anchoring acceptance")
+def test_windows_inventory_rejects_vault_name_swap_even_with_identical_bytes(
+    monkeypatch, tmp_path
+):
+    vault = _point_vault(monkeypatch, tmp_path)
+    key_id, body = _seed_uuid_file()
+    path = storage.sa_key_path(key_id)
+    sa_key_vault.atomic_write(path, body)
+    parked = tmp_path / "inventory-held-vault"
+    fired = False
+
+    def swap(_vault: Path, _name: str, _vault_handle) -> None:
+        nonlocal fired
+        if fired:
+            return
+        fired = True
+        vault.rename(parked)
+        vault.mkdir()
+        (vault / path.name).write_bytes(body)
+
+    monkeypatch.setattr(
+        sa_key_vault, "_windows_before_inventory_child", swap, raising=False
+    )
+
+    with pytest.raises(sa_key_vault.SAKeyVaultError):
+        sa_key_vault.verify_uuid_inventory({str(key_id): _sha(body)})
+
+    assert fired
+    assert (parked / path.name).read_bytes() == body
+    assert (vault / path.name).read_bytes() == body
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real Windows publication identity acceptance")
+def test_windows_atomic_write_rejects_destination_name_swap_after_move(
+    monkeypatch, tmp_path
+):
+    vault = _point_vault(monkeypatch, tmp_path)
+    path = storage.sa_key_active_path()
+    sa_key_vault.atomic_write(path, b"old")
+    moved = vault / "published-held.json"
+    replacement = b"replacement"
+    real_replace = sa_key_vault._replace_write_through
+    fired = False
+
+    def swap_after_move(source, destination, *, vault_fd=None):
+        nonlocal fired
+        real_replace(source, destination, vault_fd=vault_fd)
+        fired = True
+        destination.rename(moved)
+        destination.write_bytes(replacement)
+
+    monkeypatch.setattr(sa_key_vault, "_replace_write_through", swap_after_move)
+
+    with pytest.raises(sa_key_vault.SAKeyVaultError):
+        sa_key_vault.atomic_write(path, b"new")
+
+    assert fired
+    assert moved.read_bytes() == b"new"
+    assert path.read_bytes() == replacement
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real Windows duplicate restore acceptance")
+def test_windows_restore_keeps_quarantine_when_duplicate_canonical_is_swapped(
+    monkeypatch, tmp_path
+):
+    _point_vault(monkeypatch, tmp_path)
+    key_id, body = _seed_uuid_file()
+    path = storage.sa_key_path(key_id)
+    sa_key_vault.atomic_write(path, body)
+    ticket = sa_key_vault.quarantine_for_delete(path, expected_sha256=_sha(body))
+    sa_key_vault.atomic_write(path, body)
+    moved = path.parent / "duplicate-held.json"
+    replacement = b"replacement"
+    fired = False
+
+    def swap(label: str, _candidate: Path, _handle) -> None:
+        nonlocal fired
+        if fired or label != "restore-discard-duplicate":
+            return
+        fired = True
+        path.rename(moved)
+        path.write_bytes(replacement)
+
+    monkeypatch.setattr(sa_key_vault, "_windows_before_path_mutation", swap)
+
+    with pytest.raises(sa_key_vault.SAKeyVaultError):
+        sa_key_vault.restore_quarantined_delete(ticket)
+
+    assert fired
+    assert path.read_bytes() == replacement
+    assert moved.read_bytes() == body
+    assert (path.parent / ticket.quarantine_name).read_bytes() == body
 
 
 @pytest.mark.skipif(os.name != "nt", reason="real Windows handle anchoring acceptance")

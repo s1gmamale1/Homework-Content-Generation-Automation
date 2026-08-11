@@ -51,6 +51,10 @@ class SAKeyVaultError(RuntimeError):
     """A vault path or operation is unsafe; never includes file contents."""
 
 
+class _WindowsPathNotFound(SAKeyVaultError):
+    """A verified Windows API reported that the requested name is absent."""
+
+
 @dataclass(frozen=True)
 class DeleteQuarantine:
     key_id: UUID
@@ -98,6 +102,22 @@ def _windows_before_path_mutation(
     _operation: str, _path: Path, _handle: object
 ) -> None:  # pragma: no cover - real Windows race seam
     """Pause after held-handle validation but before the final name check."""
+
+
+def _windows_before_inventory_child(
+    _vault: Path, _name: str, _vault_handle: object
+) -> None:  # pragma: no cover - real Windows race seam
+    """Pause while the verified vault handle is held, before opening a child."""
+
+
+def _posix_before_duplicate_restore_delete(
+    _canonical_name: str,
+    _canonical_fd: int,
+    _quarantine_name: str,
+    _quarantine_fd: int,
+    _vault_fd: int,
+) -> None:
+    """Pause before identical duplicate evidence is discarded."""
 
 
 def _raise_vault_error() -> SAKeyVaultError:
@@ -268,6 +288,10 @@ def _open_windows_handle(
             None,
         )
     except OSError as exc:
+        if getattr(exc, "winerror", None) in {2, 3}:
+            raise _WindowsPathNotFound(
+                "SA-key vault path was not found"
+            ) from exc
         raise _raise_vault_error() from exc
     try:
         _windows_validate_handle(handle, directory=directory)
@@ -582,9 +606,11 @@ def _atomic_write_windows(vault: Path, name: str, body: bytes) -> None:  # pragm
                     raise _raise_vault_error()
                 _windows_validate_handle(temp_handle, directory=False)
                 _windows_recheck_vault_identity(vault, identity)
+                _windows_require_named_identity(temp, temp_handle)
                 _replace_write_through(temp, destination)
                 _windows_recheck_vault_identity(vault, identity)
                 _windows_validate_handle(temp_handle, directory=False)
+                _windows_require_named_identity(destination, temp_handle)
             _windows_harden_file(destination)
         except Exception as exc:
             try:
@@ -644,9 +670,11 @@ def _remove_windows_verified(vault: Path, name: str, *, missing_ok: bool) -> Non
                 win32file.DeleteFile(str(path))
                 _windows_recheck_vault_identity(vault, identity)
                 _windows_validate_handle(held_handle, directory=False)
-        except SAKeyVaultError:
-            if missing_ok and not path.exists():
+        except _WindowsPathNotFound:
+            if missing_ok:
                 return
+            raise
+        except SAKeyVaultError:
             raise
         except OSError as exc:
             if missing_ok and getattr(exc, "winerror", None) in {2, 3}:
@@ -847,11 +875,39 @@ def _finish_quarantine_posix_on_fd(
                     canonical_hash = hashlib.sha256(
                         _posix_read_fd(canonical_fd)
                     ).hexdigest()
+                    if canonical_hash != ticket.sha256:
+                        raise _raise_vault_error()
+                    _posix_before_duplicate_restore_delete(
+                        ticket.original_name,
+                        canonical_fd,
+                        ticket.quarantine_name,
+                        quarantine_fd,
+                        vault_fd,
+                    )
+                    _posix_verify_named_identity(
+                        vault_fd, ticket.original_name, canonical_fd
+                    )
+                    os.lseek(canonical_fd, 0, os.SEEK_SET)
+                    if (
+                        hashlib.sha256(_posix_read_fd(canonical_fd)).hexdigest()
+                        != ticket.sha256
+                    ):
+                        raise _raise_vault_error()
+                    _posix_verify_named_identity(
+                        vault_fd, ticket.quarantine_name, quarantine_fd
+                    )
+                    os.unlink(ticket.quarantine_name, dir_fd=vault_fd)
+                    _posix_verify_named_identity(
+                        vault_fd, ticket.original_name, canonical_fd
+                    )
+                    os.lseek(canonical_fd, 0, os.SEEK_SET)
+                    if (
+                        hashlib.sha256(_posix_read_fd(canonical_fd)).hexdigest()
+                        != ticket.sha256
+                    ):
+                        raise _raise_vault_error()
                 finally:
                     os.close(canonical_fd)
-                if canonical_hash != ticket.sha256:
-                    raise _raise_vault_error()
-                os.unlink(ticket.quarantine_name, dir_fd=vault_fd)
         else:
             os.unlink(ticket.quarantine_name, dir_fd=vault_fd)
         os.fsync(vault_fd)
@@ -887,24 +943,48 @@ def _finish_quarantine_windows(ticket: DeleteQuarantine, *, restore: bool) -> No
         ) as quarantine_handle:
             if _windows_hash_handle(quarantine_handle) != ticket.sha256:
                 raise _raise_vault_error()
-            if restore and canonical.exists():
-                with _open_windows_handle(
-                    canonical,
-                    use=_WindowsHandleUse.READ_OR_HASH,
-                    directory=False,
-                    disposition=win32con.OPEN_EXISTING,
-                ) as canonical_handle:
-                    if _windows_hash_handle(canonical_handle) != ticket.sha256:
-                        raise _raise_vault_error()
-                _windows_before_path_mutation(
-                    "restore-discard-duplicate", quarantine, quarantine_handle
-                )
-                _windows_require_named_identity(quarantine, quarantine_handle)
-                _windows_recheck_vault_identity(vault, identity)
-                win32file.DeleteFile(str(quarantine))
-                _windows_recheck_vault_identity(vault, identity)
-                _windows_validate_handle(quarantine_handle, directory=False)
-            elif restore:
+            if restore:
+                with contextlib.ExitStack() as canonical_stack:
+                    try:
+                        canonical_handle = canonical_stack.enter_context(
+                            _open_windows_handle(
+                                canonical,
+                                use=_WindowsHandleUse.READ_OR_HASH,
+                                directory=False,
+                                disposition=win32con.OPEN_EXISTING,
+                            )
+                        )
+                    except _WindowsPathNotFound:
+                        canonical_handle = None
+                    if canonical_handle is not None:
+                        if _windows_hash_handle(canonical_handle) != ticket.sha256:
+                            raise _raise_vault_error()
+                        _windows_before_path_mutation(
+                            "restore-discard-duplicate",
+                            quarantine,
+                            quarantine_handle,
+                        )
+                        _windows_require_named_identity(
+                            canonical, canonical_handle
+                        )
+                        if _windows_hash_handle(canonical_handle) != ticket.sha256:
+                            raise _raise_vault_error()
+                        _windows_require_named_identity(
+                            quarantine, quarantine_handle
+                        )
+                        _windows_recheck_vault_identity(vault, identity)
+                        win32file.DeleteFile(str(quarantine))
+                        _windows_recheck_vault_identity(vault, identity)
+                        _windows_validate_handle(
+                            quarantine_handle, directory=False
+                        )
+                        _windows_validate_handle(canonical_handle, directory=False)
+                        _windows_require_named_identity(
+                            canonical, canonical_handle
+                        )
+                        if _windows_hash_handle(canonical_handle) != ticket.sha256:
+                            raise _raise_vault_error()
+                        return
                 _windows_before_path_mutation(
                     "restore", quarantine, quarantine_handle
                 )
@@ -924,6 +1004,8 @@ def _finish_quarantine_windows(ticket: DeleteQuarantine, *, restore: bool) -> No
                     if _windows_identity(canonical_handle) != _windows_identity(
                         quarantine_handle
                     ):
+                        raise _raise_vault_error()
+                    if _windows_hash_handle(canonical_handle) != ticket.sha256:
                         raise _raise_vault_error()
             else:
                 _windows_before_path_mutation(
@@ -1042,11 +1124,38 @@ def verify_uuid_inventory(expected_sha256: Mapping[str, str]) -> None:
             raise _raise_vault_error()
         return
     observed: dict[str, str] = {}
-    for name in _vault_names():  # pragma: no cover - Windows CI
-        key_id = _inventory_key_id(name)
-        if key_id is None:
-            continue
-        observed[key_id] = _hash_windows_path(storage.sa_key_dir() / name)
+    with _open_windows_vault("inventory") as (  # pragma: no cover - Windows CI
+        vault,
+        vault_handle,
+        identity,
+    ):
+        _windows_recheck_vault_identity(vault, identity)
+        try:
+            names = [path.name for path in vault.iterdir()]
+        except OSError as exc:
+            raise _raise_vault_error() from exc
+        _windows_recheck_vault_identity(vault, identity)
+        for name in names:
+            key_id = _inventory_key_id(name)
+            if key_id is None:
+                continue
+            _windows_before_inventory_child(vault, name, vault_handle)
+            _windows_validate_handle(vault_handle, directory=True)
+            _windows_recheck_vault_identity(vault, identity)
+            child = vault / name
+            with _open_windows_handle(
+                child,
+                use=_WindowsHandleUse.READ_OR_HASH,
+                directory=False,
+                disposition=win32con.OPEN_EXISTING,
+            ) as child_handle:
+                _windows_require_named_identity(child, child_handle)
+                _windows_recheck_vault_identity(vault, identity)
+                digest = _windows_hash_handle(child_handle)
+                _windows_validate_handle(child_handle, directory=False)
+                _windows_require_named_identity(child, child_handle)
+                _windows_recheck_vault_identity(vault, identity)
+            observed[key_id] = digest
     if observed != expected:
         raise _raise_vault_error()
 
