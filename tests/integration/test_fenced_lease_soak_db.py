@@ -172,6 +172,87 @@ async def seeded_scope(database_url):
         await engine.dispose()
 
 
+@pytest.fixture
+async def stop_context(database_url, seeded_scope):
+    scope, unscoped_id = seeded_scope
+    engine = create_async_engine(database_url, pool_size=1, max_overflow=0)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    foreign_book_id, foreign_batch_id = uuid4(), uuid4()
+    async with factory() as session:
+        session.add(
+            Book(
+                id=foreign_book_id,
+                subject="matematika",
+                grade="5",
+                original_filename="soak-foreign.pdf",
+                content_sha256="b" * 64,
+                file_size_bytes=3,
+                status="toc_ready",
+                source_language="uz",
+            )
+        )
+        await session.flush()
+        session.add(
+            Batch(
+                id=foreign_batch_id,
+                book_id=foreign_book_id,
+                subject="matematika",
+                grade="5",
+                provider="gemini",
+                model="gemini-3.6-flash",
+                transport="api",
+                output_language="uz",
+            )
+        )
+        await session.execute(
+            text(
+                "update budget_state set api_paused_at=null, "
+                "api_paused_reason=null where id=1"
+            )
+        )
+        await session.execute(
+            text(
+                "update batches set paused_at=null, paused_reason=null "
+                "where id=:batch_id"
+            ),
+            {"batch_id": scope.batch_ids[0]},
+        )
+        await session.commit()
+    try:
+        yield {
+            "scope": scope,
+            "unscoped_id": unscoped_id,
+            "foreign_batch_id": foreign_batch_id,
+            "factory": factory,
+        }
+    finally:
+        async with factory() as session:
+            await session.execute(
+                text(
+                    "update homework_jobs set batch_id=:batch_id "
+                    "where id=:job_id"
+                ),
+                {"batch_id": scope.batch_ids[0], "job_id": scope.job_ids[0]},
+            )
+            await session.execute(
+                text(
+                    "update budget_state set api_paused_at=null, "
+                    "api_paused_reason=null where id=1"
+                )
+            )
+            await session.execute(
+                text(
+                    "update batches set paused_at=null, paused_reason=null "
+                    "where id=:batch_id"
+                ),
+                {"batch_id": scope.batch_ids[0]},
+            )
+            await session.execute(delete(Batch).where(Batch.id == foreign_batch_id))
+            await session.execute(delete(Book).where(Book.id == foreign_book_id))
+            await session.commit()
+        await engine.dispose()
+
+
 @pytest.mark.asyncio
 @requires_db
 async def test_collect_starts_a_read_only_transaction(database_url, seeded_scope):
@@ -211,6 +292,112 @@ async def test_collect_excludes_unscoped_usage_and_lease_events(database_url, se
         await store.dispose()
     assert unscoped_id not in {row.job_id for row in raw.usages}
     assert unscoped_id not in {row.job_id for row in raw.lease_events}
+
+
+@pytest.mark.asyncio
+@requires_db
+async def test_stop_mutates_only_exact_batches_and_budget_state(
+    database_url, stop_context
+):
+    scope = stop_context["scope"]
+    factory = stop_context["factory"]
+    async with factory() as session:
+        before = dict(
+            (
+                await session.execute(
+                    text(
+                        "select id, status from homework_jobs "
+                        "where id = any(cast(:job_ids as uuid[])) order by id"
+                    ),
+                    {"job_ids": [scope.job_ids[0], stop_context["unscoped_id"]]},
+                )
+            ).all()
+        )
+
+    write_store = soak.SqlSoakWriteStore(database_url)
+    try:
+        receipt = await soak.GuardedStopper(write_store).pause(
+            scope,
+            soak.Finding(
+                code="lease_lost",
+                hard=True,
+                hard_stop=True,
+                stage_failure=True,
+                message="lease lost",
+            ),
+        )
+    finally:
+        await write_store.dispose()
+
+    async with factory() as session:
+        after = dict(
+            (
+                await session.execute(
+                    text(
+                        "select id, status from homework_jobs "
+                        "where id = any(cast(:job_ids as uuid[])) order by id"
+                    ),
+                    {"job_ids": [scope.job_ids[0], stop_context["unscoped_id"]]},
+                )
+            ).all()
+        )
+        unrelated_reason = await session.scalar(
+            text("select paused_reason from batches where id=:batch_id"),
+            {"batch_id": stop_context["foreign_batch_id"]},
+        )
+        fleet_reason = await session.scalar(
+            text("select api_paused_reason from budget_state where id=1")
+        )
+
+    assert receipt.batches_paused == len(scope.batch_ids)
+    assert unrelated_reason is None
+    assert before == after
+    assert fleet_reason == f"lease-soak-stop:{scope.run_id}"
+
+
+@pytest.mark.asyncio
+@requires_db
+async def test_stop_rolls_back_everything_on_scope_drift(
+    database_url, stop_context
+):
+    scope = stop_context["scope"]
+    factory = stop_context["factory"]
+    async with factory() as session:
+        await session.execute(
+            text("update homework_jobs set batch_id=:batch_id where id=:job_id"),
+            {
+                "batch_id": stop_context["foreign_batch_id"],
+                "job_id": scope.job_ids[0],
+            },
+        )
+        await session.commit()
+
+    write_store = soak.SqlSoakWriteStore(database_url)
+    try:
+        with pytest.raises(soak.ScopeDrift):
+            await soak.GuardedStopper(write_store).pause(
+                scope,
+                soak.Finding(
+                    code="lease_lost",
+                    hard=True,
+                    hard_stop=True,
+                    stage_failure=True,
+                    message="lease lost",
+                ),
+            )
+    finally:
+        await write_store.dispose()
+
+    async with factory() as session:
+        batch_reason = await session.scalar(
+            text("select paused_reason from batches where id=:batch_id"),
+            {"batch_id": scope.batch_ids[0]},
+        )
+        fleet_reason = await session.scalar(
+            text("select api_paused_reason from budget_state where id=1")
+        )
+    assert batch_reason is None
+    assert fleet_reason is None
 
 
 @pytest.mark.parametrize(

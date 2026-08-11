@@ -333,7 +333,11 @@ class StopReceipt(PersistedModel):
     observed_at: datetime
     trigger_code: str
     paused_batch_ids: list[UUID]
+    foreign_batch_pause_ids: list[UUID] = Field(default_factory=list)
     fleet_pause_set: bool
+    foreign_fleet_pause_preserved: bool = False
+    batches_paused: int = 0
+    cancelled_jobs: int = 0
 
     @field_validator("observed_at")
     @classmethod
@@ -496,6 +500,106 @@ class RawSnapshot(PersistedModel):
 
 class SoakReadStore(Protocol):
     async def collect(self, scope: SoakScope) -> RawSnapshot: ...
+
+
+class ScopeDrift(RuntimeError):
+    """The locked database scope no longer matches the authorized soak."""
+
+
+class SoakWriteStore(Protocol):
+    async def pause_exact_scope(
+        self,
+        scope: SoakScope,
+        *,
+        stop_reason: str,
+        staging_reason: str,
+        trigger_code: str,
+    ) -> StopReceipt: ...
+
+
+class SoakStopper(Protocol):
+    async def pause(self, scope: SoakScope, trigger: Finding) -> StopReceipt: ...
+
+
+class StopMutationPlan(PersistedModel):
+    set_fleet_pause: bool
+    fleet_pause_set: bool
+    foreign_fleet_pause_preserved: bool
+    batch_ids_to_pause: list[UUID]
+    paused_batch_ids: list[UUID]
+    foreign_batch_pause_ids: list[UUID]
+
+
+def _plan_stop_mutation(
+    scope: SoakScope,
+    *,
+    fleet_reason: str | None,
+    batch_reasons: Mapping[UUID, str | None],
+    stop_reason: str,
+    staging_reason: str,
+) -> StopMutationPlan:
+    if set(batch_reasons) != set(scope.batch_ids):
+        raise ScopeDrift("locked batch state differs from exact authorized scope")
+    foreign_fleet = fleet_reason not in {None, staging_reason, stop_reason}
+    to_pause: list[UUID] = []
+    paused: list[UUID] = []
+    foreign_batches: list[UUID] = []
+    for batch_id in sorted(scope.batch_ids):
+        reason = batch_reasons[batch_id]
+        if reason is None:
+            to_pause.append(batch_id)
+            paused.append(batch_id)
+        elif reason == stop_reason:
+            paused.append(batch_id)
+        else:
+            foreign_batches.append(batch_id)
+    return StopMutationPlan(
+        set_fleet_pause=fleet_reason in {None, staging_reason},
+        fleet_pause_set=not foreign_fleet,
+        foreign_fleet_pause_preserved=foreign_fleet,
+        batch_ids_to_pause=to_pause,
+        paused_batch_ids=paused,
+        foreign_batch_pause_ids=foreign_batches,
+    )
+
+
+class GuardedStopper:
+    """Validate the hard-stop gesture before delegating one atomic mutation."""
+
+    def __init__(
+        self,
+        write_store: SoakWriteStore,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ):
+        self.write_store = write_store
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+
+    async def pause(self, scope: SoakScope, trigger: Finding) -> StopReceipt:
+        if not trigger.hard or not trigger.hard_stop:
+            raise ValueError("stopper requires a hard-stop trigger")
+        stop_reason = f"lease-soak-stop:{scope.run_id}"
+        staging_reason = f"lease-soak-staging:{scope.run_id}"
+        if len(stop_reason) > 64 or len(staging_reason) > 64:
+            raise ValueError("soak pause reason exceeds database limit")
+        receipt = await self.write_store.pause_exact_scope(
+            scope,
+            stop_reason=stop_reason,
+            staging_reason=staging_reason,
+            trigger_code=trigger.code,
+        )
+        scoped_batches = set(scope.batch_ids)
+        if (
+            receipt.run_id != scope.run_id
+            or receipt.trigger_code != trigger.code
+            or receipt.cancelled_jobs != 0
+            or not set(receipt.paused_batch_ids).issubset(scoped_batches)
+            or not set(receipt.foreign_batch_pause_ids).issubset(scoped_batches)
+        ):
+            raise ScopeDrift("write-store receipt differs from exact authorized scope")
+        return receipt.model_copy(
+            update={"observed_at": _aware_utc(self.clock(), field_name="clock")}
+        )
 
 
 def _finding(
@@ -1762,6 +1866,130 @@ class SqlSoakReadStore:
         )
 
 
+class SqlSoakWriteStore:
+    """The controller's only SQL writer: one locked exact-scope pause."""
+
+    def __init__(self, database_url: str):
+        self.engine: AsyncEngine = create_async_engine(
+            database_url,
+            pool_size=1,
+            max_overflow=0,
+            pool_pre_ping=True,
+            connect_args={
+                "server_settings": {
+                    "application_name": f"hcga-soak-stop:{os.getpid()}",
+                    "idle_in_transaction_session_timeout": "300000",
+                }
+            },
+        )
+
+    async def dispose(self) -> None:
+        await self.engine.dispose()
+
+    async def pause_exact_scope(
+        self,
+        scope: SoakScope,
+        *,
+        stop_reason: str,
+        staging_reason: str,
+        trigger_code: str,
+    ) -> StopReceipt:
+        batch_ids = sorted(scope.batch_ids)
+        job_ids = sorted(scope.job_ids)
+        params = {"batch_ids": batch_ids, "job_ids": job_ids}
+
+        async with self.engine.begin() as conn:
+            budget = (
+                await conn.execute(
+                    text(
+                        "select api_paused_reason from budget_state "
+                        "where id=1 for update"
+                    )
+                )
+            ).mappings().one_or_none()
+            if budget is None:
+                raise ScopeDrift("budget_state singleton is missing")
+
+            batch_rows = _mapping_dicts(
+                await conn.execute(
+                    text(
+                        "select id, paused_reason from batches "
+                        "where id = any(cast(:batch_ids as uuid[])) "
+                        "order by id for update"
+                    ),
+                    params,
+                )
+            )
+            if {row["id"] for row in batch_rows} != set(batch_ids):
+                raise ScopeDrift("one or more exact-scope batches are missing")
+
+            job_rows = _mapping_dicts(
+                await conn.execute(
+                    text(
+                        "select id, batch_id from homework_jobs "
+                        "where id = any(cast(:job_ids as uuid[])) "
+                        "order by id for update"
+                    ),
+                    params,
+                )
+            )
+            if {row["id"] for row in job_rows} != set(job_ids) or any(
+                row["batch_id"] not in set(batch_ids) for row in job_rows
+            ):
+                raise ScopeDrift("scope job membership changed before stop")
+
+            observed_at = await conn.scalar(text("select clock_timestamp()"))
+            current_fleet_reason = budget["api_paused_reason"]
+            plan = _plan_stop_mutation(
+                scope,
+                fleet_reason=current_fleet_reason,
+                batch_reasons={
+                    row["id"]: row["paused_reason"] for row in batch_rows
+                },
+                stop_reason=stop_reason,
+                staging_reason=staging_reason,
+            )
+            if plan.set_fleet_pause:
+                result = await conn.execute(
+                    text(
+                        "update budget_state "
+                        "set api_paused_at=:observed_at, api_paused_reason=:reason "
+                        "where id=1"
+                    ),
+                    {"observed_at": observed_at, "reason": stop_reason},
+                )
+                if result.rowcount != 1:
+                    raise ScopeDrift("budget_state changed during locked stop")
+
+            for batch_id in plan.batch_ids_to_pause:
+                result = await conn.execute(
+                    text(
+                        "update batches "
+                        "set paused_at=:observed_at, paused_reason=:reason "
+                        "where id=:batch_id and paused_reason is null"
+                    ),
+                    {
+                        "observed_at": observed_at,
+                        "reason": stop_reason,
+                        "batch_id": batch_id,
+                    },
+                )
+                if result.rowcount != 1:
+                    raise ScopeDrift("batch changed during locked stop")
+
+        return StopReceipt(
+            run_id=scope.run_id,
+            observed_at=observed_at,
+            trigger_code=trigger_code,
+            paused_batch_ids=plan.paused_batch_ids,
+            foreign_batch_pause_ids=plan.foreign_batch_pause_ids,
+            fleet_pause_set=plan.fleet_pause_set,
+            foreign_fleet_pause_preserved=plan.foreign_fleet_pause_preserved,
+            batches_paused=len(plan.paused_batch_ids),
+            cancelled_jobs=0,
+        )
+
+
 class EffectiveWorkerContract(BaseModel):
     """Only non-secret target-process settings needed by the soak contract."""
 
@@ -2442,6 +2670,71 @@ def validate_arm_confirmation(args: argparse.Namespace, *, run_id: str) -> None:
         raise SystemExit(f"--confirm-arm must equal {expected}")
 
 
+async def _dispose_store(store: Any | None) -> None:
+    dispose = getattr(store, "dispose", None)
+    if dispose is not None:
+        await dispose()
+
+
+async def async_main(
+    argv: Sequence[str],
+    *,
+    store_factory: Callable[[str], SoakReadStore] | None = None,
+    write_store_factory: Callable[[str], SoakWriteStore] | None = None,
+    database_url: str | None = None,
+    clock: Callable[[], datetime] | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    stdin: TextIO = sys.stdin,
+    stdout: TextIO = sys.stdout,
+    stderr: TextIO = sys.stderr,
+) -> ExitCode:
+    """Run database-backed commands with the writer absent unless fully armed."""
+    args = parse_args(argv)
+    if args.command not in {"preflight", "watch"}:
+        return ExitCode.OPERATIONAL_ERROR
+    try:
+        scope = load_scope(args.scope, stdin=stdin)
+        attestation = load_attestation(args.attestation)
+    except (ValidationError, json.JSONDecodeError, OSError):
+        stderr.write("soak failed: scope or attestation is invalid\n")
+        return ExitCode.OPERATIONAL_ERROR
+
+    validate_arm_confirmation(args, run_id=scope.run_id)
+    resolved_url = database_url or Settings().database_url
+    read_store = (store_factory or SqlSoakReadStore)(resolved_url)
+    write_store: SoakWriteStore | None = None
+    now = clock or (lambda: datetime.now(timezone.utc))
+    writer = ArtifactWriter(Path(args.artifact_dir), scope.run_id)
+    try:
+        if args.command == "preflight":
+            return await run_preflight(
+                scope=scope,
+                attestation=attestation,
+                store=read_store,
+                writer=writer,
+                clock=now,
+            )
+
+        stopper: SoakStopper | None = None
+        if args.arm_stop:
+            write_store = (write_store_factory or SqlSoakWriteStore)(resolved_url)
+            stopper = GuardedStopper(write_store, clock=now)
+        return await run_watch(
+            scope=scope,
+            attestation=attestation,
+            store=read_store,
+            writer=writer,
+            stopper=stopper,
+            clock=now,
+            sleep=sleep,
+            interval_seconds=args.interval_seconds,
+            stdout=stdout,
+        )
+    finally:
+        await _dispose_store(write_store)
+        await _dispose_store(read_store)
+
+
 def _default_process_source() -> Iterable[ProcessView]:
     return psutil.process_iter()
 
@@ -2525,9 +2818,17 @@ def main(
         stdout.write(canonical_json(fleet) + "\n")
         return int(ExitCode.PASS)
 
-    # Task 3+ owns the database-backed commands.  Keeping these inert here is
-    # stronger than a placeholder that might accidentally open live state.
-    return int(ExitCode.INCOMPLETE)
+    return int(
+        asyncio.run(
+            async_main(
+                sys.argv[1:] if argv is None else argv,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                clock=clock,
+            )
+        )
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through injected main
