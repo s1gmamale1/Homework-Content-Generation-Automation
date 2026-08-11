@@ -33,6 +33,7 @@ from app.services.errors import (
 from app.services.lease import CancelRequested, JobLease, LeaseLost
 from app.services.flows import (
     flow_for,
+    teacher_material_flow_for,
     file_needed_phases,
     filter_prior_outputs,
     max_output_tokens_for,
@@ -206,6 +207,18 @@ def _resolve_extract(job_extract_provider, job_extract_model, ld):
     )
 
 
+def _plan_full_flow(kind: str, subject: str) -> list[str]:
+    """Pure helper: pick the full content-phase flow for a job's `kind`.
+    Factored out of `run()`'s sequence-planning block so it's unit-testable
+    without a DB/pipeline run. `kind` must be a local captured ONCE from the
+    ORM `job` object earlier in `run()` (mirrors `provider`/`model`) — reading
+    `job.kind` this late risks `DetachedInstanceError` if the session has
+    since closed."""
+    if kind == "teacher_material":
+        return teacher_material_flow_for(subject)
+    return flow_for(subject)
+
+
 def _pending_phases(content_phases: list[str], prior_outputs: dict[str, str]) -> set[str]:
     """Content phases still to run: everything not already in prior_outputs
     (done phases get pre-injected, so they're excluded and serve as deps)."""
@@ -252,6 +265,11 @@ async def run(job_id: UUID, lease: Optional[JobLease] = None) -> None:
             # own default in that case.
             provider = job.provider
             model = job.model
+            # kind selects the phase flow (homework vs teacher_material) —
+            # captured ONCE here, alongside provider/model, so the later
+            # sequence-planning block never touches the possibly-detached
+            # ORM `job` object.
+            job_kind = getattr(job, "kind", "homework") or "homework"
             # Per-job auth transport: 'cli' (default) drives the CLI as today;
             # 'api' threads provider API keys via _auth_env and restricts
             # failover to the requested provider. Pinned at job creation.
@@ -339,7 +357,7 @@ async def run(job_id: UUID, lease: Optional[JobLease] = None) -> None:
         # ─── plan phase sequence (single flow — no classify/easy-hard) ──
         # Subset: job.selected_phases is the dependency-closure the endpoint stored.
         # Defensive re-order/filter against the live flow; None ⇒ full flow.
-        full_flow = flow_for(subject)
+        full_flow = _plan_full_flow(job_kind, subject)
         if selected_phases:
             chosen = set(selected_phases)
             content_planned = [p for p in full_flow if p in chosen]

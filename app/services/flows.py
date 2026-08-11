@@ -46,6 +46,17 @@ def flow_for(subject: str) -> list[str]:
     return [*_BASE_PHASES, *_GAMES, "boss-arena", "reflection"]
 
 
+def teacher_material_flow_for(subject: str) -> list[str]:
+    """Phase sequence for a kind='teacher_material' job: a single teacher-deck
+    phase, no games/boss-arena/reflection. `extract` still runs ahead of it as
+    the pipeline's pinned head (not part of this content-phase list) and feeds
+    the deck via lesson_context, same as every other phase — teacher-deck is
+    deliberately absent from PHASE_DEPS below (no prior_outputs dependency)."""
+    if subject not in SUBJECTS:
+        raise KeyError(f"Unsupported subject: {subject}")
+    return ["teacher-deck"]
+
+
 SUPPORTED_SUBJECTS: list[str] = sorted(SUBJECTS)
 
 
