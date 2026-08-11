@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from app.config import settings
 from app.db import SessionLocal
-from app.schemas.content_json import SCHEMAS
+from app.schemas.content_json import SCHEMAS, TeacherDeck
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
@@ -720,36 +720,57 @@ async def _execute_one_phase(
     phase_prior = filter_prior_outputs(phase_name, prior_outputs)
 
     try:
-        output_md, tin, tout, _ph, parsed_struct = await _execute_phase(
-            job_id=job_id,
-            phase_name=phase_name,
-            phase_order=phase_order,
-            subject=subject,
-            provider=provider,
-            model=model,
-            pdf_path=pdf_path,
-            attach_file=phase_needs_file,
-            section=section_data,
-            lesson_context=lesson_context,
-            prior_outputs=phase_prior,
-            difficulty=difficulty,
-            source_map_digest=source_map_digest,
-            transport=transport,
-            extract_transport=extract_transport,
-            judge_transport=judge_transport,
-            solver_transport=solver_transport,
-            custom_prompts=custom_prompts,
-            judge_provider_ov=judge_provider_ov,
-            judge_model_ov=judge_model_ov,
-            solver_provider_ov=solver_provider_ov,
-            solver_model_ov=solver_model_ov,
-            solver_boss_arena_enabled=solver_boss_arena_enabled,
-            extract_provider=extract_provider,
-            extract_model=extract_model,
-            session_limit_strategy=session_limit_strategy,
-            output_language=output_language,
-            lease=lease,
-        )
+        if phase_name == "teacher-deck":
+            # Teacher-material deliverable: a single schema-validated call
+            # persisted as content_json, not routed through _execute_phase's
+            # content-phase branch (no judge/solver/lint yet, no markdown
+            # fallback — see _execute_teacher_deck_phase's docstring). Uses
+            # ONLY the locals _execute_one_phase already received (provider/
+            # model/transport/output_language), which `run()` captured once
+            # from the ORM `job` up front — no late re-read.
+            output_md, tin, tout, _ph, parsed_struct = await _execute_teacher_deck_phase(
+                job_id=job_id,
+                phase_order=phase_order,
+                subject=subject,
+                provider=provider,
+                model=model,
+                lesson_context=lesson_context,
+                transport=transport,
+                session_limit_strategy=session_limit_strategy,
+                output_language=output_language,
+                lease=lease,
+            )
+        else:
+            output_md, tin, tout, _ph, parsed_struct = await _execute_phase(
+                job_id=job_id,
+                phase_name=phase_name,
+                phase_order=phase_order,
+                subject=subject,
+                provider=provider,
+                model=model,
+                pdf_path=pdf_path,
+                attach_file=phase_needs_file,
+                section=section_data,
+                lesson_context=lesson_context,
+                prior_outputs=phase_prior,
+                difficulty=difficulty,
+                source_map_digest=source_map_digest,
+                transport=transport,
+                extract_transport=extract_transport,
+                judge_transport=judge_transport,
+                solver_transport=solver_transport,
+                custom_prompts=custom_prompts,
+                judge_provider_ov=judge_provider_ov,
+                judge_model_ov=judge_model_ov,
+                solver_provider_ov=solver_provider_ov,
+                solver_model_ov=solver_model_ov,
+                solver_boss_arena_enabled=solver_boss_arena_enabled,
+                extract_provider=extract_provider,
+                extract_model=extract_model,
+                session_limit_strategy=session_limit_strategy,
+                output_language=output_language,
+                lease=lease,
+            )
     except (LeaseLostSignal, CancelWonSignal):
         raise  # control signal — never a content failure / job-failed write
     except SessionLimitPause:
@@ -1242,6 +1263,192 @@ async def _run_structured_attempt(
     # artifact_from_config may itself raise StructuredPhaseError (renderer
     # refused / produced nothing) — that is a fallback trigger, by design.
     return artifact_from_config(phase_name, parsed), tin, tout, produced_by
+
+
+async def _run_teacher_deck_attempt(
+    *,
+    structured_prompt: str,
+    requested_provider: str,
+    model: Optional[str],
+    transport: str = "cli",
+    session_limit_strategy: str = "pause",
+    lesson_context: Optional[str] = None,
+    job_id: Optional[UUID] = None,
+    po_id: Optional[UUID] = None,
+) -> tuple[Any, Optional[int], Optional[int], str]:
+    """The teacher-deck sibling of ``_run_structured_attempt``: same resilience
+    (``_run_with_failover`` — per-attempt timeout, ``SlotSaturation`` parking,
+    session-limit pause, same-provider retry) around one schema-validated
+    ``agent.run_phase`` call, but deliberately does NOT call
+    ``artifact_from_config`` at the end — there is no teacher-deck markdown
+    renderer, so that call would raise ``StructuredPhaseError``. Returns the
+    parsed ``TeacherDeck`` model directly.
+
+    Reuses the same ``_SCHEMA_EXHAUSTED`` sentinel technique as
+    ``_run_structured_attempt`` so a model that genuinely cannot produce this
+    config isn't burned through the classify/retry/failover budget a second
+    time — but where the content lane converts that into a (fallback-able)
+    ``StructuredPhaseError``, this re-raises ``agent.SchemaValidationExhausted``
+    UNCONVERTED: there is no markdown fallback for teacher-deck, so schema
+    exhaustion must fail the phase loudly instead of being caught anywhere.
+    """
+    schema = SCHEMAS["teacher-deck"]
+
+    async def _structured_run(prov: str, mdl: Optional[str]):
+        try:
+            result = await agent.run_phase(
+                provider=prov,
+                model=mdl,
+                phase_prompt=structured_prompt,
+                phase_name="teacher-deck",
+                homework_job_id=job_id,
+                phase_output_id=po_id,
+                lesson_context=lesson_context,
+                schema=schema,
+                max_output_tokens=max_output_tokens_for("teacher-deck"),
+                transport=transport,
+            )
+        except (agent.SchemaValidationExhausted, ValidationError):
+            return _SCHEMA_EXHAUSTED, None, None
+        if result.parsed is None:
+            return _SCHEMA_EXHAUSTED, None, None
+        tin_ = int(result.usage.get("prompt_tokens") or 0) or None
+        tout_ = int(result.usage.get("output_tokens") or 0) or None
+        return result.parsed, tin_, tout_
+
+    parsed, tin, tout, produced_by = await _run_with_failover(
+        requested_provider=requested_provider,
+        model=model,
+        run_fn=_structured_run,
+        transport=transport,
+        session_limit_strategy=session_limit_strategy,
+    )
+    if parsed is _SCHEMA_EXHAUSTED:
+        raise agent.SchemaValidationExhausted(
+            f"{schema.__name__}: model could not produce a valid teacher-deck config"
+        )
+    return parsed, tin, tout, produced_by
+
+
+async def _execute_teacher_deck_phase(
+    *,
+    job_id: UUID,
+    phase_order: int,
+    subject: str,
+    provider: str,
+    model: Optional[str],
+    lesson_context: Optional[str],
+    transport: str = "cli",
+    session_limit_strategy: str = "pause",
+    output_language: str = "uz",
+    lease: Optional[JobLease] = None,
+) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
+    """Generate the whole teacher-deck lesson-plan in ONE schema-validated call
+    and persist it as ``content_json`` — the teacher-material sibling of
+    ``_execute_phase``'s content-phase branch, called from ``_execute_one_phase``
+    instead of it (not routed through it):
+
+    - ALWAYS structured. Bypasses ``settings.structured_output_enabled`` (the
+      content lane's kill switch) and its markdown fallback entirely — there is
+      no teacher-deck markdown renderer, and ``_generate_artifact``'s fallback
+      path would call ``artifact_from_config`` and raise
+      ``StructuredPhaseError``.
+    - No judge / no solver / no content_lint here — the dedicated fidelity gate
+      is a separate, later phase-execution task; this only wires generation +
+      persistence.
+    - ``get_prompt_hash`` is NOT used: it hashes ``get_prompt`` (the markdown
+      glob under ``prompts/_general/*.md``), which has no ``teacher-deck.md``
+      and raises ``KeyError``. The structured prompt lives under
+      ``structured/`` instead, so its own content is hashed directly.
+    - On ``SchemaValidationExhausted`` (via ``_run_teacher_deck_attempt``), the
+      phase row is marked ``failed`` and the exception re-raised — mirroring
+      ``_execute_phase``'s generic-exception branch exactly, so
+      ``_execute_one_phase``'s existing error handling marks the JOB failed too
+      (no markdown to degrade to).
+    """
+    _token = _token_of(lease)
+    structured_prompt = get_structured_prompt(
+        subject, "teacher-deck", output_language=output_language
+    )
+    if not structured_prompt:
+        raise StructuredPhaseError("no structured prompt for phase 'teacher-deck'")
+    prompt_hash = "structured:sha256:" + hashlib.sha256(
+        structured_prompt.encode("utf-8")
+    ).hexdigest()
+    phase_model_label = model or "<provider-default>"
+
+    async with SessionLocal() as session:
+        po = await phase_repo.create_or_reset(
+            session,
+            job_id=job_id,
+            phase_name="teacher-deck",
+            phase_order=phase_order,
+            prompt_hash=prompt_hash,
+            model_name=phase_model_label,
+            lease=lease,
+        )
+        if po is LeaseLost:
+            raise LeaseLostSignal()
+        po_id = po.id
+        _pr = await phase_repo.set_status(
+            session, po_id, "running", started_at=_utcnow(), claim_token=_token,
+        )
+        _jr = await jobs_repo.set_status(
+            session, job_id, "running", current_phase="teacher-deck", claim_token=_token,
+        )
+        await session.commit()
+        _raise_on_lease_signal(_pr)
+        _raise_on_lease_signal(_jr)
+
+    try:
+        deck, tin, tout, produced_by = await _run_teacher_deck_attempt(
+            structured_prompt=structured_prompt,
+            requested_provider=provider,
+            model=model,
+            transport=transport,
+            session_limit_strategy=session_limit_strategy,
+            lesson_context=lesson_context,
+            job_id=job_id,
+            po_id=po_id,
+        )
+    except (LeaseLostSignal, CancelWonSignal):
+        raise  # control signal — never a phase-failed write (job is not ours)
+    except SessionLimitPause:
+        raise  # propagate to worker — phase must NOT be marked failed on a pause
+    except Exception as exc:
+        # Mirrors _execute_phase's generic-exception branch exactly, including
+        # SlotSaturation (raised by _run_with_failover) — it is NOT special-cased
+        # here either, same as the content lane: the phase row is marked failed,
+        # then the signal re-raises past this point for _execute_one_phase to
+        # re-classify and avoid marking the JOB failed on a park/pause.
+        async with SessionLocal() as session:
+            _fr = await phase_repo.set_status(
+                session, po_id, "failed",
+                completed_at=_utcnow(),
+                error_message=_error_text(exc),
+                claim_token=_token,
+            )
+            await session.commit()
+        _raise_on_lease_signal(_fr)
+        raise
+
+    async with SessionLocal() as session:
+        _dr = await phase_repo.set_status(
+            session, po_id, "done",
+            completed_at=_utcnow(),
+            output_md="",
+            tokens_input=tin,
+            tokens_output=tout,
+            provider=produced_by,
+            content_json=deck.model_dump(),
+            authoring_mode="structured",
+            content_schema_version=TeacherDeck.SCHEMA_VERSION,
+            claim_token=_token,
+        )
+        await session.commit()
+    _raise_on_lease_signal(_dr)
+
+    return "", tin, tout, prompt_hash, deck
 
 
 async def _generate_artifact(
