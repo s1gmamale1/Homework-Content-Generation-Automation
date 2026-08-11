@@ -38,3 +38,7 @@ async def test_assign_unassign_scrub(monkeypatch, tmp_path):
         assert (await c.delete(f"/api/v1/sa-keys/assignments/host-z")).status_code == 200
         # workers endpoint surfaces assignments
         assert "assignments" in (await c.get("/api/v1/workers")).json()
+        # Leave the shared scratch database and per-test vault coherent.  The
+        # startup-inventory acceptance that follows this file intentionally
+        # fails on DB rows whose canonical UUID object is absent.
+        assert (await c.delete(f"/api/v1/sa-keys/{kid}")).status_code == 200

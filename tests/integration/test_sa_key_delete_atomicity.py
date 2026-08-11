@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+import main as main_module
 from app.config import settings
 from app.db import SessionLocal, get_session
 from app.models.sa_key import SAKey, SAKeyAssignment
@@ -63,6 +64,32 @@ async def _cleanup(project: str, hostname: str) -> None:
         for row in rows:
             await session.delete(row)
         await session.commit()
+
+
+@asynccontextmanager
+async def _head_startup(monkeypatch, tmp_path, later_calls: list[str]):
+    """Run the real auth/vault/DB-inventory preflight and stub only later work."""
+    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "auth_token", _TOKEN)
+    monkeypatch.setattr(settings, "allow_insecure_local_auth", False)
+    monkeypatch.setattr(settings, "worker_concurrency", 0)
+    monkeypatch.setattr(main_module, "load_prompts", lambda: None)
+    monkeypatch.setattr(main_module.code_version, "CODE_VERSION", None)
+
+    async def reconcile_jobs(_session):
+        later_calls.append("jobs")
+
+    async def start_listener():
+        later_calls.append("listener")
+
+    async def stop_listener():
+        later_calls.append("listener-stop")
+
+    monkeypatch.setattr(main_module, "_reconcile_on_startup", reconcile_jobs)
+    monkeypatch.setattr(main_module.events_bus, "start_listener", start_listener)
+    monkeypatch.setattr(main_module.events_bus, "stop_listener", stop_listener)
+    async with main_module.app.router.lifespan_context(main_module.app):
+        yield
 
 
 @pytest.mark.asyncio
@@ -598,3 +625,264 @@ async def test_delete_preserves_all_neighbor_files_rows_and_assignment(
             for row in rows:
                 await session.delete(row)
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_head_startup_restores_quarantine_and_preserves_neighbor_state(
+    monkeypatch, tmp_path
+):
+    """Skipping startup reconcile would leave the canonical key unavailable."""
+    target_project = f"t5-restore-{uuid4()}"
+    neighbor_project = f"t5-neighbor-{uuid4()}"
+    hostname = f"t5-neighbor-host-{uuid4()}"
+    target_body = _good_key(project=target_project)
+    neighbor_body = _good_key(project=neighbor_project)
+    later: list[str] = []
+    try:
+        async with _client(monkeypatch, tmp_path) as client:
+            target_id = (
+                await client.post(
+                    "/api/v1/sa-keys",
+                    files={"file": ("target.json", target_body, "application/json")},
+                )
+            ).json()["id"]
+            neighbor_id = (
+                await client.post(
+                    "/api/v1/sa-keys",
+                    files={"file": ("neighbor.json", neighbor_body, "application/json")},
+                )
+            ).json()["id"]
+            assigned = await client.put(
+                f"/api/v1/sa-keys/assignments/{hostname}",
+                json={"key_id": neighbor_id},
+            )
+            assert assigned.status_code == 200
+
+        target_sha = hashlib.sha256(target_body).hexdigest()
+        ticket = sa_key_vault.quarantine_for_delete(
+            storage.sa_key_path(target_id), expected_sha256=target_sha
+        )
+        assert not storage.sa_key_path(target_id).exists()
+
+        async with _head_startup(monkeypatch, tmp_path, later):
+            pass
+
+        assert later == ["jobs", "listener", "listener-stop"]
+        assert sa_key_vault.read_bytes(storage.sa_key_path(target_id)) == target_body
+        assert not (tmp_path / "sa_keys" / ticket.quarantine_name).exists()
+        assert sa_key_vault.read_bytes(storage.sa_key_path(neighbor_id)) == neighbor_body
+        async with SessionLocal() as session:
+            assignment = await session.get(SAKeyAssignment, hostname)
+            assert assignment is not None
+            assert str(assignment.key_id) == neighbor_id
+    finally:
+        await _cleanup(target_project, f"t5-unused-{uuid4()}")
+        await _cleanup(neighbor_project, hostname)
+
+
+@pytest.mark.asyncio
+async def test_head_startup_discards_quarantine_after_committed_delete(
+    monkeypatch, tmp_path
+):
+    """Restoring a quarantine after its authoritative DB row is gone revives a key."""
+    project = f"t5-discard-{uuid4()}"
+    hostname = f"t5-unused-{uuid4()}"
+    body = _good_key(project=project)
+    later: list[str] = []
+    try:
+        async with _client(monkeypatch, tmp_path) as client:
+            key_id = (
+                await client.post(
+                    "/api/v1/sa-keys",
+                    files={"file": ("key.json", body, "application/json")},
+                )
+            ).json()["id"]
+        ticket = sa_key_vault.quarantine_for_delete(
+            storage.sa_key_path(key_id),
+            expected_sha256=hashlib.sha256(body).hexdigest(),
+        )
+        async with SessionLocal() as session:
+            row = await session.get(SAKey, key_id)
+            await session.delete(row)
+            await session.commit()
+
+        async with _head_startup(monkeypatch, tmp_path, later):
+            pass
+
+        assert later == ["jobs", "listener", "listener-stop"]
+        assert not storage.sa_key_path(key_id).exists()
+        assert not (tmp_path / "sa_keys" / ticket.quarantine_name).exists()
+        async with SessionLocal() as session:
+            assert await session.get(SAKey, key_id) is None
+    finally:
+        await _cleanup(project, hostname)
+
+
+@pytest.mark.asyncio
+async def test_head_startup_preserves_mismatched_quarantine_and_stops_before_jobs(
+    monkeypatch, tmp_path
+):
+    """Guessing through DB/file SHA disagreement would destroy recovery evidence."""
+    project = f"t5-mismatch-{uuid4()}"
+    hostname = f"t5-unused-{uuid4()}"
+    body = _good_key(project=project)
+    later: list[str] = []
+    ticket = None
+    try:
+        async with _client(monkeypatch, tmp_path) as client:
+            key_id = (
+                await client.post(
+                    "/api/v1/sa-keys",
+                    files={"file": ("key.json", body, "application/json")},
+                )
+            ).json()["id"]
+        ticket = sa_key_vault.quarantine_for_delete(
+            storage.sa_key_path(key_id),
+            expected_sha256=hashlib.sha256(body).hexdigest(),
+        )
+        async with SessionLocal() as session:
+            row = await session.get(SAKey, key_id)
+            row.sha256 = "f" * 64
+            await session.commit()
+
+        with pytest.raises(sa_key_vault.SAKeyVaultError):
+            async with _head_startup(monkeypatch, tmp_path, later):
+                pass
+
+        assert later == []
+        quarantine_path = tmp_path / "sa_keys" / ticket.quarantine_name
+        assert quarantine_path.exists()
+        assert sa_key_vault.read_bytes(quarantine_path) == body
+        assert not storage.sa_key_path(key_id).exists()
+    finally:
+        if ticket is not None and (tmp_path / "sa_keys" / ticket.quarantine_name).exists():
+            sa_key_vault.restore_quarantined_delete(ticket)
+        await _cleanup(project, hostname)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "hazard",
+    [
+        "missing-canonical",
+        "multiple-quarantines",
+        "wrong-quarantine-bytes",
+        "malformed-quarantine",
+        "unsafe-canonical",
+    ],
+)
+async def test_head_startup_preserves_each_unresolved_vault_hazard_and_neighbor(
+    monkeypatch, tmp_path, hazard
+):
+    """Removing a fail-closed branch would let one malformed crash state start."""
+    target_project = f"t5-hazard-{hazard}-{uuid4()}"
+    neighbor_project = f"t5-hazard-neighbor-{uuid4()}"
+    hostname = f"t5-hazard-host-{uuid4()}"
+    target_body = _good_key(project=target_project)
+    neighbor_body = _good_key(project=neighbor_project)
+    later: list[str] = []
+    ticket = None
+    extra_paths = []
+    try:
+        async with _client(monkeypatch, tmp_path) as client:
+            target_id = (
+                await client.post(
+                    "/api/v1/sa-keys",
+                    files={"file": ("target.json", target_body, "application/json")},
+                )
+            ).json()["id"]
+            neighbor_id = (
+                await client.post(
+                    "/api/v1/sa-keys",
+                    files={"file": ("neighbor.json", neighbor_body, "application/json")},
+                )
+            ).json()["id"]
+            assert (
+                await client.put(
+                    f"/api/v1/sa-keys/assignments/{hostname}",
+                    json={"key_id": neighbor_id},
+                )
+            ).status_code == 200
+
+        target_path = storage.sa_key_path(target_id)
+        target_sha = hashlib.sha256(target_body).hexdigest()
+        if hazard == "missing-canonical":
+            sa_key_vault.remove(target_path)
+        elif hazard in {"multiple-quarantines", "wrong-quarantine-bytes"}:
+            ticket = sa_key_vault.quarantine_for_delete(
+                target_path, expected_sha256=target_sha
+            )
+            quarantine_path = tmp_path / "sa_keys" / ticket.quarantine_name
+            if hazard == "multiple-quarantines":
+                duplicate = quarantine_path.parent / (
+                    f".{target_id}.json.{target_sha}.{'b' * 32}.delete-quarantine"
+                )
+                sa_key_vault.atomic_write(duplicate, target_body)
+                extra_paths.append(duplicate)
+            else:
+                sa_key_vault.atomic_write(quarantine_path, b"tampered")
+        elif hazard == "malformed-quarantine":
+            malformed = target_path.parent / ".not-a-ticket.delete-quarantine"
+            sa_key_vault.atomic_write(malformed, b"evidence")
+            extra_paths.append(malformed)
+        else:
+            if os.name == "nt":
+                pytest.skip("POSIX symlink hazard; Windows reparse coverage is separate")
+            sa_key_vault.remove(target_path)
+            outside = tmp_path / "outside-key.json"
+            outside.write_bytes(target_body)
+            target_path.symlink_to(outside)
+            extra_paths.extend((target_path, outside))
+
+        with pytest.raises(sa_key_vault.SAKeyVaultError):
+            async with _head_startup(monkeypatch, tmp_path, later):
+                pass
+
+        assert later == []
+        async with SessionLocal() as session:
+            assert await session.get(SAKey, target_id) is not None
+            neighbor = await session.get(SAKey, neighbor_id)
+            assignment = await session.get(SAKeyAssignment, hostname)
+            assert neighbor is not None
+            assert assignment is not None
+            assert str(assignment.key_id) == neighbor_id
+        # Read the known-safe neighboring file directly in the test: the real
+        # vault API correctly refuses *all* reads while unresolved evidence is
+        # present, which is the fail-closed behavior under test.
+        assert storage.sa_key_path(neighbor_id).read_bytes() == neighbor_body
+        if ticket is not None:
+            assert (tmp_path / "sa_keys" / ticket.quarantine_name).exists()
+        for path in extra_paths:
+            assert path.exists() or path.is_symlink()
+    finally:
+        for path in extra_paths:
+            if path.exists() or path.is_symlink():
+                path.unlink()
+        if ticket is not None:
+            quarantine_path = tmp_path / "sa_keys" / ticket.quarantine_name
+            if quarantine_path.exists():
+                sa_key_vault.atomic_write(quarantine_path, target_body)
+                sa_key_vault.restore_quarantined_delete(ticket)
+        await _cleanup(target_project, f"t5-unused-{uuid4()}")
+        await _cleanup(neighbor_project, hostname)
+
+
+@pytest.mark.asyncio
+async def test_head_startup_rejects_upload_orphan_before_job_reconciliation(
+    monkeypatch, tmp_path
+):
+    """Ignoring an upload-orphan UUID object would let ambiguous bytes enter service."""
+    orphan_id = uuid4()
+    body = _good_key(project=f"t5-orphan-{uuid4()}")
+    later: list[str] = []
+    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    orphan_path = storage.sa_key_path(orphan_id)
+    sa_key_vault.atomic_write(orphan_path, body)
+    try:
+        with pytest.raises(sa_key_vault.SAKeyVaultError):
+            async with _head_startup(monkeypatch, tmp_path, later):
+                pass
+        assert later == []
+        assert sa_key_vault.read_bytes(orphan_path) == body
+    finally:
+        sa_key_vault.remove(orphan_path, missing_ok=True)

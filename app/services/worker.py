@@ -52,6 +52,7 @@ from app.services import (
     agent,
     code_version,
     credential_limiter,
+    operator_auth,
     pipeline,
     providers,
     sa_key_apply,
@@ -1104,6 +1105,12 @@ async def run_standalone() -> None:
     """Entrypoint for `python -m app.services.worker`. Loads prompts,
     starts the worker, installs SIGTERM/SIGINT handlers for graceful
     shutdown."""
+    operator_auth.require_startup_auth(
+        settings.auth_token,
+        allow_insecure_local=settings.allow_insecure_local_auth,
+    )
+    sa_key_vault.harden_vault()
+
     from app.log import configure as configure_logging
     from app.services.prompts import load_all as load_prompts
 
