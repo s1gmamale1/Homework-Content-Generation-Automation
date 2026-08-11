@@ -2,7 +2,7 @@
 
 These tests never import the application DB engine and never call a provider.
 They pin the two boundaries that matter before the separately-approved smoke:
-the exact $0.20 arming gesture and the five acceptance outcomes.
+the exact remaining-budget arming gesture and the five acceptance outcomes.
 """
 
 from __future__ import annotations
@@ -66,9 +66,9 @@ def _passing_snapshot() -> smoke.AcceptanceSnapshot:
     "argv",
     [
         [],
-        ["--max-cost-usd", "0.19"],
-        ["--max-cost-usd", "0.2001"],
-        ["--max-cost-usd", "0.200"],
+        ["--max-cost-usd", "0.175"],
+        ["--max-cost-usd", "0.20"],
+        ["--max-cost-usd", "0.1753760"],
     ],
 )
 def test_runner_cannot_start_without_the_exact_approved_cap(argv):
@@ -80,7 +80,7 @@ def test_runner_cannot_start_without_the_exact_approved_cap(argv):
         calls += 1
         raise AssertionError("paid runner must not start")
 
-    with pytest.raises(smoke.PreflightError, match=r"--max-cost-usd 0\.20"):
+    with pytest.raises(smoke.PreflightError, match=r"--max-cost-usd 0\.175376"):
         smoke.main(argv, environ=_SAFE_ENV, runner=dangerous_runner)
     assert calls == 0
 
@@ -95,7 +95,9 @@ def test_runner_cannot_start_when_target_database_is_not_scratch():
 
     env = dict(_SAFE_ENV, DATABASE_URL="postgresql+asyncpg://edu:secret@db/edu_copy")
     with pytest.raises(smoke.PreflightError, match="scratch/test database"):
-        smoke.main(["--max-cost-usd", "0.20"], environ=env, runner=dangerous_runner)
+        smoke.main(
+            ["--max-cost-usd", "0.175376"], environ=env, runner=dangerous_runner
+        )
     assert calls == 0
 
 
@@ -109,7 +111,9 @@ def test_runner_cannot_start_without_an_explicit_separate_source_database():
 
     env = {"DATABASE_URL": _SAFE_ENV["DATABASE_URL"]}
     with pytest.raises(smoke.PreflightError, match="SOURCE_DB_URL"):
-        smoke.main(["--max-cost-usd", "0.20"], environ=env, runner=dangerous_runner)
+        smoke.main(
+            ["--max-cost-usd", "0.175376"], environ=env, runner=dangerous_runner
+        )
     assert calls == 0
 
 
@@ -121,10 +125,10 @@ def test_exact_cap_and_database_boundaries_arm_one_runner_invocation():
         seen.append(preflight)
 
     assert smoke.main(
-        ["--max-cost-usd", "0.20"], environ=_SAFE_ENV, runner=safe_runner
+        ["--max-cost-usd", "0.175376"], environ=_SAFE_ENV, runner=safe_runner
     ) == 0
     assert len(seen) == 1
-    assert seen[0].max_cost_usd == Decimal("0.20")
+    assert seen[0].max_cost_usd == Decimal("0.175376")
     assert seen[0].max_paid_calls == 2
 
 
@@ -138,7 +142,7 @@ async def test_paid_call_gate_never_invokes_a_third_model_call():
         calls += 1
         return "ok"
 
-    gate = smoke.PaidSolverGate(Decimal("0.20"))
+    gate = smoke.PaidSolverGate(smoke.APPROVED_CAP)
     assert await gate.call(provider_call) == "ok"
     assert await gate.call(provider_call) == "ok"
     with pytest.raises(smoke.BudgetExceeded, match="two paid solver calls"):
@@ -146,9 +150,57 @@ async def test_paid_call_gate_never_invokes_a_third_model_call():
     assert calls == 2
 
 
+@pytest.mark.asyncio
+async def test_spawn_retry_cannot_make_a_third_actual_provider_attempt(monkeypatch):
+    """A transient retry loop must hit the paid gate before attempt three."""
+    from app.services import agent
+
+    actual_provider_attempts = 0
+
+    async def transient_provider(**_kwargs):
+        nonlocal actual_provider_attempts
+        actual_provider_attempts += 1
+        return 1, "", {}, "429 RESOURCE_EXHAUSTED"
+
+    gate = smoke.PaidSolverGate(smoke.APPROVED_CAP)
+
+    async def bounded_once(**kwargs):
+        return await gate.call(transient_provider, **kwargs)
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(agent, "_spawn_once", bounded_once)
+    monkeypatch.setattr(agent.settings, "rate_limit_max_retries", 4)
+    monkeypatch.setattr(agent.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(agent, "_rate_limit_delay", lambda _attempt: 0.0)
+
+    with pytest.raises(smoke.BudgetExceeded, match="two paid solver calls"):
+        await agent._spawn(
+            provider=agent.get_provider("gemini"),
+            model=smoke.SOLVER_MODEL,
+            prompt="bounded retry probe",
+            attachments=[],
+            transport="api",
+        )
+
+    assert gate.calls == 2
+    assert actual_provider_attempts == 2
+
+
+def test_paid_smoke_wraps_spawn_once_not_the_retry_driver():
+    """The live harness must count actual transport attempts, not solver calls."""
+    import inspect
+
+    source = inspect.getsource(smoke._run_paid_smoke)
+    assert "real_spawn_once = agent._spawn_once" in source
+    assert 'patch.object(agent, "_spawn_once", bounded_spawn_once)' in source
+    assert 'patch.object(agent, "_spawn",' not in source
+
+
 def test_all_five_acceptance_assertions_pass_for_the_literal_control_snapshot():
     """Breaking any acceptance invariant must make the pure verifier reject it."""
-    report = smoke.assert_acceptance(_passing_snapshot(), Decimal("0.20"))
+    report = smoke.assert_acceptance(_passing_snapshot(), smoke.APPROVED_CAP)
     assert report.total_cost_usd == Decimal("0.088")
     assert report.paid_calls == 2
 
@@ -167,7 +219,7 @@ def test_each_acceptance_category_fails_closed(change, message):
     """Each row names a production regression that the paid result must catch."""
     values = vars(_passing_snapshot()) | change
     with pytest.raises(smoke.AcceptanceFailure, match=message):
-        smoke.assert_acceptance(smoke.AcceptanceSnapshot(**values), Decimal("0.20"))
+        smoke.assert_acceptance(smoke.AcceptanceSnapshot(**values), smoke.APPROVED_CAP)
 
 
 def test_usage_assertion_rejects_zero_tokens_wrong_model_and_overspend():
@@ -194,5 +246,5 @@ def test_usage_assertion_rejects_zero_tokens_wrong_model_and_overspend():
     with pytest.raises(smoke.AcceptanceFailure, match="usage rows"):
         smoke.assert_acceptance(
             smoke.AcceptanceSnapshot(**(vars(base) | {"usage_rows": bad_rows})),
-            Decimal("0.20"),
+            smoke.APPROVED_CAP,
         )

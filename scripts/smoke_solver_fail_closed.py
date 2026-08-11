@@ -5,7 +5,8 @@ explicitly named scratch/test PostgreSQL database, reads one source extract in
 a read-only transaction through ``SOURCE_DB_URL``, stubs content generation and
 the judge, and permits exactly two real ``gemini-3.1-pro-preview`` transport
 calls.  The paid path is impossible to enter unless the operator supplies the
-separately-approved, exact gesture ``--max-cost-usd 0.20``.
+remaining-budget gesture ``--max-cost-usd 0.175376``.  The earlier gate run
+spent $0.024624 of the original $0.20 authorization.
 
 No production database receives jobs, phases, events, or usage rows.  The
 source connection executes ``SET TRANSACTION READ ONLY`` before its only
@@ -15,7 +16,8 @@ Run only after the separate spend approval::
 
     DATABASE_URL=postgresql+asyncpg://.../edu_scratch_solver_smoke \
     SOURCE_DB_URL=postgresql://readonly:.../.../edu_copy \
-      uv run python scripts/smoke_solver_fail_closed.py --max-cost-usd 0.20
+      PYTHONPATH=. uv run python scripts/smoke_solver_fail_closed.py \
+        --max-cost-usd 0.175376
 """
 
 from __future__ import annotations
@@ -36,7 +38,9 @@ from urllib.parse import urlsplit
 from unittest.mock import patch
 
 
-APPROVED_CAP = Decimal("0.20")
+TOTAL_APPROVED_CAP = Decimal("0.20")
+PRIOR_ACCEPTANCE_COST = Decimal("0.024624")
+APPROVED_CAP = TOTAL_APPROVED_CAP - PRIOR_ACCEPTANCE_COST
 MAX_PAID_CALLS = 2
 MAX_PROVIDER_PROMPT_BYTES = 25_000
 MAX_PROVIDER_OUTPUT_TOKENS = 2_048
@@ -162,7 +166,9 @@ class PaidSolverGate:
 
     def __init__(self, approved_cap: Decimal):
         if approved_cap != APPROVED_CAP:
-            raise PreflightError("paid smoke requires --max-cost-usd 0.20 exactly")
+            raise PreflightError(
+                "paid smoke requires --max-cost-usd 0.175376 exactly"
+            )
         self.calls = 0
 
     async def call(self, provider_call: Callable[..., Awaitable[Any]], **kwargs):
@@ -197,9 +203,11 @@ def _parse_preflight(argv: Sequence[str] | None, environ: Mapping[str, str]) -> 
     try:
         cap = Decimal(args.max_cost_usd) if args.max_cost_usd is not None else None
     except Exception as exc:  # decimal.InvalidOperation has a broad hierarchy
-        raise PreflightError("paid smoke requires --max-cost-usd 0.20 exactly") from exc
-    if args.max_cost_usd != "0.20" or cap != APPROVED_CAP:
-        raise PreflightError("paid smoke requires --max-cost-usd 0.20 exactly")
+        raise PreflightError(
+            "paid smoke requires --max-cost-usd 0.175376 exactly"
+        ) from exc
+    if args.max_cost_usd != "0.175376" or cap != APPROVED_CAP:
+        raise PreflightError("paid smoke requires --max-cost-usd 0.175376 exactly")
 
     database_url = environ.get("DATABASE_URL", "").strip()
     if not database_url:
@@ -499,10 +507,10 @@ async def _run_paid_smoke(preflight: Preflight) -> None:
     generation_counts = {blocked.job_id: 0, control.job_id: 0}
     mismatch_detections = 0
     real_run_phase = agent.run_phase
-    real_spawn = agent._spawn
+    real_spawn_once = agent._spawn_once
 
-    async def bounded_spawn(**kwargs):
-        return await paid_gate.call(real_spawn, **kwargs)
+    async def bounded_spawn_once(**kwargs):
+        return await paid_gate.call(real_spawn_once, **kwargs)
 
     async def routed_run_phase(**kwargs):
         nonlocal mismatch_detections
@@ -551,7 +559,7 @@ async def _run_paid_smoke(preflight: Preflight) -> None:
         pdf.write_bytes(b"%PDF-1.4 bounded solver smoke")
         with (
             patch.object(agent, "run_phase", routed_run_phase),
-            patch.object(agent, "_spawn", bounded_spawn),
+            patch.object(agent, "_spawn_once", bounded_spawn_once),
             patch.object(pipeline.book_fetch, "ensure_book_pdf_sync", lambda *_a, **_k: pdf),
             patch.object(events_bus, "publish", record_event),
             patch.object(events_bus, "close", no_close),
@@ -601,7 +609,8 @@ async def _run_paid_smoke(preflight: Preflight) -> None:
     report = assert_acceptance(snapshot, preflight.max_cost_usd)
     print(
         "PASS: persistent mismatch blocked; control done/ok; "
-        f"paid_calls={report.paid_calls}; cost=${report.total_cost_usd:.4f}; "
+        f"paid_calls={report.paid_calls}; cost=${report.total_cost_usd:.6f}; "
+        f"cumulative_cost=${PRIOR_ACCEPTANCE_COST + report.total_cost_usd:.6f}; "
         f"blocked_job={blocked.job_id}; control_job={control.job_id}"
     )
     assert control_rows["job_claim_token"] == str(control_lease.claim_token)

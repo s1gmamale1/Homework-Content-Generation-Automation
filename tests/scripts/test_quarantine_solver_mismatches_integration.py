@@ -89,6 +89,7 @@ async def _seed_job(
     archived=True,
     completed_at=NOW,
     mismatch=True,
+    retired=False,
 ):
     from app.db import SessionLocal
     from app.models.book import Book
@@ -121,8 +122,17 @@ async def _seed_job(
             subject=book.subject,
             status="done",
             provider="gemini",
-            model="gemini-2.5-flash",
+            model="gemini-3-flash-preview" if retired else "gemini-3.6-flash",
             transport="api",
+            extract_provider="gemini",
+            extract_model=("gemini-2.5-flash" if retired else "gemini-3.5-flash-lite"),
+            extract_transport="api",
+            judge_provider="gemini",
+            judge_model=("gemini-2.5-flash" if retired else "gemini-3.5-flash"),
+            judge_transport="api",
+            solver_provider="gemini",
+            solver_model="gemini-3.1-pro-preview",
+            solver_transport="api",
             output_language="uz",
             completed_at=completed_at,
             notion_archived_at=completed_at if archived else None,
@@ -215,6 +225,22 @@ async def test_dry_run_lists_counts_and_ids_without_writing(capsys):
     assert "plan-hash=" in out
 
 
+async def test_dry_run_reports_retired_jobs_but_excludes_them_from_plan(capsys):
+    from scripts.quarantine_solver_mismatches import run
+
+    current_job, _toc, _phases = await _seed_job()
+    retired_job, _toc2, _phases2 = await _seed_job(retired=True)
+    before = await _snapshot()
+
+    assert await run(database_url=os.environ["DATABASE_URL"]) == 0
+    assert await _snapshot() == before
+    out = capsys.readouterr().out
+    assert "eligible_current_tuple=1" in out
+    assert "blocked_retired_tuple=1" in out
+    assert f"eligible job={current_job}" in out
+    assert f"blocked-retired job={retired_job}" in out
+
+
 async def test_guarded_apply_is_atomic_retains_evidence_and_is_idempotent(tmp_path):
     from sqlalchemy import text
 
@@ -225,6 +251,7 @@ async def test_guarded_apply_is_atomic_retains_evidence_and_is_idempotent(tmp_pa
         phase_names=("memory-check", "boss-arena"), archived=True
     )
     clean_job_id, _clean_toc, clean_phase_ids = await _seed_job(mismatch=False)
+    retired_job_id, _retired_toc, retired_phase_ids = await _seed_job(retired=True)
     plan = await _load_plan()
     reviewed_hash = plan_hash(plan)
     manifest = tmp_path / "quarantine.json"
@@ -239,6 +266,7 @@ async def test_guarded_apply_is_atomic_retains_evidence_and_is_idempotent(tmp_pa
     payload = json.loads(manifest.read_text())
     assert payload["plan_hash"] == reviewed_hash
     assert payload["jobs"][0]["job_id"] == str(job_id)
+    assert {entry["job_id"] for entry in payload["jobs"]} == {str(job_id)}
 
     async with SessionLocal() as session:
         phases = (
@@ -273,6 +301,14 @@ async def test_guarded_apply_is_atomic_retains_evidence_and_is_idempotent(tmp_pa
             text("SELECT status FROM phase_outputs WHERE id=:id"),
             {"id": clean_phase_ids[0]},
         )
+        retired = await session.scalar(
+            text("SELECT status FROM homework_jobs WHERE id=:id"),
+            {"id": retired_job_id},
+        )
+        retired_phase = await session.scalar(
+            text("SELECT status FROM phase_outputs WHERE id=:id"),
+            {"id": retired_phase_ids[0]},
+        )
 
     assert {p.status for p in phases} == {"failed"}
     assert {p.solver_status for p in phases} == {"mismatch_blocked"}
@@ -292,6 +328,7 @@ async def test_guarded_apply_is_atomic_retains_evidence_and_is_idempotent(tmp_pa
     assert job.claim_token is None and job.claimed_at is None and job.claimed_by is None
     assert pointer == job_id
     assert clean == "done" and clean_phase == "done"
+    assert retired == "done" and retired_phase == "done"
 
     assert await _load_plan() == ()
     assert await run(

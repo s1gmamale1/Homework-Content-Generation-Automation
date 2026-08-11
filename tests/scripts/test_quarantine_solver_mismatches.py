@@ -41,6 +41,18 @@ def _job():
         notion_skip_reason=None,
         claim_token=TOKEN,
         notion_archived_job_id=ARCHIVED_JOB_ID,
+        provider="gemini",
+        model="gemini-3.6-flash",
+        transport="api",
+        extract_provider="gemini",
+        extract_model="gemini-3.5-flash-lite",
+        extract_transport="api",
+        judge_provider="gemini",
+        judge_model="gemini-3.5-flash",
+        judge_transport="api",
+        solver_provider="gemini",
+        solver_model="gemini-3.1-pro-preview",
+        solver_transport="api",
         phases=(_phase(),),
     )
 
@@ -146,6 +158,18 @@ def test_plan_hash_is_independent_of_job_and_phase_query_order():
         notion_skip_reason="not attempted",
         claim_token=None,
         notion_archived_job_id=None,
+        provider="gemini",
+        model="gemini-3.6-flash",
+        transport="api",
+        extract_provider="gemini",
+        extract_model="gemini-3.5-flash-lite",
+        extract_transport="api",
+        judge_provider="gemini",
+        judge_model="gemini-3.5-flash",
+        judge_transport="api",
+        solver_provider="gemini",
+        solver_model="gemini-3.1-pro-preview",
+        solver_transport="api",
         phases=(second_phase,),
     )
     multi = replace(first, phases=(first.phases[0], second_phase))
@@ -153,3 +177,29 @@ def test_plan_hash_is_independent_of_job_and_phase_query_order():
 
     assert plan_hash((first, second)) == plan_hash((second, first))
     assert plan_hash((multi,)) == plan_hash((reversed_multi,))
+
+
+def test_scope_splits_current_tuple_from_retired_models():
+    from scripts.quarantine_solver_mismatches import split_scope
+
+    current = _job()
+    retired = replace(
+        current,
+        job_id=UUID("20000000-0000-0000-0000-000000000099"),
+        extract_model="gemini-2.5-flash",
+    )
+    scope = split_scope((retired, current))
+
+    assert scope.eligible_current_tuple == (current,)
+    assert scope.blocked_retired_tuple == (retired,)
+
+
+def test_plan_hash_covers_the_current_role_tuple():
+    current = _job()
+    baseline = _hash_for(current)
+    variants = (
+        replace(current, model="gemini-3-flash-preview"),
+        replace(current, extract_model="gemini-2.5-flash"),
+        replace(current, judge_transport="inherit"),
+    )
+    assert all(_hash_for(variant) != baseline for variant in variants)

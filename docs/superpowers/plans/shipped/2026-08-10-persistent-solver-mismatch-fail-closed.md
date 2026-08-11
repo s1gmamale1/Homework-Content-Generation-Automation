@@ -676,7 +676,15 @@ git commit -m "feat(solver): surface blocked answer keys as failed work"
 
 ---
 
-### Task 7: Dry-Run Historical Quarantine for the Existing 31
+### Task 7: Dry-Run Historical Quarantine for Eligible Current-Tuple Rows
+
+> **Final-gate correction (implemented):** the read-only corpus still contains 31
+> `mismatch_shipped` jobs, but 26 pin at least one retired Gemini role. This lane
+> deliberately does not restamp them. The tool reports 5 `eligible_current_tuple`
+> and 26 `blocked_retired_tuple`; only the five current-tuple jobs enter the
+> plan hash, manifest, or apply transaction. All 12 role fields are part of the
+> expected snapshot. The 26 remain evidence for the separately filed
+> `solver-retired-mismatch-restamp-1` follow-up.
 
 **Files:**
 - Create: `scripts/quarantine_solver_mismatches.py`
@@ -738,9 +746,12 @@ Inside one transaction, re-read and re-hash the plan. Abort on any mismatch. Gro
 
 Patch network/model/Notion constructors to raise if called. Apply to a scratch fixture, assert zero calls, re-run dry-run and assert zero remaining candidates. A second apply with the old hash must abort without writes.
 
-- [ ] **Step 5: Pin the 31/5 production snapshot read-only**
+- [x] **Step 5: Pin and classify the 31/5 production snapshot read-only**
 
-Run the script without `--apply` against `edu_copy` and save the sanitized count/IDs into the implementation worklog or a research artifact. Expected at plan time is 31 total / 5 last-seven-days / 29 archived; if it changed, stop and review the new snapshot rather than forcing the old count.
+The final read-only run found 31 total / 5 last-seven-days / 29 archived, then
+classified them by executable role tuple: 5 current (all recent/archived) and
+26 retired (24 archived). Current plan hash:
+`25a684c41df0e90536b1d7058003ab6ff870ca4a7d2331a2fa795d31b6ae693f`.
 
 - [ ] **Step 6: Document the post-quarantine operator path**
 
@@ -795,7 +806,7 @@ The harness seeds one scratch `memory-check` job, stubs only content generation/
 
 ```bash
 DATABASE_URL="$SCRATCH_DATABASE_URL" SOURCE_DB_URL="$READ_ONLY_PRODUCTION_URL" \
-  uv run python scripts/smoke_solver_fail_closed.py --max-cost-usd 0.20
+  PYTHONPATH=. uv run python scripts/smoke_solver_fail_closed.py --max-cost-usd 0.20
 ```
 
 If either planted mismatch is not detected, stop and report the acceptance failure; do not reroll until green or loosen the bar. The solver is probabilistic, and hiding a miss would invalidate the safety claim.
@@ -822,7 +833,7 @@ Document:
 - true repair-path transients get bounded queue retry and phase reconciliation;
 - initial unavailable/refused remains advisory;
 - dashboard failed counts/watchers expose blocked lessons;
-- historical 31/5/29-archived snapshot and the DB-only quarantine posture;
+- historical 31/5/29-archived snapshot, its 5-current/26-retired split, and the DB-only eligible quarantine posture;
 - no claim that `major_shipped` became terminal.
 
 Reserve worklog/ROADMAP identifiers at execution time using the current counter protocol; do not reuse the plan-time next number.
@@ -857,8 +868,8 @@ The implementation agent must not self-merge.
 2. Run the additive 0053 migration on the head database first. Old workers safely continue writing old status values; new code cannot safely write `mismatch_blocked` before this step.
 3. Pull the final merged SHA on head and every worker, restart the head once (raising the worker-version floor), then restart/verify every worker against the new floor. Do not rebuild the frontend unless Task 6 changes bundled web assets; if it does, build once from final head.
 4. Run the deterministic scratch acceptance and one bounded live canary before reopening key-bearing phases broadly.
-5. Only after fleet health is clean, run the historical remediation dry-run. Review the live hash/scope. Run `--apply` as a separate operator gesture; it performs DB quarantine only.
-6. Retry quarantined jobs. Do not force-rearchive the 29 archived jobs until R26's production collision-repair sequence is complete and each job is clean/done.
+5. Only after fleet health is clean, run the historical remediation dry-run. Review the live hash/scope. Run `--apply` as a separate operator gesture; it performs DB quarantine only for exact current-tuple jobs and must report retired tuples without mutating them.
+6. Retry the five eligible quarantined jobs. Do not force-rearchive them until R26's production collision-repair sequence is complete and each job is clean/done. The 26 retired-tuple jobs require the separate in-place restamp lane first.
 
 Rollback:
 
@@ -869,7 +880,17 @@ Rollback:
 
 ## Plan Self-Review
 
-- **Spec coverage:** typed terminal outcome (Tasks 1/3), bounded transient retry and terminal exhaustion (Tasks 3/4/5), sibling/state consistency (Tasks 4/5), watcher/dashboard visibility (Task 6), cancel-wins/leases (Tasks 3-5), historical 31/5 remediation (Task 7), billed smoke estimate without spend (Task 8), collision refs and deploy/rollback ordering (global/Task 8).
+- **Spec coverage:** typed terminal outcome (Tasks 1/3), bounded transient retry and terminal exhaustion (Tasks 3/4/5), sibling/state consistency (Tasks 4/5), watcher/dashboard visibility (Task 6), cancel-wins/leases (Tasks 3-5), historical 5-current/26-retired classification and eligible remediation (Task 7), billed smoke (Task 8), collision refs and deploy/rollback ordering (global/Task 8).
+
+### Final acceptance correction (2026-08-11)
+
+The original paid gate wrapped `_spawn`, so a transient internal retry could
+have exceeded its two-call accounting. The shipped harness gates `_spawn_once`
+instead; a simulated repeated 429 proves the third actual attempt is rejected
+before provider transport. The one corrected billed run made exactly two calls,
+caught both planted mismatches, cost `$0.022020`, and left the control `done/ok`.
+Cumulative spend across the original and corrected runs is `$0.046644` of the
+approved `$0.20`; there were no production writes or model rerolls.
 - **Major-shipped exclusion:** explicitly pinned in Global Constraints and docs acceptance; no task edits judge terminal policy.
 - **No silent delivery:** phase failed before raise; job completion/archive event absence is tested in Tasks 5/6/8.
 - **No placeholder implementation:** every task names exact files, signatures, assertions, commands, and expected RED/GREEN behavior. The only triple-dot forms are valid Python tuple typing (`tuple[str, ...]`) and Git's three-dot diff syntax.

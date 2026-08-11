@@ -8,13 +8,17 @@ The default is a read-only dry run.  The sole mutating gesture is::
 deliberately imports no ``app.*`` module, never calls Notion or a model, and
 preserves every archival pointer/timestamp as evidence.
 
-After an operator applies a reviewed manifest, each affected job is ``failed``
-and visible through the normal retry UI.  Retry it in place so completed clean
-siblings stay cached and only the blocked phase regenerates.  A clean retry of
-an unarchived job may then archive normally.  A previously archived job must
-not be force-rearchived until the separately shipped R26 collision repair has
-actually been executed on production; only then use the existing guarded
-``retry-archive?force=true`` path.  This script itself never changes Notion.
+Only jobs pinned to the current four-role model/transport tuple are executable.
+Rows carrying retired Gemini models are reported as evidence but excluded from
+the plan hash, manifest, and writes; they need a separately designed in-place
+restamp path.  After an operator applies a reviewed eligible manifest, each
+affected job is ``failed`` and visible through the normal retry UI.  Retry it in
+place so completed clean siblings stay cached and only the blocked phase
+regenerates.  A clean retry of an unarchived job may then archive normally.  A
+previously archived job must not be force-rearchived until the separately
+shipped R26 collision repair has actually been executed on production; only
+then use the existing guarded ``retry-archive?force=true`` path.  This script
+itself never changes Notion.
 """
 
 from __future__ import annotations
@@ -41,6 +45,23 @@ DATABASE_URL_ERROR = (
 REMEDIATION_ERROR = (
     "historical quarantine: solver-confirmed answer-key mismatch was shipped"
 )
+CURRENT_ROLE_TUPLE = {
+    "provider": "gemini",
+    "model": "gemini-3.6-flash",
+    "transport": "api",
+    "extract_provider": "gemini",
+    "extract_model": "gemini-3.5-flash-lite",
+    "extract_transport": "api",
+    "judge_provider": "gemini",
+    "judge_model": "gemini-3.5-flash",
+    "judge_transport": "api",
+    "solver_provider": "gemini",
+    "solver_model": "gemini-3.1-pro-preview",
+    "solver_transport": "api",
+}
+RETIRED_GEMINI_MODELS = frozenset(
+    {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"}
+)
 
 
 class PreflightError(RuntimeError):
@@ -53,6 +74,10 @@ class PlanChangedError(RuntimeError):
 
 class ApplyStateDriftError(RuntimeError):
     """A guarded row did not retain the expected state."""
+
+
+class UnsupportedRoleTupleError(RuntimeError):
+    """A historical candidate is neither current nor a known retired tuple."""
 
 
 @dataclass(frozen=True)
@@ -88,7 +113,25 @@ class RemediationJob:
     notion_skip_reason: str | None
     claim_token: UUID | None
     notion_archived_job_id: UUID | None
+    provider: str
+    model: str
+    transport: str
+    extract_provider: str
+    extract_model: str
+    extract_transport: str
+    judge_provider: str
+    judge_model: str
+    judge_transport: str
+    solver_provider: str
+    solver_model: str
+    solver_transport: str
     phases: tuple[RemediationPhase, ...]
+
+
+@dataclass(frozen=True)
+class RemediationScope:
+    eligible_current_tuple: tuple[RemediationJob, ...]
+    blocked_retired_tuple: tuple[RemediationJob, ...]
 
 
 _CANDIDATE_SQL = """
@@ -106,6 +149,18 @@ SELECT po.id AS phase_output_id,
        j.notion_archived_at,
        j.notion_skip_reason,
        j.claim_token,
+       j.provider,
+       j.model,
+       j.transport,
+       j.extract_provider,
+       j.extract_model,
+       j.extract_transport,
+       j.judge_provider,
+       j.judge_model,
+       j.judge_transport,
+       j.solver_provider,
+       j.solver_model,
+       j.solver_transport,
        t.notion_archived_job_id
 FROM phase_outputs po
 JOIN homework_jobs j ON j.id = po.job_id
@@ -144,6 +199,10 @@ def _phase_state(phase: RemediationPhase) -> dict:
     }
 
 
+def _role_state(job: RemediationJob) -> dict[str, str]:
+    return {field: getattr(job, field) for field in CURRENT_ROLE_TUPLE}
+
+
 def _job_state(job: RemediationJob) -> dict:
     return {
         "job_id": str(job.job_id),
@@ -156,11 +215,35 @@ def _job_state(job: RemediationJob) -> dict:
         "notion_archived_job_id": (
             str(job.notion_archived_job_id) if job.notion_archived_job_id else None
         ),
+        **_role_state(job),
         "phases": sorted(
             (_phase_state(phase) for phase in job.phases),
             key=lambda phase: phase["phase_output_id"],
         ),
     }
+
+
+def split_scope(jobs: Sequence[RemediationJob]) -> RemediationScope:
+    """Separate executable current tuples from evidence-only retired tuples."""
+    eligible: list[RemediationJob] = []
+    retired: list[RemediationJob] = []
+    for job in sorted(jobs, key=lambda candidate: str(candidate.job_id)):
+        roles = _role_state(job)
+        if roles == CURRENT_ROLE_TUPLE:
+            eligible.append(job)
+            continue
+        has_retired_role = any(
+            roles[f"{prefix}provider"] == "gemini"
+            and roles[f"{prefix}model"] in RETIRED_GEMINI_MODELS
+            for prefix in ("", "extract_", "judge_", "solver_")
+        )
+        if has_retired_role:
+            retired.append(job)
+            continue
+        raise UnsupportedRoleTupleError(
+            f"job {job.job_id} has unsupported historical role tuple: {roles}"
+        )
+    return RemediationScope(tuple(eligible), tuple(retired))
 
 
 def expected_state(plan: Sequence[RemediationJob]) -> dict:
@@ -250,9 +333,9 @@ async def publish_staged_manifest(staged: StagedManifest) -> None:
     staged.temporary.unlink()
 
 
-async def load_plan(
+async def load_scope(
     conn: AsyncConnection, *, for_update: bool = False
-) -> tuple[RemediationJob, ...]:
+) -> RemediationScope:
     suffix = " FOR UPDATE OF po, j, t" if for_update else ""
     rows = (await conn.execute(text(_CANDIDATE_SQL + suffix))).mappings().all()
     by_job: dict[UUID, list] = {}
@@ -284,10 +367,29 @@ async def load_plan(
                 notion_skip_reason=first["notion_skip_reason"],
                 claim_token=first["claim_token"],
                 notion_archived_job_id=first["notion_archived_job_id"],
+                provider=first["provider"],
+                model=first["model"],
+                transport=first["transport"],
+                extract_provider=first["extract_provider"],
+                extract_model=first["extract_model"],
+                extract_transport=first["extract_transport"],
+                judge_provider=first["judge_provider"],
+                judge_model=first["judge_model"],
+                judge_transport=first["judge_transport"],
+                solver_provider=first["solver_provider"],
+                solver_model=first["solver_model"],
+                solver_transport=first["solver_transport"],
                 phases=phases,
             )
         )
-    return tuple(sorted(jobs, key=lambda job: str(job.job_id)))
+    return split_scope(jobs)
+
+
+async def load_plan(
+    conn: AsyncConnection, *, for_update: bool = False
+) -> tuple[RemediationJob, ...]:
+    """Load only the executable current-tuple plan (compatibility helper)."""
+    return (await load_scope(conn, for_update=for_update)).eligible_current_tuple
 
 
 _PHASE_UPDATE = text(
@@ -323,6 +425,18 @@ _JOB_UPDATE = text(
        AND j.notion_archived_at IS NOT DISTINCT FROM :notion_archived_at
        AND j.notion_skip_reason IS NOT DISTINCT FROM :notion_skip_reason
        AND j.claim_token IS NOT DISTINCT FROM :claim_token
+       AND j.provider = :provider
+       AND j.model = :model
+       AND j.transport = :transport
+       AND j.extract_provider = :extract_provider
+       AND j.extract_model = :extract_model
+       AND j.extract_transport = :extract_transport
+       AND j.judge_provider = :judge_provider
+       AND j.judge_model = :judge_model
+       AND j.judge_transport = :judge_transport
+       AND j.solver_provider = :solver_provider
+       AND j.solver_model = :solver_model
+       AND j.solver_transport = :solver_transport
        AND EXISTS (
            SELECT 1
              FROM toc_entries AS t
@@ -363,6 +477,7 @@ async def apply_plan(conn: AsyncConnection, plan: Sequence[RemediationJob]) -> N
                 "notion_skip_reason": job.notion_skip_reason,
                 "claim_token": job.claim_token,
                 "notion_archived_job_id": job.notion_archived_job_id,
+                **_role_state(job),
                 "error_message": REMEDIATION_ERROR,
             },
         )
@@ -392,10 +507,11 @@ def _summary(plan: Sequence[RemediationJob]) -> dict[str, int]:
     }
 
 
-def print_plan(plan: Sequence[RemediationJob]) -> None:
+def print_scope(scope: RemediationScope) -> None:
+    plan = scope.eligible_current_tuple
     for job in plan:
         print(
-            f"job={job.job_id} status={job.job_status} "
+            f"eligible job={job.job_id} status={job.job_status} "
             f"archived={job.notion_archived_at is not None}"
         )
         for phase in job.phases:
@@ -403,9 +519,27 @@ def print_plan(plan: Sequence[RemediationJob]) -> None:
                 f"  phase={phase.phase_output_id} name={phase.phase_name} "
                 f"solver={phase.solver_status}"
             )
+    for job in scope.blocked_retired_tuple:
+        print(
+            f"blocked-retired job={job.job_id} status={job.job_status} "
+            f"roles={json.dumps(_role_state(job), sort_keys=True)}"
+        )
     summary = _summary(plan)
-    print(" ".join(f"{key}={value}" for key, value in summary.items()))
+    category_counts = {
+        "eligible_current_tuple": len(scope.eligible_current_tuple),
+        "blocked_retired_tuple": len(scope.blocked_retired_tuple),
+    }
+    print(
+        " ".join(
+            f"{key}={value}" for key, value in {**summary, **category_counts}.items()
+        )
+    )
     print(f"plan-hash={plan_hash(plan)}")
+
+
+def print_plan(plan: Sequence[RemediationJob]) -> None:
+    """Compatibility reporter for an already-eligible plan."""
+    print_scope(RemediationScope(tuple(plan), ()))
 
 
 async def run(
@@ -439,14 +573,15 @@ async def run(
                 # Make the production dry-run structurally read-only at the
                 # PostgreSQL transaction boundary, not merely by convention.
                 await conn.execute(text("SET TRANSACTION READ ONLY"))
-                plan = await load_plan(conn)
-            print_plan(plan)
+                scope = await load_scope(conn)
+            print_scope(scope)
             print("DRY RUN — nothing was written")
             return 0
 
         try:
             async with engine.begin() as conn:
-                plan = await load_plan(conn, for_update=True)
+                scope = await load_scope(conn, for_update=True)
+                plan = scope.eligible_current_tuple
                 fresh_hash = plan_hash(plan)
                 if fresh_hash != expect_plan_hash:
                     raise PlanChangedError(
