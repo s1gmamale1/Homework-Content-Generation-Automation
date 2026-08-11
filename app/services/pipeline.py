@@ -1473,7 +1473,6 @@ async def _execute_teacher_deck_phase(
         # provider's default model, which errs toward a stronger judge.
         return model if prod == provider else None
 
-    warnings: list[str] = []
     judge_status: Optional[str] = None
     serialized = serialize_deck_for_fidelity(deck)
     _jp, _jm = model_tiers.resolve_judge(
@@ -1489,6 +1488,30 @@ async def _execute_teacher_deck_phase(
         contract_override=get_teacher_deck_fidelity_contract(),
         output_language=output_language,
     )
+    # Retry-once on unavailable: mirrors the content lane (pipeline.py
+    # ~2228-2246) — a transient CLI/parse failure (or timeout degraded by
+    # _judge_with_timeout) is worth one free retry. Auth errors never reach
+    # here — phase_judge re-raises them before degrading to unavailable — so
+    # retrying unavailable is always safe. A content-policy refusal
+    # (outcome.refused) is recorded distinctly and is NOT retried — it won't
+    # self-heal. Unlike the content lane's retry, contract_override is passed
+    # again here: teacher-deck has no `_general/teacher-deck.md` for
+    # get_prompt to fall back to, so omitting it would make the retry always
+    # degrade instead of actually re-judging.
+    if not outcome.available and not outcome.refused:
+        logger.info(
+            f"[job {job_id}] teacher-deck judge unavailable on first attempt — retrying once"
+        )
+        outcome = await _judge_with_timeout(
+            subject=subject, phase_name="teacher-deck", output_md=serialized,
+            lesson_context=lesson_context, prior_outputs={},
+            gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+            judge_provider=_jp, judge_model=_jm,
+            homework_job_id=job_id, phase_output_id=po_id,
+            transport=judge_transport,
+            contract_override=get_teacher_deck_fidelity_contract(),
+            output_language=output_language,
+        )
     # Regenerate ONLY on a MAJOR fidelity issue; bounded by
     # settings.max_judge_regens (default 1 → exactly one regeneration).
     for _regen_attempt in range(settings.max_judge_regens):

@@ -13,16 +13,32 @@ never trigger a false-positive regen.
 Included (facts a generator could get wrong about the world):
   - objectives (all three fields)
   - core_idea.statement + .elaboration
-  - each stage's points (title/detail) and screen_text
+  - each stage's teacher_action, points (title/detail), and screen_text
   - each quiz question + option texts + correct_label
   - each answer_key correct_label + explanation
+  - conclusion.questions
+
+`teacher_action` is unconstrained prose the teacher says aloud and CAN carry a
+fabricated fact (e.g. a wrong date cited mid-lecture) — it belongs with the
+other fact-bearing fields. `student_action` describes what students DO
+(minimal fact surface) and stays excluded. Including teacher_action is safe
+against false positives: the fidelity contract instructs the judge to flag
+only CONTRADICTIONS of the lesson context and to ignore teaching/structure
+numbers, so ordinary "ask a question" / "collect notebooks" prose never
+triggers a regen.
 
 Excluded (process/teaching chrome, not claims about the world):
   - meta / passport (grade, timings, method/materials labels)
   - lesson_map (minutes)
-  - stage.index / .minutes / .badge / .teacher_action / .student_action
-  - pair_work / conclusion (practice prompts, not source facts)
+  - stage.index / .minutes / .badge / .student_action
+  - pair_work (invented-but-fictional practice content, not source facts)
   - rubric (scoring chrome)
+
+This list must stay in lockstep with
+`prompts/_general/structured/teacher-deck.fidelity.md`'s "What you are
+grading" section — that contract names exactly the sections emitted here, no
+more, no less; the judge should never be told it's grading a section this
+serializer doesn't actually show it.
 
 Pure function — no I/O, unit-testable in isolation.
 """
@@ -48,6 +64,7 @@ def serialize_deck_for_fidelity(deck: TeacherDeck) -> str:
 
     lines.append("## Stages")
     for stage in deck.stages:
+        lines.append(f"- {stage.teacher_action}")
         for point in stage.points:
             lines.append(f"- {point.title}: {point.detail}")
         if stage.screen_text:
@@ -65,5 +82,10 @@ def serialize_deck_for_fidelity(deck: TeacherDeck) -> str:
     lines.append("## Answer key")
     for a in deck.answer_key:
         lines.append(f"A{a.number} ({a.correct_label}): {a.explanation}")
+    lines.append("")
+
+    lines.append("## Conclusion")
+    for question in deck.conclusion.questions:
+        lines.append(f"- {question}")
 
     return "\n".join(lines)

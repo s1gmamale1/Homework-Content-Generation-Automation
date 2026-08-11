@@ -7,13 +7,17 @@ the deck itself is JSON, not the judge's usual markdown contract.
 
 ## What you are grading
 
-You will be shown a **serialized PLAIN-TEXT view of the deck** (its stages, quiz, answer
-key, pair work, conclusion, and rubric flattened to readable text), NOT the raw JSON. Grade
-that plain-text serialization against the LESSON CONTEXT for factual fidelity. Do not comment
-on JSON formatting, key names, or schema shape at all — that is validated elsewhere, before
-you ever see this output. **Never require or expect JSON output from this review; you are
-reading and grading plain text, and nothing in this contract should be read as demanding a
-JSON response from the generator.**
+You will be shown a **serialized PLAIN-TEXT view of the deck** — its objectives, core idea,
+each stage's teacher narration (what the teacher says/does aloud) and content points, the
+quiz, the answer key, and the conclusion questions, flattened to readable text — NOT the raw
+JSON. **Pair work and the rubric are deliberately NOT included in what you're shown**: pair
+work is invented-but-fictional practice content (see "Also not defects" below) and the rubric
+is scoring chrome, neither is a claim about the world, so don't expect or ask for them. Grade
+the plain-text serialization you ARE shown against the LESSON CONTEXT for factual fidelity.
+Do not comment on JSON formatting, key names, or schema shape at all — that is validated
+elsewhere, before you ever see this output. **Never require or expect JSON output from this
+review; you are reading and grading plain text, and nothing in this contract should be read
+as demanding a JSON response from the generator.**
 
 ## The one thing that matters: contradiction vs absence
 
@@ -36,8 +40,6 @@ count of real things) and that claim contradicts the LESSON CONTEXT.
 
 ## Also not defects
 
-- Invented but clearly-fictional practice content (a made-up example scenario for the pair
-  work) is expected authoring, not a fidelity violation.
 - The stage-3 video observation task naming specific names/dates from the lesson is REQUIRED
   by the authoring contract — do not flag it as "inventing" facts when those names/dates are
   genuinely present in the LESSON CONTEXT; only flag it if it names something that is NOT in

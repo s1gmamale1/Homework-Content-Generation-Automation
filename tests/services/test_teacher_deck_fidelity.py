@@ -74,12 +74,20 @@ def test_serializer_contains_fact_bearing_content_and_excludes_chrome():
             assert opt.text in out
     for a in deck.answer_key:
         assert a.explanation in out
-
-    # Pure structural/teaching chrome does NOT survive.
-    assert "teacher_only" not in out          # badge literal
-    assert "ekranga" not in out                # badge literal
+    for question in deck.conclusion.questions:
+        assert question in out
+    # teacher_action is unconstrained spoken prose that CAN carry a
+    # fabricated fact — included, unlike student_action (below).
     for stage in deck.stages:
-        assert stage.teacher_action not in out
+        assert stage.teacher_action in out
+
+    # Pure structural/teaching chrome does NOT survive. ("teacher_only" is the
+    # badge LITERAL — an English identifier, distinct from the real Uzbek word
+    # "ekranga" ["onto the screen"] that legitimately appears in some
+    # teacher_action prose now that teacher_action is included; the badge
+    # FIELD is still never rendered, so no separate check is needed for it.)
+    assert "teacher_only" not in out
+    for stage in deck.stages:
         assert stage.student_action not in out
     # Rubric scoring chrome (component detail text is distinctive, doesn't
     # appear anywhere else in the deck).
@@ -87,6 +95,22 @@ def test_serializer_contains_fact_bearing_content_and_excludes_chrome():
         assert comp.detail not in out
     for item in deck.lesson_map:
         assert item.description not in out
+    # Note: this fixture's stage-6 `screen_text` deliberately restates the
+    # pair_work prompts verbatim (the screen shows what the pair activity
+    # asks) — that's WHY they're readable in `out`, via the included
+    # screen_text field, not because pair_work itself is serialized. No
+    # separate "## Pair work" section is emitted (see field-coverage test
+    # below), matching the fidelity contract's "not included" statement.
+
+
+def test_serializer_emits_no_pair_work_or_rubric_section():
+    """Structural guard (independent of fixture text overlap): pair_work and
+    rubric never get their own section, matching the fidelity contract's
+    'not included in what you're shown' statement."""
+    out = serialize_deck_for_fidelity(_load_deck())
+    assert "## Pair work" not in out
+    assert "## Rubric" not in out
+    assert "## Conclusion" in out
 
 
 def test_serializer_is_a_pure_function():
@@ -366,6 +390,48 @@ async def test_api_auth_error_from_judge_propagates_and_fails_job(patch_io, monk
         await pipeline._execute_one_phase(**_make_kwargs(transport="api", judge_transport="api"))
 
     # The job must be marked failed — never degraded to a silent "done".
+    statuses = [s for s, _ in patch_io.set_status_calls]
+    assert "done" not in statuses
+    assert any(s == "failed" for s, _ in patch_io.jobs_set_status_calls)
+
+
+async def test_api_auth_error_during_regen_rejudge_propagates_and_fails_job(
+    patch_io, monkeypatch,
+):
+    """Distinct from the INITIAL-judge auth test above: here the FIRST judge
+    call succeeds and finds a major issue (triggering the regen), the regen's
+    deck generation succeeds, but the POST-REGEN re-judge hits an api-auth
+    error. That must still propagate (job fails) rather than shipping the
+    regenerated-but-unverified deck under the fail-open regen-failure path —
+    exercises the regen loop's own `transport == "api"` auth branch, not the
+    one guarding the initial judge call."""
+    original = _load_deck()
+    regenerated = _mutated_deck(objectives={
+        "bilib_oladi": "REGENERATED after major-issue feedback.",
+        "qila_oladi": original.objectives.qila_oladi,
+        "tushunadi": original.objectives.tushunadi,
+    })
+    patch_io.run_phase_results = [_phase_result(original), _phase_result(regenerated)]
+
+    calls = {"n": 0}
+
+    async def fake_judge(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return phase_judge.JudgeOutcome(
+                available=True, passed=False,
+                warnings=["[major] answer_key[3] contradicts extract"],
+                feedback="Fix answer_key[3].", has_major=True,
+            )
+        # Second call: the POST-REGEN re-judge hits an auth failure.
+        raise RuntimeError("401 Unauthorized: invalid api key")
+    monkeypatch.setattr(pipeline.phase_judge, "judge", fake_judge)
+
+    with pytest.raises(RuntimeError, match="401"):
+        await pipeline._execute_one_phase(**_make_kwargs(transport="api", judge_transport="api"))
+
+    assert calls["n"] == 2  # initial judge + the post-regen re-judge that raised
+    # The regenerated (unverified) deck must NEVER be shipped as `done`.
     statuses = [s for s, _ in patch_io.set_status_calls]
     assert "done" not in statuses
     assert any(s == "failed" for s, _ in patch_io.jobs_set_status_calls)
