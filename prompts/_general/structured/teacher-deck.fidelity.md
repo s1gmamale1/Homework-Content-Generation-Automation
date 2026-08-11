@@ -1,9 +1,9 @@
 # Teacher Material Deck — fidelity contract (judge-only, via `contract_override`)
 
-This is NOT an authoring prompt. It is the CONTRACT the judge uses to grade an already
--generated teacher deck. It is never reachable through the normal phase-name prompt lookup
-(`get_prompt`) — it is passed explicitly as `contract_override` because the deck itself is
-JSON, not the judge's usual markdown contract.
+This is NOT an authoring prompt. It is the CONTRACT the judge uses to grade an
+already-generated teacher deck. It is never reachable through the normal phase-name
+prompt lookup (`get_prompt`) — it is passed explicitly as `contract_override` because
+the deck itself is JSON, not the judge's usual markdown contract.
 
 ## What you are grading
 

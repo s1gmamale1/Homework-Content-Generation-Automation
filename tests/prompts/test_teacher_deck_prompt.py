@@ -33,6 +33,38 @@ def test_teacher_deck_structured_prompt_has_facts_only_directive():
     assert "timing" in low or "option count" in low or "structure" in low
 
 
+def test_teacher_deck_structured_prompt_guides_all_required_front_matter_fields():
+    """Fix A (review round 1): the model only sees the bare `model_json_schema()`
+    (no field `description=`s) and Task 6 fails the job loudly on schema-validation
+    exhaustion — so every REQUIRED top-level block needs prose guidance here, not
+    just the stage-by-stage plan."""
+    body = prompts.get_structured_prompt("history", "teacher-deck")
+    for field in (
+        "meta", "passport", "objectives", "core_idea", "lesson_map",
+        "subject_label", "topic_number", "duration_min", "video_ref",
+        "fan_sinf", "mavzu", "dars_turi", "metod", "kerakli_vosita", "baholash",
+        "bilib_oladi", "qila_oladi", "tushunadi",
+        "statement", "elaboration",
+    ):
+        assert field in body, f"missing guidance for required field {field!r}"
+
+
+def test_teacher_deck_structured_prompt_lesson_map_distinct_from_stages():
+    body = prompts.get_structured_prompt("history", "teacher-deck")
+    low = body.lower()
+    assert "lesson_map" in low
+    assert "separate from" in low or "distinct from" in low
+    # lesson_map carries its own independent 45-minute total, same as stages
+    assert low.count("sum to **45**") >= 1 or "must sum to" in low
+
+
+def test_teacher_deck_structured_prompt_screen_text_badge_rule():
+    body = prompts.get_structured_prompt("history", "teacher-deck")
+    low = body.lower()
+    assert "teacher_only" in low and "screen_text" in low
+    assert "no `screen_text`" in low or "never carry `screen_text`" in low
+
+
 def test_teacher_deck_structured_prompt_has_45_min_7_stage_structure():
     body = prompts.get_structured_prompt("history", "teacher-deck")
     assert "45" in body
@@ -96,5 +128,5 @@ def test_teacher_deck_not_reachable_via_get_prompt():
     "teacher-deck" — neither the authoring prompt nor the fidelity contract
     lives where `get_prompt` looks, so the judge is forced to receive the
     fidelity contract explicitly via `contract_override`."""
-    with pytest.raises(Exception):
+    with pytest.raises(KeyError):
         prompts.get_prompt("history", "teacher-deck")

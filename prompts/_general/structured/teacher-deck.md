@@ -12,10 +12,41 @@ the context — if something isn't there, don't state it. This does NOT apply to
 and structure numbers you are asked to set yourself (stage timings, quiz option counts,
 rubric points) — those are yours to author per the shape below, not facts you look up.
 
-## Deck shape
+## Front matter (meta, passport, objectives, core_idea)
+
+Every deck opens with four required blocks, in this order, before the stage-by-stage plan:
+
+- **`meta`** — the deck's header data: `subject_label`, `grade`, `topic_number`, `topic_title`,
+  `duration_min` (always **45**), `lesson_type` (a "Yangi bilim berish" — new-knowledge —
+  style lesson type), `method` (the lesson's method steps, e.g. Video -> tahlil -> kviz ->
+  juftlik), `materials` (what the teacher needs — video, screen, worksheets), and `video_ref`
+  (the Akademiya video used in stage 3).
+- **`passport`** — the lesson's 6-field passport card (template slide 2): `fan_sinf` (subject +
+  grade), `mavzu` (topic), `dars_turi` (lesson type), `metod` (method), `kerakli_vosita`
+  (materials), `baholash` (assessment approach).
+- **`objectives`** — the lesson's Bloom-style objectives (template slide 3): `bilib_oladi`
+  (will know), `qila_oladi` (will be able to do), `tushunadi` (will understand).
+- **`core_idea`** — the lesson's single big idea (template slide 4): a one-line `statement`
+  plus a short `elaboration` expanding on it. Every later stage, quiz question, and reflection
+  should trace back to this idea.
+
+## Lesson map (overview) vs stages (detail)
+
+`lesson_map` is a REQUIRED array, SEPARATE from `stages` — it is the compact minute-by-minute
+overview table (template slide 5, "Dars xaritasi"), not the detailed stage-by-stage plan below.
+It has exactly 7 entries, one per stage, each with `index`, `title`, a one-line `description`,
+and `minutes` — and its `minutes` must sum to **45**, same total as `stages`. Author it as the
+short summary version of the `stages` section that follows; keep the two consistent (same 7
+stages, same minute split, same order) but `lesson_map`'s `description` stays to one line while
+`stages` carries the full detail.
+
+## Stages (detail)
 
 The deck is a **45-minute** lesson plan in exactly **7 stages**, minutes in this order:
 **3 + 3 + 9 + 9 + 8 + 9 + 4 = 45**.
+
+`badge: teacher_only` stages never carry `screen_text` (leave it unset); only `badge: ekranga`
+stages carry `screen_text` — the line the teacher puts on the screen for the whole class.
 
 - **Stage 1 — Tashkiliy qism (3 min).** `badge: teacher_only`. Roll call, greeting, framing
   today's topic. Teacher-only — no `screen_text`.
