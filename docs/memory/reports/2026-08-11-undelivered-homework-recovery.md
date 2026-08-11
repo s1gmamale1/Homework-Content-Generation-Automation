@@ -76,6 +76,79 @@ no stamps yet are 100% delivered; two grade-9 kimyo jobs likewise).
 
 ---
 
+## Audited truth — RU, all grades, 2026-08-11
+
+Seven parallel read-only audits (DB + live Notion), **1,298 done RU jobs**.
+
+### Phase completeness: zero defects, and zero legacy shortfalls
+
+| grade | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+|---|---|---|---|---|---|---|---|
+| done jobs | 200 | 175 | 179 | 227 | 217 | 172 | 128 |
+| all exactly 11 | yes | yes | yes | yes | yes | yes | yes |
+
+Unlike UZ, RU has **no pre-0067 shortfalls at all** — all RU generation post-dates the
+all-games flip. RU also has almost no duplicate generation (G5/G7/G9/G10/G11 are strictly
+one done job per lesson).
+
+### Delivery: ~82 real gaps, dominated by one unmapped subject
+
+| grade | genuinely missing | note |
+|---|---|---|
+| 5 | 28 → **~1 real** | 27 are repeated rubric rows (`Вспомните` ×9, `Подумайте…` ×12, `Текстовые задачи` ×6); one copy of each IS delivered |
+| 6 | **60 biology** + 24 matematika → **60 real** | the 24 are rubric rows; biology never archived (unmapped) |
+| 7 | 0 | Notion has **+2 duplicate pages** in Алгебра (concurrent `find_or_create` race, same-minute `created_time`) |
+| 8 | **7** | 6 history (stale worker env) + 1 geometry topic |
+| 9 | **11 + 2 partial** | 9 no page, 2 pages truncated to 3/5 and 1/5 sections |
+| 10 | **1** | `ПРОЕКТНАЯ РАБОТА` title collision, pre-#120 |
+| 11 | 0 | 128/128, full 1:1 title identity |
+
+### Биология 6 — definitive: never written, not lost
+
+All 60 jobs carry `notion_skip_reason = "no Notion page for language=ru biology|6"`; NULL
+archive stamps; NULL `notion_homework_page_id`; the Notion page has NO container; a
+workspace-wide search for three distinct lesson titles found nothing homework-shaped.
+**Re-run the archiver — there is nothing to restore.** Page id (harvested, still unmapped):
+`39c99838-1c76-80b0-9e4e-f2a9881b2f19`.
+
+### ⚠️ Recovery hazards — read before any push
+
+1. **Re-archiving repeated-title rows creates DUPLICATES, not clobbers.** `find_or_create`
+   (`page_creator.py:19`) reuses a child whose lowercased title matches, but #120's
+   `resolve_lesson_title` now suffixes colliding titles (`· p.52 · e0751876`), so a re-push
+   will NOT match the existing bare-title page — it creates a second one. ~51 RU rubric rows
+   across G5/G6 are in this state. Decide deliberately whether to push them at all.
+2. **Some lessons are delivered but the DB write-back failed** — re-archiving them
+   DUPLICATES. Known: RU biology-11 `d5e63646` (page created the same minute the job
+   completed); 3 RU matematika-5 rows live in Notion while their jobs still carry a skip
+   reason. **Remedy is backfill the pointer, NOT re-archive.**
+3. **`NOTION_SUBJECT_PAGES` on the HEAD has no `ru:*|6` keys.** Any API-triggered
+   re-archive runs on the head and will silently skip RU grade-6 entirely.
+4. **10 RU geometry-8 pages are permanently DELETED** (`ObjectNotFound`, not trashed —
+   confirmed against 4 clean control probes). 9 were duplicates of an already-delivered
+   book; real loss is 1 topic.
+5. **Partial pages exist.** Two RU history-9 lessons have pages with only 3/5 and 1/5
+   sections. A page-count or title diff calls them delivered. `notion_archived_at IS NULL`
+   is what distinguishes them.
+
+### Remedy classes (they are NOT interchangeable)
+
+| class | scope |
+|---|---|
+| map key + re-archive | 60 RU biology-6 |
+| plain re-archive | 6 RU history-8 (stale env), 11 RU history/biology-9, 1 RU algebra-10 |
+| backfill DB pointer only | RU biology-11, 3 RU matematika-5 |
+| restore from Notion trash | 36 UZ math-algebra-11 |
+| unrecoverable | 1 RU geometry-8 topic |
+| do not push (rubric rows) | ~51 RU G5/G6 |
+
+### Cross-language misrouting (2 confirmed, both duplicates not losses)
+
+A `ru` biology-11 page sits in the **UZ** Biologiya container; a `uz` algebra-9 page sits in
+the **RU** Алгебра container. Both have intact originals in their correct tree.
+
+---
+
 # ORIGINAL (UNVERIFIED) — RU figures below were produced by the buggy crawl
 
 ## Inventory (DB view: a `done` job exists, no archive stamp)
