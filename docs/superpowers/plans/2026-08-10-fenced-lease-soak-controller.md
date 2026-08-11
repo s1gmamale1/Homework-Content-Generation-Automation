@@ -543,7 +543,7 @@ Expected: failures because the contracts and attestation helpers do not exist.
 
 - [ ] **Step 5: Implement exact models and four-command CLI**
 
-Use `extra="forbid"` on every persisted model. Normalize all UUID lists by rejecting duplicates, not silently deduplicating them. Validate `run_id` against `^[a-z0-9][a-z0-9-]{0,44}$` (45 characters keeps both pause reasons inside `String(64)`), `expected_git_sha` against `^[0-9a-f]{7,40}$`, `expected_code_version > 0`, `expected_db_revision` against `^[0-9a-z][0-9a-z_]{0,127}$`, validate `since.tzinfo`, convert to UTC, require `target_running > 0`, require `db_preflight_connection_limit < db_hard_stop_connection_limit`, require `approved_incremental_cost_usd > 0`, and require all PDF SHA-256 values to match `^[0-9a-f]{64}$`. The module must not define a baked-in expected SHA, code-version, or database-revision constant; all three come only from `SoakScope`. `redacted_model_dump` recursively removes values whose field names match secret-bearing names (`gemini_api_key`, `api_key`, `token`, `secret`, `password`, `database_url`) while explicitly retaining the safe contract fields `credential_fingerprint`, `forbidden_notion_mapping_keys`, and `claim_token`.
+Use `extra="forbid"` on every persisted model. Normalize all UUID lists by rejecting duplicates, not silently deduplicating them. Validate `run_id` against `^[a-z0-9][a-z0-9-]{0,44}$` (45 characters keeps both pause reasons inside `String(64)`), `expected_git_sha` against `^[0-9a-f]{7,40}$`, `expected_code_version > 0`, `expected_db_revision` against `^[0-9a-z][0-9a-z_]{0,127}$`, validate `since.tzinfo`, convert to UTC, require `target_running > 0`, require `db_preflight_connection_limit < db_hard_stop_connection_limit`, require `approved_incremental_cost_usd > 0`, and require all PDF SHA-256 values to match `^[0-9a-f]{64}$`. The module must not define a baked-in expected SHA, code-version, or database-revision constant; all three come only from `SoakScope`. `redacted_model_dump` recursively removes values whose field names match secret-bearing names (`gemini_api_key`, `api_key`, `token`, `secret`, `password`, `database_url`) while explicitly retaining the safe contract fields `credential_fingerprint`, `forbidden_notion_mapping_keys`, and `claim_token`. Free-text job, phase, usage, and validation errors persist only an error class plus SHA-256 digest—never raw or sanitized excerpts.
 
 The CLI surface is exact:
 
@@ -867,7 +867,7 @@ git commit -m "feat(soak): add fail-closed read-only preflight"
 - Produces `evaluate_runtime(scope, attestation, raw, previous_samples) -> list[Finding]`.
 - Produces `price_scoped_usage(rows) -> UsageCost` using `app.services.pricing.cost_usd`.
 - Produces `classify_error(text: str) -> ErrorClass | None` with stable values `provider_429`, `slot_exhaustion`, `auth`, `attempt_timeout`, `network`, and `other`.
-- Findings distinguish `hard_stop=True` from `stage_failure=True`. Hard stops trigger the armed circuit breaker; quality failures quarantine the stage but allow paid work already in flight to finish.
+- Findings distinguish `hard_stop=True` from `stage_failure=True`. Hard stops trigger the armed circuit breaker immediately. Quality failures latch while paid work already in flight finishes under the live watcher; at terminal they fail the read-only stage or trigger the armed exact-scope pause.
 
 - [ ] **Step 1: Write error/cost RED tests**
 
@@ -987,7 +987,7 @@ For a clean completed stage:
 - exact operation/model routing matches `expected_models_by_operation_prefix`: exact keys `phase.run`, `lesson.extract`, `lesson.extract.coverage`, and `lesson.extract.verify`, plus prefixes `judge:` and `solve:`; any unknown operation remains fail-closed;
 - cumulative scoped cost is below the approved cap;
 - every scoped job has no Notion stamp and has a non-empty skip reason;
-- `major_shipped`, `major_regen_failed`, solver mismatch, or validation corruption marks the stage failed for distribution but is not an emergency pause unless it accompanies lease/token corruption.
+- `major_shipped`, `major_regen_failed`, solver mismatch, or validation corruption latches the stage as failed for distribution. It does not interrupt in-flight jobs, but an armed watcher pauses the exact scope once all scoped jobs are terminal so escalation cannot proceed accidentally.
 
 Calculate cost in Python with `pricing.cost_usd`, never a hand-maintained SQL rate table. Preserve raw token counts/model names in evidence but not provider envelopes.
 
@@ -1090,7 +1090,7 @@ Rules:
 - On first terminal sample, start the settle clock. Any new lease event, usage row, phase change, heartbeat breach, or finding resets the settle clock.
 - A stage cannot pass unless the observed running peak reached its target.
 - On completion, write the summary to a same-directory temporary file, flush/fsync, and `os.replace` it into place.
-- On SIGINT/SIGTERM, write `verdict="incomplete"`, preserve samples, and exit 5. Do not invoke the stopper merely because the operator ended the monitor.
+- Before `READY_TO_RELEASE`, SIGINT/SIGTERM writes `verdict="incomplete"`, preserves samples, and exits 5 without mutation. From the instant release authorization is emitted, an armed watcher shields and completes the exact-scope pause on cancellation or operational failure; a read-only watcher still records an incomplete/error verdict without mutation.
 - On any hard finding, write the offending sample and summary before returning the hard-stop exit code.
 
 - [ ] **Step 4: Run green watch tests**
@@ -1498,7 +1498,7 @@ f087fb01-0c9d-4762-9d14-2898d7f30e67
 
 Use English output on these Russian math/geometry sources only after every participating attestation proves the corresponding English Notion mapping absent and the same PDF checksum present. Do not force-regenerate the existing Russian jobs.
 
-Hard-stop triggers: any lease loss/reclaim, token mismatch, duplicate/orphan phase, retry/failure/cancel, provider 429, slot exhaustion, authentication error, attempt timeout, unexpected Notion archive, cost at/above the approved cap, heartbeat older than 60 seconds for two samples, any idle-in-transaction session, or DB connections at/above 85 for two samples.
+Hard-stop triggers: any unrelated active job after release authorization, lease loss/reclaim, token mismatch, duplicate/orphan phase, retry/failure/cancel, provider 429, slot exhaustion, authentication error, attempt timeout, unexpected Notion archive, cost at/above the approved cap, heartbeat older than 60 seconds for two samples, any idle-in-transaction session, or DB connections at/above 85 for two samples. In armed mode, a latched terminal quality/solver/corruption failure and any post-authorization incomplete or operational exit also exact-scope pause.
 
 Stage pass: target concurrency observed; every job claimed once/released done once/attempts 1; owner distribution consistent with W=2; exact 12 phases done with matching tokens; no hard or quality findings; successful usage token-bearing and priced; no unexpected Notion write; DB/heartbeat/slot limits clean; and 60 seconds of quiet settle. Escalation is forbidden after a failed stage.
 
