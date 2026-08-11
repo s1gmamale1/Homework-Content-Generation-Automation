@@ -150,10 +150,12 @@ limiter slots, and stage one strong token everywhere with
 restart behind the unchanged floor and publish the exact expected
 `auth_token_fingerprint`. Attest every online model-calling process—two
 processes on one PC count twice—by code SHA/version, fingerprint, concurrency,
-capabilities, and heartbeat. Offline stragglers remain
-version-fenced, but the rotation cannot continue while any known host is
-unreachable. The final floor stays at `max(prior,target)`, never the stale prior
-value. Powered off is not rollout-complete.
+capabilities, and heartbeat. Every known host must remain reachable with its
+startup target/environment/override verified and attested through final reopen
+and rollback; a powered-off or unreachable host aborts the rotation unless it
+is separately decommissioned before the operator restarts the full preflight.
+The final floor stays at `max(prior,target)`, never the prior value. Powered off
+is not rollout-complete.
 
 Token rotation does not change credential ownership. Preserve assignment rows,
 all six stored Vertex objects, Host-59's existing assignment/scrub state, every

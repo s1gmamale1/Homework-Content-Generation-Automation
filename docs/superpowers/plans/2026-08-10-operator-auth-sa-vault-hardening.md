@@ -1271,7 +1271,10 @@ exit. Do not treat terminal jobs as proof because Notion archival is post-done.
 Use `harden_vault` + `snapshot_uuid_inventory`; generate the token into a `0600`
 temp; calculate the fingerprint through `runtime_token_set_fingerprint`; prove
 the head accepts it and every worker heartbeat publishes it. Preserve the six
-Vertex objects, Host-59 assignment, plain-key posture, and offline fences.
+Vertex objects, Host-59 assignment, and plain-key posture. Require every known
+host to stay reachable with startup target/env/override verified and attested
+through final reopen and rollback, or be separately decommissioned before the
+operator restarts the full preflight.
 
 For an owned pause, set the stamped final floor (never below the target) and
 clear the pause in one expected-state transaction. For a foreign pause, clear
@@ -1459,7 +1462,7 @@ summary must not be used as a shorter substitute.
 
 ## Plan self-review
 
-- **Spec coverage:** all-SA-route header auth (Task 2); ASCII URL-safe exact tokens, malformed-safe constant-time matching, default/open/weak startup refusal + explicit local mode (Tasks 1/2); POSIX dir-fd anchoring, Windows operation-specific handle rights, production held-handle read/hash/write/flush/rehash, same-handle ACL apply/inspect + reparse checks + exact one-ACE DACL, existing/new/temp/quarantine/active permissions, durability, access-denied fail-closed behavior, and no bytes in diagnostics (Tasks 3/4/7); race-safe PG dedup, pinned upload compensation data, key-row/assignment serialization, delete quarantine with fresh-state ambiguity handling, and fail-closed head quarantine/inventory reconciliation (Tasks 4/5); real head+standalone side-effect ordering (Task 5); six keys/Host-59/plain-key preservation, foreign-pause ownership, version-floor/all-process attestation, offline fencing, user-owned restart, mismatch window, and rollback (Tasks 6/7/deployment gate); #117/#118 doc integration (global/Task 7); no generation/paid action (global constraints/Task 7).
+- **Spec coverage:** all-SA-route header auth (Task 2); ASCII URL-safe exact tokens, malformed-safe constant-time matching, default/open/weak startup refusal + explicit local mode (Tasks 1/2); POSIX dir-fd anchoring, Windows operation-specific handle rights, production held-handle read/hash/write/flush/rehash, same-handle ACL apply/inspect + reparse checks + exact one-ACE DACL, existing/new/temp/quarantine/active permissions, durability, access-denied fail-closed behavior, and no bytes in diagnostics (Tasks 3/4/7); race-safe PG dedup, pinned upload compensation data, key-row/assignment serialization, delete quarantine with fresh-state ambiguity handling, and fail-closed head quarantine/inventory reconciliation (Tasks 4/5); real head+standalone side-effect ordering (Task 5); six keys/Host-59/plain-key preservation, foreign-pause ownership, checked version-floor/all-process attestation, every-known-host reachability through final reopen and rollback, user-owned restart, mismatch window, and hardened-only rollback (Tasks 6/7/deployment gate); #117/#118 doc integration (global/Task 7); no generation/paid action (global constraints/Task 7).
 - **Type consistency:** Task 1 exports are consumed under the same names by Tasks 2/5. Task 3's vault functions and frozen `DeleteQuarantine` are consumed under the same names by Tasks 4/5. Task 4's `create_or_get_for_upload -> (SAKey, bool)`, key-lock helpers, and `uuid_hash_inventory -> dict[str, str]` are consumed exactly by upload/assign/delete/head startup. Upload/delete exception paths consume only pinned scalars/frozen tickets after rollback. `ALLOW_INSECURE_LOCAL_AUTH` maps only to `settings.allow_insecure_local_auth`.
 - **Placeholder scan:** no TBD/TODO/“similar to”/undefined helper remains. All commands, routes, statuses, token rules, modes, files, and operational order are explicit.
 - **Scope check:** no encryption-at-rest, KMS, schema, SA assignment change, token-management UI, general-query-auth removal, live rollout, or model generation is included.

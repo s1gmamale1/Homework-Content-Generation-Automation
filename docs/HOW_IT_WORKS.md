@@ -1028,9 +1028,10 @@ are never stored in Postgres. See
 paused hard cut from `123`: the operator restarts the head, automation only prepares and
 attests, every worker process rolls afterward, and a foreign pause is never cleared. The
 temporary all-claim floor is checked above every reported process version and configured
-`WORKER_CODE_VERSION`; the final floor never drops below the deployed target, so offline
-pre-target workers stay stale. A known unreachable host with no readable/bounded effective
-version, startup target, environment, and override aborts the rotation without exception.
+`WORKER_CODE_VERSION`; the final floor never drops below the deployed target. Every known
+host must remain reachable with its effective version, startup target, environment, and
+override verified and attested through final reopen and rollback. Any unreadable host aborts
+the rotation without exception.
 Bring it reachable or complete a separately authorized decommission, then restart preflight;
 existing tombstones are preserved but never accepted as rotation proof.
 

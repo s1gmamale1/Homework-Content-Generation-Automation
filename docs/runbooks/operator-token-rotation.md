@@ -373,11 +373,13 @@ Keep `expected_auth_fingerprint` in the non-secret rollout evidence.
 
 When `pause_owned=true`, set the floor to `final_floor` and clear only this
 operation's pause in one transaction. Never blindly restore `prior_floor`:
-for example, a prior floor of 953 and target version 1000 must finish at 1000,
-so an offline v954 worker remains stale until it is updated. The new stamp
-records the attested hard-cut deployment rather than falsely restoring the old
-stamp metadata. The full fence/owner predicate makes the floor transition and
-unpause one indivisible final gesture:
+arithmetically, a prior floor of 953 and target version 1000 yields
+`final_floor=1000`, not 953. This is arithmetic only: preflight and attestation
+require every known host to remain reachable through this gesture. The new
+stamp records the attested hard-cut deployment rather than falsely restoring
+the old stamp metadata. The full
+fence/owner predicate makes the floor transition and unpause one indivisible
+final gesture:
 
 ```sql
 BEGIN;
@@ -441,7 +443,11 @@ startup validation.
 The operator again owns the head restart, which remains
 `WORKER_CONCURRENCY=0`. Workers restart and publish the rollback token-set
 fingerprint while still fenced. Preserve the six stored Vertex objects, Host-59
-assignment, plain API-key posture, offline fences, and foreign pause ownership.
+assignment, plain API-key posture, and foreign pause ownership. Every known host
+must remain reachable with its startup target/environment/override verified and
+attested through rollback final reopen; otherwise abort without lowering the
+floor, complete reachability or a separately authorized decommission, and
+restart from preflight.
 Use the same checked version inventory, `final_floor`, and owner-scoped
 reopen/handoff rules; never lower the all-claim fence merely because the API
 pause remains set.

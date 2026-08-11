@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from app.services import code_version, operator_auth
+from app.services import operator_auth
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -166,8 +166,8 @@ def test_final_reopen_never_drops_below_the_deployed_target() -> None:
         assert "min_worker_version = :temporary_floor" in block
 
 
-def test_offline_pre_cutover_worker_remains_blocked_by_final_floor() -> None:
-    """The concrete 953→1000 cutover must leave an offline v954 stale."""
+def test_final_floor_arithmetic_never_restores_the_lower_prior_floor() -> None:
+    """The concrete 953→1000 cutover finishes at the target arithmetic."""
 
     final_floor, _ = operator_auth.rotation_version_floors(
         prior_floor=953,
@@ -176,7 +176,7 @@ def test_offline_pre_cutover_worker_remains_blocked_by_final_floor() -> None:
         configured_overrides=(),
     )
 
-    assert code_version.is_stale(954, final_floor) is True
+    assert final_floor == 1000
 
 
 def test_foreign_pause_keeps_temporary_floor_until_explicit_handoff() -> None:
@@ -233,8 +233,8 @@ def test_rollback_never_selects_unhardened_code() -> None:
     assert "current hardened code" in document
 
 
-def test_rotation_runbook_attests_each_process_and_fences_offline_hosts() -> None:
-    """Catches a hostname-only rollout that declares powered-off workers complete."""
+def test_rotation_requires_every_known_host_reachable_through_final_reopen() -> None:
+    """Catches treating unreachable hosts as rollout-complete."""
 
     document = re.sub(r"\s+", " ", _text(RUNBOOK))
     for required in (
@@ -243,13 +243,23 @@ def test_rotation_runbook_attests_each_process_and_fences_offline_hosts() -> Non
         "token fingerprint",
         "auth_token_fingerprint",
         "version floor",
-        "offline",
-        "tombstone",
+        "Every known host must still be reachable and attested",
+        "If any known host becomes unreachable",
+        "restart from preflight",
+        "separate decommission",
+        "Preserve existing tombstones but do not count them as evidence",
         "GEMINI_API_KEY",
         "six stored Vertex",
         "Host-59",
     ):
         assert required in document
+    for forbidden in (
+        "offline v954",
+        "offline fences",
+        "offline stragglers",
+        "offline pre-target",
+    ):
+        assert forbidden not in document
 
 
 def test_env_example_is_fail_closed_and_documents_explicit_local_dev() -> None:
