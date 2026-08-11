@@ -87,7 +87,12 @@ def phase_rows(job: soak.JobSnapshot) -> list[soak.PhaseSnapshot]:
             status="done",
             claim_token=job.claim_token,
             judge_status="ok" if name != "extract" else None,
-            solver_status="ok" if name == "practice-rlc" else None,
+            solver_status=(
+                "ok"
+                if name
+                in {"memory-check", "practice-error-detection", "practice-rlc"}
+                else None
+            ),
         )
         for order, name in enumerate(names)
     ]

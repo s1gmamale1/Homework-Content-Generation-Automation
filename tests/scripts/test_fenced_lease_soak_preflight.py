@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -154,6 +157,130 @@ def test_healthy_preflight_has_no_findings():
     assert soak.evaluate_preflight(
         valid_scope(), valid_attestation(), healthy_raw_snapshot()
     ) == []
+
+
+class _FailingCollectStore:
+    async def collect(self, scope):
+        del scope
+        raise OSError("postgresql://user:secret@db/private?token=raw-secret")
+
+
+class _CancelledCollectStore:
+    async def collect(self, scope):
+        del scope
+        raise asyncio.CancelledError("Bearer raw-cancel-secret")
+
+
+class _FailFirstAppendWriter(soak.ArtifactWriter):
+    def __init__(self, artifact_dir, run_id):
+        super().__init__(artifact_dir, run_id)
+        self.calls = 0
+
+    def append(self, sample):
+        self.calls += 1
+        if self.calls == 1:
+            raise OSError("artifact-secret")
+        return super().append(sample)
+
+
+class _FailFirstFinishWriter(soak.ArtifactWriter):
+    def __init__(self, artifact_dir, run_id):
+        super().__init__(artifact_dir, run_id)
+        self.calls = 0
+
+    def finish(self, summary):
+        self.calls += 1
+        if self.calls == 1:
+            raise OSError("finish-secret")
+        return super().finish(summary)
+
+
+class _HealthyStore:
+    async def collect(self, scope):
+        del scope
+        return healthy_raw_snapshot()
+
+
+@pytest.mark.asyncio
+async def test_run_preflight_persists_db_error_as_digest_only_operational_error(tmp_path):
+    scope = valid_scope()
+    raw_error = "postgresql://user:secret@db/private?token=raw-secret"
+
+    code = await soak.run_preflight(
+        scope=scope,
+        attestation=valid_attestation(),
+        store=_FailingCollectStore(),
+        writer=soak.ArtifactWriter(tmp_path, scope.run_id),
+        clock=lambda: NOW,
+    )
+
+    assert code == soak.ExitCode.OPERATIONAL_ERROR
+    summary = json.loads((tmp_path / f"{scope.run_id}.summary.json").read_text())
+    assert summary["verdict"] == "operational_error"
+    finding = summary["findings"][0]
+    assert finding["code"] == "preflight_operational_error"
+    assert finding["evidence"] == {
+        "error_type": "OSError",
+        "error_sha256": hashlib.sha256(raw_error.encode()).hexdigest(),
+    }
+    assert "secret" not in json.dumps(summary)
+
+
+@pytest.mark.asyncio
+async def test_run_preflight_persists_cancellation_as_digest_only_incomplete(tmp_path):
+    scope = valid_scope()
+
+    code = await soak.run_preflight(
+        scope=scope,
+        attestation=valid_attestation(),
+        store=_CancelledCollectStore(),
+        writer=soak.ArtifactWriter(tmp_path, scope.run_id),
+        clock=lambda: NOW,
+    )
+
+    assert code == soak.ExitCode.INCOMPLETE
+    summary = json.loads((tmp_path / f"{scope.run_id}.summary.json").read_text())
+    assert summary["verdict"] == "incomplete"
+    assert summary["findings"][0]["code"] == "preflight_incomplete"
+    assert "raw-cancel-secret" not in json.dumps(summary)
+
+
+@pytest.mark.asyncio
+async def test_run_preflight_converts_artifact_failure_without_raw_escape(tmp_path):
+    scope = valid_scope()
+    writer = _FailFirstAppendWriter(tmp_path, scope.run_id)
+
+    code = await soak.run_preflight(
+        scope=scope,
+        attestation=valid_attestation(),
+        store=_HealthyStore(),
+        writer=writer,
+        clock=lambda: NOW,
+    )
+
+    assert code == soak.ExitCode.OPERATIONAL_ERROR
+    summary = json.loads((tmp_path / f"{scope.run_id}.summary.json").read_text())
+    assert summary["findings"][0]["code"] == "preflight_operational_error"
+    assert "artifact-secret" not in json.dumps(summary)
+
+
+@pytest.mark.asyncio
+async def test_run_preflight_retries_failed_final_summary_as_operational_error(tmp_path):
+    scope = valid_scope()
+    writer = _FailFirstFinishWriter(tmp_path, scope.run_id)
+
+    code = await soak.run_preflight(
+        scope=scope,
+        attestation=valid_attestation(),
+        store=_HealthyStore(),
+        writer=writer,
+        clock=lambda: NOW,
+    )
+
+    assert code == soak.ExitCode.OPERATIONAL_ERROR
+    summary = json.loads((tmp_path / f"{scope.run_id}.summary.json").read_text())
+    assert summary["findings"][0]["code"] == "preflight_operational_error"
+    assert "finish-secret" not in json.dumps(summary)
 
 
 def test_preflight_uses_caller_supplied_exact_database_revision():

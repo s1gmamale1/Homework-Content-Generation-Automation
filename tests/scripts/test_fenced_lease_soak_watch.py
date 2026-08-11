@@ -358,7 +358,12 @@ def full_stage_snapshot(scope: soak.SoakScope, *, state: str) -> soak.RawSnapsho
                 status="done",
                 claim_token=token,
                 judge_status="ok" if phase_name != "extract" else None,
-                solver_status="ok" if phase_name == "practice-rlc" else None,
+                solver_status=(
+                    "ok"
+                    if phase_name
+                    in {"memory-check", "practice-error-detection", "practice-rlc"}
+                    else None
+                ),
             )
             for phase_order, phase_name in enumerate(phase_names)
         )

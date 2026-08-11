@@ -14,16 +14,17 @@ import json
 import math
 import os
 import re
+import signal
 import socket
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum, IntEnum
 from pathlib import Path
-from typing import Any, Literal, Protocol, TextIO
+from typing import Any, Literal, NoReturn, Protocol, TextIO
 from uuid import UUID
 
 import psutil
@@ -87,6 +88,10 @@ _REQUIRED_MODEL_OPERATION_KEYS = frozenset(
 )
 _AUTHORIZED_STAGE_TARGETS = frozenset({4, 8, 12, 20, 40})
 _ARMED_STOP_TIMEOUT_SECONDS = 30.0
+_ARMED_STOP_CANCEL_GRACE_SECONDS = 5.0
+_REQUIRED_SOLVER_PHASES = frozenset(
+    {"memory-check", "practice-error-detection", "practice-rlc"}
+)
 
 
 class AttestationError(RuntimeError):
@@ -947,6 +952,52 @@ def evaluate_runtime(
             ),
         )
 
+    # Growth and shrink are different hazards.  Growth means an unattested
+    # process can claim.  Shrink means the authorized parallelism no longer
+    # exists even though the immutable attestation still says it does.  Only
+    # heartbeat absence/staleness receives the two-sample jitter allowance
+    # below; explicit registry/tombstone/floor/capability/version changes are
+    # authoritative state and fail immediately.
+    unclaimable_reasons: dict[str, list[str]] = {}
+    tombstones = set(raw.scrub_tombstones)
+    registry_by_pc = {worker.pc_id: worker for worker in raw.workers}
+    for attested in attestation.workers:
+        reasons: list[str] = []
+        worker = registry_by_pc.get(attested.pc_id)
+        if attested.hostname in tombstones:
+            reasons.append("tombstoned")
+        if raw.budget.min_worker_version != scope.expected_code_version:
+            reasons.append("version_floor")
+        if worker is not None:
+            # Explicit registry state is authoritative even when its heartbeat
+            # is also stale.  Only the absence/staleness itself is deliberately
+            # excluded here and handled by the two-sample rule below.
+            if worker.hostname != attested.hostname:
+                reasons.append("identity")
+            if worker.status != "online":
+                reasons.append("status")
+            if not worker.can_gemini_api:
+                reasons.append("capability")
+            if worker.code_version != scope.expected_code_version:
+                reasons.append("code_version")
+            floor = raw.budget.min_worker_version
+            if floor is None or (
+                worker.code_version is not None and worker.code_version < floor
+            ):
+                if "version_floor" not in reasons:
+                    reasons.append("version_floor")
+        if reasons:
+            unclaimable_reasons[attested.hostname] = sorted(set(reasons))
+    if unclaimable_reasons:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "attested_worker_unclaimable",
+                "an attested participant became explicitly unclaimable",
+                reasons=unclaimable_reasons,
+            ),
+        )
+
     # Lease-event invariants are intentionally independent: a reclaim must not
     # disappear behind the more generic claim-count finding.
     events_by_job: dict[UUID, list[LeaseEventSnapshot]] = {
@@ -1422,6 +1473,23 @@ def evaluate_runtime(
                 rows=major_rows,
             ),
         )
+    if completed:
+        missing_judge_rows = sorted(
+            f"{phase.job_id}:{phase.phase_name}:{phase.judge_status or 'missing'}"
+            for phase in raw.phases
+            if phase.phase_name != "extract"
+            and phase.judge_status
+            not in {"ok", "major_shipped", "major_regen_failed"}
+        )
+        if missing_judge_rows:
+            _append_runtime_finding(
+                findings,
+                _runtime_stage_failure(
+                    "judge_proof_missing",
+                    "a terminal content phase lacks a trusted judge proof",
+                    rows=missing_judge_rows,
+                ),
+            )
     unresolved_solver_statuses = {
         "mismatch_shipped",
         "mismatch_regen_failed",
@@ -1440,6 +1508,29 @@ def evaluate_runtime(
                 rows=solver_rows,
             ),
         )
+    if completed:
+        missing_solver_rows = sorted(
+            f"{phase.job_id}:{phase.phase_name}:{phase.solver_status or 'missing'}"
+            for phase in raw.phases
+            if phase.phase_name in _REQUIRED_SOLVER_PHASES
+            and phase.solver_status
+            not in {
+                "ok",
+                "mismatch_regen",
+                "mismatch_shipped",
+                "mismatch_regen_failed",
+                "mismatch_blocked",
+            }
+        )
+        if missing_solver_rows:
+            _append_runtime_finding(
+                findings,
+                _runtime_stage_failure(
+                    "solver_proof_missing",
+                    "a terminal key-bearing phase lacks a trusted solver proof",
+                    rows=missing_solver_rows,
+                ),
+            )
     corrupted = sorted(
         f"{phase.job_id}:{phase.phase_name}"
         for phase in raw.phases
@@ -2447,6 +2538,15 @@ def _exception_evidence(exc: BaseException) -> dict[str, str]:
     }
 
 
+def _clear_current_cancellation() -> None:
+    """Consume handled termination cancellation so cleanup awaits stay usable."""
+    task = asyncio.current_task()
+    if task is None:
+        return
+    while task.cancelling():
+        task.uncancel()
+
+
 async def _finish_armed_stop(
     *,
     scope: SoakScope,
@@ -2457,10 +2557,21 @@ async def _finish_armed_stop(
     trigger: Finding,
     clock: Callable[[], datetime],
     stop_timeout_seconds: float = _ARMED_STOP_TIMEOUT_SECONDS,
+    stop_cancel_grace_seconds: float = _ARMED_STOP_CANCEL_GRACE_SECONDS,
+    fatal_exit: Callable[[int], NoReturn] = os._exit,
 ) -> ExitCode:
-    """Pause the exact scope and make stop success or failure explicit."""
+    """Pause the exact scope and never return while its write can run later.
+
+    Python cannot forcibly kill a coroutine that suppresses cancellation.  A
+    normal timeout therefore gets a bounded cancellation/rollback grace.  If
+    the task is still alive after that grace, evidence records that the final
+    database state is unknown and the CLI process exits immediately; returning
+    would permit a late pause after the caller believed the controller ended.
+    """
     if stop_timeout_seconds <= 0:
         raise ValueError("stop_timeout_seconds must be positive")
+    if stop_cancel_grace_seconds <= 0:
+        raise ValueError("stop_cancel_grace_seconds must be positive")
     def finish_stop_summary(
         *,
         summary_findings: Sequence[Finding],
@@ -2524,31 +2635,91 @@ async def _finish_armed_stop(
             if pause_task.cancelled():
                 stop_error = exc
             else:
+                _clear_current_cancellation()
                 cancellation_seen = True
         except Exception as exc:
             stop_error = exc
 
     effective_findings = list(findings)
-    if cancellation_seen:
-        effective_findings.append(
-            _finding(
-                "stop_completion_shielded",
-                "cancellation was deferred until the exact-scope pause completed",
-                hard=False,
+
+    def record_shielded_cancellation() -> None:
+        if cancellation_seen and not any(
+            finding.code == "stop_completion_shielded"
+            for finding in effective_findings
+        ):
+            effective_findings.append(
+                _finding(
+                    "stop_completion_shielded",
+                    "cancellation was deferred until the exact-scope pause completed",
+                    hard=False,
+                )
             )
+
+    if stop_error is not None and not pause_task.done():
+        pause_task.cancel()
+        cleanup_deadline = (
+            asyncio.get_running_loop().time() + stop_cancel_grace_seconds
         )
+        while not pause_task.done():
+            remaining = cleanup_deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait_for(asyncio.shield(pause_task), timeout=remaining)
+            except asyncio.CancelledError:
+                if pause_task.done():
+                    break
+                _clear_current_cancellation()
+                cancellation_seen = True
+            except TimeoutError:
+                break
+            except Exception:
+                break
+
+        record_shielded_cancellation()
+        if not pause_task.done():
+            cleanup_error = TimeoutError(
+                "armed exact-scope pause ignored cancellation cleanup deadline"
+            )
+            cleanup_failure = _finding(
+                "armed_stop_cleanup_stuck",
+                "the pause task remained alive; process exit is required to prevent a late mutation",
+                hard=True,
+                **_exception_evidence(cleanup_error),
+            )
+            finish_stop_summary(
+                summary_findings=[*effective_findings, cleanup_failure],
+                verdict="stop_state_unknown_fatal_exit",
+                exit_code=ExitCode.OPERATIONAL_ERROR,
+            )
+            fatal_exit(int(ExitCode.OPERATIONAL_ERROR))
+            raise RuntimeError("fatal_exit unexpectedly returned")
+
+    record_shielded_cancellation()
+    if stop_error is not None and pause_task.done():
+        try:
+            completed_receipt = pause_task.result()
+        except asyncio.CancelledError:
+            # The cancelled transaction is no longer alive; the lack of a
+            # receipt remains an explicit stop failure.
+            pass
+        except Exception as exc:
+            stop_error = exc
+        else:
+            if not isinstance(completed_receipt, StopReceipt):
+                stop_error = TypeError("pause task returned no valid stop receipt")
+            else:
+                receipt = completed_receipt
+                stop_error = None
+                effective_findings.append(
+                    _finding(
+                        "stop_deadline_exceeded",
+                        "the exact-scope pause completed during cancellation cleanup",
+                        hard=False,
+                    )
+                )
 
     if stop_error is not None:
-        if not pause_task.done():
-            pause_task.cancel()
-
-            def _consume_cancelled_task(task: asyncio.Task) -> None:
-                try:
-                    task.exception()
-                except (asyncio.CancelledError, Exception):
-                    pass
-
-            pause_task.add_done_callback(_consume_cancelled_task)
         stop_failure = _finding(
             "armed_stop_failed",
             "the armed exact-scope pause could not be applied",
@@ -2582,23 +2753,74 @@ async def run_preflight(
     store: SoakReadStore,
     writer: ArtifactWriter,
     clock: Callable[[], datetime],
+    termination_requested: Callable[[], bool] | None = None,
 ) -> ExitCode:
-    raw = await store.collect(scope)
-    findings = evaluate_preflight(scope, attestation, raw)
-    writer.append(_evidence_sample(scope, raw, findings, phase="preflight"))
-    failed = any(finding.hard for finding in findings)
-    code = ExitCode.PREFLIGHT_FAILED if failed else ExitCode.PASS
-    writer.finish(
-        _summary(
-            scope,
-            [raw],
-            findings,
-            verdict="preflight_failed" if failed else "pass",
-            exit_code=code,
-            observed_at=clock(),
+    raw_samples: list[RawSnapshot] = []
+
+    def finish_error(
+        trigger: Finding, *, verdict: str, exit_code: ExitCode
+    ) -> None:
+        # A broken artifact device cannot be repaired by the controller, but
+        # it must never turn a DB/cancellation/artifact exception into raw CLI
+        # output.  One best-effort atomic summary is the only safe fallback.
+        try:
+            writer.finish(
+                _summary(
+                    scope,
+                    raw_samples,
+                    [trigger],
+                    verdict=verdict,
+                    exit_code=exit_code,
+                    observed_at=clock(),
+                )
+            )
+        except Exception:
+            pass
+
+    try:
+        if termination_requested is not None and termination_requested():
+            raise asyncio.CancelledError
+        raw = await store.collect(scope)
+        if termination_requested is not None and termination_requested():
+            raise asyncio.CancelledError
+        raw_samples.append(raw)
+        findings = evaluate_preflight(scope, attestation, raw)
+        writer.append(_evidence_sample(scope, raw, findings, phase="preflight"))
+        failed = any(finding.hard for finding in findings)
+        code = ExitCode.PREFLIGHT_FAILED if failed else ExitCode.PASS
+        writer.finish(
+            _summary(
+                scope,
+                raw_samples,
+                findings,
+                verdict="preflight_failed" if failed else "pass",
+                exit_code=code,
+                observed_at=clock(),
+            )
         )
-    )
-    return code
+        return code
+    except asyncio.CancelledError as exc:
+        trigger = _finding(
+            "preflight_incomplete",
+            "preflight was interrupted before it produced a trusted verdict",
+            hard=True,
+            **_exception_evidence(exc),
+        )
+        finish_error(trigger, verdict="incomplete", exit_code=ExitCode.INCOMPLETE)
+        return ExitCode.INCOMPLETE
+    except Exception as exc:
+        trigger = _finding(
+            "preflight_operational_error",
+            "preflight encountered an operational or artifact error",
+            hard=True,
+            **_exception_evidence(exc),
+        )
+        finish_error(
+            trigger,
+            verdict="operational_error",
+            exit_code=ExitCode.OPERATIONAL_ERROR,
+        )
+        return ExitCode.OPERATIONAL_ERROR
 
 
 async def run_watch(
@@ -2612,6 +2834,7 @@ async def run_watch(
     sleep: Callable[[float], Awaitable[None]],
     interval_seconds: float = 2.0,
     stdout: TextIO = sys.stdout,
+    termination_requested: Callable[[], bool] | None = None,
 ) -> ExitCode:
     if interval_seconds <= 0:
         raise ValueError("interval_seconds must be positive")
@@ -2627,6 +2850,8 @@ async def run_watch(
 
     try:
         initial = await store.collect(scope)
+        if termination_requested is not None and termination_requested():
+            raise asyncio.CancelledError
         raw_samples.append(initial)
         latest_findings = evaluate_preflight(scope, attestation, initial)
         writer.append(
@@ -2651,6 +2876,8 @@ async def run_watch(
 
         while True:
             raw = await store.collect(scope)
+            if termination_requested is not None and termination_requested():
+                raise asyncio.CancelledError
             raw_samples.append(raw)
             pause_reason = raw.budget.api_paused_reason
             if pause_reason == expected_staging_pause and not released:
@@ -2836,6 +3063,7 @@ async def run_watch(
                     return ExitCode.PASS
             await sleep(interval_seconds)
     except (asyncio.CancelledError, KeyboardInterrupt) as exc:
+        _clear_current_cancellation()
         if release_pending and stopper is not None:
             trigger = _runtime_hard(
                 "watch_incomplete",
@@ -3149,6 +3377,62 @@ async def _dispose_store(store: Any | None) -> None:
         await dispose()
 
 
+@contextmanager
+def _termination_signal_handlers(cancel: Callable[[], None]):
+    """Install POSIX SIGINT/SIGTERM handlers and restore exactly what existed.
+
+    ``asyncio.run`` installs its own SIGINT handler before this function runs;
+    preserving and restoring it avoids leaking controller behavior into caller
+    code or tests.  The callback itself is loop-thread-safe and does no I/O.
+    """
+    previous: dict[signal.Signals, Any] = {}
+
+    def terminate(signum: int, frame: Any) -> None:
+        del signum, frame
+        cancel()
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, terminate)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+async def _await_with_termination_signals(
+    awaitable: Awaitable[ExitCode] | Awaitable[Any],
+    *,
+    signal_handler_factory: Callable[[Callable[[], None]], Any] | None = None,
+    termination_state: list[bool] | None = None,
+) -> Any:
+    """Cancel one controller task on SIGINT/SIGTERM, then let it fail closed."""
+    task = asyncio.current_task()
+    if task is None:  # pragma: no cover - async functions always run in a task here
+        raise RuntimeError("termination signal bridge requires an asyncio task")
+    loop = asyncio.get_running_loop()
+    state = termination_state if termination_state is not None else [False]
+    pending_cancellations: list[asyncio.Handle] = []
+
+    def cancel() -> None:
+        state[0] = True
+        # call_soon_threadsafe also wakes a selector blocked in SQL/sleep.  The
+        # synchronous state latch lets run_watch classify a signal that lands
+        # just before READY even if its current await completes immediately.
+        pending_cancellations.append(loop.call_soon_threadsafe(task.cancel))
+
+    handlers = (signal_handler_factory or _termination_signal_handlers)(cancel)
+    try:
+        with handlers:
+            return await awaitable
+    finally:
+        # If the state latch completed the pre-release path without yielding,
+        # prevent its queued cancellation from escaping into caller cleanup.
+        for handle in pending_cancellations:
+            handle.cancel()
+
+
 async def async_main(
     argv: Sequence[str],
     *,
@@ -3160,6 +3444,7 @@ async def async_main(
     stdin: TextIO = sys.stdin,
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
+    signal_handler_factory: Callable[[Callable[[], None]], Any] | None = None,
 ) -> ExitCode:
     """Run database-backed commands with the writer absent unless fully armed."""
     args = parse_args(argv)
@@ -3180,28 +3465,40 @@ async def async_main(
     writer = ArtifactWriter(Path(args.artifact_dir), scope.run_id)
     try:
         if args.command == "preflight":
-            return await run_preflight(
-                scope=scope,
-                attestation=attestation,
-                store=read_store,
-                writer=writer,
-                clock=now,
+            termination_state = [False]
+            return await _await_with_termination_signals(
+                run_preflight(
+                    scope=scope,
+                    attestation=attestation,
+                    store=read_store,
+                    writer=writer,
+                    clock=now,
+                    termination_requested=lambda: termination_state[0],
+                ),
+                signal_handler_factory=signal_handler_factory,
+                termination_state=termination_state,
             )
 
         stopper: SoakStopper | None = None
         if args.arm_stop:
             write_store = (write_store_factory or SqlSoakWriteStore)(resolved_url)
             stopper = GuardedStopper(write_store, clock=now)
-        return await run_watch(
-            scope=scope,
-            attestation=attestation,
-            store=read_store,
-            writer=writer,
-            stopper=stopper,
-            clock=now,
-            sleep=sleep,
-            interval_seconds=args.interval_seconds,
-            stdout=stdout,
+        termination_state = [False]
+        return await _await_with_termination_signals(
+            run_watch(
+                scope=scope,
+                attestation=attestation,
+                store=read_store,
+                writer=writer,
+                stopper=stopper,
+                clock=now,
+                sleep=sleep,
+                interval_seconds=args.interval_seconds,
+                stdout=stdout,
+                termination_requested=lambda: termination_state[0],
+            ),
+            signal_handler_factory=signal_handler_factory,
+            termination_state=termination_state,
         )
     finally:
         await _dispose_store(write_store)

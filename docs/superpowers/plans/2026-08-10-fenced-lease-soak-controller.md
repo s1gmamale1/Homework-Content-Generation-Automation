@@ -71,6 +71,39 @@
 - Round-3 unit/fake-store verification is `$0`. PostgreSQL integration remains
   opt-in and must use a scratch URL; no production fallback is permitted.
 
+## Round-4 Fail-Closed Corrections (2026-08-11)
+
+- Repeated the mandatory read-only collision gate at
+  `origin/Nggaev-v2@d6b1c9f` and controller head `043c18f`. The soak worktree
+  remains the only owner of `scripts/fenced_lease_soak.py` and its tests; open
+  PRs `#108`, `#117`, and `#118` are unrelated and remain untouched.
+- POSIX `SIGINT` and `SIGTERM` are installed around both async controller
+  commands and restored afterward. Preflight and watch-before-release produce
+  durable `incomplete` evidence without mutation. From the instant release
+  authorization is emitted, the same cancellation routes through the armed
+  exact-scope stop. Subprocess tests exercise both real signals, not only an
+  injected exception.
+- A stop timeout cancels and awaits the write task for a bounded rollback
+  grace. A task that suppresses cancellation cannot safely be abandoned in
+  the same process: the controller first fsyncs digest-only
+  `stop_state_unknown_fatal_exit` evidence and then uses a process-fatal exit.
+  It never returns normally while a task can pause later. The real SQL path's
+  cancellation and the adversarial cancellation-resistant path are both
+  tested.
+- Runtime re-attestation now checks claimable-set shrink as well as growth.
+  Tombstone, version-floor, explicit status, API capability, code-version, or
+  identity drift stops immediately; only missing/stale heartbeat evidence gets
+  the existing two-consecutive-sample jitter allowance.
+- Preflight DB, evaluation, cancellation, and artifact errors become stable
+  `OPERATIONAL_ERROR`/`INCOMPLETE` summaries containing only exception class
+  and SHA-256. Judge/solver `unavailable`, `refused`, and missing required
+  proofs are terminal stage failures; `mismatch_regen` remains a successful
+  solver proof, while exact unresolved mismatch states still fail.
+- The scratch-Postgres scope assertion compares UUID multisets rather than SQL
+  row order. The owner run uses only `edu_scratch_leases` and must finish with
+  zero seeded books, jobs, or lease rows. No production DB, provider, fleet,
+  PR, or deployment action belongs to this correction.
+
 ## File Structure
 
 - Modify `app/db.py`: pure connection-server-settings builder and application of those settings to the existing engine.

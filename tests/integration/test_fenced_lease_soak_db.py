@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-import os
+import asyncio
+import contextlib
 import inspect
+import os
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -271,7 +274,7 @@ async def test_collect_starts_a_read_only_transaction(database_url, seeded_scope
         raw = await store.collect(scope)
     finally:
         await store.dispose()
-    assert raw.scope_job_ids == scope.job_ids
+    assert Counter(raw.scope_job_ids) == Counter(scope.job_ids)
     assert raw.transaction_read_only == "on"
     assert raw.db.idle_in_transaction_timeout_ms == 300_000
 
@@ -411,6 +414,65 @@ async def test_stop_rolls_back_everything_on_scope_drift(
         )
     assert batch_reason is None
     assert fleet_reason is None
+
+
+@pytest.mark.asyncio
+@requires_db
+async def test_real_sql_stop_cancellation_finishes_and_cannot_pause_later(
+    database_url, stop_context
+):
+    scope = stop_context["scope"]
+    factory = stop_context["factory"]
+    blocker_engine = create_async_engine(database_url, pool_size=1, max_overflow=0)
+    write_store = soak.SqlSoakWriteStore(database_url)
+    pause_task = None
+    try:
+        async with blocker_engine.connect() as blocker:
+            transaction = await blocker.begin()
+            await blocker.execute(
+                text("select id from budget_state where id=1 for update")
+            )
+            pause_task = asyncio.create_task(
+                soak.GuardedStopper(write_store).pause(
+                    scope,
+                    soak.Finding(
+                        code="lease_lost",
+                        hard=True,
+                        hard_stop=True,
+                        stage_failure=True,
+                        message="lease lost",
+                    ),
+                )
+            )
+            await asyncio.sleep(0.05)
+            assert not pause_task.done()
+
+            pause_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(pause_task, timeout=1)
+            assert pause_task.done()
+            await transaction.rollback()
+
+        # Give the loop a chance to expose any abandoned late write.  A
+        # completed cancelled task has no coroutine left that can mutate.
+        await asyncio.sleep(0.05)
+        async with factory() as session:
+            fleet_reason = await session.scalar(
+                text("select api_paused_reason from budget_state where id=1")
+            )
+            batch_reason = await session.scalar(
+                text("select paused_reason from batches where id=:batch_id"),
+                {"batch_id": scope.batch_ids[0]},
+            )
+        assert fleet_reason is None
+        assert batch_reason is None
+    finally:
+        if pause_task is not None and not pause_task.done():
+            pause_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pause_task
+        await write_store.dispose()
+        await blocker_engine.dispose()
 
 
 @pytest.mark.parametrize(
