@@ -26,6 +26,7 @@ from uuid import UUID, uuid4
 from app.services import storage
 
 if os.name == "nt":  # pragma: no cover - imported and exercised on Windows CI
+    import ntsecuritycon
     import win32api
     import win32con
     import win32file
@@ -72,7 +73,9 @@ class _WindowsHandleUse(enum.Enum):
 
 if _IS_WINDOWS:  # pragma: no cover - values are exercised on Windows CI
     _WINDOWS_COMMON_ACCESS = (
-        win32con.READ_CONTROL | win32con.WRITE_DAC | win32con.FILE_READ_ATTRIBUTES
+        win32con.READ_CONTROL
+        | win32con.WRITE_DAC
+        | ntsecuritycon.FILE_READ_ATTRIBUTES
     )
     _WINDOWS_SHARE_ALL = (
         win32con.FILE_SHARE_READ
