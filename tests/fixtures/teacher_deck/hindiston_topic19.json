@@ -1,0 +1,219 @@
+{
+  "meta": {
+    "subject_label": "Jahon tarixi",
+    "grade": "11",
+    "topic_number": 19,
+    "topic_title": "1991–2017-yillarda Hindiston Respublikasi",
+    "duration_min": 45,
+    "lesson_type": "Yangi bilim berish",
+    "method": ["Video", "tahlil", "kviz", "juftlikda ish"],
+    "materials": ["Proyektor", "Akademiya video", "jurnal", "daftar"],
+    "video_ref": "Akademiya video darsi"
+  },
+  "passport": {
+    "fan_sinf": "Jahon tarixi · 11-sinf",
+    "mavzu": "19-mavzu. Hindiston Respublikasi (1991–2017)",
+    "dars_turi": "Yangi bilim berish",
+    "metod": "Video → tahlil → kviz → juftlikda ish",
+    "kerakli_vosita": "Proyektor, Akademiya video, jurnal, daftar",
+    "baholash": "10 ballik: kviz 5 + topshiriq 3 + faollik 2"
+  },
+  "objectives": {
+    "bilib_oladi": "1991-yilgi burilishni: siyosiy inqiroz → Narasimxa Rao bozor islohotlari → xususiylashtirish.",
+    "qila_oladi": "Hindiston yuksalishini kamida ikkita aniq dalil bilan izohlaydi (1992-yildan gʻalla eksporti, IT-kadrlar boʻyicha dunyoda 2-oʻrin).",
+    "tushunadi": "Nega iqtisodiy oʻsish 400 mln kishini qashshoqlikdan olib chiqa olmadi."
+  },
+  "core_idea": {
+    "statement": "Iqtisodiy oʻsish oʻz-oʻzidan farovonlik keltirmaydi.",
+    "elaboration": "Hindiston 25 yilda dunyoning IT markazlaridan biriga aylandi — lekin 2017-yilda ham 400 mln aholi qashshoqlikda, deyarli har uchinchi kishi savodsiz edi."
+  },
+  "lesson_map": [
+    {"index": 1, "title": "Tashkiliy qism", "description": "Salomlashish · DAVOMAT · sinf tayyorligi", "minutes": 3},
+    {"index": 2, "title": "Motivatsiya", "description": "Ekranga bitta hook-savol chiqariladi", "minutes": 3},
+    {"index": 3, "title": "Video dars", "description": "Akademiya videosi + kuzatuv topshirigʻi", "minutes": 9},
+    {"index": 4, "title": "Tahlil", "description": "Uchta tayanch nuqta boʻyicha muhokama", "minutes": 9},
+    {"index": 5, "title": "Kviz", "description": "5 ta savol · qoʻl koʻtarib javob berish", "minutes": 8},
+    {"index": 6, "title": "Amaliy ish", "description": "Juftlikda jadval + 2 juft himoya qiladi", "minutes": 9},
+    {"index": 7, "title": "Yakun", "description": "Refleksiya · baholash · keyingi darsga koʻprik", "minutes": 4}
+  ],
+  "stages": [
+    {
+      "index": 1,
+      "title": "Tashkiliy qism va davomat",
+      "minutes": 3,
+      "badge": "none",
+      "points": [
+        {"title": "Salomlashish va sinf holati", "detail": "Doska, proyektor, daftarlarni tez koʻzdan kechiring."},
+        {"title": "DAVOMAT olinadi", "detail": "Jurnalga jimgina belgilang — 60 soniyadan oshmasin."},
+        {"title": "Mavzu eʻlon qilinadi", "detail": "«Bugun 25 yilda tanib boʻlmas darajada oʻzgargan bir davlat haqida gaplashamiz.»"}
+      ],
+      "teacher_action": "Jurnalni ochadi, davomatni belgilaydi, videoni oldindan ochib qoʻyadi.",
+      "student_action": "Daftar va darslikni tayyorlaydi, sanani yozadi.",
+      "screen_text": null
+    },
+    {
+      "index": 2,
+      "title": "Motivatsiya",
+      "minutes": 3,
+      "badge": "ekranga",
+      "points": [],
+      "teacher_action": "Savolni ekranga chiqaradi va javobni hozir talab qilmaydi.",
+      "student_action": "Savol haqida oʻylaydi, lekin javobini video koʻrgunga qadar aytmaydi.",
+      "screen_text": "1991-yilda Hindistonning oltin-valuta zaxirasi tugash arafasida edi. 2017-yilda esa u dunyodagi eng yirik IT-eksportchilardan biri.\n\n25 yilda nima oʻzgardi?\nJavobni hozir aytmang — video koʻrgach qaytamiz."
+    },
+    {
+      "index": 3,
+      "title": "Akademiya video darsi",
+      "minutes": 9,
+      "badge": "none",
+      "points": [
+        {"title": "OLDIN — kuzatuv topshirigʻi bering", "detail": "«Videoda 3 ta ism va 3 ta sanani yozib oling.» Topshiriqsiz video — bu dam olish, dars emas."},
+        {"title": "DAVOMIDA — jim, izohsiz", "detail": "Video ustidan gapirmang. Faqat texnik nosozlikda toʻxtating."},
+        {"title": "KEYIN — 30 soniya juftlikda", "detail": "«Yoningizdagi bilan yozganlaringizni solishtiring.»"}
+      ],
+      "teacher_action": "Videoni qoʻyadi, sinf diqqatini va yozayotganini kuzatadi.",
+      "student_action": "Videoni koʻradi va daftarga 3 ism + 3 sana yozadi.",
+      "screen_text": null
+    },
+    {
+      "index": 4,
+      "title": "Mavzuning uchta tayanch nuqtasi",
+      "minutes": 9,
+      "badge": "none",
+      "points": [
+        {"title": "1991 — inqiroz va burilish", "detail": "Rajiv Gandi oʻldiriladi → Narasimxa Rao bozor islohotlarini boshlaydi → davlat sektori qisqaradi, yirik korxonalar xususiylashtiriladi."},
+        {"title": "1992–2014 — yuksalish", "detail": "1992-yildan gʻalla EKSPORT qilinadi · IT-kadrlar boʻyicha dunyoda 2-oʻrin (AQSHdan keyin) · Vajpai, Manmoxan Singx, Modi islohotlarni davom ettiradi."},
+        {"title": "2017 — ikki yuzli natija", "detail": "Aholi 1 mlrd 350 mln · 400 mln qashshoq · deyarli 1/3 savodsiz. Oʻsish bor, lekin hammaga yetib bormagan."}
+      ],
+      "teacher_action": "Har nuqtani doskaga bitta soʻz bilan yozadi: INQIROZ → YUKSALISH → ZIDDIYAT.",
+      "student_action": "Uchta nuqtani daftarga koʻchiradi, har biriga bitta dalil qoʻshadi.",
+      "screen_text": null
+    },
+    {
+      "index": 5,
+      "title": "Kviz",
+      "minutes": 8,
+      "badge": "ekranga",
+      "points": [],
+      "teacher_action": "5 ta savolni ketma-ket ekranga chiqaradi, har birida qoʻl koʻtarib javob soʻraydi.",
+      "student_action": "Qoʻl koʻtarib har savolga A, B, C yoki D javobini beradi.",
+      "screen_text": null
+    },
+    {
+      "index": 6,
+      "title": "Juftlikda ish",
+      "minutes": 9,
+      "badge": "ekranga",
+      "points": [],
+      "teacher_action": "Juftliklarga daftardagi ustunlarni tushuntiradi va vaqtni belgilaydi.",
+      "student_action": "Juftlikda ikkita ustunni toʻldiradi: 2 ta foydali qadam va 1 ta xato.",
+      "screen_text": "Daftaringizda ikkita ustun chizing va toʻldiring:\n\n1. Hindiston tajribasidan 2 ta foydali qadam — Qaysi qarorlar mamlakatni oʻstirdi? Nega?\n2. Takrorlamaslik kerak boʻlgan 1 ta xato — Nega oʻsish hammaga yetib bormadi?"
+    },
+    {
+      "index": 7,
+      "title": "Yakun",
+      "minutes": 4,
+      "badge": "ekranga",
+      "points": [],
+      "teacher_action": "Uch xil savolni birma-bir soʻraydi va bir necha oʻquvchidan javob eshitadi.",
+      "student_action": "Xotira, xulosa va tushunarsiz qolgan joyni ovoz chiqarib aytadi.",
+      "screen_text": "1. Bugun eslab qolgan bitta RAQAMni ayting\n2. Sizningcha, hal qiluvchi omil nima boʻldi?\n3. Nima tushunarsiz qoldi?"
+    }
+  ],
+  "quiz": [
+    {
+      "number": 1,
+      "question": "1991-yildan keyin bozor islohotlarining yangi bosqichini kim boshladi?",
+      "options": [
+        {"label": "A", "text": "Rajiv Gandi"},
+        {"label": "B", "text": "Narasimxa Rao"},
+        {"label": "C", "text": "Atal Bixari Vajpai"},
+        {"label": "D", "text": "Narendra Modi"}
+      ],
+      "correct_label": "B",
+      "hint": "Qoʻl koʻtarib javob bering — A, B, C yoki D."
+    },
+    {
+      "number": 2,
+      "question": "Hindiston qaysi yildan boshlab gʻalla EKSPORT qila boshladi?",
+      "options": [
+        {"label": "A", "text": "1990-yildan"},
+        {"label": "B", "text": "1992-yildan"},
+        {"label": "C", "text": "1998-yildan"},
+        {"label": "D", "text": "2004-yildan"}
+      ],
+      "correct_label": "B",
+      "hint": "Bu — qishloq xoʻjaligidagi burilish nuqtasi."
+    },
+    {
+      "number": 3,
+      "question": "Kompyuter dasturlari sohasidagi yuqori malakali kadrlar soni boʻyicha Hindiston dunyoda nechanchi oʻrinda?",
+      "options": [
+        {"label": "A", "text": "Birinchi"},
+        {"label": "B", "text": "Ikkinchi — AQSHdan keyin"},
+        {"label": "C", "text": "Uchinchi"},
+        {"label": "D", "text": "Beshinchi"}
+      ],
+      "correct_label": "B",
+      "hint": "Ilmiy-texnik xodimlar soni boʻyicha esa — uchinchi."
+    },
+    {
+      "number": 4,
+      "question": "2000-yilda mamlakatning shimoli-gʻarbida nechta yangi shtat tashkil etildi?",
+      "options": [
+        {"label": "A", "text": "Ikkita"},
+        {"label": "B", "text": "Uchta"},
+        {"label": "C", "text": "Toʻrtta"},
+        {"label": "D", "text": "Beshta"}
+      ],
+      "correct_label": "B",
+      "hint": "Shu maqsadda birinchi marta maxsus vazirlik ham tuzilgan."
+    },
+    {
+      "number": 5,
+      "question": "2017-yilda Hindiston aholisining qancha qismi savodsiz edi?",
+      "options": [
+        {"label": "A", "text": "Taxminan 1/10 qismi"},
+        {"label": "B", "text": "Taxminan 1/5 qismi"},
+        {"label": "C", "text": "Taxminan 1/3 qismi"},
+        {"label": "D", "text": "Yarmi"}
+      ],
+      "correct_label": "C",
+      "hint": "Bu raqam darsning tayanch gʻoyasiga bogʻliq."
+    }
+  ],
+  "answer_key": [
+    {"number": 1, "correct_label": "B", "explanation": "Narasimxa Rao. Rajiv Gandi 1991-yilda oʻldirilgan — u islohotni boshlamagan."},
+    {"number": 2, "correct_label": "B", "explanation": "1992-yil. Shu yildan mamlakat gʻalla import qiluvchidan eksport qiluvchiga aylandi."},
+    {"number": 3, "correct_label": "B", "explanation": "Ikkinchi oʻrin, AQSHdan keyin. Ilmiy-texnik xodimlar boʻyicha — uchinchi."},
+    {"number": 4, "correct_label": "B", "explanation": "Uchta shtat. Mintaqa rivoji uchun alohida vazirlik tashkil etilgan."},
+    {"number": 5, "correct_label": "C", "explanation": "Taxminan 1/3. Aynan shu raqam «oʻsish ≠ farovonlik» gʻoyasini isbotlaydi."}
+  ],
+  "pair_work": {
+    "intro": "Daftaringizda ikkita ustun chizing va toʻldiring:",
+    "tasks": [
+      {"title": "Hindiston tajribasidan 2 ta foydali qadam", "prompt": "Qaysi qarorlar mamlakatni oʻstirdi? Nega?"},
+      {"title": "Takrorlamaslik kerak boʻlgan 1 ta xato", "prompt": "Nega oʻsish hammaga yetib bormadi?"}
+    ]
+  },
+  "conclusion": {
+    "questions": [
+      "Bugun eslab qolgan bitta RAQAMni ayting",
+      "Sizningcha, hal qiluvchi omil nima boʻldi?",
+      "Nima tushunarsiz qoldi?"
+    ]
+  },
+  "rubric": {
+    "components": [
+      {"points": 5, "title": "Kviz", "detail": "Har toʻgʻri javob — 1 ball. 5 savol = 5 ball."},
+      {"points": 3, "title": "Amaliy topshiriq", "detail": "2 ta foydali qadam (2 ball) + 1 ta xato asoslangan (1 ball)."},
+      {"points": 2, "title": "Faollik", "detail": "Muhokamada ishtirok, savol berish, juftlikda ishlash."}
+    ],
+    "total": 10,
+    "bands": [
+      {"range": "9–10", "grade": "5"},
+      {"range": "7–8", "grade": "4"},
+      {"range": "5–6", "grade": "3"}
+    ]
+  }
+}
