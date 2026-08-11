@@ -55,6 +55,20 @@ def job_row(
         batch_book_id=BOOK,
         subject="matematika",
         selected_phases=None,
+        output_language="en",
+        custom_prompts_present=False,
+        provider="gemini",
+        model="gemini-3.6-flash",
+        transport="api",
+        extract_provider="gemini",
+        extract_model="gemini-3.5-flash-lite",
+        extract_transport="api",
+        judge_provider="gemini",
+        judge_model="gemini-3.5-flash",
+        judge_transport="api",
+        solver_provider="gemini",
+        solver_model="gemini-3.1-pro-preview",
+        solver_transport="api",
         status=status,
         attempts=1 if status != "pending" else 0,
         claim_token=token,
@@ -231,6 +245,13 @@ def test_usage_snapshot_preserves_database_phase_binding() -> None:
     assert dumped.get("phase_name") == "flashcards"
 
 
+def test_job_snapshot_exposes_only_custom_prompt_presence() -> None:
+    assert "custom_prompts_present" in soak.JobSnapshot.model_fields
+    assert "custom_prompts" not in soak.JobSnapshot.model_fields
+    dumped = job_row(JOBS[0], status="pending").model_dump(mode="json")
+    assert dumped["custom_prompts_present"] is False
+
+
 def healthy_completed_snapshot(*, target: int = 4) -> soak.RawSnapshot:
     jobs: list[soak.JobSnapshot] = []
     events: list[soak.LeaseEventSnapshot] = []
@@ -280,7 +301,14 @@ def healthy_completed_snapshot(*, target: int = 4) -> soak.RawSnapshot:
             solver_boss_arena_enabled=True,
         ),
         jobs=jobs,
-        books={str(BOOK): soak.BookSnapshot(id=BOOK, content_sha256="a" * 64)},
+        books={
+            str(BOOK): soak.BookSnapshot(
+                id=BOOK,
+                content_sha256="a" * 64,
+                subject="matematika",
+                source_language="ru",
+            )
+        },
         unrelated_active_jobs=[],
         workers=[worker_row(1), worker_row(2)],
         scrub_tombstones=[],
@@ -306,6 +334,7 @@ def healthy_running_snapshot(*, running: int = 4, db_total: int = 30) -> soak.Ra
     for job in raw.jobs:
         job.status = "running"
         job.notion_skip_reason = None
+        job.lease_count = 1
     raw.phases = []
     raw.lease_events = [event for event in raw.lease_events if event.event_type == "claimed"]
     return raw
@@ -327,6 +356,7 @@ def runtime_attestation(scope: soak.SoakScope) -> soak.FleetAttestation:
             credential_slot_wait_seconds=120,
             gemini_max_concurrency_present=False,
             structured_output_enabled=False,
+            solver_enabled=True,
             process_count_for_host=1,
             credential_fingerprint="gemini:0123456789abcdef",
             pdf_sha256_by_book={str(BOOK): "a" * 64},
@@ -635,6 +665,64 @@ def test_claim_and_release_must_each_exist_once_for_retained_token():
     )
 
 
+def test_lease_ledger_rejects_an_event_for_a_foreign_token():
+    raw = healthy_completed_snapshot()
+    job = raw.jobs[0]
+    foreign_token = uuid4()
+    raw.lease_events.append(
+        soak.LeaseEventSnapshot(
+            job_id=job.id,
+            claim_token=foreign_token,
+            event_type="claimed",
+            owner=job.claimed_by,
+            created_at=NOW,
+        )
+    )
+    job.lease_count += 1
+
+    findings = runtime_findings(valid_scope(), raw, [])
+
+    assert "lease_event_token_mismatch" in codes(findings, hard_stop=True)
+    assert str(foreign_token) not in soak.canonical_json(
+        by_code(findings, "lease_event_token_mismatch").evidence
+    )
+
+
+def test_lease_ledger_count_must_equal_authoritative_job_count():
+    raw = healthy_completed_snapshot()
+    job = raw.jobs[0]
+    raw.lease_events = [
+        event
+        for event in raw.lease_events
+        if not (event.job_id == job.id and event.event_type == "released_done")
+    ]
+
+    findings = runtime_findings(valid_scope(), raw, [])
+
+    finding = by_code(findings, "lease_count_mismatch")
+    assert finding.hard_stop is True
+    assert str(job.id) in finding.evidence["job_ids"]
+
+
+def test_lease_ledger_rejects_unknown_same_token_auxiliary_event():
+    raw = healthy_completed_snapshot()
+    job = raw.jobs[0]
+    raw.lease_events.append(
+        soak.LeaseEventSnapshot(
+            job_id=job.id,
+            claim_token=job.claim_token,
+            event_type="heartbeat",
+            owner=job.claimed_by,
+            created_at=NOW,
+        )
+    )
+    job.lease_count += 1
+
+    assert "lease_event_unexpected" in codes(
+        runtime_findings(valid_scope(), raw, []), hard_stop=True
+    )
+
+
 def test_claim_owner_must_match_job_and_deployed_identity():
     raw = healthy_completed_snapshot()
     raw.jobs[0].claimed_by = "Host-01:100@deadbee"
@@ -704,7 +792,7 @@ def test_terminal_job_requires_exact_done_phase_set():
     )
 
 
-def test_selected_phase_job_uses_exact_selected_subset_plus_extract():
+def test_partial_selected_phase_job_is_rejected():
     raw = healthy_completed_snapshot(target=4)
     raw.jobs[0].selected_phases = ["flashcards"]
     raw.phases = [
@@ -713,8 +801,49 @@ def test_selected_phase_job_uses_exact_selected_subset_plus_extract():
         if phase.job_id != raw.jobs[0].id
         or phase.phase_name in {"extract", "flashcards"}
     ]
-    assert "phase_set_incomplete" not in codes(
-        runtime_findings(valid_scope(target=4), raw, []), hard_stop=True
+    hard = codes(runtime_findings(valid_scope(target=4), raw, []), hard_stop=True)
+    assert "job_not_full_homework" in hard
+    assert "phase_set_incomplete" in hard
+
+
+@pytest.mark.parametrize("selected_phases", [[], ["flashcards"]])
+def test_runtime_requires_null_or_exact_complete_flow(selected_phases):
+    raw = healthy_completed_snapshot()
+    raw.jobs[0].selected_phases = selected_phases
+
+    assert "job_not_full_homework" in codes(
+        runtime_findings(valid_scope(), raw, []), hard_stop=True
+    )
+
+
+def test_runtime_accepts_exact_complete_selected_flow():
+    raw = healthy_completed_snapshot()
+    raw.jobs[0].selected_phases = flows.flow_for(raw.jobs[0].subject or "")
+
+    assert "job_not_full_homework" not in codes(
+        runtime_findings(valid_scope(), raw, []), hard_stop=True
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("output_language", "ru"), ("custom_prompts_present", True)],
+)
+def test_runtime_rejects_wrong_language_or_custom_prompts(field, value):
+    raw = healthy_completed_snapshot()
+    setattr(raw.jobs[0], field, value)
+
+    assert "job_workload_contract_mismatch" in codes(
+        runtime_findings(valid_scope(), raw, []), hard_stop=True
+    )
+
+
+def test_runtime_rejects_wrong_book_source_language():
+    raw = healthy_completed_snapshot()
+    raw.books[str(BOOK)].source_language = "uz"
+
+    assert "job_workload_contract_mismatch" in codes(
+        runtime_findings(valid_scope(), raw, []), hard_stop=True
     )
 
 
@@ -904,11 +1033,155 @@ def test_unresolved_solver_mismatch_quarantines_but_does_not_emergency_pause(
 
 def test_solver_mismatch_resolved_by_regeneration_is_success():
     raw = healthy_completed_snapshot()
-    raw.phases[1].solver_status = "mismatch_regen"
+    job = raw.jobs[0]
+    phase = next(
+        item
+        for item in raw.phases
+        if item.job_id == job.id and item.phase_name == "boss-arena"
+    )
+    phase.solver_status = "mismatch_regen"
+    for operation in ("phase.run", "solve:boss-arena"):
+        usage = raw.usages[
+            _required_usage_index(raw, job_id=job.id, operation=operation)
+        ]
+        if operation == "phase.run" and usage.phase_name != "boss-arena":
+            usage = next(
+                row
+                for row in raw.usages
+                if row.job_id == job.id
+                and row.operation == operation
+                and row.phase_name == "boss-arena"
+            )
+        raw.usages.append(usage.model_copy(deep=True))
+        job.usage_count += 1
 
     findings = runtime_findings(valid_scope(), raw, [healthy_running_snapshot()])
 
-    assert "solver_mismatch" not in codes(findings)
+    assert "solver_regen_evidence_missing" not in codes(findings, hard_stop=True)
+
+
+@pytest.mark.parametrize("missing_operation", ["phase.run", "solve:boss-arena"])
+def test_mismatch_regen_requires_two_bound_generation_and_solver_calls(
+    missing_operation,
+):
+    raw = healthy_completed_snapshot()
+    job = raw.jobs[0]
+    phase = next(
+        item
+        for item in raw.phases
+        if item.job_id == job.id and item.phase_name == "boss-arena"
+    )
+    phase.solver_status = "mismatch_regen"
+    other_operation = (
+        "solve:boss-arena" if missing_operation == "phase.run" else "phase.run"
+    )
+    usage = next(
+        row
+        for row in raw.usages
+        if row.job_id == job.id
+        and row.operation == other_operation
+        and row.phase_name == "boss-arena"
+    )
+    raw.usages.append(usage.model_copy(deep=True))
+    job.usage_count += 1
+
+    assert "solver_regen_evidence_missing" in codes(
+        runtime_findings(valid_scope(), raw, []), hard_stop=True
+    )
+
+
+def test_mismatch_regen_does_not_count_a_wrongly_bound_second_solver_call():
+    raw = healthy_completed_snapshot()
+    job = raw.jobs[0]
+    phase = next(
+        item
+        for item in raw.phases
+        if item.job_id == job.id and item.phase_name == "boss-arena"
+    )
+    phase.solver_status = "mismatch_regen"
+    for operation in ("phase.run", "solve:boss-arena"):
+        usage = next(
+            row
+            for row in raw.usages
+            if row.job_id == job.id
+            and row.operation == operation
+            and row.phase_name == "boss-arena"
+        )
+        duplicate = usage.model_copy(deep=True)
+        if operation == "solve:boss-arena":
+            duplicate.phase_job_id = raw.jobs[1].id
+        raw.usages.append(duplicate)
+        job.usage_count += 1
+
+    hard = codes(runtime_findings(valid_scope(), raw, []), hard_stop=True)
+    assert "usage_phase_binding_mismatch" in hard
+    assert "solver_regen_evidence_missing" in hard
+
+
+def test_mismatch_regen_requires_generation_between_the_two_solver_calls():
+    raw = healthy_completed_snapshot()
+    job = raw.jobs[0]
+    phase = next(
+        item
+        for item in raw.phases
+        if item.job_id == job.id and item.phase_name == "boss-arena"
+    )
+    phase.solver_status = "mismatch_regen"
+    generation = next(
+        row
+        for row in raw.usages
+        if row.job_id == job.id
+        and row.operation == "phase.run"
+        and row.phase_name == "boss-arena"
+    )
+    solver_index = next(
+        index
+        for index, row in enumerate(raw.usages)
+        if row.job_id == job.id and row.operation == "solve:boss-arena"
+    )
+    solver = raw.usages[solver_index]
+    # A judge-driven regeneration before the first solver must not masquerade
+    # as the repair generated in response to a solver mismatch.
+    raw.usages.insert(solver_index, generation.model_copy(deep=True))
+    raw.usages.append(solver.model_copy(deep=True))
+    job.usage_count += 2
+
+    assert "solver_regen_evidence_missing" in codes(
+        runtime_findings(valid_scope(), raw, []), hard_stop=True
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("provider", "openai"),
+        ("model", None),
+        ("model", "wrong-content"),
+        ("transport", "cli"),
+        ("extract_provider", "openai"),
+        ("extract_provider", None),
+        ("extract_model", None),
+        ("extract_model", "wrong-extract"),
+        ("extract_transport", "cli"),
+        ("judge_provider", "openai"),
+        ("judge_provider", None),
+        ("judge_model", None),
+        ("judge_model", "wrong-judge"),
+        ("judge_transport", "cli"),
+        ("solver_provider", "openai"),
+        ("solver_provider", None),
+        ("solver_model", None),
+        ("solver_model", "wrong-solver"),
+        ("solver_transport", "cli"),
+    ],
+)
+def test_runtime_rejects_job_role_stamp_drift(field, value):
+    raw = healthy_completed_snapshot()
+    setattr(raw.jobs[0], field, value)
+
+    assert "job_role_stamp_mismatch" in codes(
+        runtime_findings(valid_scope(), raw, []), hard_stop=True
+    )
 
 
 def test_validation_corruption_quarantines_the_stage():

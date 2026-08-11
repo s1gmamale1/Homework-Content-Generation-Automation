@@ -42,6 +42,12 @@ def test_collect_reads_the_live_boss_arena_solver_toggle():
     assert "solver_boss_arena_enabled" in source
 
 
+def test_collect_preserves_persisted_usage_call_order_for_regen_proof():
+    source = inspect.getsource(soak.SqlSoakReadStore.collect)
+
+    assert "ORDER BY COALESCE(u.started_at, u.created_at), u.id" in source
+
+
 @pytest.fixture(scope="module")
 def database_url() -> str:
     url = os.environ["DATABASE_URL"]
@@ -66,7 +72,7 @@ async def seeded_scope(database_url):
             content_sha256="a" * 64,
             file_size_bytes=3,
             status="toc_ready",
-            source_language="uz",
+            source_language="ru",
         )
         toc = TOCEntry(
             id=toc_id,
@@ -85,7 +91,7 @@ async def seeded_scope(database_url):
             provider="gemini",
             model="gemini-3.6-flash",
             transport="api",
-            output_language="uz",
+            output_language="en",
         )
         session.add(book)
         await session.flush()
@@ -102,7 +108,16 @@ async def seeded_scope(database_url):
                 provider="gemini",
                 model="gemini-3.6-flash",
                 transport="api",
-                output_language="uz",
+                output_language="en",
+                extract_provider="gemini",
+                extract_model="gemini-3.5-flash-lite",
+                extract_transport="api",
+                judge_provider="gemini",
+                judge_model="gemini-3.5-flash",
+                judge_transport="api",
+                solver_provider="gemini",
+                solver_model="gemini-3.1-pro-preview",
+                solver_transport="api",
                 attempts=1,
                 created_at=now,
                 updated_at=now,
@@ -172,7 +187,10 @@ async def seeded_scope(database_url):
         credential_slot_wait_seconds=1,
         legacy_gemini_var_must_be_absent=True,
         structured_output_enabled=False,
+        solver_enabled=True,
         solver_boss_arena_enabled=True,
+        expected_output_language="en",
+        expected_source_language="ru",
         required_book_sha256={str(book_id): "a" * 64},
         forbidden_notion_mapping_keys=[],
         expected_models_by_operation_prefix={
@@ -299,6 +317,11 @@ async def test_collect_starts_a_read_only_transaction(database_url, seeded_scope
     assert Counter(raw.scope_job_ids) == Counter(scope.job_ids)
     assert raw.transaction_read_only == "on"
     assert raw.db.idle_in_transaction_timeout_ms == 300_000
+    scoped = next(job for job in raw.jobs if job.id == scope.job_ids[0])
+    assert scoped.lease_count == 1
+    assert sum(event.job_id == scoped.id for event in raw.lease_events) == scoped.lease_count
+    assert scoped.output_language == "en"
+    assert raw.books[str(scoped.book_id)].source_language == "ru"
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,79 @@ def test_runtime_snapshot_pins_live_boss_arena_solver_toggle() -> None:
     assert annotation is soak.LaunchDefaultsSnapshot
 
 
+def test_preflight_rejects_partial_or_empty_selected_phase_jobs() -> None:
+    for selected_phases in ([], ["flashcards"]):
+        raw = healthy_raw_snapshot()
+        raw.jobs[0].selected_phases = selected_phases
+
+        findings = soak.evaluate_preflight(valid_scope(), valid_attestation(), raw)
+
+        assert "scope_job_not_full_homework" in {
+            finding.code for finding in findings
+        }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("output_language", "ru"), ("custom_prompts_present", True)],
+)
+def test_preflight_rejects_wrong_language_or_custom_prompts(field, value) -> None:
+    raw = healthy_raw_snapshot()
+    setattr(raw.jobs[0], field, value)
+
+    findings = soak.evaluate_preflight(valid_scope(), valid_attestation(), raw)
+
+    assert "scope_job_workload_contract_mismatch" in {
+        finding.code for finding in findings
+    }
+
+
+def test_preflight_rejects_book_subject_or_source_language_drift() -> None:
+    raw = healthy_raw_snapshot()
+    raw.books[str(BOOK)].source_language = "uz"
+
+    findings = soak.evaluate_preflight(valid_scope(), valid_attestation(), raw)
+
+    assert "scope_job_workload_contract_mismatch" in {
+        finding.code for finding in findings
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("provider", "openai"),
+        ("model", None),
+        ("model", "wrong-content"),
+        ("transport", "cli"),
+        ("extract_provider", "openai"),
+        ("extract_provider", None),
+        ("extract_model", None),
+        ("extract_model", "wrong-extract"),
+        ("extract_transport", "cli"),
+        ("judge_provider", "openai"),
+        ("judge_provider", None),
+        ("judge_model", None),
+        ("judge_model", "wrong-judge"),
+        ("judge_transport", "cli"),
+        ("solver_provider", "openai"),
+        ("solver_provider", None),
+        ("solver_model", None),
+        ("solver_model", "wrong-solver"),
+        ("solver_transport", "cli"),
+    ],
+)
+def test_preflight_rejects_job_role_stamp_drift(field, value):
+    raw = healthy_raw_snapshot()
+    setattr(raw.jobs[0], field, value)
+
+    findings = soak.evaluate_preflight(valid_scope(), valid_attestation(), raw)
+
+    assert "scope_job_role_stamp_mismatch" in {
+        finding.code for finding in findings
+    }
+
+
 def valid_scope(**updates) -> soak.SoakScope:
     raw = valid_scope_dict()
     raw.update(
@@ -55,6 +128,7 @@ def valid_worker(index: int = 2) -> soak.WorkerAttestation:
         credential_slot_wait_seconds=120,
         gemini_max_concurrency_present=False,
         structured_output_enabled=False,
+        solver_enabled=True,
         process_count_for_host=1,
         credential_fingerprint="gemini:0123456789abcdef",
         pdf_sha256_by_book={str(BOOK): "a" * 64},
@@ -98,6 +172,22 @@ def healthy_raw_snapshot() -> soak.RawSnapshot:
                 batch_id=BATCH,
                 book_id=BOOK,
                 batch_book_id=BOOK,
+                subject="matematika",
+                selected_phases=None,
+                output_language="en",
+                custom_prompts_present=False,
+                provider="gemini",
+                model="gemini-3.6-flash",
+                transport="api",
+                extract_provider="gemini",
+                extract_model="gemini-3.5-flash-lite",
+                extract_transport="api",
+                judge_provider="gemini",
+                judge_model="gemini-3.5-flash",
+                judge_transport="api",
+                solver_provider="gemini",
+                solver_model="gemini-3.1-pro-preview",
+                solver_transport="api",
                 status="pending",
                 attempts=0,
                 claim_token=None,
@@ -108,7 +198,14 @@ def healthy_raw_snapshot() -> soak.RawSnapshot:
             )
             for job_id in valid_scope().job_ids
         ],
-        books={str(BOOK): soak.BookSnapshot(id=BOOK, content_sha256="a" * 64)},
+        books={
+            str(BOOK): soak.BookSnapshot(
+                id=BOOK,
+                content_sha256="a" * 64,
+                subject="matematika",
+                source_language="ru",
+            )
+        },
         unrelated_active_jobs=[],
         workers=[
             soak.RegistryWorkerSnapshot(

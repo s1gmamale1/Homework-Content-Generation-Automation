@@ -68,6 +68,7 @@ def worker_env(tmp_path: Path, **updates: str) -> dict[str, str]:
         "CREDENTIAL_MAX_CONCURRENT_GEMINI": "32",
         "CREDENTIAL_SLOT_WAIT_SECONDS": "120",
         "STRUCTURED_OUTPUT_ENABLED": "false",
+        "SOLVER_ENABLED": "true",
         "VAR_DIR": str(tmp_path),
         "NOTION_SUBJECT_PAGES": '{"matematika|5":"page-secret"}',
     }
@@ -158,8 +159,16 @@ def test_effective_contract_defaults_and_constraints_match_settings():
     assert contract.structured_output_enabled is Settings.model_fields[
         "structured_output_enabled"
     ].default
+    assert contract.solver_enabled is Settings.model_fields["solver_enabled"].default
     with pytest.raises(ValidationError):
         soak.effective_worker_contract({"CREDENTIAL_SLOT_WAIT_SECONDS": "0"})
+
+
+def test_local_attestation_rejects_a_solver_disabled_worker(tmp_path):
+    env = worker_env(tmp_path, SOLVER_ENABLED="false")
+
+    with pytest.raises((soak.AttestationError, ValidationError), match="solver"):
+        build_valid_local_attestation(tmp_path, worker_environ=env)
 
 
 def test_local_attestation_never_emits_secrets_or_notion_values(tmp_path):

@@ -13,7 +13,7 @@
 - The controller does **not** launch, retry, resume, cancel, archive, or regenerate a homework. It observes work created by a separately approved operator action.
 - `preflight` and unarmed `watch` must execute `SET TRANSACTION READ ONLY` before every database snapshot. A regression that issues `INSERT`, `UPDATE`, or `DELETE` in either path is a release blocker.
 - Scope is never inferred from “recent” rows alone. Every run requires non-empty `batch_ids`, non-empty `job_ids`, and an aware UTC `since` instant in the scope file. Every queried job, usage row, phase row, and lease event is filtered by those job IDs, with `since` as an additional lower bound for time-series tables.
-- The first soak requires one exact, caller-supplied **final deployed** Git SHA, code version, and Alembic revision, derived from the externally gated merge/deployment immediately before the run. Every participating process, heartbeat, attestation, `claimed_by` suffix, and the fleet version floor must match the code pair; the live database must match the caller-supplied revision exactly while still proving the 0052 ledger/token primitives exist. `d6b1c9f` / v987 / `0052_job_lease_fencing` are only the pre-plan audit baseline; they are never runtime defaults because later gated lanes create newer identities. The remaining production configuration is exactly `WORKER_CONCURRENCY=2`, `AGENT_MAX_CONCURRENCY=4`, `CREDENTIAL_MAX_CONCURRENT_GEMINI=32`, `CREDENTIAL_SLOT_WAIT_SECONDS=120`, no `GEMINI_MAX_CONCURRENCY`, one worker process per host, one shared plain-key fingerprint, and `STRUCTURED_OUTPUT_ENABLED=false`. All values live in the scope file, not as hidden code defaults.
+- The first soak requires one exact, caller-supplied **final deployed** Git SHA, code version, and Alembic revision, derived from the externally gated merge/deployment immediately before the run. Every participating process, heartbeat, attestation, `claimed_by` suffix, and the fleet version floor must match the code pair; the live database must match the caller-supplied revision exactly while still proving the 0052 ledger/token primitives exist. `d6b1c9f` / v987 / `0052_job_lease_fencing` are only the pre-plan audit baseline; they are never runtime defaults because later gated lanes create newer identities. The remaining production configuration is exactly `WORKER_CONCURRENCY=2`, `AGENT_MAX_CONCURRENCY=4`, `CREDENTIAL_MAX_CONCURRENT_GEMINI=32`, `CREDENTIAL_SLOT_WAIT_SECONDS=120`, `SOLVER_ENABLED=true`, no `GEMINI_MAX_CONCURRENCY`, one worker process per host, one shared plain-key fingerprint, and `STRUCTURED_OUTPUT_ENABLED=false`. All values live in the scope file, not as hidden code defaults.
 - The first production sequence is `4 -> 8 -> 12 -> 20 -> 40` independent fresh jobs. A level advances only after its jobs reach terminal state and a 60-second quiet-settle window passes all gates.
 - The 40-job level is two 20-job batches so each remains below the configured `$50` per-batch cap. It is still one stage and one exact scope.
 - The tooling lane is `$0`: unit tests, fake-store acceptance, and optional scratch-Postgres integration only. No provider call and no production job launch is authorized by this plan.
@@ -135,6 +135,36 @@
   validation. Workers are unique and ordered by `(hostname, pc_id)`; input
   digests are unique, sorted, one-per-worker, and exactly equal to the
   recomputed digest set. Tampering fails before a preflight store is opened.
+
+## Round-7 Workload-and-Ledger Corrections (2026-08-11)
+
+- Repeated the mandatory read-only collision gate at
+  `origin/Nggaev-v2@d6b1c9f` and controller head `dae675e`. Open PRs `#108`,
+  `#117`, and `#118` remain unrelated and read-only; no branch/worktree owns
+  these controller paths. Production lease semantics were re-read from
+  `origin/feat/fenced-job-leases@3253bb9` before changing the contract.
+- Lease evidence is complete, not selectively matched. The scoped query
+  returns every event for the scoped jobs; its per-job row count must equal
+  the authoritative correlated `lease_count`; every event token must equal
+  the job's sole retained claim token; and a clean job permits exactly one
+  `claimed` plus, once done, exactly one `released_done`. The shipped lease
+  vocabulary contains no benign heartbeat/auxiliary event, so unknown or
+  additional same-token events fail closed.
+- `solver_status=mismatch_regen` requires persisted causal evidence, not a
+  status string or set membership: two successful correctly bound solver
+  calls and at least two generation calls for the same phase, ordered as
+  `solve[initial] < phase.run[repair] < solve[verification]`. A judge-driven
+  regeneration before the first solver cannot satisfy this proof. The SQL
+  list order is deterministic from persisted
+  `COALESCE(agent_usages.started_at, created_at), id`.
+- The soak is bound to the intended full production workload. The scope and
+  every worker attestation require `SOLVER_ENABLED=true`. Jobs must use all
+  eleven phases (`selected_phases` null or exactly the ordered full flow),
+  built-in prompts only (observed only as a derived presence boolean; prompt
+  text never enters evidence), English output over the pinned Russian-source book,
+  and exact Gemini/API provider-model-transport stamps for content, extract,
+  judge, and solver. Both preflight and every runtime sample recheck these
+  fields; the expected terminal shape is always `extract + 11 phases`.
 
 ## File Structure
 
@@ -356,9 +386,9 @@ git commit -m "fix(db): bound and identify idle transactions"
 - Produces `load_scope(source: Path | Literal["-"], *, stdin: TextIO = sys.stdin) -> SoakScope`, `load_attestation(path: Path) -> FleetAttestation`, `redacted_model_dump(model: BaseModel) -> dict`, and `parse_args(argv: Sequence[str]) -> argparse.Namespace`.
 - Produces a narrow `ProcessView` protocol (`pid`, `status()`, `cmdline()`, `environ()`, `cwd()`), `discover_worker_processes(processes: Iterable[ProcessView]) -> list[ProcessView]`, `effective_worker_contract(worker_env: Mapping[str, str]) -> EffectiveWorkerContract`, `build_local_attestation(scope, *, hostname, processes, now, git_identity=None) -> WorkerAttestation`, `canonical_json(model) -> str`, and `aggregate_attestations(scope, workers, *, now) -> FleetAttestation`.
 - Produces injectable `main(argv, *, process_source=None, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr, hostname=None, now=None, git_identity=None) -> int`; production defaults use `psutil`, `socket`, the real clock, and git, while tests inject all of them and prove the command never opens a database or network client.
-- `SoakScope` fields: `run_id`, aware-UTC `since`, exact `batch_ids`, exact `job_ids`, exact `participant_hosts`, `target_running`, `expected_git_sha`, `expected_code_version`, `expected_db_revision`, expected four concurrency knobs, `legacy_gemini_var_must_be_absent`, `structured_output_enabled`, `solver_boss_arena_enabled` (literal `true`), `required_book_sha256`, `forbidden_notion_mapping_keys`, `expected_models_by_operation_prefix`, `approved_incremental_cost_usd`, `fleet_cost_limit_usd`, `db_preflight_connection_limit`, `db_hard_stop_connection_limit`, `heartbeat_max_age_seconds`, `attestation_max_age_seconds`, and `settle_seconds`. The model map must contain exactly `phase.run`, `lesson.extract`, `lesson.extract.coverage`, `lesson.extract.verify`, `judge:`, and `solve:` with stripped non-empty model values; missing, extra, or blank entries fail while parsing the scope, before preflight can open a store or incur spend.
+- `SoakScope` fields: `run_id`, aware-UTC `since`, exact `batch_ids`, exact `job_ids`, exact `participant_hosts`, `target_running`, `expected_git_sha`, `expected_code_version`, `expected_db_revision`, expected four concurrency knobs, `legacy_gemini_var_must_be_absent`, `structured_output_enabled`, `solver_enabled` (literal `true`), `solver_boss_arena_enabled` (literal `true`), `expected_output_language` (literal `en`), `expected_source_language` (literal `ru`), `required_book_sha256`, `forbidden_notion_mapping_keys`, `expected_models_by_operation_prefix`, `approved_incremental_cost_usd`, `fleet_cost_limit_usd`, `db_preflight_connection_limit`, `db_hard_stop_connection_limit`, `heartbeat_max_age_seconds`, `attestation_max_age_seconds`, and `settle_seconds`. The model map must contain exactly `phase.run`, `lesson.extract`, `lesson.extract.coverage`, `lesson.extract.verify`, `judge:`, and `solve:` with stripped non-empty model values; missing, extra, or blank entries fail while parsing the scope, before preflight can open a store or incur spend.
 - `FleetAttestation` fields: `scope_sha256`, `observed_at`, `credential_fingerprint`, and a non-empty worker list canonically ordered by `(hostname, pc_id)`. `input_artifact_sha256` is unique, sorted, has exactly one digest per worker, and must exactly equal the recomputed canonical worker-artifact digests when the persisted model loads.
-- Each `WorkerAttestation` fields: `scope_sha256`, exact `pc_id`, `hostname`, `observed_at`, `git_sha`, `code_version`, `worker_concurrency`, `agent_max_concurrency`, `credential_max_concurrent_gemini`, `credential_slot_wait_seconds`, `gemini_max_concurrency_present`, `structured_output_enabled`, `process_count_for_host`, `credential_fingerprint`, `pdf_sha256_by_book: dict[str, str | None]`, and `notion_mapping_keys`.
+- Each `WorkerAttestation` fields: `scope_sha256`, exact `pc_id`, `hostname`, `observed_at`, `git_sha`, `code_version`, `worker_concurrency`, `agent_max_concurrency`, `credential_max_concurrent_gemini`, `credential_slot_wait_seconds`, `gemini_max_concurrency_present`, `structured_output_enabled`, `solver_enabled` (literal `true`), `process_count_for_host`, `credential_fingerprint`, `pdf_sha256_by_book: dict[str, str | None]`, and `notion_mapping_keys`.
 
 - [ ] **Step 1: Write contract RED tests**
 
@@ -855,7 +885,13 @@ The store must issue bound-parameter queries, never interpolate UUIDs or timesta
 1. `alembic_version.version_num`, existence of `job_lease_events`, and `claim_token` columns on both tables.
 2. `budget_state` pause and exact version floor, plus the live
    `launch_defaults.solver_boss_arena_enabled` value.
-3. Exact scoped jobs joined to batches and books (including authoritative `books.content_sha256`); count of `pending`, `running`, or `cancelling` jobs outside the scope. Scoped freshly-created `pending` jobs are the expected staged state and are not counted as unrelated queue activity.
+3. Exact scoped jobs joined to batches and books, including job output language,
+   a SQL-derived `custom_prompts_present` boolean (never raw prompt content),
+   the four provider/model/transport role stamps, and
+   authoritative book subject/source-language/content SHA; count of `pending`,
+   `running`, or `cancelling` jobs outside the scope. Scoped freshly-created
+   `pending` jobs are the expected staged state and are not counted as
+   unrelated queue activity.
 4. Workers fresh by the configured registry stale window, including `pc_id`, heartbeat age, status, capability `git_sha`, `code_version`, and Gemini API capability.
 5. SA scrub tombstones needed to distinguish a technically online but parked hostname.
 6. `pg_settings` values for `max_connections` and `superuser_reserved_connections`, plus the controller connection's effective `idle_in_transaction_session_timeout` normalized to integer milliseconds with `extract(epoch from current_setting(...)::interval)`. PostgreSQL cannot inspect another backend's per-session GUC; exact deployed SHA plus Task 1's hardcoded engine settings prove the worker-side contract, while this runtime read proves the controller's own connection is protected.
@@ -874,6 +910,10 @@ The healthy gate requires:
 
 - schema revision exactly equals caller-supplied `scope.expected_db_revision`, both token columns and the ledger table are present, and no revision value is baked into the controller;
 - every scope job exists once, belongs to one of the scope batches, was created at/after `since`, is pending with attempts 0 / null token, and has zero phase, usage, or lease rows;
+- every scoped job is a built-in full-homework launch: English output, no
+  custom prompts, null `selected_phases` or the exact ordered eleven-phase
+  `flow_for(subject)`, a matching Russian-source book subject, and concrete
+  Gemini/API content/extract/judge/solver stamps matching the scope's model map;
 - every `required_book_sha256` value equals the corresponding scoped book's persisted `content_sha256`, so an operator cannot accidentally bless a uniformly wrong local file hash;
 - scoped jobs may be `pending` under the exact staging pause; zero **unrelated** `pending`, `running`, or `cancelling` jobs may exist;
 - fleet API pause is exactly `lease-soak-staging:<run-id>` for the initial preflight; a null pause is accepted only after the already-running watcher has emitted `READY_TO_RELEASE` and observed the operator clear that exact reason. Any other pause reason is preserved and is a hard preflight failure;
@@ -882,7 +922,8 @@ The healthy gate requires:
 - every claimable worker appears in the attestation, and every attested worker appears claimable;
 - attested hostnames equal `scope.participant_hosts`, and each attested `(hostname, pc_id)` exactly matches one live registry row; a locally correct config with a stale/restarted PID therefore fails instead of being silently accepted;
 - at least `ceil(target_running / expected_worker_concurrency)` distinct worker processes and hosts;
-- exact SHA/config/credential/PDF/Notion values match the scope;
+- exact SHA/config (including `SOLVER_ENABLED=true`)/credential/PDF/Notion
+  values match the scope;
 - live `solver_boss_arena_enabled` is exactly `true`, matching the locked scope;
 - DB total is at most `db_preflight_connection_limit`, zero idle-in-transaction, zero non-client waits, and the controller's effective idle-in-transaction timeout is nonzero and at most 300,000 ms;
 - zero fresh or stale credential slots;
@@ -1076,7 +1117,10 @@ For a clean completed stage:
 - distinct claim owners are at least `ceil(job_count / expected_worker_concurrency)`;
 - every running/terminal claimed job retains a non-null token;
 - every phase token equals its job token;
-- each job has exactly `extract` plus `flow_for(job.subject)` (or the exact selected subset if `selected_phases` is non-null), with unique phase names and orders, all done;
+- each job has exactly `extract` plus all eleven phases from
+  `flow_for(job.subject)`, with `selected_phases` either null or byte-for-byte
+  equal to that ordered complete flow, unique phase names/orders, and all rows
+  done;
 - every participant's live registry `pc_id` still equals the immutable preflight-attested `pc_id`, and no heartbeat exceeds the configured age for two samples;
 - the live boss-arena solver toggle remains exactly `true`; false, null, or
   runtime drift is an immediate hard stop;
@@ -1605,11 +1649,11 @@ f087fb01-0c9d-4762-9d14-2898d7f30e67
 0ab32b4d-a48a-437b-bcd1-bc31b35604a8
 ```
 
-Use English output on these Russian math/geometry sources only after every participating attestation proves the corresponding English Notion mapping absent and the same PDF checksum present. Do not force-regenerate the existing Russian jobs.
+Use English output on these Russian math/geometry sources only after every participating attestation proves `SOLVER_ENABLED=true`, the corresponding English Notion mapping absent, and the same PDF checksum present. Each staged job must use built-in prompts, the full eleven-phase flow, and the four exact Gemini/API role stamps in its scope; partial selections, custom prompts, non-English output, or a non-Russian source fail preflight. Do not force-regenerate the existing Russian jobs.
 
 Hard-stop triggers: any unrelated active job after release authorization, lease loss/reclaim, token mismatch, duplicate/orphan phase, retry/failure/cancel, provider 429, slot exhaustion, authentication error, attempt timeout, unexpected Notion archive, cost at/above the approved cap, heartbeat older than 60 seconds for two samples, any idle-in-transaction session, or DB connections at/above 85 for two samples. In armed mode, a latched terminal quality/solver/corruption failure and any post-authorization incomplete or operational exit also exact-scope pause.
 
-Stage pass: target concurrency observed; every job claimed once/released done once/attempts 1; owner distribution consistent with W=2; exact 12 phases done with matching tokens; all four production solver phases carry trusted solver and per-phase usage proof; the live boss-arena solver toggle remains true; every expected extract/generation/judge operation has job-and-phase-bound token-bearing successful usage and the per-job row count reconciles; no hard or quality findings; no unexpected Notion write; DB/heartbeat/slot limits clean; and 60 seconds of quiet settle. Escalation is forbidden after a failed stage.
+Stage pass: target concurrency observed; every job claimed once/released done once/attempts 1, with the raw lease-ledger count equal to the job's authoritative count and no foreign/auxiliary token event; owner distribution consistent with W=2; exact 12 phases done with matching tokens; all four production solver phases carry trusted solver and per-phase usage proof, and every `mismatch_regen` proves the ordered initial-solve → repair-generation → verification-solve chain; the live solver service and boss-arena toggle remain true; every expected extract/generation/judge operation has job-and-phase-bound token-bearing successful usage and the per-job row count reconciles; jobs retain the exact English/Russian/built-in/full-flow/four-role workload contract; no hard or quality findings; no unexpected Notion write; DB/heartbeat/slot limits clean; and 60 seconds of quiet settle. Escalation is forbidden after a failed stage.
 
 ## Self-Review Record
 

@@ -43,7 +43,10 @@ def valid_scope_dict() -> dict:
         "credential_slot_wait_seconds": 120,
         "legacy_gemini_var_must_be_absent": True,
         "structured_output_enabled": False,
+        "solver_enabled": True,
         "solver_boss_arena_enabled": True,
+        "expected_output_language": "en",
+        "expected_source_language": "ru",
         "required_book_sha256": {str(BOOK): "a" * 64},
         "forbidden_notion_mapping_keys": ["english|8"],
         "expected_models_by_operation_prefix": dict(EXPECTED_MODELS_BY_OPERATION),
@@ -68,6 +71,39 @@ def test_scope_requires_boss_arena_solver_for_the_soak() -> None:
         soak.SoakScope.model_validate(raw)
 
 
+def test_scope_requires_the_solver_service_for_the_soak() -> None:
+    raw = valid_scope_dict()
+    raw["solver_enabled"] = True
+    scope = soak.SoakScope.model_validate(raw)
+    assert scope.solver_enabled is True
+
+    raw["solver_enabled"] = False
+    with pytest.raises(ValidationError, match="solver_enabled"):
+        soak.SoakScope.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("expected_output_language", "ru"), ("expected_source_language", "uz")],
+)
+def test_scope_pins_english_output_over_russian_sources(field, value) -> None:
+    raw = valid_scope_dict()
+    raw[field] = value
+    with pytest.raises(ValidationError, match=field):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_worker_attestation_requires_the_solver_service() -> None:
+    raw = valid_worker_dict()
+    raw["solver_enabled"] = True
+    worker = soak.WorkerAttestation.model_validate(raw)
+    assert worker.solver_enabled is True
+
+    raw["solver_enabled"] = False
+    with pytest.raises(ValidationError, match="solver_enabled"):
+        soak.WorkerAttestation.model_validate(raw)
+
+
 def valid_worker_dict() -> dict:
     scope = soak.SoakScope.model_validate(valid_scope_dict())
     return {
@@ -83,6 +119,7 @@ def valid_worker_dict() -> dict:
         "credential_slot_wait_seconds": 120,
         "gemini_max_concurrency_present": False,
         "structured_output_enabled": False,
+        "solver_enabled": True,
         "process_count_for_host": 1,
         "credential_fingerprint": "gemini:0123456789abcdef",
         "pdf_sha256_by_book": {str(BOOK): "a" * 64},

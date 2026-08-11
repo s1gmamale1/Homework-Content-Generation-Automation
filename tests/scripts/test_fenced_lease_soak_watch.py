@@ -218,6 +218,7 @@ def hard_runtime_snapshot(scope: soak.SoakScope) -> soak.RawSnapshot:
             created_at=NOW,
         )
     )
+    raw.jobs[0].lease_count += 1
     return raw
 
 
@@ -272,6 +273,7 @@ def full_stage_attestation(scope: soak.SoakScope) -> soak.FleetAttestation:
             credential_slot_wait_seconds=120,
             gemini_max_concurrency_present=False,
             structured_output_enabled=False,
+            solver_enabled=True,
             process_count_for_host=1,
             credential_fingerprint="gemini:0123456789abcdef",
             pdf_sha256_by_book=dict(scope.required_book_sha256),
@@ -317,6 +319,20 @@ def full_stage_snapshot(scope: soak.SoakScope, *, state: str) -> soak.RawSnapsho
             batch_book_id=book_id,
             subject="matematika",
             selected_phases=None,
+            output_language="en",
+            custom_prompts_present=False,
+            provider="gemini",
+            model="gemini-3.6-flash",
+            transport="api",
+            extract_provider="gemini",
+            extract_model="gemini-3.5-flash-lite",
+            extract_transport="api",
+            judge_provider="gemini",
+            judge_model="gemini-3.5-flash",
+            judge_transport="api",
+            solver_provider="gemini",
+            solver_model="gemini-3.1-pro-preview",
+            solver_transport="api",
             status=state,
             attempts=0 if state == "pending" else 1,
             claim_token=token,
@@ -403,6 +419,8 @@ def full_stage_snapshot(scope: soak.SoakScope, *, state: str) -> soak.RawSnapsho
             str(book_id): soak.BookSnapshot(
                 id=book_id,
                 content_sha256=scope.required_book_sha256[str(book_id)],
+                subject="matematika",
+                source_language="ru",
             )
             for book_id in book_ids
         },

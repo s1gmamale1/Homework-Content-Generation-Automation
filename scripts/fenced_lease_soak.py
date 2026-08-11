@@ -139,7 +139,10 @@ class SoakScope(PersistedModel):
     credential_slot_wait_seconds: int = Field(ge=1)
     legacy_gemini_var_must_be_absent: bool
     structured_output_enabled: bool
+    solver_enabled: Literal[True]
     solver_boss_arena_enabled: Literal[True]
+    expected_output_language: Literal["en"]
+    expected_source_language: Literal["ru"]
     required_book_sha256: dict[str, str] = Field(min_length=1)
     forbidden_notion_mapping_keys: list[str]
     expected_models_by_operation_prefix: dict[str, str] = Field(min_length=1)
@@ -265,6 +268,7 @@ class WorkerAttestation(PersistedModel):
     credential_slot_wait_seconds: int = Field(ge=1)
     gemini_max_concurrency_present: bool
     structured_output_enabled: bool
+    solver_enabled: Literal[True]
     process_count_for_host: int = Field(ge=0)
     credential_fingerprint: str
     pdf_sha256_by_book: dict[str, str | None]
@@ -427,6 +431,20 @@ class JobSnapshot(PersistedModel):
     batch_book_id: UUID | None
     subject: str | None = None
     selected_phases: list[str] | None = None
+    output_language: str
+    custom_prompts_present: bool
+    provider: str
+    model: str | None
+    transport: str
+    extract_provider: str | None
+    extract_model: str | None
+    extract_transport: str
+    judge_provider: str | None
+    judge_model: str | None
+    judge_transport: str
+    solver_provider: str | None
+    solver_model: str | None
+    solver_transport: str
     status: str
     attempts: int
     claim_token: UUID | None
@@ -444,6 +462,8 @@ class JobSnapshot(PersistedModel):
 class BookSnapshot(PersistedModel):
     id: UUID
     content_sha256: str
+    subject: str
+    source_language: str
 
 
 class ActiveJobSnapshot(PersistedModel):
@@ -907,6 +927,81 @@ def _batch_shape_evidence(
     }
 
 
+def _complete_content_phases(job: JobSnapshot) -> list[str] | None:
+    """Return the canonical full flow only when the staged job cannot run a subset."""
+    try:
+        complete = flows.flow_for(job.subject or "")
+    except (KeyError, ValueError):
+        return None
+    if len(complete) != 11:
+        return None
+    if job.selected_phases is not None and job.selected_phases != complete:
+        return None
+    return complete
+
+
+def _job_role_stamp_mismatches(
+    scope: SoakScope, job: JobSnapshot
+) -> list[dict[str, str]]:
+    expected = {
+        "content": ("gemini", scope.expected_models_by_operation_prefix["phase.run"], "api"),
+        "extract": (
+            "gemini",
+            scope.expected_models_by_operation_prefix["lesson.extract"],
+            "api",
+        ),
+        "judge": ("gemini", scope.expected_models_by_operation_prefix["judge:"], "api"),
+        "solver": ("gemini", scope.expected_models_by_operation_prefix["solve:"], "api"),
+    }
+    observed = {
+        "content": (job.provider, job.model, job.transport),
+        "extract": (job.extract_provider, job.extract_model, job.extract_transport),
+        "judge": (job.judge_provider, job.judge_model, job.judge_transport),
+        "solver": (job.solver_provider, job.solver_model, job.solver_transport),
+    }
+    return [
+        {
+            "job_id": str(job.id),
+            "role": role,
+            "expected": "/".join(expected[role]),
+            "observed": "/".join(part or "<null>" for part in observed[role]),
+        }
+        for role in expected
+        if observed[role] != expected[role]
+    ]
+
+
+def _job_workload_contract_mismatches(
+    scope: SoakScope,
+    jobs: Iterable[JobSnapshot],
+    books: Mapping[str, BookSnapshot],
+) -> list[dict[str, str | None]]:
+    mismatches: list[dict[str, str | None]] = []
+    for job in jobs:
+        book = books.get(str(job.book_id))
+        reasons: list[str] = []
+        if job.output_language != scope.expected_output_language:
+            reasons.append("output_language")
+        if job.custom_prompts_present:
+            reasons.append("custom_prompts")
+        if book is None:
+            reasons.append("book_missing")
+        else:
+            if book.source_language != scope.expected_source_language:
+                reasons.append("source_language")
+            if book.subject != job.subject:
+                reasons.append("book_subject")
+        if reasons:
+            mismatches.append(
+                {
+                    "job_id": str(job.id),
+                    "book_id": str(job.book_id),
+                    "reasons": ",".join(reasons),
+                }
+            )
+    return mismatches
+
+
 def evaluate_runtime(
     scope: SoakScope,
     attestation: FleetAttestation,
@@ -917,6 +1012,45 @@ def evaluate_runtime(
     findings: list[Finding] = []
     scoped_ids = set(scope.job_ids)
     jobs = {job.id: job for job in raw.jobs if job.id in scoped_ids}
+
+    role_stamp_mismatches = [
+        mismatch
+        for job in jobs.values()
+        for mismatch in _job_role_stamp_mismatches(scope, job)
+    ]
+    if role_stamp_mismatches:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "job_role_stamp_mismatch",
+                "a scoped job's pinned role provider/model/transport drifted",
+                rows=role_stamp_mismatches,
+            ),
+        )
+    non_full_jobs = sorted(
+        str(job.id) for job in jobs.values() if _complete_content_phases(job) is None
+    )
+    if non_full_jobs:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "job_not_full_homework",
+                "a scoped job is not pinned to the complete eleven-phase flow",
+                job_ids=non_full_jobs,
+            ),
+        )
+    workload_mismatches = _job_workload_contract_mismatches(
+        scope, jobs.values(), raw.books
+    )
+    if workload_mismatches:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "job_workload_contract_mismatch",
+                "a scoped job is not built-in English output over its pinned Russian source",
+                rows=workload_mismatches,
+            ),
+        )
 
     if (
         raw.launch_defaults.solver_boss_arena_enabled
@@ -1054,6 +1188,33 @@ def evaluate_runtime(
     for event in raw.lease_events:
         if event.job_id in scoped_ids:
             events_by_job.setdefault(event.job_id, []).append(event)
+    foreign_event_jobs = sorted(
+        str(event.job_id) for event in raw.lease_events if event.job_id not in scoped_ids
+    )
+    if foreign_event_jobs:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "lease_event_scope_mismatch",
+                "the scoped lease query returned events for a foreign job",
+                job_ids=foreign_event_jobs,
+            ),
+        )
+    observed_lease_counts = Counter(event.job_id for event in raw.lease_events)
+    lease_count_mismatches = sorted(
+        str(job.id)
+        for job in jobs.values()
+        if observed_lease_counts[job.id] != job.lease_count
+    )
+    if lease_count_mismatches:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "lease_count_mismatch",
+                "scoped lease rows differ from the authoritative per-job count",
+                job_ids=lease_count_mismatches,
+            ),
+        )
     event_types = {event.event_type for event in raw.lease_events}
     if "lease_lost" in event_types:
         _append_runtime_finding(
@@ -1093,18 +1254,32 @@ def evaluate_runtime(
         )
 
     claim_mismatches: list[str] = []
+    foreign_token_events: list[str] = []
+    unexpected_events: list[str] = []
     missing_tokens: list[str] = []
     bad_job_states: list[str] = []
     claim_owners: set[str] = set()
     for job in jobs.values():
         claimed = job.status != "pending" or job.attempts > 0
+        job_events = events_by_job.get(job.id, [])
+        if job.claim_token is None:
+            unexpected_events.extend(
+                f"{job.id}:{event.event_type}" for event in job_events
+            )
+        else:
+            for event in job_events:
+                if event.claim_token != job.claim_token:
+                    foreign_token_events.append(
+                        f"{job.id}:{event.event_type}:foreign-token"
+                    )
+                elif event.event_type not in {"claimed", "released_done"}:
+                    unexpected_events.append(f"{job.id}:{event.event_type}")
         if claimed and job.claim_token is None:
             missing_tokens.append(str(job.id))
         if job.attempts > 1 or job.status in {"failed", "cancelled", "cancelling"}:
             bad_job_states.append(str(job.id))
         if not claimed or job.claim_token is None:
             continue
-        job_events = events_by_job.get(job.id, [])
         claimed_events = [
             event
             for event in job_events
@@ -1132,6 +1307,24 @@ def evaluate_runtime(
         for event in claimed_events:
             if event.owner:
                 claim_owners.add(event.owner)
+    if foreign_token_events:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "lease_event_token_mismatch",
+                "a scoped lease event carries a token other than the job's sole claim token",
+                rows=sorted(foreign_token_events),
+            ),
+        )
+    if unexpected_events:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "lease_event_unexpected",
+                "a clean soak job carries a non-claim/non-done lease event",
+                rows=sorted(unexpected_events),
+            ),
+        )
     if missing_tokens:
         _append_runtime_finding(
             findings,
@@ -1231,13 +1424,8 @@ def evaluate_runtime(
     incomplete: list[str] = []
     if completed:
         for job in jobs.values():
-            try:
-                content_phases = (
-                    list(job.selected_phases)
-                    if job.selected_phases is not None
-                    else flows.flow_for(job.subject or "")
-                )
-            except (KeyError, ValueError):
+            content_phases = _complete_content_phases(job)
+            if content_phases is None:
                 incomplete.append(str(job.id))
                 continue
             expected_names = {"extract", *content_phases}
@@ -1424,13 +1612,8 @@ def evaluate_runtime(
     binding_mismatches: list[dict[str, str | None]] = []
     expected_usage: set[tuple[UUID, str, str]] = set()
     for job in jobs.values():
-        try:
-            content_phases = (
-                list(job.selected_phases)
-                if job.selected_phases is not None
-                else flows.flow_for(job.subject or "")
-            )
-        except (KeyError, ValueError):
+        content_phases = _complete_content_phases(job)
+        if content_phases is None:
             continue
         expected_usage.add((job.id, "lesson.extract", "extract"))
         for phase_name in content_phases:
@@ -1461,7 +1644,8 @@ def evaluate_runtime(
                 ),
             )
 
-    qualifying_usage: set[tuple[UUID, str, str]] = set()
+    qualifying_usage: Counter[tuple[UUID, str, str]] = Counter()
+    qualifying_usage_positions: dict[tuple[UUID, str, str], list[int]] = {}
     for index, (usage, priced_row) in enumerate(zip(raw.usages, priced.rows, strict=True)):
         if usage.provider != "gemini" or usage.auth_mode != "api":
             transport_mismatches.append(
@@ -1547,7 +1731,8 @@ def evaluate_runtime(
             and usage.prompt_tokens + usage.output_tokens + usage.cached_tokens > 0
             and usage.model_name == expected_model
         ):
-            qualifying_usage.add(usage_key)
+            qualifying_usage[usage_key] += 1
+            qualifying_usage_positions.setdefault(usage_key, []).append(index)
     if completed and not raw.usages:
         invalid_usage.append(-1)
     if invalid_usage:
@@ -1588,7 +1773,8 @@ def evaluate_runtime(
     if completed:
         missing_usage = sorted(
             f"{job_id}:{operation}:{phase_name}"
-            for job_id, operation, phase_name in expected_usage - qualifying_usage
+            for job_id, operation, phase_name in expected_usage
+            if qualifying_usage[(job_id, operation, phase_name)] < 1
         )
         if missing_usage:
             _append_runtime_finding(
@@ -1703,6 +1889,43 @@ def evaluate_runtime(
                     rows=missing_solver_rows,
                 ),
             )
+        missing_regen_evidence: list[str] = []
+        for phase in raw.phases:
+            if phase.solver_status != "mismatch_regen":
+                continue
+            generation_key = (phase.job_id, "phase.run", phase.phase_name)
+            solver_key = (
+                phase.job_id,
+                f"solve:{phase.phase_name}",
+                phase.phase_name,
+            )
+            generation_positions = qualifying_usage_positions.get(generation_key, [])
+            solver_positions = qualifying_usage_positions.get(solver_key, [])
+            proves_solver_regen = any(
+                first_solver < generation < second_solver
+                for first_solver in solver_positions
+                for generation in generation_positions
+                for second_solver in solver_positions
+                if first_solver < second_solver
+            )
+            if (
+                len(generation_positions) < 2
+                or len(solver_positions) < 2
+                or not proves_solver_regen
+            ):
+                missing_regen_evidence.append(
+                    f"{phase.job_id}:{phase.phase_name}"
+                )
+        missing_regen_evidence.sort()
+        if missing_regen_evidence:
+            _append_runtime_finding(
+                findings,
+                _runtime_hard(
+                    "solver_regen_evidence_missing",
+                    "mismatch_regen lacks two bound successful generation and solver calls",
+                    rows=missing_regen_evidence,
+                ),
+            )
     corrupted = sorted(
         f"{phase.job_id}:{phase.phase_name}"
         for phase in raw.phases
@@ -1782,6 +2005,35 @@ def evaluate_preflight(
         findings.append(_finding(
             "scope_job_wrong_batch", "scoped job belongs to a foreign batch",
             job_ids=wrong_batch,
+        ))
+    role_stamp_mismatches = [
+        mismatch
+        for job in raw.jobs
+        for mismatch in _job_role_stamp_mismatches(scope, job)
+    ]
+    if role_stamp_mismatches:
+        findings.append(_finding(
+            "scope_job_role_stamp_mismatch",
+            "scoped jobs do not carry the locked Gemini/API role stamps",
+            rows=role_stamp_mismatches,
+        ))
+    non_full_jobs = sorted(
+        str(job.id) for job in raw.jobs if _complete_content_phases(job) is None
+    )
+    if non_full_jobs:
+        findings.append(_finding(
+            "scope_job_not_full_homework",
+            "scoped jobs must run the complete eleven-phase subject flow",
+            job_ids=non_full_jobs,
+        ))
+    workload_mismatches = _job_workload_contract_mismatches(
+        scope, raw.jobs, raw.books
+    )
+    if workload_mismatches:
+        findings.append(_finding(
+            "scope_job_workload_contract_mismatch",
+            "scoped jobs must use built-in English output over their pinned Russian source",
+            rows=workload_mismatches,
         ))
     batch_shape = _batch_shape_evidence(scope, raw.jobs)
     if batch_shape is not None:
@@ -2154,7 +2406,14 @@ class SqlSoakReadStore:
 
             job_rows = _mapping_dicts(await conn.execute(text("""
                 SELECT j.id, j.batch_id, j.book_id, b.book_id AS batch_book_id,
-                       j.subject, j.selected_phases, j.status, j.attempts,
+                       j.subject, j.selected_phases, j.output_language,
+                       COALESCE(j.custom_prompts <> '{}'::jsonb, false)
+                         AS custom_prompts_present,
+                       j.provider, j.model, j.transport,
+                       j.extract_provider, j.extract_model, j.extract_transport,
+                       j.judge_provider, j.judge_model, j.judge_transport,
+                       j.solver_provider, j.solver_model, j.solver_transport,
+                       j.status, j.attempts,
                        j.claim_token, j.claimed_by, j.created_at,
                        j.error_message, j.last_error,
                        j.notion_archived_at, j.notion_skip_reason,
@@ -2167,7 +2426,7 @@ class SqlSoakReadStore:
                 ORDER BY j.id
             """), params))
             book_rows = _mapping_dicts(await conn.execute(text("""
-                SELECT id, content_sha256 FROM books
+                SELECT id, content_sha256, subject, source_language FROM books
                 WHERE id = ANY(CAST(:book_ids AS uuid[]))
                 ORDER BY id
             """), params))
@@ -2278,7 +2537,7 @@ class SqlSoakReadStore:
                 LEFT JOIN phase_outputs p ON p.id = u.phase_output_id
                 WHERE u.homework_job_id = ANY(CAST(:job_ids AS uuid[]))
                   AND u.created_at >= :since
-                ORDER BY u.created_at, u.id
+                ORDER BY COALESCE(u.started_at, u.created_at), u.id
             """), params))
             fleet_params = {"cutoff": observed_at - timedelta(hours=24)}
             fleet_usage_rows = _mapping_dicts(await conn.execute(text("""
@@ -2493,6 +2752,10 @@ class EffectiveWorkerContract(BaseModel):
     structured_output_enabled: bool = Field(
         default=Settings.model_fields["structured_output_enabled"].default,
         alias="STRUCTURED_OUTPUT_ENABLED",
+    )
+    solver_enabled: bool = Field(
+        default=Settings.model_fields["solver_enabled"].default,
+        alias="SOLVER_ENABLED",
     )
     var_dir: str = Field(
         default=Settings.model_fields["var_dir"].default,
@@ -3451,6 +3714,7 @@ def build_local_attestation(
         credential_slot_wait_seconds=contract.credential_slot_wait_seconds,
         gemini_max_concurrency_present="GEMINI_MAX_CONCURRENCY" in worker_env,
         structured_output_enabled=contract.structured_output_enabled,
+        solver_enabled=contract.solver_enabled,
         process_count_for_host=len(workers),
         credential_fingerprint=fingerprint,
         pdf_sha256_by_book=pdf_hashes,
@@ -3496,6 +3760,7 @@ def aggregate_attestations(
             scope.credential_max_concurrent_gemini,
             scope.credential_slot_wait_seconds,
             scope.structured_output_enabled,
+            scope.solver_enabled,
         )
         actual_config = (
             worker.worker_concurrency,
@@ -3503,6 +3768,7 @@ def aggregate_attestations(
             worker.credential_max_concurrent_gemini,
             worker.credential_slot_wait_seconds,
             worker.structured_output_enabled,
+            worker.solver_enabled,
         )
         if actual_config != expected_config:
             raise AttestationError(f"configuration mismatch for {worker.hostname}")
