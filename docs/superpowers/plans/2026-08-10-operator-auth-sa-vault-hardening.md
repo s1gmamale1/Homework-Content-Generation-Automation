@@ -10,23 +10,24 @@
 
 ## Global Constraints
 
-- **Plan-only branch gate:** planned from `origin/Nggaev-v2@d6b1c9f65e13ea5a6c2abd21b8a592303ece784b` in `/Users/macmini5/Documents/HCGA-operator-auth-hardening` on `plan/operator-auth-sa-vault-hardening`. The mandatory scan found no equivalent open PR. PRs #108/#117/#118 are unrelated and must not be modified. Historical model/structured/lease branches were already merged; re-run the gate before implementation and before PR.
+- **Plan-only branch gate:** planned from `origin/Nggaev-v2@d6b1c9f65e13ea5a6c2abd21b8a592303ece784b` in `/Users/macmini5/Documents/HCGA-operator-auth-hardening` on `plan/operator-auth-sa-vault-hardening`. The mandatory scan found no equivalent open PR. PRs #108/#117/#118 must not be modified. #117/#118 partially overlap only the finish-doc paths (`CLAUDE.md`, `docs/CODE_MAP.md`, `docs/DATABASE.md`, `docs/HOW_IT_WORKS.md`, and memory tails): if either merges first, rebase this lane and preserve both meanings; if this lane merges first, their owners must rebase. Never resolve that overlap by editing their branches. Historical model/structured/lease branches were already merged; re-run the gate before implementation and before PR.
 - **Integration order:** this lane is independent of solver/source-integrity behavior. It must merge and deploy before generation is unpaused and before any 4→40 fleet soak. If `origin/Nggaev-v2` moves, rebase first; `main.py`, `app/services/worker.py`, and `app/config.py` must be composed against the new tip rather than copied from this plan's anchor.
-- **Credential preservation:** no migration and no repository mutation of `sa_keys` or `sa_key_assignments`. Preserve all six stored Vertex key objects byte-for-byte and preserve Host-59's current non-scrubbed assignment. Do not assign, unassign, scrub, relabel, rotate, or delete a Vertex key in this lane.
+- **Credential preservation:** no migration and no deployment-time mutation of production `sa_keys` or `sa_key_assignments`. Preserve all six stored Vertex key objects byte-for-byte and preserve Host-59's current non-scrubbed assignment. Do not assign, unassign, scrub, relabel, rotate, or delete a Vertex key in this lane.
 - **Operator-token policy:** `AUTH_TOKEN` has no default. A normal head or standalone worker refuses startup when it is unset, empty, contains the old `123`, contains any other weak member, or mixes a weak member with a strong one. Every configured member must be strong.
 - **Explicit local development:** `ALLOW_INSECURE_LOCAL_AUTH=true` permits only the exact empty-token state for local development. It never makes `/sa-keys` accessible without a header. It never legalizes `123` or any other weak configured token.
-- **Strength contract:** each comma-delimited operator token is parsed without trimming, at least 32 characters, contains no whitespace/control/comma, has at least eight distinct characters, and is not in the case-insensitive deny-list `{123, password, changeme, change-me, secret, admin, test, dev, development}`. Leading/trailing whitespace, empty segments, and duplicates are invalid. The runbook generates tokens with `secrets.token_urlsafe(48)`; the structural checks are a misconfiguration floor, not a claim that arbitrary human text has measurable entropy.
-- **Comparison and disclosure:** request matching uses `hmac.compare_digest`. Exceptions, HTTP details, and logs identify only the failing rule/member index; they never include a configured/presented token or any service-account JSON bytes.
-- **Vault contract:** `<VAR_DIR>/sa_keys` is `0700` on POSIX and grants full control only to the current process-token SID on Windows. Every existing/new/stale-temp/UUID/`active.json` regular file is `0600` on POSIX and has the same protected, one-SID Windows DACL. Because Task Scheduler launches the worker under that process identity, the scheduled-task account remains readable/writable; a worker launched under a different account fails closed rather than widening the ACL. Symlinks, Windows reparse points, hardlinks, directories, FIFOs, sockets, and devices in the vault fail closed.
-- **Durability:** writes use a same-directory exclusive `0600` temp, file flush+fsync, atomic replacement, destination permission verification, and parent-directory fsync on POSIX (Windows uses write-through replacement). A failed replacement leaves the old destination unchanged and cleans the new temp when the process is still alive.
-- **Startup order:** auth validation, then vault hardening, occur before prompts, DB sessions/reconciliation, version-floor stamping, LISTEN, worker construction, heartbeat, or claim activity. Module import/app construction remains side-effect-free so tests and tooling can import code safely.
+- **Strength contract:** each comma-delimited operator token is parsed without trimming, at least 32 characters, contains only the ASCII URL-safe alphabet `[A-Za-z0-9_-]`, has at least eight distinct characters, and is not in the case-insensitive deny-list `{123, password, changeme, change-me, secret, admin, test, dev, development}`. Leading/trailing whitespace, Unicode, controls, commas/empty segments, and duplicates are invalid. Presented header/query values are also exact (never stripped); malformed/non-ASCII input is an ordinary authentication miss, never a `TypeError`/500. The runbook generates tokens with `secrets.token_urlsafe(48)`; the structural checks are a misconfiguration floor, not a claim that arbitrary human text has measurable entropy.
+- **Comparison and disclosure:** request matching UTF-8-encodes both sides and calls `hmac.compare_digest` for every candidate even after a match; malformed presented values return false. Exceptions, HTTP details, and logs identify only the failing rule/member index; they never include a configured/presented token or any service-account JSON bytes.
+- **Vault contract:** `<VAR_DIR>/sa_keys` is `0700` on POSIX and grants full control only to the current process-token SID on Windows. Every existing/new/stale-temp/UUID/`active.json` regular file is `0600` on POSIX and has the same protected, exactly-one-ACE Windows DACL. POSIX operations remain anchored to one verified open vault-directory fd for their whole check/use sequence. Windows operations validate real handles opened with `FILE_FLAG_OPEN_REPARSE_POINT`; after the protected DACL is installed, path publication additionally re-verifies the held vault identity immediately before/after `MoveFileExW`. The Windows contract rejects pre-existing/replaced reparse/hardlink objects and other identities; it does not claim to defend against an administrator or malicious process already running as the same SID (that principal can read/change the credential regardless). Because Task Scheduler launches the worker under that process identity, the scheduled-task account remains readable/writable; a worker launched under a different account fails closed rather than widening the ACL. Symlinks, Windows reparse points, hardlinks, directories, FIFOs, sockets, and devices in the vault fail closed.
+- **Durability:** writes first open/create and harden the vault themselves, then use a same-directory exclusive `0600` temp, file flush+fsync, pre-publication regular/single-link verification, atomic replacement, destination permission verification, and vault-directory-fd fsync on POSIX (Windows uses write-through replacement). A failed replacement leaves the old destination unchanged and cleans the new temp when the process is still alive.
+- **DB/filesystem consistency:** a filesystem and PostgreSQL commit cannot be one physical transaction. Upload dedup is made database-atomic, filesystem refusal rolls the row back, and an ambiguous commit is reconciled conservatively (never delete a file unless a fresh DB read proves the newly-owned row absent). Head startup fails closed on any missing, mismatched, or orphan UUID key file. This is an honest bounded-compensation + startup-reconciliation contract, not a false cross-resource atomicity claim.
+- **Startup order:** auth validation, then vault hardening, occur before prompts, DB sessions/reconciliation, version-floor stamping, LISTEN, worker construction, heartbeat, or claim activity. Security validation remains out of module import/app construction so tests and tooling can import safely; the head's pre-existing import-time logging configuration is not falsely claimed to be behind the lifespan gate.
 - **Test-safe startup:** tests opt into anonymous local mode explicitly in `tests/conftest.py`; there is no `PYTEST_CURRENT_TEST`/environment-name bypass in production code. Tests exercising rejection turn the opt-in off and prove all startup side-effect seams remain untouched.
 - **No paid acceptance:** this lane changes security/startup/filesystem behavior, not generation. Acceptance is unit + real POSIX permission checks + scratch-Postgres API tests + full suite. No model/API call, production DB write, live fleet mutation, or real SA-byte upload is part of implementation acceptance.
 - **Deployment ownership:** automation may prepare code and `.env` values on workers, but it must not kill or restart the user-owned head process. The operator performs the head restart and authorizes worker restarts under the global pause.
 
 ## Approach & key decisions
 
-1. **Chosen: process-start validation plus route-scoped vault auth.** A global header-only change would break SSE and source-PDF clients that intentionally use the general auth contract. Strictness belongs on the credential-vault router, while startup validation removes the open/guessable production states.
+1. **Chosen: process-start validation plus route-scoped vault auth.** A global header-only change would break SSE and source-PDF clients that intentionally use the general auth contract. Strictness belongs on the credential-vault router, while startup validation removes the open/guessable production states. Header and general-query values are still exact and untrimmed.
 2. **Chosen: hard rotation from `123`.** The new startup validator rejects *every* weak member, so `AUTH_TOKEN=123,<strong>` cannot be used as a bridge. Under a global pause the head switches first, then workers; old in-memory workers temporarily cannot authenticate to the new head until restarted. That mismatch is deliberate and safe because claiming is paused and active Vertex files/DB assignments remain intact.
 3. **Chosen: one SA-specific vault service.** Scattered `chmod` calls do not close direct-write, torn-write, symlink-follow, special-file, stale-temp, read, delete, or Windows ACL gaps. All file operations route through one module.
 4. **Rejected: deleting/re-uploading the six keys.** The filesystem hardener changes metadata only, proves byte hashes unchanged, and never touches the assignment tables. Host-59 remains assigned to its current Vertex object.
@@ -40,6 +41,7 @@
 - Modify `app/auth.py` — fail-closed general empty-token behavior, local-dev opt-in, constant-time matching, and strict query-token rejection.
 - Modify `app/api/v1/__init__.py` — apply strict auth to every SA-key route.
 - Modify `app/api/v1/sa_keys.py` — remove the redundant download-only dependency and route all file I/O through the vault.
+- Modify `app/repositories/sa_keys.py` — add race-safe `ON CONFLICT` upload ownership and inventory reads without changing existing call sites.
 - Create `app/services/sa_key_vault.py` — permissions/ACLs, startup hardening, safe read/remove, atomic crash-safe writes.
 - Modify `pyproject.toml` and `uv.lock` — add conditional Windows-only `pywin32` for exact DACL replacement and inspection.
 - Create `.github/workflows/sa-vault-permissions.yml` — mandatory Windows security-descriptor acceptance for pull requests touching the vault/security startup.
@@ -116,7 +118,10 @@ def test_token_match_uses_every_candidate_without_plain_membership(monkeypatch):
 
     monkeypatch.setattr(operator_auth.hmac, "compare_digest", tracked)
     assert operator_auth.constant_time_token_match(STRONG_B, (STRONG_A, STRONG_B))
-    assert calls == [(STRONG_B, STRONG_A), (STRONG_B, STRONG_B)]
+    assert calls == [
+        (STRONG_B.encode(), STRONG_A.encode()),
+        (STRONG_B.encode(), STRONG_B.encode()),
+    ]
 ```
 
 Extend `tests/test_auth_strict.py` to prove: no token + opt-in false gives 503; no token + opt-in true gives anonymous on `get_current_user`; strict auth still gives 503 under local-dev opt-in; configured token matching is constant-time; diagnostics never contain presented/configured values.
@@ -139,6 +144,7 @@ Create `app/services/operator_auth.py` with these load-bearing rules:
 from __future__ import annotations
 
 import hmac
+import string
 import unicodedata
 from collections.abc import Iterable
 from typing import Literal
@@ -146,6 +152,7 @@ from typing import Literal
 
 MIN_TOKEN_LENGTH = 32
 MIN_DISTINCT_CHARACTERS = 8
+_TOKEN_ALPHABET = frozenset(string.ascii_letters + string.digits + "_-")
 _DENYLIST = frozenset(
     {"123", "password", "changeme", "change-me", "secret",
      "admin", "test", "dev", "development"}
@@ -167,6 +174,8 @@ def parse_strong_tokens(raw: str) -> tuple[str, ...]:
             not token
             or token != part
             or len(token) < MIN_TOKEN_LENGTH
+            or not token.isascii()
+            or any(character not in _TOKEN_ALPHABET for character in token)
             or any(
                 character.isspace()
                 or unicodedata.category(character).startswith("C")
@@ -203,15 +212,34 @@ def require_startup_auth(
 def constant_time_token_match(
     provided: str, candidates: Iterable[str]
 ) -> bool:
+    # Bytes avoid compare_digest(str, str)'s non-ASCII TypeError. Startup
+    # policy makes configured values ASCII; UTF-8 still makes malformed
+    # presented/candidate values a safe non-match in direct request tests.
+    provided_bytes = provided.encode("utf-8")
     matched = False
     for candidate in candidates:
-        matched = hmac.compare_digest(provided, candidate) or matched
+        matched = hmac.compare_digest(
+            provided_bytes, candidate.encode("utf-8")
+        ) or matched
     return matched
 ```
 
 In `app/config.py`, set `auth_token: str = ""` and add `allow_insecure_local_auth: bool = False`. Keep `valid_auth_tokens()` as the request-time parser of already-started configuration so legacy unit tests can inject short fake tokens; startup strength is enforced only by `require_startup_auth`.
 
-In `app/auth.py`, use `settings.allow_insecure_local_auth` for the anonymous branch; otherwise empty auth returns 503. Replace `provided not in valid` with `constant_time_token_match(provided, sorted(valid))`. Strict auth never consults the local-dev switch.
+In `app/auth.py`, use `settings.allow_insecure_local_auth` for the anonymous branch; otherwise empty auth returns 503. Replace `provided not in valid` with `constant_time_token_match(provided, sorted(valid))`. Strict auth never consults the local-dev switch. Both dependencies use `_bearer_value` for headers and the general dependency uses `_query_value` below; neither path calls `.strip()`:
+
+```python
+def _presented_value(value: str | None) -> str | None:
+    if not value or any(character.isspace() for character in value):
+        return None
+    return value
+
+
+def _query_value(token: str | None) -> str | None:
+    return _presented_value(token)
+```
+
+Add RED cases proving a 32-character Cyrillic configured token is rejected at startup, a Cyrillic presented token returns 401 rather than 500, header/query values with leading/trailing whitespace never authenticate, and a tracked `compare_digest` receives one `(bytes, bytes)` call for every candidate even when the first matches.
 
 In `tests/conftest.py`, add the explicit, test-only opt-in before importing app code:
 
@@ -329,10 +357,13 @@ def _bearer_value(authorization: str | None) -> str | None:
     scheme, separator, value = authorization.partition(" ")
     if not separator or scheme.casefold() != "bearer" or not value:
         return None
-    if any(character.isspace() for character in value):
-        return None
-    return value
+    return _presented_value(value)
 ```
+
+For the general dependency only, use `_query_value(token)` when no header is
+present. This deliberately preserves query authentication for SSE/source downloads
+while making it exact: `?token=%20<valid>` and `<valid>%20` are authentication misses,
+not silently trimmed successes. Add those cases to `tests/test_auth_strict.py`.
 
 In `app/api/v1/__init__.py`:
 
@@ -377,7 +408,7 @@ git commit -m "fix(sa-keys): require header auth on every vault route"
 - Create: `.github/workflows/sa-vault-permissions.yml`
 
 **Interfaces:**
-- Produces: `SAKeyVaultError`, `harden_vault() -> None`, `atomic_write(path: Path, body: bytes) -> None`, `read_bytes(path: Path) -> bytes`, `remove(path: Path, *, missing_ok: bool = False) -> None`.
+- Produces: `SAKeyVaultError`, `harden_vault() -> None`, `atomic_write(path: Path, body: bytes) -> None`, `read_bytes(path: Path) -> bytes`, `remove(path: Path, *, missing_ok: bool = False) -> None`, and `verify_uuid_inventory(expected_sha256: Mapping[str, str]) -> None`.
 - These functions accept only direct children of `storage.sa_key_dir()`; caller-supplied arbitrary paths are rejected.
 - Consumed by: API/worker I/O in Task 4 and startup in Task 5.
 
@@ -419,15 +450,18 @@ def test_atomic_failure_keeps_old_destination_and_cleans_temp(monkeypatch, tmp_p
     assert list(dest.parent.glob("*.tmp")) == []
 ```
 
-Also prove: temp is `0600` before replacement; successful replacement fsyncs file and directory; symlink vault/destination and FIFO destination are rejected without reading/writing their target; hardlink count >1 is rejected; a destination outside the vault is rejected; read rejects a path swapped to a symlink; and Windows replacement requests write-through.
+Also prove: every public function creates/hardens a missing vault before touching a credential; temp is `0600` before replacement; successful replacement fsyncs file and the held directory fd; symlink vault/destination and FIFO destination are rejected without reading/writing their target; hardlink count >1 is rejected both before and after temp publication; a destination outside the vault is rejected; and a path swap after validation cannot redirect POSIX read/write/remove because the operation stays anchored to the original directory fd. `verify_uuid_inventory` must accept the six matching UUID files plus `active.json`/stale temps, and fail generically for one missing UUID file, one mismatched SHA, one UUID file absent from the expected map, or an unsafe entry.
 
-On a real Windows runner (not an argv mock), create a temp vault under the same
-identity used to run the scheduled worker, seed a directory/file with inherited and
+On a real Windows runner (not an argv mock), create a temp vault under that runner's
+actual process identity (the identical code derives the real scheduled-task SID in
+production), seed a directory/file with inherited and
 explicit grants for the well-known Everyone SID, harden it, and inspect the resulting security
-descriptor. Assert: protected DACL; exactly one allow ACE; ACE SID equals the current
+descriptor. Assert: protected DACL; `GetAceCount() == 1`; that sole ACE is allow; ACE SID equals the current
 process-token SID; full-control mask; directory ACE carries object+container inheritance;
 file ACE carries neither; the current process can reopen/read/write both; the second SID
-has no ACE. This test is Windows-only and is mandatory in the implementation PR's Windows
+has no ACE. On that same real runner, create a file symlink, directory junction/reparse
+point, and hardlink and prove harden/read/write/remove all refuse without touching targets.
+This test is Windows-only and is mandatory in the implementation PR's Windows
 job. POSIX CI cannot substitute an argv-shape mock for that acceptance.
 
 - [ ] **Step 2: Run RED**
@@ -466,15 +500,14 @@ class SAKeyVaultError(RuntimeError):
     """A vault path or operation is unsafe; never includes file contents."""
 
 
-def _assert_direct_child(path: Path) -> Path:
+def _assert_direct_child(path: Path) -> tuple[Path, str]:
     vault = storage.sa_key_dir()
-    if path.parent != vault:
+    if path.parent != vault or path.name in {"", ".", ".."}:
         raise SAKeyVaultError("SA-key path is outside the vault")
-    return vault
+    return vault, path.name
 
 
-def _reject_unsafe_lstat(path: Path, *, directory: bool) -> None:
-    info = path.lstat()
+def _reject_unsafe_stat(info: os.stat_result, *, directory: bool) -> None:
     reparse = bool(
         getattr(info, "st_file_attributes", 0)
         & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
@@ -485,6 +518,10 @@ def _reject_unsafe_lstat(path: Path, *, directory: bool) -> None:
     if not directory and info.st_nlink != 1:
         raise SAKeyVaultError("SA-key vault file has multiple hard links")
 ```
+
+Call `_reject_unsafe_stat` only on `fstat`/handle-derived metadata. A preliminary
+`lstat` may be used for a clearer refusal, but it is never the authorization for a
+later path-based open.
 
 Add the dependency with a platform marker so Linux/macOS environments do not install it:
 
@@ -584,16 +621,45 @@ The PR gate must show `windows-security-descriptor` green. If repository branch
 protection cannot mark it required, the independent reviewer treats a missing,
 cancelled, or skipped run as a blocker and does not approve/merge.
 
-Implement `harden_vault()` in this order: create with `mode=0o700`; lstat/reparse/type-check the directory; apply directory privacy; iterate every direct entry; reject nonregular/reparse/symlink/hardlink entries; apply file privacy. Do not delete stale temps and do not inspect/log file bytes.
+Implement `harden_vault()` in this order: create with `mode=0o700`; open the directory without following links/reparse points; verify the opened object; apply directory privacy; iterate every direct entry through the held directory handle/fd; reject nonregular/reparse/symlink/hardlink entries; apply file privacy through the verified handle. Do not delete stale temps and do not inspect/log file bytes.
 
-Implement `atomic_write` with an `O_CREAT|O_EXCL` same-directory temp at `0o600`, `fchmod(0o600)` on POSIX, write/flush/fsync, private ACL application, `_replace_write_through`, final type/mode verification, and POSIX directory fsync. `_replace_write_through` uses `os.replace` + directory fsync on POSIX and `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)` on Windows. Before replacement, lstat an existing destination and reject unsafe types. Clean the temp on a live exception without following links.
+On POSIX introduce a context manager `_open_posix_vault_fd()` that opens
+`storage.sa_key_dir()` once with `O_RDONLY | O_DIRECTORY | O_NOFOLLOW`, verifies
+`fstat` is a directory, and holds that fd until the operation completes. All child
+operations use names plus that `dir_fd`: `os.open(..., dir_fd=vault_fd)`,
+`os.unlink(..., dir_fd=vault_fd)`, and
+`os.replace(..., src_dir_fd=vault_fd, dst_dir_fd=vault_fd)`. Use `fstat`/`fchmod`
+on opened files, never `Path.chmod` after a separate `lstat`. Fsync the same held
+directory fd after publication/removal. A rename of the pathname while an operation
+is in flight therefore cannot redirect credential bytes.
+
+On Windows, wrap `CreateFileW` so the vault and each existing child are opened with
+`FILE_FLAG_OPEN_REPARSE_POINT` (and `FILE_FLAG_BACKUP_SEMANTICS` for the directory),
+then inspect handle metadata/reparse tags and link count before access. Keep the vault
+handle open and record its volume serial + file index; immediately before and after
+the path-based `MoveFileExW` publish, reopen the named vault with the same flags and
+require the same identity. The protected one-SID DACL prevents other identities from
+mutating children. State in the module docstring that an administrator or malicious
+process already running as that same SID is outside the boundary; do not call the
+Windows path publish handle-relative or adversary-proof.
+
+Implement `atomic_write` by first opening/creating and hardening the vault, then creating an `O_CREAT|O_EXCL` same-directory temp at `0o600`, `fchmod(0o600)` on POSIX, writing/flushing/fsyncing, applying the private ACL, and verifying the still-open temp is regular with link count exactly one before `_replace_write_through`. Verify an existing destination through an opened no-follow handle, publish relative to the held POSIX fd (or through the identity-checked Windows path), verify the final object/mode/DACL, and fsync the POSIX vault fd. Clean the temp on a live exception through the held directory handle/fd without following links.
 
 Pin the replacement seam so its write-through behavior is reviewable and testable:
 
 ```python
-def _replace_write_through(source: Path, destination: Path) -> None:
+def _replace_write_through(
+    source: Path, destination: Path, *, vault_fd: int | None = None
+) -> None:
     if not _IS_WINDOWS:
-        os.replace(source, destination)
+        if vault_fd is None:
+            raise SAKeyVaultError("verified vault handle is required")
+        os.replace(
+            source.name,
+            destination.name,
+            src_dir_fd=vault_fd,
+            dst_dir_fd=vault_fd,
+        )
         return
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     move_file_ex = kernel32.MoveFileExW
@@ -607,11 +673,11 @@ def _replace_write_through(source: Path, destination: Path) -> None:
         raise OSError(ctypes.get_last_error(), "write-through replacement failed")
 ```
 
-After `_replace_write_through`, POSIX `atomic_write` opens the vault directory with
-`O_RDONLY | O_DIRECTORY`, fsyncs it, and closes it. The Windows call above owns the
-write-through guarantee; do not perform a second non-write-through `os.replace`.
+After `_replace_write_through`, POSIX `atomic_write` fsyncs the already-held vault fd.
+The Windows call above owns the write-through guarantee; do not perform a second
+non-write-through `os.replace`.
 
-Implement `read_bytes` with `O_RDONLY|O_NOFOLLOW` where available, then `fstat` regular/single-link verification before reading. Implement `remove` with direct-child and lstat validation before `unlink`; symlinks/nonregular paths raise rather than being silently removed.
+Implement POSIX `read_bytes` with `O_RDONLY|O_NOFOLLOW` plus `dir_fd`, then `fstat` regular/single-link verification before reading. Implement POSIX `remove` with a verified no-follow child handle and `os.unlink(name, dir_fd=vault_fd)`; Windows uses the verified reparse-point handle and rechecks vault identity around path deletion. Symlinks/nonregular paths raise rather than being silently removed. `verify_uuid_inventory` hashes only UUID-named regular children through `read_bytes`, compares the exact expected name→SHA map, ignores only `active.json` and recognized temp names, and otherwise fails without deleting or repairing evidence.
 
 - [ ] **Step 4: Run GREEN and inspect actual modes**
 
@@ -623,7 +689,7 @@ Expected on this POSIX head: every numeric mode/preservation/durability/hazard t
 
 - [ ] **Step 5: Mutation-proof the path and mode guards**
 
-Temporarily remove `O_NOFOLLOW`/the post-open `fstat` check: the swap-to-symlink test must fail. Temporarily create temps with `0o666`: the pre-replace mode test must fail. Revert both and rerun GREEN.
+Temporarily replace the POSIX `dir_fd` open/rename with path-based calls: the directory-swap test must fail. Temporarily remove the Windows reparse-handle check: the real Windows junction test must fail. Temporarily create temps with `0o666` or omit the pre-publish link-count check: the mode/hardlink tests must fail. Revert all mutations and rerun GREEN.
 
 - [ ] **Step 6: Commit Task 3**
 
@@ -637,6 +703,7 @@ git commit -m "feat(sa-keys): add private crash-safe vault primitives"
 
 **Files:**
 - Modify: `app/api/v1/sa_keys.py`
+- Modify: `app/repositories/sa_keys.py`
 - Modify: `app/services/sa_key_apply.py`
 - Modify: `app/services/worker.py`
 - Modify: `tests/services/test_sa_key_apply_core.py`
@@ -644,9 +711,11 @@ git commit -m "feat(sa-keys): add private crash-safe vault primitives"
 - Modify: `tests/api/test_sa_keys_api.py`
 - Modify: `tests/api/test_sa_keys_assign_api.py`
 - Modify: `tests/api/test_sa_keys_download.py`
+- Create: `tests/integration/test_sa_key_upload_atomicity.py`
 
 **Interfaces:**
 - Consumes Task 3: `atomic_write`, `read_bytes`, `remove`.
+- Produces `create_or_get_for_upload(...) -> tuple[SAKey, bool]` (boolean = this transaction inserted the metadata row) and `uuid_hash_inventory(session) -> dict[str, str]`.
 - Preserves API response shapes, SHA dedup, assignment locks, and worker capability behavior.
 - Does not change repository/table contents except the same explicit API mutations already requested by tests/operators.
 
@@ -674,23 +743,58 @@ Add tests that monkeypatch direct `Path.read_bytes`, `Path.write_bytes`, and `Pa
 - API delete and worker scrub call `remove`;
 - a vault error returns generic HTTP 503 without body/token bytes;
 - the existing six-file preservation test remains byte-identical.
+- two concurrent identical uploads resolve to one row/file without `IntegrityError`;
+- filesystem refusal rolls back newly inserted metadata;
+- commit failure removes a newly-owned file only after a fresh DB read proves the exact row absent; an unavailable/ambiguous check keeps the private file for startup reconciliation;
+- existing dedup rows/files are never removed by compensation, and missing/wrong-hash bytes are repaired only from a validated body whose SHA equals the row SHA.
 
 Run:
 
 ```bash
 uv run pytest tests/services/test_sa_key_apply_core.py \
   tests/services/test_worker_sa_key_sync.py tests/api/test_sa_keys_api.py \
-  tests/api/test_sa_keys_assign_api.py tests/api/test_sa_keys_download.py -q
+  tests/api/test_sa_keys_assign_api.py tests/api/test_sa_keys_download.py \
+  tests/integration/test_sa_key_upload_atomicity.py -q
 ```
 
 Expected: new wiring tests fail on the current direct `write_bytes`/`read_bytes`/`unlink` calls.
 
-- [ ] **Step 3: Replace every direct operation**
+- [ ] **Step 3: Make upload ownership race-safe and replace every direct operation**
 
-In upload, keep validation/dedup and move the atomic write before commit so a filesystem refusal rolls back the uncommitted metadata row:
+Add a repository helper without changing the existing `create_or_get` signature used by integration fixtures:
 
 ```python
-row = await repo.create_or_get(
+async def create_or_get_for_upload(
+    session: AsyncSession, **values
+) -> tuple[SAKey, bool]:
+    inserted_id = await session.scalar(
+        pg_insert(SAKey)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["sha256"])
+        .returning(SAKey.id)
+    )
+    if inserted_id is not None:
+        return await session.get(SAKey, inserted_id), True
+    row = await session.scalar(
+        select(SAKey).where(SAKey.sha256 == values["sha256"])
+    )
+    if row is None:
+        raise RuntimeError("SA-key upload conflict did not resolve")
+    return row, False
+```
+
+PostgreSQL waits for a competing uncommitted unique-key insert before resolving
+`ON CONFLICT`, so the SELECT observes the committed owner. Add
+`uuid_hash_inventory(session)` as one SELECT returning `{f"{id}.json": sha256}`
+for Task 5.
+
+In upload, keep validation, use the ownership helper, and write before commit so a
+filesystem refusal can roll back the uncommitted row. For an existing row, hash the
+current file: matching bytes are a no-op; missing or mismatched bytes are repaired
+atomically only after asserting this validated body hashes to `row.sha256`:
+
+```python
+row, created = await repo.create_or_get_for_upload(
     session,
     original_filename=file.filename or "key.json",
     project_id=project_id,
@@ -701,11 +805,26 @@ row = await repo.create_or_get(
 try:
     sa_key_vault.atomic_write(storage.sa_key_path(row.id), body)
 except sa_key_vault.SAKeyVaultError as exc:
+    await session.rollback()
     raise HTTPException(503, "SA-key vault is unavailable") from exc
-await session.commit()
+try:
+    await session.commit()
+except Exception:
+    await session.rollback()
+    await _compensate_new_upload_if_definitively_uncommitted(
+        row_id=row.id, sha256=sha, created=created
+    )
+    raise HTTPException(503, "SA-key upload did not commit") from None
 ```
 
-Use generic 503 handling for download/read/remove hazards. Do not include exception text in the response or logs. Replace direct operations as follows:
+`_compensate_new_upload_if_definitively_uncommitted` opens a fresh `SessionLocal`.
+It never removes for `created=False`, never removes when the exact row exists, removes
+only when absence is positively established, and treats a lookup error as unknown/keep.
+This is bounded compensation, not a false cross-resource transaction claim.
+
+Use generic 503 handling for download/read/remove hazards. Worker apply/scrub catches
+`SAKeyVaultError` separately and logs a fixed message without `logger.exception`, so
+an OS exception/path is not emitted through a traceback. Replace direct operations:
 
 ```python
 # download/local pull
@@ -726,7 +845,8 @@ Keep `sa_key_apply.write_active_key` as the public compatibility function, but m
 uv run pytest tests/services/test_sa_key_vault.py \
   tests/services/test_sa_key_apply_core.py tests/services/test_worker_sa_key_sync.py \
   tests/api/test_sa_keys_auth_surface.py tests/api/test_sa_keys_api.py \
-  tests/api/test_sa_keys_assign_api.py tests/api/test_sa_keys_download.py -q
+  tests/api/test_sa_keys_assign_api.py tests/api/test_sa_keys_download.py \
+  tests/integration/test_sa_key_upload_atomicity.py -q
 ```
 
 Expected: unit tests pass; real-DB modules skip without `RUN_DB_INTEGRATION=1`.
@@ -737,7 +857,7 @@ Expected: unit tests pass; real-DB modules skip without `RUN_DB_INTEGRATION=1`.
 RUN_DB_INTEGRATION=1 \
 DATABASE_URL='postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_scratch_qc' \
 uv run pytest tests/api/test_sa_keys_api.py tests/api/test_sa_keys_assign_api.py \
-  tests/api/test_sa_keys_download.py -q
+  tests/api/test_sa_keys_download.py tests/integration/test_sa_key_upload_atomicity.py -q
 ```
 
 Expected: upload/list/patch/download/assign/scrub/unassign/delete all pass with headers; query-only auth never succeeds; uploaded bytes use private permissions. Scratch fixtures use synthetic JSON only.
@@ -745,10 +865,11 @@ Expected: upload/list/patch/download/assign/scrub/unassign/delete all pass with 
 - [ ] **Step 6: Commit Task 4**
 
 ```bash
-git add app/api/v1/sa_keys.py app/services/sa_key_apply.py app/services/worker.py \
+git add app/api/v1/sa_keys.py app/repositories/sa_keys.py \
+  app/services/sa_key_apply.py app/services/worker.py \
   tests/services/test_sa_key_apply_core.py tests/services/test_worker_sa_key_sync.py \
   tests/api/test_sa_keys_api.py tests/api/test_sa_keys_assign_api.py \
-  tests/api/test_sa_keys_download.py
+  tests/api/test_sa_keys_download.py tests/integration/test_sa_key_upload_atomicity.py
 git commit -m "fix(sa-keys): route all credential files through vault"
 ```
 
@@ -763,6 +884,7 @@ git commit -m "fix(sa-keys): route all credential files through vault"
 **Interfaces:**
 - Consumes Task 1 `require_startup_auth` and Task 3 `harden_vault`.
 - Produces the same ordered synchronous preflight at the first executable line of `main.lifespan` and `worker.run_standalone`.
+- Head only: after the filesystem preflight but before job reconciliation/version-floor/LISTEN/worker construction, reads `uuid_hash_inventory(session)` and calls `verify_uuid_inventory`; a missing, mismatched, or orphan UUID file aborts startup without repair/deletion.
 - Does not validate at import and does not alter `viewer_main.py`'s separate dashboard-token startup.
 
 - [ ] **Step 1: Write fail-before-side-effect RED tests**
@@ -791,6 +913,10 @@ async def test_standalone_rejects_before_logging_prompts_worker_or_db(monkeypatc
     monkeypatch.setattr(settings, "auth_token", "123")
     monkeypatch.setattr(settings, "allow_insecure_local_auth", False)
     touched = []
+    monkeypatch.setattr(app_log, "configure",
+                        lambda: touched.append("logging"))
+    monkeypatch.setattr(prompts, "load_all",
+                        lambda: touched.append("prompts"))
     monkeypatch.setattr(worker, "build_worker_from_settings",
                         lambda: touched.append("worker"))
     with pytest.raises(operator_auth.OperatorAuthConfigurationError):
@@ -798,7 +924,13 @@ async def test_standalone_rejects_before_logging_prompts_worker_or_db(monkeypatc
     assert touched == []
 ```
 
-Add import-safety tests: with empty token/opt-in false, `import main` and `import app.services.worker` do not raise. Add ordered spies proving valid auth calls `harden_vault` before the first later seam. Add a local-dev test with empty token + opt-in true that reaches the next mocked seam but strict SA auth remains unavailable.
+The local imports in `run_standalone` resolve `app.log.configure` and
+`app.services.prompts.load_all`, so patch those source modules as above; a test that
+spies only `build_worker_from_settings` is insufficient. Also patch `SessionLocal`,
+the registry heartbeat seam, and `Worker.run`, proving neither authentication failure
+nor vault failure reaches logging, prompts, worker construction, heartbeat, or DB.
+
+Add import-safety tests: with empty token/opt-in false, `import main` and `import app.services.worker` do not raise. Add ordered spies proving valid auth calls `harden_vault` before the first later seam. For head startup, prove the inventory query/check occurs after `harden_vault` but before `_reconcile_on_startup`, version-floor stamping, LISTEN, or worker construction; seed missing/mismatch/orphan cases and assert none of those later seams runs. Add a local-dev test with empty token + opt-in true that reaches the next mocked seam but strict SA auth remains unavailable. Do not claim head logging is behind the lifecycle preflight: `main.py` intentionally configures logging at import; the security guarantee begins at the first lifespan line and precedes every credential/job/DB-network side effect.
 
 - [ ] **Step 2: Run RED**
 
@@ -820,6 +952,21 @@ operator_auth.require_startup_auth(
 )
 sa_key_vault.harden_vault()
 ```
+
+Then, in the first `SessionLocal` transaction, before `_reconcile_on_startup`:
+
+```python
+expected = await sa_keys_repo.uuid_hash_inventory(session)
+sa_key_vault.verify_uuid_inventory(expected)
+await _reconcile_on_startup(session)
+```
+
+This head-only audit is the crash-recovery boundary for Task 4: it preserves all
+evidence and refuses service when DB metadata and UUID files disagree. `active.json`
+and recognized same-vault temp names are not metadata rows; any unexpected UUID JSON
+is an orphan and blocks startup. Standalone workers run `harden_vault` but not the
+head inventory comparison because their local vault normally contains only
+`active.json`.
 
 At the top of `worker.run_standalone`, before configuring logging/loading prompts/building a worker, add the identical calls. Let failures propagate; do not catch-and-warn. Error strings remain generic and contain no token/path contents.
 
@@ -870,7 +1017,7 @@ git commit -m "fix(startup): validate auth and harden key vault first"
 
 Create `tests/docs/test_operator_token_runbook.py` and assert the runbook contains, in order:
 
-1. set fleet pause reason `operator-auth-rotation`;
+1. read the existing fleet pause; acquire `operator-auth-rotation` only when unpaused, otherwise preserve the foreign reason and record `pause_owned=false`;
 2. wait until scoped/live running job count is zero;
 3. read-only six-key count and Host-59 assignment snapshot;
 4. SHA-256 snapshot of UUID-named key files;
@@ -880,7 +1027,7 @@ Create `tests/docs/test_operator_token_runbook.py` and assert the runbook contai
 8. explicit `DO NOT restart/kill the head from automation`; operator restarts head;
 9. worker rolling restarts only after the head is healthy;
 10. post-check hashes, six DB rows, Host-59 key_id/scrub state, file permissions/ACLs, heartbeats/capabilities, auth 401/200 matrix;
-11. unpause only with `WHERE api_paused_reason='operator-auth-rotation'`;
+11. unpause only when `pause_owned=true` and with `WHERE api_paused_reason='operator-auth-rotation'`; never clear a pre-existing foreign pause;
 12. rollback uses another strong token or old code with the new strong token, never `123`.
 
 The test must fail if “temporarily allow 123”, “restart head automatically”, or an unscoped `UPDATE budget_state ... SET ... NULL` appears.
@@ -895,7 +1042,8 @@ Expected: FAIL because the runbook does not exist.
 
 - [ ] **Step 3: Write the exact rotation runbook**
 
-The runbook must use the current database pause primitive with owner-scoped SQL:
+The runbook must first read `api_paused_at/api_paused_reason`. If unpaused, acquire
+the current database pause primitive with owner-scoped SQL:
 
 ```sql
 UPDATE budget_state
@@ -904,7 +1052,12 @@ WHERE id = 1
   AND (api_paused_at IS NULL OR api_paused_reason = 'operator-auth-rotation');
 ```
 
-Abort if a foreign pause reason is present. Drain/wait; do not cancel running jobs. Capture these read-only facts without selecting key bytes:
+If a foreign pause reason (including the current blocker-remediation pause) is already
+present, do not overwrite it and do not abort merely because it is foreign: set
+`pause_owned=false`, require it to remain continuously set, and proceed only after
+running jobs reach zero. If this run acquired `operator-auth-rotation`, set
+`pause_owned=true`. Drain/wait; do not cancel running jobs. Capture these read-only
+facts without selecting key bytes:
 
 ```sql
 SELECT count(*) AS stored_vertex_keys FROM sa_keys;
@@ -915,13 +1068,24 @@ SELECT count(*) AS running_jobs FROM homework_jobs WHERE status = 'running';
 
 Require count `6`, one Host-59 row with non-null `key_id` and null `scrub_requested_at`, and zero running jobs before restart. Hash only UUID-named stored files, not JSON output. Stage code + the same new token to head/workers while old processes remain paused. Explain the unavoidable mismatch window: after the operator restarts the head, old workers still have `123` in memory and receive 401 until each is restarted; no job is claimed, assignment rows and `active.json` remain untouched, and the window closes worker-by-worker.
 
-Unpause only after all verifications:
+After the operator restarts the head, verify its automatic version-floor stamp equals
+the deployed code version. Roll workers only after that fence is visible. Attest every
+online model-calling process (not just hostnames): new code SHA/version, token
+fingerprint without disclosure, expected concurrency/capabilities, and healthy
+heartbeat. Any offline host remains fenced by the version floor and, where present,
+its tombstone until it is updated; it is not counted as rollout-complete merely because
+it is powered off.
+
+Unpause only after all verifications and only if this run owns the pause:
 
 ```sql
 UPDATE budget_state
 SET api_paused_at = NULL, api_paused_reason = NULL
 WHERE id = 1 AND api_paused_reason = 'operator-auth-rotation';
 ```
+
+When `pause_owned=false`, emit no clearing SQL: the pre-existing owner retains the
+pause and decides when the broader blocker remediation is complete.
 
 State explicitly: automation prepares worker files and reports readiness; the user/operator owns the head process and performs its restart. No agent kills/restarts the head without a new explicit instruction.
 
@@ -931,7 +1095,7 @@ State explicitly: automation prepares worker files and reports readiness; the us
 - `README`/`HOW_IT_WORKS`/`CODE_MAP`: empty no longer silently opens production; general query auth remains only on normal routes; every SA route is header-only.
 - `DEPLOY`: replace default `123`/“strongly recommended” with default empty + “required unless explicit local dev”; link the rotation runbook.
 - `DATABASE`: vault path/permission/durability/hazard contract; no schema change.
-- fleet setup: workers must share the strong operator token; SA assignment state is preserved through operator-token rotation.
+- fleet setup: workers must share the strong operator token; enumerate/attest every model-calling process, and keep offline stragglers version-fenced/tombstoned; SA assignment state, plain `GEMINI_API_KEY` values, all six stored Vertex objects, and Host-59's assignment are preserved through operator-token rotation.
 - `CLAUDE.md`: startup security order, local-dev opt-in, and do-not-bypass rules.
 
 - [ ] **Step 5: Run GREEN**
@@ -981,7 +1145,8 @@ Expected: all pass, including real POSIX mode assertions.
 RUN_DB_INTEGRATION=1 \
 DATABASE_URL='postgresql+asyncpg://edu:edu@127.0.0.1:5432/edu_scratch_qc' \
 uv run pytest tests/api/test_sa_keys_api.py tests/api/test_sa_keys_assign_api.py \
-  tests/api/test_sa_keys_download.py tests/integration/test_assignment_writer_locks.py -q
+  tests/api/test_sa_keys_download.py tests/integration/test_sa_key_upload_atomicity.py \
+  tests/integration/test_assignment_writer_locks.py -q
 ```
 
 Expected: authenticated SA CRUD/assignment behavior passes; strict query rejection and assignment locking remain intact. No production DB is contacted.
@@ -989,7 +1154,7 @@ Expected: authenticated SA CRUD/assignment behavior passes; strict query rejecti
 - [ ] **Step 3: Run the canonical suite**
 
 ```bash
-uv run pytest -q
+uv run python -m pytest tests/ -q
 ```
 
 Expected: green against the post-rebase baseline. No model call occurs.
@@ -1018,7 +1183,7 @@ git log HEAD..origin/Nggaev-v2 --oneline
 git diff --name-status origin/Nggaev-v2...
 ```
 
-If the base moved, rebase, resolve composition on `config.py`/`main.py`/`worker.py`, and rerun Steps 1–4. Never edit a project-manager-owned PR/branch.
+If the base moved, rebase, resolve composition on `config.py`/`main.py`/`worker.py`, and rerun Steps 1–4. Re-read #117/#118: if either merged, preserve both its structured-output documentation and this lane's security truth; if still open, leave its branch/PR untouched and record that its owner must rebase after this lane. Never edit a project-manager-owned PR/branch.
 
 - [ ] **Step 6: Write finish records and archive the plan**
 
@@ -1038,18 +1203,18 @@ Use `superpowers:requesting-code-review`, then `superpowers:finishing-a-developm
 
 ## Deployment and rollback gate (post-merge only)
 
-1. **Do not begin while generation is active.** Set the owner-scoped global pause and wait for `running_jobs=0`.
+1. **Do not begin while generation is active.** Read the current pause. Acquire `operator-auth-rotation` only if unpaused; otherwise preserve the foreign reason and mark this run `pause_owned=false`. Require the pause to remain set and wait for `running_jobs=0`.
 2. **Preserve facts first.** Record six metadata rows, Host-59's exact `key_id` + null scrub timestamp, hashes of all six stored UUID JSON files, and current file permissions/ACLs.
 3. **Generate two strong values offline:** the primary and a sealed rollback replacement. Neither is printed into chat, logs, shell history, git, or artifacts.
 4. **Prepare, do not restart:** pull final code and stage the primary value plus `ALLOW_INSECURE_LOCAL_AUTH=false` into head and every worker `.env`. Automation reports host-by-host readiness only.
-5. **Operator restarts the head.** Verify startup accepts auth, hardens the vault without hash changes, health is live, query auth fails on every SA route, header auth works, six keys and Host-59 are intact.
-6. **Restart workers in guarded batches.** During the paused mismatch window, not-yet-restarted workers use in-memory `123` and cannot pull from the new head; this is expected. Confirm each restarted worker uses the new token, is current, Gemini-capable, and retains its existing Vertex/plain-key posture.
-7. **Verify all hosts, then unpause only the owned reason.** A foreign pause is never cleared.
+5. **Operator restarts the head.** Verify startup accepts auth, hardens the vault without hash changes, health is live, query auth fails on every SA route, header auth works, six keys and Host-59 are intact, and the version floor auto-raised to the final code version.
+6. **Restart workers in guarded batches.** During the paused mismatch window, not-yet-restarted workers use in-memory `123` and cannot pull from the new head; the new version floor also prevents their DB claims. Confirm every online model-calling process (two processes on one PC count twice) uses the new token fingerprint, final SHA/version, expected concurrency, healthy heartbeat/capabilities, and retains its existing Vertex/plain-key posture. Offline processes remain floor-fenced/tombstoned until updated.
+7. **Verify the whole eligible fleet, then unpause only if `pause_owned=true`.** A foreign pause is never cleared; this run emits no clear when it inherited one.
 8. **Rollback:** keep the global pause. Roll code back only while retaining a strong token, or hard-cut to the sealed strong replacement and repeat head-then-worker restarts. Never restore `123`; never delete/re-upload stored Vertex keys; never change Host-59's assignment as part of auth rollback.
 
 ## Plan self-review
 
-- **Spec coverage:** all-SA-route header auth (Task 2); default/open/weak startup refusal + explicit local mode + test-safe lifecycle (Tasks 1/5); private modes/Windows ACL, existing/new/temp/active, atomic durability, hostile paths, and no bytes in diagnostics (Tasks 3/4/7); head+standalone startup (Task 5); six keys/Host-59 preservation, hard-cut rollout, user-owned restart, mismatch window, and rollback (Tasks 6/7/deployment gate); no generation/paid action (global constraints/Task 7).
-- **Type consistency:** Task 1 exports are consumed under the same names by Tasks 2/5. Task 3's four public functions are consumed under the same names by Task 4/5. `ALLOW_INSECURE_LOCAL_AUTH` maps only to `settings.allow_insecure_local_auth`.
+- **Spec coverage:** all-SA-route header auth (Task 2); ASCII URL-safe exact tokens, malformed-safe constant-time matching, default/open/weak startup refusal + explicit local mode (Tasks 1/2); POSIX dir-fd anchoring, Windows handle/reparse checks + exact one-ACE DACL, existing/new/temp/active permissions, durability, and no bytes in diagnostics (Tasks 3/4/7); race-safe PG dedup, bounded commit compensation, and fail-closed head inventory reconciliation (Tasks 4/5); real head+standalone side-effect ordering (Task 5); six keys/Host-59/plain-key preservation, foreign-pause ownership, version-floor/all-process attestation, offline fencing, user-owned restart, mismatch window, and rollback (Tasks 6/7/deployment gate); #117/#118 doc integration (global/Task 7); no generation/paid action (global constraints/Task 7).
+- **Type consistency:** Task 1 exports are consumed under the same names by Tasks 2/5. Task 3's five public functions are consumed under the same names by Tasks 4/5. Task 4's `create_or_get_for_upload -> (SAKey, bool)` and `uuid_hash_inventory -> dict[str, str]` are consumed exactly by upload/head startup. `ALLOW_INSECURE_LOCAL_AUTH` maps only to `settings.allow_insecure_local_auth`.
 - **Placeholder scan:** no TBD/TODO/“similar to”/undefined helper remains. All commands, routes, statuses, token rules, modes, files, and operational order are explicit.
 - **Scope check:** no encryption-at-rest, KMS, schema, SA assignment change, token-management UI, general-query-auth removal, live rollout, or model generation is included.
