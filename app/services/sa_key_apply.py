@@ -4,15 +4,13 @@ Pure-ish units (file/env/http) the worker orchestrates. The capability-global
 rebind lives in worker.py to avoid a worker<->this circular import."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import MutableMapping
-from uuid import uuid4
 
 import httpx
 
 from app.config import settings
-from app.services import storage
+from app.services import sa_key_vault, storage
 
 _PULL_TIMEOUT = 30.0
 
@@ -20,10 +18,7 @@ _PULL_TIMEOUT = 30.0
 def write_active_key(key_bytes: bytes, dest: Path) -> None:
     """Atomically place `key_bytes` at `dest` (same-dir temp + os.replace), so a
     concurrent reader (an agent spawn assembling child_env) never sees a torn file."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.parent / f"active.json.{os.getpid()}.{uuid4().hex}.tmp"
-    tmp.write_bytes(key_bytes)
-    os.replace(tmp, dest)  # atomic on same filesystem
+    sa_key_vault.atomic_write(dest, key_bytes)
 
 
 def set_credentials_env(env: MutableMapping, creds_path: str, project_id: str) -> None:
@@ -52,7 +47,7 @@ def pull_key_bytes(key_id: str) -> bytes:
     HTTP GET the head's download endpoint with the Bearer token (book_fetch idiom)."""
     head = settings.fleet_head_url.strip()
     if not head:
-        return storage.sa_key_path(key_id).read_bytes()
+        return sa_key_vault.read_bytes(storage.sa_key_path(key_id))
     token = settings.auth_token.split(",")[0].strip()
     url = f"{head.rstrip('/')}/api/v1/sa-keys/{key_id}/download"
     headers = {"Authorization": f"Bearer {token}"} if token else {}

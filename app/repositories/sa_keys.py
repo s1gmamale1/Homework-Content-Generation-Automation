@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import delete as sa_delete, exists, func, select, text
@@ -38,8 +39,73 @@ async def create_or_get(
     return row
 
 
+async def create_or_get_for_upload(
+    session: AsyncSession, **values
+) -> tuple[SAKey, bool]:
+    """Race-safe upload ownership with the dedup row locked for file repair."""
+    inserted_id = await session.scalar(
+        pg_insert(SAKey)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["sha256"])
+        .returning(SAKey.id)
+    )
+    if inserted_id is not None:
+        row = await session.get(SAKey, inserted_id)
+        if row is None:  # defensive: RETURNING identified a row in this transaction
+            raise RuntimeError("inserted SA-key upload row was not readable")
+        return row, True
+    row = await session.scalar(
+        select(SAKey)
+        .where(SAKey.sha256 == values["sha256"])
+        .with_for_update()
+    )
+    if row is None:
+        raise RuntimeError("SA-key upload conflict did not resolve")
+    return row, False
+
+
 async def get(session: AsyncSession, key_id: UUID) -> SAKey | None:
     return await session.get(SAKey, key_id)
+
+
+async def lock_key_for_assignment(
+    session: AsyncSession, key_id: UUID
+) -> SAKey | None:
+    """Take PostgreSQL FOR KEY SHARE before binding a worker to this key."""
+    return await session.scalar(
+        select(SAKey)
+        .where(SAKey.id == key_id)
+        .with_for_update(read=True, key_share=True)
+    )
+
+
+async def lock_unassigned_key_for_delete(
+    session: AsyncSession, key_id: UUID
+) -> tuple[SAKey | None, Literal["ready", "not_found", "assigned"]]:
+    """Lock the key row exclusively, then decide delete eligibility."""
+    row = await session.scalar(
+        select(SAKey).where(SAKey.id == key_id).with_for_update()
+    )
+    if row is None:
+        return None, "not_found"
+    assigned = await session.scalar(
+        select(
+            exists().where(SAKeyAssignment.key_id == key_id)
+        )
+    )
+    if assigned:
+        return row, "assigned"
+    return row, "ready"
+
+
+async def delete_locked_key(session: AsyncSession, key_id: UUID) -> int:
+    result = await session.execute(sa_delete(SAKey).where(SAKey.id == key_id))
+    return result.rowcount or 0
+
+
+async def uuid_hash_inventory(session: AsyncSession) -> dict[str, str]:
+    rows = (await session.execute(select(SAKey.id, SAKey.sha256))).all()
+    return {f"{key_id}.json": sha256 for key_id, sha256 in rows}
 
 
 async def list_keys(session: AsyncSession) -> list[dict]:

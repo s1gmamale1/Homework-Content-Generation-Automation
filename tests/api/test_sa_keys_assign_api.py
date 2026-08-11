@@ -7,6 +7,9 @@ pytestmark = pytest.mark.skipif(
     os.getenv("RUN_DB_INTEGRATION") != "1", reason="needs a real Postgres"
 )
 
+_TOKEN = "T8r2Vw9_Mp4xC7kN1qZ6sH3dL5yF0aJgB-Ue"
+_HEADERS = {"Authorization": f"Bearer {_TOKEN}"}
+
 
 def _good_key():
     return json.dumps({
@@ -20,9 +23,11 @@ def _good_key():
 async def test_assign_unassign_scrub(monkeypatch, tmp_path):
     import app.config as config
     monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
-    monkeypatch.setattr(config.settings, "auth_token", "")
+    monkeypatch.setattr(config.settings, "auth_token", _TOKEN)
     from main import app
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://t", headers=_HEADERS
+    ) as c:
         kid = (await c.post("/api/v1/sa-keys",
                files={"file": ("k.json", _good_key(), "application/json")})).json()["id"]
         assert (await c.put(f"/api/v1/sa-keys/assignments/host-z",

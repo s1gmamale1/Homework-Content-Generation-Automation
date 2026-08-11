@@ -55,6 +55,7 @@ from app.services import (
     pipeline,
     providers,
     sa_key_apply,
+    sa_key_vault,
 )
 from app.services.errors import (
     CancelWonSignal,
@@ -969,6 +970,9 @@ class Worker:
                     if asg["scrub"]:
                         await self._scrub_if_idle(session)
                         return
+        except sa_key_vault.SAKeyVaultError:
+            logger.warning(f"worker {self.id} SA-key vault scrub failed closed")
+            return
         except Exception:
             logger.warning(f"worker {self.id} sa-key assignment read/scrub failed")
             return
@@ -994,6 +998,8 @@ class Worker:
                 f"worker {self.id} applied SA key project={asg['project_id']} "
                 f"(live, no restart) — gemini_api={CAPABILITIES['can_gemini_api']}"
             )
+        except sa_key_vault.SAKeyVaultError:
+            logger.warning(f"worker {self.id} SA-key vault apply failed closed")
         except Exception:
             logger.exception(f"worker {self.id} SA key apply failed")
 
@@ -1019,7 +1025,7 @@ class Worker:
         when there is plainly nothing to do or this process itself is busy."""
         has_residue = (
             self._applied_key_sha is not None
-            or sa_key_active_path().exists()
+            or sa_key_vault.file_present(sa_key_active_path())
             or "GOOGLE_APPLICATION_CREDENTIALS" in os.environ
             or "GOOGLE_CLOUD_PROJECT" in os.environ
             or sa_key_apply.env_file_has_credentials(_WORKER_ENV_PATH)
@@ -1061,7 +1067,7 @@ class Worker:
             _WORKER_ENV_PATH,
             {"GOOGLE_APPLICATION_CREDENTIALS": None, "GOOGLE_CLOUD_PROJECT": None},
         )
-        sa_key_active_path().unlink(missing_ok=True)
+        sa_key_vault.remove(sa_key_active_path(), missing_ok=True)
         _rebind_capabilities()
         self._applied_key_sha = None
         logger.warning(f"worker {self.id} SA key SCRUBBED (revoked)")

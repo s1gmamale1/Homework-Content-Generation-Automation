@@ -791,6 +791,41 @@ def read_bytes(path: Path) -> bytes:
             os.close(fd)
 
 
+def file_present(path: Path) -> bool:
+    """Return whether a safe regular vault child exists.
+
+    Only a proven absent name returns ``False``.  A symlink, reparse point,
+    hardlink, unsafe type, or uncertain lookup raises ``SAKeyVaultError`` so a
+    caller cannot mistake hostile residue for a clean vault.
+    """
+    vault, name = _assert_direct_child(path)
+    harden_vault()
+    if _IS_WINDOWS:  # pragma: no cover - exercised by mandatory Windows CI
+        with _open_windows_vault("presence"):
+            try:
+                with _open_windows_handle(
+                    vault / name,
+                    use=_WindowsHandleUse.READ_OR_HASH,
+                    directory=False,
+                    disposition=win32con.OPEN_EXISTING,
+                ):
+                    return True
+            except _WindowsPathNotFound:
+                return False
+    with _open_posix_vault_fd("presence") as vault_fd:
+        try:
+            fd = _posix_open_child(vault_fd, name)
+        except SAKeyVaultError as exc:
+            try:
+                os.stat(name, dir_fd=vault_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return False
+            raise exc
+        else:
+            os.close(fd)
+            return True
+
+
 def _remove_windows_verified(vault: Path, name: str, *, missing_ok: bool) -> None:  # pragma: no cover
     path = vault / name
     with _open_windows_vault("remove") as (_vault, _handle, identity):

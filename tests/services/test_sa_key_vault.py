@@ -58,6 +58,7 @@ def test_every_public_operation_creates_a_private_missing_vault(monkeypatch, tmp
     calls = [
         lambda: sa_key_vault.harden_vault(),
         lambda: sa_key_vault.atomic_write(storage.sa_key_active_path(), b"x"),
+        lambda: sa_key_vault.file_present(storage.sa_key_active_path()),
         lambda: sa_key_vault.read_bytes(storage.sa_key_path(key_id)),
         lambda: sa_key_vault.remove(storage.sa_key_path(key_id), missing_ok=True),
         lambda: sa_key_vault.quarantine_for_delete(
@@ -77,6 +78,15 @@ def test_every_public_operation_creates_a_private_missing_vault(monkeypatch, tmp
         except (FileNotFoundError, sa_key_vault.SAKeyVaultError):
             pass
         assert stat.S_IMODE(vault.stat().st_mode) == 0o700
+
+
+def test_file_present_distinguishes_safe_file_from_proven_absence(monkeypatch, tmp_path):
+    _point_vault(monkeypatch, tmp_path)
+    path = storage.sa_key_active_path()
+
+    assert sa_key_vault.file_present(path) is False
+    sa_key_vault.atomic_write(path, b"credential")
+    assert sa_key_vault.file_present(path) is True
 
 
 @pytest.mark.skipif(os.name == "nt", reason="numeric modes are POSIX")
