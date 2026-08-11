@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useMemo, useState } from "react";
-import { ArrowLeft, ArrowRight, Loader2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Download, Loader2 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import {
   AnswerKeySlide,
@@ -96,8 +96,28 @@ export function assembleSlides(deck: TeacherDeck): SlideEntry[] {
   return slides;
 }
 
-function DeckPager({ deck }: { deck: TeacherDeck }) {
-  const slides = useMemo(() => assembleSlides(deck), [deck]);
+/**
+ * Print-only rendering of the FULL slide list (used by `window.print()`).
+ * The interactive `DeckPager` below only ever mounts the active slide, so
+ * printing it as-is would yield a one-page PDF — this sibling container
+ * renders every assembled slide, in order, each wrapped `.deck-slide` so
+ * the `@media print` rules in `globals.css` can break one slide per page.
+ * Hidden on screen (`.deck-print-view` is `display:none` by default) and
+ * flipped visible only under `@media print`.
+ */
+function DeckPrintView({ slides }: { slides: SlideEntry[] }) {
+  return (
+    <div className="deck-print-view">
+      {slides.map((s) => (
+        <div key={s.key} className="deck-slide">
+          {s.node}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DeckPager({ slides }: { slides: SlideEntry[] }) {
   const [active, setActive] = useState(0);
   const [dir, setDir] = useState(1);
   const reduce = useReducedMotion();
@@ -122,7 +142,7 @@ function DeckPager({ deck }: { deck: TeacherDeck }) {
   };
 
   return (
-    <div className="mt-7 space-y-5">
+    <div className="print-hide mt-7 space-y-5">
       <nav className="flex flex-wrap gap-2" aria-label="Slides">
         {slides.map((s, i) => {
           const isActive = i === idx;
@@ -214,6 +234,11 @@ export function DeckPage() {
     retry: (count, err) => (err instanceof ApiError && err.status === 404 ? false : count < 1),
   });
 
+  // Slide list is assembled once here (not inside DeckPager) so both the
+  // interactive pager and the print-only all-slides view render from the
+  // exact same array.
+  const slides = useMemo(() => (deck ? assembleSlides(deck) : []), [deck]);
+
   if (isLoading) {
     return (
       <div className="relative min-h-[calc(100vh-9rem)]">
@@ -247,20 +272,32 @@ export function DeckPage() {
 
   return (
     <div className="relative min-h-[calc(100vh-9rem)]">
-      <SpaceBackdrop />
+      <div className="print-hide">
+        <SpaceBackdrop />
+      </div>
 
       <div className="relative z-10">
-        <div className="flex items-center justify-between gap-3">
+        <div className="print-hide flex items-center justify-between gap-3">
           <Link to={`/job/${id}`} className={BACK_PILL}>
             <ArrowLeft className="size-4 shrink-0 transition-transform group-hover:-translate-x-0.5" />
             Back to job
           </Link>
+
+          <motion.button
+            type="button"
+            onClick={() => window.print()}
+            whileTap={{ scale: 0.96 }}
+            className={cn(GLASS_BTN, "px-3.5 py-2 text-xs")}
+          >
+            <Download className="size-3.5" />
+            Download PDF
+          </motion.button>
         </div>
 
-        <h1 className="mt-6 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+        <h1 className="print-hide mt-6 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
           Teacher deck
         </h1>
-        <p className="mt-2 flex flex-wrap items-center gap-x-2 font-mono text-[0.72rem] uppercase tracking-[0.16em] text-white/50">
+        <p className="print-hide mt-2 flex flex-wrap items-center gap-x-2 font-mono text-[0.72rem] uppercase tracking-[0.16em] text-white/50">
           <span>{deck.meta.subject_label}</span>
           <span className="text-white/25">·</span>
           <span>{deck.meta.grade}-sinf</span>
@@ -268,8 +305,10 @@ export function DeckPage() {
           <span>{deck.meta.topic_number}-mavzu</span>
         </p>
 
-        <DeckPager deck={deck} />
+        <DeckPager slides={slides} />
       </div>
+
+      <DeckPrintView slides={slides} />
     </div>
   );
 }
