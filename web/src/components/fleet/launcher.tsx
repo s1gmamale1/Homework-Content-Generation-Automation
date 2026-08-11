@@ -676,10 +676,17 @@ function SubjectAvatar({ subject }: { subject: string }) {
 // "launched" into generating/complete from its own TOC (see CardStatus).
 type FleetStatus = "preparing" | "ready" | "launched" | "failed";
 
+// The tray is a homework-centric surface — its Ready/Launched grouping only
+// ever reflects HOMEWORK batches, deliberately not lifted to the per-card
+// launchMode (that's local state per ReadyCard, not something the tray-level
+// grouping can see). A book that only carries a teacher-material batch must
+// still show "ready" here, matching its (homework-default) card.
 function bookFleetStatus(book: Book, batches: BatchSummary[]): FleetStatus {
   if (book.status === "toc_extracting" || book.status === "uploading") return "preparing";
   if (book.status === "failed" || book.status === "toc_review") return "failed";
-  return batches.some((b) => b.book_id === book.id) ? "launched" : "ready";
+  return batches.some((b) => b.book_id === book.id && b.kind === "homework")
+    ? "launched"
+    : "ready";
 }
 
 /** Caption for a tray group, e.g. "2 ready · 3 launched". */
@@ -745,6 +752,18 @@ function CardStatusChip({ status }: { status: CardStatus }) {
       )}
     >
       {m.label}
+    </span>
+  );
+}
+
+/** Unambiguous visible flag on the COLLAPSED card when launchMode persisted
+ *  as "teacher_material" — the toggle itself is only visible once expanded,
+ *  so a card can silently reopen in teacher mode; this badge is the footgun
+ *  guard (review finding #3). */
+function TeacherModeBadge() {
+  return (
+    <span className="rounded-md border border-[#7c5cff]/40 bg-[#7c5cff]/20 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-[#c9bcff]">
+      Teacher mode
     </span>
   );
 }
@@ -939,9 +958,17 @@ function ReadyCard({
   // resort. Keying the query on it makes switching the language picker refetch +
   // recompute the "complete"/remaining status for that language.
   const effectiveLang = outputLanguage ?? book.source_language ?? defaultsQ.data?.output_language ?? null;
+  // launchMode is in the query key (and passed to getBook) so the per-lesson
+  // status — and everything derived from it below (doneCount/complete/
+  // remaining/the Launch button) — reflects the card's OWN kind, not
+  // homework's. Switching the toggle refetches immediately.
   const detail = useQuery({
-    queryKey: ["book", book.id, effectiveLang],
-    queryFn: () => api.getBook(book.id, effectiveLang),
+    queryKey: ["book", book.id, effectiveLang, launchMode],
+    // Only send `kind` when it's not the default — keeps the homework-mode
+    // request byte-identical to before this toggle existed (no new query
+    // param), mirroring how outputLanguage is only sent when explicitly picked.
+    queryFn: () =>
+      api.getBook(book.id, effectiveLang, launchMode !== "homework" ? launchMode : undefined),
   });
   const toc = detail.data?.toc ?? [];
   // Rows the current class opt-in set would actually launch (LESSON-only by
@@ -1206,6 +1233,7 @@ function ReadyCard({
             {subjectLabelWithVariant(book.subject, book.subject_variant)}
             {book.grade && <GradeChip grade={book.grade} />}
             <CardStatusChip status={cardStatus} />
+            {launchMode === "teacher_material" && <TeacherModeBadge />}
             <span className={langBadge(book.source_language)}>
               {book.source_language.toUpperCase()}
             </span>

@@ -139,13 +139,18 @@ export const api = {
     return unwrap<Book>(res);
   },
 
-  async getBook(bookId: string, outputLanguage?: string | null): Promise<Book> {
+  async getBook(bookId: string, outputLanguage?: string | null, kind?: JobKind): Promise<Book> {
     // When a language is given, per-lesson status is scoped to it so the
     // launcher's "complete"/launch gate reflects the selected language.
-    const qs = outputLanguage
-      ? `?output_language=${encodeURIComponent(outputLanguage)}`
-      : "";
-    const res = await authFetch(`/api/v1/books/${encodeURIComponent(bookId)}${qs}`);
+    // `kind` scopes it the same way for job kind — omitted means the backend
+    // default "homework" (byte-identical for every non-launcher caller).
+    const params = new URLSearchParams();
+    if (outputLanguage) params.set("output_language", outputLanguage);
+    if (kind) params.set("kind", kind);
+    const qs = params.toString();
+    const res = await authFetch(
+      `/api/v1/books/${encodeURIComponent(bookId)}${qs ? `?${qs}` : ""}`,
+    );
     return unwrap<Book>(res);
   },
 

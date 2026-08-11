@@ -28,7 +28,7 @@ def test_enriched_toc_entries_attaches_latest_status(monkeypatch):
     book = SimpleNamespace(id=uuid4(), toc_entries=[e1, e2])
     job = SimpleNamespace(id=uuid4(), status="running")
 
-    async def fake_latest(session, book_id, output_language=None):
+    async def fake_latest(session, book_id, output_language=None, *, kind="homework"):
         # only the first section has a job
         return {e1.id: job}
 
@@ -52,7 +52,7 @@ def test_enriched_toc_entries_threads_output_language(monkeypatch):
     book = SimpleNamespace(id=uuid4(), toc_entries=[e1])
     captured = {}
 
-    async def fake_latest(session, book_id, output_language=None):
+    async def fake_latest(session, book_id, output_language=None, *, kind="homework"):
         captured["output_language"] = output_language
         return {}
 
@@ -78,7 +78,7 @@ def test_enriched_toc_entries_attaches_entry_class(monkeypatch):
     )
     job = SimpleNamespace(id=uuid4(), status="running")
 
-    async def fake_latest(session, book_id, output_language=None):
+    async def fake_latest(session, book_id, output_language=None, *, kind="homework"):
         # only the plain lesson row has a job — proves entry_class coexists
         # with the pre-existing latest_job_status enrichment.
         return {lesson.id: job}

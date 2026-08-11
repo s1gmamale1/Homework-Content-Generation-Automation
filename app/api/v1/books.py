@@ -391,6 +391,7 @@ async def list_books(
 async def get_book(
     book_id: UUID,
     output_language: Optional[str] = Query(None),
+    kind: str = Query("homework"),
     session: AsyncSession = Depends(get_session),
 ) -> BookOut:
     # The Fleet/Section launchers pass output_language so the per-lesson status
@@ -400,7 +401,13 @@ async def get_book(
         err = validate_output_language(output_language, allow_none=False)
         if err is not None:
             raise HTTPException(400, err)
-    return await _book_out_with_toc(session, book_id, output_language)
+    # `kind` scopes the per-lesson status the same way output_language does:
+    # the teacher-material launcher card needs teacher-job status, not
+    # homework's. Default "homework" keeps every existing caller (and the
+    # homework launcher card) byte-identical.
+    if kind not in ("homework", "teacher_material"):
+        raise HTTPException(400, f"invalid kind: {kind!r} (must be 'homework' or 'teacher_material')")
+    return await _book_out_with_toc(session, book_id, output_language, kind=kind)
 
 
 @router.post("/{book_id}/toc/retry")
@@ -761,7 +768,8 @@ async def delete_toc_entry(
 
 
 async def _enriched_toc_entries(
-    session: AsyncSession, book, output_language: Optional[str] = None
+    session: AsyncSession, book, output_language: Optional[str] = None,
+    *, kind: str = "homework",
 ) -> list[TOCEntryOut]:
     """TOC entries, each enriched with its latest homework-job id/status so the
     frontend can show a per-row indicator (Ready / Running / Failed).
@@ -773,8 +781,13 @@ async def _enriched_toc_entries(
     `output_language` (when given) scopes the per-row status to that language so
     the launcher's completion reflects the selected language; `None` keeps the
     all-language aggregate for non-launcher callers.
+
+    `kind` scopes the per-row status to that job kind (mirrors
+    `jobs_repo.latest_by_section`'s own `kind` param) — the teacher-material
+    launcher card needs teacher-job status, not homework's. Default "homework"
+    keeps the SSE callers (which never pass it) byte-identical.
     """
-    latest = await jobs_repo.latest_by_section(session, book.id, output_language)
+    latest = await jobs_repo.latest_by_section(session, book.id, output_language, kind=kind)
     classes = classify_entries(book.toc_entries)
     entries: list[TOCEntryOut] = []
     for i, e in enumerate(book.toc_entries):
@@ -789,12 +802,13 @@ async def _enriched_toc_entries(
 
 
 async def _book_out_with_toc(
-    session: AsyncSession, book_id: UUID, output_language: Optional[str] = None
+    session: AsyncSession, book_id: UUID, output_language: Optional[str] = None,
+    *, kind: str = "homework",
 ) -> BookOut:
     book = await books_repo.get_with_toc(session, book_id)
     if book is None:
         raise HTTPException(404, "book not found")
     out = BookOut.model_validate(book)
     if book.status in ("toc_ready", "toc_review"):
-        out.toc = await _enriched_toc_entries(session, book, output_language)
+        out.toc = await _enriched_toc_entries(session, book, output_language, kind=kind)
     return out
