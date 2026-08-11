@@ -22,7 +22,8 @@ export function Layout() {
       pathname.startsWith("/usage") ||
       pathname.startsWith("/library") ||
       pathname.startsWith("/monitor") ||
-      pathname.startsWith("/dashboard");
+      pathname.startsWith("/dashboard") ||
+      pathname.startsWith("/deck");
 
   return (
     <div className="flex min-h-screen flex-col bg-(--color-canvas)">
