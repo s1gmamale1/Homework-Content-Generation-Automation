@@ -511,7 +511,13 @@ wrong (the audit's "correct-student-graded-wrong" class the judge provably can't
 contract + fidelity, never solves the problems). It's a clone of the judge (structured
 `SolveVerdict` call, degrade-never-blocks except api-auth re-raise). It is **conservative**: only a
 `high`-confidence discrepancy triggers a regenerate-once (`settings.max_solve_regens`); low/medium
-are advisory. Outcome → `phase_outputs.solver_status` (`ok`/`mismatch_regen`/`mismatch_shipped`/
+are advisory. Since worklog 0169, a second high-confidence mismatch is fail-closed: the final
+attempted output is retained for inspection, the phase becomes `failed/mismatch_blocked`, the job
+fails, and neither completion events nor Notion/archive delivery can run. `mismatch_shipped` is a
+legacy-only value and is never newly emitted. A true transient during repair/recheck takes the
+existing bounded queue-retry path; initial solver `unavailable`/`refused` before any mismatch was
+proven remains advisory. Outcome → `phase_outputs.solver_status`
+(`ok`/`mismatch_regen`/`mismatch_blocked`/legacy `mismatch_shipped`/
 `mismatch_regen_failed`/`unavailable`/`refused`). The solver role has its own
 `solver_provider/model/transport` columns (mirroring the judge; seeded default
 `gemini-3.1-pro-preview`, ~$0.12/job) and its own `claim_next_job` gate (`solver_ok`) so an
@@ -522,7 +528,8 @@ alongside the judge/extract/content roles (required-concrete — a null provider
 since a null default would strand jobs in the claim gate). `solver_status` is serialized on the
 phase API and renders as a phase-console chip — with `mismatch_regen` shown **green** ("answer-key
 fixed": the solver caught a wrong key and the phase was regenerated — a success), while
-`mismatch_shipped`/`mismatch_regen_failed` are error-colored and `unavailable`/`refused` amber. The
+`mismatch_blocked` is a failed/non-deliverable phase, legacy
+`mismatch_shipped`/`mismatch_regen_failed` are error-colored, and `unavailable`/`refused` amber. The
 content-model pickers (launcher + single-lesson) surface an inline warning when content is set to
 `gemini-3.1-pro-preview`, naming the unclaimable footgun below.
 

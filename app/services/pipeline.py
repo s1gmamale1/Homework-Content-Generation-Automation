@@ -5,7 +5,7 @@ import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
 from uuid import UUID
 
 from loguru import logger
@@ -24,6 +24,7 @@ from app.services.errors import (
     CancelWonSignal,
     LeaseLostSignal,
     PhaseAttemptTimeout,
+    PersistentSolverMismatch,
     SessionLimitPause,
     SlotSaturation,
     TransientPhaseError,
@@ -128,6 +129,48 @@ def _raise_on_lease_signal(result) -> None:
         raise LeaseLostSignal()
     if result is CancelRequested:
         raise CancelWonSignal()
+
+
+async def _persist_solver_blocked_phase(
+    *,
+    po_id: UUID,
+    artifact: PhaseArtifact,
+    tin: Optional[int],
+    tout: Optional[int],
+    produced_by: str,
+    warnings: list[str],
+    judge_status: Optional[str],
+    error: PersistentSolverMismatch,
+    claim_token: Optional[UUID],
+) -> None:
+    """Fence and commit the final inspected artifact as a quality failure.
+
+    The caller raises ``error`` only after this write commits. A lost lease or
+    completed cancellation wins over the content verdict and is surfaced as
+    the existing control signal instead.
+    """
+    async with SessionLocal() as session:
+        result = await phase_repo.set_status(
+            session,
+            po_id,
+            "failed",
+            completed_at=_utcnow(),
+            output_md=artifact.output_md,
+            tokens_input=tin,
+            tokens_output=tout,
+            error_message=str(error),
+            validation_warnings=warnings or None,
+            provider=produced_by,
+            judge_status=judge_status,
+            solver_status="mismatch_blocked",
+            content_json=artifact.content_json,
+            authoring_mode=artifact.authoring_mode,
+            content_schema_version=artifact.content_schema_version,
+            renderer_version=artifact.renderer_version,
+            claim_token=claim_token,
+        )
+        await session.commit()
+    _raise_on_lease_signal(result)
 
 
 def _done_phase_md(rows) -> dict[str, str]:
@@ -1913,10 +1956,11 @@ async def _execute_phase(
 
         # CQ-C (R21.2): independent answer-key solver over the key-bearing phases.
         # Runs AFTER the judge so it checks the FINAL (possibly judge-regenerated)
-        # output. On a HIGH-confidence key mismatch, regenerate ONCE (mirrors the
-        # judge regen) then re-solve; solver_status records the outcome. Never fails
-        # a job except an api auth error (like the judge). The solver-regen output is
-        # adopted WITHOUT re-judging (accepted risk — the solver only fixes the key).
+        # output. Initial infrastructure unavailability remains advisory. Once a
+        # HIGH-confidence mismatch is proven, however, this path is fail-closed:
+        # only a regenerated artifact that the solver accepts may reach `done`.
+        # The solver-regen output is adopted WITHOUT re-judging (accepted risk —
+        # the solver only fixes the key).
         _solver_on = (
             settings.solver_enabled
             and phase_name in _SOLVER_PHASES
@@ -1938,7 +1982,29 @@ async def _execute_phase(
             elif not s_outcome.has_mismatch:
                 solver_status = "ok"
             else:
-                solver_status = "mismatch_shipped"  # default until a regen fixes it
+                prior_mismatch_warnings = list(s_outcome.warnings)
+
+                async def _block_solver(
+                    mismatch_warnings: list[str],
+                    repair_error: BaseException | None = None,
+                ) -> NoReturn:
+                    blocked = PersistentSolverMismatch(
+                        phase_name, mismatch_warnings, repair_error
+                    )
+                    await _persist_solver_blocked_phase(
+                        po_id=po_id,
+                        artifact=artifact,
+                        tin=tin,
+                        tout=tout,
+                        produced_by=produced_by,
+                        warnings=(list(outcome.warnings) if outcome.available else [])
+                        + mismatch_warnings,
+                        judge_status=judge_status,
+                        error=blocked,
+                        claim_token=_token,
+                    )
+                    raise blocked
+
                 for _s_regen in range(settings.max_solve_regens):
                     try:
                         r_art, r_tin, r_tout, r_prod = await _generate(
@@ -1960,22 +2026,54 @@ async def _execute_phase(
                             solver_provider=_sp2, solver_model=_sm2, transport=solver_transport,
                             homework_job_id=job_id, phase_output_id=po_id, contract_override=_custom_md,
                         )
-                        if not s_outcome.has_mismatch:
+                        if s_outcome.available and not s_outcome.has_mismatch:
                             solver_status = "mismatch_regen"
                             break
-                    except (LeaseLostSignal, CancelWonSignal):
-                        raise  # control signal — never degrade into the soft-keep path
-                    except SessionLimitPause:
+                        if not s_outcome.available:
+                            repair_error = s_outcome.failure or RuntimeError(
+                                "solver recheck unavailable without an exception"
+                            )
+                            if isinstance(
+                                repair_error,
+                                (
+                                    LeaseLostSignal,
+                                    CancelWonSignal,
+                                    SessionLimitPause,
+                                    SlotSaturation,
+                                    TransientPhaseError,
+                                ),
+                            ):
+                                raise repair_error
+                            if is_slot_saturation(repair_error):
+                                raise SlotSaturation(str(repair_error)) from repair_error
+                            if _requeue_worthy(repair_error):
+                                raise repair_error
+                            await _block_solver(
+                                prior_mismatch_warnings, repair_error
+                            )
+                        prior_mismatch_warnings = list(s_outcome.warnings)
+                    except PersistentSolverMismatch:
                         raise
-                    except Exception as exc:  # noqa: BLE001 — never fail a job except api auth
+                    except (
+                        LeaseLostSignal,
+                        CancelWonSignal,
+                        SessionLimitPause,
+                        SlotSaturation,
+                        TransientPhaseError,
+                    ):
+                        raise
+                    except Exception as exc:  # noqa: BLE001 — classify the repair failure
                         if is_slot_saturation(exc):
-                            raise SlotSaturation(str(exc)) from exc  # park, don't degrade
-                        if (transport == "api" or solver_transport == "api") and phase_judge._is_auth_error(exc):
-                            logger.error(f"[job {job_id}] {phase_name} api auth failure during solver regen ({exc!r})")
+                            raise SlotSaturation(str(exc)) from exc
+                        if _requeue_worthy(exc):
                             raise
-                        logger.warning(f"[job {job_id}] {phase_name} solver regen failed ({exc!r}); keeping output")
-                        solver_status = "mismatch_regen_failed"
-                        break
+                        await _block_solver(prior_mismatch_warnings, exc)
+                else:
+                    # Every allowed repair still has a solver-confirmed mismatch.
+                    # Retain the final attempted artifact for inspection but never
+                    # publish it as a completed phase.
+                    final_mismatch_warnings = list(s_outcome.warnings)
+                    await _block_solver(final_mismatch_warnings)
 
         # Infra states (unavailable/refused) carry ONLY the infra string — keep it
         # out of validation_warnings (content defects); judge_status records it and

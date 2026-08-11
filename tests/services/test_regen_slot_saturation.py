@@ -5,19 +5,20 @@ _execute_phase (queue-correctness-1, gate correction 1):
   - solver-regen (pipeline.py ~1441): the analogous catch in the solver's
     capped regen loop.
 
-Both catches today swallow EVERY non-auth exception into a soft degrade
-(judge_status='major_regen_failed' / solver_status='mismatch_regen_failed')
-so validation never fails a job. A fleet slot-saturation marker error must be
-the one exception: it has to escape as SlotSaturation so the pipeline parks
-the job (queue retry) instead of silently shipping a rejected/mismatched
-output and burning the signal on a soft degrade.
+The judge catch soft-degrades non-auth failures to ``major_regen_failed``.
+The solver catch is fail-closed after a proven mismatch, but fleet saturation
+is still a control signal rather than a content failure: it must escape as
+SlotSaturation so the worker parks the job instead of persisting
+``mismatch_blocked``.
 
 Choreography (two-phase stub) copied from
 tests/services/test_pipeline_solver.py:96-138's patch_io fixture: patch every
 DB/agent I/O boundary so _execute_phase runs without a real DB, then make the
 SECOND `_run_with_failover` call (the regen leg) raise the marker error.
 
-RED: today both regens catch-all and soft-degrade — no SlotSaturation escapes.
+RED history: both regen catches once swallowed the marker. The regression pins
+the distinct current outcomes: judge soft-degrade excludes it; solver
+fail-closed excludes it.
 """
 import uuid
 from pathlib import Path
@@ -152,8 +153,8 @@ async def test_judge_regen_slot_saturation_escapes_as_park(monkeypatch, patch_io
 async def test_solver_regen_slot_saturation_escapes_as_park(monkeypatch, patch_io):
     """First _run_with_failover call = initial generation; second = the
     solver-triggered regen. The regen call raises the saturation marker —
-    SlotSaturation must escape _execute_phase, not soft-degrade to
-    'mismatch_regen_failed'."""
+    SlotSaturation must escape _execute_phase, not become the hard content
+    outcome 'mismatch_blocked'."""
     calls = {"n": 0}
 
     async def fake_failover(*, requested_provider, model, run_fn, transport, **kw):

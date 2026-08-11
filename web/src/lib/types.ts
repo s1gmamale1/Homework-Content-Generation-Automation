@@ -197,6 +197,17 @@ export type JobStatus =
   | "cancelling"
   | "cancelled";
 
+/** Persisted answer-key solver outcomes. ``mismatch_blocked`` is terminal:
+ * the phase/job are failed and retained only for operator diagnosis. */
+export type SolverStatus =
+  | "ok"
+  | "mismatch_regen"
+  | "mismatch_shipped"
+  | "mismatch_regen_failed"
+  | "mismatch_blocked"
+  | "unavailable"
+  | "refused";
+
 export interface PhaseOut {
   phase_name: string;
   phase_order: number;
@@ -209,7 +220,7 @@ export interface PhaseOut {
   error_message: string | null;
   validation_warnings: string[] | null;
   judge_status: string | null;
-  solver_status: string | null;
+  solver_status: SolverStatus | null;
 }
 
 export interface Job {

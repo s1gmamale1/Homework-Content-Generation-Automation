@@ -22,7 +22,7 @@ pytestmark = pytest.mark.skipif(
 async def test_coverage_lesson_scoped_denominator_and_counts(monkeypatch):
     from app import config
     from app.db import SessionLocal
-    from app.models import Book, HomeworkJob, TOCEntry
+    from app.models import Book, HomeworkJob, PhaseOutput, TOCEntry
     from main import app
 
     # House pattern (tests/api/test_sa_keys_assign_api.py:23): neutralize auth.
@@ -57,7 +57,20 @@ async def test_coverage_lesson_scoped_denominator_and_counts(monkeypatch):
                                transport="api", output_language="uz")
 
         s.add(job(toc_ids[0], "done"))
-        s.add(job(toc_ids[1], "failed"))
+        blocked_job = job(toc_ids[1], "failed")
+        s.add(blocked_job)
+        await s.flush()
+        s.add(PhaseOutput(
+            job_id=blocked_job.id,
+            phase_name="memory-check",
+            phase_order=4,
+            prompt_hash="blocked-visibility",
+            model_name="gemini-3.1-pro-preview",
+            status="failed",
+            output_md="# Retained for operator inspection",
+            error_message="persistent answer-key mismatch",
+            solver_status="mismatch_blocked",
+        ))
         # gate-1: a legacy unfiltered launch left a DONE job on the test row.
         # It must not count — otherwise done would reach lessons_total and the
         # failed lesson above would be masked as "Finished".

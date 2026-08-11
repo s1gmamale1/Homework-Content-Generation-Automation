@@ -1012,13 +1012,16 @@ async def mark_failed_with_retry(
 
     Returns the resulting status ('pending' = will retry, 'failed' = terminal).
 
-    Transitional (fenced job leases, Task 5): with ``claim_token=None`` (every
-    caller until Tasks 6-7) the legacy path runs UNCHANGED. When a token is
-    given, the write is fenced: the job id on a retry/terminal hit,
+    With ``claim_token=None``, the legacy result and job-transition semantics
+    are preserved. When a token is given, the write is fenced: the job id on a
+    retry/terminal hit,
     ``lease.LeaseLost`` when the lease is gone, or ``lease.CancelRequested`` when
     a user cancel won (the repo finalizes internally — single-finalize
     contract). The retry path also CLEARS ``claim_token`` (a job going back to
-    `pending` must not carry a stale lease)."""
+    `pending` must not carry a stale lease). After a guarded transition wins,
+    unfinished phase rows owned by that lease are reconciled in the same
+    caller-owned transaction: pending for a bounded retry, failed on terminal
+    exhaustion. Done rows stay frozen."""
     if claim_token is not None:
         job = await session.get(HomeworkJob, job_id, populate_existing=True)
         if job is None:
@@ -1052,7 +1055,7 @@ async def mark_failed_with_retry(
                 "claim_token": None,  # requeue-to-pending clears the stale lease
             }
             release_event = lease.EVENT_RELEASED_RETRY
-        return await _fenced_update(
+        outcome = await _fenced_update(
             session,
             job_id,
             claim_token,
@@ -1060,6 +1063,25 @@ async def mark_failed_with_retry(
             status_guard=(HomeworkJob.status == "running"),
             release_event=release_event,
         )
+        if outcome == job_id:
+            terminal = job.attempts >= max_attempts
+            await phase_repo.reset_abandoned_phases(
+                session,
+                [job_id],
+                status="failed" if terminal else "pending",
+                error_message=(
+                    error_message if terminal else None
+                ),
+                source_statuses=("pending", "running"),
+                # The scheduler already reset cancelled siblings to pending
+                # and cleared their phase tokens before this worker-level
+                # terminal write.  Once the fenced parent transition wins the
+                # job is failed and cannot be reclaimed, so terminal cleanup
+                # must include those same-run tokenless siblings.  Retriable
+                # transitions remain token-filtered to protect a new owner.
+                claim_token=None if terminal else claim_token,
+            )
+        return outcome
 
     job = await session.get(HomeworkJob, job_id)
     if job is None:
@@ -1084,6 +1106,13 @@ async def mark_failed_with_retry(
         )
         if result.rowcount == 0:
             return await _finalize_if_cancelling(session, job_id)
+        await phase_repo.reset_abandoned_phases(
+            session,
+            [job_id],
+            status="failed",
+            error_message=error_message,
+            source_statuses=("pending", "running"),
+        )
         return "failed"
 
     # Retry: bump scheduled_at by exponential backoff (30s, 60s, 120s, ...).
@@ -1102,6 +1131,12 @@ async def mark_failed_with_retry(
     )
     if result.rowcount == 0:
         return await _finalize_if_cancelling(session, job_id)
+    await phase_repo.reset_abandoned_phases(
+        session,
+        [job_id],
+        status="pending",
+        source_statuses=("pending", "running"),
+    )
     return "pending"
 
 
@@ -1127,10 +1162,12 @@ async def requeue_session_limited(
     a 'cancelling' job to 'pending' would let it run again after the user
     asked to stop it. Returns "requeued", "cancelled", or "skipped".
 
-    Transitional (fenced job leases, Task 5): with ``claim_token=None`` the
-    legacy path runs UNCHANGED. When a token is given, the requeue is fenced —
+    With ``claim_token=None``, the legacy result and job-transition semantics
+    are preserved. When a token is given, the requeue is fenced —
     the job id on success, ``lease.LeaseLost`` / ``lease.CancelRequested`` when
     the lease no longer owns the row (the requeue already clears claim_token).
+    A successful transition also resets unfinished owned phase rows to pending
+    in the same caller-owned transaction; done rows remain frozen.
     """
     requeue_values = dict(
         status="pending",
@@ -1143,7 +1180,7 @@ async def requeue_session_limited(
         scheduled_at=func.now(),
     )
     if claim_token is not None:
-        return await _fenced_update(
+        outcome = await _fenced_update(
             session,
             job_id,
             claim_token,
@@ -1151,6 +1188,15 @@ async def requeue_session_limited(
             status_guard=(HomeworkJob.status == "running"),
             release_event=lease.EVENT_RELEASED_RETRY,
         )
+        if outcome == job_id:
+            await phase_repo.reset_abandoned_phases(
+                session,
+                [job_id],
+                status="pending",
+                source_statuses=("pending", "running"),
+                claim_token=claim_token,
+            )
+        return outcome
     result = await session.execute(
         update(HomeworkJob)
         .where(HomeworkJob.id == job_id, HomeworkJob.status == "running")
@@ -1158,6 +1204,12 @@ async def requeue_session_limited(
     )
     if result.rowcount == 0:
         return await _finalize_if_cancelling(session, job_id)
+    await phase_repo.reset_abandoned_phases(
+        session,
+        [job_id],
+        status="pending",
+        source_statuses=("pending", "running"),
+    )
     return "requeued"
 
 
@@ -1201,10 +1253,12 @@ async def requeue_slot_saturated(
     Guarded on status='running' (gate correction 6): a concurrent cancel
     must win — returns "parked", "cancelled", or "skipped".
 
-    Transitional (fenced job leases, Task 5): with ``claim_token=None`` the
-    legacy path runs UNCHANGED. When a token is given, the park is fenced —
+    With ``claim_token=None``, the legacy result and job-transition semantics
+    are preserved. When a token is given, the park is fenced —
     the job id on success, ``lease.LeaseLost`` / ``lease.CancelRequested`` when
-    the lease no longer owns the row (the park already clears claim_token)."""
+    the lease no longer owns the row (the park already clears claim_token).
+    A successful transition also resets unfinished owned phase rows to pending
+    in the same caller-owned transaction; done rows remain frozen."""
     park_values = dict(
         status="pending",
         attempts=func.greatest(HomeworkJob.attempts - 1, 0),
@@ -1217,7 +1271,7 @@ async def requeue_slot_saturated(
         + func.make_interval(0, 0, 0, 0, 0, 0, cooldown_seconds),
     )
     if claim_token is not None:
-        return await _fenced_update(
+        outcome = await _fenced_update(
             session,
             job_id,
             claim_token,
@@ -1225,12 +1279,27 @@ async def requeue_slot_saturated(
             status_guard=(HomeworkJob.status == "running"),
             release_event=lease.EVENT_RELEASED_RETRY,
         )
+        if outcome == job_id:
+            await phase_repo.reset_abandoned_phases(
+                session,
+                [job_id],
+                status="pending",
+                source_statuses=("pending", "running"),
+                claim_token=claim_token,
+            )
+        return outcome
     result = await session.execute(
         update(HomeworkJob)
         .where(HomeworkJob.id == job_id, HomeworkJob.status == "running")
         .values(**park_values)
     )
     if result.rowcount > 0:
+        await phase_repo.reset_abandoned_phases(
+            session,
+            [job_id],
+            status="pending",
+            source_statuses=("pending", "running"),
+        )
         return "parked"
     return await _finalize_if_cancelling(session, job_id)
 
