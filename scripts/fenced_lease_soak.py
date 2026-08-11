@@ -59,6 +59,16 @@ _SECRET_FIELD_PARTS = (
     "password",
     "database_url",
 )
+_REQUIRED_MODEL_OPERATION_KEYS = frozenset(
+    {
+        "phase.run",
+        "lesson.extract",
+        "lesson.extract.coverage",
+        "lesson.extract.verify",
+        "judge:",
+        "solve:",
+    }
+)
 
 
 class AttestationError(RuntimeError):
@@ -179,6 +189,23 @@ class SoakScope(PersistedModel):
                 raise ValueError(f"invalid PDF SHA-256 for book {book_id}")
             normalized[book_id] = digest
         return normalized
+
+    @field_validator("expected_models_by_operation_prefix")
+    @classmethod
+    def _valid_expected_models(cls, value: dict[str, str]) -> dict[str, str]:
+        actual_keys = set(value)
+        missing = sorted(_REQUIRED_MODEL_OPERATION_KEYS - actual_keys)
+        unexpected = sorted(actual_keys - _REQUIRED_MODEL_OPERATION_KEYS)
+        errors: list[str] = []
+        if missing:
+            errors.append(f"missing required keys: {missing}")
+        if unexpected:
+            errors.append(f"unexpected keys: {unexpected}")
+        if errors:
+            raise ValueError("; ".join(errors))
+        if any(not model.strip() or model != model.strip() for model in value.values()):
+            raise ValueError("expected models must be stripped non-empty model names")
+        return value
 
     @model_validator(mode="after")
     def _valid_limits(self) -> "SoakScope":

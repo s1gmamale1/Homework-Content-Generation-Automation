@@ -25,7 +25,7 @@ def valid_scope(*, target: int = 4, **updates) -> soak.SoakScope:
             "expected_models_by_operation_prefix": {
                 "phase.run": "gemini-3.6-flash",
                 "lesson.extract": "gemini-3.5-flash-lite",
-                "lesson.extract.coverage": "gemini-3.5-flash-lite",
+                "lesson.extract.coverage": "gemini-3.5-flash",
                 "lesson.extract.verify": "gemini-3.5-flash-lite",
                 "judge:": "gemini-3.5-flash",
                 "solve:": "gemini-3.1-pro-preview",
@@ -290,14 +290,19 @@ def test_model_routing_must_match_the_operation_contract():
 
 
 @pytest.mark.parametrize(
-    "operation",
-    ["lesson.extract.coverage", "lesson.extract.verify"],
+    ("operation", "model_name"),
+    [
+        ("lesson.extract.coverage", "gemini-3.5-flash"),
+        ("lesson.extract.verify", "gemini-3.5-flash-lite"),
+    ],
 )
-def test_auxiliary_extract_operations_use_the_configured_extract_model(operation):
+def test_auxiliary_extract_operations_use_the_configured_extract_model(
+    operation, model_name
+):
     raw = healthy_completed_snapshot()
     raw.usages[0] = usage_row(
         operation=operation,
-        model_name="gemini-3.5-flash-lite",
+        model_name=model_name,
     )
     hard = codes(runtime_findings(valid_scope(), raw, []), hard_stop=True)
     assert "operation_model_mismatch" not in hard

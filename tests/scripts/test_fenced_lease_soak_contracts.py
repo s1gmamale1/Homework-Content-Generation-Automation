@@ -13,6 +13,14 @@ from scripts import fenced_lease_soak as soak
 BOOK = UUID("11111111-1111-1111-1111-111111111111")
 BATCH = UUID("22222222-2222-2222-2222-222222222222")
 JOB = UUID("33333333-3333-3333-3333-333333333333")
+EXPECTED_MODELS_BY_OPERATION = {
+    "phase.run": "gemini-3.6-flash",
+    "lesson.extract": "gemini-3.5-flash-lite",
+    "lesson.extract.coverage": "gemini-3.5-flash",
+    "lesson.extract.verify": "gemini-3.5-flash-lite",
+    "judge:": "gemini-3.5-flash",
+    "solve:": "gemini-3.1-pro-preview",
+}
 
 
 def valid_scope_dict() -> dict:
@@ -34,14 +42,7 @@ def valid_scope_dict() -> dict:
         "structured_output_enabled": False,
         "required_book_sha256": {str(BOOK): "a" * 64},
         "forbidden_notion_mapping_keys": ["english|8"],
-        "expected_models_by_operation_prefix": {
-            "phase.run": "gemini-3.6-flash",
-            "lesson.extract": "gemini-3.5-flash-lite",
-            "lesson.extract.coverage": "gemini-3.5-flash-lite",
-            "lesson.extract.verify": "gemini-3.5-flash-lite",
-            "judge:": "gemini-3.5-flash",
-            "solve:": "gemini-3.1-pro-preview",
-        },
+        "expected_models_by_operation_prefix": dict(EXPECTED_MODELS_BY_OPERATION),
         "approved_incremental_cost_usd": "12.50",
         "fleet_cost_limit_usd": "50.00",
         "db_preflight_connection_limit": 70,
@@ -140,6 +141,32 @@ def test_scope_requires_preflight_connection_limit_below_hard_stop():
     raw = valid_scope_dict()
     raw["db_preflight_connection_limit"] = 90
     with pytest.raises(ValidationError, match="preflight"):
+        soak.SoakScope.model_validate(raw)
+
+
+@pytest.mark.parametrize("missing_key", sorted(EXPECTED_MODELS_BY_OPERATION))
+def test_scope_requires_every_model_operation_key(missing_key):
+    raw = valid_scope_dict()
+    raw["expected_models_by_operation_prefix"].pop(missing_key)
+
+    with pytest.raises(ValidationError, match="missing required keys"):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_scope_rejects_unknown_model_operation_key():
+    raw = valid_scope_dict()
+    raw["expected_models_by_operation_prefix"]["phase.unknown"] = "gemini-3.6-flash"
+
+    with pytest.raises(ValidationError, match="unexpected keys"):
+        soak.SoakScope.model_validate(raw)
+
+
+@pytest.mark.parametrize("model", ["", "   ", " gemini-3.6-flash"])
+def test_scope_requires_stripped_nonblank_expected_models(model):
+    raw = valid_scope_dict()
+    raw["expected_models_by_operation_prefix"]["phase.run"] = model
+
+    with pytest.raises(ValidationError, match="stripped non-empty model"):
         soak.SoakScope.model_validate(raw)
 
 

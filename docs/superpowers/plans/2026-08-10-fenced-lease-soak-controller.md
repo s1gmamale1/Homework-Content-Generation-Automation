@@ -263,7 +263,7 @@ git commit -m "fix(db): bound and identify idle transactions"
 - Produces `load_scope(source: Path | Literal["-"], *, stdin: TextIO = sys.stdin) -> SoakScope`, `load_attestation(path: Path) -> FleetAttestation`, `redacted_model_dump(model: BaseModel) -> dict`, and `parse_args(argv: Sequence[str]) -> argparse.Namespace`.
 - Produces a narrow `ProcessView` protocol (`pid`, `status()`, `cmdline()`, `environ()`, `cwd()`), `discover_worker_processes(processes: Iterable[ProcessView]) -> list[ProcessView]`, `effective_worker_contract(worker_env: Mapping[str, str]) -> EffectiveWorkerContract`, `build_local_attestation(scope, *, hostname, processes, now, git_identity=None) -> WorkerAttestation`, `canonical_json(model) -> str`, and `aggregate_attestations(scope, workers, *, now) -> FleetAttestation`.
 - Produces injectable `main(argv, *, process_source=None, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr, hostname=None, now=None, git_identity=None) -> int`; production defaults use `psutil`, `socket`, the real clock, and git, while tests inject all of them and prove the command never opens a database or network client.
-- `SoakScope` fields: `run_id`, aware-UTC `since`, exact `batch_ids`, exact `job_ids`, exact `participant_hosts`, `target_running`, `expected_git_sha`, `expected_code_version`, `expected_db_revision`, expected four concurrency knobs, `legacy_gemini_var_must_be_absent`, `structured_output_enabled`, `required_book_sha256`, `forbidden_notion_mapping_keys`, `expected_models_by_operation_prefix`, `approved_incremental_cost_usd`, `fleet_cost_limit_usd`, `db_preflight_connection_limit`, `db_hard_stop_connection_limit`, `heartbeat_max_age_seconds`, `attestation_max_age_seconds`, and `settle_seconds`.
+- `SoakScope` fields: `run_id`, aware-UTC `since`, exact `batch_ids`, exact `job_ids`, exact `participant_hosts`, `target_running`, `expected_git_sha`, `expected_code_version`, `expected_db_revision`, expected four concurrency knobs, `legacy_gemini_var_must_be_absent`, `structured_output_enabled`, `required_book_sha256`, `forbidden_notion_mapping_keys`, `expected_models_by_operation_prefix`, `approved_incremental_cost_usd`, `fleet_cost_limit_usd`, `db_preflight_connection_limit`, `db_hard_stop_connection_limit`, `heartbeat_max_age_seconds`, `attestation_max_age_seconds`, and `settle_seconds`. The model map must contain exactly `phase.run`, `lesson.extract`, `lesson.extract.coverage`, `lesson.extract.verify`, `judge:`, and `solve:` with stripped non-empty model values; missing, extra, or blank entries fail while parsing the scope, before preflight can open a store or incur spend.
 - `FleetAttestation` fields: `scope_sha256`, `observed_at`, `credential_fingerprint`, ordered `input_artifact_sha256`, and non-empty ordered `workers`.
 - Each `WorkerAttestation` fields: `scope_sha256`, exact `pc_id`, `hostname`, `observed_at`, `git_sha`, `code_version`, `worker_concurrency`, `agent_max_concurrency`, `credential_max_concurrent_gemini`, `credential_slot_wait_seconds`, `gemini_max_concurrency_present`, `structured_output_enabled`, `process_count_for_host`, `credential_fingerprint`, `pdf_sha256_by_book: dict[str, str | None]`, and `notion_mapping_keys`.
 
@@ -1477,12 +1477,14 @@ Expected launch routing in every scope:
 {
   "phase.run": "gemini-3.6-flash",
   "lesson.extract": "gemini-3.5-flash-lite",
-  "lesson.extract.coverage": "gemini-3.5-flash-lite",
+  "lesson.extract.coverage": "gemini-3.5-flash",
   "lesson.extract.verify": "gemini-3.5-flash-lite",
   "judge:": "gemini-3.5-flash",
   "solve:": "gemini-3.1-pro-preview"
 }
 ```
+
+This example records the intended final deployed stack, but it is not an evergreen source of truth. Generate and verify each soak scope from the final deployed configuration only after every model/config dependency has landed; do not copy these values blindly into a scope prepared against a different deployment.
 
 Candidate books, after rechecking live TOCs/PDFs, are:
 
