@@ -8,6 +8,9 @@ pytestmark = pytest.mark.skipif(
     os.getenv("RUN_DB_INTEGRATION") != "1", reason="needs a real Postgres"
 )
 
+_TOKEN = "T8r2Vw9_Mp4xC7kN1qZ6sH3dL5yF0aJgB-Ue"
+_HEADERS = {"Authorization": f"Bearer {_TOKEN}"}
+
 
 def _good_key(project="proj-api", email="svc"):
     return json.dumps({
@@ -21,10 +24,10 @@ def _good_key(project="proj-api", email="svc"):
 async def test_upload_validates_dedups_and_lists_without_private_key(monkeypatch, tmp_path):
     import app.config as config
     monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
-    monkeypatch.setattr(config.settings, "auth_token", "")  # auth disabled for the test
+    monkeypatch.setattr(config.settings, "auth_token", _TOKEN)
     from main import app
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://t") as c:
+    async with AsyncClient(transport=transport, base_url="http://t", headers=_HEADERS) as c:
         # reject a non-SA file
         r = await c.post("/api/v1/sa-keys", files={"file": ("bad.json", b"{}", "application/json")})
         assert r.status_code == 422
@@ -56,10 +59,10 @@ async def test_patch_max_concurrent_calls_updates_project_wide(monkeypatch, tmp_
     "two service accounts for one GCP project" shape."""
     import app.config as config
     monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
-    monkeypatch.setattr(config.settings, "auth_token", "")
+    monkeypatch.setattr(config.settings, "auth_token", _TOKEN)
     from main import app
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://t") as c:
+    async with AsyncClient(transport=transport, base_url="http://t", headers=_HEADERS) as c:
         r1 = await c.post(
             "/api/v1/sa-keys",
             files={"file": ("a.json", _good_key(project="proj-patch-shared", email="svc-a"), "application/json")},
@@ -96,10 +99,10 @@ async def test_patch_max_concurrent_calls_updates_project_wide(monkeypatch, tmp_
 async def test_patch_404_for_missing_key(monkeypatch, tmp_path):
     import app.config as config
     monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
-    monkeypatch.setattr(config.settings, "auth_token", "")
+    monkeypatch.setattr(config.settings, "auth_token", _TOKEN)
     from main import app
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://t") as c:
+    async with AsyncClient(transport=transport, base_url="http://t", headers=_HEADERS) as c:
         r = await c.patch(f"/api/v1/sa-keys/{uuid.uuid4()}", json={"max_concurrent_calls": 3})
         assert r.status_code == 404
 
@@ -108,10 +111,10 @@ async def test_patch_404_for_missing_key(monkeypatch, tmp_path):
 async def test_patch_422_for_sub_one_value(monkeypatch, tmp_path):
     import app.config as config
     monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
-    monkeypatch.setattr(config.settings, "auth_token", "")
+    monkeypatch.setattr(config.settings, "auth_token", _TOKEN)
     from main import app
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://t") as c:
+    async with AsyncClient(transport=transport, base_url="http://t", headers=_HEADERS) as c:
         r = await c.post(
             "/api/v1/sa-keys",
             files={"file": ("k.json", _good_key(project="proj-patch-422", email="svc-422"), "application/json")},
@@ -134,7 +137,7 @@ async def test_list_serves_slots_in_use_and_effective_limit(monkeypatch, tmp_pat
 
     credential_limiter.clear_limit_cache()
     monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
-    monkeypatch.setattr(config.settings, "auth_token", "")
+    monkeypatch.setattr(config.settings, "auth_token", _TOKEN)
     # Deterministic default so the test doesn't depend on the ambient .env.
     monkeypatch.setattr(config.settings, "credential_max_concurrent_gemini", 8)
     from main import app
@@ -142,7 +145,7 @@ async def test_list_serves_slots_in_use_and_effective_limit(monkeypatch, tmp_pat
 
     project = f"proj-slots-{uuid.uuid4().hex[:8]}"
     credential = f"gemini:{project}"
-    async with AsyncClient(transport=transport, base_url="http://t") as c:
+    async with AsyncClient(transport=transport, base_url="http://t", headers=_HEADERS) as c:
         r = await c.post(
             "/api/v1/sa-keys",
             files={"file": ("k.json", _good_key(project=project, email="svc-slots"), "application/json")},

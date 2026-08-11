@@ -18,8 +18,10 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def test_capability_blob_top_level_keys():
-    """_capability_blob must return a dict with exactly 'cli', 'api',
-    'code_version', and 'git_sha' keys (the latter two added for
+    """_capability_blob must return the provider, version, and auth-attestation keys.
+
+    ``auth_token_fingerprint`` is non-disclosing runtime evidence used during
+    a hard-cut token rotation. The version keys were added for
     fleet-worker-version-gate-1 vintage visibility).
 
     BITE: removing any key from the return dict breaks this assertion.
@@ -28,10 +30,74 @@ def test_capability_blob_top_level_keys():
 
     blob = _capability_blob({})
     assert isinstance(blob, dict), "_capability_blob must return a dict"
-    assert set(blob.keys()) == {"cli", "api", "code_version", "git_sha"}, (
-        f"blob must have exactly 'cli', 'api', 'code_version', 'git_sha' keys; "
+    assert set(blob.keys()) == {
+        "cli",
+        "api",
+        "code_version",
+        "git_sha",
+        "auth_token_fingerprint",
+    }, (
+        f"blob must include runtime auth attestation; "
         f"got {set(blob.keys())}"
     )
+
+
+def test_capability_blob_carries_no_raw_operator_token():
+    """Serializing a heartbeat must never disclose a configured operator token."""
+    import json
+
+    from app.services.worker import _capability_blob
+
+    token = "F7a9Jm2_Rq6cV8xW1sK4nP0dZ5uH3yTbG9eL"
+    blob = _capability_blob(
+        {
+            "AUTH_TOKEN": token,
+            "ALLOW_INSECURE_LOCAL_AUTH": "false",
+        }
+    )
+    serialized = json.dumps(blob, sort_keys=True)
+    assert blob["auth_token_fingerprint"] == (
+        "sha256:"
+        "436fb47cf46a2a52e3be23fb43cead1ad7f77388bb44e6c6d0b28dd46becf979"
+    )
+    assert token not in serialized
+
+
+@pytest.mark.asyncio
+async def test_registry_heartbeat_publishes_runtime_auth_fingerprint(monkeypatch):
+    """Dropping the fingerprint from the actual heartbeat payload must fail."""
+    from types import SimpleNamespace
+
+    from app.services import worker as worker_module
+
+    expected = "sha256:" + "4" * 64
+    monkeypatch.setattr(
+        worker_module,
+        "CAPABILITY_BLOB",
+        {"auth_token_fingerprint": expected},
+    )
+
+    async def get_status(_session, pc_id):
+        assert pc_id == "Host-01:123@abc"
+        return "online"
+
+    observed = {}
+
+    async def upsert(_session, pc_id, *, capabilities):
+        observed["pc_id"] = pc_id
+        observed["capabilities"] = capabilities
+
+    monkeypatch.setattr(worker_module.workers_repo, "get_status", get_status)
+    monkeypatch.setattr(worker_module.workers_repo, "upsert_heartbeat", upsert)
+    fake_worker = SimpleNamespace(id="Host-01:123@abc")
+
+    assert await worker_module.Worker._drain_check_and_beat(
+        fake_worker, object()
+    )
+    assert observed == {
+        "pc_id": "Host-01:123@abc",
+        "capabilities": {"auth_token_fingerprint": expected},
+    }
 
 
 def test_capability_blob_cli_has_all_registered_providers():

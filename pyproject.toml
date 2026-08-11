@@ -21,6 +21,7 @@ dependencies = [
     "google-genai>=2.8.0",
     "anthropic>=0.109.2",
     "openai>=2.45.0",
+    "pywin32>=311 ; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

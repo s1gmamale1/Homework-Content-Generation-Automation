@@ -9,6 +9,7 @@ import pytest
 from unittest.mock import AsyncMock
 import app.services.worker as worker
 import app.services.sa_key_apply as apply_mod
+from app.services import sa_key_vault
 
 
 class _NoopTxCtx:
@@ -106,6 +107,123 @@ async def test_sync_applies_when_idle_and_noops_when_unchanged(monkeypatch, tmp_
     )
     w._last_key_sync_at = 0.0
     await w._sync_sa_key()  # must be a no-op
+
+
+@pytest.mark.asyncio
+async def test_sync_apply_vault_refusal_logs_without_traceback_or_detail(
+    monkeypatch, tmp_path
+):
+    """A vault refusal must fail closed without logging the private OS/path detail."""
+    import app.config as config
+
+    monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
+    monkeypatch.setattr(worker, "_WORKER_ENV_PATH", tmp_path / ".env", raising=False)
+    for key in (
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_CLOUD_PROJECT",
+        "GEMINI_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    w = worker.Worker(concurrency=1)
+    w._tasks = set()
+    monkeypatch.setattr(worker, "SessionLocal", lambda: _FakeSession())
+
+    async def fake_lookup(session, hostname):
+        return {
+            "key_id": "11111111-1111-1111-1111-111111111111",
+            "sha256": "SHA-NEW",
+            "project_id": "proj-live",
+            "scrub": False,
+        }
+
+    monkeypatch.setattr(worker.sa_keys_repo, "get_assignment_with_key", fake_lookup)
+    monkeypatch.setattr(apply_mod, "pull_key_bytes", lambda _kid: b"validated")
+    monkeypatch.setattr(
+        apply_mod,
+        "write_active_key",
+        lambda *_args: (_ for _ in ()).throw(
+            sa_key_vault.SAKeyVaultError("private/path/detail")
+        ),
+    )
+    warnings = []
+    exceptions = []
+    monkeypatch.setattr(worker.logger, "warning", lambda message: warnings.append(message))
+    monkeypatch.setattr(worker.logger, "exception", lambda message: exceptions.append(message))
+
+    await w._sync_sa_key()
+
+    assert exceptions == []
+    assert warnings == [f"worker {w.id} SA-key vault apply failed closed"]
+    assert "private/path/detail" not in "".join(warnings)
+
+
+@pytest.mark.asyncio
+async def test_scrub_routes_active_key_removal_through_vault(monkeypatch, tmp_path):
+    """Replacing the vault remove with Path.unlink would bypass path fencing."""
+    import app.config as config
+
+    monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
+    envfile = tmp_path / ".env"
+    monkeypatch.setattr(worker, "_WORKER_ENV_PATH", envfile, raising=False)
+    active_path = tmp_path / "sa_keys" / "active.json"
+    active_path.parent.mkdir(parents=True)
+    active_path.write_bytes(b"credential")
+
+    w = worker.Worker(concurrency=1)
+    w._tasks = set()
+    monkeypatch.setattr(worker, "SessionLocal", lambda: _FakeSession())
+
+    async def fake_lookup(session, hostname):
+        return _scrub_assignment()
+
+    monkeypatch.setattr(worker.sa_keys_repo, "get_assignment_with_key", fake_lookup)
+    removals = []
+    monkeypatch.setattr(
+        sa_key_vault,
+        "remove",
+        lambda path, *, missing_ok: removals.append((path, missing_ok)),
+    )
+
+    await w._sync_sa_key()
+
+    assert removals == [(active_path, True)]
+
+
+@pytest.mark.asyncio
+async def test_scrub_dangling_active_symlink_fails_closed_instead_of_looking_absent(
+    monkeypatch, tmp_path
+):
+    """Path.exists() treats a dangling symlink as absent and would skip revocation."""
+    if os.name == "nt":
+        pytest.skip("POSIX dangling-symlink regression; Windows reparse is in vault CI")
+
+    import app.config as config
+
+    monkeypatch.setattr(config.settings, "var_dir", str(tmp_path))
+    monkeypatch.setattr(worker, "_WORKER_ENV_PATH", tmp_path / ".env", raising=False)
+    for key in ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT"):
+        monkeypatch.delenv(key, raising=False)
+    active_path = tmp_path / "sa_keys" / "active.json"
+    active_path.parent.mkdir(parents=True)
+    active_path.symlink_to(tmp_path / "missing-credential")
+
+    w = worker.Worker(concurrency=1)
+    w._tasks = set()
+    w._applied_key_sha = None
+    monkeypatch.setattr(worker, "SessionLocal", lambda: _FakeSession())
+
+    async def fake_lookup(session, hostname):
+        return _scrub_assignment()
+
+    monkeypatch.setattr(worker.sa_keys_repo, "get_assignment_with_key", fake_lookup)
+    warnings = []
+    monkeypatch.setattr(worker.logger, "warning", lambda message: warnings.append(message))
+
+    await w._sync_sa_key()
+
+    assert active_path.is_symlink()
+    assert warnings == [f"worker {w.id} SA-key vault scrub failed closed"]
 
 
 # ── Restart-scrub residue matrix ─────────────────────────────────────────

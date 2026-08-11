@@ -283,7 +283,7 @@ No mixins — tiny by design:
 | `last_heartbeat` | NOT NULL | always stamped with `func.now()` (DB clock) |
 | `status` | String(32) NOT NULL, server_default `'online'` | `online` / `draining`; **enforced (C5/P1):** the worker reads its own status each registry beat and self-drains when `draining` (stops claiming + lets in-flight finish) via `_drain_check_and_beat`. `claim_next_job` doesn't filter on it — the worker self-stops instead |
 | `notes` | Text NULL | |
-| `capabilities` | JSONB NULL (migration 0035) | the worker's published capability blob `{"cli": {<5 providers>: bool}, "api": {"claude": bool, "gemini": bool}}` — which provider CLIs are installed on this PC and which api creds are present. Written on every registry beat (`upsert_heartbeat(..., capabilities=)`, no-clobber on status-only beats). NULL = legacy/never-published. The head unions it over **online** workers (`aggregate_fleet_capability`) to tell the launcher which `(provider × transport)` picks the fleet can actually serve (`launcher-capability-gate-1`, worklog 0085). |
+| `capabilities` | JSONB NULL (migration 0035) | the worker's published capability blob: CLI/API serveability, code version/SHA, and `auth_token_fingerprint` (domain-separated SHA-256 of the canonical strong-token set; `local-dev` marker or NULL for invalid config; never raw token material). Written on every registry beat (`upsert_heartbeat(..., capabilities=)`, no-clobber on status-only beats) and refreshed after live capability rebind. NULL = legacy/never-published. The head unions provider flags over **online** workers for launcher serveability; operators compare the fingerprint per process during token rotation. |
 
 **Liveness is derived, never stored**: `GET /workers` fetches `SELECT now()` and computes
 `online = last_heartbeat >= db_now - worker_registry_stale_seconds` (default 90 s = 3 missed
@@ -303,7 +303,7 @@ No UUIDPK/Timestamps mixins — intentionally minimal.
 | `api_paused_at` | DateTime NULL | set by the budget monitor when the fleet-daily api spend cap is exceeded; `claim_next_job` checks this and skips all api-transport jobs while non-NULL |
 | `api_paused_reason` | String(64) NULL | e.g. `"fleet-daily-cap"` |
 | `min_worker_version` | Integer NULL | **fleet worker version floor** (mig 0046, worklog 0133): a worker whose `code_version` (git commit-count, `app/services/code_version.py`) is below this claims NOTHING (fail-closed: an undetectable version is also blocked). NULL = gate off. Auto-stamped **raise-only** by `main.lifespan` at every process startup (`budget_repo.raise_version_floor`); `PUT /workers/version-floor` is the unconditional operator escape hatch (may lower/clear) |
-| `min_worker_version_stamped_by` | String(128) NULL | `hostname@sha` for the lifespan auto-stamp; `"operator"` for the escape hatch |
+| `min_worker_version_stamped_by` | String(128) NULL | `hostname@sha` for the lifespan auto-stamp; `"operator"` for the escape hatch; `"operator-auth-rotation"`/`"operator-auth-rotation-final"` while the hard-cut runbook owns its temporary/final fence |
 | `min_worker_version_stamped_at` | DateTime NULL | when the floor last changed |
 
 `budget_repo.get_state(session)` returns the singleton row; raises `RuntimeError` if the row is missing (indicates a broken migration state — run `alembic upgrade head`). The budget monitor clears the fleet pause if spend drops back below cap (e.g. after UTC midnight resets the 24h window). The singleton's pause state is distinct from per-batch `batches.paused_at` — an operator can check both via `GET /jobs/batch/{id}/cost` (returns `fleet_api_paused_at`/`fleet_api_paused_reason` alongside the per-batch fields).
@@ -334,7 +334,10 @@ No UUIDPK/Timestamps mixins — intentionally minimal.
 
 ### 3.10 `sa_keys` — pool of uploaded GCP service-account keys (migration 0041)
 
-The DB row holds **metadata only**; the raw JSON bytes live on disk at `<var_dir>/sa_keys/<id>.json` (never in the DB).
+The DB row holds **metadata only**; the raw JSON bytes live on disk at
+`<var_dir>/sa_keys/<id>.json` (never in the DB). This hardening changes no
+schema. The filesystem and DB are joined by explicit fail-closed invariants,
+not a claim of cross-resource atomicity.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -348,7 +351,40 @@ The DB row holds **metadata only**; the raw JSON bytes live on disk at `<var_dir
 | `created_at` | timestamptz NOT NULL | |
 | `max_concurrent_calls` | Integer NULL, CHECK `IS NULL OR >= 1` (migration 0047) | per-project override for the BE-16 fleet credential limiter (§3.12); `NULL` = no override, falls back to the provider env default. `PATCH /sa-keys/{id}` writes this **project-wide** (every row sharing this key's `project_id`, since `project_id` is not unique) so two keys for one project can never disagree. |
 
-Uploaded via `POST /sa-keys` (multipart; validated by `sa_key_validate.parse_and_validate_sa_key` — must be `type=="service_account"` with non-empty `project_id`/`client_email`/`private_key`, else 422). Downloaded via `GET /sa-keys/{id}/download` (**header-auth only** — rejects `?token=`; 503 when `AUTH_TOKEN` is empty; raw bytes). Listed via `GET /sa-keys` (metadata + `worker_count`; **since BE-16 also `slots_in_use`** — live in-flight count from `credential_slots` — **and `effective_limit`** — the resolved cap, override or provider default; never returns `private_key`). Deleted via `DELETE /sa-keys/{id}` (409 if still assigned to any host). Edited via **`PATCH /sa-keys/{id}`** (`{max_concurrent_calls: int|null}`, `ge=1` or null — the concurrency override; evicts the limiter's resolve-limit cache for this credential so the new value applies immediately in this process, not after the ~60s TTL — other fleet processes still lag up to that TTL).
+Every `/api/v1/sa-keys*` endpoint is protected by one strict parent-router
+dependency: exact `Authorization: Bearer` only, query tokens always rejected,
+and 503 when no operator token is configured even in explicit local-dev mode.
+Upload is multipart and validated by
+`sa_key_validate.parse_and_validate_sa_key` (`type=="service_account"` and
+non-empty `project_id`/`client_email`/`private_key`, else 422). Download returns
+raw bytes but never a parsed `private_key` field. List returns metadata plus
+`worker_count`, `slots_in_use`, and `effective_limit`. `PATCH` changes the
+project-wide concurrency override and evicts this process's limiter cache.
+
+**Vault contract.** `<var_dir>/sa_keys` is exactly `0700` on POSIX and every
+regular file is `0600`; Windows uses a protected DACL with one full-control ACE
+for the running process-token SID. Reads, permission checks, ACL changes,
+hashes, and mutations stay anchored to a verified directory fd or already-open
+Windows handle. Symlinks, reparse points, hardlinks, directories/special files,
+identity swaps, files outside the vault, and access-denied fallbacks are
+rejected. Writes use a private same-directory exclusive temp, flush/fsync,
+rehash and type/link verification, atomic write-through replacement, destination
+verification, and directory fsync where available. Existing bytes are preserved
+when hardening permissions. `sa_key_vault.snapshot_uuid_inventory()` is the
+read-only operator snapshot: it returns only UUID→SHA-256 through that same
+anchored scan/hash path and fails on unsafe, unknown, or quarantined entries.
+
+**DB/file consistency.** Upload dedup is DB-atomic. If its COMMIT raises, the
+canonical UUID bytes remain as evidence: eventual commit is coherent; eventual
+rollback leaves an orphan that head startup rejects for manual resolution.
+Delete locks the key, rechecks assignments, verifies the canonical SHA, and
+renames that exact file to a private same-vault delete quarantine before the DB
+delete/commit. Commit success discards it; every COMMIT exception retains it.
+Head startup alone reconciles exact recognized quarantines from settled DB
+state, then verifies every expected UUID file and rejects missing, mismatched,
+orphan, or unresolved entries. Assignment also locks the key and verifies the
+canonical file SHA before changing host state. Request handlers never infer a
+COMMIT outcome from a follow-up read.
 
 ### 3.11 `sa_key_assignments` — per-hostname key assignment
 

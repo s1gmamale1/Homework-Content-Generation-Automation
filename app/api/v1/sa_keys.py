@@ -7,14 +7,21 @@ from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFil
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user_strict
 from app.db import get_session
 from app.repositories import sa_keys as repo
 from app.repositories import workers as workers_repo
-from app.services import credential_id, credential_limiter, storage
+from app.services import credential_id, credential_limiter, sa_key_vault, storage
 from app.services.sa_key_validate import InvalidServiceAccountKey, parse_and_validate_sa_key
 
 router = APIRouter(prefix="/sa-keys", tags=["sa-keys"])
+
+
+async def _best_effort_rollback(session: AsyncSession) -> None:
+    """Try to release request locks without claiming transaction resolution."""
+    try:
+        await session.rollback()
+    except Exception:
+        return
 
 
 def _meta(row) -> dict:
@@ -38,14 +45,49 @@ async def upload_sa_key(
     except InvalidServiceAccountKey as exc:
         raise HTTPException(422, f"not a valid service-account key: {exc}")
     sha = hashlib.sha256(body).hexdigest()
-    row = await repo.create_or_get(
-        session, original_filename=file.filename or "key.json",
-        project_id=project_id, client_email=client_email, sha256=sha, byte_size=len(body),
-    )
-    await session.commit()
-    path = storage.sa_key_path(row.id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(body)  # idempotent on dedup (same bytes)
+    try:
+        row, created = await repo.create_or_get_for_upload(
+            session, original_filename=file.filename or "key.json",
+            project_id=project_id, client_email=client_email, sha256=sha,
+            byte_size=len(body),
+        )
+    except repo.SAKeyUploadContentionError:
+        await _best_effort_rollback(session)
+        raise HTTPException(
+            503, "SA-key upload is temporarily unavailable"
+        ) from None
+    row_id = row.id
+    row_sha256 = row.sha256
+    created_by_this_tx = bool(created)
+    if hashlib.sha256(body).hexdigest() != row_sha256:
+        await _best_effort_rollback(session)
+        raise HTTPException(503, "SA-key upload metadata is inconsistent")
+    path = storage.sa_key_path(row_id)
+    must_write = created_by_this_tx
+    if not must_write:
+        try:
+            current_sha256 = hashlib.sha256(
+                sa_key_vault.read_bytes(path)
+            ).hexdigest()
+            must_write = current_sha256 != row_sha256
+        except sa_key_vault.SAKeyVaultError:
+            must_write = True
+    if must_write:
+        try:
+            sa_key_vault.atomic_write(path, body)
+        except sa_key_vault.SAKeyVaultError as exc:
+            await _best_effort_rollback(session)
+            raise HTTPException(503, "SA-key vault is unavailable") from exc
+    try:
+        await session.commit()
+    except Exception:
+        # A COMMIT exception is ambiguous even when rollback returns normally:
+        # a broken/no-op driver seam can report success while the transaction
+        # remains live. Keep the exact canonical bytes. Eventual commit is
+        # immediately coherent; eventual rollback leaves an orphan that the
+        # startup inventory fails closed for manual resolution.
+        await _best_effort_rollback(session)
+        raise HTTPException(503, "SA-key upload did not commit") from None
     return _meta(row)
 
 
@@ -73,13 +115,37 @@ async def list_sa_keys(session: AsyncSession = Depends(get_session)) -> dict:
 
 @router.delete("/{key_id}")
 async def delete_sa_key(key_id: UUID, session: AsyncSession = Depends(get_session)) -> dict:
-    outcome = await repo.delete(session, key_id)
+    row, outcome = await repo.lock_unassigned_key_for_delete(session, key_id)
     if outcome == "not_found":
         raise HTTPException(404, "no such key")
     if outcome == "assigned":
         raise HTTPException(409, "key is still assigned to a worker; unassign first")
-    await session.commit()
-    storage.sa_key_path(key_id).unlink(missing_ok=True)
+    if row is None:
+        await _best_effort_rollback(session)
+        raise HTTPException(503, "SA-key delete state is inconsistent")
+    row_id = row.id
+    row_sha256 = row.sha256
+    try:
+        ticket = sa_key_vault.quarantine_for_delete(
+            storage.sa_key_path(row_id), expected_sha256=row_sha256
+        )
+    except sa_key_vault.SAKeyVaultError as exc:
+        await _best_effort_rollback(session)
+        raise HTTPException(503, "SA-key vault is unavailable") from exc
+    try:
+        deleted = await repo.delete_locked_key(session, row_id)
+        if deleted != 1:
+            raise RuntimeError("locked SA-key delete affected an unexpected row count")
+        await session.commit()
+    except Exception:
+        # Retain the exact quarantine for startup reconciliation. A fresh
+        # request-time snapshot cannot decide an unresolved transaction.
+        await _best_effort_rollback(session)
+        raise HTTPException(503, "SA-key delete outcome is unavailable") from None
+    try:
+        sa_key_vault.discard_quarantined_delete(ticket)
+    except sa_key_vault.SAKeyVaultError as exc:
+        raise HTTPException(503, "SA-key vault is unavailable") from exc
     return {"deleted": str(key_id)}
 
 
@@ -129,15 +195,15 @@ async def patch_sa_key(
 async def download_sa_key(
     key_id: UUID,
     session: AsyncSession = Depends(get_session),
-    _user: dict = Depends(get_current_user_strict),  # header-only; overrides router dep
 ) -> Response:
     row = await repo.get(session, key_id)
     if row is None:
         raise HTTPException(404, "no such key")
-    path = storage.sa_key_path(key_id)
-    if not path.exists():
-        raise HTTPException(404, "key bytes missing on disk")
-    return Response(content=path.read_bytes(), media_type="application/json")
+    try:
+        body = sa_key_vault.read_bytes(storage.sa_key_path(key_id))
+    except sa_key_vault.SAKeyVaultError as exc:
+        raise HTTPException(503, "SA-key vault is unavailable") from exc
+    return Response(content=body, media_type="application/json")
 
 
 # ---------------------------------------------------------------------------
@@ -166,13 +232,26 @@ async def list_assignments(session: AsyncSession = Depends(get_session)) -> dict
 async def assign_sa_key(
     hostname: str, req: AssignRequest, session: AsyncSession = Depends(get_session),
 ) -> dict:
-    # Exclusive host lock BEFORE the mutation — serializes against a claim
-    # holding the shared lock (task 1) so a tombstone/re-key write can't
+    # Key row first, then exclusive host lock: one global lock order shared
+    # with delete prevents an assignment/delete AB-BA cycle.
+    # The following exclusive host lock serializes against a claim holding
+    # the shared host lock, so a tombstone/re-key write cannot
     # interleave with a claim that already re-read "no tombstone". The
-    # key_id existence check touches no host state, so it may run before
-    # or after; kept before for a cheap 404 without taking the lock first.
-    if await repo.get(session, req.key_id) is None:
+    # Key existence and canonical-byte integrity touch no host state, so
+    # both checks stay before the host lock and any assignment mutation.
+    row = await repo.lock_key_for_assignment(session, req.key_id)
+    if row is None:
         raise HTTPException(404, "no such key")
+    row_id = row.id
+    row_sha256 = row.sha256
+    try:
+        body = sa_key_vault.read_bytes(storage.sa_key_path(row_id))
+    except sa_key_vault.SAKeyVaultError:
+        await _best_effort_rollback(session)
+        raise HTTPException(503, "SA-key vault is unavailable") from None
+    if hashlib.sha256(body).hexdigest() != row_sha256:
+        await _best_effort_rollback(session)
+        raise HTTPException(503, "SA-key vault is unavailable") from None
     await workers_repo.lock_host_exclusive(session, hostname)
     await repo.assign(session, hostname, req.key_id)
     await session.commit()

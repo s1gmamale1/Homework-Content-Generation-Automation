@@ -18,8 +18,8 @@ from app.repositories import books as books_repo
 from app.repositories import budget as budget_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
-from app.services import code_version
-from app.services import events_bus
+from app.repositories import sa_keys as sa_keys_repo
+from app.services import code_version, events_bus, operator_auth, sa_key_vault
 from app.services.prompts import load_all as load_prompts
 from app.services.worker import Worker, build_worker_from_settings
 
@@ -74,6 +74,12 @@ async def _reconcile_on_startup(session) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    operator_auth.require_startup_auth(
+        settings.auth_token,
+        allow_insecure_local=settings.allow_insecure_local_auth,
+    )
+    sa_key_vault.harden_vault()
+
     load_prompts()
     log.info("Prompts loaded")
 
@@ -82,6 +88,9 @@ async def lifespan(app: FastAPI):
     # peer-owned job (and its phase rows) is left untouched, not globally
     # force-failed.
     async with SessionLocal() as session:
+        expected = await sa_keys_repo.uuid_hash_inventory(session)
+        sa_key_vault.reconcile_delete_quarantines(expected)
+        sa_key_vault.verify_uuid_inventory(expected)
         await _reconcile_on_startup(session)
     log.info("Orphan sweep complete (books + phase_outputs)")
 

@@ -142,7 +142,29 @@ Every CLI call writes one row to `agent_usages` with `provider`, `model_name`, *
 
 ## Auth
 
-Token-based via `Authorization: Bearer <token>` (REST) or `?token=<>` query param (SSE / downloads, since `EventSource` can't set headers). Comma-separated list in `AUTH_TOKEN`. Empty disables auth (everything is `user="anonymous"`).
+Production startup requires every comma-separated `AUTH_TOKEN` member to pass
+the strong ASCII URL-safe policy; there is no token default and the historical
+`123` value is rejected. General REST uses `Authorization: Bearer <token>`;
+exact `?token=<>` query auth remains only for normal SSE/source-download routes
+whose clients cannot set a header. Every `/api/v1/sa-keys*` route is
+header-only, including list/upload/assignment/scrub—not just download.
+
+The only anonymous mode is explicit local development:
+`AUTH_TOKEN=` plus `ALLOW_INSECURE_LOCAL_AUTH=true`. It never opens the SA-key
+router. Do not add an environment-name, hostname, debug, or pytest bypass.
+Executable startup order is security-sensitive: validate operator auth, harden
+the SA-key vault, load prompts, then open the DB session that reconciles/verifies
+head inventory and job state; only afterward stamp the version floor, start
+listeners/workers, send heartbeats, or claim. Automation never kills/restarts
+the user-owned head. For
+an operational hard cut, follow
+`docs/runbooks/operator-token-rotation.md`; never bridge with `123,<strong>`.
+Its temporary floor is checked above every reported process version and every
+configured `WORKER_CODE_VERSION`, while its final floor remains at least the
+deployed target. A known unreachable host with no readable/bounded effective
+version, startup target, environment, and override unconditionally aborts the
+rotation. Bring it reachable or complete a separately authorized decommission,
+then restart preflight; preserve tombstones without counting them as proof.
 
 ## Things not to do
 

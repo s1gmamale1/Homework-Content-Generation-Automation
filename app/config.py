@@ -39,12 +39,12 @@ class Settings(BaseSettings):
     enable_docs: bool = False
     allow_origins: str = "*"
 
-    # Auth: comma-separated list of valid bearer tokens. Empty disables auth
-    # (dev/local mode — anyone can call any endpoint). In production, the
-    # upstream service injects the token in the request header; for manual
-    # frontend access (paste token into login form), the SPA stores it in
-    # sessionStorage and attaches it to every API call.
-    auth_token: str = "123"
+    # Auth: comma-separated list of valid bearer tokens. Production startup
+    # rejects an empty or structurally weak list. Local development must opt in
+    # explicitly with ALLOW_INSECURE_LOCAL_AUTH=true and an exactly empty list;
+    # that mode never opens the strict service-account-key routes.
+    auth_token: str = ""
+    allow_insecure_local_auth: bool = False
 
     # Dashboard viewer auth: a SEPARATE comma-separated token set for the
     # read-only dashboard viewer port (a second FastAPI process). Deliberately
@@ -316,7 +316,7 @@ settings = Settings()
 
 
 def valid_auth_tokens() -> set[str]:
-    """Parsed valid token set. Empty means auth is disabled."""
+    """Request-time token set; startup policy decides whether empty is safe."""
     return {t.strip() for t in settings.auth_token.split(",") if t.strip()}
 
 

@@ -25,7 +25,7 @@ The flow is a single fixed sequence of **11 phases** per subject (no easy/hard b
 - **Cost safety for paid (`api`) runs.** A per-call cost ledger plus a budget monitor with per-batch and fleet-daily `$` caps that **pause-claim** (stop claiming, let in-flight finish — never hard-cancel paid work) when a cap trips; claude cache-write tokens are priced (1.25× input). Caps via `COST_CAP_BATCH_USD` / `COST_CAP_FLEET_DAILY_USD` (0 = disabled).
 - **Custom prompts + phase picker.** An operator can override a phase's prompt and/or generate only a chosen subset of phases (`custom_prompts` / `selected_phases`); a partial selection must carry an uploaded prompt for every picked phase (else the launch is rejected 400). Default launches run the full 11-phase flow with built-in prompts.
 - **Cross-job extract reuse.** A per-section lesson extract already produced by another job (same `toc_entry_id` + prompt hash) is reused for free instead of re-reading the PDF.
-- **Token auth** via `Authorization: Bearer` header (REST) + `?token=` query param (SSE — `EventSource` can't set headers). Empty `AUTH_TOKEN` disables auth (everyone is `anonymous`).
+- **Fail-closed operator auth.** Production startup requires strong comma-separated `AUTH_TOKEN` values. General REST uses `Authorization: Bearer`; `?token=` remains available only to normal routes that need it (such as SSE/source downloads). Every `/api/v1/sa-keys*` route is header-only. Anonymous local development requires the explicit pair `AUTH_TOKEN=` + `ALLOW_INSECURE_LOCAL_AUTH=true`; SA-key routes stay closed.
 
 ## Architecture at a glance
 
@@ -60,7 +60,7 @@ The pipeline lives entirely server-side; the SPA streams progress via SSE and re
 ```bash
 git clone https://github.com/ganiyevuz/class-homework-builder.git
 cd class-homework-builder
-cp .env.example .env        # set DATABASE_URL and (recommended) AUTH_TOKEN
+cp .env.example .env        # set DATABASE_URL and the required strong AUTH_TOKEN
 docker compose up --build
 ```
 
@@ -130,7 +130,8 @@ All settings via env vars; defaults in [`app/config.py`](./app/config.py). Essen
 | | |
 |---|---|
 | `DATABASE_URL` | Required. async Postgres URL (`postgresql+asyncpg://…`) |
-| `AUTH_TOKEN` | Comma-separated bearer tokens. Empty = auth disabled (dev only) |
+| `AUTH_TOKEN` | Required strong comma-separated bearer tokens; there is no production default. Use the [hard-cut rotation runbook](./docs/runbooks/operator-token-rotation.md) to replace an active token fleet-wide. |
+| `ALLOW_INSECURE_LOCAL_AUTH` | `false` by default. `true` permits only an exactly empty `AUTH_TOKEN` for explicit local development; it never opens SA-key routes. |
 | `WORKER_CONCURRENCY` | Embedded worker concurrency. Set `0` in API-only pods |
 | `AGENT_MAX_CONCURRENCY` | Process-wide cap on concurrent CLI subprocesses |
 | `RATE_LIMIT_MAX_RETRIES` / `RATE_LIMIT_BASE_DELAY_SECONDS` / `RATE_LIMIT_MAX_DELAY_SECONDS` | Reactive 429 backoff: `agent._spawn` retries a transient rate-limit (429 / `RESOURCE_EXHAUSTED` / `overloaded_error`) with exponential delay + jitter (defaults `4` / `2.0` / `30.0`). The backoff sleep holds no concurrency slot |

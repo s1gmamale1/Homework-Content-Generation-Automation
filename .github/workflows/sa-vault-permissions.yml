@@ -1,0 +1,28 @@
+name: SA vault permissions
+
+on:
+  pull_request:
+    branches: [Nggaev-v2]
+    paths:
+      - "app/services/sa_key_vault.py"
+      - "app/services/sa_key_apply.py"
+      - "app/services/worker.py"
+      - "app/api/v1/sa_keys.py"
+      - "main.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "tests/services/test_sa_key_vault.py"
+      - ".github/workflows/sa-vault-permissions.yml"
+  workflow_dispatch:
+
+jobs:
+  windows-security-descriptor:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --extra dev
+      - run: uv run pytest tests/services/test_sa_key_vault.py -vv

@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends
 
 from app.api.v1 import batch, books, dashboard, health, jobs, notion, sa_keys, settings, workers
-from app.auth import get_current_user
+from app.auth import get_current_user, get_current_user_strict
 
 # Health stays public (deployment liveness probes don't need a token).
-# Everything else requires `Depends(get_current_user)` — attached to the
-# parent router so we don't have to repeat it on every endpoint.
+# Everything else requires a router-level auth dependency. SA-key routes use
+# strict header-only auth; the remaining routers preserve general header/query
+# auth for SSE and source-PDF clients.
 api_v1_router = APIRouter(prefix="/api/v1")
 api_v1_router.include_router(health.router, tags=["meta"])
 api_v1_router.include_router(books.router, dependencies=[Depends(get_current_user)])
@@ -17,5 +18,7 @@ api_v1_router.include_router(jobs.router, dependencies=[Depends(get_current_user
 api_v1_router.include_router(notion.router, dependencies=[Depends(get_current_user)])
 api_v1_router.include_router(workers.router, dependencies=[Depends(get_current_user)])
 api_v1_router.include_router(settings.router, dependencies=[Depends(get_current_user)])
-api_v1_router.include_router(sa_keys.router, dependencies=[Depends(get_current_user)])
+api_v1_router.include_router(
+    sa_keys.router, dependencies=[Depends(get_current_user_strict)]
+)
 api_v1_router.include_router(dashboard.router, dependencies=[Depends(get_current_user)])

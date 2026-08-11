@@ -14,6 +14,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services import code_version
+from app.services import operator_auth
 from app.services.worker import Worker
 
 
@@ -77,6 +78,36 @@ def test_unknown_version_with_floor_is_blocked():
     w = Worker(concurrency=1)
     claim = _run_claim(w, floor=200, version=None)
     claim.assert_not_called()
+
+
+def test_ahead_override_process_started_during_rotation_is_still_blocked():
+    """The temporary floor must dominate a known configured override."""
+    _, temporary_floor = operator_auth.rotation_version_floors(
+        prior_floor=953,
+        target_code_version=1000,
+        reported_code_versions=(1000,),
+        configured_overrides=(1500,),
+    )
+    worker = Worker(concurrency=1)
+
+    claim = _run_claim(worker, floor=temporary_floor, version=1500)
+
+    claim.assert_not_called()
+
+
+def test_old_worker_local_scrub_gate_cannot_bound_an_ahead_override():
+    """A DB scrub row is not a fence when the running binary ignores that row.
+
+    The harness models that older local behavior by bypassing the current
+    worker-local scrub check. An effective override above the temporary floor
+    then reaches ``claim_next_job``, proving the runbook must stop or use an
+    independently enforced park rather than trust the database tombstone.
+    """
+    worker = Worker(concurrency=1)
+
+    claim = _run_claim(worker, floor=1001, version=1500)
+
+    claim.assert_called_once()
 
 
 def test_at_floor_worker_claims():

@@ -52,9 +52,11 @@ from app.services import (
     agent,
     code_version,
     credential_limiter,
+    operator_auth,
     pipeline,
     providers,
     sa_key_apply,
+    sa_key_vault,
 )
 from app.services.errors import (
     CancelWonSignal,
@@ -92,12 +94,21 @@ def _api_capable(env: dict) -> dict[str, bool]:
 
 
 def _capability_blob(env: dict) -> dict:
-    """Published worker capability blob — provider × transport view.
-    Shape: {"cli": {name: bool ...}, "api": {provider: bool ...}}.
+    """Published worker capability blob — provider, version, and auth evidence.
+
     The cli flags follow shutil.which (via agent.provider_cli_installed); the api
     flags use the same acceptance rules as _compute_capabilities via _api_capable.
     Computed once at module load (CAPABILITY_BLOB) and published on each heartbeat."""
     api = _api_capable(env)
+    allow_raw = env.get(
+        "ALLOW_INSECURE_LOCAL_AUTH", settings.allow_insecure_local_auth
+    )
+    allow_insecure_local = (
+        allow_raw
+        if isinstance(allow_raw, bool)
+        else str(allow_raw).casefold() in {"1", "true", "yes", "on"}
+    )
+    raw_auth_token = str(env.get("AUTH_TOKEN", settings.auth_token))
     return {
         "cli": {name: agent.provider_cli_installed(name) for name in providers.PROVIDERS},
         "api": {
@@ -109,6 +120,10 @@ def _capability_blob(env: dict) -> dict:
         # captured at def time) so tests can patch the module globals.
         "code_version": code_version.CODE_VERSION,
         "git_sha": code_version.GIT_SHA,
+        "auth_token_fingerprint": operator_auth.runtime_token_set_fingerprint(
+            raw_auth_token,
+            allow_insecure_local=allow_insecure_local,
+        ),
     }
 
 
@@ -969,6 +984,9 @@ class Worker:
                     if asg["scrub"]:
                         await self._scrub_if_idle(session)
                         return
+        except sa_key_vault.SAKeyVaultError:
+            logger.warning(f"worker {self.id} SA-key vault scrub failed closed")
+            return
         except Exception:
             logger.warning(f"worker {self.id} sa-key assignment read/scrub failed")
             return
@@ -994,6 +1012,8 @@ class Worker:
                 f"worker {self.id} applied SA key project={asg['project_id']} "
                 f"(live, no restart) — gemini_api={CAPABILITIES['can_gemini_api']}"
             )
+        except sa_key_vault.SAKeyVaultError:
+            logger.warning(f"worker {self.id} SA-key vault apply failed closed")
         except Exception:
             logger.exception(f"worker {self.id} SA key apply failed")
 
@@ -1019,7 +1039,7 @@ class Worker:
         when there is plainly nothing to do or this process itself is busy."""
         has_residue = (
             self._applied_key_sha is not None
-            or sa_key_active_path().exists()
+            or sa_key_vault.file_present(sa_key_active_path())
             or "GOOGLE_APPLICATION_CREDENTIALS" in os.environ
             or "GOOGLE_CLOUD_PROJECT" in os.environ
             or sa_key_apply.env_file_has_credentials(_WORKER_ENV_PATH)
@@ -1061,7 +1081,7 @@ class Worker:
             _WORKER_ENV_PATH,
             {"GOOGLE_APPLICATION_CREDENTIALS": None, "GOOGLE_CLOUD_PROJECT": None},
         )
-        sa_key_active_path().unlink(missing_ok=True)
+        sa_key_vault.remove(sa_key_active_path(), missing_ok=True)
         _rebind_capabilities()
         self._applied_key_sha = None
         logger.warning(f"worker {self.id} SA key SCRUBBED (revoked)")
@@ -1098,6 +1118,13 @@ async def run_standalone() -> None:
     """Entrypoint for `python -m app.services.worker`. Loads prompts,
     starts the worker, installs SIGTERM/SIGINT handlers for graceful
     shutdown."""
+    operator_auth.require_startup_auth(
+        settings.auth_token,
+        allow_insecure_local=settings.allow_insecure_local_auth,
+    )
+    sa_key_vault.harden_vault()
+    _rebind_capabilities()
+
     from app.log import configure as configure_logging
     from app.services.prompts import load_all as load_prompts
 

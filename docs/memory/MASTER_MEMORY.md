@@ -2417,3 +2417,46 @@ pairs the judge enforces as ground truth.
 - **Crash-safety earned itself immediately**: the first paid attempt died on call 1 (the worktree loads
   the PARENT `.env`, whose `GOOGLE_APPLICATION_CREDENTIALS` is a Windows path from the fleet host) and
   lost nothing, at $0.00.
+
+## 0170 — Operator auth and SA-key vault hardening (2026-08-11)
+
+**Branch:** `plan/operator-auth-sa-vault-hardening` · **No migration · $0 acceptance · not deployed.**
+
+The operator surface no longer has a guessable/open production state. `AUTH_TOKEN` defaults empty,
+but normal head and standalone-worker startup reject empty, weak, malformed, duplicate, or mixed
+weak+strong token sets. `ALLOW_INSECURE_LOCAL_AUTH=true` accepts only the exact empty-token state for
+explicit local development; it never opens `/sa-keys`. General routes retain their intentional
+header/query contract, while the complete `/api/v1/sa-keys*` router is header-only. Token comparison
+is exact, ASCII-safe, constant-time across every candidate, and diagnostics never contain configured
+or presented token material.
+
+All service-account key filesystem operations now cross `app.services.sa_key_vault`: POSIX operations
+stay anchored to a verified vault directory fd; Windows operations apply and inspect the protected
+one-principal DACL on the already-open reparse-point handle. Existing, new, temp, quarantine, UUID, and
+`active.json` objects are private; atomic publication flushes/rehashes before write-through replacement;
+symlink/reparse/hardlink/nonregular/path-swap hazards fail closed. Upload dedup is DB-atomic. Delete
+quarantines exact hash-matching bytes before its locked DB mutation. A COMMIT exception is treated as
+ambiguous: upload retains canonical bytes and delete retains its quarantine; no request-time fresh
+session guesses the transaction outcome. Head startup reconciles exact quarantines from settled DB
+state, then requires DB rows and vault UUID hashes to match exactly. Assignment locks the key and
+verifies its canonical bytes/hash before touching host state.
+
+Startup order is now auth validation → vault hardening → prompts → DB quarantine/inventory reconcile →
+version stamp → listener → optional worker. The hard-cut rotation runbook keeps an all-claim temporary
+version floor above every known process/override, drains every process and credential slot, requires
+all known hosts to remain reachable, publishes a non-disclosing runtime token-set fingerprint, and
+permits the final reopen only after every process attests. Automation may stage worker changes but
+**must not restart or kill the user-owned head process**. The rollout preserves all six stored Vertex
+objects and Host-59's exact non-scrubbed assignment; neither was mutated during implementation.
+
+**Fresh verification at finish:** focused security/lifecycle suite **177 passed / 13 skipped** (the
+skips are the real-Windows cases); authenticated SA CRUD/assignment plus ambiguous upload/delete
+acceptance on the isolated `edu_scratch_auth_task5` PostgreSQL database **51/51 passed**; canonical
+suite **2411 passed / 426 skipped**. Security scans found no unsafe token default, non-strict SA router,
+direct key-file I/O, path-based Windows ACL call, key-material log expression, or whitespace error;
+the remaining `AUTH_TOKEN=123` matches are prohibition text or historical shipped-plan/spec examples.
+No model call, production DB/vault write, `.env` edit, token rotation, fleet change, process restart,
+deployment, or merge occurred. The PR is not merge-gateable until its mandatory real-Windows workflow
+passes production held-handle read/write/flush/hash/quarantine and adversarial DACL/reparse/hardlink
+cases. The eventual `123` removal remains an operator-owned hard cut behind the documented drain and
+temporary-floor protocol.
