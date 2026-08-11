@@ -849,7 +849,7 @@ uv run python -m pytest tests/ -q -k "resume"
 
 - [ ] **Step 5: RED-proof (mandatory)**
 
-Change `stagger_offset(resumed, ...)` to `stagger_offset(len(skipped_retired) + resumed, ...)` — the plausible wrong version. Re-run: `test_retired_jobs_do_not_consume_a_wave_slot` must fail with `assert [0, 0, 60] == [0, 60, 60]`. **Restore.**
+Change `stagger_offset(resumed, ...)` to `stagger_offset(len(skipped_retired) + resumed, ...)` — the plausible wrong version. Re-run: `test_retired_jobs_do_not_consume_a_wave_slot` must fail, the retired skip having pushed the third job into wave 1 — pytest prints actual first, so expect `assert [0, 60, 60] == [0, 0, 60]`. **Restore.**
 
 - [ ] **Step 6: Commit**
 
@@ -1251,10 +1251,12 @@ uv run python -m pytest tests/api tests/integration -q
 
 - [ ] **Step 5: RED-proof (mandatory)**
 
-Two sabotages, both required. **Both target `test_mixed_resume_and_create_share_one_wave_sequence`** — the single-disposition tests cannot detect either one (in an all-create launch `created == launched`; in an all-resume launch the create branch never executes), which is exactly why the mixed test exists:
+Two sabotages, both required, **both targeting `test_mixed_resume_and_create_share_one_wave_sequence`**. Sabotage 1 is detectable by *no other test in the suite* — in an all-create launch `created == launched` identically, and in an all-resume launch the create branch never executes — which is exactly why the mixed test exists. (Sabotage 2 is also caught by `test_resumed_sections_share_the_same_wave_counter`; run it against the mixed test anyway for a consistent record.)
 
-1. Change the create-branch offset argument to `stagger_offset(created, ...)`. The mixed test must fail with `assert [60, 60, 120, ...] == [0, 0, 0, 60, ...]` — the created jobs restart their own ramp at 0 instead of continuing from the resumed ones.
-2. Change `launched += 1` in the **resume** branch to a no-op. The mixed test must fail with `resume_offsets == [0, 0, 0, 0]` (and the created offsets shifted down a wave).
+1. Change the create-branch offset argument to `stagger_offset(created, ...)`. The mixed test must fail: the created jobs restart their own ramp at 0 (`[0, 0, 0, 60, 60, 60, 120, 120, 120, 180]`) instead of continuing from the resumed ones (`[60, 60, 120, ...]`).
+2. Change `launched += 1` in the **resume** branch to a no-op. The mixed test must fail with `resume_offsets == [0, 0, 0, 0]` and the created offsets shifted down a wave.
+
+**Quote pytest's real output, not these predictions** — pytest prints `assert <actual> == <expected>`, so the sides appear in the opposite order to the prose above.
 
 **Restore after each.** Quote both failures verbatim. If either sabotage leaves the suite green, stop and report — it means the shared-counter rule is still untested and the task is not done.
 
@@ -1394,14 +1396,17 @@ git commit -m "feat(batch): stagger the /resume path too"
 
 **Why the scope is what it is.** The feature's entire runtime effect is the `scheduled_at` stamps the launcher writes; that a later `scheduled_at` delays a claim is pre-existing, already-tested behaviour (`jobs.py:551`, `tests/integration/test_clock_skew.py`). So the gate proves two things, and the expensive one stays at one lesson:
 
-- **(a) Schedule proof — $0, zero model calls.** Run the real `launch_batch` in-process against a **scratch** DB (`127.0.0.1`, never `edu_copy`) with `BATCH_LAUNCH_WAVE_SIZE=2`, `BATCH_LAUNCH_WAVE_INTERVAL_SECONDS=60`, launching 6 lessons. Read `scheduled_at` straight back out of the DB and assert three distinct values ~60s apart, 2 jobs each, wave 0 at ~`now()`. Then assert `jobs_repo.queue_depth(session) == 2` — only wave 0 counts toward backpressure, which is the composition claim in fact 3 of the Approach section.
-- **(b) Generation still works — ONE lesson, `transport=api`, in-process.** Prove the offset column doesn't break a real run end to end. **Estimated ≈$1.15** (measured: the 28-lesson batch billed ≈$1.15/lesson across 830 calls, 7.48M prompt / 2.58M output tokens).
+- **(a) Schedule proof + claim-through — $0, zero model calls.** Run the real `launch_batch` in-process against a **scratch** DB (`127.0.0.1`, never `edu_copy`) with `BATCH_LAUNCH_WAVE_SIZE=2` and `BATCH_LAUNCH_WAVE_INTERVAL_SECONDS=20` (20s, not 60s, purely so the wait is bearable), launching 6 lessons. Then:
+  1. Read `scheduled_at` back out of the DB: three distinct values ~20s apart, 2 jobs each, wave 0 at ~`now()`.
+  2. `jobs_repo.queue_depth(session) == 2` — only wave 0 counts toward backpressure (Approach fact 3).
+  3. **Wait past the first boundary; assert `queue_depth() == 4`. Wait past the second; assert `== 6`.** This is the step that makes the gate self-contained: it observes a future-stamped row *become* claimable on real Postgres, rather than resting on pre-existing coverage (`tests/integration/test_clock_skew.py`).
+- **(b) Generation still works, on a job the stagger actually held back — ONE lesson, `transport=api`, in-process.** Do **not** launch a fresh single lesson: a 1-lesson launch is always wave 0, offset 0, `scheduled_at` never stamped — so it would prove nothing about this feature. Instead take one of part (a)'s **wave-2** jobs, `claim_next_job` it once its stamp is due, and run the pipeline on it. That exercises the full composition end to end: INSERT with a SQL-expression `scheduled_at` → held back by the claim gate → became due → claimed → generated. **Estimated ≈$1.15**, unchanged (measured: the 28-lesson batch billed ≈$1.15/lesson across 830 calls, 7.48M prompt / 2.58M output tokens).
 
-**Pre-flight (all must hold before spending anything):**
+**Pre-flight (all must hold before spending anything).** These two run against **production `edu_copy`** — read-only, and they are about the *fleet*, not the scratch DB: part (b) bills a real credential, so generation must not be paused and the fleet must be quiet enough that the smoke isn't competing for slots.
 ```bash
-# generation must be unpaused and the queue quiet
-psql "$DSN" -c "select api_paused_at from budget_state;"
-psql "$DSN" -c "select status, count(*) from homework_jobs where status in ('pending','running') group by 1;"
+# READ-ONLY against production. Everything the smoke WRITES goes to the scratch DB.
+psql "$PROD_DSN" -c "select api_paused_at from budget_state;"
+psql "$PROD_DSN" -c "select status, count(*) from homework_jobs where status in ('pending','running') group by 1;"
 ```
 Confirmed clean at plan time: `api_paused_at` NULL, zero pending/running.
 
@@ -1442,6 +1447,8 @@ git commit -m "test(launch): acceptance smoke for the wave stagger"
 - [ ] **Step 2: Write worklog 0172 + the INDEX row**
 
 Must record: the measured evidence (fan-out 5.54, extract p50 13.1s, 16 exhaustions, 81-in-flight-with-zero-failures counter-evidence); the closed form `(processes × AMC) − cap = 16`; **why raising `CREDENTIAL_MAX_CONCURRENT_GEMINI` was explored and rejected** (48-call fleet ceiling makes ≥48 all identical, Pro solver untested above 32, frozen fleet); the `ge=1` concurrency hardening as an in-scope-by-approval addition; **the ships-dark caveat**; and the smoke's exact spend.
+
+**Also required, in both the worklog and the PR body — the second residual:** the stagger is **per launch**, so two batches launched simultaneously each get their own wave 0 (≈12 jobs × 5.54 fan-out between them). By the closed form above that still drains inside the 120s budget, so it is not a defect — but name it rather than let an operator infer a fleet-wide guarantee that isn't there.
 
 **Also required, in both the worklog and the PR body — the residual an operator will otherwise assume away:** the stagger shapes only the **initial** release. A batch paused mid-ramp and unpaused later, or a fleet outage spanning the ramp, releases every overdue wave simultaneously — `pause`/`unpause` (`batch.py:540-559`) touch only `paused_at` and never re-stagger, and the claim gate then sees every `scheduled_at` already in the past. Deliberately out of scope: the rebuilt herd is bounded by the batch's own size, i.e. no worse than today. File it on WISHLIST as `stagger-on-unpause-1` alongside the FE follow-up.
 
@@ -1497,3 +1504,10 @@ The PR body must lead with: this is sized for the **current** concurrency config
 **Type consistency.** `stagger_offset(index, *, wave_size, interval_seconds) -> int` is called identically in Tasks 5, 6, 7. `start_offset_seconds: int = 0` is the parameter name on both `create` and `reset_for_retry`. `resume_failed_in_batch` keeps its `{"resumed", "skipped_retired"}` return shape. `_stagger_summary` returns the same five keys in both payloads, and the Task 6/7 assertions match it exactly.
 
 **Known gap, deliberate.** No FE change: the `stagger` payload key is additive and unread by the SPA, so a staggered launch still shows jobs as plain "queued". Acceptable — the operator-facing signal exists in the API response, and touching the FE would widen the diff past the filed defect. Filed as a WISHLIST follow-up in Task 9.
+
+**Review round 3 (fresh Fable reviewer): VERDICT PASS — no blockers.** It independently re-verified round 2's fixes and confirmed all four correct: the mixed test's arithmetic hand-traced against `launch_batch:337-421`; `resume_ids=None` leaves the four pre-existing tests byte-identical; the `fake_session` fixture necessary (`batch.py:423,427` really flush/commit) and conflict-free (`tests/api/conftest.py` never touches `get_session`); the Task 7 expected-failure correction right. It also **independently re-derived and upheld my rejection** of round 2's `created_at` finding — an ORM INSERT always supplies the Python-side `_utcnow()` value, so a transaction-fixed server clock never enters it, and each `create` flushes individually (`jobs.py:87`), separating the timestamps further.
+
+Changes folded from round 3:
+- **IMPORTANT — fixed.** Task 8(b) would never have generated a job the stagger actually future-stamped: a 1-lesson launch is always wave 0, offset 0, so `scheduled_at` is never written and the real-api leg was a plain regression smoke. Part (a) now also waits out both wave boundaries and re-reads `queue_depth` (2 → 4 → 6), observing a future-stamped row *become* claimable on real Postgres; part (b) now generates one of part (a)'s **wave-2** jobs instead of a fresh single lesson. Same ≈$1.15, and the full composition — SQL-expression INSERT → held back → became due → claimed → generated — is now covered end to end.
+- **NITS — fixed.** Task 6 Step 5 no longer overstates sabotage 2 (it *is* also caught by the all-resume test; only sabotage 1 is uniquely dependent on the mixed test); both quoted RED failure strings now put actual before expected, matching pytest's real output; Task 8's pre-flight now says explicitly that its two queries read **production** while everything the smoke writes goes to the scratch DB.
+- **Accepted as non-issues:** ±1-2 line drift on three citations (all point at the right code); `Settings(_env_file=None)` still reading process env (identical exposure to the existing `tests/test_config_*.py` pattern).
