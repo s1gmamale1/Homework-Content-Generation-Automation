@@ -445,6 +445,76 @@ def _windows_harden_file(path: Path) -> None:  # pragma: no cover
         _windows_require_named_identity(path, handle)
 
 
+def _posix_validate_crashed_restore_pair(
+    vault_fd: int,
+    ticket: DeleteQuarantine,
+) -> bool:
+    """Return whether two names are the exact two-link restore crash state."""
+    quarantine_digest, quarantine_fd = _hash_posix_child(
+        vault_fd,
+        ticket.quarantine_name,
+        allowed_file_links=(1, 2),
+    )
+    try:
+        canonical_digest, canonical_fd = _hash_posix_child(
+            vault_fd,
+            ticket.original_name,
+            allowed_file_links=(1, 2),
+        )
+        try:
+            quarantine_info = os.fstat(quarantine_fd)
+            canonical_info = os.fstat(canonical_fd)
+            same_identity = (
+                quarantine_info.st_dev,
+                quarantine_info.st_ino,
+            ) == (canonical_info.st_dev, canonical_info.st_ino)
+            if not same_identity:
+                if quarantine_info.st_nlink == canonical_info.st_nlink == 1:
+                    return False
+                raise _raise_vault_error()
+            if (
+                quarantine_info.st_nlink != 2
+                or canonical_info.st_nlink != 2
+                or stat.S_IMODE(quarantine_info.st_mode) != 0o600
+                or stat.S_IMODE(canonical_info.st_mode) != 0o600
+                or quarantine_digest != ticket.sha256
+                or canonical_digest != ticket.sha256
+            ):
+                raise _raise_vault_error()
+            _posix_verify_named_identity(
+                vault_fd,
+                ticket.quarantine_name,
+                quarantine_fd,
+                allowed_file_links=(2,),
+            )
+            _posix_verify_named_identity(
+                vault_fd,
+                ticket.original_name,
+                canonical_fd,
+                allowed_file_links=(2,),
+            )
+            return True
+        finally:
+            os.close(canonical_fd)
+    finally:
+        os.close(quarantine_fd)
+
+
+def _posix_crashed_restore_names(vault_fd: int, names: list[str]) -> set[str]:
+    """Identify only canonical UUID/quarantine pairs left by restore publication."""
+    present = set(names)
+    recovery_names: set[str] = set()
+    for name in names:
+        if not name.endswith(".delete-quarantine"):
+            continue
+        ticket = _ticket_from_name(name)
+        if ticket.original_name not in present:
+            continue
+        if _posix_validate_crashed_restore_pair(vault_fd, ticket):
+            recovery_names.update((ticket.original_name, ticket.quarantine_name))
+    return recovery_names
+
+
 def harden_vault(*, _restore_ticket: DeleteQuarantine | None = None) -> None:
     if _IS_WINDOWS:  # pragma: no cover - Windows CI
         with _open_windows_vault("harden") as (vault, _handle, identity):
@@ -465,6 +535,7 @@ def harden_vault(*, _restore_ticket: DeleteQuarantine | None = None) -> None:
             names = os.listdir(vault_fd)
         except OSError as exc:
             raise _raise_vault_error() from exc
+        crashed_restore_names = _posix_crashed_restore_names(vault_fd, names)
         restore_names = set()
         if _restore_ticket is not None:
             restore_names = {
@@ -473,14 +544,19 @@ def harden_vault(*, _restore_ticket: DeleteQuarantine | None = None) -> None:
             }
         restore_stats: dict[str, os.stat_result] = {}
         for name in names:
-            allowed_links = (1, 2) if name in restore_names else (1,)
+            allowed_links = (
+                (1, 2)
+                if name in restore_names or name in crashed_restore_names
+                else (1,)
+            )
             fd = _posix_open_child(
                 vault_fd,
                 name,
                 allowed_file_links=allowed_links,
             )
             try:
-                os.fchmod(fd, 0o600)
+                if name not in crashed_restore_names:
+                    os.fchmod(fd, 0o600)
                 info = os.fstat(fd)
                 _reject_unsafe_stat(
                     info,
@@ -903,7 +979,7 @@ def quarantine_for_delete(path: Path, *, expected_sha256: str) -> DeleteQuaranti
 def _finish_quarantine_posix_on_fd(
     ticket: DeleteQuarantine, *, restore: bool, vault_fd: int
 ) -> None:
-    allowed_links = (1, 2) if restore else (1,)
+    allowed_links = (1, 2)
     digest, quarantine_fd = _hash_posix_child(
         vault_fd,
         ticket.quarantine_name,
@@ -1022,6 +1098,44 @@ def _finish_quarantine_posix_on_fd(
             finally:
                 os.close(canonical_fd)
         else:
+            if quarantine_info.st_nlink == 2:
+                if not _posix_validate_crashed_restore_pair(vault_fd, ticket):
+                    raise _raise_vault_error()
+                canonical_fd = _posix_open_child(
+                    vault_fd,
+                    ticket.original_name,
+                    allowed_file_links=(2,),
+                )
+                try:
+                    canonical_info = os.fstat(canonical_fd)
+                    if (
+                        canonical_info.st_dev,
+                        canonical_info.st_ino,
+                    ) != (quarantine_info.st_dev, quarantine_info.st_ino):
+                        raise _raise_vault_error()
+                    _posix_verify_named_identity(
+                        vault_fd,
+                        ticket.original_name,
+                        canonical_fd,
+                        allowed_file_links=(2,),
+                    )
+                    _posix_verify_named_identity(
+                        vault_fd,
+                        ticket.quarantine_name,
+                        quarantine_fd,
+                        allowed_file_links=(2,),
+                    )
+                    # DB absence is authoritative. Remove the published name first,
+                    # so a crash can leave only a quarantine for the next reconcile.
+                    os.unlink(ticket.original_name, dir_fd=vault_fd)
+                    os.fsync(vault_fd)
+                    _posix_verify_named_identity(
+                        vault_fd,
+                        ticket.quarantine_name,
+                        quarantine_fd,
+                    )
+                finally:
+                    os.close(canonical_fd)
             os.unlink(ticket.quarantine_name, dir_fd=vault_fd)
         os.fsync(vault_fd)
     except OSError as exc:

@@ -427,6 +427,96 @@ def test_restore_recovers_after_crash_between_link_and_quarantine_unlink(
     assert not quarantine.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="dir-fd publication is POSIX")
+@pytest.mark.parametrize("db_present", [True, False])
+def test_plain_harden_then_reconcile_recovers_a_crashed_restore_link(
+    monkeypatch, tmp_path, db_present
+):
+    _point_vault(monkeypatch, tmp_path)
+    key_id, body = _seed_uuid_file()
+    path = storage.sa_key_path(key_id)
+    sa_key_vault.atomic_write(path, body)
+    ticket = sa_key_vault.quarantine_for_delete(path, expected_sha256=_sha(body))
+    quarantine = path.parent / ticket.quarantine_name
+    real_unlink = os.unlink
+
+    def crash_before_quarantine_unlink(name, *, dir_fd=None):
+        if name == ticket.quarantine_name:
+            raise OSError("simulated crash after no-replace publication")
+        return real_unlink(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(sa_key_vault.os, "unlink", crash_before_quarantine_unlink)
+    with pytest.raises(sa_key_vault.SAKeyVaultError):
+        sa_key_vault.restore_quarantined_delete(ticket)
+    monkeypatch.setattr(sa_key_vault.os, "unlink", real_unlink)
+
+    assert path.stat().st_ino == quarantine.stat().st_ino
+    assert path.stat().st_nlink == quarantine.stat().st_nlink == 2
+
+    # Startup keeps this ordering: harden before the DB-backed reconciliation.
+    sa_key_vault.harden_vault()
+    expected = {str(key_id): _sha(body)} if db_present else {}
+    sa_key_vault.reconcile_delete_quarantines(expected)
+    sa_key_vault.verify_uuid_inventory(expected)
+
+    assert not quarantine.exists()
+    if db_present:
+        assert path.read_bytes() == body
+        assert path.stat().st_nlink == 1
+    else:
+        assert not path.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="hard-link recovery is POSIX")
+@pytest.mark.parametrize(
+    "invalid_pair",
+    ["generic", "wrong-hash", "wrong-uuid", "third-link", "non-private"],
+)
+def test_harden_rejects_every_noncanonical_two_link_recovery_pair(
+    monkeypatch, tmp_path, invalid_pair
+):
+    vault = _point_vault(monkeypatch, tmp_path)
+    vault.mkdir(mode=0o700)
+    key_id, body = _seed_uuid_file()
+    canonical = storage.sa_key_path(key_id)
+    canonical.write_bytes(body)
+    canonical.chmod(0o600)
+    encoded_id = key_id
+    encoded_sha = _sha(body)
+    alias = vault / "generic-hard-link"
+
+    if invalid_pair == "generic":
+        pass
+    elif invalid_pair == "wrong-hash":
+        encoded_sha = _sha(b"different")
+    elif invalid_pair == "wrong-uuid":
+        encoded_id = uuid4()
+
+    if invalid_pair == "generic":
+        os.link(canonical, alias)
+    else:
+        quarantine = vault / (
+            f".{encoded_id}.json.{encoded_sha}.{'a' * 32}.delete-quarantine"
+        )
+        os.link(canonical, quarantine)
+        if invalid_pair == "third-link":
+            os.link(canonical, alias)
+        elif invalid_pair == "non-private":
+            canonical.chmod(0o640)
+
+    with pytest.raises(sa_key_vault.SAKeyVaultError):
+        sa_key_vault.harden_vault()
+
+
+def test_inventory_does_not_hide_a_db_absent_canonical_orphan(monkeypatch, tmp_path):
+    _point_vault(monkeypatch, tmp_path)
+    key_id, body = _seed_uuid_file()
+    sa_key_vault.atomic_write(storage.sa_key_path(key_id), body)
+
+    with pytest.raises(sa_key_vault.SAKeyVaultError):
+        sa_key_vault.verify_uuid_inventory({})
+
+
 def test_restore_discards_only_a_byte_identical_duplicate(monkeypatch, tmp_path):
     _point_vault(monkeypatch, tmp_path)
     key_id, body = _seed_uuid_file()
