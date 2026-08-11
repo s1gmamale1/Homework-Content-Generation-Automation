@@ -39,6 +39,59 @@ os.environ.setdefault("ALLOW_INSECURE_LOCAL_AUTH", "true")
 os.environ.setdefault("EXTRACT_COVERAGE_CHECK_ENABLED", "false")
 
 
+# ── real-DB tests must never be pointed at production ────────────────────
+# The `RUN_DB_INTEGRATION=1` tests CREATE books, batches and jobs. They take
+# whatever `DATABASE_URL` is in the environment, so running them with a normal
+# operator env writes that seed data straight into the live database. Nothing
+# stopped that before; this refuses at collection time instead.
+#
+# Two independent tripwires, because the two ways to get here are different:
+#   * a PRODUCTION database name (`edu_copy` is the live fleet DB), and
+#   * a NON-LOCAL host — the trap that actually catches people. A git worktree
+#     has no `.env` of its own, so `load_dotenv` walks UP to the parent
+#     directory's `.env`, which points at the remote head. Deriving a "scratch"
+#     URL inside a worktree therefore silently aims at a real fleet host. That
+#     has now caught two separate people on this project.
+#
+# Deliberately a DENYLIST, not an allowlist: requiring the name to contain
+# "scratch" would break anyone running these against a normal local dev DB
+# (`edu_homework`), which is legitimate.
+_PROD_DB_NAMES = {"edu_copy"}
+
+
+def _guard_db_integration_target() -> None:
+    if os.getenv("RUN_DB_INTEGRATION") != "1":
+        return
+    url = os.environ.get("DATABASE_URL", "")
+    if not url:
+        return
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url.replace("postgresql+asyncpg://", "postgresql://"))
+        name = (parsed.path or "").lstrip("/")
+        host = parsed.hostname or ""
+    except Exception:  # noqa: BLE001 — a URL we cannot parse is not our business
+        return
+    if name in _PROD_DB_NAMES:
+        raise RuntimeError(
+            f"REFUSING to run RUN_DB_INTEGRATION tests against database {name!r} — "
+            "that is PRODUCTION. These tests create books/batches/jobs. Point "
+            "DATABASE_URL at a scratch database."
+        )
+    if host and host not in ("127.0.0.1", "localhost", "::1", ""):
+        raise RuntimeError(
+            f"REFUSING to run RUN_DB_INTEGRATION tests against host {host!r} — "
+            "these tests write, and a non-local host is a real fleet machine. "
+            "If you derived this URL inside a git worktree, note the worktree has "
+            "no .env of its own and load_dotenv walks up to the parent one. Pin "
+            "127.0.0.1 explicitly."
+        )
+
+
+_guard_db_integration_target()
+
+
 @pytest.fixture(autouse=True)
 def _loopback_events_bus(request, monkeypatch):
     """Unit tests never open a DB connection (module docstring above) — but

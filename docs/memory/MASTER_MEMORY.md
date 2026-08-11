@@ -2575,3 +2575,29 @@ fails (3). Sabotage marker verified as landed before the run, then restored. Sui
 3/3 pass against real Postgres.
 
 Sibling of `test_queue_depth_pause.py`, which pins the other `queue_depth` predicate.
+
+## 0174 — Real-DB tests refuse to run against production (2026-08-11)
+
+**Branch:** `test/db-integration-prod-guard` · **Test-infra only · no migration · $0 · no production surface.**
+
+**What:** `tests/conftest.py` now refuses at collection time to run `RUN_DB_INTEGRATION=1` tests
+against a production target. Two independent tripwires: a **production database name** (`edu_copy`,
+the live fleet DB) and a **non-local host**. Six tests pin both directions.
+
+**Why:** the real-DB tests CREATE books, batches and jobs, and take whatever `DATABASE_URL` is in the
+environment. `RUN_DB_INTEGRATION=1` with a normal operator env therefore seeded that data straight
+into the live database, with nothing to stop it. **Pre-existing, not a regression** — flagged in the
+#133 gate once a second file of this shape existed (`test_queue_depth_pause.py` has the identical
+shape). The non-local arm is the one that earns its keep: a git worktree has no `.env` of its own, so
+`load_dotenv` walks UP to the parent directory's, which points at the remote head — deriving a
+"scratch" URL inside a worktree silently aims at a real fleet machine. **That trap has now caught two
+separate people on this project**, which is why the host check is not optional.
+
+**Deliberately a DENYLIST, not an allowlist.** Requiring the name to contain "scratch" would break
+anyone running these against a normal local dev DB (`edu_homework`), which is legitimate; a test
+pins that case stays working. The guard also fails **open** on an unparseable URL — a URL we cannot
+read is not evidence of danger, and refusing there would block runs for an unrelated reason.
+
+**Verified live, not just unit-tested:** pointed at `edu_copy` it aborts collection with
+`REFUSING … that is PRODUCTION`; pointed at a local scratch, the 4 real-DB `queue_depth` tests run
+and pass unchanged. Canonical suite **2501 passed / 458 skipped** (+6 = the guard's own tests).
