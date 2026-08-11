@@ -249,6 +249,9 @@ def full_stage_scope(*, target: int, batches: int, workers: int) -> soak.SoakSco
                 str(book_id): f"{index:x}" * 64
                 for index, book_id in enumerate(book_ids, start=1)
             },
+            "required_book_subject": {
+                str(book_id): "matematika" for book_id in book_ids
+            },
             "forbidden_notion_mapping_keys": ["english|8"],
             "approved_incremental_cost_usd": "1.00",
             "settle_seconds": 2,
@@ -451,6 +454,99 @@ def full_stage_snapshot(scope: soak.SoakScope, *, state: str) -> soak.RawSnapsho
         phases=phases,
         usages=usages,
         fleet_usages_24h=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_release_timeout_is_incomplete_and_never_invokes_stop(tmp_path):
+    scope = valid_scope(
+        target=4,
+        release_timeout_seconds=60,
+        stage_timeout_seconds=600,
+    )
+    staged = pristine_staged_snapshot(scope)
+    store = FakeStore([staged])
+    clock = FakeClock()
+    stop_store = StageWriteStore()
+    stopper = soak.GuardedStopper(stop_store, clock=clock)
+
+    code = await soak.run_watch(
+        scope=scope,
+        attestation=runtime_attestation(scope),
+        store=store,
+        writer=soak.ArtifactWriter(tmp_path, scope.run_id),
+        stopper=stopper,
+        clock=clock,
+        monotonic=lambda: clock.current.timestamp(),
+        sleep=FakeSleep(clock),
+        interval_seconds=30,
+    )
+
+    assert code == soak.ExitCode.INCOMPLETE
+    assert stop_store.stop_calls == 0
+    summary = load_summary(tmp_path, scope.run_id)
+    assert summary["verdict"] == "incomplete"
+    assert {row["code"] for row in summary["findings"]} == {"release_timeout"}
+
+
+@pytest.mark.asyncio
+async def test_stage_timeout_armed_stops_exact_scope(tmp_path):
+    scope = valid_scope(
+        target=4,
+        release_timeout_seconds=60,
+        stage_timeout_seconds=60,
+    )
+    staged = pristine_staged_snapshot(scope)
+    running = healthy_running_snapshot(running=4)
+    store = FakeStore([staged, running])
+    clock = FakeClock()
+    stop_store = StageWriteStore()
+    stopper = soak.GuardedStopper(stop_store, clock=clock)
+
+    code = await soak.run_watch(
+        scope=scope,
+        attestation=runtime_attestation(scope),
+        store=store,
+        writer=soak.ArtifactWriter(tmp_path, scope.run_id),
+        stopper=stopper,
+        clock=clock,
+        monotonic=lambda: clock.current.timestamp(),
+        sleep=FakeSleep(clock),
+        interval_seconds=30,
+    )
+
+    assert code == soak.ExitCode.HARD_STOP_ARMED
+    assert stop_store.stop_calls == 1
+    summary = load_summary(tmp_path, scope.run_id)
+    assert any(row["code"] == "stage_timeout" for row in summary["findings"])
+
+
+@pytest.mark.asyncio
+async def test_runtime_immutable_drift_uses_armed_exact_scope_stop(tmp_path):
+    scope = valid_scope(target=4)
+    staged = pristine_staged_snapshot(scope)
+    drifted = healthy_running_snapshot(running=4)
+    drifted.schema_state.revision = "wrong_revision"
+    store = FakeStore([staged, drifted])
+    clock = FakeClock()
+    stop_store = StageWriteStore()
+
+    code = await soak.run_watch(
+        scope=scope,
+        attestation=runtime_attestation(scope),
+        store=store,
+        writer=soak.ArtifactWriter(tmp_path, scope.run_id),
+        stopper=soak.GuardedStopper(stop_store, clock=clock),
+        clock=clock,
+        sleep=FakeSleep(clock),
+    )
+
+    assert code == soak.ExitCode.HARD_STOP_ARMED
+    assert stop_store.stop_calls == 1
+    summary = load_summary(tmp_path, scope.run_id)
+    assert any(
+        row["code"] == "schema_revision_mismatch"
+        for row in summary["findings"]
     )
 
 

@@ -15,6 +15,13 @@
 - Scope is never inferred from “recent” rows alone. Every run requires non-empty `batch_ids`, non-empty `job_ids`, and an aware UTC `since` instant in the scope file. Every queried job, usage row, phase row, and lease event is filtered by those job IDs, with `since` as an additional lower bound for time-series tables.
 - The first soak requires one exact, caller-supplied **final deployed** Git SHA, code version, and Alembic revision, derived from the externally gated merge/deployment immediately before the run. Every participating process, heartbeat, attestation, `claimed_by` suffix, and the fleet version floor must match the code pair; the live database must match the caller-supplied revision exactly while still proving the 0052 ledger/token primitives exist. `d6b1c9f` / v987 / `0052_job_lease_fencing` are only the pre-plan audit baseline; they are never runtime defaults because later gated lanes create newer identities. The remaining production configuration is exactly `WORKER_CONCURRENCY=2`, `AGENT_MAX_CONCURRENCY=4`, `CREDENTIAL_MAX_CONCURRENT_GEMINI=32`, `CREDENTIAL_SLOT_WAIT_SECONDS=120`, `SOLVER_ENABLED=true`, no `GEMINI_MAX_CONCURRENCY`, one worker process per host, one shared plain-key fingerprint, and `STRUCTURED_OUTPUT_ENABLED=false`. All values live in the scope file, not as hidden code defaults.
 - The first production sequence is `4 -> 8 -> 12 -> 20 -> 40` independent fresh jobs. A level advances only after its jobs reach terminal state and a 60-second quiet-settle window passes all gates.
+- Every paid scope explicitly records `release_timeout_seconds=600` and
+  `stage_timeout_seconds=14400` (four hours). These are conservative first-run
+  values, not hidden defaults: release timeout is bounded to 30–1800 seconds
+  and stage timeout to 60–21600 seconds by the schema. Both deadlines use a
+  monotonic clock. Expiry before release is incomplete and never invokes the
+  stop writer; expiry after release is a hard stop and, when armed, pauses only
+  the exact scope.
 - The 40-job level is two 20-job batches so each remains below the configured `$50` per-batch cap. It is still one stage and one exact scope.
 - The tooling lane is `$0`: unit tests, fake-store acceptance, and optional scratch-Postgres integration only. No provider call and no production job launch is authorized by this plan.
 - A later billed soak is a separate operator gate. The 84-job series is forecast at `$96.30` median / `$125.70` historical p95 / `$202.74` historical maximum. Do not run it without an explicit hard-dollar approval; the proposed hard stop is `$135`, not an authorization.
@@ -177,6 +184,31 @@
   integration file against `edu_scratch_soak_gate8` pins the correction.
 - The scratch acceptance leaves zero `soak%` books, jobs, or lease events.
   This round makes no production/provider/fleet call and does not push a ref.
+
+## Round-9 Runtime-Scope and Deadline Corrections (2026-08-11)
+
+- Repeated the mandatory read-only collision gate at controller head
+  `987adb4`; open PRs and other worktrees remain non-overlapping/read-only.
+- One common immutable-state evaluator now gates preflight and every runtime
+  sample. It proves the transaction is read-only, the exact Alembic revision
+  remains live, the ledger/job-token/phase-token primitives still exist, and
+  every required book still has its locked content SHA. Runtime drift is an
+  immediate hard stop rather than a preflight-only assertion.
+- The scope carries an expected subject for every required book, with the
+  exact same canonical UUID key set as the SHA map. Both the live book and
+  every scoped job must equal that per-book subject at preflight and runtime.
+- Release and stage deadlines are explicit required scope fields. The first
+  approved values are 600 and 14,400 seconds respectively; no CLI or model
+  default can silently extend a paid run. A pre-release expiry records
+  `incomplete` without mutation. A post-release expiry takes the existing
+  exact-scope armed-stop path.
+- Provider isolation is live evidence, not a capacity count. Every credential
+  slot must use the attested sanitized Gemini fingerprint and an attested
+  process `pc_id`. The read-only store cumulatively collects every API usage
+  outside the exact job IDs since `scope.since`, ordered and watermarked by
+  persisted `(created_at, id)`. Any such call—or disappearance of an earlier
+  event—is contamination and hard-stops. Raw credentials, secrets, and free
+  provider error text never enter this evidence.
 
 ## File Structure
 
@@ -398,7 +430,7 @@ git commit -m "fix(db): bound and identify idle transactions"
 - Produces `load_scope(source: Path | Literal["-"], *, stdin: TextIO = sys.stdin) -> SoakScope`, `load_attestation(path: Path) -> FleetAttestation`, `redacted_model_dump(model: BaseModel) -> dict`, and `parse_args(argv: Sequence[str]) -> argparse.Namespace`.
 - Produces a narrow `ProcessView` protocol (`pid`, `status()`, `cmdline()`, `environ()`, `cwd()`), `discover_worker_processes(processes: Iterable[ProcessView]) -> list[ProcessView]`, `effective_worker_contract(worker_env: Mapping[str, str]) -> EffectiveWorkerContract`, `build_local_attestation(scope, *, hostname, processes, now, git_identity=None) -> WorkerAttestation`, `canonical_json(model) -> str`, and `aggregate_attestations(scope, workers, *, now) -> FleetAttestation`.
 - Produces injectable `main(argv, *, process_source=None, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr, hostname=None, now=None, git_identity=None) -> int`; production defaults use `psutil`, `socket`, the real clock, and git, while tests inject all of them and prove the command never opens a database or network client.
-- `SoakScope` fields: `run_id`, aware-UTC `since`, exact `batch_ids`, exact `job_ids`, exact `participant_hosts`, `target_running`, `expected_git_sha`, `expected_code_version`, `expected_db_revision`, expected four concurrency knobs, `legacy_gemini_var_must_be_absent`, `structured_output_enabled`, `solver_enabled` (literal `true`), `solver_boss_arena_enabled` (literal `true`), `expected_output_language` (literal `en`), `expected_source_language` (literal `ru`), `required_book_sha256`, `forbidden_notion_mapping_keys`, `expected_models_by_operation_prefix`, `approved_incremental_cost_usd`, `fleet_cost_limit_usd`, `db_preflight_connection_limit`, `db_hard_stop_connection_limit`, `heartbeat_max_age_seconds`, `attestation_max_age_seconds`, and `settle_seconds`. The model map must contain exactly `phase.run`, `lesson.extract`, `lesson.extract.coverage`, `lesson.extract.verify`, `judge:`, and `solve:` with stripped non-empty model values; missing, extra, or blank entries fail while parsing the scope, before preflight can open a store or incur spend.
+- `SoakScope` fields: `run_id`, aware-UTC `since`, exact `batch_ids`, exact `job_ids`, exact `participant_hosts`, `target_running`, `expected_git_sha`, `expected_code_version`, `expected_db_revision`, expected four concurrency knobs, `legacy_gemini_var_must_be_absent`, `structured_output_enabled`, `solver_enabled` (literal `true`), `solver_boss_arena_enabled` (literal `true`), `expected_output_language` (literal `en`), `expected_source_language` (literal `ru`), `required_book_sha256`, `required_book_subject`, `forbidden_notion_mapping_keys`, `expected_models_by_operation_prefix`, `approved_incremental_cost_usd`, `fleet_cost_limit_usd`, `db_preflight_connection_limit`, `db_hard_stop_connection_limit`, `heartbeat_max_age_seconds`, `attestation_max_age_seconds`, `settle_seconds`, `release_timeout_seconds`, and `stage_timeout_seconds`. The two per-book maps must cover the exact same canonical UUID set. The model map must contain exactly `phase.run`, `lesson.extract`, `lesson.extract.coverage`, `lesson.extract.verify`, `judge:`, and `solve:` with stripped non-empty model values; missing, extra, or blank entries fail while parsing the scope, before preflight can open a store or incur spend.
 - `FleetAttestation` fields: `scope_sha256`, `observed_at`, `credential_fingerprint`, and a non-empty worker list canonically ordered by `(hostname, pc_id)`. `input_artifact_sha256` is unique, sorted, has exactly one digest per worker, and must exactly equal the recomputed canonical worker-artifact digests when the persisted model loads.
 - Each `WorkerAttestation` fields: `scope_sha256`, exact `pc_id`, `hostname`, `observed_at`, `git_sha`, `code_version`, `worker_concurrency`, `agent_max_concurrency`, `credential_max_concurrent_gemini`, `credential_slot_wait_seconds`, `gemini_max_concurrency_present`, `structured_output_enabled`, `solver_enabled` (literal `true`), `process_count_for_host`, `credential_fingerprint`, `pdf_sha256_by_book: dict[str, str | None]`, and `notion_mapping_keys`.
 
@@ -908,11 +940,16 @@ The store must issue bound-parameter queries, never interpolate UUIDs or timesta
 5. SA scrub tombstones needed to distinguish a technically online but parked hostname.
 6. `pg_settings` values for `max_connections` and `superuser_reserved_connections`, plus the controller connection's effective `idle_in_transaction_session_timeout` normalized to integer milliseconds with `extract(epoch from current_setting(...)::interval)`. PostgreSQL cannot inspect another backend's per-session GUC; exact deployed SHA plus Task 1's hardcoded engine settings prove the worker-side contract, while this runtime read proves the controller's own connection is protected.
 7. `pg_stat_activity`: total sessions, `idle in transaction` rows with PID/application/client/age/query prefix, and non-client wait events. Exclude the controller's own PID only from the idle/wait offender lists, not from the total count.
-8. Fresh and stale `credential_slots`, grouped by credential fingerprint and holder process.
+8. Fresh and stale `credential_slots`, grouped by sanitized credential
+   fingerprint and holder process. Every row must bind to the fleet
+   attestation's fingerprint and exact process set.
 9. Scoped `job_lease_events`, `phase_outputs`, and `agent_usages` since
    `scope.since`; usage rows include `phase_output_id` and a left join to the
    authoritative phase's job/name for binding checks.
-10. Fleet API usage rows in the trailing 24 hours for the global envelope check.
+10. Fleet API usage rows in the trailing 24 hours for the global envelope
+    check, plus every API usage row outside the scoped jobs since `scope.since`
+    with its persisted `(created_at, UUID id)` watermark. The latter query is
+    cumulative so a call between samples cannot disappear.
 
 Do not query worker `.env` values from PostgreSQL; exact configuration comes from the authenticated-channel-captured attestation and is cross-checked against the same `pc_id` heartbeat row. A worker is “claimable” for this gate only when heartbeat is fresh, status is `online`, Gemini API capability is true, its code version is at/above the floor, and its hostname has no scrub tombstone.
 
@@ -938,7 +975,9 @@ The healthy gate requires:
   values match the scope;
 - live `solver_boss_arena_enabled` is exactly `true`, matching the locked scope;
 - DB total is at most `db_preflight_connection_limit`, zero idle-in-transaction, zero non-client waits, and the controller's effective idle-in-transaction timeout is nonzero and at most 300,000 ms;
-- zero fresh or stale credential slots;
+- zero fresh or stale credential slots, with every observed slot additionally
+  required to match the attested fingerprint and process set so a nonzero
+  baseline cannot hide foreign ownership behind the generic count finding;
 - priced trailing-24h fleet cost plus the approved incremental cap is at most `fleet_cost_limit_usd`.
 
 - [ ] **Step 5: Add real-Postgres read-only and scope tests**
@@ -1566,7 +1605,12 @@ Rollback: revert the PR, deploy the revert to head/workers, and restart so new c
 
 This plan does not authorize the following commands. They are the exact handoff once an operator approves a hard cap.
 
-For each stage, first hold API claims with the exact operator-owned staging pause. The current app has no public endpoint for this global gate, so use a guarded SQL update and verify exactly one returned row before launching:
+For each stage, first freeze book upload, TOC extraction/validation, and every
+other model-calling operator action for the entire soak. Those calls may have
+no homework job ID and are deliberately treated as unscoped provider
+contamination. Then hold API claims with the exact operator-owned staging
+pause. The current app has no public endpoint for this global gate, so use a
+guarded SQL update and verify exactly one returned row before launching:
 
 ```bash
 psql "$DATABASE_URL_PSQL" -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -1578,7 +1622,13 @@ returning id, api_paused_reason;
 SQL
 ```
 
-If the command returns zero rows, stop: a foreign pause already exists and must not be overwritten. With staging active, create fresh jobs through the normal batch API, then capture exact resolved batch and job IDs plus the exact participant hostname list into `scope-<level>.json`.
+If the command returns zero rows, stop: a foreign pause already exists and
+must not be overwritten. With staging active, create fresh jobs through the
+normal batch API, then set `scope.since` after the model-calling freeze and
+before any stage work, and capture exact resolved batch/job IDs, per-book SHA
+and subject, exact participant hostname list,
+`release_timeout_seconds=600`, and `stage_timeout_seconds=14400` into
+`scope-<level>.json`.
 
 On each listed participant, use the authenticated fleet-management channel to execute this command from the final deployed checkout. Feed the identical scope bytes on stdin and capture stdout centrally; the worker needs neither a copied scope file nor a writable artifact directory:
 
@@ -1663,7 +1713,17 @@ f087fb01-0c9d-4762-9d14-2898d7f30e67
 
 Use English output on these Russian math/geometry sources only after every participating attestation proves `SOLVER_ENABLED=true`, the corresponding English Notion mapping absent, and the same PDF checksum present. Each staged job must use built-in prompts, the full eleven-phase flow, and the four exact Gemini/API role stamps in its scope; partial selections, custom prompts, non-English output, or a non-Russian source fail preflight. Do not force-regenerate the existing Russian jobs.
 
-Hard-stop triggers: any unrelated active job after release authorization, lease loss/reclaim, token mismatch, duplicate/orphan phase, retry/failure/cancel, provider 429, slot exhaustion, authentication error, attempt timeout, unexpected Notion archive, cost at/above the approved cap, heartbeat older than 60 seconds for two samples, any idle-in-transaction session, or DB connections at/above 85 for two samples. In armed mode, a latched terminal quality/solver/corruption failure and any post-authorization incomplete or operational exit also exact-scope pause.
+Hard-stop triggers: immutable DB revision/read-mode/lease-primitive or book
+SHA drift; per-book subject drift in the book or job; any unscoped API usage;
+any credential slot whose sanitized fingerprint or process holder is outside
+the attestation; any unrelated active job after release authorization; lease
+loss/reclaim; token mismatch; duplicate/orphan phase; retry/failure/cancel;
+provider 429; slot exhaustion; authentication error; attempt timeout;
+unexpected Notion archive; cost at/above the approved cap; heartbeat older
+than 60 seconds for two samples; any idle-in-transaction session; DB
+connections at/above 85 for two samples; or the four-hour stage deadline. In
+armed mode, a latched terminal quality/solver/corruption failure and any
+post-authorization incomplete or operational exit also exact-scope pause.
 
 Stage pass: target concurrency observed; every job claimed once/released done once/attempts 1, with the raw lease-ledger count equal to the job's authoritative count and no foreign/auxiliary token event; owner distribution consistent with W=2; exact 12 phases done with matching tokens; all four production solver phases carry trusted solver and per-phase usage proof, and every `mismatch_regen` proves the ordered initial-solve → repair-generation → verification-solve chain; the live solver service and boss-arena toggle remain true; every expected extract/generation/judge operation has job-and-phase-bound token-bearing successful usage and the per-job row count reconciles; jobs retain the exact English/Russian/built-in/full-flow/four-role workload contract; no hard or quality findings; no unexpected Notion write; DB/heartbeat/slot limits clean; and 60 seconds of quiet settle. Escalation is forbidden after a failed stage.
 

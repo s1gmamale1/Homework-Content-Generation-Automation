@@ -48,6 +48,7 @@ def valid_scope_dict() -> dict:
         "expected_output_language": "en",
         "expected_source_language": "ru",
         "required_book_sha256": {str(BOOK): "a" * 64},
+        "required_book_subject": {str(BOOK): "matematika"},
         "forbidden_notion_mapping_keys": ["english|8"],
         "expected_models_by_operation_prefix": dict(EXPECTED_MODELS_BY_OPERATION),
         "approved_incremental_cost_usd": "12.50",
@@ -57,7 +58,39 @@ def valid_scope_dict() -> dict:
         "heartbeat_max_age_seconds": 90,
         "attestation_max_age_seconds": 300,
         "settle_seconds": 60,
+        "release_timeout_seconds": 600,
+        "stage_timeout_seconds": 14400,
     }
+
+
+def test_scope_requires_explicit_bounded_release_and_stage_timeouts() -> None:
+    for field in ("release_timeout_seconds", "stage_timeout_seconds"):
+        raw = valid_scope_dict()
+        del raw[field]
+        with pytest.raises(ValidationError, match=field):
+            soak.SoakScope.model_validate(raw)
+
+    raw = valid_scope_dict()
+    raw["release_timeout_seconds"] = 29
+    with pytest.raises(ValidationError, match="release_timeout_seconds"):
+        soak.SoakScope.model_validate(raw)
+
+    raw = valid_scope_dict()
+    raw["stage_timeout_seconds"] = 21601
+    with pytest.raises(ValidationError, match="stage_timeout_seconds"):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_scope_pins_one_subject_for_every_required_book() -> None:
+    raw = valid_scope_dict()
+    raw["required_book_subject"] = {}
+    with pytest.raises(ValidationError, match="required_book_subject"):
+        soak.SoakScope.model_validate(raw)
+
+    raw = valid_scope_dict()
+    raw["required_book_subject"] = {str(BOOK): " matematika "}
+    with pytest.raises(ValidationError, match="required_book_subject"):
+        soak.SoakScope.model_validate(raw)
 
 
 def test_scope_requires_boss_arena_solver_for_the_soak() -> None:

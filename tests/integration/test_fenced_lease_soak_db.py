@@ -207,6 +207,7 @@ async def seeded_scope(database_url):
         expected_output_language="en",
         expected_source_language="ru",
         required_book_sha256={str(book_id): "a" * 64},
+        required_book_subject={str(book_id): "matematika"},
         forbidden_notion_mapping_keys=[],
         expected_models_by_operation_prefix={
             "phase.run": "gemini-3.6-flash",
@@ -223,6 +224,8 @@ async def seeded_scope(database_url):
         heartbeat_max_age_seconds=60,
         attestation_max_age_seconds=300,
         settle_seconds=1,
+        release_timeout_seconds=600,
+        stage_timeout_seconds=14400,
     )
     try:
         yield scope, unscoped_id
@@ -365,6 +368,13 @@ async def test_collect_separates_unscoped_usage_and_persists_unrelated_activity(
     finally:
         await store.dispose()
     assert unscoped_id not in {row.job_id for row in raw.usages}
+    assert unscoped_id in {row.job_id for row in raw.unscoped_api_usages}
+    assert raw.unscoped_api_usage_watermark is not None
+    assert raw.unscoped_api_usage_watermark.id == raw.unscoped_api_usages[-1].id
+    assert (
+        raw.unscoped_api_usage_watermark.created_at
+        == raw.unscoped_api_usages[-1].created_at
+    )
     assert unscoped_id not in {row.job_id for row in raw.lease_events}
     assert unscoped_id in {row.job_id for row in raw.unrelated_lease_events}
     assert unscoped_id in {row.id for row in raw.unrelated_job_transitions}

@@ -17,6 +17,7 @@ import re
 import signal
 import socket
 import sys
+import time
 from contextlib import asynccontextmanager, contextmanager
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -49,6 +50,9 @@ _GIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 _DB_REVISION_RE = re.compile(r"^[0-9a-z][0-9a-z_]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PLAIN_GEMINI_FP_RE = re.compile(r"^gemini:[0-9a-f]{16}$")
+_SANITIZED_CREDENTIAL_RE = re.compile(
+    r"^(?:gemini:[0-9a-f]{16}|credential:sha256:[0-9a-f]{16})$"
+)
 _SAFE_REDACTED_FIELDS = {
     "claim_token",
     "credential_fingerprint",
@@ -144,6 +148,7 @@ class SoakScope(PersistedModel):
     expected_output_language: Literal["en"]
     expected_source_language: Literal["ru"]
     required_book_sha256: dict[str, str] = Field(min_length=1)
+    required_book_subject: dict[str, str] = Field(min_length=1)
     forbidden_notion_mapping_keys: list[str]
     expected_models_by_operation_prefix: dict[str, str] = Field(min_length=1)
     approved_incremental_cost_usd: Decimal = Field(gt=0)
@@ -153,6 +158,8 @@ class SoakScope(PersistedModel):
     heartbeat_max_age_seconds: int = Field(gt=0)
     attestation_max_age_seconds: int = Field(gt=0)
     settle_seconds: int = Field(gt=0)
+    release_timeout_seconds: int = Field(ge=30, le=1800)
+    stage_timeout_seconds: int = Field(ge=60, le=21600)
 
     @field_validator("run_id")
     @classmethod
@@ -217,6 +224,19 @@ class SoakScope(PersistedModel):
             normalized[book_id] = digest
         return normalized
 
+    @field_validator("required_book_subject")
+    @classmethod
+    def _valid_book_subjects(cls, value: dict[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for raw_book_id, subject in value.items():
+            book_id = str(UUID(raw_book_id))
+            if book_id in normalized:
+                raise ValueError("duplicate canonical book id")
+            if not subject.strip() or subject != subject.strip():
+                raise ValueError("required_book_subject values must be stripped and non-empty")
+            normalized[book_id] = subject
+        return normalized
+
     @field_validator("expected_models_by_operation_prefix")
     @classmethod
     def _valid_expected_models(cls, value: dict[str, str]) -> dict[str, str]:
@@ -252,6 +272,10 @@ class SoakScope(PersistedModel):
             raise ValueError("db preflight connection limit must be below hard stop")
         if self.approved_incremental_cost_usd > self.fleet_cost_limit_usd:
             raise ValueError("approved incremental cost cannot exceed fleet cost limit")
+        if set(self.required_book_sha256) != set(self.required_book_subject):
+            raise ValueError(
+                "required_book_subject must cover exactly required_book_sha256"
+            )
         return self
 
 
@@ -508,6 +532,13 @@ class CredentialSlotSnapshot(PersistedModel):
     acquired_at: datetime
     slot_count: int = 1
 
+    @field_validator("credential")
+    @classmethod
+    def _valid_sanitized_credential(cls, value: str) -> str:
+        if not _SANITIZED_CREDENTIAL_RE.fullmatch(value):
+            raise ValueError("credential slot identity must be a sanitized fingerprint")
+        return value
+
 
 class LeaseEventSnapshot(PersistedModel):
     job_id: UUID
@@ -545,6 +576,32 @@ class UsageSnapshot(PersistedModel):
     total_tokens: int = 0
     success: bool
     error_message: str | None = None
+
+
+class UnscopedApiUsageSnapshot(PersistedModel):
+    id: UUID
+    created_at: datetime
+    job_id: UUID | None
+    provider: str
+    operation: str
+    model_name: str | None
+    auth_mode: Literal["api"]
+    success: bool
+
+    @field_validator("created_at")
+    @classmethod
+    def _valid_created_at(cls, value: datetime) -> datetime:
+        return _aware_utc(value, field_name="created_at")
+
+
+class UsageWatermark(PersistedModel):
+    created_at: datetime
+    id: UUID
+
+    @field_validator("created_at")
+    @classmethod
+    def _valid_created_at(cls, value: datetime) -> datetime:
+        return _aware_utc(value, field_name="created_at")
 
 
 class PricedUsageRow(PersistedModel):
@@ -595,6 +652,20 @@ class RawSnapshot(PersistedModel):
     phases: list[PhaseSnapshot]
     usages: list[UsageSnapshot]
     fleet_usages_24h: list[UsageSnapshot]
+    unscoped_api_usages: list[UnscopedApiUsageSnapshot] = Field(default_factory=list)
+    unscoped_api_usage_watermark: UsageWatermark | None = None
+
+    @model_validator(mode="after")
+    def _valid_unscoped_usage_watermark(self) -> "RawSnapshot":
+        keys = [(row.created_at, row.id) for row in self.unscoped_api_usages]
+        if len(keys) != len(set(keys)) or keys != sorted(keys):
+            raise ValueError("unscoped API usage rows must be unique and ordered")
+        expected = (
+            UsageWatermark(created_at=keys[-1][0], id=keys[-1][1]) if keys else None
+        )
+        if self.unscoped_api_usage_watermark != expected:
+            raise ValueError("unscoped API usage watermark must equal the final row")
+        return self
 
     @property
     def scope_job_ids(self) -> list[UUID]:
@@ -979,6 +1050,7 @@ def _job_workload_contract_mismatches(
     mismatches: list[dict[str, str | None]] = []
     for job in jobs:
         book = books.get(str(job.book_id))
+        expected_subject = scope.required_book_subject.get(str(job.book_id))
         reasons: list[str] = []
         if job.output_language != scope.expected_output_language:
             reasons.append("output_language")
@@ -989,7 +1061,11 @@ def _job_workload_contract_mismatches(
         else:
             if book.source_language != scope.expected_source_language:
                 reasons.append("source_language")
-            if book.subject != job.subject:
+            if expected_subject is None:
+                reasons.append("expected_subject_missing")
+            if job.subject != expected_subject:
+                reasons.append("job_subject")
+            if book.subject != expected_subject:
                 reasons.append("book_subject")
         if reasons:
             mismatches.append(
@@ -1002,6 +1078,101 @@ def _job_workload_contract_mismatches(
     return mismatches
 
 
+def _immutable_database_findings(
+    scope: SoakScope, raw: RawSnapshot
+) -> list[Finding]:
+    """Evaluate DB/source facts that must remain immutable for the whole run."""
+    findings: list[Finding] = []
+    schema_ok = (
+        raw.transaction_read_only == "on"
+        and raw.schema_state.revision == scope.expected_db_revision
+        and raw.schema_state.ledger_table
+        and raw.schema_state.job_claim_token
+        and raw.schema_state.phase_claim_token
+    )
+    if not schema_ok:
+        findings.append(
+            _runtime_hard(
+                "schema_revision_mismatch",
+                "database revision, read mode, or fenced-lease primitives differ from scope",
+                expected_revision=scope.expected_db_revision,
+                revision=raw.schema_state.revision,
+                ledger_table=raw.schema_state.ledger_table,
+                job_claim_token=raw.schema_state.job_claim_token,
+                phase_claim_token=raw.schema_state.phase_claim_token,
+                transaction_read_only=raw.transaction_read_only,
+            )
+        )
+    checksum_drift = sorted(
+        book_id
+        for book_id, expected_hash in scope.required_book_sha256.items()
+        if (row := raw.books.get(book_id)) is None
+        or row.content_sha256 != expected_hash
+    )
+    if checksum_drift:
+        findings.append(
+            _runtime_hard(
+                "book_checksum_scope_mismatch",
+                "authoritative book checksum differs from scope",
+                book_ids=checksum_drift,
+            )
+        )
+    return findings
+
+
+def _credential_slot_identity_mismatches(
+    attestation: FleetAttestation, raw: RawSnapshot
+) -> list[dict[str, str]]:
+    attested_pc_ids = {worker.pc_id for worker in attestation.workers}
+    expected_fingerprint = attestation.credential_fingerprint
+    return [
+        {
+            "credential_fingerprint": slot.credential,
+            "pc_id": slot.pc_id,
+        }
+        for slot in raw.credential_slots
+        if slot.credential != expected_fingerprint or slot.pc_id not in attested_pc_ids
+    ]
+
+
+def _unscoped_usage_findings(
+    raw: RawSnapshot, previous_samples: Sequence[RawSnapshot]
+) -> list[Finding]:
+    findings: list[Finding] = []
+    if raw.unscoped_api_usages:
+        findings.append(
+            _runtime_hard(
+                "unscoped_api_usage",
+                "API usage outside the exact soak job scope occurred after scope start",
+                rows=[row.model_dump(mode="json") for row in raw.unscoped_api_usages],
+                watermark=(
+                    raw.unscoped_api_usage_watermark.model_dump(mode="json")
+                    if raw.unscoped_api_usage_watermark
+                    else None
+                ),
+            )
+        )
+    if previous_samples:
+        prior_keys = {
+            (row.created_at, row.id)
+            for row in previous_samples[-1].unscoped_api_usages
+        }
+        current_keys = {(row.created_at, row.id) for row in raw.unscoped_api_usages}
+        missing = sorted(
+            f"{created_at.isoformat()}:{event_id}"
+            for created_at, event_id in prior_keys - current_keys
+        )
+        if missing:
+            findings.append(
+                _runtime_hard(
+                    "unscoped_api_usage_history_shrank",
+                    "cumulative unscoped API usage evidence disappeared between samples",
+                    missing=missing,
+                )
+            )
+    return findings
+
+
 def evaluate_runtime(
     scope: SoakScope,
     attestation: FleetAttestation,
@@ -1010,6 +1181,10 @@ def evaluate_runtime(
 ) -> list[Finding]:
     """Evaluate a live/terminal stage without I/O; safety drifts fail closed."""
     findings: list[Finding] = []
+    for finding in _immutable_database_findings(scope, raw):
+        _append_runtime_finding(findings, finding)
+    for finding in _unscoped_usage_findings(raw, previous_samples):
+        _append_runtime_finding(findings, finding)
     scoped_ids = set(scope.job_ids)
     jobs = {job.id: job for job in raw.jobs if job.id in scoped_ids}
 
@@ -1537,6 +1712,16 @@ def evaluate_runtime(
         )
 
     active_slots = sum(slot.slot_count for slot in raw.credential_slots)
+    slot_identity_mismatches = _credential_slot_identity_mismatches(attestation, raw)
+    if slot_identity_mismatches:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "credential_slot_identity_mismatch",
+                "credential slots are not owned by an attested process and fingerprint",
+                rows=slot_identity_mismatches,
+            ),
+        )
     if active_slots > scope.credential_max_concurrent_gemini:
         _append_runtime_finding(
             findings,
@@ -1961,24 +2146,8 @@ def evaluate_preflight(
                 observed=raw.launch_defaults.solver_boss_arena_enabled,
             )
         )
-    schema_ok = (
-        raw.transaction_read_only == "on"
-        and raw.schema_state.revision == scope.expected_db_revision
-        and raw.schema_state.ledger_table
-        and raw.schema_state.job_claim_token
-        and raw.schema_state.phase_claim_token
-    )
-    if not schema_ok:
-        findings.append(_finding(
-            "schema_revision_mismatch",
-            "database revision or fenced-lease schema primitives differ from scope",
-            expected_revision=scope.expected_db_revision,
-            revision=raw.schema_state.revision,
-            ledger_table=raw.schema_state.ledger_table,
-            job_claim_token=raw.schema_state.job_claim_token,
-            phase_claim_token=raw.schema_state.phase_claim_token,
-            transaction_read_only=raw.transaction_read_only,
-        ))
+    findings.extend(_immutable_database_findings(scope, raw))
+    findings.extend(_unscoped_usage_findings(raw, []))
 
     expected_jobs = set(scope.job_ids)
     jobs_by_id: dict[UUID, list[JobSnapshot]] = {}
@@ -2219,17 +2388,6 @@ def evaluate_preflight(
             required=required_processes, processes=len(attested_by_pc), hosts=len(attested_hosts),
         ))
 
-    checksum_drift: list[str] = []
-    for book_id, expected_hash in scope.required_book_sha256.items():
-        row = raw.books.get(book_id)
-        if row is None or row.content_sha256 != expected_hash:
-            checksum_drift.append(book_id)
-    if checksum_drift:
-        findings.append(_finding(
-            "book_checksum_scope_mismatch", "authoritative book checksum differs from scope",
-            book_ids=checksum_drift,
-        ))
-
     if raw.db.total_connections > scope.db_preflight_connection_limit:
         findings.append(_finding(
             "db_connection_baseline_high", "database connection baseline exceeds preflight cap",
@@ -2257,6 +2415,15 @@ def evaluate_preflight(
             "credential_slot_baseline_nonzero", "credential slots are not empty",
             slots=[slot.model_dump(mode="json") for slot in raw.credential_slots],
         ))
+    slot_identity_mismatches = _credential_slot_identity_mismatches(attestation, raw)
+    if slot_identity_mismatches:
+        findings.append(
+            _finding(
+                "credential_slot_identity_mismatch",
+                "credential slots are not owned by an attested process and fingerprint",
+                rows=slot_identity_mismatches,
+            )
+        )
     prior_cost = _fleet_cost(raw.fleet_usages_24h)
     projected = prior_cost + scope.approved_incremental_cost_usd
     unpriced = []
@@ -2540,6 +2707,18 @@ class SqlSoakReadStore:
                   AND u.created_at >= :since
                 ORDER BY COALESCE(u.started_at, u.created_at), u.id
             """), params))
+            unscoped_usage_rows = _mapping_dicts(await conn.execute(text("""
+                SELECT u.id, u.created_at, u.homework_job_id AS job_id,
+                       u.provider, u.operation, u.model_name, u.auth_mode, u.success
+                FROM agent_usages u
+                WHERE u.auth_mode = 'api'
+                  AND u.created_at >= :since
+                  AND (
+                    u.homework_job_id IS NULL
+                    OR NOT (u.homework_job_id = ANY(CAST(:job_ids AS uuid[])))
+                  )
+                ORDER BY u.created_at, u.id
+            """), params))
             fleet_params = {"cutoff": observed_at - timedelta(hours=24)}
             fleet_usage_rows = _mapping_dicts(await conn.execute(text("""
                 SELECT homework_job_id AS job_id, provider, operation, model_name, auth_mode,
@@ -2550,6 +2729,18 @@ class SqlSoakReadStore:
                 ORDER BY started_at, id
             """), fleet_params))
 
+        unscoped_api_usages = [
+            UnscopedApiUsageSnapshot.model_validate(row)
+            for row in unscoped_usage_rows
+        ]
+        watermark = (
+            UsageWatermark(
+                created_at=unscoped_api_usages[-1].created_at,
+                id=unscoped_api_usages[-1].id,
+            )
+            if unscoped_api_usages
+            else None
+        )
         return RawSnapshot(
             observed_at=observed_at,
             transaction_read_only=transaction_read_only,
@@ -2596,6 +2787,8 @@ class SqlSoakReadStore:
             phases=[PhaseSnapshot.model_validate(row) for row in phase_rows],
             usages=[_usage_from_row(row) for row in usage_rows],
             fleet_usages_24h=[_usage_from_row(row) for row in fleet_usage_rows],
+            unscoped_api_usages=unscoped_api_usages,
+            unscoped_api_usage_watermark=watermark,
         )
 
 
@@ -3297,6 +3490,7 @@ async def run_watch(
     stopper: Any | None,
     clock: Callable[[], datetime],
     sleep: Callable[[float], Awaitable[None]],
+    monotonic: Callable[[], float] = time.monotonic,
     interval_seconds: float = 2.0,
     stdout: TextIO = sys.stdout,
     termination_requested: Callable[[], bool] | None = None,
@@ -3309,6 +3503,8 @@ async def run_watch(
     expected_staging_pause = f"lease-soak-staging:{scope.run_id}"
     released = False
     release_pending = False
+    release_authorized_monotonic: float | None = None
+    stage_started_monotonic: float | None = None
     settle_started_at: datetime | None = None
     settle_signature: str | None = None
     latched_stage_findings: dict[str, Finding] = {}
@@ -3336,10 +3532,71 @@ async def run_watch(
             return ExitCode.PREFLIGHT_FAILED
 
         release_pending = True
+        release_authorized_monotonic = monotonic()
         stdout.write("READY_TO_RELEASE\n")
         stdout.flush()
 
         while True:
+            monotonic_now = monotonic()
+            if (
+                not released
+                and release_authorized_monotonic is not None
+                and monotonic_now - release_authorized_monotonic
+                >= scope.release_timeout_seconds
+            ):
+                trigger = _finding(
+                    "release_timeout",
+                    "operator did not clear the exact staging pause before the approved deadline",
+                    hard=True,
+                    elapsed_seconds=monotonic_now - release_authorized_monotonic,
+                    limit_seconds=scope.release_timeout_seconds,
+                )
+                latest_findings = [trigger]
+                writer.finish(
+                    _summary(
+                        scope,
+                        raw_samples,
+                        latest_findings,
+                        verdict="incomplete",
+                        exit_code=ExitCode.INCOMPLETE,
+                        observed_at=clock(),
+                    )
+                )
+                return ExitCode.INCOMPLETE
+            if (
+                released
+                and stage_started_monotonic is not None
+                and monotonic_now - stage_started_monotonic
+                >= scope.stage_timeout_seconds
+            ):
+                trigger = _runtime_hard(
+                    "stage_timeout",
+                    "released soak stage exceeded its approved monotonic deadline",
+                    elapsed_seconds=monotonic_now - stage_started_monotonic,
+                    limit_seconds=scope.stage_timeout_seconds,
+                )
+                latest_findings = [*latest_findings, trigger]
+                if stopper is not None:
+                    return await _finish_armed_stop(
+                        scope=scope,
+                        stopper=stopper,
+                        writer=writer,
+                        raw_samples=raw_samples,
+                        findings=latest_findings,
+                        trigger=trigger,
+                        clock=clock,
+                    )
+                writer.finish(
+                    _summary(
+                        scope,
+                        raw_samples,
+                        latest_findings,
+                        verdict="hard_stop",
+                        exit_code=ExitCode.HARD_STOP_READ_ONLY,
+                        observed_at=clock(),
+                    )
+                )
+                return ExitCode.HARD_STOP_READ_ONLY
             raw = await store.collect(scope)
             if termination_requested is not None and termination_requested():
                 raise asyncio.CancelledError
@@ -3426,6 +3683,8 @@ async def run_watch(
                     )
                 ]
             else:
+                if not released:
+                    stage_started_monotonic = monotonic()
                 released = True
                 current_findings = evaluate_runtime(
                     scope, attestation, raw, raw_samples[:-1]
