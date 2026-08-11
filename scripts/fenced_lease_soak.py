@@ -75,7 +75,6 @@ _SECRET_ASSIGNMENT_RE = re.compile(
     r"auth_token|password|passwd|secret)\s*[:=]\s*[^\s,;\"']+"
 )
 _GOOGLE_API_KEY_RE = re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b")
-_ERROR_EXCERPT_LIMIT = 240
 _REQUIRED_MODEL_OPERATION_KEYS = frozenset(
     {
         "phase.run",
@@ -816,6 +815,19 @@ def evaluate_runtime(
     findings: list[Finding] = []
     scoped_ids = set(scope.job_ids)
     jobs = {job.id: job for job in raw.jobs if job.id in scoped_ids}
+
+    if raw.unrelated_active_jobs:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "unrelated_active_queue_during_watch",
+                "unrelated pending or running work entered the queue during the soak",
+                jobs=[
+                    job.model_dump(mode="json")
+                    for job in raw.unrelated_active_jobs
+                ],
+            ),
+        )
 
     # Lease-event invariants are intentionally independent: a reclaim must not
     # disappear behind the more generic claim-count finding.
@@ -2089,12 +2101,11 @@ def _sanitize_sensitive_text(value: str) -> str:
 
 
 def sanitize_error_evidence(value: str) -> dict[str, str]:
-    """Return bounded, deterministic diagnostics without the provider envelope."""
+    """Return deterministic diagnostics without retaining any free-form text."""
     category = classify_error(value) or ErrorClass.OTHER
     return {
         "class": category.value,
         "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
-        "excerpt": _sanitize_sensitive_text(value)[:_ERROR_EXCERPT_LIMIT],
     }
 
 
@@ -2291,39 +2302,99 @@ async def _finish_armed_stop(
     clock: Callable[[], datetime],
 ) -> ExitCode:
     """Pause the exact scope and make stop success or failure explicit."""
-    try:
-        receipt = await stopper.pause(scope, trigger)
-    except Exception as exc:
+    def finish_stop_summary(
+        *,
+        summary_findings: Sequence[Finding],
+        verdict: str,
+        exit_code: ExitCode,
+        receipt: StopReceipt | None = None,
+    ) -> bool:
+        try:
+            writer.finish(
+                _summary(
+                    scope,
+                    raw_samples,
+                    summary_findings,
+                    verdict=verdict,
+                    exit_code=exit_code,
+                    observed_at=clock(),
+                    receipt=receipt,
+                )
+            )
+            return True
+        except Exception as exc:
+            evidence_failure = _finding(
+                "stop_evidence_write_failed",
+                "the first stop-summary write failed and was retried",
+                hard=True,
+                **_exception_evidence(exc),
+            )
+            try:
+                writer.finish(
+                    _summary(
+                        scope,
+                        raw_samples,
+                        [*summary_findings, evidence_failure],
+                        verdict=verdict,
+                        exit_code=exit_code,
+                        observed_at=clock(),
+                        receipt=receipt,
+                    )
+                )
+                return True
+            except Exception:
+                return False
+
+    pause_task = asyncio.create_task(stopper.pause(scope, trigger))
+    cancellation_seen = False
+    stop_error: BaseException | None = None
+    receipt: StopReceipt | None = None
+    while receipt is None and stop_error is None:
+        try:
+            receipt = await asyncio.shield(pause_task)
+        except asyncio.CancelledError as exc:
+            if pause_task.cancelled():
+                stop_error = exc
+            else:
+                cancellation_seen = True
+        except Exception as exc:
+            stop_error = exc
+
+    effective_findings = list(findings)
+    if cancellation_seen:
+        effective_findings.append(
+            _finding(
+                "stop_completion_shielded",
+                "cancellation was deferred until the exact-scope pause completed",
+                hard=False,
+            )
+        )
+
+    if stop_error is not None:
         stop_failure = _finding(
             "armed_stop_failed",
             "the armed exact-scope pause could not be applied",
             hard=True,
-            **_exception_evidence(exc),
+            **_exception_evidence(stop_error),
         )
-        writer.finish(
-            _summary(
-                scope,
-                raw_samples,
-                [*findings, stop_failure],
-                verdict="stop_failed",
-                exit_code=ExitCode.OPERATIONAL_ERROR,
-                observed_at=clock(),
-            )
+        finish_stop_summary(
+            summary_findings=[*effective_findings, stop_failure],
+            verdict="stop_failed",
+            exit_code=ExitCode.OPERATIONAL_ERROR,
         )
         return ExitCode.OPERATIONAL_ERROR
 
-    writer.finish(
-        _summary(
-            scope,
-            raw_samples,
-            findings,
-            verdict="hard_stop",
-            exit_code=ExitCode.HARD_STOP_ARMED,
-            observed_at=clock(),
-            receipt=receipt,
-        )
+    persisted = finish_stop_summary(
+        summary_findings=effective_findings,
+        verdict="hard_stop",
+        exit_code=ExitCode.HARD_STOP_ARMED,
+        receipt=receipt,
     )
-    return ExitCode.HARD_STOP_ARMED
+    return (
+        ExitCode.HARD_STOP_ARMED
+        if persisted
+        else ExitCode.OPERATIONAL_ERROR
+    )
 
 
 async def run_preflight(
@@ -2371,6 +2442,7 @@ async def run_watch(
     latest_findings: list[Finding] = []
     expected_staging_pause = f"lease-soak-staging:{scope.run_id}"
     released = False
+    release_pending = False
     settle_started_at: datetime | None = None
     settle_signature: str | None = None
     latched_stage_findings: dict[str, Finding] = {}
@@ -2395,6 +2467,7 @@ async def run_watch(
             )
             return ExitCode.PREFLIGHT_FAILED
 
+        release_pending = True
         stdout.write("READY_TO_RELEASE\n")
         stdout.flush()
 
@@ -2404,12 +2477,55 @@ async def run_watch(
             pause_reason = raw.budget.api_paused_reason
             if pause_reason == expected_staging_pause and not released:
                 latest_findings = evaluate_preflight(scope, attestation, raw)
+                if raw.unrelated_active_jobs:
+                    latest_findings = [
+                        finding
+                        for finding in latest_findings
+                        if finding.code != "unrelated_active_queue_not_empty"
+                    ]
+                    latest_findings.append(
+                        _runtime_hard(
+                            "unrelated_active_queue_during_watch",
+                            "unrelated active work entered the queue after release authorization",
+                            jobs=[
+                                job.model_dump(mode="json")
+                                for job in raw.unrelated_active_jobs
+                            ],
+                        )
+                    )
                 writer.append(
                     _evidence_sample(
                         scope, raw, latest_findings, phase="waiting_release"
                     )
                 )
                 if any(finding.hard for finding in latest_findings):
+                    if release_pending and stopper is not None:
+                        hard_stop = next(
+                            (
+                                finding
+                                for finding in latest_findings
+                                if finding.hard_stop
+                            ),
+                            None,
+                        )
+                        if hard_stop is None:
+                            hard_stop = _runtime_hard(
+                                "release_preflight_drift",
+                                "preflight drift appeared after release authorization",
+                                finding_codes=sorted(
+                                    finding.code for finding in latest_findings
+                                ),
+                            )
+                            latest_findings.append(hard_stop)
+                        return await _finish_armed_stop(
+                            scope=scope,
+                            stopper=stopper,
+                            writer=writer,
+                            raw_samples=raw_samples,
+                            findings=latest_findings,
+                            trigger=hard_stop,
+                            clock=clock,
+                        )
                     writer.finish(
                         _summary(
                             scope,
@@ -2487,6 +2603,26 @@ async def run_watch(
                 any(finding.stage_failure for finding in latest_findings)
                 and _terminal(scope, raw)
             ):
+                if stopper is not None:
+                    terminal_trigger = _runtime_hard(
+                        "terminal_stage_failure",
+                        "the terminal soak stage contains a quality or integrity failure",
+                        finding_codes=sorted(
+                            finding.code
+                            for finding in latest_findings
+                            if finding.stage_failure and not finding.hard_stop
+                        ),
+                    )
+                    terminal_findings = [*latest_findings, terminal_trigger]
+                    return await _finish_armed_stop(
+                        scope=scope,
+                        stopper=stopper,
+                        writer=writer,
+                        raw_samples=raw_samples,
+                        findings=terminal_findings,
+                        trigger=terminal_trigger,
+                        clock=clock,
+                    )
                 writer.finish(
                     _summary(
                         scope,
@@ -2522,7 +2658,7 @@ async def run_watch(
                     return ExitCode.PASS
             await sleep(interval_seconds)
     except (asyncio.CancelledError, KeyboardInterrupt) as exc:
-        if released and stopper is not None:
+        if release_pending and stopper is not None:
             trigger = _runtime_hard(
                 "watch_incomplete",
                 "the armed watcher ended before the released scope was terminal",
@@ -2554,7 +2690,7 @@ async def run_watch(
             "the watcher encountered an operational error",
             **_exception_evidence(exc),
         )
-        if released and stopper is not None:
+        if release_pending and stopper is not None:
             return await _finish_armed_stop(
                 scope=scope,
                 stopper=stopper,

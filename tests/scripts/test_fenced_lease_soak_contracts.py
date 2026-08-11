@@ -217,7 +217,7 @@ def test_redacted_model_dump_removes_nested_secrets_but_keeps_safe_identifiers()
     assert dumped["evidence"]["claim_token"] == "safe-lease-id"
 
 
-def test_error_evidence_is_classified_digested_sanitized_and_bounded():
+def test_error_evidence_is_classified_and_digested_without_any_excerpt():
     raw = (
         "429 RESOURCE_EXHAUSTED Bearer super-secret-token "
         "https://user:pass@example.test/path?api_key=query-secret "
@@ -229,11 +229,7 @@ def test_error_evidence_is_classified_digested_sanitized_and_bounded():
 
     assert sanitized["class"] == "provider_429"
     assert sanitized["sha256"] == hashlib.sha256(raw.encode()).hexdigest()
-    assert len(sanitized["excerpt"]) <= 240
-    assert "super-secret-token" not in sanitized["excerpt"]
-    assert "query-secret" not in sanitized["excerpt"]
-    assert "AIzaSyKnownSecretMaterial0123456789" not in sanitized["excerpt"]
-    assert "https://" not in sanitized["excerpt"]
+    assert set(sanitized) == {"class", "sha256"}
 
 
 def test_artifact_sanitizes_nested_job_phase_usage_and_warning_errors(tmp_path):
@@ -256,6 +252,11 @@ def test_artifact_sanitizes_nested_job_phase_usage_and_warning_errors(tmp_path):
     )
     raw.phases[0].validation_warnings = ["api_key=warning-secret"]
     raw.usages[0].error_message = "access_token=usage-secret"
+    raw.fleet_usages_24h.append(
+        raw.usages[0].model_copy(
+            update={"error_message": "opaque-unpatterned-secret-material"}
+        )
+    )
     writer = soak.ArtifactWriter(tmp_path, scope.run_id)
 
     writer.append(soak._evidence_sample(scope, raw, [], phase="watch"))
@@ -269,6 +270,7 @@ def test_artifact_sanitizes_nested_job_phase_usage_and_warning_errors(tmp_path):
         "phase:secret",
         "warning-secret",
         "usage-secret",
+        "opaque-unpatterned-secret-material",
     ):
         assert secret not in encoded
     assert "https://" not in encoded
@@ -282,7 +284,11 @@ def test_artifact_sanitizes_nested_job_phase_usage_and_warning_errors(tmp_path):
         snapshot["phases"][0]["validation_warnings"][0],
         snapshot["usages"][0]["error_message"],
     ):
-        assert set(value) == {"class", "sha256", "excerpt"}
+        assert set(value) == {"class", "sha256"}
+    assert set(snapshot["fleet_usages_24h"][0]["error_message"]) == {
+        "class",
+        "sha256",
+    }
 
 
 def test_scope_loader_supports_stdin_and_rejects_unknown_fields(tmp_path):
