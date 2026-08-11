@@ -2221,6 +2221,60 @@ def _quiet_signature(
     return hashlib.sha256(canonical_json(evidence).encode("utf-8")).hexdigest()
 
 
+def _exception_evidence(exc: BaseException) -> dict[str, str]:
+    """Identify an operational failure without persisting its free-form text."""
+    return {
+        "error_type": type(exc).__name__,
+        "error_sha256": hashlib.sha256(str(exc).encode("utf-8")).hexdigest(),
+    }
+
+
+async def _finish_armed_stop(
+    *,
+    scope: SoakScope,
+    stopper: Any,
+    writer: ArtifactWriter,
+    raw_samples: Sequence[RawSnapshot],
+    findings: Sequence[Finding],
+    trigger: Finding,
+    clock: Callable[[], datetime],
+) -> ExitCode:
+    """Pause the exact scope and make stop success or failure explicit."""
+    try:
+        receipt = await stopper.pause(scope, trigger)
+    except Exception as exc:
+        stop_failure = _finding(
+            "armed_stop_failed",
+            "the armed exact-scope pause could not be applied",
+            hard=True,
+            **_exception_evidence(exc),
+        )
+        writer.finish(
+            _summary(
+                scope,
+                raw_samples,
+                [*findings, stop_failure],
+                verdict="stop_failed",
+                exit_code=ExitCode.OPERATIONAL_ERROR,
+                observed_at=clock(),
+            )
+        )
+        return ExitCode.OPERATIONAL_ERROR
+
+    writer.finish(
+        _summary(
+            scope,
+            raw_samples,
+            findings,
+            verdict="hard_stop",
+            exit_code=ExitCode.HARD_STOP_ARMED,
+            observed_at=clock(),
+            receipt=receipt,
+        )
+    )
+    return ExitCode.HARD_STOP_ARMED
+
+
 async def run_preflight(
     *,
     scope: SoakScope,
@@ -2268,6 +2322,7 @@ async def run_watch(
     released = False
     settle_started_at: datetime | None = None
     settle_signature: str | None = None
+    latched_stage_findings: dict[str, Finding] = {}
 
     try:
         initial = await store.collect(scope)
@@ -2335,9 +2390,18 @@ async def run_watch(
                 ]
             else:
                 released = True
-                latest_findings = evaluate_runtime(
+                current_findings = evaluate_runtime(
                     scope, attestation, raw, raw_samples[:-1]
                 )
+                for finding in current_findings:
+                    if finding.stage_failure and not finding.hard_stop:
+                        latched_stage_findings.setdefault(finding.code, finding)
+                latest_findings = [
+                    finding
+                    for finding in current_findings
+                    if not (finding.stage_failure and not finding.hard_stop)
+                ]
+                latest_findings.extend(latched_stage_findings.values())
             writer.append(
                 _evidence_sample(scope, raw, latest_findings, phase="watch")
             )
@@ -2346,30 +2410,32 @@ async def run_watch(
                 (finding for finding in latest_findings if finding.hard_stop), None
             )
             if hard_stop is not None:
-                receipt = (
-                    await stopper.pause(scope, hard_stop)
-                    if stopper is not None
-                    else None
-                )
-                code = (
-                    ExitCode.HARD_STOP_ARMED
-                    if stopper is not None
-                    else ExitCode.HARD_STOP_READ_ONLY
-                )
+                if stopper is not None:
+                    return await _finish_armed_stop(
+                        scope=scope,
+                        stopper=stopper,
+                        writer=writer,
+                        raw_samples=raw_samples,
+                        findings=latest_findings,
+                        trigger=hard_stop,
+                        clock=clock,
+                    )
                 writer.finish(
                     _summary(
                         scope,
                         raw_samples,
                         latest_findings,
                         verdict="hard_stop",
-                        exit_code=code,
+                        exit_code=ExitCode.HARD_STOP_READ_ONLY,
                         observed_at=clock(),
-                        receipt=receipt,
                     )
                 )
-                return code
+                return ExitCode.HARD_STOP_READ_ONLY
 
-            if any(finding.stage_failure for finding in latest_findings):
+            if (
+                any(finding.stage_failure for finding in latest_findings)
+                and _terminal(scope, raw)
+            ):
                 writer.finish(
                     _summary(
                         scope,
@@ -2404,7 +2470,22 @@ async def run_watch(
                     )
                     return ExitCode.PASS
             await sleep(interval_seconds)
-    except (asyncio.CancelledError, KeyboardInterrupt):
+    except (asyncio.CancelledError, KeyboardInterrupt) as exc:
+        if released and stopper is not None:
+            trigger = _runtime_hard(
+                "watch_incomplete",
+                "the armed watcher ended before the released scope was terminal",
+                **_exception_evidence(exc),
+            )
+            return await _finish_armed_stop(
+                scope=scope,
+                stopper=stopper,
+                writer=writer,
+                raw_samples=raw_samples,
+                findings=[trigger],
+                trigger=trigger,
+                clock=clock,
+            )
         writer.finish(
             _summary(
                 scope,
@@ -2416,6 +2497,33 @@ async def run_watch(
             )
         )
         return ExitCode.INCOMPLETE
+    except Exception as exc:
+        trigger = _runtime_hard(
+            "watch_operational_error",
+            "the watcher encountered an operational error",
+            **_exception_evidence(exc),
+        )
+        if released and stopper is not None:
+            return await _finish_armed_stop(
+                scope=scope,
+                stopper=stopper,
+                writer=writer,
+                raw_samples=raw_samples,
+                findings=[trigger],
+                trigger=trigger,
+                clock=clock,
+            )
+        writer.finish(
+            _summary(
+                scope,
+                raw_samples,
+                [trigger],
+                verdict="operational_error",
+                exit_code=ExitCode.OPERATIONAL_ERROR,
+                observed_at=clock(),
+            )
+        )
+        return ExitCode.OPERATIONAL_ERROR
 
 
 def load_scope(

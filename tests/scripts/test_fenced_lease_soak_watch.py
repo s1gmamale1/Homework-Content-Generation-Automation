@@ -36,6 +36,13 @@ class FakeStore:
         return self._snapshots[index].model_copy(deep=True)
 
 
+class FailingAfterReleaseStore(FakeStore):
+    async def collect(self, scope: soak.SoakScope) -> soak.RawSnapshot:
+        if self.collect_count >= 2:
+            raise OSError("database connection dropped")
+        return await super().collect(scope)
+
+
 class StageWriteStore:
     def __init__(self):
         self.fleet_pause_reason: str | None = None
@@ -75,6 +82,28 @@ class StageWriteStore:
             batches_paused=len(plan.paused_batch_ids),
             cancelled_jobs=0,
         )
+
+
+class FailingStopper:
+    async def pause(
+        self,
+        scope: soak.SoakScope,
+        trigger: soak.Finding,
+    ) -> soak.StopReceipt:
+        del scope, trigger
+        raise OSError("stop database unavailable")
+
+
+class FailFirstWatchAppendWriter(soak.ArtifactWriter):
+    def __init__(self, artifact_dir, run_id):
+        super().__init__(artifact_dir, run_id)
+        self.append_count = 0
+
+    def append(self, sample):
+        self.append_count += 1
+        if self.append_count == 2:
+            raise OSError("artifact fsync failed")
+        super().append(sample)
 
 
 class FakeClock:
@@ -612,6 +641,149 @@ async def test_staging_pause_cannot_reappear_after_release(tmp_path):
     assert load_summary(tmp_path, scope.run_id)["findings"][0]["code"] == (
         "staging_pause_reappeared"
     )
+
+
+@pytest.mark.asyncio
+async def test_quality_failure_latches_until_remaining_jobs_are_terminal(tmp_path):
+    scope = valid_scope(target=4)
+    running = healthy_running_snapshot(running=4)
+    running.phases.append(
+        soak.PhaseSnapshot(
+            job_id=running.jobs[0].id,
+            phase_name="practice-rlc",
+            phase_order=1,
+            status="done",
+            claim_token=running.jobs[0].claim_token,
+            judge_status="major_shipped",
+        )
+    )
+    completed = healthy_completed_snapshot(target=4)
+    store = FakeStore([pristine_staged_snapshot(scope), running, completed])
+
+    code = await soak.run_watch(
+        scope=scope,
+        attestation=runtime_attestation(scope),
+        store=store,
+        writer=soak.ArtifactWriter(tmp_path, scope.run_id),
+        stopper=None,
+        clock=lambda: NOW,
+        sleep=lambda _: asyncio.sleep(0),
+    )
+
+    assert code == soak.ExitCode.PREFLIGHT_FAILED
+    assert store.collect_count == 3
+    summary = load_summary(tmp_path, scope.run_id)
+    assert summary["verdict"] == "failed"
+    assert {finding["code"] for finding in summary["findings"]} == {
+        "quality_major_shipped"
+    }
+
+
+@pytest.mark.asyncio
+async def test_armed_cancellation_after_release_pauses_exact_scope(tmp_path):
+    scope = valid_scope(target=4)
+    write_store = StageWriteStore()
+    calls = 0
+
+    async def cancel_after_release(seconds: float) -> None:
+        nonlocal calls
+        del seconds
+        calls += 1
+        raise asyncio.CancelledError
+
+    code = await soak.run_watch(
+        scope=scope,
+        attestation=runtime_attestation(scope),
+        store=FakeStore(
+            [pristine_staged_snapshot(scope), healthy_running_snapshot(running=4)]
+        ),
+        writer=soak.ArtifactWriter(tmp_path, scope.run_id),
+        stopper=soak.GuardedStopper(write_store, clock=lambda: NOW),
+        clock=lambda: NOW,
+        sleep=cancel_after_release,
+    )
+
+    assert calls == 1
+    assert code == soak.ExitCode.HARD_STOP_ARMED
+    assert write_store.fleet_pause_reason == f"lease-soak-stop:{scope.run_id}"
+    summary = load_summary(tmp_path, scope.run_id)
+    assert summary["verdict"] == "hard_stop"
+    assert summary["findings"][0]["code"] == "watch_incomplete"
+    assert summary["stop_receipt"]["trigger_code"] == "watch_incomplete"
+
+
+@pytest.mark.asyncio
+async def test_armed_collect_failure_after_release_pauses_exact_scope(tmp_path):
+    scope = valid_scope(target=4)
+    write_store = StageWriteStore()
+
+    code = await soak.run_watch(
+        scope=scope,
+        attestation=runtime_attestation(scope),
+        store=FailingAfterReleaseStore(
+            [pristine_staged_snapshot(scope), healthy_running_snapshot(running=4)]
+        ),
+        writer=soak.ArtifactWriter(tmp_path, scope.run_id),
+        stopper=soak.GuardedStopper(write_store, clock=lambda: NOW),
+        clock=lambda: NOW,
+        sleep=lambda _: asyncio.sleep(0),
+    )
+
+    assert code == soak.ExitCode.HARD_STOP_ARMED
+    assert write_store.fleet_pause_reason == f"lease-soak-stop:{scope.run_id}"
+    summary = load_summary(tmp_path, scope.run_id)
+    assert summary["findings"][0]["code"] == "watch_operational_error"
+    assert summary["findings"][0]["evidence"]["error_type"] == "OSError"
+
+
+@pytest.mark.asyncio
+async def test_armed_artifact_failure_after_release_pauses_exact_scope(tmp_path):
+    scope = valid_scope(target=4)
+    write_store = StageWriteStore()
+
+    code = await soak.run_watch(
+        scope=scope,
+        attestation=runtime_attestation(scope),
+        store=FakeStore(
+            [pristine_staged_snapshot(scope), healthy_running_snapshot(running=4)]
+        ),
+        writer=FailFirstWatchAppendWriter(tmp_path, scope.run_id),
+        stopper=soak.GuardedStopper(write_store, clock=lambda: NOW),
+        clock=lambda: NOW,
+        sleep=lambda _: asyncio.sleep(0),
+    )
+
+    assert code == soak.ExitCode.HARD_STOP_ARMED
+    assert write_store.fleet_pause_reason == f"lease-soak-stop:{scope.run_id}"
+    summary = load_summary(tmp_path, scope.run_id)
+    assert summary["findings"][0]["code"] == "watch_operational_error"
+    assert summary["findings"][0]["evidence"]["error_type"] == "OSError"
+
+
+@pytest.mark.asyncio
+async def test_armed_pause_failure_is_an_explicit_operational_error(tmp_path):
+    scope = valid_scope(target=4)
+
+    code = await soak.run_watch(
+        scope=scope,
+        attestation=runtime_attestation(scope),
+        store=FailingAfterReleaseStore(
+            [pristine_staged_snapshot(scope), healthy_running_snapshot(running=4)]
+        ),
+        writer=soak.ArtifactWriter(tmp_path, scope.run_id),
+        stopper=FailingStopper(),
+        clock=lambda: NOW,
+        sleep=lambda _: asyncio.sleep(0),
+    )
+
+    assert code == soak.ExitCode.OPERATIONAL_ERROR
+    summary = load_summary(tmp_path, scope.run_id)
+    assert summary["verdict"] == "stop_failed"
+    assert [finding["code"] for finding in summary["findings"]] == [
+        "watch_operational_error",
+        "armed_stop_failed",
+    ]
+    assert summary["exit_code"] == int(soak.ExitCode.OPERATIONAL_ERROR)
 
 
 @pytest.mark.asyncio
