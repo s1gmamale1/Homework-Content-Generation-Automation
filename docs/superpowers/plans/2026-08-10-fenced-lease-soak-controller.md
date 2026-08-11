@@ -65,8 +65,9 @@
   `mismatch_regen_failed`, and the incoming `mismatch_blocked`) fail a stage.
 - PostgreSQL wait evidence is restricted to `client backend` rows while still
   reporting their non-Client lock/I/O waits. Armed writes use a 5-second lock
-  timeout and 30-second statement timeout; the controller independently caps
-  stop completion at 30 seconds and records `stop_failed` on failure or timeout.
+  timeout and 20-second statement timeout; the controller independently caps
+  stop completion at 30 seconds (leaving time for transaction cleanup) and
+  records `stop_failed` on failure or timeout.
 - Round-3 unit/fake-store verification is `$0`. PostgreSQL integration remains
   opt-in and must use a scratch URL; no production fallback is permitted.
 
