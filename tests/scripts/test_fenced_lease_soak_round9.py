@@ -60,20 +60,48 @@ def test_preflight_and_runtime_reject_per_book_subject_drift(drift):
     assert "job_workload_contract_mismatch" in runtime_codes
 
 
-@pytest.mark.parametrize("drift", ["credential", "holder"])
-def test_runtime_binds_every_credential_slot_to_attested_process(drift):
+def limiter_holder(pc_id: str) -> str:
+    return pc_id.rsplit("@", 1)[0]
+
+
+def test_runtime_accepts_real_limiter_holder_for_attested_process():
     scope = valid_scope()
     raw = healthy_running_snapshot()
     attestation = runtime_attestation(scope)
     worker = attestation.workers[0]
     raw.credential_slots = [
         soak.CredentialSlotSnapshot(
-            credential=(
-                "gemini:ffffffffffffffff"
-                if drift == "credential"
-                else worker.credential_fingerprint
-            ),
-            pc_id=("Host-99:9@badcafe" if drift == "holder" else worker.pc_id),
+            credential=worker.credential_fingerprint,
+            pc_id=limiter_holder(worker.pc_id),
+            acquired_at=NOW,
+        )
+    ]
+
+    findings = soak.evaluate_runtime(scope, attestation, raw, [])
+
+    assert "credential_slot_identity_mismatch" not in {
+        row.code for row in findings if row.hard_stop
+    }
+
+
+@pytest.mark.parametrize(
+    ("credential", "holder"),
+    [
+        ("gemini:ffffffffffffffff", "Host-01:100"),
+        ("gemini:0123456789abcdef", "Host-01:999"),
+        ("gemini:0123456789abcdef", "Host-99:100"),
+    ],
+)
+def test_runtime_rejects_foreign_limiter_fingerprint_pid_or_host(
+    credential, holder
+):
+    scope = valid_scope()
+    raw = healthy_running_snapshot()
+    attestation = runtime_attestation(scope)
+    raw.credential_slots = [
+        soak.CredentialSlotSnapshot(
+            credential=credential,
+            pc_id=holder,
             acquired_at=NOW,
         )
     ]
@@ -92,7 +120,7 @@ def test_preflight_binds_credential_slot_to_attested_process() -> None:
     raw.credential_slots = [
         soak.CredentialSlotSnapshot(
             credential="gemini:ffffffffffffffff",
-            pc_id=attestation.workers[0].pc_id,
+            pc_id=limiter_holder(attestation.workers[0].pc_id),
             acquired_at=NOW,
         )
     ]
@@ -159,6 +187,36 @@ def test_credential_slot_contract_rejects_raw_credential_material() -> None:
         soak.CredentialSlotSnapshot(
             credential="AIzaRawSecretMaterialThatMustNeverReachEvidence",
             pc_id="Host-01:100@fedcba9",
+            acquired_at=NOW,
+        )
+
+
+@pytest.mark.parametrize(
+    "pc_id",
+    [
+        "Host-01:100",
+        "Host-01:100@fedcba9@extra",
+        "Host-01:not-a-pid@fedcba9",
+        "Host-01:100@not-a-sha",
+    ],
+)
+def test_worker_attestation_rejects_noncanonical_versioned_pc_id(pc_id) -> None:
+    scope = valid_scope()
+    worker = runtime_attestation(scope).workers[0]
+    with pytest.raises(ValidationError, match="pc_id"):
+        soak.WorkerAttestation.model_validate(
+            worker.model_copy(update={"pc_id": pc_id}).model_dump()
+        )
+
+
+@pytest.mark.parametrize(
+    "pc_id", ["Host-01:100@fedcba9", "Host-01:100@fedcba9@extra", "Host-01:x"]
+)
+def test_slot_holder_rejects_version_suffix_or_malformed_pid(pc_id) -> None:
+    with pytest.raises(ValidationError, match="pc_id"):
+        soak.CredentialSlotSnapshot(
+            credential="gemini:0123456789abcdef",
+            pc_id=pc_id,
             acquired_at=NOW,
         )
 

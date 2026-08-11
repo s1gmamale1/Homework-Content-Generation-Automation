@@ -63,6 +63,14 @@ def test_collect_qualifies_every_usage_projection_across_phase_join():
         assert f"u.{column}" in source
 
 
+def test_read_store_has_finite_connect_statement_and_lock_timeouts():
+    source = inspect.getsource(soak.SqlSoakReadStore.__init__)
+
+    assert '"timeout": 10.0' in source
+    assert '"statement_timeout": "30000"' in source
+    assert '"lock_timeout": "5000"' in source
+
+
 @pytest.fixture(scope="module")
 def database_url() -> str:
     url = os.environ["DATABASE_URL"]
@@ -350,10 +358,43 @@ async def test_read_store_cannot_write(database_url):
         async with store.read_connection() as conn:
             app_name = await conn.scalar(text("select current_setting('application_name')"))
             assert app_name.startswith("hcga-soak:")
+            assert await conn.scalar(
+                text("select current_setting('statement_timeout')")
+            ) == "30s"
+            assert await conn.scalar(
+                text("select current_setting('lock_timeout')")
+            ) == "5s"
             with pytest.raises(DBAPIError, match="read-only transaction"):
                 await conn.execute(text("update homework_jobs set priority=priority"))
     finally:
         await store.dispose()
+
+
+@pytest.mark.asyncio
+@requires_db
+async def test_cancelled_active_sql_rolls_back_and_store_disposes(database_url):
+    store = soak.SqlSoakReadStore(database_url)
+    with pytest.raises(TimeoutError):
+        async with store.read_connection() as conn:
+            await asyncio.wait_for(
+                conn.execute(text("select pg_sleep(5)")), timeout=0.05
+            )
+    await store.dispose()
+
+    probe = create_async_engine(database_url, pool_size=1, max_overflow=0)
+    try:
+        async with probe.connect() as conn:
+            active = int(
+                await conn.scalar(
+                    text(
+                        "select count(*) from pg_stat_activity "
+                        "where application_name like 'hcga-soak:%'"
+                    )
+                )
+            )
+        assert active == 0
+    finally:
+        await probe.dispose()
 
 
 @pytest.mark.asyncio

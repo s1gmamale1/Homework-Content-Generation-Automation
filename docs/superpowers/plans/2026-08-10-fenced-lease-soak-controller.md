@@ -210,6 +210,30 @@
   event—is contamination and hard-stops. Raw credentials, secrets, and free
   provider error text never enter this evidence.
 
+## Round-10 Limiter-Identity and Active-Read Deadline Corrections (2026-08-11)
+
+- Repeated the mandatory read-only collision gate at controller head
+  `efc881e`; no open PR or other worktree overlaps the controller paths.
+- The worker registry/attestation identity and credential-limiter holder are
+  related but intentionally not byte-identical: attestation uses
+  `hostname:pid@sha`, while `credential_slots.pc_id` uses `hostname:pid`.
+  Both forms now have strict, anchored validators. The authorized holder set
+  is derived only from the validated final `@<7–40 lowercase hex SHA>` group;
+  malformed IDs and multiple `@` delimiters cannot be normalized loosely.
+  Tests pin a real accepted pair plus foreign host, foreign PID, and wrong
+  fingerprint rejection.
+- Deadline enforcement now wraps every snapshot collection after
+  `READY_TO_RELEASE` in cancellation-safe `asyncio.wait_for` using the exact
+  remaining monotonic release/stage budget. A blocked pre-release read exits
+  incomplete without writes; a blocked post-release read uses the exact-scope
+  armed stop. Adversarial never-returning stores prove cancellation is awaited
+  and their cleanup runs before the controller returns.
+- The real SQL read store adds a finite 10-second connect timeout and
+  per-session 30-second statement / 5-second lock timeouts, without exposing
+  the database URL. A scratch-Postgres cancellation test interrupts an active
+  `pg_sleep`, proves transaction cleanup, disposes the engine, and verifies no
+  controller backend remains.
+
 ## File Structure
 
 - Modify `app/db.py`: pure connection-server-settings builder and application of those settings to the existing engine.

@@ -955,7 +955,7 @@ def test_active_slots_cannot_exceed_credential_limit():
     raw.credential_slots = [
         soak.CredentialSlotSnapshot(
             credential="gemini:0123456789abcdef",
-            pc_id="Host-01:100@fedcba9",
+            pc_id="Host-01:100",
             acquired_at=NOW,
             slot_count=33,
         )

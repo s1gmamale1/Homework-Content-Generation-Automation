@@ -51,6 +51,43 @@ class FailingFirstPostReadyStore(FakeStore):
         return await super().collect(scope)
 
 
+class HangingAfterCollectsStore(FakeStore):
+    def __init__(self, snapshots, *, hang_after: int):
+        super().__init__(snapshots)
+        self.hang_after = hang_after
+        self.collect_started = asyncio.Event()
+        self.collect_cleaned = asyncio.Event()
+
+    async def collect(self, scope: soak.SoakScope) -> soak.RawSnapshot:
+        if self.collect_count < self.hang_after:
+            return await super().collect(scope)
+        self.collect_count += 1
+        self.collect_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.collect_cleaned.set()
+        raise AssertionError("unreachable")
+
+
+class TimeoutAfterCalls:
+    def __init__(self, *, pass_calls: int):
+        self.pass_calls = pass_calls
+        self.calls = 0
+
+    async def __call__(self, awaitable, timeout):
+        assert timeout > 0
+        self.calls += 1
+        if self.calls <= self.pass_calls:
+            return await awaitable
+        task = asyncio.create_task(awaitable)
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        raise TimeoutError
+
+
 class StageWriteStore:
     def __init__(self):
         self.fleet_pause_reason: str | None = None
@@ -548,6 +585,76 @@ async def test_runtime_immutable_drift_uses_armed_exact_scope_stop(tmp_path):
         row["code"] == "schema_revision_mismatch"
         for row in summary["findings"]
     )
+
+
+@pytest.mark.asyncio
+async def test_never_returning_pre_release_collect_times_out_without_write(tmp_path):
+    scope = valid_scope(target=4)
+    store = HangingAfterCollectsStore(
+        [pristine_staged_snapshot(scope)], hang_after=1
+    )
+    clock = FakeClock()
+    stop_store = StageWriteStore()
+
+    code = await soak.run_watch(
+        scope=scope,
+        attestation=runtime_attestation(scope),
+        store=store,
+        writer=soak.ArtifactWriter(tmp_path, scope.run_id),
+        stopper=soak.GuardedStopper(stop_store, clock=clock),
+        clock=clock,
+        sleep=FakeSleep(clock),
+        wait_for=TimeoutAfterCalls(pass_calls=0),
+    )
+
+    assert code == soak.ExitCode.INCOMPLETE
+    assert stop_store.stop_calls == 0
+    assert store.collect_started.is_set()
+    assert store.collect_cleaned.is_set()
+    assert load_summary(tmp_path, scope.run_id)["verdict"] == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_never_returning_post_release_collect_uses_armed_stop(tmp_path):
+    scope = valid_scope(target=4)
+    store = HangingAfterCollectsStore(
+        [pristine_staged_snapshot(scope), healthy_running_snapshot(running=4)],
+        hang_after=2,
+    )
+    clock = FakeClock()
+    stop_store = StageWriteStore()
+
+    code = await soak.run_watch(
+        scope=scope,
+        attestation=runtime_attestation(scope),
+        store=store,
+        writer=soak.ArtifactWriter(tmp_path, scope.run_id),
+        stopper=soak.GuardedStopper(stop_store, clock=clock),
+        clock=clock,
+        sleep=FakeSleep(clock),
+        wait_for=TimeoutAfterCalls(pass_calls=1),
+    )
+
+    assert code == soak.ExitCode.HARD_STOP_ARMED
+    assert stop_store.stop_calls == 1
+    assert store.collect_started.is_set()
+    assert store.collect_cleaned.is_set()
+    assert any(
+        row["code"] == "stage_timeout"
+        for row in load_summary(tmp_path, scope.run_id)["findings"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_collect_timeout_cancels_and_awaits_never_returning_store_cleanup():
+    scope = valid_scope(target=4)
+    store = HangingAfterCollectsStore([], hang_after=0)
+
+    with pytest.raises(soak.SnapshotDeadlineExpired):
+        await soak._collect_with_timeout(store, scope, timeout_seconds=0.01)
+
+    assert store.collect_started.is_set()
+    assert store.collect_cleaned.is_set()
 
 
 def test_forty_job_stage_requires_twenty_jobs_in_each_batch():

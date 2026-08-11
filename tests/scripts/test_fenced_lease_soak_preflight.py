@@ -432,7 +432,7 @@ def test_preflight_rejects_disabled_or_over_five_minute_idle_timeout(timeout_ms)
         (lambda raw: setattr(raw.db, "total_connections", 71), "db_connection_baseline_high"),
         (lambda raw: raw.db.idle_in_transaction.append({"pid": 9, "application_name": "hcga-worker:x", "age_s": 301}), "db_idle_in_transaction"),
         (lambda raw: raw.db.server_waits.append({"pid": 8, "wait_event_type": "Lock", "wait_event": "transactionid"}), "db_server_wait"),
-        (lambda raw: raw.credential_slots.append(soak.CredentialSlotSnapshot(credential="gemini:0123456789abcdef", pc_id="Host-02:4242@fedcba9", acquired_at=NOW)), "credential_slot_baseline_nonzero"),
+        (lambda raw: raw.credential_slots.append(soak.CredentialSlotSnapshot(credential="gemini:0123456789abcdef", pc_id="Host-02:4242", acquired_at=NOW)), "credential_slot_baseline_nonzero"),
     ],
 )
 def test_preflight_fails_closed_for_raw_snapshot_drift(mutation, code):

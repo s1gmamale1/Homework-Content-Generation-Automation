@@ -53,6 +53,10 @@ _PLAIN_GEMINI_FP_RE = re.compile(r"^gemini:[0-9a-f]{16}$")
 _SANITIZED_CREDENTIAL_RE = re.compile(
     r"^(?:gemini:[0-9a-f]{16}|credential:sha256:[0-9a-f]{16})$"
 )
+_LIMITER_HOLDER_RE = re.compile(r"^[^:@\s]+:[1-9][0-9]*$")
+_ATTESTED_PC_ID_RE = re.compile(
+    r"^(?P<holder>[^:@\s]+:[1-9][0-9]*)@(?P<sha>[0-9a-f]{7,40})$"
+)
 _SAFE_REDACTED_FIELDS = {
     "claim_token",
     "credential_fingerprint",
@@ -298,6 +302,13 @@ class WorkerAttestation(PersistedModel):
     pdf_sha256_by_book: dict[str, str | None]
     notion_mapping_keys: list[str]
 
+    @field_validator("pc_id")
+    @classmethod
+    def _valid_versioned_pc_id(cls, value: str) -> str:
+        if not _ATTESTED_PC_ID_RE.fullmatch(value):
+            raise ValueError("pc_id must be canonical hostname:pid@sha")
+        return value
+
     @field_validator("scope_sha256")
     @classmethod
     def _valid_scope_hash(cls, value: str) -> str:
@@ -539,6 +550,13 @@ class CredentialSlotSnapshot(PersistedModel):
             raise ValueError("credential slot identity must be a sanitized fingerprint")
         return value
 
+    @field_validator("pc_id")
+    @classmethod
+    def _valid_limiter_holder(cls, value: str) -> str:
+        if not _LIMITER_HOLDER_RE.fullmatch(value):
+            raise ValueError("pc_id must be canonical limiter hostname:pid")
+        return value
+
 
 class LeaseEventSnapshot(PersistedModel):
     job_id: UUID
@@ -674,6 +692,27 @@ class RawSnapshot(PersistedModel):
 
 class SoakReadStore(Protocol):
     async def collect(self, scope: SoakScope) -> RawSnapshot: ...
+
+
+class SnapshotDeadlineExpired(TimeoutError):
+    """A post-ready read did not finish inside the remaining approved time."""
+
+
+async def _collect_with_timeout(
+    store: SoakReadStore,
+    scope: SoakScope,
+    *,
+    timeout_seconds: float,
+    wait_for: Callable[[Awaitable[RawSnapshot], float], Awaitable[RawSnapshot]] = (
+        asyncio.wait_for
+    ),
+) -> RawSnapshot:
+    if timeout_seconds <= 0:
+        raise SnapshotDeadlineExpired("snapshot deadline already expired")
+    try:
+        return await wait_for(store.collect(scope), timeout_seconds)
+    except TimeoutError as exc:
+        raise SnapshotDeadlineExpired("snapshot collection exceeded deadline") from exc
 
 
 class ScopeDrift(RuntimeError):
@@ -1123,7 +1162,12 @@ def _immutable_database_findings(
 def _credential_slot_identity_mismatches(
     attestation: FleetAttestation, raw: RawSnapshot
 ) -> list[dict[str, str]]:
-    attested_pc_ids = {worker.pc_id for worker in attestation.workers}
+    attested_pc_ids: set[str] = set()
+    for worker in attestation.workers:
+        match = _ATTESTED_PC_ID_RE.fullmatch(worker.pc_id)
+        if match is None:  # model_copy can bypass validation in adversarial tests
+            continue
+        attested_pc_ids.add(match.group("holder"))
     expected_fingerprint = attestation.credential_fingerprint
     return [
         {
@@ -2513,9 +2557,12 @@ class SqlSoakReadStore:
             max_overflow=0,
             pool_pre_ping=True,
             connect_args={
+                "timeout": 10.0,
                 "server_settings": {
                     "application_name": f"hcga-soak:{os.getpid()}",
                     "idle_in_transaction_session_timeout": "300000",
+                    "statement_timeout": "30000",
+                    "lock_timeout": "5000",
                 }
             },
         )
@@ -3491,6 +3538,9 @@ async def run_watch(
     clock: Callable[[], datetime],
     sleep: Callable[[float], Awaitable[None]],
     monotonic: Callable[[], float] = time.monotonic,
+    wait_for: Callable[[Awaitable[RawSnapshot], float], Awaitable[RawSnapshot]] = (
+        asyncio.wait_for
+    ),
     interval_seconds: float = 2.0,
     stdout: TextIO = sys.stdout,
     termination_requested: Callable[[], bool] | None = None,
@@ -3508,6 +3558,60 @@ async def run_watch(
     settle_started_at: datetime | None = None
     settle_signature: str | None = None
     latched_stage_findings: dict[str, Finding] = {}
+
+    async def finish_deadline(
+        *, after_release: bool, elapsed_seconds: float
+    ) -> ExitCode:
+        nonlocal latest_findings
+        if not after_release:
+            trigger = _finding(
+                "release_timeout",
+                "operator release or its confirming snapshot exceeded the approved deadline",
+                hard=True,
+                elapsed_seconds=elapsed_seconds,
+                limit_seconds=scope.release_timeout_seconds,
+            )
+            latest_findings = [trigger]
+            writer.finish(
+                _summary(
+                    scope,
+                    raw_samples,
+                    latest_findings,
+                    verdict="incomplete",
+                    exit_code=ExitCode.INCOMPLETE,
+                    observed_at=clock(),
+                )
+            )
+            return ExitCode.INCOMPLETE
+
+        trigger = _runtime_hard(
+            "stage_timeout",
+            "released soak stage or its active snapshot exceeded its deadline",
+            elapsed_seconds=elapsed_seconds,
+            limit_seconds=scope.stage_timeout_seconds,
+        )
+        latest_findings = [*latest_findings, trigger]
+        if stopper is not None:
+            return await _finish_armed_stop(
+                scope=scope,
+                stopper=stopper,
+                writer=writer,
+                raw_samples=raw_samples,
+                findings=latest_findings,
+                trigger=trigger,
+                clock=clock,
+            )
+        writer.finish(
+            _summary(
+                scope,
+                raw_samples,
+                latest_findings,
+                verdict="hard_stop",
+                exit_code=ExitCode.HARD_STOP_READ_ONLY,
+                observed_at=clock(),
+            )
+        )
+        return ExitCode.HARD_STOP_READ_ONLY
 
     try:
         initial = await store.collect(scope)
@@ -3544,60 +3648,46 @@ async def run_watch(
                 and monotonic_now - release_authorized_monotonic
                 >= scope.release_timeout_seconds
             ):
-                trigger = _finding(
-                    "release_timeout",
-                    "operator did not clear the exact staging pause before the approved deadline",
-                    hard=True,
-                    elapsed_seconds=monotonic_now - release_authorized_monotonic,
-                    limit_seconds=scope.release_timeout_seconds,
+                return await finish_deadline(
+                    after_release=False,
+                    elapsed_seconds=(
+                        monotonic_now - release_authorized_monotonic
+                    ),
                 )
-                latest_findings = [trigger]
-                writer.finish(
-                    _summary(
-                        scope,
-                        raw_samples,
-                        latest_findings,
-                        verdict="incomplete",
-                        exit_code=ExitCode.INCOMPLETE,
-                        observed_at=clock(),
-                    )
-                )
-                return ExitCode.INCOMPLETE
             if (
                 released
                 and stage_started_monotonic is not None
                 and monotonic_now - stage_started_monotonic
                 >= scope.stage_timeout_seconds
             ):
-                trigger = _runtime_hard(
-                    "stage_timeout",
-                    "released soak stage exceeded its approved monotonic deadline",
+                return await finish_deadline(
+                    after_release=True,
                     elapsed_seconds=monotonic_now - stage_started_monotonic,
-                    limit_seconds=scope.stage_timeout_seconds,
                 )
-                latest_findings = [*latest_findings, trigger]
-                if stopper is not None:
-                    return await _finish_armed_stop(
-                        scope=scope,
-                        stopper=stopper,
-                        writer=writer,
-                        raw_samples=raw_samples,
-                        findings=latest_findings,
-                        trigger=trigger,
-                        clock=clock,
-                    )
-                writer.finish(
-                    _summary(
-                        scope,
-                        raw_samples,
-                        latest_findings,
-                        verdict="hard_stop",
-                        exit_code=ExitCode.HARD_STOP_READ_ONLY,
-                        observed_at=clock(),
-                    )
+            deadline_monotonic = (
+                stage_started_monotonic + scope.stage_timeout_seconds
+                if released and stage_started_monotonic is not None
+                else release_authorized_monotonic + scope.release_timeout_seconds
+            )
+            remaining_seconds = deadline_monotonic - monotonic()
+            try:
+                raw = await _collect_with_timeout(
+                    store,
+                    scope,
+                    timeout_seconds=remaining_seconds,
+                    wait_for=wait_for,
                 )
-                return ExitCode.HARD_STOP_READ_ONLY
-            raw = await store.collect(scope)
+            except SnapshotDeadlineExpired:
+                return await finish_deadline(
+                    after_release=released,
+                    elapsed_seconds=(
+                        monotonic() - (
+                            stage_started_monotonic
+                            if released and stage_started_monotonic is not None
+                            else release_authorized_monotonic
+                        )
+                    ),
+                )
             if termination_requested is not None and termination_requested():
                 raise asyncio.CancelledError
             raw_samples.append(raw)
