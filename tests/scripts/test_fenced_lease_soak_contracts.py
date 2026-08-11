@@ -1,0 +1,562 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import UUID
+
+import pytest
+from pydantic import ValidationError
+
+from scripts import fenced_lease_soak as soak
+
+
+BOOK = UUID("11111111-1111-1111-1111-111111111111")
+BATCH = UUID("22222222-2222-2222-2222-222222222222")
+JOB = UUID("33333333-3333-3333-3333-333333333333")
+SCOPE_JOBS = [JOB, *[UUID(int=index) for index in range(1, 4)]]
+EXPECTED_MODELS_BY_OPERATION = {
+    "phase.run": "gemini-3.6-flash",
+    "lesson.extract": "gemini-3.5-flash-lite",
+    "lesson.extract.coverage": "gemini-3.5-flash",
+    "lesson.extract.verify": "gemini-3.5-flash-lite",
+    "judge:": "gemini-3.5-flash",
+    "solve:": "gemini-3.1-pro-preview",
+}
+
+
+def valid_scope_dict() -> dict:
+    return {
+        "run_id": "stage-04-20260810",
+        "since": "2026-08-10T12:00:00Z",
+        "batch_ids": [str(BATCH)],
+        "job_ids": [str(job_id) for job_id in SCOPE_JOBS],
+        "participant_hosts": ["Host-02"],
+        "target_running": 4,
+        "expected_git_sha": "fedcba9",
+        "expected_code_version": 1001,
+        "expected_db_revision": "0052_job_lease_fencing",
+        "worker_concurrency": 2,
+        "agent_max_concurrency": 4,
+        "credential_max_concurrent_gemini": 32,
+        "credential_slot_wait_seconds": 120,
+        "legacy_gemini_var_must_be_absent": True,
+        "structured_output_enabled": False,
+        "solver_enabled": True,
+        "solver_boss_arena_enabled": True,
+        "expected_output_language": "en",
+        "expected_source_language": "ru",
+        "required_book_sha256": {str(BOOK): "a" * 64},
+        "required_book_subject": {str(BOOK): "matematika"},
+        "forbidden_notion_mapping_keys": ["english|8"],
+        "expected_models_by_operation_prefix": dict(EXPECTED_MODELS_BY_OPERATION),
+        "approved_incremental_cost_usd": "12.50",
+        "fleet_cost_limit_usd": "50.00",
+        "db_preflight_connection_limit": 70,
+        "db_hard_stop_connection_limit": 90,
+        "heartbeat_max_age_seconds": 90,
+        "attestation_max_age_seconds": 300,
+        "settle_seconds": 60,
+        "release_timeout_seconds": 600,
+        "stage_timeout_seconds": 14400,
+    }
+
+
+def test_scope_requires_explicit_bounded_release_and_stage_timeouts() -> None:
+    for field in ("release_timeout_seconds", "stage_timeout_seconds"):
+        raw = valid_scope_dict()
+        del raw[field]
+        with pytest.raises(ValidationError, match=field):
+            soak.SoakScope.model_validate(raw)
+
+    raw = valid_scope_dict()
+    raw["release_timeout_seconds"] = 29
+    with pytest.raises(ValidationError, match="release_timeout_seconds"):
+        soak.SoakScope.model_validate(raw)
+
+    raw = valid_scope_dict()
+    raw["stage_timeout_seconds"] = 21601
+    with pytest.raises(ValidationError, match="stage_timeout_seconds"):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_scope_pins_one_subject_for_every_required_book() -> None:
+    raw = valid_scope_dict()
+    raw["required_book_subject"] = {}
+    with pytest.raises(ValidationError, match="required_book_subject"):
+        soak.SoakScope.model_validate(raw)
+
+    raw = valid_scope_dict()
+    raw["required_book_subject"] = {str(BOOK): " matematika "}
+    with pytest.raises(ValidationError, match="required_book_subject"):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_scope_requires_boss_arena_solver_for_the_soak() -> None:
+    raw = valid_scope_dict()
+    raw["solver_boss_arena_enabled"] = True
+    scope = soak.SoakScope.model_validate(raw)
+    assert scope.solver_boss_arena_enabled is True
+
+    raw["solver_boss_arena_enabled"] = False
+    with pytest.raises(ValidationError, match="solver_boss_arena_enabled"):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_scope_requires_the_solver_service_for_the_soak() -> None:
+    raw = valid_scope_dict()
+    raw["solver_enabled"] = True
+    scope = soak.SoakScope.model_validate(raw)
+    assert scope.solver_enabled is True
+
+    raw["solver_enabled"] = False
+    with pytest.raises(ValidationError, match="solver_enabled"):
+        soak.SoakScope.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("expected_output_language", "ru"), ("expected_source_language", "uz")],
+)
+def test_scope_pins_english_output_over_russian_sources(field, value) -> None:
+    raw = valid_scope_dict()
+    raw[field] = value
+    with pytest.raises(ValidationError, match=field):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_worker_attestation_requires_the_solver_service() -> None:
+    raw = valid_worker_dict()
+    raw["solver_enabled"] = True
+    worker = soak.WorkerAttestation.model_validate(raw)
+    assert worker.solver_enabled is True
+
+    raw["solver_enabled"] = False
+    with pytest.raises(ValidationError, match="solver_enabled"):
+        soak.WorkerAttestation.model_validate(raw)
+
+
+def valid_worker_dict() -> dict:
+    scope = soak.SoakScope.model_validate(valid_scope_dict())
+    return {
+        "scope_sha256": soak.sha256_canonical(scope),
+        "pc_id": "Host-02:4242@fedcba9",
+        "hostname": "Host-02",
+        "observed_at": "2026-08-10T12:01:00Z",
+        "git_sha": "fedcba9",
+        "code_version": 1001,
+        "worker_concurrency": 2,
+        "agent_max_concurrency": 4,
+        "credential_max_concurrent_gemini": 32,
+        "credential_slot_wait_seconds": 120,
+        "gemini_max_concurrency_present": False,
+        "structured_output_enabled": False,
+        "solver_enabled": True,
+        "process_count_for_host": 1,
+        "credential_fingerprint": "gemini:0123456789abcdef",
+        "pdf_sha256_by_book": {str(BOOK): "a" * 64},
+        "notion_mapping_keys": [],
+    }
+
+
+def valid_attestation_dict() -> dict:
+    worker = soak.WorkerAttestation.model_validate(valid_worker_dict())
+    return {
+        "scope_sha256": worker.scope_sha256,
+        "observed_at": worker.observed_at.isoformat(),
+        "credential_fingerprint": worker.credential_fingerprint,
+        "input_artifact_sha256": [soak.sha256_canonical(worker)],
+        "workers": [worker.model_dump(mode="json")],
+    }
+
+
+def two_worker_attestation_dict() -> dict:
+    first = soak.WorkerAttestation.model_validate(valid_worker_dict())
+    second = first.model_copy(
+        update={"hostname": "Host-03", "pc_id": "Host-03:4343@fedcba9"}
+    )
+    workers = [first, second]
+    return {
+        "scope_sha256": first.scope_sha256,
+        "observed_at": first.observed_at.isoformat(),
+        "credential_fingerprint": first.credential_fingerprint,
+        "input_artifact_sha256": sorted(
+            soak.sha256_canonical(worker) for worker in workers
+        ),
+        "workers": [worker.model_dump(mode="json") for worker in workers],
+    }
+
+
+def test_fleet_attestation_rejects_a_worker_changed_after_digesting() -> None:
+    raw = valid_attestation_dict()
+    raw["workers"][0]["code_version"] = 1002
+
+    with pytest.raises(ValidationError, match="digest"):
+        soak.FleetAttestation.model_validate(raw)
+
+
+def test_fleet_attestation_rejects_duplicate_worker_and_digest() -> None:
+    raw = valid_attestation_dict()
+    raw["workers"].append(dict(raw["workers"][0]))
+    raw["input_artifact_sha256"].append(raw["input_artifact_sha256"][0])
+
+    with pytest.raises(ValidationError, match="duplicate"):
+        soak.FleetAttestation.model_validate(raw)
+
+
+def test_fleet_attestation_requires_canonical_worker_order() -> None:
+    raw = two_worker_attestation_dict()
+    raw["workers"].reverse()
+
+    with pytest.raises(ValidationError, match="worker order"):
+        soak.FleetAttestation.model_validate(raw)
+
+
+def test_fleet_attestation_requires_exact_sorted_input_digests() -> None:
+    raw = two_worker_attestation_dict()
+    raw["input_artifact_sha256"].reverse()
+    assert raw["input_artifact_sha256"] != sorted(raw["input_artifact_sha256"])
+
+    with pytest.raises(ValidationError, match="digest"):
+        soak.FleetAttestation.model_validate(raw)
+
+
+def test_fleet_attestation_requires_one_digest_per_worker() -> None:
+    raw = two_worker_attestation_dict()
+    raw["input_artifact_sha256"].pop()
+
+    with pytest.raises(ValidationError, match="digest"):
+        soak.FleetAttestation.model_validate(raw)
+
+
+@pytest.mark.parametrize("field", ["batch_ids", "job_ids", "participant_hosts"])
+def test_scope_rejects_empty_identity_fields(field):
+    raw = valid_scope_dict()
+    raw[field] = []
+    with pytest.raises(ValidationError):
+        soak.SoakScope.model_validate(raw)
+
+
+@pytest.mark.parametrize("field", ["batch_ids", "job_ids"])
+def test_scope_rejects_duplicate_uuid_identity_fields(field):
+    raw = valid_scope_dict()
+    raw[field] = [raw[field][0], raw[field][0]]
+    with pytest.raises(ValidationError, match="duplicate"):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_scope_requires_aware_since_and_normalizes_to_utc():
+    raw = valid_scope_dict()
+    raw["since"] = "2026-08-10T12:00:00"
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        soak.SoakScope.model_validate(raw)
+
+    raw["since"] = "2026-08-10T08:00:00-04:00"
+    scope = soak.SoakScope.model_validate(raw)
+    assert scope.since == datetime(2026, 8, 10, 12, tzinfo=timezone.utc)
+
+
+def test_scope_pins_exact_participating_hosts():
+    raw = valid_scope_dict()
+    raw["participant_hosts"] = ["Host-02", "Host-02"]
+    with pytest.raises(ValidationError, match="duplicate participant host"):
+        soak.SoakScope.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("run_id", "UPPER"),
+        ("expected_git_sha", "not-a-sha"),
+        ("expected_code_version", 0),
+        ("target_running", 0),
+        ("approved_incremental_cost_usd", "0"),
+    ],
+)
+def test_scope_rejects_invalid_bounds(field, value):
+    raw = valid_scope_dict()
+    raw[field] = value
+    with pytest.raises(ValidationError):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_scope_requires_preflight_connection_limit_below_hard_stop():
+    raw = valid_scope_dict()
+    raw["db_preflight_connection_limit"] = 90
+    with pytest.raises(ValidationError, match="preflight"):
+        soak.SoakScope.model_validate(raw)
+
+
+@pytest.mark.parametrize("target", [1, 2, 3, 5, 16, 39, 41])
+def test_scope_rejects_unsupported_stage_targets(target):
+    raw = valid_scope_dict()
+    raw["target_running"] = target
+    raw["job_ids"] = [str(UUID(int=index + 1)) for index in range(target)]
+
+    with pytest.raises(ValidationError, match="authorized soak target"):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_scope_requires_one_job_per_target_slot():
+    raw = valid_scope_dict()
+    raw["target_running"] = 4
+    raw["job_ids"] = [str(UUID(int=index + 1)) for index in range(3)]
+
+    with pytest.raises(ValidationError, match="job_ids must equal target_running"):
+        soak.SoakScope.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    ("target", "batch_count"),
+    [(4, 2), (8, 2), (12, 2), (20, 2), (40, 1), (40, 3)],
+)
+def test_scope_requires_exact_batch_shape_for_stage(target, batch_count):
+    raw = valid_scope_dict()
+    raw["target_running"] = target
+    raw["job_ids"] = [str(UUID(int=index + 1)) for index in range(target)]
+    raw["batch_ids"] = [str(UUID(int=10_000 + index)) for index in range(batch_count)]
+
+    with pytest.raises(ValidationError, match="batch"):
+        soak.SoakScope.model_validate(raw)
+
+
+@pytest.mark.parametrize("missing_key", sorted(EXPECTED_MODELS_BY_OPERATION))
+def test_scope_requires_every_model_operation_key(missing_key):
+    raw = valid_scope_dict()
+    raw["expected_models_by_operation_prefix"].pop(missing_key)
+
+    with pytest.raises(ValidationError, match="missing required keys"):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_scope_rejects_unknown_model_operation_key():
+    raw = valid_scope_dict()
+    raw["expected_models_by_operation_prefix"]["phase.unknown"] = "gemini-3.6-flash"
+
+    with pytest.raises(ValidationError, match="unexpected keys"):
+        soak.SoakScope.model_validate(raw)
+
+
+@pytest.mark.parametrize("model", ["", "   ", " gemini-3.6-flash"])
+def test_scope_requires_stripped_nonblank_expected_models(model):
+    raw = valid_scope_dict()
+    raw["expected_models_by_operation_prefix"]["phase.run"] = model
+
+    with pytest.raises(ValidationError, match="stripped non-empty model"):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_final_deployed_identity_is_caller_supplied_not_baked_in():
+    raw = valid_scope_dict()
+    raw["expected_git_sha"] = "abcdef0123456789"
+    raw["expected_code_version"] = 1001
+    raw["expected_db_revision"] = "0054_source_integrity"
+    scope = soak.SoakScope.model_validate(raw)
+    assert scope.expected_git_sha == "abcdef0123456789"
+    assert scope.expected_code_version == 1001
+    assert scope.expected_db_revision == "0054_source_integrity"
+
+
+@pytest.mark.parametrize("value", ["", " 0054_source_integrity", "0054;drop", "UPPER"])
+def test_scope_rejects_blank_or_unsafe_database_revision(value):
+    raw = valid_scope_dict()
+    raw["expected_db_revision"] = value
+    with pytest.raises(ValidationError):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_attestation_rejects_raw_secret_fields():
+    raw = valid_attestation_dict()
+    raw["workers"][0]["gemini_api_key"] = "secret"
+    with pytest.raises(ValidationError):
+        soak.FleetAttestation.model_validate(raw)
+
+
+def test_redacted_model_dump_removes_nested_secrets_but_keeps_safe_identifiers():
+    model = soak.Finding(
+        code="example",
+        hard=True,
+        message="safe",
+        evidence={
+            "database_url": "postgresql://secret",
+            "token": "secret",
+            "credential_fingerprint": "gemini:0123456789abcdef",
+            "claim_token": "safe-lease-id",
+        },
+    )
+    dumped = soak.redacted_model_dump(model)
+    assert "database_url" not in dumped["evidence"]
+    assert "token" not in dumped["evidence"]
+    assert dumped["evidence"]["credential_fingerprint"].startswith("gemini:")
+    assert dumped["evidence"]["claim_token"] == "safe-lease-id"
+
+
+def test_error_evidence_is_classified_and_digested_without_any_excerpt():
+    raw = (
+        "429 RESOURCE_EXHAUSTED Bearer super-secret-token "
+        "https://user:pass@example.test/path?api_key=query-secret "
+        "GEMINI_API_KEY=AIzaSyKnownSecretMaterial0123456789 "
+        + "x" * 500
+    )
+
+    sanitized = soak.sanitize_error_evidence(raw)
+
+    assert sanitized["class"] == "provider_429"
+    assert sanitized["sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+    assert set(sanitized) == {"class", "sha256"}
+
+
+def test_artifact_sanitizes_nested_job_phase_usage_and_warning_errors(tmp_path):
+    from tests.scripts.test_fenced_lease_soak_snapshot import (
+        healthy_completed_snapshot,
+        valid_scope,
+    )
+
+    scope = valid_scope(target=4)
+    raw = healthy_completed_snapshot(target=4)
+    raw.jobs[0].error_message = (
+        "Bearer job-secret https://job:pass@provider.test/v1?key=job-query"
+    )
+    raw.jobs[0].last_error = (
+        "GEMINI_API_KEY=AIzaSyJobSecretMaterial01234567890"
+    )
+    raw.phases[0].error_message = (
+        "Basic dXNlcjpwYXNz "
+        "postgresql+asyncpg://phase:secret@db.internal/prod"
+    )
+    raw.phases[0].validation_warnings = ["api_key=warning-secret"]
+    raw.usages[0].error_message = "access_token=usage-secret"
+    raw.fleet_usages_24h.append(
+        raw.usages[0].model_copy(
+            update={"error_message": "opaque-unpatterned-secret-material"}
+        )
+    )
+    writer = soak.ArtifactWriter(tmp_path, scope.run_id)
+
+    writer.append(soak._evidence_sample(scope, raw, [], phase="watch"))
+
+    encoded = writer.samples_path.read_text(encoding="utf-8")
+    for secret in (
+        "job-secret",
+        "job-query",
+        "AIzaSyJobSecretMaterial01234567890",
+        "dXNlcjpwYXNz",
+        "phase:secret",
+        "warning-secret",
+        "usage-secret",
+        "opaque-unpatterned-secret-material",
+    ):
+        assert secret not in encoded
+    assert "https://" not in encoded
+    assert "postgresql+asyncpg://" not in encoded
+    sample = json.loads(encoded)
+    snapshot = sample["snapshot"]
+    for value in (
+        snapshot["jobs"][0]["error_message"],
+        snapshot["jobs"][0]["last_error"],
+        snapshot["phases"][0]["error_message"],
+        snapshot["phases"][0]["validation_warnings"][0],
+        snapshot["usages"][0]["error_message"],
+    ):
+        assert set(value) == {"class", "sha256"}
+    assert set(snapshot["fleet_usages_24h"][0]["error_message"]) == {
+        "class",
+        "sha256",
+    }
+
+
+def test_scope_loader_supports_stdin_and_rejects_unknown_fields(tmp_path):
+    import io
+    import json
+
+    encoded = json.dumps(valid_scope_dict())
+    scope = soak.load_scope("-", stdin=io.StringIO(encoded))
+    assert scope.run_id == "stage-04-20260810"
+
+    raw = valid_scope_dict()
+    raw["api_key"] = "forbidden"
+    path = tmp_path / "scope.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValidationError):
+        soak.load_scope(path)
+
+
+def test_unarmed_watch_is_read_only_by_construction():
+    args = soak.parse_args(
+        [
+            "watch",
+            "--scope",
+            "scope.json",
+            "--attestation",
+            "fleet.json",
+            "--artifact-dir",
+            "out",
+        ]
+    )
+    assert args.arm_stop is False
+    assert args.confirm_arm is None
+
+
+def test_parser_rejects_confirmation_without_arm():
+    with pytest.raises(SystemExit):
+        soak.parse_args(
+            [
+                "watch",
+                "--scope",
+                "scope.json",
+                "--attestation",
+                "fleet.json",
+                "--artifact-dir",
+                "out",
+                "--confirm-arm",
+                "lease-soak-stop:stage-04-20260810",
+            ]
+        )
+
+
+@pytest.mark.parametrize("confirm", [None, "wrong", "lease-soak-stop:other-run"])
+def test_arm_stop_requires_exact_second_gesture(confirm):
+    argv = [
+        "watch",
+        "--scope",
+        "scope.json",
+        "--attestation",
+        "fleet.json",
+        "--artifact-dir",
+        "out",
+        "--arm-stop",
+    ]
+    if confirm is not None:
+        argv += ["--confirm-arm", confirm]
+    with pytest.raises(SystemExit):
+        soak.validate_arm_confirmation(
+            soak.parse_args(argv), run_id="stage-04-20260810"
+        )
+
+
+def test_cli_surface_has_only_the_four_planned_commands():
+    assert set(soak.build_parser()._subparsers._group_actions[0].choices) == {
+        "attest-local",
+        "attest-aggregate",
+        "preflight",
+        "watch",
+    }
+
+
+def test_persisted_placeholder_models_for_later_tasks_forbid_extra_fields():
+    snapshot = soak.SoakSnapshot(
+        run_id="stage-04-20260810",
+        observed_at="2026-08-10T12:01:00Z",
+        findings=[],
+    )
+    receipt = soak.StopReceipt(
+        run_id="stage-04-20260810",
+        observed_at="2026-08-10T12:01:00Z",
+        trigger_code="example",
+        paused_batch_ids=[str(BATCH)],
+        fleet_pause_set=True,
+    )
+    assert snapshot.run_id == receipt.run_id
+    with pytest.raises(ValidationError):
+        soak.StopReceipt.model_validate({**receipt.model_dump(), "token": "secret"})
