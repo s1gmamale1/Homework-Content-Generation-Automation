@@ -1158,6 +1158,7 @@ git commit -m "fix(startup): validate auth and harden key vault first"
 - Modify: `app/services/worker.py`
 - Modify: `app/services/sa_key_vault.py`
 - Modify: `tests/services/test_operator_auth.py`
+- Modify: `tests/services/test_worker_version_gate.py`
 - Modify: `tests/services/test_worker_capabilities.py`
 - Modify: `tests/services/test_worker_capability_rebind.py`
 - Modify: `tests/services/test_operator_security_startup.py`
@@ -1178,6 +1179,10 @@ git commit -m "fix(startup): validate auth and harden key vault first"
 - Produces `sa_key_vault.snapshot_uuid_inventory() -> dict[str, str]`, using the
   same held-fd/held-handle scan/hash path as startup verification and failing on
   unsafe, unknown, or quarantined entries.
+- Produces `rotation_version_floors(...) -> (final_floor, temporary_floor)`:
+  checked signed-Integer arithmetic; final is at least target/prior, temporary
+  strictly dominates target/prior plus every reported effective version and
+  configured `WORKER_CODE_VERSION` override.
 - Produces an operator-owned runbook. It never restarts/kills the head and never
   mutates credentials during implementation.
 
@@ -1189,8 +1194,12 @@ Prove startup rebinds it, live rebind refreshes it, and the actual registry
 heartbeat carries it. Add a POSIX mutation test that patches `Path.read_bytes`
 and `Path.iterdir` to fail while `snapshot_uuid_inventory` still succeeds; add
 unsafe-entry/quarantine failures and keep the real Windows handle acceptance.
+Pin the concrete prior=953/target=1000 result `(1000,1001)`, a high override
+that raises the temporary floor, signed-Integer overflow rejection, and the real
+worker claim gate blocking a process that starts at the known override before
+attestation.
 
-- [ ] **Step 2: Implement the two pure evidence surfaces**
+- [ ] **Step 2: Implement the runtime evidence and checked-fence helpers**
 
 The fingerprint canonical bytes are:
 
@@ -1206,26 +1215,38 @@ rebinds only after auth + vault hardening. The vault snapshot reuses the exact
 verified inventory collector; `verify_uuid_inventory` compares its normalized
 DB expectation to that snapshot rather than maintaining a second scan.
 
+`rotation_version_floors` accepts only real non-negative integers in
+`0..2_147_483_647`, refuses an unbounded member, and refuses a maximum member
+because no representable temporary fence can exceed it. It returns
+`final=max(prior or 0,target)` and `temporary=max(final, reported,
+overrides)+1`.
+
 - [ ] **Step 3: Write structural runbook RED tests**
 
 Tests must require:
 
 1. snapshot prior pause + floor metadata; acquire the API pause only if unpaused;
-2. install `temporary_floor = max(prior_floor or 0, target_code_version) + 1`
-   with expected pause/floor predicates and stamped owner;
-3. one drain per online process ID, supervisor stop, head embedded-worker drain,
+2. inventory every online/retained/offline-known process plus each protected
+   service's configured `WORKER_CODE_VERSION`; reject unexpected/ahead/unreadable
+   overrides, and require an unreachable unbounded host to stay structurally
+   tombstoned/parked;
+3. calculate checked `final_floor=max(prior or 0,target)` and a temporary floor
+   above every prior/target/reported/override version, then install it with
+   expected pause/floor predicates and stamped owner;
+4. one drain per online process ID, supervisor stop, head embedded-worker drain,
    `WORKER_CONCURRENCY=0`, zero `running|cancelling`, zero credential slots, and
    OS/process-level zero worker tasks (covers post-done Notion work);
-4. six-key/Host-59 snapshots and only production vault snapshot APIs—no direct
+5. six-key/Host-59 snapshots and only production vault snapshot APIs—no direct
    path enumeration/reads;
-5. private token generation plus the exact expected runtime fingerprint;
-6. user-owned head restart, head valid-token 200, then worker restarts while the
+6. private token generation plus the exact expected runtime fingerprint;
+7. user-owned head restart, head valid-token 200, then worker restarts while the
    temporary floor remains above target;
-7. per-process exact fingerprint/version/concurrency/capability heartbeat;
-8. one final transaction that restores the prior floor and clears only an owned
+8. per-process exact fingerprint/version/concurrency/capability heartbeat;
+9. one final transaction that sets the final floor and clears only an owned
    `operator-auth-rotation` pause; an inherited foreign pause keeps the temporary
    floor until its owner explicitly accepts a recorded floor-fence handoff;
-9. rollback never restores `123`.
+10. offline pre-target workers remain stale/tombstoned after reopen; rollback
+   never restores `123` or selects a build lacking Tasks 1–6 hardening.
 
 Extract every SQL clearing block and require the complete owner + temporary-floor
 predicate. An appended unscoped clear, API-pause-only fence, hostname-only drain,
@@ -1234,8 +1255,11 @@ fingerprint, or early floor lower must turn RED.
 
 - [ ] **Step 4: Write the exact all-claim hard-cut runbook**
 
-State why `api_paused_at` is insufficient (CLI claims pass). Keep the temporary
-floor through drain, head restart, worker restart, and attestation. Stop/restart
+State why `api_paused_at` is insufficient (CLI claims pass). Inventory all
+registry/process versions and every service-file override first; an unreachable
+host with no proven bound must already be independently tombstoned and remain
+so after reopen. Keep the checked temporary floor through drain, head restart,
+worker restart, and attestation. Stop/restart
 worker processes, not hostnames; require the head at `WORKER_CONCURRENCY=0`.
 Use `status IN ('running','cancelling')`, `credential_slots=0`, and runtime task
 exit. Do not treat terminal jobs as proof because Notion archival is post-done.
@@ -1244,11 +1268,13 @@ temp; calculate the fingerprint through `runtime_token_set_fingerprint`; prove
 the head accepts it and every worker heartbeat publishes it. Preserve the six
 Vertex objects, Host-59 assignment, plain-key posture, and offline fences.
 
-For an owned pause, restore prior floor metadata and clear the pause in one
-expected-state transaction. For a foreign pause, clear nothing and lower no
-floor until the foreign owner explicitly accepts the handoff; its later
-floor-only transaction predicates on the exact foreign pause and temporary
-floor owner. Automation never restarts/kills the head.
+For an owned pause, set the stamped final floor (never below the target) and
+clear the pause in one expected-state transaction. For a foreign pause, clear
+nothing and lower no floor until the foreign owner explicitly accepts the
+handoff; its later floor-only transaction predicates on the exact foreign pause
+and temporary-floor owner. Default rollback rotates to a sealed strong token on
+current hardened code; code fallback is allowed only to a predesignated,
+reviewed ref that preserves Tasks 1–6. Automation never restarts/kills the head.
 
 - [ ] **Step 5: De-stale the live docs**
 
@@ -1263,6 +1289,7 @@ optional worker. Do not edit historical worklogs/plans.
 ```bash
 uv run pytest tests/services/test_operator_auth.py \
   tests/services/test_worker_capabilities.py \
+  tests/services/test_worker_version_gate.py \
   tests/services/test_worker_capability_rebind.py \
   tests/services/test_operator_security_startup.py \
   tests/services/test_sa_key_vault.py \
@@ -1271,6 +1298,7 @@ uv run pytest -q
 git add app/services/operator_auth.py app/services/worker.py \
   app/services/sa_key_vault.py tests/services/test_operator_auth.py \
   tests/services/test_worker_capabilities.py \
+  tests/services/test_worker_version_gate.py \
   tests/services/test_worker_capability_rebind.py \
   tests/services/test_operator_security_startup.py \
   tests/services/test_sa_key_vault.py docs/runbooks/operator-token-rotation.md \
@@ -1381,8 +1409,10 @@ summary must not be used as a shorter substitute.
 1. **Own the current state and install an all-claim fence.** Snapshot the exact
    pause and version-floor metadata. Acquire `operator-auth-rotation` only when
    unpaused; otherwise preserve the foreign pause and mark `pause_owned=false`.
-   Install a stamped temporary floor strictly above both the prior floor and the
-   target code version using full expected-state predicates.
+   Inventory every registry/process effective version and every service-file
+   override, retaining an independent tombstone for any unreachable unbounded
+   host. Install a checked temporary floor strictly above all of them using full
+   expected-state predicates.
 2. **Drain every model-calling process, not merely jobs or hostnames.** Disable
    supervisor restarts, drain/stop every online worker process (including any
    embedded head worker), stage `WORKER_CONCURRENCY=0` on the head, and require
@@ -1406,15 +1436,18 @@ summary must not be used as a shorter substitute.
    fingerprint, target version/SHA, concurrency, and unchanged credential
    posture. Offline hosts remain floor-fenced/tombstoned.
 7. **Reopen only with exact ownership.** When `pause_owned=true`, one
-   expected-state transaction restores the exact prior floor metadata and
-   clears only this operation's pause. When a foreign pause was inherited,
-   clear nothing and lower no floor until that owner explicitly accepts the
-   recorded handoff; its floor-only restore predicates on the exact foreign
-   pause and temporary-floor owner.
+   expected-state transaction sets the stamped final floor to
+   `max(prior,target)` and clears only this operation's pause. When a foreign
+   pause was inherited, clear nothing and lower no floor until that owner
+   explicitly accepts the recorded handoff; its floor-only transition predicates
+   on the exact foreign pause and temporary-floor owner. Offline pre-target
+   workers remain stale, and unbounded hosts remain independently tombstoned.
 8. **Rollback remains equally fenced.** Keep the temporary all-claim floor and
-   zero-task drain, retain or replace with another strong token, repeat the
-   process-level attestations, and use the same owner-scoped final gesture.
-   Never restore `123`, alter Host-59, or delete/re-upload stored Vertex keys.
+   zero-task drain. Default to a sealed strong replacement on current hardened
+   code; use a code fallback only when a predesignated reviewed build retains
+   Tasks 1–6. Repeat process-level attestations and the same owner-scoped final
+   gesture. Never restore `123`, alter Host-59, or delete/re-upload stored
+   Vertex keys.
 
 ## Plan self-review
 

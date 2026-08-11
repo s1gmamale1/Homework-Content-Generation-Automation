@@ -34,12 +34,70 @@ Record these immutable rollout variables outside shell history/logs:
 
 - `observed_pause_at` and `observed_pause_reason`;
 - `prior_floor`, `prior_floor_stamped_by`, and `prior_floor_stamped_at`;
-- `target_code_version`, read from the exact code staged for deployment;
-- `temporary_floor = max(prior_floor or 0, target_code_version) + 1`.
+- `target_code_version`, read from the exact code staged for deployment.
 
-The temporary floor must be strictly above both the prior floor and the target
-code. Every worker at the target version is then structurally unable to claim.
-An unknown-version worker also fails closed.
+Before computing either fence, inventory **every registry row**, not only rows
+currently reported online:
+
+```sql
+SELECT pc_id,
+       last_heartbeat,
+       status,
+       capabilities->>'code_version' AS reported_code_version,
+       capabilities->>'git_sha' AS reported_git_sha
+FROM workers
+ORDER BY pc_id;
+```
+
+First disable every known worker supervisor/scheduled auto-restart without
+stopping the currently running process. This freezes the set of service starts
+while the evidence and floor are built. Reconcile the result with the fleet
+host/process inventory, including all
+**online, retained, and offline-known** processes. Under the protected deployment
+channel, inspect the actual head and worker service environments for
+`WORKER_CODE_VERSION`; an unset override and a proven bounded integer are
+different evidence states. Inventory each model-calling process and each host
+configuration separately—two processes on one PC can use different service
+files.
+
+An unexpected or ahead override is a stop condition even though its numeric
+value participates in fence sizing: explain it, remove/correct it, restart the
+affected process, and repeat the inventory. An invalid or unreadable override is
+also a stop condition; do not trust the heartbeat as a substitute. If an
+offline/unreachable host's configured override cannot be proven, that host must
+already be **tombstoned/parked before proceeding** by a structural pre-claim
+gate. Do not create or dismiss a provider-credential scrub as part of this auth
+rotation. If no independently-authorized tombstone exists, abort the rotation
+until the host is reachable. Such hosts **remain tombstoned/parked after the
+final reopen** until updated and attested.
+
+Calculate the two checked values using the production helper. Populate the two
+lists only from the reconciled evidence above; do not paste the example values:
+
+```python
+from app.services.operator_auth import rotation_version_floors
+
+final_floor, temporary_floor = rotation_version_floors(
+    prior_floor=prior_floor,
+    target_code_version=target_code_version,
+    reported_code_versions=reported_code_versions,
+    configured_overrides=configured_worker_code_versions,
+)
+```
+
+The helper enforces PostgreSQL's signed-Integer range (`0..2_147_483_647`) and
+aborts if the maximum known version cannot be incremented without overflow.
+Its exact contracts are:
+
+- `final_floor = max(prior_floor or 0, target_code_version)`;
+- `temporary_floor` is one greater than the maximum of the prior floor, target,
+  every effective reported version, and every configured override.
+
+The temporary floor therefore blocks a known ahead-override process even if it
+starts before attestation. An unknown-version worker fails closed. Keep all
+worker supervisors disabled until this fence is installed and read back; then
+repeat the version/config inventory. Any new process, row, override, or mismatch
+means abort the rotation and rebuild the evidence/floors before continuing.
 
 Record either `pause_owned=true` or `pause_owned=false`:
 
@@ -306,18 +364,22 @@ Keep `expected_auth_fingerprint` in the non-secret rollout evidence.
 
 ## 10. Final owner-scoped reopen
 
-When `pause_owned=true`, restore the exact prior floor metadata and clear only
-this operation's pause in one transaction. The full fence/owner predicate makes
-the floor lower and unpause one indivisible final gesture:
+When `pause_owned=true`, set the floor to `final_floor` and clear only this
+operation's pause in one transaction. Never blindly restore `prior_floor`:
+for example, a prior floor of 953 and target version 1000 must finish at 1000,
+so an offline v954 worker remains stale until it is updated. The new stamp
+records the attested hard-cut deployment rather than falsely restoring the old
+stamp metadata. The full fence/owner predicate makes the floor transition and
+unpause one indivisible final gesture:
 
 ```sql
 BEGIN;
 UPDATE budget_state
 SET api_paused_at = NULL,
     api_paused_reason = NULL,
-    min_worker_version = :prior_floor,
-    min_worker_version_stamped_by = :prior_floor_stamped_by,
-    min_worker_version_stamped_at = :prior_floor_stamped_at
+    min_worker_version = :final_floor,
+    min_worker_version_stamped_by = 'operator-auth-rotation-final',
+    min_worker_version_stamped_at = now()
 WHERE id = 1
   AND api_paused_reason = 'operator-auth-rotation'
   AND min_worker_version = :temporary_floor
@@ -330,16 +392,16 @@ If `pause_owned=false`, emit no clearing SQL and **do not restore or lower the
 temporary floor**. The foreign pause does not block CLI claims, so lowering the
 all-claim fence would silently reopen generation. Record a fence handoff with
 `foreign_pause_reason`, `foreign_pause_at`, the prior-floor snapshot, temporary
-floor, attested process set, and expected fingerprint. The foreign owner must
-explicitly accept the fence handoff. The accepting owner then performs this
-floor-only restore:
+floor, final floor, attested process set, expected fingerprint, and retained
+offline tombstones. The foreign owner must explicitly accept the fence handoff.
+The accepting owner then performs this floor-only transition:
 
 ```sql
 BEGIN;
 UPDATE budget_state
-SET min_worker_version = :prior_floor,
-    min_worker_version_stamped_by = :prior_floor_stamped_by,
-    min_worker_version_stamped_at = :prior_floor_stamped_at
+SET min_worker_version = :final_floor,
+    min_worker_version_stamped_by = 'operator-auth-rotation-final',
+    min_worker_version_stamped_at = now()
 WHERE id = 1
   AND api_paused_at IS NOT DISTINCT FROM :foreign_pause_at
   AND api_paused_reason IS NOT DISTINCT FROM :foreign_pause_reason
@@ -350,20 +412,29 @@ COMMIT;
 ```
 
 That handoff transaction deliberately leaves the foreign pause untouched. Only
-after either final transaction commits may claiming resume. Re-enable any
-maintenance-disabled supervisor policy only after its worker is already running
-and attested.
+after either final transaction commits may eligible claiming resume. Offline
+stragglers below `final_floor` remain stale, and unbounded/unreachable hosts keep
+their independent pre-claim tombstones. Re-enable any maintenance-disabled
+supervisor policy only after its worker is already running and attested.
 
 ## Rollback
 
-Rollback stays behind the same temporary version floor and zero-task drain. Use
-another newly generated strong token, or roll back to old code while keeping the
-new strong token. A rollback must never restore `123`, never add it beside a
-strong token, and never bypass startup validation.
+Rollback stays behind the same temporary version floor and zero-task drain. The
+default recovery is a **sealed strong replacement** on the **current hardened
+code**. A code-version fallback is permitted only when preflight recorded a
+specific `designated_hardened_rollback_ref` whose reviewed build demonstrably
+retains **Tasks 1–6**: fail-closed startup auth, header-only SA routes,
+held-handle vault protection, transaction-safe SA operations, startup
+reconciliation, runtime token fingerprinting, and this exact all-claim floor
+protocol. An arbitrary historical build is prohibited. If that evidence is
+absent, keep the current hardened build and rotate only the token. A rollback
+must never restore `123`, never add it beside a strong token, and never bypass
+startup validation.
 
 The operator again owns the head restart, which remains
 `WORKER_CONCURRENCY=0`. Workers restart and publish the rollback token-set
 fingerprint while still fenced. Preserve the six stored Vertex objects, Host-59
 assignment, plain API-key posture, offline fences, and foreign pause ownership.
-Use the same final owner-scoped reopen/handoff rules; never lower the all-claim
-fence merely because the API pause remains set.
+Use the same checked version inventory, `final_floor`, and owner-scoped
+reopen/handoff rules; never lower the all-claim fence merely because the API
+pause remains set.

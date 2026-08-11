@@ -1026,7 +1026,10 @@ entries. Writes are same-directory, flushed, rehashed, and atomically replaced. 
 are never stored in Postgres. See
 [`docs/runbooks/operator-token-rotation.md`](runbooks/operator-token-rotation.md) for the
 paused hard cut from `123`: the operator restarts the head, automation only prepares and
-attests, every worker process rolls afterward, and a foreign pause is never cleared.
+attests, every worker process rolls afterward, and a foreign pause is never cleared. The
+temporary all-claim floor is checked above every reported process version and configured
+`WORKER_CODE_VERSION`; the final floor never drops below the deployed target, so offline
+pre-target workers stay stale (and unbounded unreachable hosts stay tombstoned).
 
 ---
 

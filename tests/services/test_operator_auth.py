@@ -86,6 +86,51 @@ def test_token_set_fingerprint_distinguishes_local_dev_from_invalid_config():
     )
 
 
+def test_rotation_floor_keeps_target_as_the_post_cutover_minimum():
+    final_floor, temporary_floor = operator_auth.rotation_version_floors(
+        prior_floor=953,
+        target_code_version=1000,
+        reported_code_versions=(954, 1000),
+        configured_overrides=(),
+    )
+
+    assert final_floor == 1000
+    assert temporary_floor == 1001
+
+
+def test_rotation_temporary_floor_exceeds_every_effective_and_override_version():
+    final_floor, temporary_floor = operator_auth.rotation_version_floors(
+        prior_floor=953,
+        target_code_version=1000,
+        reported_code_versions=(954, 1000, 1200),
+        configured_overrides=(1500,),
+    )
+
+    assert final_floor == 1000
+    assert temporary_floor == 1501
+
+
+@pytest.mark.parametrize("unsafe", [None, True, -1, 2_147_483_648])
+def test_rotation_floor_rejects_unbounded_or_non_database_versions(unsafe):
+    with pytest.raises(operator_auth.OperatorAuthConfigurationError):
+        operator_auth.rotation_version_floors(
+            prior_floor=953,
+            target_code_version=1000,
+            reported_code_versions=(unsafe,),
+            configured_overrides=(),
+        )
+
+
+def test_rotation_floor_rejects_integer_max_that_cannot_be_exceeded():
+    with pytest.raises(operator_auth.OperatorAuthConfigurationError):
+        operator_auth.rotation_version_floors(
+            prior_floor=953,
+            target_code_version=1000,
+            reported_code_versions=(),
+            configured_overrides=(2_147_483_647,),
+        )
+
+
 def test_token_match_uses_every_candidate_without_plain_membership(monkeypatch):
     calls = []
     real = operator_auth.hmac.compare_digest

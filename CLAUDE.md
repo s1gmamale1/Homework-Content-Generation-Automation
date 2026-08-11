@@ -159,6 +159,9 @@ listeners/workers, send heartbeats, or claim. Automation never kills/restarts
 the user-owned head. For
 an operational hard cut, follow
 `docs/runbooks/operator-token-rotation.md`; never bridge with `123,<strong>`.
+Its temporary floor is checked above every reported process version and every
+configured `WORKER_CODE_VERSION`, while its final floor remains at least the
+deployed target; unreachable unbounded hosts stay independently tombstoned.
 
 ## Things not to do
 

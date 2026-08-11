@@ -17,6 +17,7 @@ from typing import Literal
 
 MIN_TOKEN_LENGTH = 32
 MIN_DISTINCT_CHARACTERS = 8
+MAX_DATABASE_INTEGER = 2_147_483_647
 _TOKEN_ALPHABET = frozenset(string.ascii_letters + string.digits + "_-")
 _DENYLIST = frozenset(
     {
@@ -122,6 +123,56 @@ def runtime_token_set_fingerprint(
     return "sha256:" + hashlib.sha256(
         _FINGERPRINT_DOMAIN + canonical
     ).hexdigest()
+
+
+def rotation_version_floors(
+    *,
+    prior_floor: int | None,
+    target_code_version: int,
+    reported_code_versions: Iterable[int],
+    configured_overrides: Iterable[int],
+) -> tuple[int, int]:
+    """Return ``(final_floor, temporary_floor)`` for an auth hard cut.
+
+    The final floor never drops below the deployed target. The temporary
+    all-claim fence strictly exceeds every version the preflight proved could
+    start, including ``WORKER_CODE_VERSION`` overrides. PostgreSQL ``Integer``
+    is signed 32-bit, so an unbounded/invalid value or a maximum value that
+    cannot be exceeded aborts instead of wrapping or weakening the fence.
+    """
+
+    def checked(value: object, *, field: str) -> int:
+        if (
+            type(value) is not int
+            or value < 0
+            or value > MAX_DATABASE_INTEGER
+        ):
+            raise OperatorAuthConfigurationError(
+                f"{field} is not a bounded PostgreSQL integer version"
+            )
+        return value
+
+    prior = (
+        0
+        if prior_floor is None
+        else checked(prior_floor, field="prior_floor")
+    )
+    target = checked(target_code_version, field="target_code_version")
+    reported = [
+        checked(value, field="reported_code_version")
+        for value in reported_code_versions
+    ]
+    overrides = [
+        checked(value, field="configured_override")
+        for value in configured_overrides
+    ]
+    final_floor = max(prior, target)
+    highest_known = max([final_floor, *reported, *overrides])
+    if highest_known == MAX_DATABASE_INTEGER:
+        raise OperatorAuthConfigurationError(
+            "known code version leaves no representable temporary fence"
+        )
+    return final_floor, highest_known + 1
 
 
 def constant_time_token_match(

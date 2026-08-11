@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from app.services import code_version, operator_auth
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNBOOK = ROOT / "docs/runbooks/operator-token-rotation.md"
@@ -86,7 +88,8 @@ def test_rotation_runbook_uses_version_floor_as_the_all_claim_fence() -> None:
     document = re.sub(r"\s+", " ", _text(RUNBOOK))
     for required in (
         "API pause is not a global claim fence",
-        "max(prior_floor or 0, target_code_version) + 1",
+        "rotation_version_floors",
+        "final_floor = max(prior_floor or 0, target_code_version)",
         "min_worker_version IS NOT DISTINCT FROM :prior_floor",
         "min_worker_version_stamped_by IS NOT DISTINCT FROM :prior_floor_stamped_by",
         "api_paused_reason IS NOT DISTINCT FROM :observed_pause_reason",
@@ -96,6 +99,60 @@ def test_rotation_runbook_uses_version_floor_as_the_all_claim_fence() -> None:
         "SELECT count(*) AS active_credential_slots",
     ):
         assert required in document
+
+
+def test_rotation_inventories_every_effective_version_and_host_override() -> None:
+    """Catches sizing the fence from only the intended deployment version."""
+
+    document = re.sub(r"\s+", " ", _text(RUNBOOK))
+    for required in (
+        "every registry row",
+        "online, retained, and offline-known",
+        "capabilities->>'code_version'",
+        "WORKER_CODE_VERSION",
+        "unexpected or ahead override",
+        "unreadable override",
+        "abort the rotation",
+        "tombstoned/parked before proceeding",
+        "remain tombstoned/parked after the final reopen",
+        "2_147_483_647",
+    ):
+        assert required in document
+
+
+def test_final_reopen_never_drops_below_the_deployed_target() -> None:
+    """Catches restoring a stale prior floor after new code is deployed."""
+
+    document = _text(RUNBOOK)
+    assert "final_floor = max(prior_floor or 0, target_code_version)" in document
+    assert "SET min_worker_version = :prior_floor" not in document
+    sql_blocks = re.findall(r"```sql\s*(.*?)```", document, re.DOTALL)
+    reopen_blocks = [
+        block
+        for block in sql_blocks
+        if "min_worker_version = :final_floor" in block
+    ]
+    assert len(reopen_blocks) == 2
+    for block in reopen_blocks:
+        assert (
+            "min_worker_version_stamped_by = 'operator-auth-rotation-final'"
+            in block
+        )
+        assert "min_worker_version_stamped_at = now()" in block
+        assert "min_worker_version = :temporary_floor" in block
+
+
+def test_offline_pre_cutover_worker_remains_blocked_by_final_floor() -> None:
+    """The concrete 953→1000 cutover must leave an offline v954 stale."""
+
+    final_floor, _ = operator_auth.rotation_version_floors(
+        prior_floor=953,
+        target_code_version=1000,
+        reported_code_versions=(954, 1000),
+        configured_overrides=(),
+    )
+
+    assert code_version.is_stale(954, final_floor) is True
 
 
 def test_foreign_pause_keeps_temporary_floor_until_explicit_handoff() -> None:
@@ -138,6 +195,18 @@ def test_rotation_requires_runtime_fingerprint_evidence_before_reopen() -> None:
         "before lowering the temporary floor",
     ):
         assert required in document
+
+
+def test_rollback_never_selects_unhardened_code() -> None:
+    """Catches rollback guidance that reintroduces weak auth or vault access."""
+
+    document = re.sub(r"\s+", " ", _text(RUNBOOK))
+    lowered = document.casefold()
+    assert "roll back to old code" not in lowered
+    assert "designated_hardened_rollback_ref" in document
+    assert "Tasks 1–6" in document
+    assert "sealed strong replacement" in document
+    assert "current hardened code" in document
 
 
 def test_rotation_runbook_attests_each_process_and_fences_offline_hosts() -> None:

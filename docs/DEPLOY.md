@@ -316,14 +316,21 @@ These aren't wired yet but the data is in the DB / logs — easy to add a `/metr
 **Operator-token changes are hard cuts.** Startup rejects the old `123` value
 even when it appears beside a strong value. The API budget pause is not a global
 claim fence (CLI jobs still pass), so install a temporary version floor above
-the target version, drain/stop every worker process—including post-done archive
-work—and require zero active jobs and credential slots. Stage one token
+the target version **and every reported/configured process version**, including
+`WORKER_CODE_VERSION` overrides; an unreachable host without a proven bound
+must remain independently tombstoned. Drain/stop every worker
+process—including post-done archive work—and require zero active jobs and
+credential slots. Stage one token
 everywhere with `WORKER_CONCURRENCY=0` on the head; the operator restarts the
 head, then workers restart and publish the expected auth fingerprint while
 still fenced. Automation must not kill/restart the user-owned head. Follow
 [`docs/runbooks/operator-token-rotation.md`](./runbooks/operator-token-rotation.md),
 including the owner-scoped floor restore/unpause or explicit foreign-pause
-handoff and the six-key/Host-59 preservation checks.
+handoff and the six-key/Host-59 preservation checks. The final floor is
+`max(prior,target)`, never blindly the old floor; offline pre-target workers stay
+stale. Rollback defaults to a sealed strong token on current hardened code—an
+alternate build must be predesignated and retain the complete auth/vault/fence
+hardening.
 
 **SPA + auth.** If `AUTH_TOKEN` is set but the SPA's sessionStorage has no token, every page load redirects to `/login`. The login form takes a token; paste-and-submit. In production, the upstream service either (a) injects the bearer token via reverse proxy, or (b) hands the token to the SPA via postMessage / URL fragment / iframe init.
 
