@@ -43,6 +43,33 @@
 - Isolated planning worktree: `/Users/macmini5/Documents/HCGA-fenced-soak-plan`, branch `plan/fenced-lease-soak-controller`. The shared checkout's untracked files are untouched.
 - Baseline: `13 passed` for `tests/services/test_lease_types.py`, `tests/services/test_worker_version_gate.py`, and `tests/test_db_pool_config.py`.
 
+## Round-3 Composition Corrections (2026-08-10)
+
+- Repeated the mandatory read-only collision gate at
+  `origin/Nggaev-v2@d6b1c9f` and local controller head `9c2adb6`. Open PRs
+  `#108`, `#117`, and `#118` touch dashboard/content-JSON paths only; no
+  branch or worktree overlaps the controller files. This branch remains the
+  sole owner of `scripts/fenced_lease_soak.py` and its tests.
+- `SoakScope` accepts only the authorized `4/8/12/20/40` stages. The job count
+  must equal the target; `4/8/12/20` use one batch, while `40` uses exactly two
+  batches whose live job distribution is exactly `20+20`. A watch hard-stops
+  if simultaneous running work exceeds the authorized target.
+- Every sample recomputes the complete claimable-worker set from the live
+  registry, version floor, heartbeats, capabilities, and scrub tombstones. A
+  newly claimable process outside the immutable attestation is a hard stop.
+  The read store also persists unscoped job transitions and lease events since
+  `scope.since`, so unrelated work that starts and terminates between samples
+  cannot disappear from the evidence.
+- Solver quality is outcome-aware: `mismatch_regen` is a successful repaired
+  result. Only unresolved outcomes (`mismatch_shipped`,
+  `mismatch_regen_failed`, and the incoming `mismatch_blocked`) fail a stage.
+- PostgreSQL wait evidence is restricted to `client backend` rows while still
+  reporting their non-Client lock/I/O waits. Armed writes use a 5-second lock
+  timeout and 30-second statement timeout; the controller independently caps
+  stop completion at 30 seconds and records `stop_failed` on failure or timeout.
+- Round-3 unit/fake-store verification is `$0`. PostgreSQL integration remains
+  opt-in and must use a scratch URL; no production fallback is permitted.
+
 ## File Structure
 
 - Modify `app/db.py`: pure connection-server-settings builder and application of those settings to the existing engine.
