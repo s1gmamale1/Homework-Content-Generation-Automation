@@ -67,6 +67,24 @@ Using the wrong one causes damage.
 | **unrecoverable** | 1 RU geometry-8 topic (`Повторение курса 7-ого класса`) |
 | **do not push** | ~51 RU rubric rows across G5/G6 |
 
+## Cleanup backlog — duplicated / misplaced, NOT missing
+
+These are **not** recovery items: nothing is lost, so nothing should be pushed. They need
+deleting or consolidating. Listed separately because a "recovery" pass must not touch them.
+
+| item | where | action |
+|---|---|---|
+| 2 duplicate lesson pages | RU Алгебра 7 — `38f99838-…81c3` / `…8141` (`Правила раскрытия скобок`), `38f99838-…8138` / `…81ec` (`Свойства арифметических действий`) | trash one of each pair; both copies are fully populated |
+| 1 stray RU page in the UZ tree | `3b199838-1c76-8184-b330-fbd80c7280b8` — `§ 1 Биологические системы` inside **UZ** `Biologiya → Generated Homeworks`; orphan, no `toc_entry` points at it; correct RU copy intact at `3ac99838-…813a` | trash the stray |
+| 1 stray UZ page in the RU tree | `38e99838-…` — `10-§ Funksiyaning o'sishi va kamayishi` inside **RU** Алгебра 9 → `Generated Homeworks`; no RU DB counterpart | trash the stray |
+| 2 surplus containers | RU Геометрия 8 has THREE `Generated Homeworks` (`…813d` 1 page, `…81ca` 1 page, `…8178` 55 pages) | move the 2 singletons into the main container, then delete the empties |
+| 1 surplus container | UZ Биологиya 7 has TWO (1 page + 35 pages) | same |
+| 10 dangling page pointers | RU geometriya-8 duplicate book `f20db30c` — `notion_homework_page_id` points at permanently deleted pages (`ObjectNotFound`) | null the pointers so a future resume does not trust them |
+
+**Verified clean, no action:** 26 lessons that had a short (8-phase) job followed by an
+11-phase re-run — in all 26 the **11-phase job is the archived one**, so no page holds stale
+pre-0067 content. Duplicate generation cost money but did not degrade delivered homework.
+
 ## ⚠️ Recovery hazards — read before any push
 
 1. **Re-archiving repeated-title rows creates DUPLICATES, not clobbers.** `find_or_create`
