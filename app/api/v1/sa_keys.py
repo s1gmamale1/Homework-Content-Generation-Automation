@@ -16,12 +16,13 @@ from app.services.sa_key_validate import InvalidServiceAccountKey, parse_and_val
 router = APIRouter(prefix="/sa-keys", tags=["sa-keys"])
 
 
-async def _best_effort_rollback(session: AsyncSession) -> None:
-    """Attempt to release the request transaction without masking recovery."""
+async def _best_effort_rollback(session: AsyncSession) -> bool:
+    """Return whether the request transaction was definitively rolled back."""
     try:
         await session.rollback()
     except Exception:
-        return
+        return False
+    return True
 
 
 async def _compensate_new_upload_if_definitively_uncommitted(
@@ -131,12 +132,13 @@ async def upload_sa_key(
     try:
         await session.commit()
     except Exception:
-        await _best_effort_rollback(session)
-        await _compensate_new_upload_if_definitively_uncommitted(
-            row_id=row_id,
-            sha256=row_sha256,
-            created=created_by_this_tx,
-        )
+        rollback_resolved = await _best_effort_rollback(session)
+        if rollback_resolved:
+            await _compensate_new_upload_if_definitively_uncommitted(
+                row_id=row_id,
+                sha256=row_sha256,
+                created=created_by_this_tx,
+            )
         raise HTTPException(503, "SA-key upload did not commit") from None
     return _meta(row)
 
@@ -188,15 +190,16 @@ async def delete_sa_key(key_id: UUID, session: AsyncSession = Depends(get_sessio
             raise RuntimeError("locked SA-key delete affected an unexpected row count")
         await session.commit()
     except Exception:
-        await _best_effort_rollback(session)
-        try:
-            await _reconcile_delete_outcome(
-                row_id=row_id,
-                sha256=row_sha256,
-                ticket=ticket,
-            )
-        except sa_key_vault.SAKeyVaultError:
-            pass
+        rollback_resolved = await _best_effort_rollback(session)
+        if rollback_resolved:
+            try:
+                await _reconcile_delete_outcome(
+                    row_id=row_id,
+                    sha256=row_sha256,
+                    ticket=ticket,
+                )
+            except sa_key_vault.SAKeyVaultError:
+                pass
         raise HTTPException(503, "SA-key delete outcome is unavailable") from None
     try:
         sa_key_vault.discard_quarantined_delete(ticket)

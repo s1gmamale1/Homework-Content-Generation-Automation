@@ -842,10 +842,11 @@ Add tests that monkeypatch direct `Path.read_bytes`, `Path.write_bytes`, and `Pa
 - the existing six-file preservation test remains byte-identical.
 - two concurrent identical uploads resolve to one row/file without `IntegrityError`;
 - filesystem refusal rolls back newly inserted metadata;
-- a forced real-Postgres upload commit failure flushes then raises, performs an actual SQLAlchemy rollback, returns the generic 503 without `MissingGreenlet`, and removes a newly-owned file only after a fresh DB read proves the exact pinned `row_id`/SHA absent; an unavailable/ambiguous check keeps the private file for startup reconciliation;
+- a forced real-Postgres upload commit failure flushes then raises, performs an actual SQLAlchemy rollback, returns the generic 503 without `MissingGreenlet`, and removes a newly-owned file only after that rollback succeeds and a fresh DB read proves the exact pinned `row_id`/SHA absent; rollback failure or an unavailable/ambiguous fresh check keeps the private file for startup/manual reconciliation;
 - existing dedup rows/files are never removed by compensation, and missing/wrong-hash bytes are repaired only from a validated body whose SHA equals the row SHA.
 - assigned delete returns 409 before quarantine; concurrent assign/delete and dedup-upload/delete executions serialize on the key row and finish in one of the two valid whole states, never a dangling assignment, missing file for a live row, or UUID file for an absent row;
-- delete failure before DB mutation leaves the row/file unchanged; definitive rollback restores the exact quarantine; commit success removes it; an exception with ambiguous commit outcome opens a fresh session and follows `same row/SHA => restore`, `row absent => discard`, `different row/SHA or lookup error => retain quarantine + generic 503`;
+- delete failure before DB mutation leaves the row/file unchanged; definitive rollback restores the exact quarantine; commit success removes it; after a successful rollback, an exception with ambiguous commit outcome opens a fresh session and follows `same row/SHA => restore`, `row absent => discard`, `different row/SHA or lookup error => retain quarantine + generic 503`; rollback failure retains the exact quarantine without consulting fresh DB state;
+- real two-session unresolved-transaction tests pause an uncommitted insert/delete after commit and rollback both raise, prove no fresh-session visibility is treated as authoritative, then drive both eventual outcomes: upload commit leaves row+canonical consistent, upload rollback retains the orphan as fail-closed evidence, delete commit lets startup discard the quarantine, and delete rollback lets startup restore it;
 - crash-boundary fixtures stop after quarantine with the row present and after committed DB deletion with the row absent; Task 5 startup reconciliation restores/removes respectively, and a neighboring row/file plus all assignments remain byte/row-identical.
 
 Run:
@@ -924,12 +925,13 @@ except sa_key_vault.SAKeyVaultError as exc:
 try:
     await session.commit()
 except Exception:
-    await session.rollback()
-    await _compensate_new_upload_if_definitively_uncommitted(
-        row_id=row_id,
-        sha256=row_sha256,
-        created=created_by_this_tx,
-    )
+    rollback_resolved = await _best_effort_rollback(session)
+    if rollback_resolved:
+        await _compensate_new_upload_if_definitively_uncommitted(
+            row_id=row_id,
+            sha256=row_sha256,
+            created=created_by_this_tx,
+        )
     raise HTTPException(503, "SA-key upload did not commit") from None
 ```
 
@@ -942,6 +944,11 @@ expiration so a regression produces `MissingGreenlet` and turns RED.
 It never removes for `created=False`, never removes when the exact row exists, removes
 only when absence is positively established, and treats a lookup error as unknown/keep.
 This is bounded compensation, not a false cross-resource transaction claim.
+`_best_effort_rollback` returns a boolean transaction-resolution signal. A fresh session's
+snapshot is authoritative for destructive compensation only when rollback returned normally.
+If rollback raises, the original transaction may still later commit or roll back; upload keeps
+the canonical bytes and delete keeps the quarantine so startup/manual reconciliation can decide
+after the database outcome becomes observable.
 
 Implement API key deletion as this exact state machine; do not reuse the worker scrub's
 simple `remove`:
@@ -956,11 +963,12 @@ simple `remove`:
    Commit. On success call `discard_quarantined_delete(ticket)`; if final discard fails,
    return generic 503 and retain the exact quarantine for startup reconciliation—the DB
    deletion is already authoritative.
-4. On any DELETE/commit exception, roll back and call
+4. On any DELETE/commit exception, attempt rollback. Only when rollback returns normally call
    `_reconcile_delete_outcome(row_id, row_sha256, ticket)` using a fresh `SessionLocal`.
    If the exact row/SHA exists, restore; if the row is absent, discard; if a different SHA,
    DB lookup error, unsafe file, or restore/discard error occurs, retain the quarantine and
-   return generic 503. Never infer commit outcome from the exception type.
+   return generic 503. If rollback raises, retain the quarantine without a fresh lookup because
+   the unresolved transaction may still commit. Never infer commit outcome from the exception type.
 
 The fresh-session reconciler uses only the pinned scalar values and frozen ticket. It does
 not delete or rename a canonical file belonging to any other UUID/SHA. Upload repair obtains

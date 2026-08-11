@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import os
 from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException, UploadFile
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
@@ -324,45 +326,69 @@ async def test_commit_failure_rolls_back_and_removes_only_newly_owned_file(
 
 
 @pytest.mark.asyncio
-async def test_upload_rollback_error_still_compensates_from_fresh_absence(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("eventual_outcome", ["commit", "rollback"])
+async def test_upload_rollback_error_preserves_bytes_until_original_tx_resolves(
+    monkeypatch, tmp_path, eventual_outcome
 ):
-    """Fresh DB absence, not rollback's exception, authorizes exact compensation."""
+    """Fresh absence cannot authorize removal while the request tx may still commit."""
+    from app.api.v1 import sa_keys as api
+
     project = f"t4-upload-rollback-error-{uuid4()}"
     body = _good_key(project=project)
+    sha = hashlib.sha256(body).hexdigest()
     rollback_calls = []
+    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    try:
+        async with SessionLocal() as request_session:
+            real_commit = request_session.commit
+            real_rollback = request_session.rollback
 
-    async def failing_session():
-        async with SessionLocal() as session:
             async def fail_commit():
-                await session.flush()
+                await request_session.flush()
                 raise RuntimeError("private commit detail")
 
             async def fail_rollback():
                 rollback_calls.append(True)
                 raise RuntimeError("private rollback detail")
 
-            monkeypatch.setattr(session, "commit", fail_commit)
-            monkeypatch.setattr(session, "rollback", fail_rollback)
-            yield session
-
-    app.dependency_overrides[get_session] = failing_session
-    try:
-        async with _client(monkeypatch, tmp_path) as client:
-            response = await client.post(
-                "/api/v1/sa-keys",
-                files={"file": ("key.json", body, "application/json")},
+            monkeypatch.setattr(request_session, "commit", fail_commit)
+            monkeypatch.setattr(request_session, "rollback", fail_rollback)
+            with pytest.raises(HTTPException) as raised:
+                await api.upload_sa_key(
+                    UploadFile(filename="key.json", file=io.BytesIO(body)),
+                    request_session,
+                )
+            assert raised.value.status_code == 503
+            assert raised.value.detail == "SA-key upload did not commit"
+            row = await request_session.scalar(
+                select(SAKey).where(SAKey.project_id == project)
             )
-        assert response.status_code == 503
-        assert response.json() == {"detail": "SA-key upload did not commit"}
-        assert "private" not in response.text
-        assert rollback_calls == [True]
-        async with SessionLocal() as session:
-            row = await session.scalar(select(SAKey).where(SAKey.project_id == project))
-        assert row is None
-        assert list((tmp_path / "sa_keys").glob("*.json")) == []
+            row_id = row.id
+
+            # The other session cannot see the insert yet. Removing here would
+            # create a live-row/missing-file split when the original tx commits.
+            async with SessionLocal() as fresh:
+                assert await fresh.get(SAKey, row_id) is None
+            assert sa_key_vault.read_bytes(storage.sa_key_path(row_id)) == body
+            assert rollback_calls == [True]
+
+            if eventual_outcome == "commit":
+                await real_commit()
+            else:
+                await real_rollback()
+
+        async with SessionLocal() as fresh:
+            committed = await fresh.get(SAKey, row_id)
+        if eventual_outcome == "commit":
+            assert committed is not None
+            assert committed.sha256 == sha
+            sa_key_vault.verify_uuid_inventory({str(row_id): sha})
+        else:
+            assert committed is None
+            with pytest.raises(sa_key_vault.SAKeyVaultError):
+                sa_key_vault.verify_uuid_inventory({})
+            assert sa_key_vault.read_bytes(storage.sa_key_path(row_id)) == body
     finally:
-        app.dependency_overrides.pop(get_session, None)
         await _delete_owned_rows(project)
 
 
@@ -383,11 +409,7 @@ async def test_upload_rollback_and_fresh_lookup_errors_retain_exact_evidence(
                 await session.flush()
                 raise RuntimeError("private commit detail")
 
-            async def fail_rollback():
-                raise RuntimeError("private rollback detail")
-
             monkeypatch.setattr(session, "commit", fail_commit)
-            monkeypatch.setattr(session, "rollback", fail_rollback)
             yield session
 
     class _UnreadableFresh:

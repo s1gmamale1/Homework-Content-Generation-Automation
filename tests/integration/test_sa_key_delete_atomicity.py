@@ -1,13 +1,15 @@
 """Real-Postgres assignment/delete serialization and vault quarantine tests."""
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import os
-import asyncio
 from contextlib import asynccontextmanager
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
@@ -228,13 +230,17 @@ async def test_delete_failure_before_commit_restores_exact_quarantine(
 
 
 @pytest.mark.asyncio
-async def test_delete_rollback_error_still_restores_from_fresh_live_row(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("eventual_outcome", ["commit", "rollback"])
+async def test_delete_rollback_error_preserves_quarantine_until_original_tx_resolves(
+    monkeypatch, tmp_path, eventual_outcome
 ):
-    """Fresh live-row authority restores even when request rollback also raises."""
+    """Fresh live-row visibility cannot prove an unresolved DELETE rolled back."""
+    from app.api.v1 import sa_keys as api
+
     project = f"t4-delete-rollback-error-{uuid4()}"
     hostname = f"t4-unused-{uuid4()}"
     body = _good_key(project=project)
+    sha = hashlib.sha256(body).hexdigest()
     captured = []
     real_quarantine = sa_key_vault.quarantine_for_delete
 
@@ -242,19 +248,6 @@ async def test_delete_rollback_error_still_restores_from_fresh_live_row(
         ticket = real_quarantine(path, expected_sha256=expected_sha256)
         captured.append(ticket)
         return ticket
-
-    async def failing_session():
-        async with SessionLocal() as session:
-            async def fail_commit():
-                await session.flush()
-                raise RuntimeError("private commit detail")
-
-            async def fail_rollback():
-                raise RuntimeError("private rollback detail")
-
-            monkeypatch.setattr(session, "commit", fail_commit)
-            monkeypatch.setattr(session, "rollback", fail_rollback)
-            yield session
 
     try:
         async with _client(monkeypatch, tmp_path) as client:
@@ -264,20 +257,52 @@ async def test_delete_rollback_error_still_restores_from_fresh_live_row(
                     files={"file": ("key.json", body, "application/json")},
                 )
             ).json()["id"]
-            monkeypatch.setattr(sa_key_vault, "quarantine_for_delete", capture)
-            app.dependency_overrides[get_session] = failing_session
-            response = await client.delete(f"/api/v1/sa-keys/{key_id}")
-        assert response.status_code == 503
-        assert response.json() == {"detail": "SA-key delete outcome is unavailable"}
-        assert "private" not in response.text
-        assert len(captured) == 1
-        ticket = captured[0]
+        monkeypatch.setattr(sa_key_vault, "quarantine_for_delete", capture)
+        async with SessionLocal() as request_session:
+            real_commit = request_session.commit
+            real_rollback = request_session.rollback
+
+            async def fail_commit():
+                await request_session.flush()
+                raise RuntimeError("private commit detail")
+
+            async def fail_rollback():
+                raise RuntimeError("private rollback detail")
+
+            monkeypatch.setattr(request_session, "commit", fail_commit)
+            monkeypatch.setattr(request_session, "rollback", fail_rollback)
+            with pytest.raises(HTTPException) as raised:
+                await api.delete_sa_key(UUID(key_id), request_session)
+            assert raised.value.status_code == 503
+            assert raised.value.detail == "SA-key delete outcome is unavailable"
+            assert len(captured) == 1
+            ticket = captured[0]
+
+            # The fresh session still sees the pre-delete row, but restoring
+            # now would become an orphan canonical file if this tx commits.
+            async with SessionLocal() as fresh:
+                assert await fresh.get(SAKey, key_id) is not None
+            assert not storage.sa_key_path(key_id).exists()
+            assert (tmp_path / "sa_keys" / ticket.quarantine_name).exists()
+
+            if eventual_outcome == "commit":
+                await real_commit()
+            else:
+                await real_rollback()
+
         async with SessionLocal() as session:
-            assert await session.get(SAKey, key_id) is not None
-        assert sa_key_vault.read_bytes(storage.sa_key_path(key_id)) == body
+            resolved_row = await session.get(SAKey, key_id)
+        expected = {} if eventual_outcome == "commit" else {key_id: sha}
+        if eventual_outcome == "commit":
+            assert resolved_row is None
+        else:
+            assert resolved_row is not None
+        sa_key_vault.reconcile_delete_quarantines(expected)
+        sa_key_vault.verify_uuid_inventory(expected)
         assert not (tmp_path / "sa_keys" / ticket.quarantine_name).exists()
+        if eventual_outcome == "rollback":
+            assert sa_key_vault.read_bytes(storage.sa_key_path(key_id)) == body
     finally:
-        app.dependency_overrides.pop(get_session, None)
         await _cleanup(project, hostname)
 
 
@@ -285,7 +310,7 @@ async def test_delete_rollback_error_still_restores_from_fresh_live_row(
 async def test_delete_ambiguous_commit_and_rollback_errors_discard_from_fresh_absence(
     monkeypatch, tmp_path
 ):
-    """Fresh DB absence discards quarantine even when rollback also reports failure."""
+    """Rollback uncertainty preserves quarantine until startup sees DB absence."""
     project = f"t4-delete-double-error-{uuid4()}"
     hostname = f"t4-unused-{uuid4()}"
     body = _good_key(project=project)
@@ -328,8 +353,11 @@ async def test_delete_ambiguous_commit_and_rollback_errors_discard_from_fresh_ab
         ticket = captured[0]
         async with SessionLocal() as session:
             assert await session.get(SAKey, key_id) is None
-        assert not (tmp_path / "sa_keys" / ticket.quarantine_name).exists()
+        assert (tmp_path / "sa_keys" / ticket.quarantine_name).exists()
         assert not storage.sa_key_path(key_id).exists()
+        sa_key_vault.reconcile_delete_quarantines({})
+        sa_key_vault.verify_uuid_inventory({})
+        assert not (tmp_path / "sa_keys" / ticket.quarantine_name).exists()
     finally:
         app.dependency_overrides.pop(get_session, None)
         await _cleanup(project, hostname)
