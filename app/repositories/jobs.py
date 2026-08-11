@@ -52,6 +52,7 @@ async def create(
     solver_provider: Optional[str] = None,
     solver_model: Optional[str] = None,
     start_offset_seconds: int = 0,
+    kind: str = "homework",
 ) -> HomeworkJob:
     kwargs: dict[str, Any] = dict(
         book_id=book_id,
@@ -63,6 +64,7 @@ async def create(
         extract_transport=extract_transport,
         judge_transport=judge_transport,
         solver_transport=solver_transport,
+        kind=kind,
     )
     if provider is not None:
         kwargs["provider"] = provider
@@ -120,6 +122,7 @@ async def find_active_for_section(
     *,
     transport: Optional[str] = None,
     output_language: str,
+    kind: str = "homework",
 ) -> Optional[HomeworkJob]:
     """Return the most recent pending/running/done job for the (book, section).
 
@@ -133,12 +136,17 @@ async def find_active_for_section(
 
     `output_language` scopes the lookup so a job in another language is NOT
     adopted — an 'en' batch must never reuse a 'uz' job (spec §language-key).
+
+    `kind` scopes the lookup so a 'teacher_material' launch never adopts a
+    'homework' job (and vice versa). Default 'homework' keeps every existing
+    caller behavior-identical.
     """
     conds = [
         HomeworkJob.book_id == book_id,
         HomeworkJob.toc_entry_id == toc_entry_id,
         HomeworkJob.status.in_(["pending", "running", "done"]),
         HomeworkJob.output_language == output_language,
+        HomeworkJob.kind == kind,
     ]
     if transport is not None:
         conds.append(HomeworkJob.transport == transport)
@@ -1496,6 +1504,7 @@ async def latest_for_section(
     session: AsyncSession, book_id: UUID, toc_entry_id: UUID, *,
     transport: Optional[str] = None,
     output_language: str,
+    kind: str = "homework",
 ) -> Optional[HomeworkJob]:
     """The most recent job for a (book, section, output_language) regardless of
     status — used by relaunch to find a failed/cancelled job to RESUME rather
@@ -1504,10 +1513,15 @@ async def latest_for_section(
     `output_language` scopes the lookup so an EN relaunch over a previously-
     failed UZ section finds the EN job (not the UZ one) and resumes it correctly
     instead of creating a new EN job that would duplicate work.
+
+    `kind` scopes the lookup so a 'teacher_material' relaunch never resumes a
+    'homework' job (and vice versa). Default 'homework' keeps every existing
+    caller behavior-identical.
     """
     conds = [HomeworkJob.book_id == book_id,
              HomeworkJob.toc_entry_id == toc_entry_id,
-             HomeworkJob.output_language == output_language]
+             HomeworkJob.output_language == output_language,
+             HomeworkJob.kind == kind]
     if transport is not None:
         conds.append(HomeworkJob.transport == transport)
     stmt = (select(HomeworkJob).where(*conds)

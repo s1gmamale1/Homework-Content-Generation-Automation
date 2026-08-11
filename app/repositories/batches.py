@@ -34,13 +34,16 @@ async def get_or_create_for_book(
     custom_prompts: Optional[dict] = None,
     selected_phases: Optional[list] = None,
     session_limit_strategy: str = "inherit",
+    kind: str = "homework",
 ) -> Batch:
-    """Race-safe find-or-create THE batch for a (book, transport, output_language)
-    triple (UNIQUE(book_id, transport, output_language) + ON CONFLICT). Core insert
-    bypasses the ORM Python defaults, so id/created_at/updated_at are supplied
-    explicitly. On conflict the existing row is kept (only updated_at is touched)
-    and its id is returned — a different-transport or different-language re-launch
-    forks a new batch."""
+    """Race-safe find-or-create THE batch for a (book, transport, output_language,
+    kind) quadruple (UNIQUE(book_id, transport, output_language, kind) + ON
+    CONFLICT, migration 0054). Core insert bypasses the ORM Python defaults, so
+    id/created_at/updated_at are supplied explicitly. On conflict the existing
+    row is kept (only updated_at is touched) and its id is returned — a
+    different-transport, different-language, or different-kind re-launch forks
+    a new batch. Default kind='homework' keeps every existing caller
+    behavior-identical."""
     insert = pg_insert(Batch).values(
         id=uuid4(),
         book_id=book_id,
@@ -50,6 +53,7 @@ async def get_or_create_for_book(
         model=model,
         transport=transport,
         output_language=output_language,
+        kind=kind,
         extract_transport=extract_transport,
         judge_transport=judge_transport,
         solver_transport=solver_transport,
@@ -79,7 +83,7 @@ async def get_or_create_for_book(
         on_conflict_set["selected_phases"] = insert.excluded.selected_phases
     stmt = (
         insert.on_conflict_do_update(
-            index_elements=["book_id", "transport", "output_language"],
+            index_elements=["book_id", "transport", "output_language", "kind"],
             set_=on_conflict_set,
         )
         .returning(Batch.id)
