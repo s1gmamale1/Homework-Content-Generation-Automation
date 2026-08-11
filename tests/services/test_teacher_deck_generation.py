@@ -23,7 +23,7 @@ import pytest
 
 from app.config import settings as _settings
 from app.schemas.content_json import TeacherDeck
-from app.services import agent, pipeline
+from app.services import agent, phase_judge, pipeline
 from app.services.errors import LeaseLostSignal
 
 FIXTURE_PATH = "tests/fixtures/teacher_deck/hindiston_topic19.json"
@@ -127,13 +127,33 @@ def _phase_result(deck: TeacherDeck) -> agent.PhaseResult:
     )
 
 
+def _clean_judge_result() -> agent.PhaseResult:
+    """A passing Verdict for the fidelity judge's own `agent.run_phase` call
+    (Task 7 — every teacher-deck generation is now followed by one judge
+    call). Task 6's tests here only exercise generation, so this keeps the
+    judge quiet (available, no major issue, zero regens) rather than letting
+    its mocked `run_phase` queue exhaust into a "judge unavailable" warning."""
+    return agent.PhaseResult(
+        text="{}", parsed=phase_judge.Verdict(passed=True, failures=[]),
+        usage={"prompt_tokens": 50, "output_tokens": 20, "cached_tokens": 0,
+               "total_tokens": 70, "raw": {}},
+    )
+
+
+def _deck_gen_calls(calls: list[dict]) -> list[dict]:
+    """The subset of `agent.run_phase` calls that are the deck GENERATION
+    call (`phase_name == "teacher-deck"`), excluding the fidelity judge's own
+    call (`phase_name == "__judge__"`, from `phase_judge.judge`)."""
+    return [c for c in calls if c["phase_name"] == "teacher-deck"]
+
+
 # ===========================================================================
 # 1 + 2 — resilient generation, correct kwargs, content_json persisted
 # ===========================================================================
 
 async def test_teacher_deck_persists_content_json_structured(patch_io):
     deck = _load_deck()
-    patch_io.run_phase_results = [_phase_result(deck)]
+    patch_io.run_phase_results = [_phase_result(deck), _clean_judge_result()]
 
     await pipeline._execute_one_phase(**_make_kwargs())
 
@@ -150,7 +170,11 @@ async def test_teacher_deck_run_phase_called_with_job_provider_model_transport_a
     patch_io,
 ):
     deck = _load_deck()
-    patch_io.run_phase_results = [_phase_result(deck)]
+    # Two run_phase calls now follow generation: the deck GENERATION call,
+    # then the Task 7 fidelity judge's own call (phase_name="__judge__").
+    # The judge result is a clean pass so it doesn't trigger a regen (which
+    # would add a third call) or log a "judge unavailable" warning.
+    patch_io.run_phase_results = [_phase_result(deck), _clean_judge_result()]
 
     kw = _make_kwargs(
         provider="claude", model="claude-opus-4-6", transport="api",
@@ -158,8 +182,9 @@ async def test_teacher_deck_run_phase_called_with_job_provider_model_transport_a
     )
     await pipeline._execute_one_phase(**kw)
 
-    assert len(patch_io.run_phase_calls) == 1
-    call = patch_io.run_phase_calls[0]
+    gen_calls = _deck_gen_calls(patch_io.run_phase_calls)
+    assert len(gen_calls) == 1
+    call = gen_calls[0]
     assert call["provider"] == "claude"
     assert call["model"] == "claude-opus-4-6"
     assert call["transport"] == "api"
@@ -172,7 +197,7 @@ async def test_teacher_deck_never_calls_artifact_from_config(patch_io):
     """boom_artifact_from_config in patch_io raises if it's ever invoked — a
     clean run (no assertion error) proves it wasn't called."""
     deck = _load_deck()
-    patch_io.run_phase_results = [_phase_result(deck)]
+    patch_io.run_phase_results = [_phase_result(deck), _clean_judge_result()]
 
     await pipeline._execute_one_phase(**_make_kwargs())  # would raise if called
 
@@ -193,7 +218,7 @@ async def test_teacher_deck_generates_structured_even_with_kill_switch_off(
     monkeypatch.setattr(_settings, "structured_output_enabled", False)
 
     deck = _load_deck()
-    patch_io.run_phase_results = [_phase_result(deck)]
+    patch_io.run_phase_results = [_phase_result(deck), _clean_judge_result()]
 
     await pipeline._execute_one_phase(**_make_kwargs())
 
