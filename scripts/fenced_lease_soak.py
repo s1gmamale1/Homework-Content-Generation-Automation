@@ -61,6 +61,21 @@ _SECRET_FIELD_PARTS = (
     "password",
     "database_url",
 )
+_FREE_TEXT_ERROR_FIELDS = frozenset(
+    {"error_message", "last_error", "validation_warnings"}
+)
+_SENSITIVE_URL_RE = re.compile(
+    r"(?i)\b[a-z][a-z0-9+.-]*://[^\s\"'<>]+"
+)
+_BEARER_OR_BASIC_RE = re.compile(
+    r"(?i)\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+"
+)
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(?:gemini_api_key|google_api_key|api_key|apikey|access_token|"
+    r"auth_token|password|passwd|secret)\s*[:=]\s*[^\s,;\"']+"
+)
+_GOOGLE_API_KEY_RE = re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b")
+_ERROR_EXCERPT_LIMIT = 240
 _REQUIRED_MODEL_OPERATION_KEYS = frozenset(
     {
         "phase.run",
@@ -2065,15 +2080,51 @@ def _is_secret_field(name: str) -> bool:
     )
 
 
+def _sanitize_sensitive_text(value: str) -> str:
+    sanitized = _SENSITIVE_URL_RE.sub("<redacted-url>", value)
+    sanitized = _BEARER_OR_BASIC_RE.sub("<redacted-auth>", sanitized)
+    sanitized = _SECRET_ASSIGNMENT_RE.sub("<redacted-secret>", sanitized)
+    sanitized = _GOOGLE_API_KEY_RE.sub("<redacted-api-key>", sanitized)
+    return sanitized
+
+
+def sanitize_error_evidence(value: str) -> dict[str, str]:
+    """Return bounded, deterministic diagnostics without the provider envelope."""
+    category = classify_error(value) or ErrorClass.OTHER
+    return {
+        "class": category.value,
+        "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+        "excerpt": _sanitize_sensitive_text(value)[:_ERROR_EXCERPT_LIMIT],
+    }
+
+
+def _sanitize_error_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return sanitize_error_evidence(value)
+    if isinstance(value, list):
+        return [
+            sanitize_error_evidence(item) if isinstance(item, str) else _redact(item)
+            for item in value
+        ]
+    return _redact(value)
+
+
 def _redact(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return {
-            key: _redact(item)
-            for key, item in value.items()
-            if not _is_secret_field(str(key))
-        }
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            name = str(key)
+            if _is_secret_field(name):
+                continue
+            if name.lower() in _FREE_TEXT_ERROR_FIELDS:
+                redacted[key] = _sanitize_error_value(item)
+            else:
+                redacted[key] = _redact(item)
+        return redacted
     if isinstance(value, list):
         return [_redact(item) for item in value]
+    if isinstance(value, str):
+        return _sanitize_sensitive_text(value)
     return value
 
 

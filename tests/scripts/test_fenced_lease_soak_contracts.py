@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
@@ -213,6 +215,74 @@ def test_redacted_model_dump_removes_nested_secrets_but_keeps_safe_identifiers()
     assert "token" not in dumped["evidence"]
     assert dumped["evidence"]["credential_fingerprint"].startswith("gemini:")
     assert dumped["evidence"]["claim_token"] == "safe-lease-id"
+
+
+def test_error_evidence_is_classified_digested_sanitized_and_bounded():
+    raw = (
+        "429 RESOURCE_EXHAUSTED Bearer super-secret-token "
+        "https://user:pass@example.test/path?api_key=query-secret "
+        "GEMINI_API_KEY=AIzaSyKnownSecretMaterial0123456789 "
+        + "x" * 500
+    )
+
+    sanitized = soak.sanitize_error_evidence(raw)
+
+    assert sanitized["class"] == "provider_429"
+    assert sanitized["sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+    assert len(sanitized["excerpt"]) <= 240
+    assert "super-secret-token" not in sanitized["excerpt"]
+    assert "query-secret" not in sanitized["excerpt"]
+    assert "AIzaSyKnownSecretMaterial0123456789" not in sanitized["excerpt"]
+    assert "https://" not in sanitized["excerpt"]
+
+
+def test_artifact_sanitizes_nested_job_phase_usage_and_warning_errors(tmp_path):
+    from tests.scripts.test_fenced_lease_soak_snapshot import (
+        healthy_completed_snapshot,
+        valid_scope,
+    )
+
+    scope = valid_scope(target=1)
+    raw = healthy_completed_snapshot(target=1)
+    raw.jobs[0].error_message = (
+        "Bearer job-secret https://job:pass@provider.test/v1?key=job-query"
+    )
+    raw.jobs[0].last_error = (
+        "GEMINI_API_KEY=AIzaSyJobSecretMaterial01234567890"
+    )
+    raw.phases[0].error_message = (
+        "Basic dXNlcjpwYXNz "
+        "postgresql+asyncpg://phase:secret@db.internal/prod"
+    )
+    raw.phases[0].validation_warnings = ["api_key=warning-secret"]
+    raw.usages[0].error_message = "access_token=usage-secret"
+    writer = soak.ArtifactWriter(tmp_path, scope.run_id)
+
+    writer.append(soak._evidence_sample(scope, raw, [], phase="watch"))
+
+    encoded = writer.samples_path.read_text(encoding="utf-8")
+    for secret in (
+        "job-secret",
+        "job-query",
+        "AIzaSyJobSecretMaterial01234567890",
+        "dXNlcjpwYXNz",
+        "phase:secret",
+        "warning-secret",
+        "usage-secret",
+    ):
+        assert secret not in encoded
+    assert "https://" not in encoded
+    assert "postgresql+asyncpg://" not in encoded
+    sample = json.loads(encoded)
+    snapshot = sample["snapshot"]
+    for value in (
+        snapshot["jobs"][0]["error_message"],
+        snapshot["jobs"][0]["last_error"],
+        snapshot["phases"][0]["error_message"],
+        snapshot["phases"][0]["validation_warnings"][0],
+        snapshot["usages"][0]["error_message"],
+    ):
+        assert set(value) == {"class", "sha256", "excerpt"}
 
 
 def test_scope_loader_supports_stdin_and_rejects_unknown_fields(tmp_path):
