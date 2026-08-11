@@ -17,8 +17,9 @@ class Batch(Base, UUIDPK, Timestamps):
     race-safe (ON CONFLICT) and adoption unambiguous. No status counters: the
     rollup is computed on read (DISTINCT ON over the batch's jobs). provider/model
     are the launch-default label only - per-job provider/model are authoritative.
-    `kind` is pure schema plumbing for now ("homework" default) - nothing
-    consumes it yet."""
+    `kind` ("homework" default vs "teacher_material") scopes which deliverable type
+    the batch belongs to - every read path that resolves the latest job/batch for a
+    section or book is kind-scoped so the two deliverable types stay isolated."""
 
     __tablename__ = "batches"
 
@@ -56,9 +57,10 @@ class Batch(Base, UUIDPK, Timestamps):
     session_limit_strategy: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default="inherit"
     )
-    # Deliverable discriminator: "homework" (default, student packet) vs
-    # "teacher_material" (future teacher deck). Pure schema plumbing here —
-    # nothing consumes `kind` yet.
+    # Deliverable discriminator: "homework" (default, student packet, the
+    # 11-phase flow) vs "teacher_material" (single structured teacher-deck
+    # phase). Part of the batch's widened unique key below; scopes every
+    # section/book/batch read path so the two deliverable types stay isolated.
     kind: Mapped[str] = mapped_column(String(32), nullable=False, server_default="homework")
 
     __table_args__ = (

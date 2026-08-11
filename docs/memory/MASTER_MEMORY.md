@@ -2601,3 +2601,44 @@ read is not evidence of danger, and refusing there would block runs for an unrel
 **Verified live, not just unit-tested:** pointed at `edu_copy` it aborts collection with
 `REFUSING … that is PRODUCTION`; pointed at a local scratch, the 4 real-DB `queue_depth` tests run
 and pass unchanged. Canonical suite **2501 passed / 458 skipped** (+6 = the guard's own tests).
+
+## 0175 — Teacher material: a structured lesson-plan deck deliverable (2026-08-11)
+
+**Branch:** `feat/teacher-material-deck` · **Migration 0054 · acceptance ~$0.13/deck (~$0.40 total, 3 runs).**
+
+**What:** a new job `kind` (`'homework'` | `'teacher_material'`; migration 0054 adds it to
+`homework_jobs` + `batches` and widens the batches unique key to
+`uq_batches_book_id_transport_output_language_kind`) lets an operator launch a per-lesson teacher
+lesson-plan deck, separate from student homework, from the SAME Fleet launcher (a mode toggle)
+reusing the cached `extract`. The deck is generated in ONE schema-validated `transport=api` pass —
+`TeacherDeck` Pydantic schema (`app/schemas/content_json/teacher_deck.py`),
+`agent.run_phase(schema=)`, resilience via `_run_with_failover`, bypasses the
+`structured_output_enabled` kill switch + markdown fallback, `SchemaValidationExhausted` fails
+loudly — stored as `phase_outputs.content_json` (`authoring_mode="structured"`), and gated by a
+factual-fidelity judge (a serialized-deck view + a `contract_override` fidelity contract, NOT
+`get_prompt` which misses `teacher-deck` by design) with regen-once + retry-once-on-unavailable +
+fail-open. Resume is idempotent (`_done_phase_md` counts `content_json`-bearing done rows with
+empty `output_md`).
+
+**Cross-kind isolation is complete** — every section/book/batch read path is kind-scoped (repos
+`find_active_for_section`/`latest_for_section`/`latest_by_section`, `get_or_create_for_book` + ON
+CONFLICT target, `subject_coverage.job_status_by_book` + `batch_by_book`, `notion_archive.archive_job`
+skip, `books` TOC enrichment via `GET /books?kind=`, FE `kindBatches`/`bookFleetStatus`) — and
+homework is byte-identical (server_default `'homework'` backfills existing rows).
+
+**FE:** launcher mode toggle + kind-aware batch identity + teacher-mode TOC status, a `/deck/:id`
+slide viewer (generic content-complete assembly — no stage-count/quiz-count/language assumption
+after the `/kviz/`/`/juft/` title regex was removed for ru-deck safety), and PDF export via print
+CSS + `window.print()`.
+
+**Acceptance:** 3/3 real `gemini-3.5-flash` api decks schema-valid, `lesson_map` minutes=45, ZERO
+fidelity violations (Narasimxa Rao / 1992 grain export / IT-2nd / 2017 figures all trace to the
+extract), **~$0.13/deck** (~$0.40 total, 3 runs). Rebased onto #132 batch-launch-stagger (both
+features coexist in `batch.py`/`jobs.py`). Suite **2557/483**, FE tsc-0 + build clean, real-DB
+teacher-material + books-kind + kind-threading green.
+
+**Downgrade caveat:** migration 0054's `downgrade()` recreates the narrow 3-col batch unique key and
+will raise if a book has BOTH a homework and a teacher_material batch on the same (transport,
+output_language) after the feature is used (the upgrade path is data-safe).
+
+No production writes (scratch DB + read-only extract fetch; smoke script left untracked).

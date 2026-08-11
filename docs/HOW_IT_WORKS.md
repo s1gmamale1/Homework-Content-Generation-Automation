@@ -568,6 +568,28 @@ The download endpoint zips those per-phase markdown files on demand. *(An earlie
 a `_render_homework_md` assembler writing `homework_jobs.assembled_md`; both were removed in
 the markdown-per-phase reshape.)*
 
+### Teacher-material deck (worklog 0175)
+A second deliverable kind, launched from the SAME pipeline via a discriminator column,
+`homework_jobs.kind` (`'homework'` default | `'teacher_material'`). A teacher-material job runs a
+single content phase, `teacher-deck`, instead of the 11-phase student flow: it reuses the job's
+already-computed `extract` (cross-job cache included — a teacher deck for a lesson that already has
+a homework job for-free reuses that extract) and calls `agent.run_phase(schema=TeacherDeck)` under
+`_run_with_failover` — a schema-validated `transport=api` structured call that deliberately bypasses
+the `structured_output_enabled` kill switch and the markdown fallback (a teacher deck with no
+schema is not a degraded deck, it's a failed job — `SchemaValidationExhausted` propagates). The
+validated `TeacherDeck` (cover, passport, Bloom objectives, core idea, a 45-minute stage-by-stage
+lesson map, a 5-question quiz + answer key, pair work, conclusion, rubric) lands in
+`phase_outputs.content_json` with `authoring_mode="structured"` — no markdown is generated for this
+phase. It then passes through a **factual-fidelity gate**: the deck is serialized to text and graded
+by `phase_judge.judge(lesson_context=<extract>)` under a purpose-written `contract_override` fidelity
+contract (not the normal `get_prompt` lookup, which has no `teacher-deck` contract by design), with
+one regen-on-major and fail-open on judge unavailability. The FE renders the finished deck at
+`/deck/:id` (a generic slide assembly — front-matter → stages → quiz → answer key → rubric, robust
+to language/stage-count rather than template-exact) with PDF export via `@media print` +
+`window.print()`. Every batch/book/section read path (adoption, resume, coverage rollups, Notion
+archive) is `kind`-scoped so a teacher-material launch can never be mistaken for, or silently
+absorbed into, a homework batch.
+
 ### Teaching-equivalence audit (worklog 0148, offline)
 The judge (§ above) and the extract coverage-contract (#84) both grade a packet against
 **itself** or its own extract — neither ever asks "does this packet actually teach what the
