@@ -334,7 +334,10 @@ No UUIDPK/Timestamps mixins — intentionally minimal.
 
 ### 3.10 `sa_keys` — pool of uploaded GCP service-account keys (migration 0041)
 
-The DB row holds **metadata only**; the raw JSON bytes live on disk at `<var_dir>/sa_keys/<id>.json` (never in the DB).
+The DB row holds **metadata only**; the raw JSON bytes live on disk at
+`<var_dir>/sa_keys/<id>.json` (never in the DB). This hardening changes no
+schema. The filesystem and DB are joined by explicit fail-closed invariants,
+not a claim of cross-resource atomicity.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -348,7 +351,38 @@ The DB row holds **metadata only**; the raw JSON bytes live on disk at `<var_dir
 | `created_at` | timestamptz NOT NULL | |
 | `max_concurrent_calls` | Integer NULL, CHECK `IS NULL OR >= 1` (migration 0047) | per-project override for the BE-16 fleet credential limiter (§3.12); `NULL` = no override, falls back to the provider env default. `PATCH /sa-keys/{id}` writes this **project-wide** (every row sharing this key's `project_id`, since `project_id` is not unique) so two keys for one project can never disagree. |
 
-Uploaded via `POST /sa-keys` (multipart; validated by `sa_key_validate.parse_and_validate_sa_key` — must be `type=="service_account"` with non-empty `project_id`/`client_email`/`private_key`, else 422). Downloaded via `GET /sa-keys/{id}/download` (**header-auth only** — rejects `?token=`; 503 when `AUTH_TOKEN` is empty; raw bytes). Listed via `GET /sa-keys` (metadata + `worker_count`; **since BE-16 also `slots_in_use`** — live in-flight count from `credential_slots` — **and `effective_limit`** — the resolved cap, override or provider default; never returns `private_key`). Deleted via `DELETE /sa-keys/{id}` (409 if still assigned to any host). Edited via **`PATCH /sa-keys/{id}`** (`{max_concurrent_calls: int|null}`, `ge=1` or null — the concurrency override; evicts the limiter's resolve-limit cache for this credential so the new value applies immediately in this process, not after the ~60s TTL — other fleet processes still lag up to that TTL).
+Every `/api/v1/sa-keys*` endpoint is protected by one strict parent-router
+dependency: exact `Authorization: Bearer` only, query tokens always rejected,
+and 503 when no operator token is configured even in explicit local-dev mode.
+Upload is multipart and validated by
+`sa_key_validate.parse_and_validate_sa_key` (`type=="service_account"` and
+non-empty `project_id`/`client_email`/`private_key`, else 422). Download returns
+raw bytes but never a parsed `private_key` field. List returns metadata plus
+`worker_count`, `slots_in_use`, and `effective_limit`. `PATCH` changes the
+project-wide concurrency override and evicts this process's limiter cache.
+
+**Vault contract.** `<var_dir>/sa_keys` is exactly `0700` on POSIX and every
+regular file is `0600`; Windows uses a protected DACL with one full-control ACE
+for the running process-token SID. Reads, permission checks, ACL changes,
+hashes, and mutations stay anchored to a verified directory fd or already-open
+Windows handle. Symlinks, reparse points, hardlinks, directories/special files,
+identity swaps, files outside the vault, and access-denied fallbacks are
+rejected. Writes use a private same-directory exclusive temp, flush/fsync,
+rehash and type/link verification, atomic write-through replacement, destination
+verification, and directory fsync where available. Existing bytes are preserved
+when hardening permissions.
+
+**DB/file consistency.** Upload dedup is DB-atomic. If its COMMIT raises, the
+canonical UUID bytes remain as evidence: eventual commit is coherent; eventual
+rollback leaves an orphan that head startup rejects for manual resolution.
+Delete locks the key, rechecks assignments, verifies the canonical SHA, and
+renames that exact file to a private same-vault delete quarantine before the DB
+delete/commit. Commit success discards it; every COMMIT exception retains it.
+Head startup alone reconciles exact recognized quarantines from settled DB
+state, then verifies every expected UUID file and rejects missing, mismatched,
+orphan, or unresolved entries. Assignment also locks the key and verifies the
+canonical file SHA before changing host state. Request handlers never infer a
+COMMIT outcome from a follow-up read.
 
 ### 3.11 `sa_key_assignments` — per-hostname key assignment
 

@@ -56,9 +56,13 @@ Do this once per PC. After that, the PC generates on its own forever.
 2. **Copy one file** onto the PC: `docker-compose.worker.yml`.
 
 3. **Point the worker at the head for textbooks.** Set `FLEET_HEAD_URL` to the
-   head's API (e.g. `http://<HEAD_IP>:8000`) plus a matching `AUTH_TOKEN` — a
+   head's API (e.g. `http://<HEAD_IP>:8000`) plus the same strong `AUTH_TOKEN`
+   used by the head and `ALLOW_INSECURE_LOCAL_AUTH=false` — a
    worker that's missing a book's PDF now **fetches it from the head on demand**
    and caches it locally (ROADMAP R13, shipped). No manual copying needed.
+   Empty, weak, historical `123`, or mixed weak+strong token configuration now
+   refuses standalone-worker startup. Never enable anonymous local mode on a
+   fleet worker.
    *(Alternative: mount a shared `var/books` folder on the PC and skip
    `FLEET_HEAD_URL` — the worker reads the PDF straight off disk.)*
 
@@ -128,7 +132,24 @@ must be THIS machine's path**) and `ANTHROPIC_API_KEY` (claude) — still work a
 A worker missing a credential simply **never claims jobs that need it** (it
 logs which side is missing at startup) — cli jobs are unaffected.
 
-**SA key distribution (Fleet → Keys panel):** instead of copying `.json` files manually, upload each service-account key once from the web UI (Fleet → Keys). The head stores the key and you assign it to a worker hostname from the same panel. The worker then downloads and applies the key automatically on the next startup or main-loop tick — no manual `.env` edit and no restart needed. Applying the key writes `<var_dir>/sa_keys/active.json`, updates `GOOGLE_APPLICATION_CREDENTIALS`/`GOOGLE_CLOUD_PROJECT` in the process environment and the worker's `.env`, and recomputes the capability flags so a previously keyless idle worker starts claiming gemini-api jobs immediately. The download endpoint requires a real `AUTH_TOKEN` and never exposes the `private_key` field — keep `AUTH_TOKEN` a genuine secret when using SA key distribution (it is a credential vault endpoint).
+**SA key distribution (Fleet → Keys panel):** instead of copying `.json` files manually, upload each service-account key once from the web UI (Fleet → Keys). The head stores the key and you assign it to a worker hostname from the same panel. The worker then downloads and applies the key automatically on the next startup or main-loop tick — no manual `.env` edit and no restart needed. Applying the key writes `<var_dir>/sa_keys/active.json`, updates `GOOGLE_APPLICATION_CREDENTIALS`/`GOOGLE_CLOUD_PROJECT` in the process environment and the worker's `.env`, and recomputes the capability flags so a previously keyless idle worker starts claiming gemini-api jobs immediately. The complete SA-key API is header-only; `?token=` is rejected on list/upload/download/assignment/scrub alike, and the vault stays closed in anonymous local mode. Credential-file reads/writes now use the private atomic vault service rather than direct path I/O.
+
+**Operator-token rotation is a coordinated hard cut.** Follow
+[`docs/runbooks/operator-token-rotation.md`](../runbooks/operator-token-rotation.md):
+keep the global pause (never overwrite/clear a foreign reason), drain running
+jobs, stage one strong token everywhere, let the operator restart the head,
+verify head health + automatic version floor, and only then perform rolling
+worker restarts. Attest every online model-calling process—two processes on one
+PC count twice—by code SHA/version, non-disclosing token fingerprint,
+concurrency, capabilities, and heartbeat. Offline stragglers remain
+version-fenced and, where applicable, tombstoned until updated; powered off is
+not rollout-complete.
+
+Token rotation does not change credential ownership. Preserve assignment rows,
+all six stored Vertex objects, Host-59's existing assignment/scrub state, every
+plain `GEMINI_API_KEY`, and active Vertex files byte-for-byte. Automation may
+prepare worker files/restarts under the global pause, but it must not kill or
+restart the user-owned head process.
 
 **Two required one-time settings in `~/.gemini/settings.json` on every worker:**
 

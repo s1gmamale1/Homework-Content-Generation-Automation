@@ -808,7 +808,11 @@ dialog).
 
 `main.py` builds the FastAPI app, mounts the API under `/api/v1`, and — if the React app has
 been built into `web/dist` — serves that too (with a catch-all so client-side routes work on
-refresh). On startup it loads prompts, sweeps orphaned rows, and starts the embedded worker.
+refresh). Executable startup first validates operator auth and hardens the SA-key vault; the
+head then reconciles delete quarantines and verifies the DB/file inventory. Only after those
+fail-closed gates does it load prompts, sweep orphaned rows, stamp the fleet version floor,
+start listeners, and start the embedded worker. Standalone workers run the same auth/vault
+preflight before heartbeat or claim activity.
 
 Key endpoints:
 - `POST /books` — upload a PDF (+ subject). Saves to disk, starts TOC extraction in the
@@ -1005,10 +1009,24 @@ on receipt — jobs from `phase_outputs` + `job.error_message`, books via the sh
 stream ends cleanly across processes too.
 
 ### Auth
-Bearer token (`Authorization: Bearer <token>`), or `?token=` for the streaming/download
-routes. Valid tokens are a comma-separated list in the `AUTH_TOKEN` env var. **Empty
-`AUTH_TOKEN` disables auth entirely** (everything becomes `user="anonymous"`) — fine for
-local dev.
+Production requires strong comma-separated values in `AUTH_TOKEN`; unset, empty, weak,
+malformed, duplicate, or mixed weak+strong configuration refuses process startup. Normal
+REST uses `Authorization: Bearer <token>`. Exact `?token=` auth remains only on intended
+normal streaming/source-download routes whose clients cannot set a header.
+
+The complete `/api/v1/sa-keys*` router is stricter: header-only Bearer auth, no query-token
+fallback, and no anonymous local mode. Explicit local development requires exactly
+`AUTH_TOKEN=` with `ALLOW_INSECURE_LOCAL_AUTH=true`; this permits anonymous normal routes
+but the SA-key router still returns 503 without configured tokens.
+
+The credential bytes live in a private `<VAR_DIR>/sa_keys` vault. Startup enforces a private
+directory and private regular single-link files, reconciles exact delete quarantines from
+settled DB state, and rejects missing, mismatched, orphaned, linked, reparse, or non-regular
+entries. Writes are same-directory, flushed, rehashed, and atomically replaced. Key bytes
+are never stored in Postgres. See
+[`docs/runbooks/operator-token-rotation.md`](runbooks/operator-token-rotation.md) for the
+paused hard cut from `123`: the operator restarts the head, automation only prepares and
+attests, every worker process rolls afterward, and a foreign pause is never cleared.
 
 ---
 

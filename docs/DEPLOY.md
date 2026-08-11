@@ -15,7 +15,7 @@ Same image serves both. Pick a topology by setting environment variables.
 
 ```bash
 cp .env.example .env
-# edit .env: set AUTH_TOKEN=... (and the transport=api keys only if you use api jobs)
+# edit .env: set a strong AUTH_TOKEN (and transport=api keys only if needed)
 docker compose up
 ```
 
@@ -46,7 +46,8 @@ not `localhost:8000`. (For a bare local run without Traefik, publish port 8000 y
 > env vars above still work as a **fallback/legacy** path, but the Keys UI is the recommended
 > mechanism for a fleet.
 | `GEMINI_MODEL` | no | `gemini-2.0-flash-exp` | Vestigial (unread by the runtime). The *extract pin* `EXTRACT_MODEL` is separately `gemini-2.5-flash`. |
-| `AUTH_TOKEN` | **strongly recommended** | `"123"` | Code default is the literal token `"123"` (`config.py`); `.env.example` ships `AUTH_TOKEN=` (empty) which **disables** auth (every request `user="anonymous"`). ⚠️ A bare-metal run with no `.env` entry gets `"123"` — auth silently ON with a guessable token. Set this to a strong value. |
+| `AUTH_TOKEN` | **yes** (except explicit local dev) | empty / startup refusal | Every comma-separated member must be a strong ASCII URL-safe token. Empty, weak, malformed, duplicate, or mixed weak+strong values refuse head and standalone-worker startup. Rotate an existing fleet with [`docs/runbooks/operator-token-rotation.md`](./runbooks/operator-token-rotation.md); never bridge with `123,<strong>`. |
+| `ALLOW_INSECURE_LOCAL_AUTH` | no | `false` | `true` permits only the exact empty-token state for explicit local development. It never opens any `/api/v1/sa-keys*` route, which remains header-only and returns 503 without configured tokens. |
 | `WORKER_CONCURRENCY` | no | `4` | Embedded worker job concurrency. Set `0` in API-only pods. |
 | `COST_CAP_BATCH_USD` | no | `0` | Per-batch API spend cap in USD. `0` disables the check. When a batch's api spend exceeds this, the budget monitor pauses it (`batches.paused_at`/`paused_reason`) so no further api jobs from that batch are claimed. The pause reason is set to `"batch-cap"`. |
 | `COST_CAP_FLEET_DAILY_USD` | no | `0` | Fleet-wide rolling 24h api spend cap in USD. `0` disables. When the 24h api spend across all jobs exceeds this, the budget monitor sets the `budget_state` singleton's `api_paused_at`, blocking all api-transport jobs across the entire fleet. The pause reason is set to `"fleet-daily-cap"`. |
@@ -263,7 +264,8 @@ Behind an ALB, point the target group at the `api` task. Use RDS Postgres. Run `
 
 ## Pre-launch checklist
 
-- [ ] `AUTH_TOKEN` set to a strong random value (or comma-separated list for multiple services)
+- [ ] `AUTH_TOKEN` set to a strong random value (or strong comma-separated values); `ALLOW_INSECURE_LOCAL_AUTH=false`
+- [ ] Existing fleets use the [operator-token hard-cut runbook](./runbooks/operator-token-rotation.md): preserve any foreign global pause, drain, stage one token everywhere, operator-restart head first, then roll/attest every worker process
 - [ ] `ENABLE_DOCS=false`
 - [ ] Judge/extract model selection reviewed at **`/settings`** (DB-backed `launch_defaults` singleton, migration 0037). Seed defaults: judge = gemini/gemini-2.5-flash, extract = gemini/gemini-2.5-flash, `toc_transport=cli`. **⚠ On an all-Vertex head** (Vertex SA creds only, no gemini CLI OAuth): flip `toc_transport→api` at `/settings` immediately after first deploy, or book-upload TOC extraction fails. `EXTRACT_MODEL`/`EXTRACT_PROVIDER`/`JUDGE_MODEL`/`JUDGE_PROVIDER`/`EXTRACT_TOC_TRANSPORT` env vars are **deleted** — do not set them. (`GEMINI_MODEL` is also vestigial — nothing reads it.)
 - [ ] Vertex/SA keys distributed via the head's **Fleet → Keys** UI (upload once, assign per worker hostname; workers boot keyless). Env-var creds (`GOOGLE_APPLICATION_CREDENTIALS`/`GOOGLE_CLOUD_PROJECT`/`GEMINI_API_KEY`/`ANTHROPIC_API_KEY`) remain a fallback/legacy option.
@@ -310,6 +312,15 @@ These aren't wired yet but the data is in the DB / logs — easy to add a `/metr
 **Draining a worker / taking a PC offline gracefully.** `POST /api/v1/workers/{pc_id}/drain` tells the worker to stop claiming new jobs and finish its in-flight work before quitting. The worker polls its own status on every registry heartbeat (`heartbeat_seconds`, default 30s); when it sees `draining` it calls `stop()` and does NOT write `"online"` back (which would clobber the signal). Use `POST /api/v1/workers/{pc_id}/undrain` to cancel. Once all in-flight jobs on that PC finish, the worker process exits cleanly.
 
 **Head restart is now fleet-safe.** As of Cluster 5 / P1, the API startup orphan sweep is peer-aware: it resets-all `running` jobs to `pending` only when the `workers` table shows no live peers (single-host fast recovery, behavior unchanged); when live peers are present, only jobs whose lease is older than `RECLAIM_STALE_SECONDS` are reset. This means restarting the head/API pod no longer yanks a peer worker's freshly-heartbeated jobs.
+
+**Operator-token changes are hard cuts.** Startup rejects the old `123` value
+even when it appears beside a strong value. Keep generation paused and drained,
+stage the same new token everywhere, then let the operator restart the head;
+only after head health and its automatic version-floor stamp may workers be
+rolled. Old workers receive 401 during that paused mismatch window. Automation
+must not kill/restart the user-owned head. Follow
+[`docs/runbooks/operator-token-rotation.md`](./runbooks/operator-token-rotation.md),
+including owner-scoped unpause and the six-key/Host-59 preservation checks.
 
 **SPA + auth.** If `AUTH_TOKEN` is set but the SPA's sessionStorage has no token, every page load redirects to `/login`. The login form takes a token; paste-and-submit. In production, the upstream service either (a) injects the bearer token via reverse proxy, or (b) hands the token to the SPA via postMessage / URL fragment / iframe init.
 
