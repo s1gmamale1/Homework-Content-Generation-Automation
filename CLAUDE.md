@@ -162,8 +162,9 @@ an operational hard cut, follow
 Its temporary floor is checked above every reported process version and every
 configured `WORKER_CODE_VERSION`, while its final floor remains at least the
 deployed target. A known unreachable host with no readable/bounded effective
-version and override is an unconditional stop unless independently parked
-outside worker-local code; an SA scrub tombstone alone is not such a fence.
+version, startup target, environment, and override unconditionally aborts the
+rotation. Bring it reachable or complete a separately authorized decommission,
+then restart preflight; preserve tombstones without counting them as proof.
 
 ## Things not to do
 

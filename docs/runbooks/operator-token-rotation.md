@@ -64,22 +64,17 @@ An unexpected or ahead override is a stop condition even though its numeric
 value participates in fence sizing: explain it, remove/correct it, restart the
 affected process, and repeat the inventory. An invalid or unreadable override is
 also a stop condition; do not trust the heartbeat as a substitute. A known
-offline/unreachable host whose effective code, service configuration, or
-override cannot be read and bounded is an **unconditional STOP** for this
-rotation.
+offline/unreachable host whose effective code, startup target, service
+environment, or override cannot be read and bounded is an **unconditional
+ABORT** for this rotation.
 
-The only parking exceptions are independently verified controls outside that
-worker binary: a disabled supervisor/scheduled task with durable proof, explicit
-network/DB isolation, or a head-side mechanism that the old worker code cannot
-bypass. A DB **SA scrub tombstone alone never qualifies**—the scrub claim gate is
-worker-local, so an older binary or ahead override may ignore it and claim.
-
-An exact-binary proof is acceptable only when the SHA proves both its version
-gate and scrub/tombstone claim gate, and its `WORKER_CODE_VERSION` override is
-readable and bounded. Otherwise abort until the host is reachable or an external
-park is independently established. Preserve that external park after the final
-reopen until the host is updated and attested. Do not create or dismiss a
-provider-credential scrub as part of this auth rotation.
+Bring it reachable and verify every field, or complete a separately authorized
+decommission procedure outside this rotation. Then restart this runbook from
+preflight; never resume from a partially collected inventory. Preserve existing
+tombstones, but never count them as rotation proof: their claim gate is
+worker-local and an older or overridden binary can ignore it. This runbook does
+not create, dismiss, or use a tombstone, asserted shutdown, stale SHA, or network
+claim as a substitute for direct verification.
 
 Calculate the two checked values using the production helper. Populate the two
 lists only from the reconciled evidence above; do not paste the example values:
@@ -335,10 +330,11 @@ token fingerprint is the published `auth_token_fingerprint`, compared exactly
 to the expected value—not a hostname-level inference.
 
 If a PC runs two model-calling processes, attest both. Any missing/`None`/`local-dev`
-fingerprint or mismatch is a hard stop. An offline host is not rollout-complete:
-leave it fenced by the version floor and any independently verified external
-park until it is updated and attested. A worker-local SA tombstone is only
-supplemental evidence. Do not remove an offline fence to inflate capacity.
+fingerprint or mismatch is a hard stop. If any known host becomes unreachable
+or its startup environment becomes unreadable, abort without lowering the
+temporary floor and restart from preflight only after reachability is restored
+or a separate decommission completes. Preserve existing tombstones but do not
+count them as evidence and do not remove one to inflate capacity.
 
 ## 9. Post-rotation verification
 
@@ -403,9 +399,8 @@ If `pause_owned=false`, emit no clearing SQL and **do not restore or lower the
 temporary floor**. The foreign pause does not block CLI claims, so lowering the
 all-claim fence would silently reopen generation. Record a fence handoff with
 `foreign_pause_reason`, `foreign_pause_at`, the prior-floor snapshot, temporary
-floor, final floor, attested process set, expected fingerprint, and retained
-offline external-parking evidence. The foreign owner must explicitly accept the
-fence handoff.
+floor, final floor, attested process set, and expected fingerprint. The foreign
+owner must explicitly accept the fence handoff.
 The accepting owner then performs this floor-only transition:
 
 ```sql
@@ -424,10 +419,10 @@ COMMIT;
 ```
 
 That handoff transaction deliberately leaves the foreign pause untouched. Only
-after either final transaction commits may eligible claiming resume. Offline
-stragglers below `final_floor` remain stale, and unbounded/unreachable hosts keep
-their independently enforced external park. Re-enable any maintenance-disabled
-supervisor policy only after its worker is already running and attested.
+after either final transaction commits may eligible claiming resume. Every
+known host must still be reachable and attested at this point; otherwise the
+final transaction is prohibited. Re-enable any maintenance-disabled supervisor
+policy only after its worker is already running and attested.
 
 ## Rollback
 

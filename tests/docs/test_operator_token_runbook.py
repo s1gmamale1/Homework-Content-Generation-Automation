@@ -113,18 +113,35 @@ def test_rotation_inventories_every_effective_version_and_host_override() -> Non
         "unexpected or ahead override",
         "unreadable override",
         "abort the rotation",
-        "unconditional STOP",
-        "SA scrub tombstone alone never qualifies",
-        "disabled supervisor/scheduled task with durable proof",
-        "network/DB isolation",
-        "head-side mechanism that the old worker code cannot bypass",
-        "exact-binary proof",
-        "SHA proves both its version gate and scrub/tombstone claim gate",
-        "override is readable and bounded",
+        "unconditional ABORT",
+        "Bring it reachable and verify",
+        "separately authorized decommission procedure outside this rotation",
+        "restart this runbook from preflight",
+        "Preserve existing tombstones, but never count them as rotation proof",
         "2_147_483_647",
     ):
         assert required in document
     assert "already be **tombstoned/parked before proceeding**" not in document
+
+
+def test_offline_host_rule_has_no_waiver_or_tombstone_escape() -> None:
+    """Catches reintroducing a route around reachability/env verification."""
+
+    document = re.sub(r"\s+", " ", _text(RUNBOOK))
+    offline_rule = document.split(
+        "A known offline/unreachable host", 1
+    )[1].split("Calculate the two checked values", 1)[0].casefold()
+    for forbidden in (
+        "unless",
+        "exception",
+        "waiv",
+        "proceed if tombstoned",
+        "exact-binary",
+        "network/db isolation",
+        "head-side mechanism",
+        "disabled supervisor",
+    ):
+        assert forbidden not in offline_rule
 
 
 def test_final_reopen_never_drops_below_the_deployed_target() -> None:

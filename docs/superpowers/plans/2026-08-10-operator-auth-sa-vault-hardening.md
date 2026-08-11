@@ -1228,10 +1228,9 @@ Tests must require:
 1. snapshot prior pause + floor metadata; acquire the API pause only if unpaused;
 2. inventory every online/retained/offline-known process plus each protected
    service's configured `WORKER_CODE_VERSION`; reject unexpected/ahead/unreadable
-   overrides; an unreachable unbounded host is an unconditional stop unless an
-   independently verified outside-worker park exists (SA tombstone alone is
-   insufficient), or exact SHA proves both local gates and its override is
-   readable/bounded;
+   overrides; any known unreachable host or unreadable startup target/env is an
+   unconditional abort with no in-runbook exception—restore reachability or
+   finish a separately authorized decommission, then restart preflight;
 3. calculate checked `final_floor=max(prior or 0,target)` and a temporary floor
    above every prior/target/reported/override version, then install it with
    expected pause/floor predicates and stamped owner;
@@ -1247,9 +1246,9 @@ Tests must require:
 9. one final transaction that sets the final floor and clears only an owned
    `operator-auth-rotation` pause; an inherited foreign pause keeps the temporary
    floor until its owner explicitly accepts a recorded floor-fence handoff;
-10. offline pre-target workers remain stale and retain any independently
-   enforced external park after reopen; rollback never restores `123` or selects
-   a build lacking Tasks 1–6 hardening.
+10. every known host remains reachable through final reopen; existing tombstones
+   are preserved but never accepted as rotation proof; rollback never restores
+   `123` or selects a build lacking Tasks 1–6 hardening.
 
 Extract every SQL clearing block and require the complete owner + temporary-floor
 predicate. An appended unscoped clear, API-pause-only fence, hostname-only drain,
@@ -1260,13 +1259,13 @@ fingerprint, or early floor lower must turn RED.
 
 State why `api_paused_at` is insufficient (CLI claims pass). Inventory all
 registry/process versions and every service-file override first; an unreachable
-host with no proven bound is an unconditional stop unless durable supervisor,
-network/DB, or old-code-proof head-side isolation exists. A worker-local SA
-tombstone never qualifies by itself; exact-binary proof additionally requires a
-readable/bounded override. Keep any external park after reopen. Keep the checked
-temporary floor through drain, head restart, worker restart, and attestation.
-Stop/restart
-worker processes, not hostnames; require the head at `WORKER_CONCURRENCY=0`.
+host or unreadable startup target/env is an unconditional abort. This runbook
+has no tombstone, SHA, supervisor, network, or other reachability exception:
+restore direct verification or complete a separately authorized decommission,
+then restart from preflight. Preserve existing tombstones without counting them
+as evidence. Keep the checked temporary floor through drain, head restart,
+worker restart, and attestation. Stop/restart worker processes, not hostnames;
+require the head at `WORKER_CONCURRENCY=0`.
 Use `status IN ('running','cancelling')`, `credential_slots=0`, and runtime task
 exit. Do not treat terminal jobs as proof because Notion archival is post-done.
 Use `harden_vault` + `snapshot_uuid_inventory`; generate the token into a `0600`
@@ -1416,10 +1415,11 @@ summary must not be used as a shorter substitute.
    pause and version-floor metadata. Acquire `operator-auth-rotation` only when
    unpaused; otherwise preserve the foreign pause and mark `pause_owned=false`.
    Inventory every registry/process effective version and every service-file
-   override. An unreachable unbounded host stops the operation unless durable
-   outside-worker isolation is independently proven; worker-local SA tombstones
-   alone never qualify. Install a checked temporary floor strictly above every
-   proven value using full expected-state predicates.
+   override. Any unreachable host or unreadable startup target/env aborts the
+   operation; restore reachability or finish a separate decommission, then
+   restart preflight. Existing tombstones are preserved but never count as
+   proof. Install a checked temporary floor strictly above every proven value
+   using full expected-state predicates.
 2. **Drain every model-calling process, not merely jobs or hostnames.** Disable
    supervisor restarts, drain/stop every online worker process (including any
    embedded head worker), stage `WORKER_CONCURRENCY=0` on the head, and require
@@ -1441,15 +1441,15 @@ summary must not be used as a shorter substitute.
 6. **Restart and attest every worker process behind the same floor.** Require
    each full process-ID heartbeat to publish the exact expected token-set
    fingerprint, target version/SHA, concurrency, and unchanged credential
-   posture. Offline hosts remain floor-fenced and retain any independently
-   enforced external park.
+   posture. Any host that becomes unreachable aborts the operation without
+   lowering the temporary floor.
 7. **Reopen only with exact ownership.** When `pause_owned=true`, one
    expected-state transaction sets the stamped final floor to
    `max(prior,target)` and clears only this operation's pause. When a foreign
    pause was inherited, clear nothing and lower no floor until that owner
    explicitly accepts the recorded handoff; its floor-only transition predicates
-   on the exact foreign pause and temporary-floor owner. Offline pre-target
-   workers remain stale, and externally parked hosts remain isolated.
+   on the exact foreign pause and temporary-floor owner. Every known host must
+   remain reachable and attested through this final gesture.
 8. **Rollback remains equally fenced.** Keep the temporary all-claim floor and
    zero-task drain. Default to a sealed strong replacement on current hardened
    code; use a code fallback only when a predesignated reviewed build retains

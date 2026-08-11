@@ -1030,8 +1030,9 @@ attests, every worker process rolls afterward, and a foreign pause is never clea
 temporary all-claim floor is checked above every reported process version and configured
 `WORKER_CODE_VERSION`; the final floor never drops below the deployed target, so offline
 pre-target workers stay stale. A known unreachable host with no readable/bounded effective
-version and override stops the rotation unless an outside-worker supervisor/network/DB/head
-fence is independently proven; a worker-local SA tombstone alone is insufficient.
+version, startup target, environment, and override aborts the rotation without exception.
+Bring it reachable or complete a separately authorized decommission, then restart preflight;
+existing tombstones are preserved but never accepted as rotation proof.
 
 ---
 

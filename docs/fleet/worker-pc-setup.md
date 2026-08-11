@@ -140,10 +140,10 @@ preserve any foreign API pause, then install a temporary version floor above
 the target code, every effective reported process version, and every configured
 `WORKER_CODE_VERSION` because the API pause does not block CLI claims. Reject
 unexpected/unreadable overrides; an unreachable host without a proven bound
-stops the rotation unless durable parking outside that worker process is
-independently proven (disabled supervisor/schedule, network/DB isolation, or a
-head-side gate old code cannot bypass). An SA scrub tombstone alone never
-qualifies. Drain and stop every worker process
+or readable startup target/environment aborts the rotation without exception.
+Bring it reachable or complete a separately authorized decommission, preserve
+any tombstone without counting it as evidence, and restart preflight. Drain and
+stop every worker process
 (terminal DB rows alone do not prove post-done Notion work ended), require zero
 limiter slots, and stage one strong token everywhere with
 `WORKER_CONCURRENCY=0` on the head. The operator restarts the head; workers then
@@ -151,10 +151,9 @@ restart behind the unchanged floor and publish the exact expected
 `auth_token_fingerprint`. Attest every online model-calling process—two
 processes on one PC count twice—by code SHA/version, fingerprint, concurrency,
 capabilities, and heartbeat. Offline stragglers remain
-version-fenced and retain any independently enforced external park until
-updated; the final floor
-stays at `max(prior,target)`, never the stale prior value. Powered off is not
-rollout-complete.
+version-fenced, but the rotation cannot continue while any known host is
+unreachable. The final floor stays at `max(prior,target)`, never the stale prior
+value. Powered off is not rollout-complete.
 
 Token rotation does not change credential ownership. Preserve assignment rows,
 all six stored Vertex objects, Host-59's existing assignment/scrub state, every

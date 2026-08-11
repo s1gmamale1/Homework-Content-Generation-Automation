@@ -318,11 +318,11 @@ even when it appears beside a strong value. The API budget pause is not a global
 claim fence (CLI jobs still pass), so install a temporary version floor above
 the target version **and every reported/configured process version**, including
 `WORKER_CODE_VERSION` overrides; an unreachable host without a proven bound
-stops the rotation unless a durable supervisor/scheduled-task, network/DB, or
-old-code-proof head-side fence is independently verified. A worker-local SA
-tombstone alone never qualifies. Drain/stop every worker
-process—including post-done archive work—and require zero active jobs and
-credential slots. Stage one token
+or readable startup target/environment aborts the rotation with no tombstone,
+SHA, supervisor, or network exception. Bring it reachable or complete a
+separately authorized decommission, then restart preflight. Drain/stop every
+worker process—including post-done archive work—and require zero active jobs
+and credential slots. Stage one token
 everywhere with `WORKER_CONCURRENCY=0` on the head; the operator restarts the
 head, then workers restart and publish the expected auth fingerprint while
 still fenced. Automation must not kill/restart the user-owned head. Follow
