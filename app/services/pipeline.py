@@ -45,7 +45,13 @@ from app.services.phase_artifact import (
     artifact_from_config,
     artifact_from_markdown,
 )
-from app.services.prompts import get_prompt, get_prompt_hash, get_structured_prompt
+from app.services.prompts import (
+    get_prompt,
+    get_prompt_hash,
+    get_structured_prompt,
+    get_teacher_deck_fidelity_contract,
+)
+from app.services.teacher_deck import serialize_deck_for_fidelity
 
 _INTERNAL_PHASES = {"extract", "classify"}
 
@@ -728,13 +734,14 @@ async def _execute_one_phase(
 
     try:
         if phase_name == "teacher-deck":
-            # Teacher-material deliverable: a single schema-validated call
-            # persisted as content_json, not routed through _execute_phase's
-            # content-phase branch (no judge/solver/lint yet, no markdown
-            # fallback — see _execute_teacher_deck_phase's docstring). Uses
+            # Teacher-material deliverable: a single schema-validated call,
+            # fidelity-judged with regen-once, persisted as content_json —
+            # not routed through _execute_phase's content-phase branch (no
+            # solver/lint — see _execute_teacher_deck_phase's docstring). Uses
             # ONLY the locals _execute_one_phase already received (provider/
-            # model/transport/output_language), which `run()` captured once
-            # from the ORM `job` up front — no late re-read.
+            # model/transport/judge_transport/judge_provider_ov/judge_model_ov/
+            # output_language), which `run()` captured once from the ORM `job`
+            # up front — no late re-read.
             output_md, tin, tout, _ph, parsed_struct = await _execute_teacher_deck_phase(
                 job_id=job_id,
                 phase_order=phase_order,
@@ -743,6 +750,9 @@ async def _execute_one_phase(
                 model=model,
                 lesson_context=lesson_context,
                 transport=transport,
+                judge_transport=judge_transport,
+                judge_provider_ov=judge_provider_ov,
+                judge_model_ov=judge_model_ov,
                 session_limit_strategy=session_limit_strategy,
                 output_language=output_language,
                 lease=lease,
@@ -1346,23 +1356,33 @@ async def _execute_teacher_deck_phase(
     model: Optional[str],
     lesson_context: Optional[str],
     transport: str = "cli",
+    judge_transport: str = "cli",
+    judge_provider_ov: Optional[str] = None,
+    judge_model_ov: Optional[str] = None,
     session_limit_strategy: str = "pause",
     output_language: str = "uz",
     lease: Optional[JobLease] = None,
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
-    """Generate the whole teacher-deck lesson-plan in ONE schema-validated call
-    and persist it as ``content_json`` — the teacher-material sibling of
-    ``_execute_phase``'s content-phase branch, called from ``_execute_one_phase``
-    instead of it (not routed through it):
+    """Generate the whole teacher-deck lesson-plan in ONE schema-validated call,
+    run the factual-fidelity gate against it, and persist the FINAL deck
+    (original or regenerated) as ``content_json`` — the teacher-material
+    sibling of ``_execute_phase``'s content-phase branch, called from
+    ``_execute_one_phase`` instead of it (not routed through it):
 
     - ALWAYS structured. Bypasses ``settings.structured_output_enabled`` (the
       content lane's kill switch) and its markdown fallback entirely — there is
       no teacher-deck markdown renderer, and ``_generate_artifact``'s fallback
       path would call ``artifact_from_config`` and raise
       ``StructuredPhaseError``.
-    - No judge / no solver / no content_lint here — the dedicated fidelity gate
-      is a separate, later phase-execution task; this only wires generation +
-      persistence.
+    - Fidelity gate (Task 7): after generation, the deck's fact-bearing content
+      is serialized (`serialize_deck_for_fidelity`) and judged against
+      ``lesson_context`` via ``phase_judge.judge(..., contract_override=
+      get_teacher_deck_fidelity_contract())`` — the SAME shape as the content
+      lane's judge + regen-once loop (``pipeline.py`` ~2074-2187), mirrored
+      here instead of shared because this lane regenerates the WHOLE
+      structured deck (``_run_teacher_deck_attempt``), not a markdown
+      artifact. No solver / no content_lint here — those are content-phase
+      concerns that don't apply to a structured teacher deck.
     - ``get_prompt_hash`` is NOT used: it hashes ``get_prompt`` (the markdown
       glob under ``prompts/_general/*.md``), which has no ``teacher-deck.md``
       and raises ``KeyError``. The structured prompt lives under
@@ -1439,6 +1459,125 @@ async def _execute_teacher_deck_phase(
         _raise_on_lease_signal(_fr)
         raise
 
+    # Factual-fidelity gate (Task 7): judge the deck's fact-bearing content
+    # against the lesson extract, regenerate the WHOLE deck once on a MAJOR
+    # contradiction, keep-original-on-regen-failure (fail-open — validation
+    # must never fail the job), and let an api-auth error from the judge
+    # propagate uncaught (phase_judge.judge already re-raises it for
+    # transport="api" — this mirrors the content lane's initial judge call,
+    # which is likewise OUTSIDE any try/except so an auth error fails the
+    # JOB, not just the phase).
+    def _gen_model_of(prod: str) -> Optional[str]:
+        # Same approximation as the content lane: after failover the fallback
+        # ran on model=None (provider default); tier selection then uses the
+        # provider's default model, which errs toward a stronger judge.
+        return model if prod == provider else None
+
+    warnings: list[str] = []
+    judge_status: Optional[str] = None
+    serialized = serialize_deck_for_fidelity(deck)
+    _jp, _jm = model_tiers.resolve_judge(
+        produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
+    )
+    outcome = await _judge_with_timeout(
+        subject=subject, phase_name="teacher-deck", output_md=serialized,
+        lesson_context=lesson_context, prior_outputs={},
+        gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+        judge_provider=_jp, judge_model=_jm,
+        homework_job_id=job_id, phase_output_id=po_id,
+        transport=judge_transport,
+        contract_override=get_teacher_deck_fidelity_contract(),
+        output_language=output_language,
+    )
+    # Regenerate ONLY on a MAJOR fidelity issue; bounded by
+    # settings.max_judge_regens (default 1 → exactly one regeneration).
+    for _regen_attempt in range(settings.max_judge_regens):
+        if not (outcome.available and outcome.has_major):
+            break
+        logger.info(
+            f"[job {job_id}] teacher-deck judge found major fidelity issue(s) "
+            f"({len(outcome.warnings)} total) — regenerating "
+            f"(attempt {_regen_attempt + 1}/{settings.max_judge_regens}). "
+            f"Issues: {outcome.warnings}"
+        )
+        # The regen runs through _run_with_failover (inside
+        # _run_teacher_deck_attempt), which CAN exhaust all providers and
+        # raise. This block is OUTSIDE the generation try/except above (which
+        # marks the phase failed), so an unguarded raise here would fail the
+        # whole job — violating "validation never fails a job". Guard it: on
+        # regen failure keep the judge-rejected-but-complete original deck +
+        # its warnings and proceed to `done`.
+        try:
+            r_deck, r_tin, r_tout, r_prod = await _run_teacher_deck_attempt(
+                structured_prompt=(
+                    structured_prompt
+                    + "\n\n---\nFACTUAL-FIDELITY CORRECTION (previous attempt "
+                    "contradicted the lesson source — fix ALL of these before "
+                    f"regenerating the full deck):\n{outcome.feedback}"
+                ),
+                requested_provider=produced_by,
+                model=_gen_model_of(produced_by),
+                transport=transport,
+                session_limit_strategy=session_limit_strategy,
+                lesson_context=lesson_context,
+                job_id=job_id,
+                po_id=po_id,
+            )
+            # Commit to the regenerated deck only after it actually succeeded —
+            # the WHOLE deck is swapped, never a partial merge.
+            deck, tin, tout, produced_by = r_deck, r_tin, r_tout, r_prod
+            serialized = serialize_deck_for_fidelity(deck)
+            _jp2, _jm2 = model_tiers.resolve_judge(
+                produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
+            )
+            outcome = await _judge_with_timeout(
+                subject=subject, phase_name="teacher-deck", output_md=serialized,
+                lesson_context=lesson_context, prior_outputs={},
+                gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+                judge_provider=_jp2, judge_model=_jm2,
+                homework_job_id=job_id, phase_output_id=po_id,
+                transport=judge_transport,
+                contract_override=get_teacher_deck_fidelity_contract(),
+                output_language=output_language,
+            )
+        except (LeaseLostSignal, CancelWonSignal):
+            raise  # control signal — never degrade into the soft-keep path
+        except SessionLimitPause:
+            raise  # quota-pause during regen must propagate — not a content failure
+        except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job (except api auth, below)
+            if is_slot_saturation(exc):
+                raise SlotSaturation(str(exc)) from exc  # park, don't degrade
+            if (transport == "api" or judge_transport == "api") and phase_judge._is_auth_error(exc):
+                # Two spawns here can fail on auth: the regen GENERATION
+                # (transport) and the post-regen JUDGE (judge_transport). If
+                # EITHER ran under api, the failure must be LOUD — consistent
+                # with the initial judge call above — never silently degrade
+                # to the pre-regen deck. Only pure cli+cli keeps the soft
+                # degrade below.
+                logger.error(
+                    f"[job {job_id}] teacher-deck api auth failure during regen/judge ({exc!r})"
+                )
+                raise
+            logger.warning(
+                f"[job {job_id}] teacher-deck regen failed ({exc!r}); "
+                f"keeping the judge-rejected original deck + warnings"
+            )
+            # deck/tin/tout/produced_by and `outcome` retain their original
+            # pre-regen values — the phase still completes `done` with warnings.
+            judge_status = "major_regen_failed"
+            break
+
+    if judge_status is None:
+        if getattr(outcome, "refused", False):
+            judge_status = "refused"
+        elif not outcome.available:
+            judge_status = "unavailable"
+        elif outcome.passed or not outcome.has_major:
+            judge_status = "ok"
+        else:
+            judge_status = "major_shipped"
+    warnings = list(outcome.warnings) if outcome.available else []
+
     async with SessionLocal() as session:
         _dr = await phase_repo.set_status(
             session, po_id, "done",
@@ -1450,6 +1589,8 @@ async def _execute_teacher_deck_phase(
             content_json=deck.model_dump(mode="json"),
             authoring_mode="structured",
             content_schema_version=TeacherDeck.SCHEMA_VERSION,
+            validation_warnings=warnings or None,
+            judge_status=judge_status,
             claim_token=_token,
         )
         await session.commit()
