@@ -2472,3 +2472,78 @@ deployment, or merge occurred. The PR is not merge-gateable until its mandatory 
 passes production held-handle read/write/flush/hash/quarantine and adversarial DACL/reparse/hardlink
 cases. The eventual `123` removal remains an operator-owned hard cut behind the documented drain and
 temporary-floor protocol.
+
+## 0172 — Batch launches go out in waves, not all at once (2026-08-11)
+
+**Branch:** `feat/batch-launch-stagger` · **No migration · acceptance $1.1220 · ships dark.**
+
+**What:** `POST /api/v1/jobs/batch` created every job in one loop with `scheduled_at` left to its
+`NOW()` server default, so a whole-book launch made every lesson claimable in the same instant. The
+launcher now stamps `scheduled_at` in **waves** — `BATCH_LAUNCH_WAVE_SIZE` jobs (default 6)
+claimable immediately, that many more every `BATCH_LAUNCH_WAVE_INTERVAL_SECONDS` (default 60). New
+pure module `app/services/launch_stagger.stagger_offset`; `jobs_repo.create` and
+`jobs_repo.reset_for_retry` gained a DB-clock `start_offset_seconds` (default 0 ⇒ byte-identical for
+every pre-existing caller); `resume_failed_in_batch` gained `wave_size`/`interval_seconds` plus a
+deterministic `ORDER BY created_at, id`; both `launch_batch` and the `/resume` endpoint wire it and
+report a `stagger` summary. **No migration** — `scheduled_at` already existed, was already in the
+partial queue index, and was already honoured by the claim gate.
+
+**Why, measured (production batch `d538c4ef`, geografiya g5 RU, 28 lessons, transport=api):** every
+job's first phase (`extract`) is short and *tightly* distributed — avg 12.6s, p50 13.1s, **max
+16.1s** — so all 28 crossed into their parallel DAG tail within ~4s of each other and fanned out
+together. Per-job peak fan-out measured **5.54** api calls (p50 5, max 7) ⇒ ~**155** concurrent calls
+against `CREDENTIAL_MAX_CONCURRENT_GEMINI=32`, producing **16** `429 fleet credential slot wait
+exhausted`, **13 of them in the first minute**. The decisive counter-evidence that this is
+*synchronisation* and not capacity: once the jobs decorrelated the same fleet sustained **81 calls in
+flight with ZERO exhaustions**. Slot saturation refunds the attempt (`attempts - 1`), so the batch
+still finished 28/28 — the cost was wasted wall-clock and noise, not lost work.
+
+**Sizing:** 6 × 5.54 ≈ 33 ≈ the cap of 32 (vs the ~155 that broke it); 60s clears extract (max 16.1s)
+plus one content call (avg 35.9s) so waves cannot stack. During a burst that outlasts the 120s
+slot-wait budget the exhaustion count has a closed form — `(processes × AGENT_MAX_CONCURRENCY) −
+cap`; for the incident `(12 × 4) − 32 = 16`, matching the 16 observed exactly.
+
+⭐ **Raising `CREDENTIAL_MAX_CONCURRENT_GEMINI` was explored and REJECTED.** The per-process semaphore
+is entered *before* the credential limiter (`agent.py:582` wraps `:613`), so 12 processes × AMC 4 =
+**48 calls is the most the fleet can put in front of the limiter** — every cap ≥48 (48, 128, 1026) is
+the identical setting, and all of them mean "limiter off". It also runs `gemini-3.1-pro-preview` (117
+calls in that batch) above its measured-clean 32, needs 14 `.env` edits during a deliberate freeze,
+and at 48 a 28-lesson launch drains in ~116s against a 120s budget — four seconds of margin, gone
+again by ~60 lessons. The stagger instead attacks burst *duration*, the only one of the three factors
+reachable with **no worker-side change**. Recorded for the unfreeze: **AMC 4 → 2** is the better
+config-side lever than raising the cap (12 × 2 = 24 is *below* the cap, so nothing ever queues at the
+timed gate — exhaustions become structurally impossible, not merely rarer).
+
+**Also shipped (in scope by explicit approval, found while reading the semaphore):** `ge=1` on
+`agent_max_concurrency` **and** `gemini_max_concurrency`. Both feed `asyncio.Semaphore(n)`, and
+`Semaphore(0)` has zero permits — a host set to 0 would claim jobs, make no model calls, log nothing,
+and lose every job to `job_timeout_seconds`. ⚠️ **Deploy note:** this converts that silent brick into
+a loud startup failure, so any host carrying `GEMINI_MAX_CONCURRENCY=0` will now refuse to boot.
+Neither var is 0 in any reachable local `.env`.
+
+**Acceptance (`scripts/smoke_launch_stagger.py`, scratch DB, production never written):**
+(a) $0 — 6 lessons → 3 waves at [0,20,40]s, 2 each, in TOC order; `queue_depth()` measured **2 → 4 →
+6** as each wave fell due, observing a future-stamped row *becoming* claimable on real Postgres.
+(b) **$1.1220 / 27 calls / 0 failures** — every other job cancelled so the only claimable row was a
+**wave-2** job (asserted id-equal), then the real pipeline → `status=done`, 12 done phases. A
+one-lesson launch would have proved nothing (always wave 0, offset 0, never stamped). Unplanned
+confirmations from re-runs: in-launch **resume** staggers identically, and **adopt/skip consumes no
+wave slot** (`jobs_launched: 0, waves: 1`). Report: `docs/research/2026-08-11-launch-stagger-smoke.md`.
+
+**Residuals, both deliberate and both operator-facing:** the stagger shapes only the **initial**
+release — pausing a batch mid-ramp and unpausing after the waves elapse releases every overdue wave
+at once (`pause`/`unpause` touch only `paused_at`), as does a fleet outage spanning the ramp; and it
+is **per launch**, so two batches launched simultaneously each get their own wave 0. Neither is worse
+than today's behaviour. Filed `stagger-on-unpause-1`.
+
+**Verification:** full suite **2495 passed / 455 skipped / 0 failed** (branch-point baseline 2917
+collected → 2950 at HEAD = +33, exactly the new tests; the plan's quoted "≈2411/426" was a stale
+figure copied from [0170] on a different branch). 3 plan-review rounds before any code (2 blockers,
+both "a test that cannot fail"), a per-task review on all 7 code tasks, and a whole-branch review
+(**SAFE TO MERGE**, 0 critical/important). Every RED-proof was re-run by the controller with the
+sabotage marker verified as landed — including the one that matters most: making the create branch
+use its own counter fails **only** the mixed resume+create test, with the other four passing, so
+without that single test a split counter would have shipped green.
+
+**Ships dark:** the launcher runs on the head, pinned to v968 until the `AUTH_TOKEN` rotation.
+Interim mitigation is chunked launches of ~6 via `toc_entry_ids`.

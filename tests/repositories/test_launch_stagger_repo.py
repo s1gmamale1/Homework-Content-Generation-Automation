@@ -106,7 +106,7 @@ async def test_resume_with_offset_pushes_scheduled_at_on_the_db_clock():
 
 @pytest.mark.asyncio
 async def test_resume_offset_does_not_disturb_the_lease_reset():
-    """The stagger must not weaken the fenced-lease rotation (jobs.py:278-282)."""
+    """The stagger must not weaken the fenced-lease rotation (jobs.py:299-301)."""
     job = _FakeJob()
     await jobs_repo.reset_for_retry(_GetStubSession(job), job.id,
                                     start_offset_seconds=60)

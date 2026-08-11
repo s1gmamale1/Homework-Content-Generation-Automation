@@ -27,6 +27,11 @@ fleet, which is exactly what this module shortens.
 
 This module answers one question and touches nothing else: given a job's 0-based
 position in a launch, how many seconds after NOW() may it start?
+
+It owns the OFFSET rule. One derived quantity lives elsewhere by design:
+`batch.py::_stagger_summary` turns a launch size back into a wave COUNT for the
+API payload. If the offset rule ever changes shape (an exponential ramp, say),
+that helper must change with it.
 """
 
 
