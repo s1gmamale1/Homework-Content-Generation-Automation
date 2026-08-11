@@ -30,7 +30,7 @@ transactional consistency between "claim a job" and "see its data."
   *after* `commit()`, which would otherwise raise in async contexts.
 
 **Migrations**: Alembic, applied with `uv run alembic upgrade head` (the Docker entrypoint
-also runs it on deploy). Current head: **`0051_launch_defaults_3x`** (0028 = enum CHECK constraints,
+also runs it on deploy). Current head: **`0053_solver_mismatch_blocked`** (0028 = enum CHECK constraints,
 0029 = `phase_outputs.judge_status`, 0030 = `agent_usages.cache_creation_tokens`,
 0031 = `batches.paused_at`/`paused_reason`, 0032 = `budget_state` singleton,
 0033 = `custom_prompts`/`selected_phases` JSONB on `homework_jobs`+`batches`,
@@ -48,7 +48,8 @@ also runs it on deploy). Current head: **`0051_launch_defaults_3x`** (0028 = enu
 0046 = `budget_state` worker-version-floor columns `min_worker_version`/`min_worker_version_stamped_by`/`min_worker_version_stamped_at` (fleet-worker-version-gate, worklog 0133),
 0047 = credential slots + per-key concurrency, 0048 = Notion source links + `toc_ready_at`,
 0050 = structured phase-output columns, 0051 = 3.x model launch defaults,
-0052 = `claim_token` fencing cols on `homework_jobs`+`phase_outputs` + `job_lease_events` ledger (fenced job leases, worklog 0163)).
+0052 = `claim_token` fencing cols on `homework_jobs`+`phase_outputs` + `job_lease_events` ledger (fenced job leases, worklog 0163),
+0053 = add `mismatch_blocked` to the `phase_outputs.solver_status` CHECK (persistent solver mismatch fail-closed, worklog 0169).
 Full chain in §7. (Revision IDs stay ≤32 chars — `alembic_version.version_num` is VARCHAR(32).)
 
 ---
@@ -199,7 +200,7 @@ UUIDPK only — **no** `created_at`/`updated_at`; it has `started_at`/`completed
 | `error_message` | Text NULL | |
 | `validation_warnings` | JSONB NULL | LLM-judge warnings (migration 0017) |
 | `judge_status` | String(24) NULL | judge outcome (migration 0029): `ok` / `major_shipped` / `major_regen_failed` / `unavailable` / NULL (pre-0029 rows or extract phase) |
-| `solver_status` | String(24) NULL | answer-key solver outcome (migration 0043, CQ-C/worklog 0112): `ok` / `mismatch_regen` / `mismatch_shipped` / `mismatch_regen_failed` / `unavailable` / `refused` / NULL (non-solver phase or solver disabled). CHECK-constrained. |
+| `solver_status` | String(24) NULL | answer-key solver outcome (migration 0043, widened by 0053/worklog 0169): `ok` / `mismatch_regen` / `mismatch_blocked` / legacy `mismatch_shipped` / `mismatch_regen_failed` / `unavailable` / `refused` / NULL. `mismatch_blocked` is paired with phase `status='failed'` and is non-deliverable; new code never emits `mismatch_shipped`. CHECK-constrained. |
 | `claim_token` | UUID NULL | per-phase fencing token (migration 0052, worklog 0163). Stamped when `create_or_reset` runs under a verified lease; phase writes are guarded `AND claim_token = :token`. `create_or_reset` takes the job-row `FOR UPDATE` first (lock order **job → phase** everywhere) and verifies the job's token before touching phase rows. Cleared by `reset_abandoned_phases` on reclaim. |
 | `started_at` / `completed_at` | NULL | |
 
@@ -598,7 +599,9 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 | 47 | 0047_credential_slots | `0047_credential_slots` | adds `credential_slots` table (`id` UUID PK, `credential` Text NOT NULL indexed, `pc_id` Text NOT NULL, `acquired_at` timestamptz NOT NULL default now()) + `sa_keys.max_concurrent_calls` Integer NULL CHECK `IS NULL OR >= 1` — the BE-16 fleet-wide per-credential api concurrency limiter (worklog 0142) |
 | 48 | 0048_book_notion_sources | `0048_book_notion_sources` | adds `book_notion_sources` table (`id` UUID PK, `book_id` FK→books ondelete=CASCADE NOT NULL indexed, `notion_page_id`/`notion_block_id` Text NOT NULL UNIQUE pair, `linked_at` timestamptz NOT NULL default now()) + `books.toc_ready_at` DateTime(tz) NULL — the Notion source → book link + prepared-since stamp for the system-aware "Prepare a subject" dialog (worklog 0144) |
 | 50 | 0050_phase_output_structured | `0050_phase_output_structured` | adds nullable `phase_outputs.content_json` JSONB, `authoring_mode`, `content_schema_version`, and `renderer_version`, plus the authoring-mode CHECK constraint (content-JSON producer lane) |
-| 51 | 0051_launch_defaults_3x | `0051_launch_defaults_3x` | unconditional `UPDATE launch_defaults SET ... WHERE id=1` flipping the singleton to the 3.x-flash target tuple: content=`gemini`/`gemini-3.6-flash`, extract=`gemini`/`gemini-3.5-flash-lite`, judge=`gemini`/`gemini-3.5-flash`, solver=`gemini`/`gemini-3.1-pro-preview`, all 5 transport columns `'api'`. Converges both a fresh-seeded DB and the pre-existing prod row onto the same tuple; downgrade restores the exact pre-migration prod tuple (worklog 0161) — **HEAD** |
+| 51 | 0051_launch_defaults_3x | `0051_launch_defaults_3x` | unconditional `UPDATE launch_defaults SET ... WHERE id=1` flipping the singleton to the 3.x-flash target tuple: content=`gemini`/`gemini-3.6-flash`, extract=`gemini`/`gemini-3.5-flash-lite`, judge=`gemini`/`gemini-3.5-flash`, solver=`gemini`/`gemini-3.1-pro-preview`, all 5 transport columns `'api'`. Converges both a fresh-seeded DB and the pre-existing prod row onto the same tuple; downgrade restores the exact pre-migration prod tuple (worklog 0161). |
+| 52 | 0052_job_lease_fencing | `0052_job_lease_fencing` | per-claim `claim_token` on jobs/phases plus append-only `job_lease_events`; obsolete owners cannot mutate reclaimed work (worklog 0163). |
+| 53 | 0053_solver_mismatch_blocked | `0053_solver_mismatch_blocked` | widens `ck_phase_outputs_solver_status` with `mismatch_blocked`; downgrade relabels blocked rows to legacy `mismatch_shipped` before restoring the old CHECK — **HEAD** |
 
 ---
 

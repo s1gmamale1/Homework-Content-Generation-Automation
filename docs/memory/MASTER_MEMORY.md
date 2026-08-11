@@ -2418,6 +2418,18 @@ pairs the judge enforces as ground truth.
   the PARENT `.env`, whose `GOOGLE_APPLICATION_CREDENTIALS` is a Windows path from the fleet host) and
   lost nothing, at $0.00.
 
+## 0169 — 2026-08-11 — Persistent solver mismatches fail closed
+
+**Cause.** The independent answer-key solver could prove a high-confidence defect, regenerate once, prove the repaired artifact was still wrong, and nevertheless persist `mismatch_shipped` on a `done` phase/job. That let known-bad keys publish completion events and reach Notion/export. Initial solver unavailability is probabilistic/advisory and remains so; the defect was specifically the already-proven mismatch path.
+
+**Shipped behavior.** `PersistentSolverMismatch` is a typed hard content-quality failure. A second high-confidence mismatch keeps the final attempted markdown/provenance for inspection, writes phase `failed` + `solver_status=mismatch_blocked`, terminal-fails the job, and suppresses phase/job completion and automatic archive. A genuine timeout/429/network failure while repairing or rechecking propagates through the existing bounded queue retry and same-transaction phase reconciliation; lease loss and cancel-wins remain control signals. `mismatch_shipped` is legacy-only and is never newly emitted. Migration 0053 widens the CHECK; dashboard/watcher failed counts surface the blocked lesson.
+
+**Historical posture.** The production read-only dry-run on 2026-08-11 remained `31` phases across `31` jobs, `5` in the previous seven days, `29` already archived (snapshot hash `529c78facf85cadadac93bec453bc6732bbfff5f756ad22a1c75a7dbd83a198c`). `scripts/quarantine_solver_mismatches.py` is DB-only, dry-run by default, expected-state/hash/manifest guarded, and preserves Notion pointers as evidence. No production apply or Notion write ran; retry/rearchive remains a separate operator sequence after R26.
+
+**Bounded real acceptance.** Exactly two `gemini-3.1-pro-preview` `solve:memory-check` calls ran once against lane scratch DB `edu_scratch_solver_quarantine_t7`; production supplied one extract under a read-only transaction and received zero matching job/usage rows. Both calls found the planted persistent arithmetic mismatch: `3,349 in / 485 out` and `3,353 in / 450 out`, zero cached tokens, total **6,702 input / 935 output**, priced **$0.024624** under the approved $0.20 cap. The blocked job ended `failed`, attempt 1, with its lease identity intact and phase `failed/mismatch_blocked`; the clean control ended `done/ok` without regeneration and archived once. The harness also asserted zero blocked phase/job completion events and zero blocked archive calls. No reroll occurred. An initial file-path invocation missed `PYTHONPATH` and stopped before importing `app`—zero calls and zero writes—then the corrected invocation produced the sole paid run.
+
+**Verification.** Backend **2300 passed / 401 skipped** (the live fleet `.env` sets credential concurrency 32, so the canonical default test was run with its documented source default 8); real-Postgres focused legs **30/30**; frontend **15/15** plus `tsc`/Vite production build; Alembic reports only `0053_solver_mismatch_blocked` as head. Global generation pause remained active. No migration, deployment, push, PR, or production mutation occurred in this acceptance session.
+
 ## 0170 — Operator auth and SA-key vault hardening (2026-08-11)
 
 **Branch:** `plan/operator-auth-sa-vault-hardening` · **No migration · $0 acceptance · not deployed.**
