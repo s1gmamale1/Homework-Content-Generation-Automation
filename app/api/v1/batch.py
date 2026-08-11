@@ -96,6 +96,9 @@ class BatchLaunchRequest(BaseModel):
     custom_prompts: dict[str, str] | None = None
     selected_phases: list[str] | None = None
     session_limit_strategy: str = "inherit"  # "pause" | "switch" | "inherit"
+    # "homework" (default) | "teacher_material" — forks its own batch (Task 8)
+    # and never resumes/adopts the other kind's job for the same section.
+    kind: str = "homework"
 
 
 def _stagger_summary(launched: int, wave_size: int, interval_seconds: int) -> dict:
@@ -119,6 +122,7 @@ def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None 
         "subject": batch.subject,
         "subject_variant": subjects.history_variant(batch.subject, original_filename),
         "grade": batch.grade,
+        "kind": batch.kind,
         "output_language": batch.output_language,
         "provider": batch.provider,
         "model": batch.model,
@@ -216,6 +220,22 @@ async def launch_batch(
     if lang_err is not None:
         raise HTTPException(400, lang_err)
 
+    if body.kind not in ("homework", "teacher_material"):
+        raise HTTPException(400, f"invalid kind: {body.kind!r} (must be 'homework' or 'teacher_material')")
+
+    # teacher_material is a fixed single-phase flow (`teacher-deck`) — custom
+    # phase prompts / a phase pick would have nothing (or the wrong thing) to
+    # apply to, and `flow_for(book.subject)` (the homework flow) is meaningless
+    # for it. Reject outright rather than silently ignoring the fields; this
+    # also means the flow_for-phase validation below never runs for a
+    # teacher_material launch (custom_prompts/selected_phases stay None).
+    if body.kind == "teacher_material" and (body.custom_prompts or body.selected_phases is not None):
+        raise HTTPException(
+            400,
+            "custom_prompts/selected_phases are not supported for "
+            "kind='teacher_material' (fixed single-phase teacher-deck flow)",
+        )
+
     custom_prompts = body.custom_prompts or None
     if custom_prompts:
         valid_phases = set(flow_for(book.subject))
@@ -301,12 +321,12 @@ async def launch_batch(
         for t in targets:
             active = await jobs_repo.find_active_for_section(
                 session, body.book_id, t.id, transport=body.transport,
-                output_language=res_output_language)
+                output_language=res_output_language, kind=body.kind)
             if active is not None:
                 continue  # pending/running/done — not "remaining"
             latest = await jobs_repo.latest_for_section(
                 session, body.book_id, t.id, transport=body.transport,
-                output_language=res_output_language)
+                output_language=res_output_language, kind=body.kind)
             if latest is not None and latest.status in ("failed", "cancelled"):
                 # Disjoint from resumable/empty: a retired-stamped saved
                 # section can never be safely resumed (it would reuse the
@@ -341,7 +361,8 @@ async def launch_batch(
         judge_model=res_judge_model,
         solver_provider=res_solver_provider,
         solver_model=res_solver_model,
-        session_limit_strategy=body.session_limit_strategy)
+        session_limit_strategy=body.session_limit_strategy,
+        kind=body.kind)
 
     created = adopted = skipped = resumed = 0
     # Launch stagger (plan 2026-08-11). `launched` counts only the jobs THIS
@@ -363,7 +384,7 @@ async def launch_batch(
         # the cli jobs untouched.
         existing = None if batch_force else await jobs_repo.find_active_for_section(
             session, body.book_id, t.id, transport=body.transport,
-            output_language=res_output_language)
+            output_language=res_output_language, kind=body.kind)
         if existing is not None:
             # Lookup is transport-scoped, so a returned job always matches —
             # guard it as belt-and-suspenders before adopting. A plain `assert`
@@ -394,7 +415,7 @@ async def launch_batch(
         # failed/cancelled section instead of discarding it; else create fresh.
         latest = await jobs_repo.latest_for_section(
             session, body.book_id, t.id, transport=body.transport,
-            output_language=res_output_language)
+            output_language=res_output_language, kind=body.kind)
         if (latest is not None and latest.status in ("failed", "cancelled")
                 and body.relaunch_mode != "discard"):
             # Resuming reuses the saved job's pinned provider/model verbatim —
@@ -447,7 +468,8 @@ async def launch_batch(
                                solver_model=res_solver_model,
                                start_offset_seconds=stagger_offset(
                                    launched, wave_size=_wave_size,
-                                   interval_seconds=_wave_interval))
+                                   interval_seconds=_wave_interval),
+                               kind=body.kind)
         launched += 1
         created += 1
 

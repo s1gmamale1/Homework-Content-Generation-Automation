@@ -49,6 +49,7 @@ def _make_fake_batch(output_language="uz"):
         book_id=BOOK_ID,
         subject="math-algebra",
         grade="8",
+        kind="homework",
         provider="claude",
         model=None,
         transport="cli",

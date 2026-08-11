@@ -85,11 +85,11 @@ def _apply_common_monkeypatches(monkeypatch, batch_mod):
         return _fake_launch_defaults()
 
     async def _fake_find_active_for_section(session, book_id, toc_entry_id, *, transport=None,
-                                             output_language):
+                                             output_language, kind="homework"):
         return None  # nothing pending/running/done — every target is "remaining"
 
     async def _fake_latest_for_section(session, book_id, toc_entry_id, *, transport=None,
-                                        output_language):
+                                        output_language, kind="homework"):
         if toc_entry_id == _LESSON1_ID:
             return _live_failed_job(uuid.uuid4())
         if toc_entry_id == _LESSON2_ID:

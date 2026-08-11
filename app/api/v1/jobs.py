@@ -651,6 +651,29 @@ async def download(
     )
 
 
+@router.get("/jobs/{job_id}/deck")
+async def get_deck(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return the teacher-deck phase's `content_json` for a `kind='teacher_material'` job.
+
+    404 when the job doesn't exist, isn't `teacher_material`, or the
+    `teacher-deck` phase hasn't produced `content_json` yet (not generated,
+    still running, or failed before producing structured output). Header-auth
+    via the router-level `get_current_user` dependency (app/api/v1/__init__.py),
+    same as every other route in this module.
+    """
+    job = await jobs_repo.get_with_phases(session, job_id)
+    if job is None or job.kind != "teacher_material":
+        raise HTTPException(404, "job not found")
+    deck_phase = next(
+        (p for p in job.phase_outputs if p.phase_name == "teacher-deck"), None)
+    if deck_phase is None or deck_phase.content_json is None:
+        raise HTTPException(404, "deck not generated yet")
+    return {"job_id": str(job_id), "content_json": deck_phase.content_json}
+
+
 async def _job_out(session: AsyncSession, job_id: UUID) -> JobOut:
     job = await jobs_repo.get_with_phases(session, job_id)
     if job is None:
