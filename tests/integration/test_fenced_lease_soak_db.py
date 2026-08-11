@@ -48,6 +48,21 @@ def test_collect_preserves_persisted_usage_call_order_for_regen_proof():
     assert "ORDER BY COALESCE(u.started_at, u.created_at), u.id" in source
 
 
+def test_collect_qualifies_every_usage_projection_across_phase_join():
+    source = inspect.getsource(soak.SqlSoakReadStore.collect)
+
+    for column in (
+        "prompt_tokens",
+        "output_tokens",
+        "cached_tokens",
+        "cache_creation_tokens",
+        "total_tokens",
+        "success",
+        "error_message",
+    ):
+        assert f"u.{column}" in source
+
+
 @pytest.fixture(scope="module")
 def database_url() -> str:
     url = os.environ["DATABASE_URL"]

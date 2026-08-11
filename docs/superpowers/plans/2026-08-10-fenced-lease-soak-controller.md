@@ -166,6 +166,18 @@
   judge, and solver. Both preflight and every runtime sample recheck these
   fields; the expected terminal shape is always `extract + 11 phases`.
 
+## Round-8 Real-Postgres Query Correction (2026-08-11)
+
+- Repeated the mandatory read-only collision gate at controller head
+  `5a4baad`; open PRs and other worktrees remain non-overlapping/read-only.
+- The real scratch-Postgres run exposed an `AmbiguousColumnError`: the scoped
+  usage query joins `agent_usages u` to `phase_outputs p`, and both tables own
+  `error_message`. All usage-owned projection columns are now explicitly
+  qualified with `u.`; a source-contract test plus execution of the entire
+  integration file against `edu_scratch_soak_gate8` pins the correction.
+- The scratch acceptance leaves zero `soak%` books, jobs, or lease events.
+  This round makes no production/provider/fleet call and does not push a ref.
+
 ## File Structure
 
 - Modify `app/db.py`: pure connection-server-settings builder and application of those settings to the existing engine.

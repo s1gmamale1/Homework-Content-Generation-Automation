@@ -2531,8 +2531,9 @@ class SqlSoakReadStore:
                 SELECT u.homework_job_id AS job_id, u.phase_output_id,
                        p.job_id AS phase_job_id, p.phase_name,
                        u.provider, u.operation, u.model_name, u.auth_mode,
-                       prompt_tokens, output_tokens, cached_tokens,
-                       cache_creation_tokens, total_tokens, success, error_message
+                       u.prompt_tokens, u.output_tokens, u.cached_tokens,
+                       u.cache_creation_tokens, u.total_tokens, u.success,
+                       u.error_message
                 FROM agent_usages u
                 LEFT JOIN phase_outputs p ON p.id = u.phase_output_id
                 WHERE u.homework_job_id = ANY(CAST(:job_ids AS uuid[]))
