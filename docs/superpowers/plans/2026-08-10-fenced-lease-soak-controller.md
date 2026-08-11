@@ -119,6 +119,23 @@
   missing/untrusted boss-arena solver result. Contract and behavior tests pin
   both the phase set and the live-toggle requirement.
 
+## Round-6 Evidence-Completeness Corrections (2026-08-11)
+
+- Repeated the mandatory read-only collision gate at
+  `origin/Nggaev-v2@d6b1c9f` and controller head `5e6f90f`. No open PR,
+  branch, or worktree overlaps the controller paths.
+- Terminal usage proof is per job and phase. Every job requires a
+  token-bearing successful `lesson.extract`; every expected content phase
+  requires `phase.run` and `judge:<phase>`; and every production solver phase
+  requires `solve:<phase>`. The SQL snapshot joins usage to its phase row so
+  another job/phase cannot satisfy the obligation. Regeneration may add rows,
+  but cannot replace a missing mandatory class. The snapshot count must equal
+  the authoritative `homework_jobs` correlated usage count.
+- A persisted `FleetAttestation` now re-hashes its worker artifacts during
+  validation. Workers are unique and ordered by `(hostname, pc_id)`; input
+  digests are unique, sorted, one-per-worker, and exactly equal to the
+  recomputed digest set. Tampering fails before a preflight store is opened.
+
 ## File Structure
 
 - Modify `app/db.py`: pure connection-server-settings builder and application of those settings to the existing engine.
@@ -340,7 +357,7 @@ git commit -m "fix(db): bound and identify idle transactions"
 - Produces a narrow `ProcessView` protocol (`pid`, `status()`, `cmdline()`, `environ()`, `cwd()`), `discover_worker_processes(processes: Iterable[ProcessView]) -> list[ProcessView]`, `effective_worker_contract(worker_env: Mapping[str, str]) -> EffectiveWorkerContract`, `build_local_attestation(scope, *, hostname, processes, now, git_identity=None) -> WorkerAttestation`, `canonical_json(model) -> str`, and `aggregate_attestations(scope, workers, *, now) -> FleetAttestation`.
 - Produces injectable `main(argv, *, process_source=None, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr, hostname=None, now=None, git_identity=None) -> int`; production defaults use `psutil`, `socket`, the real clock, and git, while tests inject all of them and prove the command never opens a database or network client.
 - `SoakScope` fields: `run_id`, aware-UTC `since`, exact `batch_ids`, exact `job_ids`, exact `participant_hosts`, `target_running`, `expected_git_sha`, `expected_code_version`, `expected_db_revision`, expected four concurrency knobs, `legacy_gemini_var_must_be_absent`, `structured_output_enabled`, `solver_boss_arena_enabled` (literal `true`), `required_book_sha256`, `forbidden_notion_mapping_keys`, `expected_models_by_operation_prefix`, `approved_incremental_cost_usd`, `fleet_cost_limit_usd`, `db_preflight_connection_limit`, `db_hard_stop_connection_limit`, `heartbeat_max_age_seconds`, `attestation_max_age_seconds`, and `settle_seconds`. The model map must contain exactly `phase.run`, `lesson.extract`, `lesson.extract.coverage`, `lesson.extract.verify`, `judge:`, and `solve:` with stripped non-empty model values; missing, extra, or blank entries fail while parsing the scope, before preflight can open a store or incur spend.
-- `FleetAttestation` fields: `scope_sha256`, `observed_at`, `credential_fingerprint`, ordered `input_artifact_sha256`, and non-empty ordered `workers`.
+- `FleetAttestation` fields: `scope_sha256`, `observed_at`, `credential_fingerprint`, and a non-empty worker list canonically ordered by `(hostname, pc_id)`. `input_artifact_sha256` is unique, sorted, has exactly one digest per worker, and must exactly equal the recomputed canonical worker-artifact digests when the persisted model loads.
 - Each `WorkerAttestation` fields: `scope_sha256`, exact `pc_id`, `hostname`, `observed_at`, `git_sha`, `code_version`, `worker_concurrency`, `agent_max_concurrency`, `credential_max_concurrent_gemini`, `credential_slot_wait_seconds`, `gemini_max_concurrency_present`, `structured_output_enabled`, `process_count_for_host`, `credential_fingerprint`, `pdf_sha256_by_book: dict[str, str | None]`, and `notion_mapping_keys`.
 
 - [ ] **Step 1: Write contract RED tests**
@@ -844,7 +861,9 @@ The store must issue bound-parameter queries, never interpolate UUIDs or timesta
 6. `pg_settings` values for `max_connections` and `superuser_reserved_connections`, plus the controller connection's effective `idle_in_transaction_session_timeout` normalized to integer milliseconds with `extract(epoch from current_setting(...)::interval)`. PostgreSQL cannot inspect another backend's per-session GUC; exact deployed SHA plus Task 1's hardcoded engine settings prove the worker-side contract, while this runtime read proves the controller's own connection is protected.
 7. `pg_stat_activity`: total sessions, `idle in transaction` rows with PID/application/client/age/query prefix, and non-client wait events. Exclude the controller's own PID only from the idle/wait offender lists, not from the total count.
 8. Fresh and stale `credential_slots`, grouped by credential fingerprint and holder process.
-9. Scoped `job_lease_events`, `phase_outputs`, and `agent_usages` since `scope.since`.
+9. Scoped `job_lease_events`, `phase_outputs`, and `agent_usages` since
+   `scope.since`; usage rows include `phase_output_id` and a left join to the
+   authoritative phase's job/name for binding checks.
 10. Fleet API usage rows in the trailing 24 hours for the global envelope check.
 
 Do not query worker `.env` values from PostgreSQL; exact configuration comes from the authenticated-channel-captured attestation and is cross-checked against the same `pc_id` heartbeat row. A worker is “claimable” for this gate only when heartbeat is fresh, status is `online`, Gemini API capability is true, its code version is at/above the floor, and its hostname has no scrub tombstone.
@@ -1064,6 +1083,10 @@ For a clean completed stage:
 - no DB hard threshold, idle transaction, or non-client wait appears;
 - active credential slots never exceed `expected_credential_max_concurrent_gemini`; any slot-wait exhaustion text is an immediate hard stop;
 - every scoped usage row is pinned to provider `gemini` and auth mode `api`; every failed row hard-stops even when its error text is blank; every successful row has a known price, positive tokens, and positive calculated cost;
+- terminal per-job usage rows equal the authoritative correlated count, and
+  token-bearing successful proof exists for `lesson.extract`, `phase.run` plus
+  `judge:<phase>` for every expected content phase, and `solve:<phase>` for all
+  four required solver phases; each proof is joined to that same job/phase;
 - exact operation/model routing matches `expected_models_by_operation_prefix`: exact keys `phase.run`, `lesson.extract`, `lesson.extract.coverage`, and `lesson.extract.verify`, plus prefixes `judge:` and `solve:`; any unknown operation remains fail-closed;
 - cumulative scoped cost is below the approved cap;
 - every scoped job has no Notion stamp and has a non-empty skip reason;
@@ -1586,7 +1609,7 @@ Use English output on these Russian math/geometry sources only after every parti
 
 Hard-stop triggers: any unrelated active job after release authorization, lease loss/reclaim, token mismatch, duplicate/orphan phase, retry/failure/cancel, provider 429, slot exhaustion, authentication error, attempt timeout, unexpected Notion archive, cost at/above the approved cap, heartbeat older than 60 seconds for two samples, any idle-in-transaction session, or DB connections at/above 85 for two samples. In armed mode, a latched terminal quality/solver/corruption failure and any post-authorization incomplete or operational exit also exact-scope pause.
 
-Stage pass: target concurrency observed; every job claimed once/released done once/attempts 1; owner distribution consistent with W=2; exact 12 phases done with matching tokens; all four production solver phases carry trusted proof; the live boss-arena solver toggle remains true; no hard or quality findings; successful usage token-bearing and priced; no unexpected Notion write; DB/heartbeat/slot limits clean; and 60 seconds of quiet settle. Escalation is forbidden after a failed stage.
+Stage pass: target concurrency observed; every job claimed once/released done once/attempts 1; owner distribution consistent with W=2; exact 12 phases done with matching tokens; all four production solver phases carry trusted solver and per-phase usage proof; the live boss-arena solver toggle remains true; every expected extract/generation/judge operation has job-and-phase-bound token-bearing successful usage and the per-job row count reconciles; no hard or quality findings; no unexpected Notion write; DB/heartbeat/slot limits clean; and 60 seconds of quiet settle. Escalation is forbidden after a failed stage.
 
 ## Self-Review Record
 

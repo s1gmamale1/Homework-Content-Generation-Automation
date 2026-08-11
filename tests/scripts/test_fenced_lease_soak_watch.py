@@ -13,6 +13,7 @@ from app.services import flows
 from scripts import fenced_lease_soak as soak
 from tests.scripts.test_fenced_lease_soak_contracts import valid_scope_dict
 from tests.scripts.test_fenced_lease_soak_snapshot import (
+    complete_usage_rows,
     healthy_completed_snapshot,
     healthy_running_snapshot,
     runtime_attestation,
@@ -282,7 +283,9 @@ def full_stage_attestation(scope: soak.SoakScope) -> soak.FleetAttestation:
         scope_sha256=scope_sha,
         observed_at=NOW - timedelta(seconds=5),
         credential_fingerprint="gemini:0123456789abcdef",
-        input_artifact_sha256=[soak.sha256_canonical(worker) for worker in workers],
+        input_artifact_sha256=sorted(
+            soak.sha256_canonical(worker) for worker in workers
+        ),
         workers=workers,
     )
 
@@ -323,7 +326,7 @@ def full_stage_snapshot(scope: soak.SoakScope, *, state: str) -> soak.RawSnapsho
                 "mapping intentionally absent" if state == "done" else None
             ),
             phase_count=12 if state == "done" else 0,
-            usage_count=1 if state == "done" else 0,
+            usage_count=0,
             lease_count=2 if state == "done" else (1 if state == "running" else 0),
         )
         jobs.append(job)
@@ -350,7 +353,7 @@ def full_stage_snapshot(scope: soak.SoakScope, *, state: str) -> soak.RawSnapsho
             )
         )
         phase_names = ["extract", *flows.flow_for("matematika")]
-        phases.extend(
+        job_phases = [
             soak.PhaseSnapshot(
                 job_id=job_id,
                 phase_name=phase_name,
@@ -371,8 +374,11 @@ def full_stage_snapshot(scope: soak.SoakScope, *, state: str) -> soak.RawSnapsho
                 ),
             )
             for phase_order, phase_name in enumerate(phase_names)
-        )
-        usages.append(usage_row(job_id=job_id))
+        ]
+        phases.extend(job_phases)
+        job_usages = complete_usage_rows(job_id, job_phases)
+        usages.extend(job_usages)
+        job.usage_count = len(job_usages)
 
     return soak.RawSnapshot(
         observed_at=NOW,
@@ -636,6 +642,7 @@ async def test_new_usage_during_settle_restarts_the_quiet_clock(tmp_path):
     completed = healthy_completed_snapshot(target=4)
     changed = completed.model_copy(deep=True)
     changed.usages.append(usage_row(job_id=scope.job_ids[0]))
+    changed.jobs[0].usage_count += 1
     store = FakeStore(
         [
             pristine_staged_snapshot(scope),

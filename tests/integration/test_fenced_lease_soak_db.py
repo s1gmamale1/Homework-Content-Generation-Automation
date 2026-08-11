@@ -18,6 +18,7 @@ from app.models.batch import Batch
 from app.models.book import Book
 from app.models.homework_job import HomeworkJob
 from app.models.job_lease_event import JobLeaseEvent
+from app.models.phase_output import PhaseOutput
 from app.models.toc_entry import TOCEntry
 from scripts import fenced_lease_soak as soak
 
@@ -107,9 +108,22 @@ async def seeded_scope(database_url):
                 updated_at=now,
             ))
         await session.flush()
+        phase = PhaseOutput(
+            job_id=scoped_ids[0],
+            phase_name="flashcards",
+            phase_order=1,
+            prompt_hash="a" * 64,
+            model_name="gemini-3.6-flash",
+            provider="gemini",
+            output_md="# Flashcards",
+            status="done",
+        )
+        session.add(phase)
+        await session.flush()
         session.add_all([
             AgentUsage(
                 homework_job_id=scoped_ids[0],
+                phase_output_id=phase.id,
                 provider="gemini",
                 operation="phase.run",
                 model_name="gemini-3.6-flash",
@@ -316,6 +330,10 @@ async def test_collect_separates_unscoped_usage_and_persists_unrelated_activity(
     assert unscoped_id not in {row.job_id for row in raw.lease_events}
     assert unscoped_id in {row.job_id for row in raw.unrelated_lease_events}
     assert unscoped_id in {row.id for row in raw.unrelated_job_transitions}
+    scoped_usage = next(row for row in raw.usages if row.job_id == scope.job_ids[0])
+    assert scoped_usage.phase_output_id is not None
+    assert scoped_usage.phase_job_id == scope.job_ids[0]
+    assert scoped_usage.phase_name == "flashcards"
 
 
 @pytest.mark.asyncio

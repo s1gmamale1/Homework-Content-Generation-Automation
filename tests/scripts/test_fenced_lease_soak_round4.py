@@ -93,6 +93,39 @@ class CancellationResistantStopper:
         return await self.delegate.pause(scope, trigger)
 
 
+@pytest.mark.asyncio
+async def test_preflight_rejects_tampered_persisted_attestation_before_store(tmp_path):
+    scope = valid_scope(target=4)
+    attestation = runtime_attestation(scope)
+    tampered = attestation.model_dump(mode="json")
+    tampered["workers"][0]["code_version"] += 1
+    scope_path = tmp_path / "scope.json"
+    attestation_path = tmp_path / "attestation.json"
+    scope_path.write_text(soak.canonical_json(scope), encoding="utf-8")
+    attestation_path.write_text(json.dumps(tampered), encoding="utf-8")
+
+    def forbidden_store_factory(database_url: str):
+        del database_url
+        raise AssertionError("invalid persisted attestation reached the store")
+
+    code = await soak.async_main(
+        [
+            "preflight",
+            "--scope",
+            str(scope_path),
+            "--attestation",
+            str(attestation_path),
+            "--artifact-dir",
+            str(tmp_path / "artifacts"),
+        ],
+        store_factory=forbidden_store_factory,
+        database_url="postgresql+asyncpg://unused/unused",
+        stderr=io.StringIO(),
+    )
+
+    assert code == soak.ExitCode.OPERATIONAL_ERROR
+
+
 class FatalExit(BaseException):
     pass
 

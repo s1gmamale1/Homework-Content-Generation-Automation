@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import pytest
 
@@ -113,21 +113,122 @@ def usage_row(
     error_message: str | None = None,
     provider: str = "gemini",
     auth_mode: str = "api",
+    phase_name: str | None = None,
+    phase_job_id: UUID | None = None,
+    prompt_tokens: int | None = None,
+    output_tokens: int | None = None,
 ) -> soak.UsageSnapshot:
+    if phase_name is None:
+        if operation.startswith("lesson.extract"):
+            phase_name = "extract"
+        elif operation.startswith(("judge:", "solve:")):
+            phase_name = operation.split(":", 1)[1]
+        else:
+            phase_name = "flashcards"
     return soak.UsageSnapshot(
         job_id=job_id,
+        phase_output_id=uuid5(job_id, phase_name),
+        phase_job_id=phase_job_id or job_id,
+        phase_name=phase_name,
         provider=provider,
         operation=operation,
         model_name=model_name,
         auth_mode=auth_mode,
-        prompt_tokens=1_000 if total_tokens else 0,
-        output_tokens=100 if total_tokens else 0,
+        prompt_tokens=(
+            (1_000 if total_tokens else 0)
+            if prompt_tokens is None
+            else prompt_tokens
+        ),
+        output_tokens=(
+            (100 if total_tokens else 0)
+            if output_tokens is None
+            else output_tokens
+        ),
         cached_tokens=0,
         cache_creation_tokens=0,
         total_tokens=total_tokens,
         success=success,
         error_message=error_message,
     )
+
+
+def complete_usage_rows(
+    job_id: UUID, phases: list[soak.PhaseSnapshot]
+) -> list[soak.UsageSnapshot]:
+    def required_usage(**kwargs) -> soak.UsageSnapshot:
+        return usage_row(
+            total_tokens=11,
+            prompt_tokens=10,
+            output_tokens=1,
+            **kwargs,
+        )
+
+    rows = [
+        required_usage(
+            job_id=job_id,
+            operation="lesson.extract",
+            model_name="gemini-3.5-flash-lite",
+            phase_name="extract",
+        )
+    ]
+    solver_phases = {
+        "memory-check",
+        "practice-error-detection",
+        "practice-rlc",
+        "boss-arena",
+    }
+    for phase in phases:
+        if phase.phase_name == "extract":
+            continue
+        rows.extend(
+            [
+                required_usage(job_id=job_id, phase_name=phase.phase_name),
+                required_usage(
+                    job_id=job_id,
+                    operation=f"judge:{phase.phase_name}",
+                    model_name="gemini-3.5-flash",
+                    phase_name=phase.phase_name,
+                ),
+            ]
+        )
+        if phase.phase_name in solver_phases:
+            rows.append(
+                required_usage(
+                    job_id=job_id,
+                    operation=f"solve:{phase.phase_name}",
+                    model_name="gemini-3.1-pro-preview",
+                    phase_name=phase.phase_name,
+                )
+            )
+    return rows
+
+
+def test_usage_snapshot_preserves_database_phase_binding() -> None:
+    job_id = JOBS[0]
+    phase_output_id = UUID("55555555-5555-5555-5555-555555555555")
+    row = {
+        "job_id": job_id,
+        "phase_output_id": phase_output_id,
+        "phase_job_id": job_id,
+        "phase_name": "flashcards",
+        "provider": "gemini",
+        "operation": "phase.run",
+        "model_name": "gemini-3.6-flash",
+        "auth_mode": "api",
+        "prompt_tokens": 1_000,
+        "output_tokens": 100,
+        "cached_tokens": 0,
+        "cache_creation_tokens": 0,
+        "total_tokens": 1_100,
+        "success": True,
+        "error_message": None,
+    }
+
+    dumped = soak._usage_from_row(row).model_dump()
+
+    assert dumped.get("phase_output_id") == phase_output_id
+    assert dumped.get("phase_job_id") == job_id
+    assert dumped.get("phase_name") == "flashcards"
 
 
 def healthy_completed_snapshot(*, target: int = 4) -> soak.RawSnapshot:
@@ -140,7 +241,8 @@ def healthy_completed_snapshot(*, target: int = 4) -> soak.RawSnapshot:
         owner = f"Host-{index % 2 + 1:02d}:{index % 2 + 100}@fedcba9"
         job = job_row(job_id, token=token, owner=owner)
         jobs.append(job)
-        phases.extend(phase_rows(job))
+        job_phases = phase_rows(job)
+        phases.extend(job_phases)
         events.extend(
             [
                 soak.LeaseEventSnapshot(
@@ -159,7 +261,11 @@ def healthy_completed_snapshot(*, target: int = 4) -> soak.RawSnapshot:
                 ),
             ]
         )
-        usages.append(usage_row(job_id=job_id))
+        job_usages = complete_usage_rows(job_id, job_phases)
+        usages.extend(job_usages)
+        job.phase_count = len(job_phases)
+        job.usage_count = len(job_usages)
+        job.lease_count = 2
     return soak.RawSnapshot(
         observed_at=NOW,
         transaction_read_only="on",
@@ -232,7 +338,9 @@ def runtime_attestation(scope: soak.SoakScope) -> soak.FleetAttestation:
         scope_sha256=scope_sha,
         observed_at=NOW - timedelta(seconds=5),
         credential_fingerprint="gemini:0123456789abcdef",
-        input_artifact_sha256=[soak.sha256_canonical(worker) for worker in workers],
+        input_artifact_sha256=sorted(
+            soak.sha256_canonical(worker) for worker in workers
+        ),
         workers=workers,
     )
 
@@ -297,6 +405,129 @@ def test_successful_api_usage_must_be_token_bearing_and_priced():
     raw.usages[0] = usage_row(model_name="unknown", total_tokens=0)
     findings = runtime_findings(valid_scope(), raw, [])
     assert "unpriced_or_tokenless_usage" in codes(findings, hard_stop=True)
+
+
+def _required_usage_index(
+    raw: soak.RawSnapshot,
+    *,
+    job_id: UUID,
+    operation: str,
+) -> int:
+    return next(
+        index
+        for index, usage in enumerate(raw.usages)
+        if usage.job_id == job_id and usage.operation == operation
+    )
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "lesson.extract",
+        "phase.run",
+        "judge:flashcards",
+        "solve:boss-arena",
+    ],
+)
+def test_terminal_job_requires_every_mandatory_usage_class(operation):
+    raw = healthy_completed_snapshot()
+    job = raw.jobs[0]
+    index = _required_usage_index(raw, job_id=job.id, operation=operation)
+    raw.usages.pop(index)
+    job.usage_count -= 1
+
+    findings = runtime_findings(valid_scope(), raw, [])
+
+    finding = by_code(findings, "usage_coverage_missing")
+    assert finding.hard_stop is True
+    assert any(
+        str(job.id) in row and operation in row
+        for row in finding.evidence["rows"]
+    )
+
+
+def test_usage_count_must_equal_the_authoritative_job_count():
+    raw = healthy_completed_snapshot()
+    job = raw.jobs[0]
+    raw.usages.pop(
+        _required_usage_index(raw, job_id=job.id, operation="judge:flashcards")
+    )
+
+    findings = runtime_findings(valid_scope(), raw, [])
+
+    finding = by_code(findings, "usage_count_mismatch")
+    assert finding.hard_stop is True
+    assert str(job.id) in finding.evidence["job_ids"]
+
+
+def test_required_usage_cannot_be_bound_to_another_job():
+    raw = healthy_completed_snapshot()
+    first, second = raw.jobs[:2]
+    usage = raw.usages[
+        _required_usage_index(raw, job_id=first.id, operation="phase.run")
+    ]
+    usage.phase_job_id = second.id
+
+    findings = runtime_findings(valid_scope(), raw, [])
+
+    assert "usage_phase_binding_mismatch" in codes(findings, hard_stop=True)
+    assert "usage_coverage_missing" in codes(findings, hard_stop=True)
+
+
+def test_required_usage_cannot_be_bound_to_the_wrong_phase():
+    raw = healthy_completed_snapshot()
+    job = raw.jobs[0]
+    usage = raw.usages[
+        _required_usage_index(raw, job_id=job.id, operation="judge:flashcards")
+    ]
+    usage.phase_name = "memory-check"
+
+    findings = runtime_findings(valid_scope(), raw, [])
+
+    assert "usage_phase_binding_mismatch" in codes(findings, hard_stop=True)
+    assert "usage_coverage_missing" in codes(findings, hard_stop=True)
+
+
+def test_phase_run_without_phase_identity_is_a_binding_mismatch():
+    raw = healthy_completed_snapshot()
+    job = raw.jobs[0]
+    usage = raw.usages[
+        _required_usage_index(raw, job_id=job.id, operation="phase.run")
+    ]
+    usage.phase_name = None
+
+    findings = runtime_findings(valid_scope(), raw, [])
+
+    assert "usage_phase_binding_mismatch" in codes(findings, hard_stop=True)
+
+
+def test_wrong_model_row_does_not_satisfy_required_usage_coverage():
+    raw = healthy_completed_snapshot()
+    job = raw.jobs[0]
+    usage = raw.usages[
+        _required_usage_index(raw, job_id=job.id, operation="solve:boss-arena")
+    ]
+    usage.model_name = "gemini-3.6-flash"
+
+    findings = runtime_findings(valid_scope(), raw, [])
+
+    assert "operation_model_mismatch" in codes(findings, hard_stop=True)
+    assert "usage_coverage_missing" in codes(findings, hard_stop=True)
+
+
+def test_multiple_regeneration_rows_may_satisfy_one_required_operation():
+    raw = healthy_completed_snapshot()
+    job = raw.jobs[0]
+    usage = raw.usages[
+        _required_usage_index(raw, job_id=job.id, operation="phase.run")
+    ]
+    raw.usages.append(usage.model_copy(deep=True))
+    job.usage_count += 1
+
+    findings = runtime_findings(valid_scope(), raw, [])
+
+    assert "usage_count_mismatch" not in codes(findings, hard_stop=True)
+    assert "usage_coverage_missing" not in codes(findings, hard_stop=True)
 
 
 def test_model_routing_must_match_the_operation_contract():

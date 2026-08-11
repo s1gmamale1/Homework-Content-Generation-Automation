@@ -68,9 +68,9 @@ def valid_attestation() -> soak.FleetAttestation:
         scope_sha256=workers[0].scope_sha256,
         observed_at=workers[0].observed_at,
         credential_fingerprint=workers[0].credential_fingerprint,
-        input_artifact_sha256=[
+        input_artifact_sha256=sorted(
             soak.sha256_canonical(worker) for worker in workers
-        ],
+        ),
         workers=workers,
     )
 

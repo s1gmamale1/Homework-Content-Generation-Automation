@@ -341,6 +341,31 @@ class FleetAttestation(PersistedModel):
             raise ValueError("input artifact digest must be lowercase SHA-256")
         return value
 
+    @model_validator(mode="after")
+    def _bind_workers_to_input_artifacts(self) -> "FleetAttestation":
+        hostnames = [worker.hostname for worker in self.workers]
+        pc_ids = [worker.pc_id for worker in self.workers]
+        if len(hostnames) != len(set(hostnames)) or len(pc_ids) != len(set(pc_ids)):
+            raise ValueError("duplicate worker identity in fleet attestation")
+
+        ordered_workers = sorted(
+            self.workers,
+            key=lambda worker: (worker.hostname, worker.pc_id),
+        )
+        if self.workers != ordered_workers:
+            raise ValueError("worker order must be canonical by hostname and pc_id")
+
+        if len(self.input_artifact_sha256) != len(self.workers):
+            raise ValueError("input artifact digest count must equal worker count")
+        if len(self.input_artifact_sha256) != len(set(self.input_artifact_sha256)):
+            raise ValueError("duplicate input artifact digest")
+        expected_digests = sorted(sha256_canonical(worker) for worker in self.workers)
+        if self.input_artifact_sha256 != expected_digests:
+            raise ValueError(
+                "input artifact digest list must exactly bind the persisted workers"
+            )
+        return self
+
 
 class Finding(PersistedModel):
     code: str
@@ -486,6 +511,9 @@ class PhaseSnapshot(PersistedModel):
 
 class UsageSnapshot(PersistedModel):
     job_id: UUID | None
+    phase_output_id: UUID | None = None
+    phase_job_id: UUID | None = None
+    phase_name: str | None = None
     provider: str
     operation: str = ""
     model_name: str | None
@@ -1393,6 +1421,47 @@ def evaluate_runtime(
     invalid_usage: list[int] = []
     transport_mismatches: list[dict[str, str]] = []
     routing_mismatches: list[dict[str, str | None]] = []
+    binding_mismatches: list[dict[str, str | None]] = []
+    expected_usage: set[tuple[UUID, str, str]] = set()
+    for job in jobs.values():
+        try:
+            content_phases = (
+                list(job.selected_phases)
+                if job.selected_phases is not None
+                else flows.flow_for(job.subject or "")
+            )
+        except (KeyError, ValueError):
+            continue
+        expected_usage.add((job.id, "lesson.extract", "extract"))
+        for phase_name in content_phases:
+            expected_usage.add((job.id, "phase.run", phase_name))
+            expected_usage.add((job.id, f"judge:{phase_name}", phase_name))
+            if phase_name in _REQUIRED_SOLVER_PHASES:
+                expected_usage.add((job.id, f"solve:{phase_name}", phase_name))
+
+    observed_usage_counts = Counter(
+        usage.job_id for usage in raw.usages if usage.job_id is not None
+    )
+    if completed:
+        # Preflight proves every scoped job was created at/after scope.since;
+        # its FK-bound usage rows therefore cannot legitimately predate the
+        # scoped usage query.  The correlated job count is an exact cross-check.
+        count_mismatches = sorted(
+            str(job.id)
+            for job in jobs.values()
+            if observed_usage_counts[job.id] != job.usage_count
+        )
+        if count_mismatches:
+            _append_runtime_finding(
+                findings,
+                _runtime_hard(
+                    "usage_count_mismatch",
+                    "scoped usage rows differ from the authoritative per-job count",
+                    job_ids=count_mismatches,
+                ),
+            )
+
+    qualifying_usage: set[tuple[UUID, str, str]] = set()
     for index, (usage, priced_row) in enumerate(zip(raw.usages, priced.rows, strict=True)):
         if usage.provider != "gemini" or usage.auth_mode != "api":
             transport_mismatches.append(
@@ -1419,6 +1488,66 @@ def evaluate_runtime(
                     "observed_model": usage.model_name,
                 }
             )
+        expected_phase: str | None = None
+        if usage.operation in {
+            "lesson.extract",
+            "lesson.extract.coverage",
+            "lesson.extract.verify",
+        }:
+            expected_phase = "extract"
+        elif usage.operation.startswith(("judge:", "solve:")):
+            expected_phase = usage.operation.split(":", 1)[1] or None
+        elif usage.operation == "phase.run":
+            expected_phase = usage.phase_name
+
+        phase_bound_operation = (
+            usage.operation == "phase.run"
+            or usage.operation
+            in {
+                "lesson.extract",
+                "lesson.extract.coverage",
+                "lesson.extract.verify",
+            }
+            or usage.operation.startswith(("judge:", "solve:"))
+        )
+        binding_ok = (
+            phase_bound_operation
+            and usage.job_id is not None
+            and usage.phase_output_id is not None
+            and usage.phase_job_id == usage.job_id
+            and usage.phase_name == expected_phase
+            and (
+                usage.operation != "phase.run"
+                or (usage.job_id, usage.operation, expected_phase) in expected_usage
+            )
+        )
+        if phase_bound_operation and not binding_ok:
+            binding_mismatches.append(
+                {
+                    "job_id": str(usage.job_id) if usage.job_id else None,
+                    "operation": usage.operation,
+                    "phase_name": usage.phase_name,
+                    "phase_job_id": (
+                        str(usage.phase_job_id) if usage.phase_job_id else None
+                    ),
+                }
+            )
+
+        usage_key = (
+            (usage.job_id, usage.operation, expected_phase)
+            if usage.job_id is not None and expected_phase is not None
+            else None
+        )
+        if (
+            usage_key in expected_usage
+            and binding_ok
+            and usage.success
+            and is_expected_transport
+            and usage.total_tokens > 0
+            and usage.prompt_tokens + usage.output_tokens + usage.cached_tokens > 0
+            and usage.model_name == expected_model
+        ):
+            qualifying_usage.add(usage_key)
     if completed and not raw.usages:
         invalid_usage.append(-1)
     if invalid_usage:
@@ -1447,6 +1576,29 @@ def evaluate_runtime(
                 rows=routing_mismatches,
             ),
         )
+    if binding_mismatches:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "usage_phase_binding_mismatch",
+                "scoped usage is not bound to its claimed job and phase",
+                rows=binding_mismatches,
+            ),
+        )
+    if completed:
+        missing_usage = sorted(
+            f"{job_id}:{operation}:{phase_name}"
+            for job_id, operation, phase_name in expected_usage - qualifying_usage
+        )
+        if missing_usage:
+            _append_runtime_finding(
+                findings,
+                _runtime_hard(
+                    "usage_coverage_missing",
+                    "terminal jobs lack token-bearing successful usage proof",
+                    rows=missing_usage,
+                ),
+            )
     if priced.total_usd >= scope.approved_incremental_cost_usd:
         _append_runtime_finding(
             findings,
@@ -1915,6 +2067,9 @@ def _sanitize_activity_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _usage_from_row(row: Mapping[str, Any]) -> UsageSnapshot:
     return UsageSnapshot(
         job_id=row.get("job_id"),
+        phase_output_id=row.get("phase_output_id"),
+        phase_job_id=row.get("phase_job_id"),
+        phase_name=row.get("phase_name"),
         provider=row["provider"],
         operation=row.get("operation") or "",
         model_name=row.get("model_name"),
@@ -2114,13 +2269,16 @@ class SqlSoakReadStore:
                 ORDER BY job_id, phase_order
             """), params))
             usage_rows = _mapping_dicts(await conn.execute(text("""
-                SELECT homework_job_id AS job_id, provider, operation, model_name, auth_mode,
+                SELECT u.homework_job_id AS job_id, u.phase_output_id,
+                       p.job_id AS phase_job_id, p.phase_name,
+                       u.provider, u.operation, u.model_name, u.auth_mode,
                        prompt_tokens, output_tokens, cached_tokens,
                        cache_creation_tokens, total_tokens, success, error_message
-                FROM agent_usages
-                WHERE homework_job_id = ANY(CAST(:job_ids AS uuid[]))
-                  AND created_at >= :since
-                ORDER BY created_at, id
+                FROM agent_usages u
+                LEFT JOIN phase_outputs p ON p.id = u.phase_output_id
+                WHERE u.homework_job_id = ANY(CAST(:job_ids AS uuid[]))
+                  AND u.created_at >= :since
+                ORDER BY u.created_at, u.id
             """), params))
             fleet_params = {"cutoff": observed_at - timedelta(hours=24)}
             fleet_usage_rows = _mapping_dicts(await conn.execute(text("""

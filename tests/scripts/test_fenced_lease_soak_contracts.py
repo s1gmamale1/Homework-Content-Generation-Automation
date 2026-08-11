@@ -101,6 +101,65 @@ def valid_attestation_dict() -> dict:
     }
 
 
+def two_worker_attestation_dict() -> dict:
+    first = soak.WorkerAttestation.model_validate(valid_worker_dict())
+    second = first.model_copy(
+        update={"hostname": "Host-03", "pc_id": "Host-03:4343@fedcba9"}
+    )
+    workers = [first, second]
+    return {
+        "scope_sha256": first.scope_sha256,
+        "observed_at": first.observed_at.isoformat(),
+        "credential_fingerprint": first.credential_fingerprint,
+        "input_artifact_sha256": sorted(
+            soak.sha256_canonical(worker) for worker in workers
+        ),
+        "workers": [worker.model_dump(mode="json") for worker in workers],
+    }
+
+
+def test_fleet_attestation_rejects_a_worker_changed_after_digesting() -> None:
+    raw = valid_attestation_dict()
+    raw["workers"][0]["code_version"] = 1002
+
+    with pytest.raises(ValidationError, match="digest"):
+        soak.FleetAttestation.model_validate(raw)
+
+
+def test_fleet_attestation_rejects_duplicate_worker_and_digest() -> None:
+    raw = valid_attestation_dict()
+    raw["workers"].append(dict(raw["workers"][0]))
+    raw["input_artifact_sha256"].append(raw["input_artifact_sha256"][0])
+
+    with pytest.raises(ValidationError, match="duplicate"):
+        soak.FleetAttestation.model_validate(raw)
+
+
+def test_fleet_attestation_requires_canonical_worker_order() -> None:
+    raw = two_worker_attestation_dict()
+    raw["workers"].reverse()
+
+    with pytest.raises(ValidationError, match="worker order"):
+        soak.FleetAttestation.model_validate(raw)
+
+
+def test_fleet_attestation_requires_exact_sorted_input_digests() -> None:
+    raw = two_worker_attestation_dict()
+    raw["input_artifact_sha256"].reverse()
+    assert raw["input_artifact_sha256"] != sorted(raw["input_artifact_sha256"])
+
+    with pytest.raises(ValidationError, match="digest"):
+        soak.FleetAttestation.model_validate(raw)
+
+
+def test_fleet_attestation_requires_one_digest_per_worker() -> None:
+    raw = two_worker_attestation_dict()
+    raw["input_artifact_sha256"].pop()
+
+    with pytest.raises(ValidationError, match="digest"):
+        soak.FleetAttestation.model_validate(raw)
+
+
 @pytest.mark.parametrize("field", ["batch_ids", "job_ids", "participant_hosts"])
 def test_scope_rejects_empty_identity_fields(field):
     raw = valid_scope_dict()
