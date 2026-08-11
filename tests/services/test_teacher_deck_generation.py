@@ -138,9 +138,12 @@ async def test_teacher_deck_persists_content_json_structured(patch_io):
     await pipeline._execute_one_phase(**_make_kwargs())
 
     done = patch_io.done_kwargs()
-    assert done["content_json"] == deck.model_dump()
+    assert done["content_json"] == deck.model_dump(mode="json")
     assert done["authoring_mode"] == "structured"
     assert done["content_schema_version"] == TeacherDeck.SCHEMA_VERSION == "teacher_deck@1"
+    # Locks in the content_json-only shape that the resume fix (_done_phase_md)
+    # depends on: teacher-deck has no markdown deliverable, ever.
+    assert done["output_md"] == ""
 
 
 async def test_teacher_deck_run_phase_called_with_job_provider_model_transport_and_extract(
@@ -196,7 +199,7 @@ async def test_teacher_deck_generates_structured_even_with_kill_switch_off(
 
     done = patch_io.done_kwargs()
     assert done["authoring_mode"] == "structured"
-    assert done["content_json"] == deck.model_dump()
+    assert done["content_json"] == deck.model_dump(mode="json")
 
 
 # ===========================================================================
@@ -218,23 +221,58 @@ async def test_teacher_deck_schema_exhausted_fails_loudly(patch_io):
     )
 
 
-async def test_teacher_deck_lease_lost_is_not_a_content_failure(patch_io):
+async def test_teacher_deck_lease_lost_is_not_a_content_failure(patch_io, monkeypatch):
     """Control signals (fenced job leases) must propagate untouched — never
     laundered into a phase-failed write."""
-    fake_po = MagicMock()
-    fake_po.id = uuid.uuid4()
-
-    async def lease_lost_create(session, **kw):
-        from app.services.lease import LeaseLost
-        return LeaseLost
-    import app.services.pipeline as _p
-    orig = _p.phase_repo.create_or_reset
+    from app.services.lease import LeaseLost
 
     async def fake_create_or_reset(session, **kw):
-        from app.services.lease import LeaseLost
         return LeaseLost
-    import unittest.mock as _m
+    monkeypatch.setattr(pipeline.phase_repo, "create_or_reset", fake_create_or_reset)
 
-    with _m.patch.object(_p.phase_repo, "create_or_reset", fake_create_or_reset):
-        with pytest.raises(LeaseLostSignal):
-            await pipeline._execute_one_phase(**_make_kwargs(lease=MagicMock(claim_token=uuid.uuid4())))
+    with pytest.raises(LeaseLostSignal):
+        await pipeline._execute_one_phase(**_make_kwargs(lease=MagicMock(claim_token=uuid.uuid4())))
+
+
+# ===========================================================================
+# 5 — resume: a done teacher-deck row (content_json-only, output_md="") must
+# be recognized as done, or a reclaim/resume re-runs it and overwrites the
+# already-generated deck with a fresh, billed, stochastic regeneration.
+# ===========================================================================
+
+def test_done_teacher_deck_row_is_in_the_resumable_set():
+    row = types.SimpleNamespace(
+        phase_name="teacher-deck", status="done", output_md="",
+        content_json={"meta": {"topic_title": "Hindiston"}},
+    )
+    done_md = pipeline._done_phase_md([row])
+    assert "teacher-deck" in done_md, (
+        "a done content_json-only phase must count as resumable even though "
+        "output_md is empty"
+    )
+
+
+def test_done_teacher_deck_row_is_not_re_planned_as_pending():
+    row = types.SimpleNamespace(
+        phase_name="teacher-deck", status="done", output_md="",
+        content_json={"meta": {"topic_title": "Hindiston"}},
+    )
+    done_md = pipeline._done_phase_md([row])
+    prior_outputs = dict(done_md)  # mirrors run()'s _done_md -> prior_outputs copy
+    pending = pipeline._pending_phases(["teacher-deck"], prior_outputs)
+    assert pending == set(), (
+        "a resumed job must NOT re-plan a already-done teacher-deck phase — "
+        "re-running it overwrites the persisted content_json with a fresh "
+        "(billed, stochastic) deck"
+    )
+
+
+def test_done_markdown_phase_still_excluded_when_blank():
+    """Regression guard: a done markdown-only phase (every other content
+    phase) with a blank output_md must still be EXCLUDED from the resumable
+    set — the fix only widens the predicate for phases carrying content_json,
+    it must not resurrect the old blank-markdown bug for everyone else."""
+    row = types.SimpleNamespace(
+        phase_name="preview", status="done", output_md="   ", content_json=None,
+    )
+    assert pipeline._done_phase_md([row]) == {}

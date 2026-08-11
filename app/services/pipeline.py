@@ -175,11 +175,18 @@ async def _persist_solver_blocked_phase(
 
 
 def _done_phase_md(rows) -> dict[str, str]:
-    """Phase rows that are `done` with non-empty markdown — the resumable set."""
+    """Phase rows that are `done` and have a real deliverable — the resumable
+    set. Most phases carry that deliverable in `output_md`; content-only
+    phases (teacher-deck) carry it in `content_json` instead and persist
+    `output_md=""` — an empty string there must still count as done, or a
+    resume/reclaim would find nothing in `prior_outputs`, mark the phase
+    pending again, and `create_or_reset` would overwrite the existing
+    `content_json` with a fresh (billed, stochastic) regeneration."""
     return {
         r.phase_name: r.output_md
         for r in rows
-        if r.status == "done" and (r.output_md or "").strip()
+        if r.status == "done"
+        and ((r.output_md or "").strip() or getattr(r, "content_json", None) is not None)
     }
 
 
@@ -1440,7 +1447,7 @@ async def _execute_teacher_deck_phase(
             tokens_input=tin,
             tokens_output=tout,
             provider=produced_by,
-            content_json=deck.model_dump(),
+            content_json=deck.model_dump(mode="json"),
             authoring_mode="structured",
             content_schema_version=TeacherDeck.SCHEMA_VERSION,
             claim_token=_token,
