@@ -64,6 +64,7 @@ _FAKE_BATCH = SimpleNamespace(
     paused_at=None,
     paused_reason=None,
     session_limit_strategy="inherit",
+    kind="homework",
 )
 _ROWS = [
     SimpleNamespace(id=uuid.uuid4(), section_number=f"1.{i}",
@@ -102,11 +103,11 @@ def _wire(monkeypatch, batch_mod, *, offsets_sink, latest=None, resume_ids=None)
         return _fake_launch_defaults()
 
     async def _find_active(session, book_id, toc_entry_id, *, transport=None,
-                           output_language):
+                           output_language, kind="homework"):
         return None
 
     async def _latest(session, book_id, toc_entry_id, *, transport=None,
-                      output_language):
+                      output_language, kind="homework"):
         if resume_ids is not None:
             return latest if toc_entry_id in resume_ids else None
         return latest
