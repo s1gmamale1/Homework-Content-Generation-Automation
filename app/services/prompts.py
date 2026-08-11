@@ -559,6 +559,31 @@ def get_structured_prompt(
     return _apply_substitutions(body, subject, output_language)
 
 
+_TEACHER_DECK_FIDELITY_PATH = (
+    PROMPTS_DIR / "_general" / "structured" / "teacher-deck.fidelity.md"
+)
+_teacher_deck_fidelity_cache: str | None = None
+
+
+def get_teacher_deck_fidelity_contract() -> str:
+    """The judge contract for grading a generated teacher deck's factual fidelity.
+
+    Deliberately NOT reachable via `get_prompt(subject, "teacher-deck")` — that
+    lookup only scans `_general/*.md` (non-recursive), and this file lives
+    under the `structured/` subfolder alongside the authoring prompt, same as
+    `get_structured_prompt`. Unlike the authoring prompt, this is loaded
+    verbatim (no `{{SUBJECT}}`/`{{LANGUAGE_RULES}}` substitution — it's an
+    English-only reviewer instruction, not student-facing content) and passed
+    explicitly by the caller as `phase_judge.judge(..., contract_override=...)`.
+    """
+    global _teacher_deck_fidelity_cache
+    if _teacher_deck_fidelity_cache is None:
+        _teacher_deck_fidelity_cache = _TEACHER_DECK_FIDELITY_PATH.read_text(
+            encoding="utf-8"
+        )
+    return _teacher_deck_fidelity_cache
+
+
 def get_prompt_hash(subject: str, phase_name: str, output_language: str = "uz") -> str:
     # Provenance only (recorded on agent_usages); does NOT drive cross-job reuse.
     import hashlib
