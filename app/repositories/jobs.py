@@ -258,7 +258,8 @@ async def set_notion_skip_reason(
 
 
 async def reset_for_retry(
-    session: AsyncSession, job_id: UUID, batch_id: Optional[UUID] = None
+    session: AsyncSession, job_id: UUID, batch_id: Optional[UUID] = None,
+    *, start_offset_seconds: int = 0,
 ) -> Optional[HomeworkJob]:
     """Reset a failed job back to 'pending' so the worker can re-claim it.
 
@@ -274,6 +275,13 @@ async def reset_for_retry(
     keeps its old (often NULL) batch_id and runs invisibly to the batch — the
     only-stamp-if-provided guard keeps non-batch resumes (single /generate)
     untouched.
+
+    ``start_offset_seconds``: launch stagger (plan 2026-08-11). This function
+    deliberately did NOT touch ``scheduled_at`` before, so a resumed job kept its
+    original (past) timestamp and became claimable the instant it flipped to
+    pending — which reproduces the same synchronised burst a fresh batch launch
+    does. A positive offset pushes it out on the DB clock. Default 0 keeps the
+    historical behaviour byte-for-byte for every other caller.
 
     Returns the updated row, or None if the job no longer exists.
     """
@@ -291,6 +299,9 @@ async def reset_for_retry(
     job.claim_token = None
     job.claimed_at = None
     job.claimed_by = None
+    if start_offset_seconds > 0:
+        job.scheduled_at = func.now() + func.make_interval(
+            0, 0, 0, 0, 0, 0, start_offset_seconds)
     if batch_id is not None:
         job.batch_id = batch_id
     return job
