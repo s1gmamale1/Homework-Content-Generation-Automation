@@ -6,7 +6,5 @@ export { LessonMapSlide } from "./lesson-map-slide";
 export { StageSlide } from "./stage-slide";
 export { QuizSlide } from "./quiz-slide";
 export { AnswerKeySlide } from "./answer-key-slide";
-export { PairWorkSlide } from "./pair-work-slide";
-export { ConclusionSlide } from "./conclusion-slide";
 export { RubricSlide } from "./rubric-slide";
 export type { Accent } from "./shared";
