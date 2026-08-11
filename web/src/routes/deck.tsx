@@ -5,12 +5,10 @@ import { ArrowLeft, ArrowRight, Loader2 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import {
   AnswerKeySlide,
-  ConclusionSlide,
   CoreIdeaSlide,
   CoverSlide,
   LessonMapSlide,
   ObjectivesSlide,
-  PairWorkSlide,
   PassportSlide,
   QuizSlide,
   RubricSlide,
@@ -19,11 +17,11 @@ import {
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import { api, ApiError } from "@/lib/api";
 import { springSoft } from "@/lib/motion";
-import type { TeacherDeck, TeacherDeckStage } from "@/lib/types";
+import type { TeacherDeck } from "@/lib/types";
 import { BACK_PILL, GLASS_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 
-/** One entry in the assembled 18-slide pager. */
+/** One entry in the assembled slide pager. */
 interface SlideEntry {
   key: string;
   /** Short label for the chip nav / footer. */
@@ -34,32 +32,31 @@ interface SlideEntry {
 /**
  * Assembles the pager's slide order from a `TeacherDeck`:
  *   cover → passport → objectives → core_idea → lesson_map
- *   → stages 1–4 (teacher/hook/video/anchors)
- *   → quiz[0..4] (5 slides) → answer_key
- *   → pair-work stage → conclusion/yakun stage → rubric
+ *   → every `stages[]` entry (sorted by `index`), as a StageSlide, in full
+ *   → quiz[] (one QuizSlide per item) → answer_key
+ *   → rubric
  *
- * `deck.stages` carries all 7 lesson-map stages, including the "Kviz" one —
- * that stage is NOT rendered as a generic StageSlide. It's identified (by
- * title, falling back to position) and expanded in place into the 5
- * QuizSlides + the AnswerKeySlide, since `deck.quiz`/`deck.answer_key` are
- * the structured sources for that content. The pair-work and
- * conclusion/yakun stages likewise borrow their header (bosqich #, minutes,
- * title) from `deck.stages` but render body content from the dedicated
- * `deck.pair_work` / `deck.conclusion` objects.
+ * Deliberately GENERIC and content-complete — no assumption about stage
+ * count, quiz count, or language:
+ *  - EVERY stage renders, in `index` order. No slicing to a fixed head
+ *    count, no title/regex matching to find "the quiz stage" or "the
+ *    pair-work stage" (an earlier version did `/kviz/i` / `/juft/i` on
+ *    `stage.title`, which silently dropped/misidentified stages on any
+ *    deck that wasn't exactly 7 stages in Uzbek — e.g. a `ru`-language
+ *    deck's "Квиз"/"Парная" titles never matched, corrupting the pager).
+ *    The stage whose content IS the quiz just renders as a normal
+ *    StageSlide (its `teacher_action`/`points`/`screen_text` describe
+ *    running the quiz — real facilitation info, not a duplicate of the
+ *    questions themselves).
+ *  - `deck.quiz[]` and `deck.answer_key[]` are independent, already-generic
+ *    arrays — no stage lookup needed to render them.
+ *  - This trades the template's mid-flow quiz interleaving (quiz slides
+ *    sitting between the "Tahlil" and "Juftlikda ish" stages) for a simple,
+ *    robust two-part structure (all stages, then the whole assessment
+ *    block) that can never lose or duplicate content regardless of how
+ *    many stages/questions a real generation run produces.
  */
-function assembleSlides(deck: TeacherDeck): SlideEntry[] {
-  const sortedStages = [...deck.stages].sort((a, b) => a.index - b.index);
-  const headStages = sortedStages.slice(0, 4);
-  const tailStages = sortedStages.slice(4);
-
-  const quizStage: TeacherDeckStage | undefined =
-    tailStages.find((s) => /kviz/i.test(s.title)) ?? tailStages[0];
-  const remaining = tailStages.filter((s) => s !== quizStage);
-  const pairWorkStage: TeacherDeckStage | undefined =
-    remaining.find((s) => /juft/i.test(s.title)) ?? remaining[0];
-  const conclusionStage: TeacherDeckStage | undefined =
-    remaining.find((s) => s !== pairWorkStage) ?? remaining[1];
-
+export function assembleSlides(deck: TeacherDeck): SlideEntry[] {
   const slides: SlideEntry[] = [
     {
       key: "cover",
@@ -72,7 +69,8 @@ function assembleSlides(deck: TeacherDeck): SlideEntry[] {
     { key: "lesson_map", label: "Xarita", node: <LessonMapSlide items={deck.lesson_map} /> },
   ];
 
-  for (const stage of headStages) {
+  const sortedStages = [...deck.stages].sort((a, b) => a.index - b.index);
+  for (const stage of sortedStages) {
     slides.push({
       key: `stage-${stage.index}`,
       label: `${stage.index}-bosqich`,
@@ -89,26 +87,8 @@ function assembleSlides(deck: TeacherDeck): SlideEntry[] {
     });
   });
 
-  slides.push({
-    key: "answer_key",
-    label: "Kalit",
-    node: <AnswerKeySlide items={deck.answer_key} stageIndex={quizStage?.index ?? deck.stages.length} />,
-  });
-
-  if (pairWorkStage) {
-    slides.push({
-      key: "pair_work",
-      label: pairWorkStage.title,
-      node: <PairWorkSlide stage={pairWorkStage} pairWork={deck.pair_work} />,
-    });
-  }
-
-  if (conclusionStage) {
-    slides.push({
-      key: "conclusion",
-      label: conclusionStage.title,
-      node: <ConclusionSlide stage={conclusionStage} conclusion={deck.conclusion} />,
-    });
+  if (deck.answer_key.length > 0) {
+    slides.push({ key: "answer_key", label: "Kalit", node: <AnswerKeySlide items={deck.answer_key} /> });
   }
 
   slides.push({ key: "rubric", label: "Baholash", node: <RubricSlide rubric={deck.rubric} /> });

@@ -1,12 +1,16 @@
-/** Stage slides (bosqich 1–4 in the assembled pager): renders differently by
- *  `stage.badge`.
+/** Stage slides — one per `deck.stages[]` entry, in `stages[].index` order
+ *  (the assembler in `routes/deck.tsx` renders EVERY stage, never a subset).
+ *  Renders differently by `stage.badge`:
  *  - `teacher_only` (light, blue): numbered teaching points + the two-column
  *    "O'qituvchi nima qiladi / O'quvchi nima qiladi" boxes at the bottom.
  *  - `ekranga` (dark): the projected `screen_text`, split into a headline
  *    paragraph and an optional highlighted "hook" box (title + detail) —
  *    `screen_text` encodes the split as a blank line, e.g.
  *    "<headline>\n\n<hook title>\n<hook detail>" (see the "Motivatsiya"
- *    stage in the fixture).
+ *    stage in the fixture) — PLUS a compact teacher/student note strip,
+ *    since `ekranga` stages carry `teacher_action`/`student_action` too
+ *    (e.g. "shows the 5 questions in turn") and that facilitation text
+ *    would otherwise be silently dropped.
  */
 import { CircleHelp } from "lucide-react";
 import type { TeacherDeckStage } from "@/lib/types";
@@ -42,9 +46,11 @@ export function StageSlide({ stage, accent }: { stage: TeacherDeckStage; accent:
         <SlideKicker label={kicker} accent={accent} badge="ekranga" dark />
         <SlideTitle dark>{stage.title}</SlideTitle>
 
-        <p className="mt-6 whitespace-pre-line text-lg leading-relaxed text-white/85 sm:text-xl">
-          {headline}
-        </p>
+        {headline && (
+          <p className="mt-6 whitespace-pre-line text-lg leading-relaxed text-white/85 sm:text-xl">
+            {headline}
+          </p>
+        )}
 
         {box && (
           <div className="mt-8 flex items-start gap-4 rounded-xl bg-white/[0.05] p-5">
@@ -60,6 +66,14 @@ export function StageSlide({ stage, accent }: { stage: TeacherDeckStage; accent:
             </div>
           </div>
         )}
+
+        <TeacherStudentBoxes
+          teacherAction={stage.teacher_action}
+          studentAction={stage.student_action}
+          accent={accent}
+          dark
+          compact
+        />
       </DarkSlide>
     );
   }
@@ -73,7 +87,7 @@ export function StageSlide({ stage, accent }: { stage: TeacherDeckStage; accent:
 
       <div className="space-y-3">
         {stage.points.map((p, i) => (
-          <NumberedPoint key={p.title} n={i + 1} title={p.title} detail={p.detail} accent={accent} />
+          <NumberedPoint key={`${i}-${p.title}`} n={i + 1} title={p.title} detail={p.detail} accent={accent} />
         ))}
       </div>
 

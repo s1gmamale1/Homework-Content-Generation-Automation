@@ -176,34 +176,67 @@ export function NumberedPoint({
   );
 }
 
-/** The two-column "teacher does / student does" box pair used on every
- *  teacher_only StageSlide. */
+/** The two-column "teacher does / student does" box pair. Used on every
+ *  `teacher_only` StageSlide (bottom-pinned, full-size — the original
+ *  template layout) and, in `compact`+`dark` form, as the facilitation note
+ *  strip beneath an `ekranga` StageSlide's screen text — those stages carry
+ *  `teacher_action`/`student_action` too and previously lost it entirely. */
 export function TeacherStudentBoxes({
   teacherAction,
   studentAction,
   accent,
+  dark,
+  compact,
 }: {
   teacherAction: string;
   studentAction: string;
   accent: Accent;
+  dark?: boolean;
+  compact?: boolean;
 }) {
   const hex = ACCENT_HEX[accent];
   return (
-    <div className="mt-auto grid grid-cols-1 gap-4 pt-6 sm:grid-cols-2">
-      <div className="rounded-xl border border-slate-900/[0.08] p-4">
+    <div
+      className={cn(
+        "grid grid-cols-1 gap-4 sm:grid-cols-2",
+        compact ? "mt-6" : "mt-auto pt-6",
+      )}
+    >
+      <div
+        className={cn(
+          "rounded-xl",
+          dark ? "border border-white/10 bg-white/[0.03]" : "border border-slate-900/[0.08]",
+          compact ? "p-3.5" : "p-4",
+        )}
+      >
         <p
           className="mb-1.5 font-mono text-[0.64rem] font-bold uppercase tracking-[0.14em]"
           style={{ color: hex }}
         >
           O'qituvchi nima qiladi
         </p>
-        <p className="text-sm leading-relaxed text-slate-700">{teacherAction}</p>
+        <p className={cn("text-sm leading-relaxed", dark ? "text-white/70" : "text-slate-700")}>
+          {teacherAction}
+        </p>
       </div>
-      <div className="rounded-xl border border-slate-900/[0.08] p-4">
-        <p className="mb-1.5 font-mono text-[0.64rem] font-bold uppercase tracking-[0.14em] text-slate-400">
+      <div
+        className={cn(
+          "rounded-xl",
+          dark ? "border border-white/10 bg-white/[0.03]" : "border border-slate-900/[0.08]",
+          compact ? "p-3.5" : "p-4",
+        )}
+      >
+        <p
+          className={cn(
+            "mb-1.5 font-mono text-[0.64rem] font-bold uppercase tracking-[0.14em]",
+            dark ? "text-white/40" : "text-slate-400",
+          )}
+        >
           O'quvchi nima qiladi
         </p>
-        <p className="text-sm leading-relaxed text-slate-700">{studentAction}</p>
+        <p className={cn("text-sm leading-relaxed", dark ? "text-white/70" : "text-slate-700")}>
+          {studentAction}
+        </p>
       </div>
     </div>
   );

@@ -27,7 +27,7 @@ export function PairWorkSlide({
 
       <div className="space-y-3.5">
         {pairWork.tasks.map((t, i) => (
-          <NumberedPoint key={t.title} n={i + 1} title={t.title} detail={t.prompt} accent="green" dark />
+          <NumberedPoint key={`${i}-${t.title}`} n={i + 1} title={t.title} detail={t.prompt} accent="green" dark />
         ))}
       </div>
     </DarkSlide>

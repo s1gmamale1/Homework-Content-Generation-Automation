@@ -23,7 +23,7 @@ export function ConclusionSlide({
 
       <div className="mt-6 space-y-3.5">
         {conclusion.questions.map((q, i) => (
-          <NumberedPoint key={q} n={i + 1} title={q} accent="blue" dark />
+          <NumberedPoint key={`${i}-${q}`} n={i + 1} title={q} accent="blue" dark />
         ))}
       </div>
     </DarkSlide>

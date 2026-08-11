@@ -18,7 +18,7 @@ export function ObjectivesSlide({ objectives }: { objectives: TeacherDeckObjecti
 
       <div className="space-y-3.5">
         {rows.map((r, i) => (
-          <NumberedPoint key={r.title} n={i + 1} title={r.title} detail={r.detail} accent="blue" />
+          <NumberedPoint key={`${i}-${r.title}`} n={i + 1} title={r.title} detail={r.detail} accent="blue" />
         ))}
       </div>
     </LightSlide>

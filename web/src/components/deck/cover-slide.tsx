@@ -1,5 +1,8 @@
 /** Slide 1/18 in the template — dark cover, blue left accent bar, title +
- *  subtitle, a row of stat pills, and a footer-style subject/date line. */
+ *  subtitle, a row of stat pills, and a footer-style subject/date line.
+ *  Also surfaces `meta.lesson_type`/`method[]`/`materials[]` — today these
+ *  duplicate the passport slide, but a generator divergence between `meta`
+ *  and `passport` shouldn't silently drop them, so they render here too. */
 import type { TeacherDeckMeta, TeacherDeckPassport } from "@/lib/types";
 import { DarkSlide } from "./shared";
 
@@ -33,14 +36,24 @@ export function CoverSlide({
         </p>
 
         <div className="mt-8 flex flex-wrap gap-2.5">
-          {pills.map((p) => (
+          {pills.map((p, i) => (
             <span
-              key={p}
+              key={`${i}-${p}`}
               className="rounded-full border border-white/10 bg-white/[0.06] px-4 py-2 text-sm font-semibold text-white/85"
             >
               {p}
             </span>
           ))}
+        </div>
+
+        <div className="mt-6 space-y-1 text-sm text-white/40">
+          {meta.lesson_type && (
+            <p>
+              {meta.lesson_type}
+              {meta.method.length > 0 ? ` · ${meta.method.join(", ")}` : ""}
+            </p>
+          )}
+          {meta.materials.length > 0 && <p>Kerakli vosita: {meta.materials.join(", ")}</p>}
         </div>
       </div>
 

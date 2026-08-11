@@ -11,9 +11,9 @@ export function RubricSlide({ rubric }: { rubric: TeacherDeckRubric }) {
       <TitleUnderline accent="orange" />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        {rubric.components.map((c) => (
+        {rubric.components.map((c, i) => (
           <div
-            key={c.title}
+            key={`${i}-${c.title}`}
             className="rounded-xl border-t-[3px] bg-slate-900/[0.03] p-4"
             style={{ borderTopColor: "#f0a83c" }}
           >
@@ -26,8 +26,8 @@ export function RubricSlide({ rubric }: { rubric: TeacherDeckRubric }) {
 
       <div className="mt-auto flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl bg-[#0d1120] px-5 py-4 text-sm font-semibold text-white">
         <span>Jami {rubric.total} ball</span>
-        {rubric.bands.map((b) => (
-          <span key={b.range} className="text-white/70">
+        {rubric.bands.map((b, i) => (
+          <span key={`${i}-${b.range}`} className="text-white/70">
             {b.range} = «{b.grade}»
           </span>
         ))}
