@@ -1,24 +1,82 @@
 # Undelivered homework — recovery inventory (2026-08-11)
 
-**422 completed homework packets exist in `phase_outputs` but were never archived to
-Notion.** All content is already generated and paid for; recovery is a push, not a
-regeneration. RU 170 · UZ 252.
+> **⚠️ SUPERSEDED IN PART — corrected 2026-08-11 after a 7-grade UZ audit.**
+> The original version of this report claimed 422 undelivered packets and asserted that
+> `toc_entries.notion_archived_job_id` was proven unreliable. **Both claims were wrong,
+> and the error was mine**: the crawl that produced them selected the FIRST Notion page
+> whose title contained "Generated" (`next(...)`). Several subject pages hold MULTIPLE
+> `Generated Homeworks` containers, so the crawl counted one of them and missed the rest.
+>
+> RU Геометрия 8 was the headline "proof": crawl said 1 page, DB said 57. The subject page
+> actually has **three** containers holding 1 + 1 + 55 = **57**. The DB was correct.
+> The same bug produced the Биологиya 7 (1 vs 36 — real total 1 + 35) and Algebra 11
+> "proofs". **Any future crawl must sum ALL matching containers, never take the first.**
+>
+> See "Audited truth (UZ)" below. The RU figures further down were produced by the same
+> broken method and are **UNVERIFIED** — treat them as suspect until an RU audit runs.
 
-## ⚠️ The database's delivery record is not trustworthy
+## Audited truth — UZ, all grades, 2026-08-11
 
-`toc_entries.notion_archived_job_id` is set by the archiver *before* the collision-era
-`_write_leaf` could silently skip the actual write. A Notion crawl on 2026-08-11 proved
-the divergence:
+Seven parallel read-only audits (DB + live Notion), **2,131 done UZ jobs**.
 
-| | DB claims delivered | actually in Notion |
-|---|---|---|
-| Геометрия 8 (ru) | 57 | **1** |
-| Биологиya 7 (uz) | 36 | **1** |
-| Algebra 11 (uz) | 36 | **0** |
+### Phase completeness: no defects
 
-**So the 422 below is a FLOOR, not a total.** It counts only rows the DB itself admits
-are unarchived. Lessons that are falsely stamped are additional and can only be found by
-crawling Notion lesson-by-lesson, which has not been done.
+38 jobs carry fewer than 11 content phases (G7 ×11, G8 ×18, G9 ×9). **Every one is a
+pre-worklog-0067 job** — completed on or before 2026-06-19, when the flow ran ONE
+mini-game per subject (`SUBJECT_GAME`) instead of all four; the missing set is
+per-subject-constant (history/biology lost jigsaw+sentence+tictactoe, kimyo/algebra lost
+jigsaw+memory-match+sentence). **Every one is superseded by a later 11-phase re-run of the
+same lesson.** Net: **zero UZ lessons lack a complete 11-phase generation.**
+
+### Delivery: 52 real gaps, not 252
+
+| grade | done jobs | all-11 (latest per lesson) | genuinely missing from Notion |
+|---|---|---|---|
+| 5 | 178 | yes | 5 — `Matnli masalalar` ×7 title collision |
+| 6 | 264 | yes | 2 — same collision |
+| 7 | 325 | yes | 0 |
+| 8 | 524 | yes | 4 — `Tarixiy ma'lumotlar` non-lesson TOC rows |
+| 9 | 378 | yes | 5 — 4× `Amaliy-tatbiqiy…` collision + 1 adabiyot |
+| 10 | 251 | yes | 0 |
+| 11 | 211 | yes | **36 TRASHED, recoverable by restore** |
+
+**~16 undelivered + 36 trashed.** The dominant cause is **duplicate lesson titles inside one
+textbook** collapsing onto a single Notion page — the pre-#120 collision, fixed for new
+archives on 2026-08-06.
+
+### Grade-11 math: deleted, not missing
+
+All 36 `math-algebra|11` pages plus their `Generated Homeworks` container return
+`in_trash=true, archived=true` (verified per-page). Mapping key exists and is correct;
+ancestry is correct. Archived 2026-07-21, then trashed as a unit. **Restore from Notion
+trash recovers all 36 with no regeneration.** Actor and time unknown from a read-only API.
+
+### What the delivery column actually means
+
+`notion_archived_job_id` is set for all 211 grade-11 jobs **including the 36 trashed ones**.
+It records *"we wrote this once"*, NOT *"it is there now"*. That is a real limitation — but
+it is not the wholesale unreliability originally claimed here. For grades 5, 6, 8 and 10 it
+agreed with Notion exactly. Known false-negatives exist (UZ geometry/algebra grade 7 carry
+no stamps yet are 100% delivered; two grade-9 kimyo jobs likewise).
+
+### Other findings worth acting on
+
+- **Duplicate generation is expensive.** G8: 524 jobs for 385 lessons (139 redundant).
+  Kimyo grade 8 ran **112 jobs for 44 lessons (2.5x)**; one lesson has 7 done jobs. Notion
+  keeps one page per lesson, so re-runs overwrote each other — pure wasted spend.
+- **The archiver handles duplicate titles inconsistently**: G9 geometry delivered all 8
+  same-titled pages correctly; G9 algebra collapsed 5 into 1.
+- **Cross-language misrouting**: a `ru` biology-11 job was archived into the **UZ**
+  Biologiya container despite `ru:biology|11` existing and pointing elsewhere.
+- **Generation ran on an unaccepted TOC**: `6_sinf_matematika_darslik_2024_UZ.pdf` is
+  `status='toc_review'` yet 22 jobs ran against it.
+- **`notion_homework_page_id` points at the nested `Homework` sub-page**, not the lesson
+  page. Joining it against `get_child_pages("Generated Homeworks")` yields 0 matches and
+  looks catastrophic. It is not.
+
+---
+
+# ORIGINAL (UNVERIFIED) — RU figures below were produced by the buggy crawl
 
 ## Inventory (DB view: a `done` job exists, no archive stamp)
 
