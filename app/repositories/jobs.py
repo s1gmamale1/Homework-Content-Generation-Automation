@@ -51,6 +51,7 @@ async def create(
     judge_model: Optional[str] = None,
     solver_provider: Optional[str] = None,
     solver_model: Optional[str] = None,
+    start_offset_seconds: int = 0,
 ) -> HomeworkJob:
     kwargs: dict[str, Any] = dict(
         book_id=book_id,
@@ -83,6 +84,16 @@ async def create(
     ):
         if _v is not None:
             kwargs[_k] = _v
+    # Launch stagger (plan 2026-08-11): a positive offset pushes scheduled_at
+    # into the future so the claim gate (`scheduled_at <= func.now()`,
+    # claim_next_job) holds this job back until its wave is due. DB clock, never
+    # the host clock — the gate compares against func.now() and worker host
+    # clocks drift (same reasoning as the host-clock note on
+    # mark_failed_with_retry). Left unset at offset 0 so the column keeps its
+    # NOW() server default and every pre-existing caller is untouched.
+    if start_offset_seconds > 0:
+        kwargs["scheduled_at"] = func.now() + func.make_interval(
+            0, 0, 0, 0, 0, 0, start_offset_seconds)
     job = HomeworkJob(**kwargs)
     session.add(job)
     await session.flush()
