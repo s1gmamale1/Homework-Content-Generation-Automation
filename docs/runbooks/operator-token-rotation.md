@@ -63,13 +63,23 @@ files.
 An unexpected or ahead override is a stop condition even though its numeric
 value participates in fence sizing: explain it, remove/correct it, restart the
 affected process, and repeat the inventory. An invalid or unreadable override is
-also a stop condition; do not trust the heartbeat as a substitute. If an
-offline/unreachable host's configured override cannot be proven, that host must
-already be **tombstoned/parked before proceeding** by a structural pre-claim
-gate. Do not create or dismiss a provider-credential scrub as part of this auth
-rotation. If no independently-authorized tombstone exists, abort the rotation
-until the host is reachable. Such hosts **remain tombstoned/parked after the
-final reopen** until updated and attested.
+also a stop condition; do not trust the heartbeat as a substitute. A known
+offline/unreachable host whose effective code, service configuration, or
+override cannot be read and bounded is an **unconditional STOP** for this
+rotation.
+
+The only parking exceptions are independently verified controls outside that
+worker binary: a disabled supervisor/scheduled task with durable proof, explicit
+network/DB isolation, or a head-side mechanism that the old worker code cannot
+bypass. A DB **SA scrub tombstone alone never qualifies**—the scrub claim gate is
+worker-local, so an older binary or ahead override may ignore it and claim.
+
+An exact-binary proof is acceptable only when the SHA proves both its version
+gate and scrub/tombstone claim gate, and its `WORKER_CODE_VERSION` override is
+readable and bounded. Otherwise abort until the host is reachable or an external
+park is independently established. Preserve that external park after the final
+reopen until the host is updated and attested. Do not create or dismiss a
+provider-credential scrub as part of this auth rotation.
 
 Calculate the two checked values using the production helper. Populate the two
 lists only from the reconciled evidence above; do not paste the example values:
@@ -326,8 +336,9 @@ to the expected value—not a hostname-level inference.
 
 If a PC runs two model-calling processes, attest both. Any missing/`None`/`local-dev`
 fingerprint or mismatch is a hard stop. An offline host is not rollout-complete:
-leave it fenced by the version floor and, where present, its tombstone until it is
-updated and attested. Do not remove an offline fence to inflate capacity.
+leave it fenced by the version floor and any independently verified external
+park until it is updated and attested. A worker-local SA tombstone is only
+supplemental evidence. Do not remove an offline fence to inflate capacity.
 
 ## 9. Post-rotation verification
 
@@ -393,7 +404,8 @@ temporary floor**. The foreign pause does not block CLI claims, so lowering the
 all-claim fence would silently reopen generation. Record a fence handoff with
 `foreign_pause_reason`, `foreign_pause_at`, the prior-floor snapshot, temporary
 floor, final floor, attested process set, expected fingerprint, and retained
-offline tombstones. The foreign owner must explicitly accept the fence handoff.
+offline external-parking evidence. The foreign owner must explicitly accept the
+fence handoff.
 The accepting owner then performs this floor-only transition:
 
 ```sql
@@ -414,7 +426,7 @@ COMMIT;
 That handoff transaction deliberately leaves the foreign pause untouched. Only
 after either final transaction commits may eligible claiming resume. Offline
 stragglers below `final_floor` remain stale, and unbounded/unreachable hosts keep
-their independent pre-claim tombstones. Re-enable any maintenance-disabled
+their independently enforced external park. Re-enable any maintenance-disabled
 supervisor policy only after its worker is already running and attested.
 
 ## Rollback

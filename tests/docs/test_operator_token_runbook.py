@@ -113,11 +113,18 @@ def test_rotation_inventories_every_effective_version_and_host_override() -> Non
         "unexpected or ahead override",
         "unreadable override",
         "abort the rotation",
-        "tombstoned/parked before proceeding",
-        "remain tombstoned/parked after the final reopen",
+        "unconditional STOP",
+        "SA scrub tombstone alone never qualifies",
+        "disabled supervisor/scheduled task with durable proof",
+        "network/DB isolation",
+        "head-side mechanism that the old worker code cannot bypass",
+        "exact-binary proof",
+        "SHA proves both its version gate and scrub/tombstone claim gate",
+        "override is readable and bounded",
         "2_147_483_647",
     ):
         assert required in document
+    assert "already be **tombstoned/parked before proceeding**" not in document
 
 
 def test_final_reopen_never_drops_below_the_deployed_target() -> None:

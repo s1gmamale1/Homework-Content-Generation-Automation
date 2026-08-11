@@ -161,7 +161,9 @@ an operational hard cut, follow
 `docs/runbooks/operator-token-rotation.md`; never bridge with `123,<strong>`.
 Its temporary floor is checked above every reported process version and every
 configured `WORKER_CODE_VERSION`, while its final floor remains at least the
-deployed target; unreachable unbounded hosts stay independently tombstoned.
+deployed target. A known unreachable host with no readable/bounded effective
+version and override is an unconditional stop unless independently parked
+outside worker-local code; an SA scrub tombstone alone is not such a fence.
 
 ## Things not to do
 
