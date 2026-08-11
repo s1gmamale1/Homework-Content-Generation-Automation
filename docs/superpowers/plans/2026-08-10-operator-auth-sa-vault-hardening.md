@@ -10,14 +10,14 @@
 
 ## Global Constraints
 
-- **Plan-only branch gate:** planned from `origin/Nggaev-v2@d6b1c9f65e13ea5a6c2abd21b8a592303ece784b` in `/Users/macmini5/Documents/HCGA-operator-auth-hardening` on `plan/operator-auth-sa-vault-hardening`. The mandatory scan found no equivalent open PR. PRs #108/#117/#118 must not be modified. #117/#118 partially overlap only the finish-doc paths (`CLAUDE.md`, `docs/CODE_MAP.md`, `docs/DATABASE.md`, `docs/HOW_IT_WORKS.md`, and memory tails): if either merges first, rebase this lane and preserve both meanings; if this lane merges first, their owners must rebase. Never resolve that overlap by editing their branches. Historical model/structured/lease branches were already merged; re-run the gate before implementation and before PR.
+- **Plan-only branch gate:** planned from `origin/Nggaev-v2@d6b1c9f65e13ea5a6c2abd21b8a592303ece784b` in `/Users/macmini5/Documents/HCGA-operator-auth-hardening` on `plan/operator-auth-sa-vault-hardening`. The mandatory scan found no equivalent open PR. The gate was repeated read-only at `c9cc63e`: base remained `d6b1c9f`, the owned worktree was clean, and open PRs #108/#117/#118 still had no auth/vault overlap. PRs #108/#117/#118 must not be modified. #117/#118 partially overlap only the finish-doc paths (`CLAUDE.md`, `docs/CODE_MAP.md`, `docs/DATABASE.md`, `docs/HOW_IT_WORKS.md`, and memory tails): if either merges first, rebase this lane and preserve both meanings; if this lane merges first, their owners must rebase. Never resolve that overlap by editing their branches. Historical model/structured/lease branches were already merged; re-run the gate before implementation and before PR.
 - **Integration order:** this lane is independent of solver/source-integrity behavior. It must merge and deploy before generation is unpaused and before any 4→40 fleet soak. If `origin/Nggaev-v2` moves, rebase first; `main.py`, `app/services/worker.py`, and `app/config.py` must be composed against the new tip rather than copied from this plan's anchor.
 - **Credential preservation:** no migration and no deployment-time mutation of production `sa_keys` or `sa_key_assignments`. Preserve all six stored Vertex key objects byte-for-byte and preserve Host-59's current non-scrubbed assignment. Do not assign, unassign, scrub, relabel, rotate, or delete a Vertex key in this lane.
 - **Operator-token policy:** `AUTH_TOKEN` has no default. A normal head or standalone worker refuses startup when it is unset, empty, contains the old `123`, contains any other weak member, or mixes a weak member with a strong one. Every configured member must be strong.
 - **Explicit local development:** `ALLOW_INSECURE_LOCAL_AUTH=true` permits only the exact empty-token state for local development. It never makes `/sa-keys` accessible without a header. It never legalizes `123` or any other weak configured token.
 - **Strength contract:** each comma-delimited operator token is parsed without trimming, at least 32 characters, contains only the ASCII URL-safe alphabet `[A-Za-z0-9_-]`, has at least eight distinct characters, and is not in the case-insensitive deny-list `{123, password, changeme, change-me, secret, admin, test, dev, development}`. Leading/trailing whitespace, Unicode, controls, commas/empty segments, and duplicates are invalid. Presented header/query values are also exact (never stripped); malformed/non-ASCII input is an ordinary authentication miss, never a `TypeError`/500. The runbook generates tokens with `secrets.token_urlsafe(48)`; the structural checks are a misconfiguration floor, not a claim that arbitrary human text has measurable entropy.
 - **Comparison and disclosure:** request matching UTF-8-encodes both sides and calls `hmac.compare_digest` for every candidate even after a match; malformed presented values return false. Exceptions, HTTP details, and logs identify only the failing rule/member index; they never include a configured/presented token or any service-account JSON bytes.
-- **Vault contract:** `<VAR_DIR>/sa_keys` is `0700` on POSIX and grants full control only to the current process-token SID on Windows. Every existing/new/stale-temp/delete-quarantine/UUID/`active.json` regular file is `0600` on POSIX and has the same protected, exactly-one-ACE Windows DACL. POSIX operations remain anchored to one verified open vault-directory fd for their whole check/use sequence. Windows ACL application and inspection use `SetSecurityInfo`/`GetSecurityInfo` on the already-open `CreateFileW(..., FILE_FLAG_OPEN_REPARSE_POINT)` handle; no authorization, ACL write, or ACL verification re-resolves the child by path. After the protected DACL is installed, path publication additionally re-verifies the held vault identity immediately before/after `MoveFileExW`. The Windows contract rejects pre-existing/replaced reparse/hardlink objects and other identities; it does not claim to defend against an administrator or malicious process already running as the same SID (that principal can read/change the credential regardless). Because Task Scheduler launches the worker under that process identity, the scheduled-task account remains readable/writable; a worker launched under a different account fails closed rather than widening the ACL. Symlinks, Windows reparse points, hardlinks, directories, FIFOs, sockets, and devices in the vault fail closed.
+- **Vault contract:** `<VAR_DIR>/sa_keys` is `0700` on POSIX and grants full control only to the current process-token SID on Windows. Every existing/new/stale-temp/delete-quarantine/UUID/`active.json` regular file is `0600` on POSIX and has the same protected, exactly-one-ACE Windows DACL. POSIX operations remain anchored to one verified open vault-directory fd for their whole check/use sequence. Windows ACL application and inspection use `SetSecurityInfo`/`GetSecurityInfo` on the already-open `CreateFileW(..., FILE_FLAG_OPEN_REPARSE_POINT)` handle; no authorization, ACL write, ACL verification, credential read/hash, temp write/flush/rehash, or quarantine verification re-resolves the child by path. The Windows wrapper has explicit operation profiles: every handle includes `READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES`, read/hash adds `GENERIC_READ`, temp write/flush/rehash adds `GENERIC_WRITE | GENERIC_READ`, and any future handle-based delete/rename adds `DELETE`; held handles use compatible `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` where publication/quarantine needs rename/delete. An access-denied result fails closed and never triggers a path-based reopen. After the protected DACL is installed, path publication additionally re-verifies the held vault identity immediately before/after `MoveFileExW`. The Windows contract rejects pre-existing/replaced reparse/hardlink objects and other identities; it does not claim to defend against an administrator or malicious process already running as the same SID (that principal can read/change the credential regardless). Because Task Scheduler launches the worker under that process identity, the scheduled-task account remains readable/writable; a worker launched under a different account fails closed rather than widening the ACL. Symlinks, Windows reparse points, hardlinks, directories, FIFOs, sockets, and devices in the vault fail closed.
 - **Durability:** writes first open/create and harden the vault themselves, then use a same-directory exclusive `0600` temp, file flush+fsync, pre-publication regular/single-link verification, atomic replacement, destination permission verification, and vault-directory-fd fsync on POSIX (Windows uses write-through replacement). A failed replacement leaves the old destination unchanged and cleans the new temp when the process is still alive.
 - **DB/filesystem consistency:** a filesystem and PostgreSQL commit cannot be one physical transaction. Upload dedup is made database-atomic, all compensation inputs (`row_id`, SHA, ownership) are copied to plain immutable values before commit/rollback, filesystem refusal rolls the row back, and an ambiguous upload commit is reconciled conservatively (never delete a file unless a fresh DB read proves the newly-owned row absent). Delete takes a key-row lock, rechecks assignments, atomically renames only the exact hash-matching UUID file to a private same-vault quarantine, then mutates/commits the DB. A definitive rollback restores it; commit success removes it; ambiguous outcomes use a fresh DB read (`exact row exists` => restore, `row absent` => remove, mismatch/lookup failure => retain evidence). Head startup resolves exact recognized quarantines with the same state table, then fails closed on any unresolved quarantine or missing, mismatched, or orphan UUID key file. This is an honest bounded-compensation + startup-reconciliation contract, not a false cross-resource atomicity claim.
 - **Startup order:** auth validation, then vault hardening, occur before prompts, DB sessions/reconciliation, version-floor stamping, LISTEN, worker construction, heartbeat, or claim activity. Security validation remains out of module import/app construction so tests and tooling can import safely; the head's pre-existing import-time logging configuration is not falsely claimed to be behind the lifespan gate.
@@ -461,6 +461,16 @@ process-token SID; full-control mask; directory ACE carries object+container inh
 file ACE carries neither; the current process can reopen/read/write both; the second SID
 has no ACE. On that same real runner, create a file symlink, directory junction/reparse
 point, and hardlink and prove harden/read/write/remove all refuse without touching targets.
+Drive the actual production functions—not a raw `open()` substitute—through every access
+profile: `read_bytes` returns exact bytes through its held READ handle;
+`atomic_write` creates the temp through its held READ_WRITE handle, calls the real
+`FlushFileBuffers`, rewinds/rehashes through that same handle, publishes, and survives a
+fresh production `read_bytes`; `quarantine_for_delete` hashes through its held READ handle
+and the production restore/discard paths complete without a path-based data reopen. Spy on
+the `CreateFileW` wrapper and assert each operation requested its exact profile plus the
+common ACL/attribute rights and compatible share flags. An injected `ERROR_ACCESS_DENIED`
+must raise `SAKeyVaultError`; patch `Path.open`, built-in `open`, and path-based byte helpers
+to raise so no fallback can bypass a deficient held handle.
 Add an exact handle-anchoring race: open a permissive regular child through the production
 `CreateFileW` wrapper, pause at a test seam after handle/type/identity validation but before
 ACL application, rename that child and put a distinct permissive replacement at the original
@@ -489,6 +499,7 @@ Create `app/services/sa_key_vault.py` with these exact boundaries:
 from __future__ import annotations
 
 import ctypes
+import enum
 import os
 import stat
 from pathlib import Path
@@ -499,6 +510,7 @@ from app.services import storage
 if os.name == "nt":  # pragma: no cover - imported only on the Windows CI leg
     import win32api
     import win32con
+    import win32file
     import win32security
 
 
@@ -645,12 +657,57 @@ on opened files, never `Path.chmod` after a separate `lstat`. Fsync the same hel
 directory fd after publication/removal. A rename of the pathname while an operation
 is in flight therefore cannot redirect credential bytes.
 
-On Windows, wrap `CreateFileW` so the vault and each existing child are opened with
-`FILE_FLAG_OPEN_REPARSE_POINT` (and `FILE_FLAG_BACKUP_SEMANTICS` for the directory),
-`READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES`, and
-`FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` so the held handle remains valid
-across the deliberate atomic rename operations. Then inspect handle metadata/reparse tags
-and link count before access. Keep the vault
+On Windows, wrap `CreateFileW` with an explicit operation profile rather than one
+metadata-only mask:
+
+```python
+class _WindowsHandleUse(enum.Enum):
+    ACL_ONLY = "acl-only"
+    READ_OR_HASH = "read-or-hash"
+    TEMP_READ_WRITE = "temp-read-write"
+    HANDLE_DELETE_OR_RENAME = "handle-delete-or-rename"
+
+
+_WINDOWS_COMMON_ACCESS = (
+    win32con.READ_CONTROL
+    | win32con.WRITE_DAC
+    | win32con.FILE_READ_ATTRIBUTES
+)
+_WINDOWS_SHARE_ALL = (
+    win32con.FILE_SHARE_READ
+    | win32con.FILE_SHARE_WRITE
+    | win32con.FILE_SHARE_DELETE
+)
+
+
+def _windows_desired_access(use: _WindowsHandleUse) -> int:
+    access = _WINDOWS_COMMON_ACCESS
+    if use is _WindowsHandleUse.READ_OR_HASH:
+        access |= win32con.GENERIC_READ
+    elif use is _WindowsHandleUse.TEMP_READ_WRITE:
+        # GENERIC_READ is deliberate: the still-held temp is rewound and
+        # rehashed after the real write+FlushFileBuffers, before publish.
+        access |= win32con.GENERIC_READ | win32con.GENERIC_WRITE
+    elif use is _WindowsHandleUse.HANDLE_DELETE_OR_RENAME:
+        access |= win32con.DELETE
+    return access
+```
+
+`_open_windows_handle(path, *, use, directory, disposition)` calls `CreateFileW` with
+that exact desired-access value, `FILE_FLAG_OPEN_REPARSE_POINT` (plus
+`FILE_FLAG_BACKUP_SEMANTICS` for a directory), `_WINDOWS_SHARE_ALL` whenever a held
+handle must coexist with atomic publication/quarantine, and `OPEN_EXISTING` versus
+`CREATE_NEW` explicitly. It rejects `INVALID_HANDLE_VALUE`, then inspects handle
+metadata/reparse tags and link count before access. ACL hardening may use `ACL_ONLY`;
+`read_bytes`, UUID/quarantine hashing, and inventory hashing must use `READ_OR_HASH`;
+the exclusive temp must use `TEMP_READ_WRITE`; if an implementation changes the
+path-based `MoveFileExW`/delete design to a handle-based operation, that handle must use
+`HANDLE_DELETE_OR_RENAME`. Do not request file-data rights for the directory handle.
+Do not catch `ERROR_ACCESS_DENIED` and reopen with Python `open`, `Path.open`,
+`read_bytes`, `write_bytes`, or any path-resolved fallback: translate it to a generic
+`SAKeyVaultError` and stop.
+
+Keep the vault
 handle open and record its volume serial + file index; immediately before and after
 the path-based `MoveFileExW` publish, reopen the named vault with the same flags and
 require the same identity. The protected one-SID DACL prevents other identities from
@@ -661,7 +718,7 @@ itself is handle-anchored: pass the original verified handle to
 `SetSecurityInfo`/`GetSecurityInfo`; never pass its path to
 `SetFileSecurity`/`GetFileSecurity`.
 
-Implement `atomic_write` by first opening/creating and hardening the vault, then creating an `O_CREAT|O_EXCL` same-directory temp at `0o600`, `fchmod(0o600)` on POSIX, writing/flushing/fsyncing, applying the private ACL, and verifying the still-open temp is regular with link count exactly one before `_replace_write_through`. Verify an existing destination through an opened no-follow handle, publish relative to the held POSIX fd (or through the identity-checked Windows path), verify the final object/mode/DACL, and fsync the POSIX vault fd. Clean the temp on a live exception through the held directory handle/fd without following links.
+Implement `atomic_write` by first opening/creating and hardening the vault, then creating an `O_CREAT|O_EXCL` same-directory temp at `0o600`, `fchmod(0o600)` on POSIX, writing/flushing/fsyncing, applying the private ACL, and verifying the still-open temp is regular with link count exactly one before `_replace_write_through`. On Windows, create with the `TEMP_READ_WRITE` profile, write all bytes with `win32file.WriteFile` (loop until complete), call the real `win32file.FlushFileBuffers` on that same handle, rewind and SHA-256 re-read it through the same held handle, and require the hash of bytes actually written to match `body` before publication. Verify an existing destination through an opened no-follow/`ACL_ONLY` handle, publish relative to the held POSIX fd (or through the identity-checked Windows path), verify the final object/mode/DACL, and fsync the POSIX vault fd. Clean the temp on a live exception through the held directory handle/fd without following links.
 
 Pin the replacement seam so its write-through behavior is reviewable and testable:
 
@@ -695,7 +752,7 @@ After `_replace_write_through`, POSIX `atomic_write` fsyncs the already-held vau
 The Windows call above owns the write-through guarantee; do not perform a second
 non-write-through `os.replace`.
 
-Implement POSIX `read_bytes` with `O_RDONLY|O_NOFOLLOW` plus `dir_fd`, then `fstat` regular/single-link verification before reading. Implement POSIX `remove` with a verified no-follow child handle and `os.unlink(name, dir_fd=vault_fd)`; Windows uses the verified reparse-point handle and rechecks vault identity around path deletion. Symlinks/nonregular paths raise rather than being silently removed.
+Implement POSIX `read_bytes` with `O_RDONLY|O_NOFOLLOW` plus `dir_fd`, then `fstat` regular/single-link verification before reading. Windows `read_bytes` opens once with `READ_OR_HASH`, validates that held object, and reads to EOF with `win32file.ReadFile` through the same handle. UUID/quarantine/inventory SHA helpers hash chunks from that same production held-handle reader. Implement POSIX `remove` with a verified no-follow child handle and `os.unlink(name, dir_fd=vault_fd)`; Windows uses the verified reparse-point handle and rechecks vault identity around path deletion. Symlinks/nonregular paths raise rather than being silently removed. No Windows read/hash/write/flush path reopens by name after validation or access denial.
 
 Implement delete quarantine as a second atomic-rename primitive, not as a special case of
 best-effort `remove`. A `DeleteQuarantine` name encodes its exact UUID and SHA plus a random
@@ -724,11 +781,11 @@ every remaining quarantine or other unexpected entry without deleting evidence.
 uv run pytest tests/services/test_sa_key_vault.py -q
 ```
 
-Expected on this POSIX head: every numeric mode/preservation/durability/hazard test passes. Windows-specific command tests pass with subprocess/replace seams mocked.
+Expected on this POSIX head: every numeric mode/preservation/durability/hazard test passes and Windows-only cases skip. On the mandatory real Windows workflow, the same test module must drive production `read_bytes`, `atomic_write` + real flush/rehash, quarantine/restore/discard, DACL swap, junction, symlink, and hardlink behavior; an argv/access-mask mock is not acceptance.
 
 - [ ] **Step 5: Mutation-proof the path and mode guards**
 
-Temporarily replace the POSIX `dir_fd` open/rename with path-based calls: the directory-swap test must fail. Temporarily change Windows ACL apply/inspect to `SetFileSecurity`/`GetFileSecurity`: the real Windows name-swap test must fail. Temporarily remove the Windows reparse-handle check: the real Windows junction test must fail. Temporarily create temps with `0o666`, omit the pre-publish link-count check, or make quarantine discard accept a bare path/wrong SHA: the mode/hardlink/quarantine tests must fail. Revert all mutations and rerun GREEN.
+Temporarily replace the POSIX `dir_fd` open/rename with path-based calls: the directory-swap test must fail. Temporarily change Windows ACL apply/inspect to `SetFileSecurity`/`GetFileSecurity`: the real Windows name-swap test must fail. Temporarily remove `GENERIC_READ` from `READ_OR_HASH`, `GENERIC_WRITE` from `TEMP_READ_WRITE`, the real `FlushFileBuffers`, or replace production held-handle reads/writes with a path reopen: the Windows production-operation tests must fail. Temporarily remove the Windows reparse-handle check: the real Windows junction test must fail. Temporarily create temps with `0o666`, omit the pre-publish link-count check, or make quarantine discard accept a bare path/wrong SHA: the mode/hardlink/quarantine tests must fail. Revert all mutations and rerun GREEN.
 
 - [ ] **Step 6: Commit Task 3**
 
@@ -1239,7 +1296,7 @@ uv run pytest tests/services/test_operator_auth.py tests/test_auth_strict.py \
   tests/docs/test_operator_token_runbook.py -q
 ```
 
-Expected: all pass, including real POSIX mode assertions.
+Expected: all pass, including real POSIX mode assertions. The implementation PR is not gateable until the separate mandatory Windows workflow also passes the production held-handle read/write/flush/hash/quarantine cases and the ACL name-swap/reparse/hardlink cases.
 
 - [ ] **Step 2: Run scratch-Postgres SA API acceptance**
 
@@ -1318,7 +1375,7 @@ Use `superpowers:requesting-code-review`, then `superpowers:finishing-a-developm
 
 ## Plan self-review
 
-- **Spec coverage:** all-SA-route header auth (Task 2); ASCII URL-safe exact tokens, malformed-safe constant-time matching, default/open/weak startup refusal + explicit local mode (Tasks 1/2); POSIX dir-fd anchoring, Windows same-handle ACL apply/inspect + reparse checks + exact one-ACE DACL, existing/new/temp/quarantine/active permissions, durability, and no bytes in diagnostics (Tasks 3/4/7); race-safe PG dedup, pinned upload compensation data, key-row/assignment serialization, delete quarantine with fresh-state ambiguity handling, and fail-closed head quarantine/inventory reconciliation (Tasks 4/5); real head+standalone side-effect ordering (Task 5); six keys/Host-59/plain-key preservation, foreign-pause ownership, version-floor/all-process attestation, offline fencing, user-owned restart, mismatch window, and rollback (Tasks 6/7/deployment gate); #117/#118 doc integration (global/Task 7); no generation/paid action (global constraints/Task 7).
+- **Spec coverage:** all-SA-route header auth (Task 2); ASCII URL-safe exact tokens, malformed-safe constant-time matching, default/open/weak startup refusal + explicit local mode (Tasks 1/2); POSIX dir-fd anchoring, Windows operation-specific handle rights, production held-handle read/hash/write/flush/rehash, same-handle ACL apply/inspect + reparse checks + exact one-ACE DACL, existing/new/temp/quarantine/active permissions, durability, access-denied fail-closed behavior, and no bytes in diagnostics (Tasks 3/4/7); race-safe PG dedup, pinned upload compensation data, key-row/assignment serialization, delete quarantine with fresh-state ambiguity handling, and fail-closed head quarantine/inventory reconciliation (Tasks 4/5); real head+standalone side-effect ordering (Task 5); six keys/Host-59/plain-key preservation, foreign-pause ownership, version-floor/all-process attestation, offline fencing, user-owned restart, mismatch window, and rollback (Tasks 6/7/deployment gate); #117/#118 doc integration (global/Task 7); no generation/paid action (global constraints/Task 7).
 - **Type consistency:** Task 1 exports are consumed under the same names by Tasks 2/5. Task 3's vault functions and frozen `DeleteQuarantine` are consumed under the same names by Tasks 4/5. Task 4's `create_or_get_for_upload -> (SAKey, bool)`, key-lock helpers, and `uuid_hash_inventory -> dict[str, str]` are consumed exactly by upload/assign/delete/head startup. Upload/delete exception paths consume only pinned scalars/frozen tickets after rollback. `ALLOW_INSECURE_LOCAL_AUTH` maps only to `settings.allow_insecure_local_auth`.
 - **Placeholder scan:** no TBD/TODO/“similar to”/undefined helper remains. All commands, routes, statuses, token rules, modes, files, and operational order are explicit.
 - **Scope check:** no encryption-at-rest, KMS, schema, SA assignment change, token-management UI, general-query-auth removal, live rollout, or model generation is included.
