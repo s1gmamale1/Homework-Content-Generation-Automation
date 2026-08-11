@@ -56,11 +56,14 @@ async def get_current_user(
             detail="operator auth is unavailable",
         )
 
-    provided = (
-        _bearer_value(authorization)
-        if authorization is not None
-        else _query_value(token)
-    )
+    # Fall through to the query token when the header is absent OR carries no
+    # parseable Bearer credential. SSE/download clients can only present
+    # `?token=`, and an upstream proxy may stamp a blank or non-Bearer
+    # `Authorization` onto those browser-originated requests; such a header is
+    # not a presented credential and must not suppress the query token.
+    # A well-formed but WRONG Bearer is truthy here, so it short-circuits and
+    # still 401s — the fallback never becomes credential shopping.
+    provided = _bearer_value(authorization) or _query_value(token)
 
     if not provided:
         raise HTTPException(

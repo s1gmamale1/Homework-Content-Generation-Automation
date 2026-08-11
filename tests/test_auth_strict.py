@@ -120,3 +120,42 @@ async def test_auth_diagnostics_never_disclose_token_values(monkeypatch):
     detail = str(caught.value.detail)
     assert configured not in detail
     assert presented not in detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "authorization",
+    ["", "   ", "Basic Zm9vOmJhcg==", "Bearer", "Bearer ", "Token abc"],
+)
+async def test_query_token_survives_an_unusable_authorization_header(
+    monkeypatch, authorization
+):
+    """SSE/download clients can only carry `?token=`.
+
+    An upstream proxy may stamp a blank or non-Bearer `Authorization` on those
+    browser-originated requests (EventSource / <a download>). Such a header
+    carries no credential, so it must not suppress an otherwise-valid query
+    token — the module contract is still "two acceptance modes per request".
+    """
+    monkeypatch.setattr(auth, "valid_auth_tokens", lambda: {STRONG_A})
+    result = await auth.get_current_user(
+        authorization=authorization, token=STRONG_A
+    )
+    assert result["auth"] == "token"
+
+
+@pytest.mark.asyncio
+async def test_a_wellformed_wrong_bearer_is_not_rescued_by_a_query_token(
+    monkeypatch,
+):
+    """Guard on the fix above: only an UNPARSEABLE header falls through.
+
+    A well-formed Bearer is a real presented credential, so a wrong one still
+    401s — the fallback must never become credential shopping.
+    """
+    monkeypatch.setattr(auth, "valid_auth_tokens", lambda: {STRONG_A})
+    with pytest.raises(HTTPException) as caught:
+        await auth.get_current_user(
+            authorization=f"Bearer {STRONG_B}", token=STRONG_A
+        )
+    assert caught.value.status_code == 401
