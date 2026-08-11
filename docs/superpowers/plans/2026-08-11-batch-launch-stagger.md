@@ -334,7 +334,7 @@ def test_zero_concurrency_is_rejected_not_silently_deadlocking(field):
 ```bash
 uv run python -m pytest tests/test_launch_stagger_settings.py -q
 ```
-Expected: `test_defaults_match_the_measured_incident` fails with `AttributeError: 'Settings' object has no attribute 'batch_launch_wave_size'`, and both `test_zero_concurrency_...` cases fail with `DID NOT RAISE`.
+Expected: **6 failures**, not 3 — `test_defaults_match_the_measured_incident` with `AttributeError: 'Settings' object has no attribute 'batch_launch_wave_size'`; `test_knobs_are_overridable` likewise (`extra="ignore"` in `SettingsConfigDict` swallows the unknown kwargs, so the attribute is still missing); both `test_negative_is_rejected` cases with `DID NOT RAISE`; and both `test_zero_concurrency_...` cases with `DID NOT RAISE`. `test_zero_is_an_allowed_kill_switch` passes vacuously for the same `extra="ignore"` reason — it only becomes meaningful after the fields exist.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -677,6 +677,8 @@ git commit -m "feat(jobs): reset_for_retry() accepts a DB-clock start offset"
 1. **Wave position is `resumed`, not the loop index.** A retired-model job is skipped and adds no load, so it must not consume a wave slot.
 2. **Add a deterministic `ORDER BY`.** The current `select` has none, so row order is whatever Postgres returns and wave assignment would vary run to run. Before writing, `grep -rn "resume_failed_in_batch" app/ tests/` and confirm every caller still compiles.
 
+   **Why `created_at` is the right key, and is not a tie** (a reviewer flagged this as arbitrary — the mechanism they assumed does not apply here): `HomeworkJob` inherits `Timestamps` (`app/models/base.py:20-23`), whose `created_at` is a **Python-side** `default=_utcnow` evaluated per row at INSERT — *not* a Postgres `server_default` of `now()`. Postgres `now()` is transaction-fixed and would give every job in one launch an identical timestamp; `_utcnow()` does not. So `created_at` carries real per-row microsecond creation order, which for a batch launch is TOC order, and `id` only ever breaks a same-microsecond tie. Do **not** "fix" this by joining `TOCEntry.order_index` — it adds a correlated subquery for an ordering `created_at` already gives.
+
 - [ ] **Step 1: Write the failing test**
 
 Append to `tests/repositories/test_launch_stagger_repo.py`:
@@ -882,14 +884,42 @@ Create `tests/api/test_batch_launch_stagger.py`. Reuse the fixture shape from `t
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 BOOK_ID = uuid.uuid4()
 
+
+@pytest.fixture
+def fake_session():
+    """`launch_batch` really calls `session.flush()` (batch.py:423) and
+    `session.commit()` (:427). Without this override those run on the REAL
+    session built from the sentinel `DATABASE_URL`, which points at a database
+    that does not exist — see the warning in `tests/api/conftest.py`'s
+    docstring. Every other mocked 201-path launch test overrides it the same
+    way (`test_batch_output_language.py:130-143`); do not skip it."""
+    from app.db import get_session
+    from main import app
+
+    def _mk():
+        s = MagicMock()
+        s.commit = AsyncMock()
+        s.flush = AsyncMock()
+        s.rollback = AsyncMock()
+        s.close = AsyncMock()
+        return s
+
+    async def _override():
+        yield _mk()
+
+    app.dependency_overrides[get_session] = _override
+    yield
+    app.dependency_overrides.pop(get_session, None)
+
 # `launch_batch` ends by building its response through `_rollup_payload`
-# (batch.py:429 -> :102-133), which reads SEVENTEEN attributes off the batch.
+# (batch.py:429 -> :102-133), which reads 21 attributes off the batch.
 # A 4-attribute stub makes every test in this file 500 inside payload
 # construction — i.e. fail GREEN for a reason that has nothing to do with the
 # stagger. This mirrors the complete shape already proven at
@@ -940,7 +970,10 @@ def _fake_launch_defaults():
     )
 
 
-def _wire(monkeypatch, batch_mod, *, offsets_sink, latest=None):
+def _wire(monkeypatch, batch_mod, *, offsets_sink, latest=None, resume_ids=None):
+    """`resume_ids`: when given, only those toc ids resolve to a saved
+    failed job (-> resume branch); every other target falls through to
+    create. That mix is what makes the SHARED wave counter observable."""
     async def _get_book(session, book_id):
         return _fake_book()
 
@@ -956,6 +989,8 @@ def _wire(monkeypatch, batch_mod, *, offsets_sink, latest=None):
 
     async def _latest(session, book_id, toc_entry_id, *, transport=None,
                       output_language):
+        if resume_ids is not None:
+            return latest if toc_entry_id in resume_ids else None
         return latest
 
     async def _lock(session, book_id, toc_entry_id=None):
@@ -1004,7 +1039,7 @@ async def _launch(payload):
 
 
 @pytest.mark.asyncio
-async def test_large_launch_is_spread_across_waves(monkeypatch):
+async def test_large_launch_is_spread_across_waves(monkeypatch, fake_session):
     from app.api.v1 import batch as batch_mod
     offsets = []
     _wire(monkeypatch, batch_mod, offsets_sink=offsets)
@@ -1022,7 +1057,7 @@ async def test_large_launch_is_spread_across_waves(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_small_launch_is_not_staggered_at_all(monkeypatch):
+async def test_small_launch_is_not_staggered_at_all(monkeypatch, fake_session):
     """The other direction: a launch that fits in one wave is untouched."""
     from app.api.v1 import batch as batch_mod
     offsets = []
@@ -1040,7 +1075,7 @@ async def test_small_launch_is_not_staggered_at_all(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_kill_switch_disables_the_stagger(monkeypatch):
+async def test_kill_switch_disables_the_stagger(monkeypatch, fake_session):
     from app.api.v1 import batch as batch_mod
     offsets = []
     _wire(monkeypatch, batch_mod, offsets_sink=offsets)
@@ -1054,7 +1089,7 @@ async def test_kill_switch_disables_the_stagger(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resumed_sections_share_the_same_wave_counter(monkeypatch):
+async def test_resumed_sections_share_the_same_wave_counter(monkeypatch, fake_session):
     """A resumed job is as claimable as a created one, so both must advance the
     counter — otherwise a resume-heavy relaunch rebuilds the herd."""
     from app.api.v1 import batch as batch_mod
@@ -1079,6 +1114,52 @@ async def test_resumed_sections_share_the_same_wave_counter(monkeypatch):
     assert resp.status_code == 201
     assert offsets == []                      # everything resumed, nothing created
     assert resume_offsets[:7] == [0, 0, 0, 60, 60, 60, 120]
+
+
+@pytest.mark.asyncio
+async def test_mixed_resume_and_create_share_one_wave_sequence(monkeypatch, fake_session):
+    """THE test for the shared counter, and the only one that can catch the
+    plausible wrong implementation (a separate counter per branch).
+
+    The two single-disposition tests above cannot: in an all-create launch
+    `created == launched` at every call site, and in an all-resume launch the
+    create branch never runs. Only a MIX distinguishes them.
+
+    First 4 targets resume, remaining 10 create. With wave_size 3 the resumed
+    and created offsets must interleave into ONE monotone sequence
+    [(i // 3) * 60 for i in range(14)] — not two independent ramps that both
+    restart at 0.
+    """
+    from app.api.v1 import batch as batch_mod
+    offsets = []
+    resume_offsets = []
+    resume_ids = {r.id for r in _ROWS[:4]}
+    saved = SimpleNamespace(id=uuid.uuid4(), status="failed", provider="gemini",
+                            model="gemini-3.6-flash", extract_provider=None,
+                            extract_model=None, judge_provider=None,
+                            judge_model=None, solver_provider=None,
+                            solver_model=None)
+    _wire(monkeypatch, batch_mod, offsets_sink=offsets, latest=saved,
+          resume_ids=resume_ids)
+
+    async def _reset(session, job_id, batch_id=None, *, start_offset_seconds=0):
+        resume_offsets.append(start_offset_seconds)
+
+    monkeypatch.setattr(batch_mod.jobs_repo, "reset_for_retry", _reset)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_size", 3)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_interval_seconds", 60)
+
+    resp = await _launch({"book_id": str(BOOK_ID)})
+
+    assert resp.status_code == 201
+    assert resume_offsets == [0, 0, 0, 60]
+    assert offsets == [60, 60, 120, 120, 120, 180, 180, 180, 240, 240]
+    # The whole point: ONE sequence, not two.
+    assert resume_offsets + offsets == [(i // 3) * 60 for i in range(14)]
+    body = resp.json()
+    assert body["jobs_resumed"] == 4
+    assert body["jobs_created"] == 10
+    assert body["stagger"]["jobs_launched"] == 14
 ```
 
 > **Implementer note:** the `_wire` helper is a starting point, not gospel. Run it, and if `launch_batch` reaches a repo call the stub doesn't cover — **or reads an attribute a stubbed return value doesn't carry** — extend the stub. Do **not** loosen an assertion to make it pass. Watch specifically for a `500` on a test that asserts `201`: that means payload construction blew up on a missing attribute, which is a stub defect, never a finding about the stagger. If `saved` needs more attributes for `retired_models_in_job` to return empty, add them; that guard must keep working unchanged.
@@ -1170,11 +1251,12 @@ uv run python -m pytest tests/api tests/integration -q
 
 - [ ] **Step 5: RED-proof (mandatory)**
 
-Two sabotages, both required:
-1. Change the create-branch offset argument to `stagger_offset(created, ...)` — `test_resumed_sections_share_the_same_wave_counter` must fail, proving the shared counter is really tested.
-2. Change `launched += 1` in the resume branch to a no-op — the same test must fail with all-zero resume offsets.
+Two sabotages, both required. **Both target `test_mixed_resume_and_create_share_one_wave_sequence`** — the single-disposition tests cannot detect either one (in an all-create launch `created == launched`; in an all-resume launch the create branch never executes), which is exactly why the mixed test exists:
 
-**Restore after each.** Quote both failures.
+1. Change the create-branch offset argument to `stagger_offset(created, ...)`. The mixed test must fail with `assert [60, 60, 120, ...] == [0, 0, 0, 60, ...]` — the created jobs restart their own ramp at 0 instead of continuing from the resumed ones.
+2. Change `launched += 1` in the **resume** branch to a no-op. The mixed test must fail with `resume_offsets == [0, 0, 0, 0]` (and the created offsets shifted down a wave).
+
+**Restore after each.** Quote both failures verbatim. If either sabotage leaves the suite green, stop and report — it means the shared-counter rule is still untested and the task is not done.
 
 - [ ] **Step 6: Commit**
 
@@ -1257,7 +1339,11 @@ async def test_resume_endpoint_passes_the_wave_settings(monkeypatch):
 
 - [ ] **Step 2: Run it and watch it fail**
 
-Expected: `KeyError: 'stagger'` (and `seen == {}` if the endpoint passes no wave args).
+Expected: the response is already `200`, and the `seen` assertion fires **before** anything reads `body["stagger"]`, so the failure is:
+```
+AssertionError: assert {'wave_size': 0, 'interval_seconds': 0} == {'wave_size': 6, 'interval_seconds': 60}
+```
+(not a `KeyError` — the stub's own `wave_size=0, interval_seconds=0` defaults are what get recorded when the endpoint passes no wave arguments).
 
 - [ ] **Step 3: Write the implementation**
 
@@ -1399,6 +1485,14 @@ The PR body must lead with: this is sized for the **current** concurrency config
 - **IMPORTANT — fixed.** The pause/unpause-rebuilds-the-herd residual was undocumented; now recorded in the module docstring and required in the worklog and PR body.
 - **NITS — fixed.** Task 1 expected-count 11 → **9**; Task 3 Step 2 now names **both** failing tests; the claim-order citation now distinguishes the docstring (`:428-430`) from the executable `ORDER BY` (`:559-566`); the kill-switch wording no longer implies zero restart.
 - **Confirmed accurate by the reviewer** (spot-re-verified by me): every other file:line citation; ORM-attribute assignment of a SQL expression; `make_interval` 7-arg seconds-last against five existing uses; `HomeworkJob.created_at` exists via the `Timestamps` mixin so Task 5's `ORDER BY` compiles; monkeypatch resolution order for `reset_for_retry` and `retired_models_in_job`; the wave-counter logic at both call sites; **no existing test breaks** (every existing `create`/`reset_for_retry` stub is a kwarg-tolerant `AsyncMock`, no batch route has an exact-payload assertion, and integration launches use ≤5 lessons so default wave_size 6 leaves them byte-identical); startup-sweep safety for future-dated unclaimed rows; and full scope compliance (`/generate` untouched, retired-model guard intact, no migration, `ge=1` cannot disturb the `8` sentinel).
+
+**Review round 2 (fresh Fable reviewer; every finding re-verified against source before acting):**
+- **BLOCKER — fixed.** Round 1 blessed "the wave-counter logic at both call sites", but only the *implementation*, not its test coverage. All four Task 6 tests were single-disposition: three all-create (where `created == launched`, so the two counters are indistinguishable) and one all-resume (where the create branch never executes). **Sabotage 1 was therefore a no-op no test could detect** — and the plausible wrong implementation the shared-counter rule exists to forbid would have shipped green. Added `test_mixed_resume_and_create_share_one_wave_sequence` (4 resumed + 10 created, asserting one monotone sequence) and re-pointed both Task 6 sabotages at it, with an instruction to STOP if either leaves the suite green. This is the repo's documented pattern recurring one step over: round 1 fixed a RED-proof that would `NameError`; round 2 found one that could not fail at all.
+- **IMPORTANT — fixed.** Task 7 Step 2 predicted `KeyError: 'stagger'`; the stub's own `wave_size=0` defaults mean the `seen` assertion fires first, so the real failure is an `AssertionError`. Corrected verbatim.
+- **IMPORTANT — fixed.** Task 6's tests exercised the real `get_session` (`launch_batch` genuinely calls `flush()`+`commit()`), which the `tests/api/conftest.py` docstring warns opens a connection to a sentinel `DATABASE_URL` that does not exist. Added a `fake_session` fixture on the proven `test_batch_output_language.py:130-143` pattern; all five Task 6 tests now take it.
+- **REJECTED — reviewer's mechanism was wrong.** It claimed Task 5's `ORDER BY created_at, id` degrades to random-UUID order because "Postgres `now()` is transaction-fixed", so every job in a launch shares a `created_at`. That is false here: `Timestamps.created_at` (`app/models/base.py:20-23`) is a **Python-side** `default=_utcnow` evaluated per row, not a server default — verified, and no migration overrides it for `homework_jobs`. Ordering is real per-row creation order. Kept `created_at, id`; added the reasoning inline in Task 5 so round 3 doesn't re-raise it, and an explicit "do not 'fix' this with a `TOCEntry` subquery".
+- **NITS — fixed.** `_rollup_payload` reads **21** attributes, not 17 (the stub already carried all of them); Task 2 Step 2 now lists all **6** pre-implementation failures and flags `test_zero_is_an_allowed_kill_switch` as vacuous until the fields exist.
+- **Newly confirmed by round 2:** all callers of the three modified functions pass no new kwarg (`jobs.py:300` /generate, `jobs.py:420` retry_job, two smoke scripts, `batch.py:534`); FE reads `jobs_created`/`jobs_resumed` by key (`launcher.tsx:1126,1156`, `batch-actions.tsx:45`) so the additive `stagger` key is harmless; no SSE publish in `launch_batch`; `classify_entries` yields 14 lessons on the fixture; the Task 7 dependency-override key is correct; and all other RED-proofs fail for their stated reasons.
 
 **Type consistency.** `stagger_offset(index, *, wave_size, interval_seconds) -> int` is called identically in Tasks 5, 6, 7. `start_offset_seconds: int = 0` is the parameter name on both `create` and `reset_for_retry`. `resume_failed_in_batch` keeps its `{"resumed", "skipped_retired"}` return shape. `_stagger_summary` returns the same five keys in both payloads, and the Task 6/7 assertions match it exactly.
 
