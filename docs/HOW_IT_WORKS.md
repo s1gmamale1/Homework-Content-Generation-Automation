@@ -173,6 +173,21 @@ request open. So instead:
   randomly), and across the fleet `SKIP LOCKED` hands ascending lessons to successive workers.
 - The worker holds N "slots" (a semaphore, default 4) so it runs at most N jobs at once.
 
+**Launching a whole book doesn't start every lesson at once.** A batch launch stamps
+`scheduled_at` in *waves* — `BATCH_LAUNCH_WAVE_SIZE` jobs (default 6) claimable
+immediately, that many more every `BATCH_LAUNCH_WAVE_INTERVAL_SECONDS` (default 60).
+The reason is that every job's first phase (`extract`) is short and very consistent
+(~13s), so without the stagger all N lessons finish step one within a few seconds of
+each other and then all fan out into their parallel phases simultaneously — measured
+on 2026-08-11, a 28-lesson launch put ~155 concurrent API calls against a 32-slot
+credential limiter and burned 16 two-minute waits. Spreading the *start* removes the
+pile-up without changing any concurrency setting. Three things worth knowing:
+a launch of wave-size lessons or fewer is **not delayed at all**; waiting jobs are
+excluded from the `/generate` backpressure count (`queue_depth` only counts jobs
+that are due), so they never trip its 503; and the stagger shapes only the *initial*
+release — pausing a batch mid-ramp and unpausing later releases every overdue wave
+together, and two batches launched at the same moment each get their own first wave.
+
 The worker can run **two ways**:
 - **Embedded** (default): it runs *inside* the FastAPI process, started in `main.py`'s
   lifespan. Good for a single machine. Set `WORKER_CONCURRENCY=0` to turn it off.

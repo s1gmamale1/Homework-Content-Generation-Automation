@@ -72,14 +72,33 @@ class Settings(BaseSettings):
     # When `pending` queue depth exceeds this, /generate returns 503. Set
     # to 0 to disable backpressure and accept-all.
     queue_backpressure_limit: int = 50
+    # ─── Batch-launch wave stagger (plan 2026-08-11) ──────────────────────
+    # A batch launch stamps `scheduled_at` in waves instead of making every job
+    # claimable at once. Sized against the MEASURED 2026-08-11 incident (batch
+    # d538c4ef, 28 lessons, transport=api): per-job peak api-call fan-out is
+    # 5.54 (p50 5, max 7), so 6 jobs per wave puts ~33 calls against
+    # CREDENTIAL_MAX_CONCURRENT_GEMINI=32 instead of the ~155 that produced 16
+    # slot-wait exhaustions. The interval clears the extract phase (p50 13.1s,
+    # max 16.1s) plus one content call (avg 35.9s), so waves cannot stack.
+    # Deliberately NOT sized against a raised credential cap: the point is that
+    # this works at the fleet's CURRENT configuration with no worker touch.
+    # Set either to 0 to disable — every job becomes claimable immediately,
+    # exactly as before this feature.
+    batch_launch_wave_size: int = Field(default=6, ge=0)
+    batch_launch_wave_interval_seconds: int = Field(default=60, ge=0)
     # Process-wide cap on simultaneous CLI subprocesses. Protects against
     # rate-limit cascades when multiple workers + parallel scheduler all
     # fan out at once. agent_max_concurrency is the live knob read by
     # agent._effective_concurrency(); gemini_max_concurrency is a DEPRECATED
     # fallback used only when agent_max_concurrency is left at its default (8),
     # so existing .env files that set GEMINI_MAX_CONCURRENCY still work.
-    agent_max_concurrency: int = 8  # LIVE knob — set AGENT_MAX_CONCURRENCY to tune
-    gemini_max_concurrency: int = 8  # DEPRECATED fallback — honoured only when agent_max_concurrency==8
+    # ge=1 on BOTH: `_semaphore()` feeds whichever one wins into
+    # `asyncio.Semaphore(n)` (agent.py:249-253), and `asyncio.Semaphore(0)` has
+    # ZERO permits — every model call blocks forever with no error and no log,
+    # so a host set to 0 claims jobs, makes no calls, looks healthy, and loses
+    # each job to `job_timeout_seconds`. Fail at startup instead.
+    agent_max_concurrency: int = Field(default=8, ge=1)  # LIVE knob — set AGENT_MAX_CONCURRENCY to tune
+    gemini_max_concurrency: int = Field(default=8, ge=1)  # DEPRECATED fallback — honoured only when agent_max_concurrency==8
     # transport=api: claude's Messages API REQUIRES max_tokens (gemini does not,
     # and stays uncapped). 16384 gives headroom over the longest uncapped content
     # phases (reading/preview-hard); hitting it fails LOUD, never silent-truncates.
