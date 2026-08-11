@@ -2547,3 +2547,31 @@ without that single test a split counter would have shipped green.
 
 **Ships dark:** the launcher runs on the head, pinned to v968 until the `AUTH_TOKEN` rotation.
 Interim mitigation is chunked launches of ~6 via `toc_entry_ids`.
+
+## 0173 — Pin the stagger↔backpressure interaction (2026-08-11)
+
+**Branch:** `test/stagger-backpressure` · **Test-only · no migration · $0 · no production surface.**
+
+**What:** three real-Postgres tests in `tests/repositories/test_queue_depth_stagger.py` pinning that
+`jobs_repo.queue_depth` counts only the wave that is DUE. Follow-up to the #132 gate
+(`stagger-backpressure-test-1`), taken by the gatekeeper as a follow-up rather than a blocker.
+
+**Why:** the wave stagger's safety property — a staggered launch must not trip `/generate`'s
+`queue_backpressure_limit` 503 with its own not-yet-due jobs — rests entirely on `queue_depth`'s
+`scheduled_at <= func.now()` filter. That filter is **pre-existing**: worklog 0172 added no code for
+it and simply relied on a property already true, so **nothing asserted it**. A later relaxation of
+`queue_depth` would have made big launches silently 503 on their own waves with no test failing.
+
+**The three:** (1) 6 lessons at wave_size 2 → `queue_depth` sees only the 2 due, not 6 — offsets come
+from the shipped `stagger_offset`, so the test tracks the real rule instead of a hand-copied one;
+(2) the inverse direction — an offset-0 job IS counted, so (1) cannot be satisfied by a `queue_depth`
+that counts nothing; (3) the boundary moves — a stamp rewound past `now()` becomes countable, which
+is what makes a wave *fall due* rather than vanish.
+
+**RED-proved:** removing the `scheduled_at <= func.now()` filter fails (1) with
+`assert 14 == (8 + 2)` — "counted 6 of 6 staggered jobs; only the 2 due ones may count" — and also
+fails (3). Sabotage marker verified as landed before the run, then restored. Suite **2495 passed /
+458 skipped** (+3 skips = the new real-DB tests, correctly skipped without `RUN_DB_INTEGRATION`);
+3/3 pass against real Postgres.
+
+Sibling of `test_queue_depth_pause.py`, which pins the other `queue_depth` predicate.
