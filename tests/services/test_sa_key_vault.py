@@ -954,6 +954,7 @@ def test_windows_access_denied_never_falls_back_to_path_io(monkeypatch, tmp_path
 def test_windows_remove_missing_ok_never_treats_access_denied_as_absent(
     monkeypatch, tmp_path
 ):
+    import ntsecuritycon
     import win32con
     import win32security
 
@@ -970,7 +971,7 @@ def test_windows_remove_missing_ok_never_treats_access_denied_as_absent(
         win32security.ACL_REVISION, win32con.DELETE, sid
     )
     denied.AddAccessAllowedAce(
-        win32security.ACL_REVISION, win32con.FILE_ALL_ACCESS, sid
+        win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, sid
     )
     descriptor = win32security.GetFileSecurity(
         str(path), win32security.DACL_SECURITY_INFORMATION

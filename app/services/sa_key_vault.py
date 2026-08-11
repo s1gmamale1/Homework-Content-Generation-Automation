@@ -349,7 +349,7 @@ def _set_private_windows_dacl(handle, *, directory: bool) -> None:  # pragma: no
     dacl.AddAccessAllowedAceEx(
         win32security.ACL_REVISION_DS,
         inheritance,
-        win32con.FILE_ALL_ACCESS,
+        ntsecuritycon.FILE_ALL_ACCESS,
         sid,
     )
     win32security.SetSecurityInfo(
@@ -387,7 +387,7 @@ def _verify_private_windows_dacl(handle, *, directory: bool) -> None:  # pragma:
     if (
         ace_type != win32security.ACCESS_ALLOWED_ACE_TYPE
         or ace_flags != expected_flags
-        or access_mask != win32con.FILE_ALL_ACCESS
+        or access_mask != ntsecuritycon.FILE_ALL_ACCESS
         or not win32security.EqualSid(ace_sid, _windows_process_sid())
     ):
         raise _raise_vault_error()
