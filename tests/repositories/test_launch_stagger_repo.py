@@ -114,3 +114,100 @@ async def test_resume_offset_does_not_disturb_the_lease_reset():
     assert job.claimed_at is None
     assert job.claimed_by is None
     assert job.attempts == 0
+
+
+class _ResumeStubSession:
+    """Stands in for the `select(...)` in resume_failed_in_batch."""
+
+    def __init__(self, jobs):
+        self._jobs = jobs
+        self.statements = []
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+
+        class _Result:
+            def __init__(self, jobs):
+                self._jobs = jobs
+
+            def scalars(self):
+                return self
+
+            def all(self):
+                return self._jobs
+
+        return _Result(self._jobs)
+
+
+@pytest.mark.asyncio
+async def test_resume_assigns_waves_in_order(monkeypatch):
+    jobs = [_FakeJob() for _ in range(8)]
+    seen = []
+
+    async def _fake_reset(session, job_id, batch_id=None, *, start_offset_seconds=0):
+        seen.append(start_offset_seconds)
+
+    monkeypatch.setattr(jobs_repo, "reset_for_retry", _fake_reset)
+    monkeypatch.setattr(
+        "app.services.job_reactivation.retired_models_in_job", lambda job: ())
+
+    out = await jobs_repo.resume_failed_in_batch(
+        _ResumeStubSession(jobs), uuid.uuid4(), wave_size=3, interval_seconds=60)
+
+    assert out["resumed"] == 8
+    assert seen == [0, 0, 0, 60, 60, 60, 120, 120]
+
+
+@pytest.mark.asyncio
+async def test_retired_jobs_do_not_consume_a_wave_slot(monkeypatch):
+    """A skipped retired job adds no load, so the next real job must stay in
+    the same wave it would have occupied anyway."""
+    jobs = [_FakeJob() for _ in range(4)]
+    retired_id = jobs[1].id
+    seen = []
+
+    async def _fake_reset(session, job_id, batch_id=None, *, start_offset_seconds=0):
+        seen.append(start_offset_seconds)
+
+    monkeypatch.setattr(jobs_repo, "reset_for_retry", _fake_reset)
+    monkeypatch.setattr(
+        "app.services.job_reactivation.retired_models_in_job",
+        lambda job: (("content", "gemini", "gemini-2.5-flash"),) if job.id == retired_id else ())
+
+    out = await jobs_repo.resume_failed_in_batch(
+        _ResumeStubSession(jobs), uuid.uuid4(), wave_size=2, interval_seconds=60)
+
+    assert out["resumed"] == 3
+    assert len(out["skipped_retired"]) == 1
+    # 3 resumable jobs at wave_size 2 -> waves 0, 0, 1 (NOT 0, 1, 1)
+    assert seen == [0, 0, 60]
+
+
+@pytest.mark.asyncio
+async def test_resume_without_wave_args_does_not_stagger(monkeypatch):
+    """Default call site behaviour is unchanged."""
+    jobs = [_FakeJob() for _ in range(5)]
+    seen = []
+
+    async def _fake_reset(session, job_id, batch_id=None, *, start_offset_seconds=0):
+        seen.append(start_offset_seconds)
+
+    monkeypatch.setattr(jobs_repo, "reset_for_retry", _fake_reset)
+    monkeypatch.setattr(
+        "app.services.job_reactivation.retired_models_in_job", lambda job: ())
+
+    await jobs_repo.resume_failed_in_batch(_ResumeStubSession(jobs), uuid.uuid4())
+
+    assert seen == [0, 0, 0, 0, 0]
+
+
+@pytest.mark.asyncio
+async def test_resume_select_is_deterministically_ordered(monkeypatch):
+    """Without an ORDER BY, which lesson lands in wave 0 varies per run."""
+    session = _ResumeStubSession([])
+    monkeypatch.setattr(
+        "app.services.job_reactivation.retired_models_in_job", lambda job: ())
+
+    await jobs_repo.resume_failed_in_batch(session, uuid.uuid4())
+
+    assert "order by" in str(session.statements[0]).lower()

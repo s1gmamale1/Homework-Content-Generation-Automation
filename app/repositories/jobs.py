@@ -1442,7 +1442,10 @@ async def running_job_ids_in_batch(session: AsyncSession, batch_id: UUID) -> lis
     return list(rows.scalars().all())
 
 
-async def resume_failed_in_batch(session: AsyncSession, batch_id: UUID) -> dict:
+async def resume_failed_in_batch(
+    session: AsyncSession, batch_id: UUID, *,
+    wave_size: int = 0, interval_seconds: int = 0,
+) -> dict:
     """Re-enqueue every failed/cancelled job in a batch via reset_for_retry
     (status->pending, attempts->0). reset_for_retry keeps phase rows, so the
     pipeline RESUMES — done phases are reused, only unfinished ones re-run.
@@ -1452,15 +1455,26 @@ async def resume_failed_in_batch(session: AsyncSession, batch_id: UUID) -> dict:
     reuses the job's pinned provider/model verbatim, so re-enqueuing a
     retired-stamped job would call a dead model.
 
+    ``wave_size``/``interval_seconds``: launch stagger (plan 2026-08-11).
+    Resuming N failed lessons makes them all claimable at once, which is the
+    same synchronised burst a fresh batch launch produces — and resume is the
+    LIKELIER re-trigger, since retrying is how operators react to the failure.
+    Defaults of 0 mean "no stagger", so any other caller is unaffected.
+
     Returns ``{"resumed": <count re-enqueued>, "skipped_retired": [<job id
     str>, ...]}``.
     """
     from app.services import job_reactivation
+    from app.services.launch_stagger import stagger_offset
 
     rows = await session.execute(
-        select(HomeworkJob).where(
+        select(HomeworkJob)
+        .where(
             HomeworkJob.batch_id == batch_id,
-            HomeworkJob.status.in_(["failed", "cancelled"])))
+            HomeworkJob.status.in_(["failed", "cancelled"]))
+        # Deterministic wave assignment: with no ORDER BY the DB may return rows
+        # in any order, so which lesson lands in wave 0 would vary run to run.
+        .order_by(HomeworkJob.created_at, HomeworkJob.id))
     jobs = list(rows.scalars().all())
     resumed = 0
     skipped_retired: list[str] = []
@@ -1468,7 +1482,12 @@ async def resume_failed_in_batch(session: AsyncSession, batch_id: UUID) -> dict:
         if job_reactivation.retired_models_in_job(job):
             skipped_retired.append(str(job.id))
             continue
-        await reset_for_retry(session, job.id)
+        # Wave position is `resumed`, NOT the loop index: a skipped retired job
+        # adds no load and must not consume a wave slot.
+        await reset_for_retry(
+            session, job.id,
+            start_offset_seconds=stagger_offset(
+                resumed, wave_size=wave_size, interval_seconds=interval_seconds))
         resumed += 1
     return {"resumed": resumed, "skipped_retired": skipped_retired}
 
