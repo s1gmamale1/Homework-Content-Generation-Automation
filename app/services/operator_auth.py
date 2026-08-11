@@ -1,0 +1,124 @@
+"""Pure policy helpers for operator bearer authentication.
+
+Configuration strength is enforced explicitly at process startup, not while
+this module is imported.  Request dependencies deliberately keep accepting
+short injected test tokens once a process has passed its startup gate.
+"""
+
+from __future__ import annotations
+
+import hmac
+import string
+import unicodedata
+from collections.abc import Iterable
+from typing import Literal
+
+
+MIN_TOKEN_LENGTH = 32
+MIN_DISTINCT_CHARACTERS = 8
+_TOKEN_ALPHABET = frozenset(string.ascii_letters + string.digits + "_-")
+_DENYLIST = frozenset(
+    {
+        "123",
+        "password",
+        "changeme",
+        "change-me",
+        "secret",
+        "admin",
+        "test",
+        "dev",
+        "development",
+    }
+)
+
+
+class OperatorAuthConfigurationError(RuntimeError):
+    """Operator auth cannot safely start; never carries token material."""
+
+
+def parse_strong_tokens(raw: str) -> tuple[str, ...]:
+    """Parse an exact comma-delimited operator-token configuration.
+
+    An empty string is represented as no configured tokens so the separate
+    startup-mode decision can allow an explicit local-development mode.
+    Every non-empty member must independently satisfy the strength floor.
+    """
+
+    if raw == "":
+        return ()
+
+    parts = raw.split(",")
+    parsed: list[str] = []
+    for index, part in enumerate(parts, start=1):
+        token = part.strip()
+        invalid = (
+            not token
+            or token != part
+            or len(token) < MIN_TOKEN_LENGTH
+            or not token.isascii()
+            or any(character not in _TOKEN_ALPHABET for character in token)
+            or any(
+                character.isspace()
+                or unicodedata.category(character).startswith("C")
+                for character in token
+            )
+            or len(set(token)) < MIN_DISTINCT_CHARACTERS
+            or token.casefold() in _DENYLIST
+        )
+        if invalid:
+            raise OperatorAuthConfigurationError(
+                f"AUTH_TOKEN member {index} is structurally weak or malformed"
+            )
+        if token in parsed:
+            raise OperatorAuthConfigurationError(
+                f"AUTH_TOKEN member {index} duplicates an earlier member"
+            )
+        parsed.append(token)
+    return tuple(parsed)
+
+
+def require_startup_auth(
+    raw: str, *, allow_insecure_local: bool
+) -> Literal["token", "local-dev"]:
+    """Validate startup configuration and return its explicit auth mode."""
+
+    tokens = parse_strong_tokens(raw)
+    if tokens:
+        return "token"
+    if allow_insecure_local:
+        return "local-dev"
+    raise OperatorAuthConfigurationError(
+        "AUTH_TOKEN is required unless ALLOW_INSECURE_LOCAL_AUTH=true"
+    )
+
+
+def constant_time_token_match(
+    provided: str, candidates: Iterable[str]
+) -> bool:
+    """Compare an exact presented token against every candidate.
+
+    Bytes make ordinary non-ASCII input a safe mismatch against the configured
+    ASCII token set.  Ill-formed Unicode (for example, an injected lone
+    surrogate) cannot be UTF-8 encoded and is also an authentication miss,
+    never an exception that escapes as a 500.
+    """
+
+    try:
+        provided_bytes = provided.encode("utf-8")
+    except (UnicodeEncodeError, AttributeError):
+        return False
+
+    matched = False
+    for candidate in candidates:
+        try:
+            candidate_bytes = candidate.encode("utf-8")
+        except (UnicodeEncodeError, AttributeError):
+            # Startup policy makes live candidates ASCII.  Keep one digest
+            # operation per injected candidate while forcing malformed test
+            # configuration to miss.
+            candidate_bytes = b"\x00invalid-candidate"
+        candidate_matches = hmac.compare_digest(
+            provided_bytes, candidate_bytes
+        )
+        matched = candidate_matches or matched
+    return matched

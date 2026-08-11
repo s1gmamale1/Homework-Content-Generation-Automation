@@ -5,9 +5,8 @@ Two acceptance modes per request:
   2. `?token=<token>` query parameter — used by SSE streams (EventSource
      can't set custom headers in the browser, so the token rides on the URL)
 
-Tokens are validated against `settings.auth_token` (comma-separated). When
-the setting is empty, auth is disabled (dev/local mode) — any request is
-accepted and `user_id="anonymous"` is returned.
+Tokens are validated against `settings.auth_token` (comma-separated). Empty
+auth is accepted only when explicit insecure local-development mode is on.
 
 In production, the upstream service either injects the header (REST) or
 sets a cookie / appends the query param (SSE). The frontend's manual login
@@ -18,7 +17,27 @@ from typing import Optional
 
 from fastapi import Header, HTTPException, Query, status
 
-from app.config import valid_auth_tokens, valid_dashboard_tokens
+from app.config import settings, valid_auth_tokens, valid_dashboard_tokens
+from app.services.operator_auth import constant_time_token_match
+
+
+def _presented_value(value: str | None) -> str | None:
+    if not value or any(character.isspace() for character in value):
+        return None
+    return value
+
+
+def _bearer_value(authorization: str | None) -> str | None:
+    if authorization is None:
+        return None
+    scheme, separator, value = authorization.partition(" ")
+    if not separator or scheme.casefold() != "bearer" or not value:
+        return None
+    return _presented_value(value)
+
+
+def _query_value(token: str | None) -> str | None:
+    return _presented_value(token)
 
 
 async def get_current_user(
@@ -27,14 +46,21 @@ async def get_current_user(
 ) -> dict:
     valid = valid_auth_tokens()
     if not valid:
-        # Auth disabled (no AUTH_TOKEN configured). Local/dev convenience.
-        return {"user_id": "anonymous", "auth": "disabled"}
+        if (
+            settings.allow_insecure_local_auth
+            and settings.auth_token == ""
+        ):
+            return {"user_id": "anonymous", "auth": "disabled"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="operator auth is unavailable",
+        )
 
-    provided: Optional[str] = None
-    if authorization and authorization.lower().startswith("bearer "):
-        provided = authorization.split(None, 1)[1].strip()
-    elif token:
-        provided = token.strip()
+    provided = (
+        _bearer_value(authorization)
+        if authorization is not None
+        else _query_value(token)
+    )
 
     if not provided:
         raise HTTPException(
@@ -42,7 +68,7 @@ async def get_current_user(
             detail="missing auth token",
             headers={"WWW-Authenticate": 'Bearer realm="api"'},
         )
-    if provided not in valid:
+    if not constant_time_token_match(provided, sorted(valid)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid auth token",
@@ -64,10 +90,8 @@ async def get_current_user_strict(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="SA-key download requires AUTH_TOKEN to be configured",
         )
-    provided: Optional[str] = None
-    if authorization and authorization.lower().startswith("bearer "):
-        provided = authorization.split(None, 1)[1].strip()
-    if not provided or provided not in valid:
+    provided = _bearer_value(authorization)
+    if not provided or not constant_time_token_match(provided, sorted(valid)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="missing or invalid auth token",
