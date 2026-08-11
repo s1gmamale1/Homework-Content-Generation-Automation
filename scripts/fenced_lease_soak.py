@@ -8,6 +8,7 @@ attestation.  It opens no database, network, or model-provider client.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import math
@@ -16,7 +17,8 @@ import re
 import socket
 import sys
 from contextlib import asynccontextmanager
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections import Counter
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum, IntEnum
@@ -1849,6 +1851,343 @@ def _redact(value: Any) -> Any:
 
 def redacted_model_dump(model: BaseModel) -> dict[str, Any]:
     return _redact(model.model_dump(mode="json"))
+
+
+class ArtifactWriter:
+    """Durably append redacted samples and atomically publish one summary."""
+
+    def __init__(self, artifact_dir: Path, run_id: str):
+        if not _RUN_ID_RE.fullmatch(run_id):
+            raise ValueError("artifact run_id must be a safe soak run id")
+        self.artifact_dir = Path(artifact_dir)
+        self.run_id = run_id
+        self.artifact_dir.mkdir(parents=True, exist_ok=True)
+        self.samples_path = self.artifact_dir / f"{run_id}.samples.jsonl"
+        self.summary_path = self.artifact_dir / f"{run_id}.summary.json"
+
+    @staticmethod
+    def _encoded(value: BaseModel | Mapping[str, Any]) -> str:
+        dumped = (
+            value.model_dump(mode="json")
+            if isinstance(value, BaseModel)
+            else dict(value)
+        )
+        return json.dumps(
+            _redact(dumped),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def append(self, sample: BaseModel | Mapping[str, Any]) -> None:
+        encoded = self._encoded(sample)
+        with self.samples_path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(encoded + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def finish(self, summary: BaseModel | Mapping[str, Any]) -> None:
+        encoded = self._encoded(summary)
+        temporary = self.summary_path.with_suffix(".json.tmp")
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(encoded + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, self.summary_path)
+
+
+def _evidence_sample(
+    scope: SoakScope,
+    raw: RawSnapshot,
+    findings: Sequence[Finding],
+    *,
+    phase: str,
+) -> dict[str, Any]:
+    return {
+        "run_id": scope.run_id,
+        "scope_sha256": sha256_canonical(scope),
+        "phase": phase,
+        "observed_at": raw.observed_at.isoformat(),
+        "findings": [finding.model_dump(mode="json") for finding in findings],
+        "snapshot": raw.model_dump(mode="json"),
+        "priced_usage": price_scoped_usage(raw.usages).model_dump(mode="json"),
+    }
+
+
+def _summary(
+    scope: SoakScope,
+    raw_samples: Sequence[RawSnapshot],
+    findings: Sequence[Finding],
+    *,
+    verdict: str,
+    exit_code: ExitCode,
+    observed_at: datetime,
+    receipt: BaseModel | Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    latest = raw_samples[-1] if raw_samples else None
+    lease_counts = Counter(
+        event.event_type for event in (latest.lease_events if latest else [])
+    )
+    result: dict[str, Any] = {
+        "run_id": scope.run_id,
+        "scope_sha256": sha256_canonical(scope),
+        "observed_at": _aware_utc(observed_at, field_name="observed_at").isoformat(),
+        "verdict": verdict,
+        "exit_code": int(exit_code),
+        "sample_count": len(raw_samples),
+        "settle_seconds": scope.settle_seconds,
+        "peaks": {
+            "running_jobs": max(
+                (sum(job.status == "running" for job in raw.jobs) for raw in raw_samples),
+                default=0,
+            ),
+            "database_connections": max(
+                (raw.db.total_connections for raw in raw_samples), default=0
+            ),
+            "credential_slots": max(
+                (sum(slot.slot_count for slot in raw.credential_slots) for raw in raw_samples),
+                default=0,
+            ),
+        },
+        "lease_events": dict(sorted(lease_counts.items())),
+        "findings": [finding.model_dump(mode="json") for finding in findings],
+        "usage": (
+            price_scoped_usage(latest.usages).model_dump(mode="json")
+            if latest
+            else UsageCost(total_usd=Decimal("0"), rows=[]).model_dump(mode="json")
+        ),
+    }
+    if receipt is not None:
+        result["stop_receipt"] = (
+            receipt.model_dump(mode="json")
+            if isinstance(receipt, BaseModel)
+            else dict(receipt)
+        )
+    return result
+
+
+def _terminal(scope: SoakScope, raw: RawSnapshot) -> bool:
+    jobs = {job.id: job for job in raw.jobs}
+    return set(jobs) == set(scope.job_ids) and all(
+        jobs[job_id].status == "done" for job_id in scope.job_ids
+    )
+
+
+def _ordered_model_dumps(rows: Iterable[BaseModel]) -> list[dict[str, Any]]:
+    dumped = [row.model_dump(mode="json") for row in rows]
+    return sorted(dumped, key=lambda row: json.dumps(row, sort_keys=True))
+
+
+def _quiet_signature(
+    scope: SoakScope,
+    raw: RawSnapshot,
+    findings: Sequence[Finding],
+) -> str:
+    evidence = {
+        "lease_events": _ordered_model_dumps(raw.lease_events),
+        "usages": _ordered_model_dumps(raw.usages),
+        "phases": _ordered_model_dumps(raw.phases),
+        "heartbeat_breaches": sorted(_heartbeat_stale_hosts(scope, raw)),
+        "findings": _ordered_model_dumps(findings),
+    }
+    return hashlib.sha256(canonical_json(evidence).encode("utf-8")).hexdigest()
+
+
+async def run_preflight(
+    *,
+    scope: SoakScope,
+    attestation: FleetAttestation,
+    store: SoakReadStore,
+    writer: ArtifactWriter,
+    clock: Callable[[], datetime],
+) -> ExitCode:
+    raw = await store.collect(scope)
+    findings = evaluate_preflight(scope, attestation, raw)
+    writer.append(_evidence_sample(scope, raw, findings, phase="preflight"))
+    failed = any(finding.hard for finding in findings)
+    code = ExitCode.PREFLIGHT_FAILED if failed else ExitCode.PASS
+    writer.finish(
+        _summary(
+            scope,
+            [raw],
+            findings,
+            verdict="preflight_failed" if failed else "pass",
+            exit_code=code,
+            observed_at=clock(),
+        )
+    )
+    return code
+
+
+async def run_watch(
+    *,
+    scope: SoakScope,
+    attestation: FleetAttestation,
+    store: SoakReadStore,
+    writer: ArtifactWriter,
+    stopper: Any | None,
+    clock: Callable[[], datetime],
+    sleep: Callable[[float], Awaitable[None]],
+    interval_seconds: float = 2.0,
+    stdout: TextIO = sys.stdout,
+) -> ExitCode:
+    if interval_seconds <= 0:
+        raise ValueError("interval_seconds must be positive")
+
+    raw_samples: list[RawSnapshot] = []
+    latest_findings: list[Finding] = []
+    expected_staging_pause = f"lease-soak-staging:{scope.run_id}"
+    released = False
+    settle_started_at: datetime | None = None
+    settle_signature: str | None = None
+
+    try:
+        initial = await store.collect(scope)
+        raw_samples.append(initial)
+        latest_findings = evaluate_preflight(scope, attestation, initial)
+        writer.append(
+            _evidence_sample(scope, initial, latest_findings, phase="preflight")
+        )
+        if any(finding.hard for finding in latest_findings):
+            writer.finish(
+                _summary(
+                    scope,
+                    raw_samples,
+                    latest_findings,
+                    verdict="preflight_failed",
+                    exit_code=ExitCode.PREFLIGHT_FAILED,
+                    observed_at=clock(),
+                )
+            )
+            return ExitCode.PREFLIGHT_FAILED
+
+        stdout.write("READY_TO_RELEASE\n")
+        stdout.flush()
+
+        while True:
+            raw = await store.collect(scope)
+            raw_samples.append(raw)
+            pause_reason = raw.budget.api_paused_reason
+            if pause_reason == expected_staging_pause and not released:
+                latest_findings = evaluate_preflight(scope, attestation, raw)
+                writer.append(
+                    _evidence_sample(
+                        scope, raw, latest_findings, phase="waiting_release"
+                    )
+                )
+                if any(finding.hard for finding in latest_findings):
+                    writer.finish(
+                        _summary(
+                            scope,
+                            raw_samples,
+                            latest_findings,
+                            verdict="preflight_failed",
+                            exit_code=ExitCode.PREFLIGHT_FAILED,
+                            observed_at=clock(),
+                        )
+                    )
+                    return ExitCode.PREFLIGHT_FAILED
+                await sleep(interval_seconds)
+                continue
+
+            if pause_reason == expected_staging_pause:
+                latest_findings = [
+                    _runtime_hard(
+                        "staging_pause_reappeared",
+                        "staging pause reappeared after the watched release",
+                    )
+                ]
+            elif pause_reason is not None:
+                latest_findings = [
+                    _runtime_hard(
+                        "foreign_pause_during_watch",
+                        "fleet pause changed to a foreign reason after preflight",
+                        observed=pause_reason,
+                    )
+                ]
+            else:
+                released = True
+                latest_findings = evaluate_runtime(
+                    scope, attestation, raw, raw_samples[:-1]
+                )
+            writer.append(
+                _evidence_sample(scope, raw, latest_findings, phase="watch")
+            )
+
+            hard_stop = next(
+                (finding for finding in latest_findings if finding.hard_stop), None
+            )
+            if hard_stop is not None:
+                receipt = (
+                    await stopper.pause(scope, hard_stop)
+                    if stopper is not None
+                    else None
+                )
+                code = (
+                    ExitCode.HARD_STOP_ARMED
+                    if stopper is not None
+                    else ExitCode.HARD_STOP_READ_ONLY
+                )
+                writer.finish(
+                    _summary(
+                        scope,
+                        raw_samples,
+                        latest_findings,
+                        verdict="hard_stop",
+                        exit_code=code,
+                        observed_at=clock(),
+                        receipt=receipt,
+                    )
+                )
+                return code
+
+            if any(finding.stage_failure for finding in latest_findings):
+                writer.finish(
+                    _summary(
+                        scope,
+                        raw_samples,
+                        latest_findings,
+                        verdict="failed",
+                        exit_code=ExitCode.PREFLIGHT_FAILED,
+                        observed_at=clock(),
+                    )
+                )
+                return ExitCode.PREFLIGHT_FAILED
+
+            now = _aware_utc(clock(), field_name="clock")
+            if not _terminal(scope, raw):
+                settle_started_at = None
+                settle_signature = None
+            else:
+                signature = _quiet_signature(scope, raw, latest_findings)
+                if settle_started_at is None or signature != settle_signature:
+                    settle_started_at = now
+                    settle_signature = signature
+                elif (now - settle_started_at).total_seconds() >= scope.settle_seconds:
+                    writer.finish(
+                        _summary(
+                            scope,
+                            raw_samples,
+                            latest_findings,
+                            verdict="pass",
+                            exit_code=ExitCode.PASS,
+                            observed_at=now,
+                        )
+                    )
+                    return ExitCode.PASS
+            await sleep(interval_seconds)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        writer.finish(
+            _summary(
+                scope,
+                raw_samples,
+                latest_findings,
+                verdict="incomplete",
+                exit_code=ExitCode.INCOMPLETE,
+                observed_at=clock(),
+            )
+        )
+        return ExitCode.INCOMPLETE
 
 
 def load_scope(
