@@ -447,7 +447,9 @@ def test_aggregation_rejects_missing_duplicate_or_unexpected_hosts(tmp_path):
 def test_aggregation_rejects_artifact_from_another_scope(tmp_path):
     scope = scope_for(tmp_path)
     other_raw = valid_scope_dict()
-    other_raw["job_ids"] = ["44444444-4444-4444-4444-444444444444"]
+    other_raw["job_ids"] = [
+        f"44444444-4444-4444-4444-{index:012d}" for index in range(1, 5)
+    ]
     other = soak.SoakScope.model_validate(other_raw)
     worker = worker_for_aggregate(tmp_path, hostname="Host-02", pid=2, scope=scope)
     worker = worker.model_copy(update={"scope_sha256": soak.sha256_canonical(other)})

@@ -21,7 +21,8 @@ def valid_scope(**updates) -> soak.SoakScope:
     raw = valid_scope_dict()
     raw.update(
         {
-            "target_running": 2,
+            "participant_hosts": ["Host-02", "Host-03"],
+            "target_running": 4,
             "forbidden_notion_mapping_keys": ["english|8"],
             **updates,
         }
@@ -29,12 +30,13 @@ def valid_scope(**updates) -> soak.SoakScope:
     return soak.SoakScope.model_validate(raw)
 
 
-def valid_worker() -> soak.WorkerAttestation:
+def valid_worker(index: int = 2) -> soak.WorkerAttestation:
     scope = valid_scope()
+    hostname = f"Host-{index:02d}"
     return soak.WorkerAttestation(
         scope_sha256=soak.sha256_canonical(scope),
-        pc_id="Host-02:4242@fedcba9",
-        hostname="Host-02",
+        pc_id=f"{hostname}:{4240 + index}@fedcba9",
+        hostname=hostname,
         observed_at=NOW - timedelta(seconds=5),
         git_sha="fedcba9",
         code_version=1001,
@@ -52,13 +54,15 @@ def valid_worker() -> soak.WorkerAttestation:
 
 
 def valid_attestation() -> soak.FleetAttestation:
-    worker = valid_worker()
+    workers = [valid_worker(2), valid_worker(3)]
     return soak.FleetAttestation(
-        scope_sha256=worker.scope_sha256,
-        observed_at=worker.observed_at,
-        credential_fingerprint=worker.credential_fingerprint,
-        input_artifact_sha256=[soak.sha256_canonical(worker)],
-        workers=[worker],
+        scope_sha256=workers[0].scope_sha256,
+        observed_at=workers[0].observed_at,
+        credential_fingerprint=workers[0].credential_fingerprint,
+        input_artifact_sha256=[
+            soak.sha256_canonical(worker) for worker in workers
+        ],
+        workers=workers,
     )
 
 
@@ -78,7 +82,7 @@ def healthy_raw_snapshot() -> soak.RawSnapshot:
         ),
         jobs=[
             soak.JobSnapshot(
-                id=JOB,
+                id=job_id,
                 batch_id=BATCH,
                 book_id=BOOK,
                 batch_book_id=BOOK,
@@ -90,19 +94,21 @@ def healthy_raw_snapshot() -> soak.RawSnapshot:
                 usage_count=0,
                 lease_count=0,
             )
+            for job_id in valid_scope().job_ids
         ],
         books={str(BOOK): soak.BookSnapshot(id=BOOK, content_sha256="a" * 64)},
         unrelated_active_jobs=[],
         workers=[
             soak.RegistryWorkerSnapshot(
-                pc_id="Host-02:4242@fedcba9",
-                hostname="Host-02",
+                pc_id=f"Host-{index:02d}:{4240 + index}@fedcba9",
+                hostname=f"Host-{index:02d}",
                 last_heartbeat=NOW - timedelta(seconds=5),
                 status="online",
                 git_sha="fedcba9",
                 code_version=1001,
                 can_gemini_api=True,
             )
+            for index in (2, 3)
         ],
         scrub_tombstones=[],
         db=soak.DatabaseSnapshot(

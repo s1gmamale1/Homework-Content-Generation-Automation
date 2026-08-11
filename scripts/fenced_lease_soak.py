@@ -85,6 +85,8 @@ _REQUIRED_MODEL_OPERATION_KEYS = frozenset(
         "solve:",
     }
 )
+_AUTHORIZED_STAGE_TARGETS = frozenset({4, 8, 12, 20, 40})
+_ARMED_STOP_TIMEOUT_SECONDS = 30.0
 
 
 class AttestationError(RuntimeError):
@@ -225,6 +227,18 @@ class SoakScope(PersistedModel):
 
     @model_validator(mode="after")
     def _valid_limits(self) -> "SoakScope":
+        if self.target_running not in _AUTHORIZED_STAGE_TARGETS:
+            raise ValueError(
+                "target_running must be an authorized soak target: 4, 8, 12, 20, or 40"
+            )
+        if len(self.job_ids) != self.target_running:
+            raise ValueError("job_ids must equal target_running")
+        expected_batch_count = 2 if self.target_running == 40 else 1
+        if len(self.batch_ids) != expected_batch_count:
+            raise ValueError(
+                f"target {self.target_running} requires exactly "
+                f"{expected_batch_count} batch(es)"
+            )
         if self.db_preflight_connection_limit >= self.db_hard_stop_connection_limit:
             raise ValueError("db preflight connection limit must be below hard stop")
         if self.approved_incremental_cost_usd > self.fleet_cost_limit_usd:
@@ -402,6 +416,18 @@ class ActiveJobSnapshot(PersistedModel):
     status: str
 
 
+class UnrelatedJobTransitionSnapshot(PersistedModel):
+    id: UUID
+    status: str
+    attempts: int
+    updated_at: datetime
+
+    @field_validator("updated_at")
+    @classmethod
+    def _valid_updated_at(cls, value: datetime) -> datetime:
+        return _aware_utc(value, field_name="updated_at")
+
+
 class RegistryWorkerSnapshot(PersistedModel):
     pc_id: str
     hostname: str
@@ -498,6 +524,10 @@ class RawSnapshot(PersistedModel):
     jobs: list[JobSnapshot]
     books: dict[str, BookSnapshot]
     unrelated_active_jobs: list[ActiveJobSnapshot]
+    unrelated_job_transitions: list[UnrelatedJobTransitionSnapshot] = Field(
+        default_factory=list
+    )
+    unrelated_lease_events: list[LeaseEventSnapshot] = Field(default_factory=list)
     workers: list[RegistryWorkerSnapshot]
     scrub_tombstones: list[str]
     db: DatabaseSnapshot
@@ -805,6 +835,39 @@ def _heartbeat_stale_hosts(scope: SoakScope, raw: RawSnapshot) -> set[str]:
     return set(scope.participant_hosts) - fresh_hosts
 
 
+def _claimable_workers(
+    scope: SoakScope, raw: RawSnapshot
+) -> dict[str, RegistryWorkerSnapshot]:
+    tombstones = set(raw.scrub_tombstones)
+    claimable: dict[str, RegistryWorkerSnapshot] = {}
+    for worker in raw.workers:
+        age = _age_seconds(raw.observed_at, worker.last_heartbeat)
+        if (
+            0 <= age <= scope.heartbeat_max_age_seconds
+            and worker.status == "online"
+            and worker.can_gemini_api
+            and worker.code_version is not None
+            and worker.code_version >= (raw.budget.min_worker_version or 2**31)
+            and worker.hostname not in tombstones
+        ):
+            claimable[worker.pc_id] = worker
+    return claimable
+
+
+def _batch_shape_evidence(
+    scope: SoakScope, jobs: Sequence[JobSnapshot]
+) -> dict[str, int] | None:
+    counts = Counter(job.batch_id for job in jobs)
+    expected_per_batch = 20 if scope.target_running == 40 else scope.target_running
+    expected = {batch_id: expected_per_batch for batch_id in scope.batch_ids}
+    if counts == expected:
+        return None
+    return {
+        str(batch_id) if batch_id is not None else "null": count
+        for batch_id, count in sorted(counts.items(), key=lambda item: str(item[0]))
+    }
+
+
 def evaluate_runtime(
     scope: SoakScope,
     attestation: FleetAttestation,
@@ -816,6 +879,31 @@ def evaluate_runtime(
     scoped_ids = set(scope.job_ids)
     jobs = {job.id: job for job in raw.jobs if job.id in scoped_ids}
 
+    observed_running = sum(job.status == "running" for job in raw.jobs) + sum(
+        job.status == "running" for job in raw.unrelated_active_jobs
+    )
+    if observed_running > scope.target_running:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "running_target_exceeded",
+                "simultaneous running jobs exceeded the authorized stage target",
+                observed=observed_running,
+                target=scope.target_running,
+            ),
+        )
+
+    batch_shape = _batch_shape_evidence(scope, list(jobs.values()))
+    if batch_shape is not None:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "scope_batch_shape_mismatch",
+                "scoped job-to-batch distribution differs from the authorized stage",
+                observed=batch_shape,
+            ),
+        )
+
     if raw.unrelated_active_jobs:
         _append_runtime_finding(
             findings,
@@ -826,6 +914,36 @@ def evaluate_runtime(
                     job.model_dump(mode="json")
                     for job in raw.unrelated_active_jobs
                 ],
+            ),
+        )
+
+    if raw.unrelated_job_transitions or raw.unrelated_lease_events:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "unrelated_queue_activity_since_start",
+                "unrelated jobs transitioned after the authorized soak start",
+                jobs=[
+                    row.model_dump(mode="json")
+                    for row in raw.unrelated_job_transitions
+                ],
+                lease_events=[
+                    row.model_dump(mode="json")
+                    for row in raw.unrelated_lease_events
+                ],
+            ),
+        )
+
+    claimable = _claimable_workers(scope, raw)
+    attested_pc_ids = {worker.pc_id for worker in attestation.workers}
+    unattested_claimable = sorted(set(claimable) - attested_pc_ids)
+    if unattested_claimable:
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "unattested_claimable_worker",
+                "a claimable worker exists outside the locked fleet attestation",
+                pc_ids=unattested_claimable,
             ),
         )
 
@@ -1304,10 +1422,15 @@ def evaluate_runtime(
                 rows=major_rows,
             ),
         )
+    unresolved_solver_statuses = {
+        "mismatch_shipped",
+        "mismatch_regen_failed",
+        "mismatch_blocked",
+    }
     solver_rows = sorted(
         f"{phase.job_id}:{phase.phase_name}:{phase.solver_status}"
         for phase in raw.phases
-        if phase.solver_status and "mismatch" in phase.solver_status.lower()
+        if (phase.solver_status or "").lower() in unresolved_solver_statuses
     )
     if solver_rows:
         _append_runtime_finding(
@@ -1385,6 +1508,13 @@ def evaluate_preflight(
             "scope_job_wrong_batch", "scoped job belongs to a foreign batch",
             job_ids=wrong_batch,
         ))
+    batch_shape = _batch_shape_evidence(scope, raw.jobs)
+    if batch_shape is not None:
+        findings.append(_finding(
+            "scope_batch_shape_mismatch",
+            "scoped job-to-batch distribution differs from the authorized stage",
+            observed=batch_shape,
+        ))
     non_pristine = sorted(
         str(job.id)
         for job in raw.jobs
@@ -1406,6 +1536,19 @@ def evaluate_preflight(
             "unrelated_active_queue_not_empty",
             "unrelated pending/running/cancelling jobs exist",
             jobs=[job.model_dump(mode="json") for job in raw.unrelated_active_jobs],
+        ))
+    if raw.unrelated_job_transitions or raw.unrelated_lease_events:
+        findings.append(_finding(
+            "unrelated_queue_activity_since_start",
+            "unrelated jobs transitioned after the authorized soak start",
+            jobs=[
+                row.model_dump(mode="json")
+                for row in raw.unrelated_job_transitions
+            ],
+            lease_events=[
+                row.model_dump(mode="json")
+                for row in raw.unrelated_lease_events
+            ],
         ))
 
     expected_pause = f"lease-soak-staging:{scope.run_id}"
@@ -1445,19 +1588,7 @@ def evaluate_preflight(
             stale_workers=stale_workers,
         ))
 
-    tombstones = set(raw.scrub_tombstones)
-    claimable: dict[str, RegistryWorkerSnapshot] = {}
-    for worker in raw.workers:
-        age = _age_seconds(raw.observed_at, worker.last_heartbeat)
-        if (
-            0 <= age <= scope.heartbeat_max_age_seconds
-            and worker.status == "online"
-            and worker.can_gemini_api
-            and worker.code_version is not None
-            and worker.code_version >= (raw.budget.min_worker_version or 2**31)
-            and worker.hostname not in tombstones
-        ):
-            claimable[worker.pc_id] = worker
+    claimable = _claimable_workers(scope, raw)
 
     attested_by_pc = {worker.pc_id: worker for worker in attestation.workers}
     rogue = sorted(set(claimable) - set(attested_by_pc))
@@ -1762,6 +1893,13 @@ class SqlSoakReadStore:
                   AND NOT (id = ANY(CAST(:job_ids AS uuid[])))
                 ORDER BY id
             """), params))
+            unrelated_transitions = _mapping_dicts(await conn.execute(text("""
+                SELECT id, status, attempts, updated_at FROM homework_jobs
+                WHERE NOT (id = ANY(CAST(:job_ids AS uuid[])))
+                  AND updated_at >= :since
+                  AND attempts > 0
+                ORDER BY updated_at, id
+            """), params))
             worker_rows = _mapping_dicts(await conn.execute(text("""
                 SELECT pc_id,
                        split_part(pc_id, ':', 1) AS hostname,
@@ -1811,6 +1949,7 @@ class SqlSoakReadStore:
                        left(query, 160) AS query_prefix
                 FROM pg_stat_activity
                 WHERE pid <> :controller_pid
+                  AND backend_type = 'client backend'
                   AND wait_event_type IS NOT NULL
                   AND wait_event_type <> 'Client'
                 ORDER BY pid
@@ -1829,6 +1968,13 @@ class SqlSoakReadStore:
                 SELECT job_id, claim_token, event_type, owner, created_at
                 FROM job_lease_events
                 WHERE job_id = ANY(CAST(:job_ids AS uuid[])) AND created_at >= :since
+                ORDER BY created_at, id
+            """), params))
+            unrelated_lease_rows = _mapping_dicts(await conn.execute(text("""
+                SELECT job_id, claim_token, event_type, owner, created_at
+                FROM job_lease_events
+                WHERE NOT (job_id = ANY(CAST(:job_ids AS uuid[])))
+                  AND created_at >= :since
                 ORDER BY created_at, id
             """), params))
             phase_rows = _mapping_dicts(await conn.execute(text("""
@@ -1873,6 +2019,14 @@ class SqlSoakReadStore:
             jobs=[JobSnapshot.model_validate(row) for row in job_rows],
             books={str(row["id"]): BookSnapshot.model_validate(row) for row in book_rows},
             unrelated_active_jobs=[ActiveJobSnapshot.model_validate(row) for row in unrelated],
+            unrelated_job_transitions=[
+                UnrelatedJobTransitionSnapshot.model_validate(row)
+                for row in unrelated_transitions
+            ],
+            unrelated_lease_events=[
+                LeaseEventSnapshot.model_validate(row)
+                for row in unrelated_lease_rows
+            ],
             workers=[RegistryWorkerSnapshot.model_validate(row) for row in worker_rows],
             scrub_tombstones=[str(row["hostname"]) for row in tombstone_rows],
             db=DatabaseSnapshot(
@@ -1906,6 +2060,8 @@ class SqlSoakWriteStore:
                 "server_settings": {
                     "application_name": f"hcga-soak-stop:{os.getpid()}",
                     "idle_in_transaction_session_timeout": "300000",
+                    "lock_timeout": "5000",
+                    "statement_timeout": "30000",
                 }
             },
         )
@@ -2300,8 +2456,11 @@ async def _finish_armed_stop(
     findings: Sequence[Finding],
     trigger: Finding,
     clock: Callable[[], datetime],
+    stop_timeout_seconds: float = _ARMED_STOP_TIMEOUT_SECONDS,
 ) -> ExitCode:
     """Pause the exact scope and make stop success or failure explicit."""
+    if stop_timeout_seconds <= 0:
+        raise ValueError("stop_timeout_seconds must be positive")
     def finish_stop_summary(
         *,
         summary_findings: Sequence[Finding],
@@ -2346,12 +2505,21 @@ async def _finish_armed_stop(
                 return False
 
     pause_task = asyncio.create_task(stopper.pause(scope, trigger))
+    deadline = asyncio.get_running_loop().time() + stop_timeout_seconds
     cancellation_seen = False
     stop_error: BaseException | None = None
     receipt: StopReceipt | None = None
     while receipt is None and stop_error is None:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            stop_error = TimeoutError("armed exact-scope pause timed out")
+            break
         try:
-            receipt = await asyncio.shield(pause_task)
+            receipt = await asyncio.wait_for(
+                asyncio.shield(pause_task), timeout=remaining
+            )
+        except TimeoutError:
+            stop_error = TimeoutError("armed exact-scope pause timed out")
         except asyncio.CancelledError as exc:
             if pause_task.cancelled():
                 stop_error = exc
@@ -2371,6 +2539,16 @@ async def _finish_armed_stop(
         )
 
     if stop_error is not None:
+        if not pause_task.done():
+            pause_task.cancel()
+
+            def _consume_cancelled_task(task: asyncio.Task) -> None:
+                try:
+                    task.exception()
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            pause_task.add_done_callback(_consume_cancelled_task)
         stop_failure = _finding(
             "armed_stop_failed",
             "the armed exact-scope pause could not be applied",

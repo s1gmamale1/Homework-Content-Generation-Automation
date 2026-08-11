@@ -91,7 +91,7 @@ class FakeWriteStore:
 @pytest.mark.asyncio
 async def test_armed_stop_pauses_exact_batches_and_fleet_but_never_jobs():
     writer = FakeWriteStore()
-    scope = valid_scope(batch_ids=[B1, B2])
+    scope = valid_scope(target=40, batch_ids=[B1, B2])
 
     receipt = await soak.GuardedStopper(writer, clock=lambda: NOW).pause(
         scope, lease_lost_finding()
@@ -113,7 +113,7 @@ async def test_foreign_fleet_and_batch_pauses_are_preserved():
         fleet_reason="manual-operator",
         batch_reasons={B1: "manual", B2: None},
     )
-    scope = valid_scope(batch_ids=[B1, B2])
+    scope = valid_scope(target=40, batch_ids=[B1, B2])
 
     receipt = await soak.GuardedStopper(writer, clock=lambda: NOW).pause(
         scope, lease_lost_finding()
@@ -239,3 +239,24 @@ def test_sql_stop_writer_contains_no_job_mutation_or_queue_helper_calls():
         "unpause_by_reason",
     ):
         assert forbidden not in module_source
+
+
+def test_sql_stop_writer_bounds_lock_and_statement_waits(monkeypatch):
+    captured = {}
+
+    class FakeEngine:
+        async def dispose(self):
+            return None
+
+    def fake_create_async_engine(database_url, **kwargs):
+        captured["database_url"] = database_url
+        captured.update(kwargs)
+        return FakeEngine()
+
+    monkeypatch.setattr(soak, "create_async_engine", fake_create_async_engine)
+
+    soak.SqlSoakWriteStore("postgresql+asyncpg://scratch/soak")
+
+    settings = captured["connect_args"]["server_settings"]
+    assert 0 < int(settings["lock_timeout"]) <= 5_000
+    assert 0 < int(settings["statement_timeout"]) <= 30_000

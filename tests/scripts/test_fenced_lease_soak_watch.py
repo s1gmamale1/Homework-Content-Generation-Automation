@@ -113,6 +113,17 @@ class DriftStopper:
         raise soak.ScopeDrift("scope job membership changed before stop")
 
 
+class HangingStopper:
+    async def pause(
+        self,
+        scope: soak.SoakScope,
+        trigger: soak.Finding,
+    ) -> soak.StopReceipt:
+        del scope, trigger
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
 class DelayedStopper:
     def __init__(self, delegate):
         self.delegate = delegate
@@ -406,6 +417,34 @@ def full_stage_snapshot(scope: soak.SoakScope, *, state: str) -> soak.RawSnapsho
     )
 
 
+def test_forty_job_stage_requires_twenty_jobs_in_each_batch():
+    scope = full_stage_scope(target=40, batches=2, workers=20)
+    raw = full_stage_snapshot(scope, state="pending")
+    raw.jobs[20].batch_id = scope.batch_ids[0]
+
+    findings = soak.evaluate_preflight(scope, full_stage_attestation(scope), raw)
+
+    assert "scope_batch_shape_mismatch" in {
+        finding.code for finding in findings if finding.hard
+    }
+
+
+def test_runtime_hard_stops_when_simultaneous_running_exceeds_target():
+    scope = full_stage_scope(target=4, batches=1, workers=2)
+    raw = full_stage_snapshot(scope, state="running")
+    raw.unrelated_active_jobs.append(
+        soak.ActiveJobSnapshot(id=_stage_uuid(0xF, 1), status="running")
+    )
+
+    findings = soak.evaluate_runtime(
+        scope, full_stage_attestation(scope), raw, previous_samples=[]
+    )
+
+    assert "running_target_exceeded" in {
+        finding.code for finding in findings if finding.hard_stop
+    }
+
+
 def write_stage_inputs(tmp_path, scope: soak.SoakScope) -> tuple[str, str]:
     scope_path = tmp_path / "scope.json"
     attestation_path = tmp_path / "attestation.json"
@@ -481,7 +520,7 @@ async def test_full_synthetic_stage_reaches_target_and_settles_cleanly(
 
 @pytest.mark.asyncio
 async def test_armed_cli_records_foreign_token_then_pauses_only_exact_scope(tmp_path):
-    scope = full_stage_scope(target=4, batches=2, workers=2)
+    scope = full_stage_scope(target=40, batches=2, workers=20)
     scope_path, attestation_path = write_stage_inputs(tmp_path, scope)
     violating = full_stage_snapshot(scope, state="done")
     violating.phases[0].claim_token = UUID(
@@ -998,6 +1037,39 @@ async def test_scope_membership_drift_during_stop_is_explicit_stop_failure(tmp_p
     summary = load_summary(tmp_path, scope.run_id)
     assert summary["verdict"] == "stop_failed"
     assert summary["findings"][-1]["evidence"]["error_type"] == "ScopeDrift"
+
+
+@pytest.mark.asyncio
+async def test_armed_stop_timeout_is_bounded_and_persists_stop_failed(tmp_path):
+    scope = valid_scope(target=4)
+    writer = soak.ArtifactWriter(tmp_path, scope.run_id)
+    trigger = soak.Finding(
+        code="lease_lost",
+        hard=True,
+        hard_stop=True,
+        stage_failure=True,
+        message="lease lost",
+    )
+
+    code = await asyncio.wait_for(
+        soak._finish_armed_stop(
+            scope=scope,
+            stopper=HangingStopper(),
+            writer=writer,
+            raw_samples=[hard_runtime_snapshot(scope)],
+            findings=[trigger],
+            trigger=trigger,
+            clock=lambda: NOW,
+            stop_timeout_seconds=0.01,
+        ),
+        timeout=0.5,
+    )
+
+    assert code == soak.ExitCode.OPERATIONAL_ERROR
+    summary = load_summary(tmp_path, scope.run_id)
+    assert summary["verdict"] == "stop_failed"
+    assert summary["findings"][-1]["code"] == "armed_stop_failed"
+    assert summary["findings"][-1]["evidence"]["error_type"] == "TimeoutError"
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import inspect
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -24,6 +25,12 @@ requires_db = pytest.mark.skipif(
 )
 
 
+def test_server_wait_scan_is_limited_to_client_backends():
+    source = inspect.getsource(soak.SqlSoakReadStore.collect)
+
+    assert "backend_type = 'client backend'" in source
+
+
 @pytest.fixture(scope="module")
 def database_url() -> str:
     url = os.environ["DATABASE_URL"]
@@ -37,7 +44,8 @@ async def seeded_scope(database_url):
     factory = async_sessionmaker(engine, expire_on_commit=False)
     now = datetime.now(timezone.utc)
     book_id, toc_id, batch_id = uuid4(), uuid4(), uuid4()
-    scoped_id, unscoped_id = uuid4(), uuid4()
+    scoped_ids = [uuid4() for _ in range(4)]
+    unscoped_id = uuid4()
     async with factory() as session:
         book = Book(
             id=book_id,
@@ -72,7 +80,7 @@ async def seeded_scope(database_url):
         await session.flush()
         session.add_all([toc, batch])
         await session.flush()
-        for job_id in (scoped_id, unscoped_id):
+        for job_id in (*scoped_ids, unscoped_id):
             session.add(HomeworkJob(
                 id=job_id,
                 book_id=book_id,
@@ -91,7 +99,7 @@ async def seeded_scope(database_url):
         await session.flush()
         session.add_all([
             AgentUsage(
-                homework_job_id=scoped_id,
+                homework_job_id=scoped_ids[0],
                 provider="gemini",
                 operation="phase.run",
                 model_name="gemini-3.6-flash",
@@ -111,7 +119,7 @@ async def seeded_scope(database_url):
                 total_tokens=2,
             ),
             JobLeaseEvent(
-                job_id=scoped_id,
+                job_id=scoped_ids[0],
                 claim_token=uuid4(),
                 event_type="claimed",
                 created_at=now,
@@ -128,9 +136,9 @@ async def seeded_scope(database_url):
         run_id="integration-soak",
         since=now - timedelta(minutes=1),
         batch_ids=[batch_id],
-        job_ids=[scoped_id],
+        job_ids=scoped_ids,
         participant_hosts=["none"],
-        target_running=1,
+        target_running=4,
         expected_git_sha="fedcba9",
         expected_code_version=1001,
         expected_db_revision="0052_job_lease_fencing",
@@ -162,9 +170,10 @@ async def seeded_scope(database_url):
         yield scope, unscoped_id
     finally:
         async with factory() as session:
-            await session.execute(delete(AgentUsage).where(AgentUsage.homework_job_id.in_([scoped_id, unscoped_id])))
-            await session.execute(delete(JobLeaseEvent).where(JobLeaseEvent.job_id.in_([scoped_id, unscoped_id])))
-            await session.execute(delete(HomeworkJob).where(HomeworkJob.id.in_([scoped_id, unscoped_id])))
+            all_job_ids = [*scoped_ids, unscoped_id]
+            await session.execute(delete(AgentUsage).where(AgentUsage.homework_job_id.in_(all_job_ids)))
+            await session.execute(delete(JobLeaseEvent).where(JobLeaseEvent.job_id.in_(all_job_ids)))
+            await session.execute(delete(HomeworkJob).where(HomeworkJob.id.in_(all_job_ids)))
             await session.execute(delete(Batch).where(Batch.id == batch_id))
             await session.execute(delete(TOCEntry).where(TOCEntry.id == toc_id))
             await session.execute(delete(Book).where(Book.id == book_id))
@@ -283,7 +292,9 @@ async def test_read_store_cannot_write(database_url):
 
 @pytest.mark.asyncio
 @requires_db
-async def test_collect_excludes_unscoped_usage_and_lease_events(database_url, seeded_scope):
+async def test_collect_separates_unscoped_usage_and_persists_unrelated_activity(
+    database_url, seeded_scope
+):
     scope, unscoped_id = seeded_scope
     store = soak.SqlSoakReadStore(database_url)
     try:
@@ -292,6 +303,8 @@ async def test_collect_excludes_unscoped_usage_and_lease_events(database_url, se
         await store.dispose()
     assert unscoped_id not in {row.job_id for row in raw.usages}
     assert unscoped_id not in {row.job_id for row in raw.lease_events}
+    assert unscoped_id in {row.job_id for row in raw.unrelated_lease_events}
+    assert unscoped_id in {row.id for row in raw.unrelated_job_transitions}
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@ from scripts import fenced_lease_soak as soak
 BOOK = UUID("11111111-1111-1111-1111-111111111111")
 BATCH = UUID("22222222-2222-2222-2222-222222222222")
 JOB = UUID("33333333-3333-3333-3333-333333333333")
+SCOPE_JOBS = [JOB, *[UUID(int=index) for index in range(1, 4)]]
 EXPECTED_MODELS_BY_OPERATION = {
     "phase.run": "gemini-3.6-flash",
     "lesson.extract": "gemini-3.5-flash-lite",
@@ -30,7 +31,7 @@ def valid_scope_dict() -> dict:
         "run_id": "stage-04-20260810",
         "since": "2026-08-10T12:00:00Z",
         "batch_ids": [str(BATCH)],
-        "job_ids": [str(JOB)],
+        "job_ids": [str(job_id) for job_id in SCOPE_JOBS],
         "participant_hosts": ["Host-02"],
         "target_running": 4,
         "expected_git_sha": "fedcba9",
@@ -146,6 +147,39 @@ def test_scope_requires_preflight_connection_limit_below_hard_stop():
         soak.SoakScope.model_validate(raw)
 
 
+@pytest.mark.parametrize("target", [1, 2, 3, 5, 16, 39, 41])
+def test_scope_rejects_unsupported_stage_targets(target):
+    raw = valid_scope_dict()
+    raw["target_running"] = target
+    raw["job_ids"] = [str(UUID(int=index + 1)) for index in range(target)]
+
+    with pytest.raises(ValidationError, match="authorized soak target"):
+        soak.SoakScope.model_validate(raw)
+
+
+def test_scope_requires_one_job_per_target_slot():
+    raw = valid_scope_dict()
+    raw["target_running"] = 4
+    raw["job_ids"] = [str(UUID(int=index + 1)) for index in range(3)]
+
+    with pytest.raises(ValidationError, match="job_ids must equal target_running"):
+        soak.SoakScope.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    ("target", "batch_count"),
+    [(4, 2), (8, 2), (12, 2), (20, 2), (40, 1), (40, 3)],
+)
+def test_scope_requires_exact_batch_shape_for_stage(target, batch_count):
+    raw = valid_scope_dict()
+    raw["target_running"] = target
+    raw["job_ids"] = [str(UUID(int=index + 1)) for index in range(target)]
+    raw["batch_ids"] = [str(UUID(int=10_000 + index)) for index in range(batch_count)]
+
+    with pytest.raises(ValidationError, match="batch"):
+        soak.SoakScope.model_validate(raw)
+
+
 @pytest.mark.parametrize("missing_key", sorted(EXPECTED_MODELS_BY_OPERATION))
 def test_scope_requires_every_model_operation_key(missing_key):
     raw = valid_scope_dict()
@@ -238,8 +272,8 @@ def test_artifact_sanitizes_nested_job_phase_usage_and_warning_errors(tmp_path):
         valid_scope,
     )
 
-    scope = valid_scope(target=1)
-    raw = healthy_completed_snapshot(target=1)
+    scope = valid_scope(target=4)
+    raw = healthy_completed_snapshot(target=4)
     raw.jobs[0].error_message = (
         "Bearer job-secret https://job:pass@provider.test/v1?key=job-query"
     )

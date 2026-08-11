@@ -17,9 +17,13 @@ JOBS = [UUID(f"33333333-3333-3333-3333-{index:012d}") for index in range(1, 5)]
 
 def valid_scope(*, target: int = 4, **updates) -> soak.SoakScope:
     raw = valid_scope_dict()
+    job_ids = [
+        UUID(f"33333333-3333-3333-3333-{index:012d}")
+        for index in range(1, target + 1)
+    ]
     raw.update(
         {
-            "job_ids": [str(job_id) for job_id in JOBS[:target]],
+            "job_ids": [str(job_id) for job_id in job_ids],
             "participant_hosts": [f"Host-{index:02d}" for index in range(1, 3)],
             "target_running": target,
             "expected_models_by_operation_prefix": {
@@ -457,13 +461,16 @@ def test_terminal_job_requires_exact_done_phase_set():
 
 
 def test_selected_phase_job_uses_exact_selected_subset_plus_extract():
-    raw = healthy_completed_snapshot(target=1)
+    raw = healthy_completed_snapshot(target=4)
     raw.jobs[0].selected_phases = ["flashcards"]
     raw.phases = [
-        phase for phase in raw.phases if phase.phase_name in {"extract", "flashcards"}
+        phase
+        for phase in raw.phases
+        if phase.job_id != raw.jobs[0].id
+        or phase.phase_name in {"extract", "flashcards"}
     ]
     assert "phase_set_incomplete" not in codes(
-        runtime_findings(valid_scope(target=1), raw, []), hard_stop=True
+        runtime_findings(valid_scope(target=4), raw, []), hard_stop=True
     )
 
 
@@ -496,6 +503,59 @@ def test_runtime_pc_id_must_match_the_preflight_attestation():
     assert "worker_runtime_drift" in codes(
         runtime_findings(scope, raw, [], attestation=runtime_attestation(scope)),
         hard_stop=True,
+    )
+
+
+def test_runtime_rejects_newly_claimable_worker_outside_attestation():
+    scope = valid_scope()
+    raw = healthy_running_snapshot()
+    raw.workers.append(
+        soak.RegistryWorkerSnapshot(
+            pc_id="Host-99:999@fedcba9",
+            hostname="Host-99",
+            last_heartbeat=NOW - timedelta(seconds=1),
+            status="online",
+            git_sha="fedcba9",
+            code_version=1001,
+            can_gemini_api=True,
+        )
+    )
+
+    findings = runtime_findings(
+        scope, raw, [], attestation=runtime_attestation(scope)
+    )
+
+    assert "unattested_claimable_worker" in codes(findings, hard_stop=True)
+
+
+def test_transient_unrelated_terminal_activity_since_start_is_a_hard_stop():
+    scope = valid_scope()
+    raw = healthy_running_snapshot()
+    foreign_id = uuid4()
+    encoded = raw.model_dump(mode="json", by_alias=True)
+    encoded["unrelated_job_transitions"] = [
+        {
+            "id": str(foreign_id),
+            "status": "failed",
+            "attempts": 1,
+            "updated_at": NOW.isoformat(),
+        }
+    ]
+    encoded["unrelated_lease_events"] = [
+        {
+            "job_id": str(foreign_id),
+            "claim_token": str(uuid4()),
+            "event_type": "released_failed",
+            "owner": "Host-99:999@fedcba9",
+            "created_at": NOW.isoformat(),
+        }
+    ]
+    raw_with_history = soak.RawSnapshot.model_validate(encoded)
+
+    findings = runtime_findings(scope, raw_with_history, [])
+
+    assert "unrelated_queue_activity_since_start" in codes(
+        findings, hard_stop=True
     )
 
 
@@ -555,9 +615,9 @@ def test_provider_slot_auth_timeout_and_network_errors_stop_the_soak(message):
 
 
 def test_incremental_cost_cap_is_inclusive():
-    raw = healthy_completed_snapshot(target=1)
+    raw = healthy_completed_snapshot(target=4)
     priced = soak.price_scoped_usage(raw.usages)
-    scope = valid_scope(target=1, approved_incremental_cost_usd=str(priced.total_usd))
+    scope = valid_scope(target=4, approved_incremental_cost_usd=str(priced.total_usd))
     assert "incremental_cost_cap" in codes(
         runtime_findings(scope, raw, []), hard_stop=True
     )
@@ -582,14 +642,29 @@ def test_quality_failure_quarantines_but_does_not_emergency_pause():
     assert codes(findings, hard_stop=True) == set()
 
 
-def test_solver_mismatch_quarantines_but_does_not_emergency_pause():
+@pytest.mark.parametrize(
+    "solver_status",
+    ["mismatch_shipped", "mismatch_regen_failed", "mismatch_blocked"],
+)
+def test_unresolved_solver_mismatch_quarantines_but_does_not_emergency_pause(
+    solver_status,
+):
     raw = healthy_completed_snapshot()
-    raw.phases[1].solver_status = "mismatch_regen_failed"
+    raw.phases[1].solver_status = solver_status
     findings = runtime_findings(valid_scope(), raw, [healthy_running_snapshot()])
     finding = by_code(findings, "solver_mismatch")
     assert finding.stage_failure is True
     assert finding.hard_stop is False
     assert codes(findings, hard_stop=True) == set()
+
+
+def test_solver_mismatch_resolved_by_regeneration_is_success():
+    raw = healthy_completed_snapshot()
+    raw.phases[1].solver_status = "mismatch_regen"
+
+    findings = runtime_findings(valid_scope(), raw, [healthy_running_snapshot()])
+
+    assert "solver_mismatch" not in codes(findings)
 
 
 def test_validation_corruption_quarantines_the_stage():
