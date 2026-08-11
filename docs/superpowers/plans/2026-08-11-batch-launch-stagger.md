@@ -25,7 +25,7 @@
 **Load-bearing facts, each verified against code or production this session:**
 
 1. `scheduled_at` exists (`app/models/homework_job.py:71`), is in the partial queue index (`:101-106`), and gates claiming (`jobs.py:551`). **No migration.**
-2. Claim order is `priority DESC, toc_entries.order_index ASC, scheduled_at ASC` (`jobs.py:428-430`) — `scheduled_at` is only the final tiebreaker, so staggering changes *eligibility*, never lesson ordering inside an eligible set.
+2. Claim order is `priority DESC, toc_entries.order_index ASC, scheduled_at ASC` — documented at `jobs.py:428-430`, executed at `jobs.py:559-566`. `scheduled_at` is only the final tiebreaker, so staggering changes *eligibility*, never lesson ordering inside an eligible set.
 3. `queue_depth` also filters `scheduled_at <= func.now()` (`jobs.py:1321`), so **staggered jobs do not inflate the `/generate` backpressure count**. The two mechanisms compose instead of fighting.
 4. `reset_for_retry` (`jobs.py:249-285`) never touches `scheduled_at`, so a **resumed** job keeps its original past timestamp and is instantly claimable — the resume paths reproduce the identical herd. Scope covers them (user-approved).
 5. `requeue_slot_saturated` already pushes `scheduled_at` by `slot_saturation_requeue_seconds` (`jobs.py:1270`) — `scheduled_at`-as-backpressure is an **established pattern in this codebase**, applied reactively today and preventively here.
@@ -218,7 +218,15 @@ def stagger_offset(index: int, *, wave_size: int, interval_seconds: int) -> int:
 
     Either knob at <= 0 disables staggering (all offsets 0). That is the kill
     switch — `BATCH_LAUNCH_WAVE_SIZE=0` restores pre-plan behaviour with no code
-    change and no deploy.
+    change (it is read from the settings singleton, so it needs a head restart,
+    not a deploy).
+
+    KNOWN LIMIT: this shapes only the INITIAL release. Pausing a batch mid-ramp
+    and unpausing after the waves have elapsed releases every overdue wave at
+    once — the claim gate sees every `scheduled_at` already in the past and the
+    pause/unpause endpoints do not re-stagger. A fleet outage spanning the ramp
+    does the same. Out of scope here; the herd it rebuilds is bounded by the
+    batch's own size, exactly as today.
 
     ``index`` is the position among the jobs THIS launch actually makes
     claimable (created + resumed) — never the index in the target list. A
@@ -237,7 +245,7 @@ def stagger_offset(index: int, *, wave_size: int, interval_seconds: int) -> int:
 ```bash
 uv run python -m pytest tests/services/test_launch_stagger.py -q
 ```
-Expected: 11 passed.
+Expected: **9 passed** (7 plain tests + `test_negative_index_never_delays` parametrized ×2).
 
 - [ ] **Step 5: RED-proof (mandatory)**
 
@@ -474,7 +482,7 @@ async def test_zero_offset_is_indistinguishable_from_omitting_it():
 ```bash
 uv run python -m pytest tests/repositories/test_launch_stagger_repo.py -q
 ```
-Expected: `test_offset_uses_the_db_clock_not_the_host_clock` fails with `TypeError: create() got an unexpected keyword argument 'start_offset_seconds'`.
+Expected: **two** failures — `test_offset_uses_the_db_clock_not_the_host_clock` **and** `test_zero_offset_is_indistinguishable_from_omitting_it`, both with `TypeError: create() got an unexpected keyword argument 'start_offset_seconds'` (both pass the new kwarg).
 
 - [ ] **Step 3: Write the implementation**
 
@@ -510,9 +518,9 @@ uv run python -m pytest tests/repositories tests/api -q
 
 - [ ] **Step 5: RED-proof (mandatory)**
 
-Replace the DB-clock expression with a host-clock one:
+Replace the DB-clock expression with a host-clock one. **`jobs.py:1` imports only `datetime`, not `timezone`** — use the naive form, or the sabotage dies on `NameError: name 'timezone' is not defined` and RED-proves nothing:
 ```python
-        kwargs["scheduled_at"] = datetime.now(timezone.utc)
+        kwargs["scheduled_at"] = datetime.now()
 ```
 Re-run — `test_offset_uses_the_db_clock_not_the_host_clock` must fail on `isinstance(job.scheduled_at, ClauseElement)` (a `datetime` is not a `ClauseElement`). **Restore.** This is the test's whole point: it fails specifically on host-clock drift, not on "some value was set".
 
@@ -872,12 +880,43 @@ Create `tests/api/test_batch_launch_stagger.py`. Reuse the fixture shape from `t
 ```python
 """Batch-launch wave stagger — endpoint wiring, both directions."""
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 BOOK_ID = uuid.uuid4()
+
+# `launch_batch` ends by building its response through `_rollup_payload`
+# (batch.py:429 -> :102-133), which reads SEVENTEEN attributes off the batch.
+# A 4-attribute stub makes every test in this file 500 inside payload
+# construction — i.e. fail GREEN for a reason that has nothing to do with the
+# stagger. This mirrors the complete shape already proven at
+# tests/api/test_never_pay_twice.py:55-77.
+_FAKE_BATCH = SimpleNamespace(
+    id=uuid.uuid4(),
+    book_id=BOOK_ID,
+    subject="geografiya",
+    grade="5",
+    output_language="ru",
+    provider="gemini",
+    model="gemini-3.6-flash",
+    transport="cli",
+    extract_transport="api",
+    judge_transport="inherit",
+    solver_transport="inherit",
+    extract_provider="gemini",
+    extract_model="gemini-3.5-flash-lite",
+    judge_provider="claude",
+    judge_model="claude-sonnet-4-6",
+    solver_provider="claude",
+    solver_model="claude-haiku-4-5-20251001",
+    created_at=datetime(2026, 8, 11, tzinfo=timezone.utc),
+    paused_at=None,
+    paused_reason=None,
+    session_limit_strategy="inherit",
+)
 _ROWS = [
     SimpleNamespace(id=uuid.uuid4(), section_number=f"1.{i}",
                     section_title=f"Dars {i}", page_start=i, page_end=i + 1,
@@ -927,8 +966,7 @@ def _wire(monkeypatch, batch_mod, *, offsets_sink, latest=None):
         return SimpleNamespace(id=uuid.uuid4())
 
     async def _get_or_create_batch(session, **kwargs):
-        return SimpleNamespace(id=uuid.uuid4(), book_id=BOOK_ID, paused_at=None,
-                               transport=kwargs.get("transport"))
+        return _FAKE_BATCH
 
     async def _rollup(session, batch_id):
         return {}
@@ -1043,7 +1081,7 @@ async def test_resumed_sections_share_the_same_wave_counter(monkeypatch):
     assert resume_offsets[:7] == [0, 0, 0, 60, 60, 60, 120]
 ```
 
-> **Implementer note:** the `_wire` helper is a starting point, not gospel — run it, and if `launch_batch` reaches a repo call this stub doesn't cover, add the stub. Do **not** loosen an assertion to make it pass. If `saved` needs more attributes for `retired_models_in_job` to return empty, add them; that guard must keep working unchanged.
+> **Implementer note:** the `_wire` helper is a starting point, not gospel. Run it, and if `launch_batch` reaches a repo call the stub doesn't cover — **or reads an attribute a stubbed return value doesn't carry** — extend the stub. Do **not** loosen an assertion to make it pass. Watch specifically for a `500` on a test that asserts `201`: that means payload construction blew up on a missing attribute, which is a stub defect, never a finding about the stagger. If `saved` needs more attributes for `retired_models_in_job` to return empty, add them; that guard must keep working unchanged.
 
 - [ ] **Step 2: Run it and watch it fail**
 
@@ -1319,6 +1357,8 @@ git commit -m "test(launch): acceptance smoke for the wave stagger"
 
 Must record: the measured evidence (fan-out 5.54, extract p50 13.1s, 16 exhaustions, 81-in-flight-with-zero-failures counter-evidence); the closed form `(processes × AMC) − cap = 16`; **why raising `CREDENTIAL_MAX_CONCURRENT_GEMINI` was explored and rejected** (48-call fleet ceiling makes ≥48 all identical, Pro solver untested above 32, frozen fleet); the `ge=1` concurrency hardening as an in-scope-by-approval addition; **the ships-dark caveat**; and the smoke's exact spend.
 
+**Also required, in both the worklog and the PR body — the residual an operator will otherwise assume away:** the stagger shapes only the **initial** release. A batch paused mid-ramp and unpaused later, or a fleet outage spanning the ramp, releases every overdue wave simultaneously — `pause`/`unpause` (`batch.py:540-559`) touch only `paused_at` and never re-stagger, and the claim gate then sees every `scheduled_at` already in the past. Deliberately out of scope: the rebuilt herd is bounded by the batch's own size, i.e. no worse than today. File it on WISHLIST as `stagger-on-unpause-1` alongside the FE follow-up.
+
 - [ ] **Step 3: `git mv` the plan into `shipped/`**
 
 - [ ] **Step 4: Rebase check (mandatory, immediately before pushing)**
@@ -1351,7 +1391,14 @@ The PR body must lead with: this is sized for the **current** concurrency config
 
 **Spec coverage.** Filed defect (unguarded `create` loop at `batch.py:406`) → Tasks 3 + 6. Configurable + documented → Task 2. Justified default from the measured numbers → Approach + Task 2. Both test directions → Tasks 1, 6 (`test_small_launch_is_not_staggered_at_all`, `test_kill_switch_disables_the_stagger`). `/generate` untouched → Global Constraints, no task edits `jobs.py:252-265`. Retired-model guard untouched → Tasks 5 + 6 both say so. RED-proof → a mandatory Step 5 on every code task. Real api smoke, bounded and costed → Task 8. Worklog + INDEX + plan `git mv` + de-staled refs + rebase check + PR-not-merged → Task 9.
 
-**Placeholder scan.** No TBDs; every code and test block is complete and runnable. The one judgement call left to the implementer is explicit and bounded: extend the `_wire` stub if `launch_batch` reaches an uncovered repo call — with an explicit instruction never to loosen an assertion instead.
+**Placeholder scan.** No TBDs; every code and test block is complete and runnable. The one judgement call left to the implementer is explicit and bounded: extend the `_wire` stub if `launch_batch` reaches an uncovered repo call or an unstubbed attribute — with an explicit instruction never to loosen an assertion instead.
+
+**Review round 1 (fresh Fable reviewer, findings independently re-verified against source before acting):**
+- **BLOCKER — fixed.** The Task 6 batch stub carried 4 attributes; `_rollup_payload` (`batch.py:102-133`, called at `:429`) reads **17**. Every Task 6 test would have returned 500 during payload construction and failed GREEN for a reason unrelated to the stagger. Replaced with a complete `_FAKE_BATCH` modelled on the proven shape at `tests/api/test_never_pay_twice.py:55-77`.
+- **IMPORTANT — fixed.** Task 3's RED-proof sabotage used `datetime.now(timezone.utc)`, but `jobs.py:1` imports only `datetime` — it would have died on `NameError` and RED-proved nothing. Switched to the naive form with the reason stated inline.
+- **IMPORTANT — fixed.** The pause/unpause-rebuilds-the-herd residual was undocumented; now recorded in the module docstring and required in the worklog and PR body.
+- **NITS — fixed.** Task 1 expected-count 11 → **9**; Task 3 Step 2 now names **both** failing tests; the claim-order citation now distinguishes the docstring (`:428-430`) from the executable `ORDER BY` (`:559-566`); the kill-switch wording no longer implies zero restart.
+- **Confirmed accurate by the reviewer** (spot-re-verified by me): every other file:line citation; ORM-attribute assignment of a SQL expression; `make_interval` 7-arg seconds-last against five existing uses; `HomeworkJob.created_at` exists via the `Timestamps` mixin so Task 5's `ORDER BY` compiles; monkeypatch resolution order for `reset_for_retry` and `retired_models_in_job`; the wave-counter logic at both call sites; **no existing test breaks** (every existing `create`/`reset_for_retry` stub is a kwarg-tolerant `AsyncMock`, no batch route has an exact-payload assertion, and integration launches use ≤5 lessons so default wave_size 6 leaves them byte-identical); startup-sweep safety for future-dated unclaimed rows; and full scope compliance (`/generate` untouched, retired-model guard intact, no migration, `ge=1` cannot disturb the `8` sentinel).
 
 **Type consistency.** `stagger_offset(index, *, wave_size, interval_seconds) -> int` is called identically in Tasks 5, 6, 7. `start_offset_seconds: int = 0` is the parameter name on both `create` and `reset_for_retry`. `resume_failed_in_batch` keeps its `{"resumed", "skipped_retired"}` return shape. `_stagger_summary` returns the same five keys in both payloads, and the Task 6/7 assertions match it exactly.
 
