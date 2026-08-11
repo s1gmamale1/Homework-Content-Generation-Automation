@@ -336,6 +336,97 @@ def test_restore_never_replaces_a_different_canonical_file(monkeypatch, tmp_path
     assert (path.parent / ticket.quarantine_name).read_bytes() == body
 
 
+@pytest.mark.skipif(os.name == "nt", reason="dir-fd publication is POSIX")
+def test_restore_canonical_absent_never_replaces_a_concurrent_creation(
+    monkeypatch, tmp_path
+):
+    _point_vault(monkeypatch, tmp_path)
+    key_id, body = _seed_uuid_file()
+    path = storage.sa_key_path(key_id)
+    sa_key_vault.atomic_write(path, body)
+    ticket = sa_key_vault.quarantine_for_delete(path, expected_sha256=_sha(body))
+    quarantine = path.parent / ticket.quarantine_name
+    replacement = b"concurrent-canonical"
+    real_link = os.link
+    real_open = os.open
+    fired = False
+
+    def create_canonical_before_link(
+        source,
+        destination,
+        *,
+        src_dir_fd=None,
+        dst_dir_fd=None,
+        follow_symlinks=True,
+    ):
+        nonlocal fired
+        fired = True
+        replacement_fd = real_open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=dst_dir_fd,
+        )
+        try:
+            os.write(replacement_fd, replacement)
+        finally:
+            os.close(replacement_fd)
+        return real_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(sa_key_vault.os, "link", create_canonical_before_link)
+
+    with pytest.raises(sa_key_vault.SAKeyVaultError):
+        sa_key_vault.restore_quarantined_delete(ticket)
+
+    assert fired
+    assert path.read_bytes() == replacement
+    assert quarantine.read_bytes() == body
+
+
+@pytest.mark.skipif(os.name == "nt", reason="dir-fd publication is POSIX")
+def test_restore_recovers_after_crash_between_link_and_quarantine_unlink(
+    monkeypatch, tmp_path
+):
+    _point_vault(monkeypatch, tmp_path)
+    key_id, body = _seed_uuid_file()
+    path = storage.sa_key_path(key_id)
+    sa_key_vault.atomic_write(path, body)
+    ticket = sa_key_vault.quarantine_for_delete(path, expected_sha256=_sha(body))
+    quarantine = path.parent / ticket.quarantine_name
+    real_unlink = os.unlink
+    fired = False
+
+    def crash_before_quarantine_unlink(name, *, dir_fd=None):
+        nonlocal fired
+        if not fired and name == ticket.quarantine_name:
+            fired = True
+            raise OSError("simulated crash after no-replace publication")
+        return real_unlink(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(sa_key_vault.os, "unlink", crash_before_quarantine_unlink)
+
+    with pytest.raises(sa_key_vault.SAKeyVaultError):
+        sa_key_vault.restore_quarantined_delete(ticket)
+
+    assert fired
+    assert path.read_bytes() == body
+    assert quarantine.read_bytes() == body
+    assert path.stat().st_ino == quarantine.stat().st_ino
+    assert path.stat().st_nlink == 2
+
+    sa_key_vault.restore_quarantined_delete(ticket)
+
+    assert path.read_bytes() == body
+    assert path.stat().st_nlink == 1
+    assert not quarantine.exists()
+
+
 def test_restore_discards_only_a_byte_identical_duplicate(monkeypatch, tmp_path):
     _point_vault(monkeypatch, tmp_path)
     key_id, body = _seed_uuid_file()
@@ -861,7 +952,8 @@ def test_windows_acl_application_stays_on_validated_handle_after_name_swap(
         path.write_bytes(replacement_body)
 
     monkeypatch.setattr(sa_key_vault, "_windows_after_validation", swap)
-    sa_key_vault.harden_vault()
+    with pytest.raises(sa_key_vault.SAKeyVaultError):
+        sa_key_vault.harden_vault()
     assert fired
 
     with sa_key_vault._open_windows_handle(

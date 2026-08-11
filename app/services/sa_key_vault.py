@@ -142,7 +142,12 @@ def _assert_direct_child(path: Path) -> tuple[Path, str]:
     return vault_absolute, path.name
 
 
-def _reject_unsafe_stat(info: os.stat_result, *, directory: bool) -> None:
+def _reject_unsafe_stat(
+    info: os.stat_result,
+    *,
+    directory: bool,
+    allowed_file_links: tuple[int, ...] = (1,),
+) -> None:
     reparse = bool(
         getattr(info, "st_file_attributes", 0)
         & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
@@ -150,7 +155,7 @@ def _reject_unsafe_stat(info: os.stat_result, *, directory: bool) -> None:
     expected = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
     if reparse or stat.S_ISLNK(info.st_mode) or not expected:
         raise SAKeyVaultError("SA-key vault contains an unsafe path type")
-    if not directory and info.st_nlink != 1:
+    if not directory and info.st_nlink not in allowed_file_links:
         raise SAKeyVaultError("SA-key vault file has multiple hard links")
 
 
@@ -192,6 +197,7 @@ def _posix_open_child(
     *,
     writable: bool = False,
     create_exclusive: bool = False,
+    allowed_file_links: tuple[int, ...] = (1,),
 ) -> int:
     flags = getattr(os, "O_NOFOLLOW", 0)
     flags |= os.O_RDWR if writable else os.O_RDONLY
@@ -202,7 +208,11 @@ def _posix_open_child(
     try:
         fd = os.open(name, flags, 0o600, dir_fd=vault_fd)
         info = os.fstat(fd)
-        _reject_unsafe_stat(info, directory=False)
+        _reject_unsafe_stat(
+            info,
+            directory=False,
+            allowed_file_links=allowed_file_links,
+        )
         return fd
     except SAKeyVaultError:
         if "fd" in locals():
@@ -214,8 +224,18 @@ def _posix_open_child(
         raise _raise_vault_error() from exc
 
 
-def _posix_verify_named_identity(vault_fd: int, name: str, held_fd: int) -> None:
-    probe = _posix_open_child(vault_fd, name)
+def _posix_verify_named_identity(
+    vault_fd: int,
+    name: str,
+    held_fd: int,
+    *,
+    allowed_file_links: tuple[int, ...] = (1,),
+) -> None:
+    probe = _posix_open_child(
+        vault_fd,
+        name,
+        allowed_file_links=allowed_file_links,
+    )
     try:
         held = os.fstat(held_fd)
         named = os.fstat(probe)
@@ -422,9 +442,10 @@ def _windows_harden_file(path: Path) -> None:  # pragma: no cover
         _windows_after_validation(path, handle, directory=False)
         _set_private_windows_dacl(handle, directory=False)
         _verify_private_windows_dacl(handle, directory=False)
+        _windows_require_named_identity(path, handle)
 
 
-def harden_vault() -> None:
+def harden_vault(*, _restore_ticket: DeleteQuarantine | None = None) -> None:
     if _IS_WINDOWS:  # pragma: no cover - Windows CI
         with _open_windows_vault("harden") as (vault, _handle, identity):
             try:
@@ -444,16 +465,43 @@ def harden_vault() -> None:
             names = os.listdir(vault_fd)
         except OSError as exc:
             raise _raise_vault_error() from exc
+        restore_names = set()
+        if _restore_ticket is not None:
+            restore_names = {
+                _restore_ticket.original_name,
+                _restore_ticket.quarantine_name,
+            }
+        restore_stats: dict[str, os.stat_result] = {}
         for name in names:
-            fd = _posix_open_child(vault_fd, name)
+            allowed_links = (1, 2) if name in restore_names else (1,)
+            fd = _posix_open_child(
+                vault_fd,
+                name,
+                allowed_file_links=allowed_links,
+            )
             try:
                 os.fchmod(fd, 0o600)
                 info = os.fstat(fd)
-                _reject_unsafe_stat(info, directory=False)
+                _reject_unsafe_stat(
+                    info,
+                    directory=False,
+                    allowed_file_links=allowed_links,
+                )
                 if stat.S_IMODE(info.st_mode) != 0o600:
                     raise _raise_vault_error()
+                if name in restore_names:
+                    restore_stats[name] = info
             finally:
                 os.close(fd)
+        linked = {
+            name: info for name, info in restore_stats.items() if info.st_nlink == 2
+        }
+        if linked:
+            if set(linked) != restore_names:
+                raise _raise_vault_error()
+            identities = {(info.st_dev, info.st_ino) for info in linked.values()}
+            if len(identities) != 1:
+                raise _raise_vault_error()
 
 
 def _replace_write_through(
@@ -747,8 +795,17 @@ def _validate_ticket(ticket: DeleteQuarantine) -> DeleteQuarantine:
     return ticket
 
 
-def _hash_posix_child(vault_fd: int, name: str) -> tuple[str, int]:
-    fd = _posix_open_child(vault_fd, name)
+def _hash_posix_child(
+    vault_fd: int,
+    name: str,
+    *,
+    allowed_file_links: tuple[int, ...] = (1,),
+) -> tuple[str, int]:
+    fd = _posix_open_child(
+        vault_fd,
+        name,
+        allowed_file_links=allowed_file_links,
+    )
     try:
         digest = hashlib.sha256()
         while True:
@@ -846,14 +903,32 @@ def quarantine_for_delete(path: Path, *, expected_sha256: str) -> DeleteQuaranti
 def _finish_quarantine_posix_on_fd(
     ticket: DeleteQuarantine, *, restore: bool, vault_fd: int
 ) -> None:
-    digest, quarantine_fd = _hash_posix_child(vault_fd, ticket.quarantine_name)
+    allowed_links = (1, 2) if restore else (1,)
+    digest, quarantine_fd = _hash_posix_child(
+        vault_fd,
+        ticket.quarantine_name,
+        allowed_file_links=allowed_links,
+    )
     try:
         if digest != ticket.sha256:
             raise _raise_vault_error()
-        _posix_verify_named_identity(vault_fd, ticket.quarantine_name, quarantine_fd)
+        quarantine_info = os.fstat(quarantine_fd)
+        if stat.S_IMODE(quarantine_info.st_mode) != 0o600:
+            raise _raise_vault_error()
+        _posix_verify_named_identity(
+            vault_fd,
+            ticket.quarantine_name,
+            quarantine_fd,
+            allowed_file_links=allowed_links,
+        )
         if restore:
+            published_from_quarantine = False
             try:
-                canonical_fd = _posix_open_child(vault_fd, ticket.original_name)
+                canonical_fd = _posix_open_child(
+                    vault_fd,
+                    ticket.original_name,
+                    allowed_file_links=(1, 2),
+                )
             except SAKeyVaultError as exc:
                 try:
                     os.stat(
@@ -862,21 +937,52 @@ def _finish_quarantine_posix_on_fd(
                         follow_symlinks=False,
                     )
                 except FileNotFoundError:
-                    os.replace(
+                    if os.fstat(quarantine_fd).st_nlink != 1:
+                        raise _raise_vault_error()
+                    os.link(
                         ticket.quarantine_name,
                         ticket.original_name,
                         src_dir_fd=vault_fd,
                         dst_dir_fd=vault_fd,
+                        follow_symlinks=False,
+                    )
+                    published_from_quarantine = True
+                    canonical_fd = _posix_open_child(
+                        vault_fd,
+                        ticket.original_name,
+                        allowed_file_links=(2,),
                     )
                 else:
                     raise exc
-            else:
-                try:
-                    canonical_hash = hashlib.sha256(
-                        _posix_read_fd(canonical_fd)
-                    ).hexdigest()
-                    if canonical_hash != ticket.sha256:
+            try:
+                quarantine_info = os.fstat(quarantine_fd)
+                canonical_info = os.fstat(canonical_fd)
+                same_identity = (
+                    quarantine_info.st_dev,
+                    quarantine_info.st_ino,
+                ) == (canonical_info.st_dev, canonical_info.st_ino)
+                if same_identity:
+                    if (
+                        quarantine_info.st_nlink != 2
+                        or canonical_info.st_nlink != 2
+                    ):
                         raise _raise_vault_error()
+                    _posix_verify_named_identity(
+                        vault_fd,
+                        ticket.original_name,
+                        canonical_fd,
+                        allowed_file_links=(2,),
+                    )
+                    _posix_verify_named_identity(
+                        vault_fd,
+                        ticket.quarantine_name,
+                        quarantine_fd,
+                        allowed_file_links=(2,),
+                    )
+                else:
+                    if published_from_quarantine:
+                        raise _raise_vault_error()
+                    _reject_unsafe_stat(canonical_info, directory=False)
                     _posix_before_duplicate_restore_delete(
                         ticket.original_name,
                         canonical_fd,
@@ -887,27 +993,34 @@ def _finish_quarantine_posix_on_fd(
                     _posix_verify_named_identity(
                         vault_fd, ticket.original_name, canonical_fd
                     )
-                    os.lseek(canonical_fd, 0, os.SEEK_SET)
-                    if (
-                        hashlib.sha256(_posix_read_fd(canonical_fd)).hexdigest()
-                        != ticket.sha256
-                    ):
-                        raise _raise_vault_error()
                     _posix_verify_named_identity(
                         vault_fd, ticket.quarantine_name, quarantine_fd
                     )
-                    os.unlink(ticket.quarantine_name, dir_fd=vault_fd)
-                    _posix_verify_named_identity(
-                        vault_fd, ticket.original_name, canonical_fd
-                    )
-                    os.lseek(canonical_fd, 0, os.SEEK_SET)
-                    if (
-                        hashlib.sha256(_posix_read_fd(canonical_fd)).hexdigest()
-                        != ticket.sha256
-                    ):
-                        raise _raise_vault_error()
-                finally:
-                    os.close(canonical_fd)
+                os.lseek(canonical_fd, 0, os.SEEK_SET)
+                canonical_hash = hashlib.sha256(
+                    _posix_read_fd(canonical_fd)
+                ).hexdigest()
+                if (
+                    canonical_hash != ticket.sha256
+                    or stat.S_IMODE(os.fstat(canonical_fd).st_mode) != 0o600
+                ):
+                    raise _raise_vault_error()
+                os.fsync(canonical_fd)
+                os.fsync(vault_fd)
+                os.unlink(ticket.quarantine_name, dir_fd=vault_fd)
+                _posix_verify_named_identity(
+                    vault_fd, ticket.original_name, canonical_fd
+                )
+                os.lseek(canonical_fd, 0, os.SEEK_SET)
+                if (
+                    hashlib.sha256(_posix_read_fd(canonical_fd)).hexdigest()
+                    != ticket.sha256
+                    or stat.S_IMODE(os.fstat(canonical_fd).st_mode) != 0o600
+                ):
+                    raise _raise_vault_error()
+                os.fsync(canonical_fd)
+            finally:
+                os.close(canonical_fd)
         else:
             os.unlink(ticket.quarantine_name, dir_fd=vault_fd)
         os.fsync(vault_fd)
@@ -1020,10 +1133,11 @@ def _finish_quarantine_windows(ticket: DeleteQuarantine, *, restore: bool) -> No
 
 def restore_quarantined_delete(ticket: DeleteQuarantine) -> None:
     ticket = _validate_ticket(ticket)
-    harden_vault()
     if _IS_WINDOWS:  # pragma: no cover
+        harden_vault()
         _finish_quarantine_windows(ticket, restore=True)
     else:
+        harden_vault(_restore_ticket=ticket)
         _finish_quarantine_posix(ticket, restore=True)
 
 
