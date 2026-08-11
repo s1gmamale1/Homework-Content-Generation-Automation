@@ -90,7 +90,12 @@ def phase_rows(job: soak.JobSnapshot) -> list[soak.PhaseSnapshot]:
             solver_status=(
                 "ok"
                 if name
-                in {"memory-check", "practice-error-detection", "practice-rlc"}
+                in {
+                    "memory-check",
+                    "practice-error-detection",
+                    "practice-rlc",
+                    "boss-arena",
+                }
                 else None
             ),
         )
@@ -165,6 +170,9 @@ def healthy_completed_snapshot(*, target: int = 4) -> soak.RawSnapshot:
             phase_claim_token=True,
         ),
         budget=soak.BudgetSnapshot(api_paused_reason=None, min_worker_version=1001),
+        launch_defaults=soak.LaunchDefaultsSnapshot(
+            solver_boss_arena_enabled=True,
+        ),
         jobs=jobs,
         books={str(BOOK): soak.BookSnapshot(id=BOOK, content_sha256="a" * 64)},
         unrelated_active_jobs=[],

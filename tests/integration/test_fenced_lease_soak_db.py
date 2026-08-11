@@ -34,6 +34,13 @@ def test_server_wait_scan_is_limited_to_client_backends():
     assert "backend_type = 'client backend'" in source
 
 
+def test_collect_reads_the_live_boss_arena_solver_toggle():
+    source = inspect.getsource(soak.SqlSoakReadStore.collect)
+
+    assert "FROM launch_defaults WHERE id = 1" in source
+    assert "solver_boss_arena_enabled" in source
+
+
 @pytest.fixture(scope="module")
 def database_url() -> str:
     url = os.environ["DATABASE_URL"]
@@ -151,6 +158,7 @@ async def seeded_scope(database_url):
         credential_slot_wait_seconds=1,
         legacy_gemini_var_must_be_absent=True,
         structured_output_enabled=False,
+        solver_boss_arena_enabled=True,
         required_book_sha256={str(book_id): "a" * 64},
         forbidden_notion_mapping_keys=[],
         expected_models_by_operation_prefix={

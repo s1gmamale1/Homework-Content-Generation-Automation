@@ -43,6 +43,7 @@ def valid_scope_dict() -> dict:
         "credential_slot_wait_seconds": 120,
         "legacy_gemini_var_must_be_absent": True,
         "structured_output_enabled": False,
+        "solver_boss_arena_enabled": True,
         "required_book_sha256": {str(BOOK): "a" * 64},
         "forbidden_notion_mapping_keys": ["english|8"],
         "expected_models_by_operation_prefix": dict(EXPECTED_MODELS_BY_OPERATION),
@@ -54,6 +55,17 @@ def valid_scope_dict() -> dict:
         "attestation_max_age_seconds": 300,
         "settle_seconds": 60,
     }
+
+
+def test_scope_requires_boss_arena_solver_for_the_soak() -> None:
+    raw = valid_scope_dict()
+    raw["solver_boss_arena_enabled"] = True
+    scope = soak.SoakScope.model_validate(raw)
+    assert scope.solver_boss_arena_enabled is True
+
+    raw["solver_boss_arena_enabled"] = False
+    with pytest.raises(ValidationError, match="solver_boss_arena_enabled"):
+        soak.SoakScope.model_validate(raw)
 
 
 def valid_worker_dict() -> dict:

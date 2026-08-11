@@ -20,6 +20,12 @@ from tests.scripts.test_fenced_lease_soak_contracts import (
 NOW = datetime(2026, 8, 10, 12, 5, tzinfo=timezone.utc)
 
 
+def test_runtime_snapshot_pins_live_boss_arena_solver_toggle() -> None:
+    assert "launch_defaults" in soak.RawSnapshot.model_fields
+    annotation = soak.RawSnapshot.model_fields["launch_defaults"].annotation
+    assert annotation is soak.LaunchDefaultsSnapshot
+
+
 def valid_scope(**updates) -> soak.SoakScope:
     raw = valid_scope_dict()
     raw.update(
@@ -83,6 +89,9 @@ def healthy_raw_snapshot() -> soak.RawSnapshot:
             api_paused_reason="lease-soak-staging:stage-04-20260810",
             min_worker_version=1001,
         ),
+        launch_defaults=soak.LaunchDefaultsSnapshot(
+            solver_boss_arena_enabled=True,
+        ),
         jobs=[
             soak.JobSnapshot(
                 id=job_id,
@@ -144,6 +153,15 @@ def healthy_raw_snapshot() -> soak.RawSnapshot:
 
 def hard_codes(findings: list[soak.Finding]) -> set[str]:
     return {finding.code for finding in findings if finding.hard}
+
+
+def test_preflight_rejects_disabled_boss_arena_solver_toggle() -> None:
+    raw = healthy_raw_snapshot()
+    raw.launch_defaults.solver_boss_arena_enabled = False
+
+    findings = soak.evaluate_preflight(valid_scope(), valid_attestation(), raw)
+
+    assert "solver_boss_arena_toggle_mismatch" in hard_codes(findings)
 
 
 def assert_hard(code: str, raw: soak.RawSnapshot, *, scope=None, attestation=None):

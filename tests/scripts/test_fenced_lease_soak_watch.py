@@ -361,7 +361,12 @@ def full_stage_snapshot(scope: soak.SoakScope, *, state: str) -> soak.RawSnapsho
                 solver_status=(
                     "ok"
                     if phase_name
-                    in {"memory-check", "practice-error-detection", "practice-rlc"}
+                    in {
+                        "memory-check",
+                        "practice-error-detection",
+                        "practice-rlc",
+                        "boss-arena",
+                    }
                     else None
                 ),
             )
@@ -383,6 +388,9 @@ def full_stage_snapshot(scope: soak.SoakScope, *, state: str) -> soak.RawSnapsho
                 f"lease-soak-staging:{scope.run_id}" if state == "pending" else None
             ),
             min_worker_version=1001,
+        ),
+        launch_defaults=soak.LaunchDefaultsSnapshot(
+            solver_boss_arena_enabled=True,
         ),
         jobs=jobs,
         books={

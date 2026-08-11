@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import pipeline
 from scripts import fenced_lease_soak as soak
 from tests.scripts.test_fenced_lease_soak_snapshot import (
     healthy_completed_snapshot,
@@ -494,6 +495,21 @@ def test_explicit_capability_shrink_is_immediate_even_with_stale_heartbeat():
     assert "heartbeat_stale" not in {item.code for item in findings}
 
 
+def test_boss_arena_solver_toggle_drift_is_an_immediate_hard_stop():
+    scope = valid_scope(target=4)
+    raw = healthy_running_snapshot(running=4)
+    raw.launch_defaults.solver_boss_arena_enabled = False
+
+    findings = soak.evaluate_runtime(
+        scope, runtime_attestation(scope), raw, previous_samples=[]
+    )
+
+    finding = next(
+        item for item in findings if item.code == "solver_boss_arena_toggle_drift"
+    )
+    assert finding.hard_stop is True
+
+
 @pytest.mark.parametrize("judge_status", [None, "unavailable", "refused"])
 def test_terminal_missing_or_untrusted_judge_proof_fails_stage(judge_status):
     scope = valid_scope(target=4)
@@ -522,6 +538,24 @@ def test_terminal_missing_or_untrusted_required_solver_proof_fails_stage(solver_
 
     finding = next(item for item in findings if item.code == "solver_proof_missing")
     assert finding.stage_failure and not finding.hard_stop
+
+
+def test_solver_proof_phase_set_matches_the_production_pipeline():
+    assert soak._REQUIRED_SOLVER_PHASES == frozenset(pipeline._SOLVER_PHASES)
+
+
+def test_terminal_missing_boss_arena_solver_proof_fails_stage():
+    scope = valid_scope(target=4)
+    raw = healthy_completed_snapshot(target=4)
+    phase = next(row for row in raw.phases if row.phase_name == "boss-arena")
+    phase.solver_status = None
+
+    findings = soak.evaluate_runtime(
+        scope, runtime_attestation(scope), raw, [healthy_running_snapshot(running=4)]
+    )
+
+    finding = next(item for item in findings if item.code == "solver_proof_missing")
+    assert f"{phase.job_id}:boss-arena:missing" in finding.evidence["rows"]
 
 
 def test_mismatch_regen_remains_successful_solver_proof():

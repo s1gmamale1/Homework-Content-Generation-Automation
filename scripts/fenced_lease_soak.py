@@ -90,7 +90,7 @@ _AUTHORIZED_STAGE_TARGETS = frozenset({4, 8, 12, 20, 40})
 _ARMED_STOP_TIMEOUT_SECONDS = 30.0
 _ARMED_STOP_CANCEL_GRACE_SECONDS = 5.0
 _REQUIRED_SOLVER_PHASES = frozenset(
-    {"memory-check", "practice-error-detection", "practice-rlc"}
+    {"memory-check", "practice-error-detection", "practice-rlc", "boss-arena"}
 )
 
 
@@ -139,6 +139,7 @@ class SoakScope(PersistedModel):
     credential_slot_wait_seconds: int = Field(ge=1)
     legacy_gemini_var_must_be_absent: bool
     structured_output_enabled: bool
+    solver_boss_arena_enabled: Literal[True]
     required_book_sha256: dict[str, str] = Field(min_length=1)
     forbidden_notion_mapping_keys: list[str]
     expected_models_by_operation_prefix: dict[str, str] = Field(min_length=1)
@@ -390,6 +391,10 @@ class BudgetSnapshot(PersistedModel):
     min_worker_version: int | None
 
 
+class LaunchDefaultsSnapshot(PersistedModel):
+    solver_boss_arena_enabled: bool | None
+
+
 class JobSnapshot(PersistedModel):
     id: UUID
     batch_id: UUID | None
@@ -526,6 +531,7 @@ class RawSnapshot(PersistedModel):
     transaction_read_only: str
     schema_state: SchemaSnapshot = Field(alias="schema")
     budget: BudgetSnapshot
+    launch_defaults: LaunchDefaultsSnapshot
     jobs: list[JobSnapshot]
     books: dict[str, BookSnapshot]
     unrelated_active_jobs: list[ActiveJobSnapshot]
@@ -883,6 +889,20 @@ def evaluate_runtime(
     findings: list[Finding] = []
     scoped_ids = set(scope.job_ids)
     jobs = {job.id: job for job in raw.jobs if job.id in scoped_ids}
+
+    if (
+        raw.launch_defaults.solver_boss_arena_enabled
+        is not scope.solver_boss_arena_enabled
+    ):
+        _append_runtime_finding(
+            findings,
+            _runtime_hard(
+                "solver_boss_arena_toggle_drift",
+                "the live boss-arena solver toggle drifted from the locked soak scope",
+                expected=scope.solver_boss_arena_enabled,
+                observed=raw.launch_defaults.solver_boss_arena_enabled,
+            ),
+        )
 
     observed_running = sum(job.status == "running" for job in raw.jobs) + sum(
         job.status == "running" for job in raw.unrelated_active_jobs
@@ -1554,6 +1574,18 @@ def evaluate_preflight(
 ) -> list[Finding]:
     """Evaluate the entire initial gate without I/O; every drift fails closed."""
     findings: list[Finding] = []
+    if (
+        raw.launch_defaults.solver_boss_arena_enabled
+        is not scope.solver_boss_arena_enabled
+    ):
+        findings.append(
+            _finding(
+                "solver_boss_arena_toggle_mismatch",
+                "the live boss-arena solver toggle differs from the locked soak scope",
+                expected=scope.solver_boss_arena_enabled,
+                observed=raw.launch_defaults.solver_boss_arena_enabled,
+            )
+        )
     schema_ok = (
         raw.transaction_read_only == "on"
         and raw.schema_state.revision == scope.expected_db_revision
@@ -1958,6 +1990,12 @@ class SqlSoakReadStore:
                     FROM budget_state WHERE id = 1
                 """))
             ).mappings().one_or_none()
+            launch_defaults_row = (
+                await conn.execute(text("""
+                    SELECT solver_boss_arena_enabled
+                    FROM launch_defaults WHERE id = 1
+                """))
+            ).mappings().one_or_none()
 
             job_rows = _mapping_dicts(await conn.execute(text("""
                 SELECT j.id, j.batch_id, j.book_id, b.book_id AS batch_book_id,
@@ -2106,6 +2144,11 @@ class SqlSoakReadStore:
             budget=BudgetSnapshot(
                 api_paused_reason=(budget_row or {}).get("api_paused_reason"),
                 min_worker_version=(budget_row or {}).get("min_worker_version"),
+            ),
+            launch_defaults=LaunchDefaultsSnapshot(
+                solver_boss_arena_enabled=(launch_defaults_row or {}).get(
+                    "solver_boss_arena_enabled"
+                ),
             ),
             jobs=[JobSnapshot.model_validate(row) for row in job_rows],
             books={str(row["id"]): BookSnapshot.model_validate(row) for row in book_rows},
