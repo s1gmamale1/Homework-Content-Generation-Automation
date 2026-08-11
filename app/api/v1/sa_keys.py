@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFil
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user_strict
 from app.db import get_session
 from app.repositories import sa_keys as repo
 from app.repositories import workers as workers_repo
@@ -129,7 +128,6 @@ async def patch_sa_key(
 async def download_sa_key(
     key_id: UUID,
     session: AsyncSession = Depends(get_session),
-    _user: dict = Depends(get_current_user_strict),  # header-only; overrides router dep
 ) -> Response:
     row = await repo.get(session, key_id)
     if row is None:

@@ -13,7 +13,7 @@ sets a cookie / appends the query param (SSE). The frontend's manual login
 flow pastes the token into sessionStorage and attaches it to every call.
 """
 
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import Header, HTTPException, Query, status
 
@@ -78,17 +78,22 @@ async def get_current_user(
 
 
 async def get_current_user_strict(
-    authorization: Optional[str] = Header(default=None),
+    authorization: Annotated[Optional[str], Header()] = None,
+    token: Annotated[
+        Optional[str], Query(include_in_schema=False)
+    ] = None,
 ) -> dict:
-    """Header-only auth for serving credential bytes. Unlike get_current_user
-    this rejects the ?token= query param (which would leak the token into
-    proxy/access logs) and refuses entirely (503) when auth is disabled — a
-    service-account-key vault must never be served wide-open."""
+    """Header-only auth for every service-account-key vault route."""
     valid = valid_auth_tokens()
     if not valid:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="SA-key download requires AUTH_TOKEN to be configured",
+            detail="SA-key vault auth is unavailable",
+        )
+    if token is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="query auth is not accepted",
         )
     provided = _bearer_value(authorization)
     if not provided or not constant_time_token_match(provided, sorted(valid)):

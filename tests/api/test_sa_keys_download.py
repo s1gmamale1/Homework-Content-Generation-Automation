@@ -26,8 +26,11 @@ async def test_download_is_header_only(monkeypatch, tmp_path):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         kid = (await c.post("/api/v1/sa-keys",
                files={"file": ("k.json", _good_key(), "application/json")}, headers=H)).json()["id"]
-        # ?token= works on a normal endpoint (proves it's not globally broken)
-        assert (await c.get("/api/v1/sa-keys?token=secret")).status_code == 200
+        # ?token= still works on a normal endpoint (proves query auth was not
+        # globally removed when the complete SA-key router became header-only).
+        assert (await c.get("/api/v1/books?token=secret")).status_code == 200
+        # The SA-key collection itself is now header-only too.
+        assert (await c.get("/api/v1/sa-keys?token=secret")).status_code == 401
         # ?token= is REJECTED on the download route (header-only)
         assert (await c.get(f"/api/v1/sa-keys/{kid}/download?token=secret")).status_code == 401
         # correct header serves the bytes

@@ -57,6 +57,18 @@ async def test_strict_requires_header_and_refuses_when_open(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_strict_rejects_any_query_token_even_with_a_valid_header(monkeypatch):
+    monkeypatch.setattr(auth, "valid_auth_tokens", lambda: {STRONG_A})
+
+    with pytest.raises(HTTPException) as caught:
+        await auth.get_current_user_strict(
+            authorization=f"Bearer {STRONG_A}", token=STRONG_A
+        )
+
+    assert caught.value.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_general_auth_checks_every_candidate_in_constant_time(
     monkeypatch,
 ):
