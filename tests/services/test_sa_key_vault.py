@@ -980,16 +980,19 @@ def test_windows_remove_missing_ok_never_treats_access_denied_as_absent(
     win32security.SetFileSecurity(
         str(path), win32security.DACL_SECURITY_INFORMATION, descriptor
     )
-    monkeypatch.setattr(
-        Path,
-        "exists",
-        lambda *_args, **_kwargs: pytest.fail("Path.exists fail-open"),
-    )
     try:
-        with pytest.raises(sa_key_vault.SAKeyVaultError):
-            sa_key_vault._remove_windows_verified(
-                vault, path.name, missing_ok=True
+        # Restore the global Path probe before pytest formats a failure or tears
+        # down tmp_path; both pytest internals legitimately call Path.exists().
+        with monkeypatch.context() as path_probe:
+            path_probe.setattr(
+                Path,
+                "exists",
+                lambda *_args, **_kwargs: pytest.fail("Path.exists fail-open"),
             )
+            with pytest.raises(sa_key_vault.SAKeyVaultError):
+                sa_key_vault._remove_windows_verified(
+                    vault, path.name, missing_ok=True
+                )
     finally:
         win32security.SetFileSecurity(
             str(path), win32security.DACL_SECURITY_INFORMATION, original

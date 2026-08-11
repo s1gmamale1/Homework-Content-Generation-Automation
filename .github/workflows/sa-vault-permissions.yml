@@ -25,4 +25,4 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --extra dev
-      - run: uv run pytest tests/services/test_sa_key_vault.py -q
+      - run: uv run pytest tests/services/test_sa_key_vault.py -vv
