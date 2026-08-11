@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db import get_session
 from app.repositories import batches as batches_repo
 from app.repositories import books as books_repo
@@ -32,6 +33,7 @@ from app.services.agent_models import (
 )
 from app.services.flows import order_phase_selection, flow_for, selection_missing_prompts
 from app.services import job_reactivation
+from app.services.launch_stagger import stagger_offset
 from app.services.toc_classifier import classify_entries, CLASSES
 
 router = APIRouter(tags=["batches"])
@@ -94,6 +96,18 @@ class BatchLaunchRequest(BaseModel):
     custom_prompts: dict[str, str] | None = None
     selected_phases: list[str] | None = None
     session_limit_strategy: str = "inherit"  # "pause" | "switch" | "inherit"
+
+
+def _stagger_summary(launched: int, wave_size: int, interval_seconds: int) -> dict:
+    """What the launcher did to `scheduled_at`, so an operator can tell a
+    deliberately staggered launch apart from a stuck queue. `waves` is 1 and the
+    offset 0 when the stagger is off or the launch fits inside one wave."""
+    last = stagger_offset(max(launched - 1, 0), wave_size=wave_size,
+                          interval_seconds=interval_seconds)
+    waves = (last // interval_seconds) + 1 if interval_seconds > 0 and last > 0 else 1
+    return {"wave_size": wave_size, "interval_seconds": interval_seconds,
+            "jobs_launched": launched, "waves": waves,
+            "last_start_offset_seconds": last}
 
 
 def _rollup_payload(batch, tally: dict[str, int], original_filename: str | None = None,
@@ -330,6 +344,14 @@ async def launch_batch(
         session_limit_strategy=body.session_limit_strategy)
 
     created = adopted = skipped = resumed = 0
+    # Launch stagger (plan 2026-08-11). `launched` counts only the jobs THIS
+    # call actually makes claimable — created + resumed. Adopted/skipped
+    # sections are already running or already done: they add no load and must
+    # not consume a wave slot, or a mostly-adopted relaunch of 8 new jobs would
+    # be spread over 5 waves for nothing.
+    _wave_size = settings.batch_launch_wave_size
+    _wave_interval = settings.batch_launch_wave_interval_seconds
+    launched = 0
     # fleet-api-4: per-section rebill warnings (only populated on force path).
     # Format: [{toc_entry_id, prior_api_cost_usd, would_rebill}, ...]
     rebill_warnings: list[dict] = []
@@ -398,7 +420,12 @@ async def launch_batch(
                         ],
                     },
                 )
-            await jobs_repo.reset_for_retry(session, latest.id, batch_id=batch.id)   # reuses done phases + adopts batch
+            await jobs_repo.reset_for_retry(
+                session, latest.id, batch_id=batch.id,
+                start_offset_seconds=stagger_offset(
+                    launched, wave_size=_wave_size,
+                    interval_seconds=_wave_interval))   # reuses done phases + adopts batch
+            launched += 1
             resumed += 1
             continue
         # brand-new section, OR discard mode → fresh job (discard leaves the old
@@ -417,7 +444,11 @@ async def launch_batch(
                                judge_provider=res_judge_provider,
                                judge_model=res_judge_model,
                                solver_provider=res_solver_provider,
-                               solver_model=res_solver_model)
+                               solver_model=res_solver_model,
+                               start_offset_seconds=stagger_offset(
+                                   launched, wave_size=_wave_size,
+                                   interval_seconds=_wave_interval))
+        launched += 1
         created += 1
 
     await session.flush()
@@ -431,7 +462,8 @@ async def launch_batch(
                               stale=archive["stale"])
     payload.update(jobs_created=created, jobs_adopted=adopted,
                    jobs_skipped=skipped, jobs_resumed=resumed,
-                   rebill_warnings=rebill_warnings)
+                   rebill_warnings=rebill_warnings,
+                   stagger=_stagger_summary(launched, _wave_size, _wave_interval))
     return payload
 
 
