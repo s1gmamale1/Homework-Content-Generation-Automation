@@ -153,9 +153,10 @@ The only anonymous mode is explicit local development:
 `AUTH_TOKEN=` plus `ALLOW_INSECURE_LOCAL_AUTH=true`. It never opens the SA-key
 router. Do not add an environment-name, hostname, debug, or pytest bypass.
 Executable startup order is security-sensitive: validate operator auth, harden
-the SA-key vault, reconcile/verify head inventory, and only then load prompts,
-open DB lifecycle work, stamp the version floor, start listeners/workers, send
-heartbeats, or claim. Automation never kills/restarts the user-owned head. For
+the SA-key vault, load prompts, then open the DB session that reconciles/verifies
+head inventory and job state; only afterward stamp the version floor, start
+listeners/workers, send heartbeats, or claim. Automation never kills/restarts
+the user-owned head. For
 an operational hard cut, follow
 `docs/runbooks/operator-token-rotation.md`; never bridge with `123,<strong>`.
 

@@ -94,12 +94,21 @@ def _api_capable(env: dict) -> dict[str, bool]:
 
 
 def _capability_blob(env: dict) -> dict:
-    """Published worker capability blob — provider × transport view.
-    Shape: {"cli": {name: bool ...}, "api": {provider: bool ...}}.
+    """Published worker capability blob — provider, version, and auth evidence.
+
     The cli flags follow shutil.which (via agent.provider_cli_installed); the api
     flags use the same acceptance rules as _compute_capabilities via _api_capable.
     Computed once at module load (CAPABILITY_BLOB) and published on each heartbeat."""
     api = _api_capable(env)
+    allow_raw = env.get(
+        "ALLOW_INSECURE_LOCAL_AUTH", settings.allow_insecure_local_auth
+    )
+    allow_insecure_local = (
+        allow_raw
+        if isinstance(allow_raw, bool)
+        else str(allow_raw).casefold() in {"1", "true", "yes", "on"}
+    )
+    raw_auth_token = str(env.get("AUTH_TOKEN", settings.auth_token))
     return {
         "cli": {name: agent.provider_cli_installed(name) for name in providers.PROVIDERS},
         "api": {
@@ -111,6 +120,10 @@ def _capability_blob(env: dict) -> dict:
         # captured at def time) so tests can patch the module globals.
         "code_version": code_version.CODE_VERSION,
         "git_sha": code_version.GIT_SHA,
+        "auth_token_fingerprint": operator_auth.runtime_token_set_fingerprint(
+            raw_auth_token,
+            allow_insecure_local=allow_insecure_local,
+        ),
     }
 
 
@@ -1110,6 +1123,7 @@ async def run_standalone() -> None:
         allow_insecure_local=settings.allow_insecure_local_auth,
     )
     sa_key_vault.harden_vault()
+    _rebind_capabilities()
 
     from app.log import configure as configure_logging
     from app.services.prompts import load_all as load_prompts

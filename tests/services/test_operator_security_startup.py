@@ -241,6 +241,11 @@ async def test_standalone_orders_auth_vault_before_logging_prompts_and_worker(
         "sa_key_vault",
         SimpleNamespace(harden_vault=lambda: calls.append("harden")),
     )
+    monkeypatch.setattr(
+        worker_module,
+        "_rebind_capabilities",
+        lambda: calls.append("auth-fingerprint"),
+    )
 
     class FakeWorker:
         def stop(self):
@@ -263,7 +268,14 @@ async def test_standalone_orders_auth_vault_before_logging_prompts_and_worker(
 
     await worker_module.run_standalone()
 
-    assert calls[:5] == ["auth", "harden", "logging", "prompts", "worker"]
+    assert calls[:6] == [
+        "auth",
+        "harden",
+        "auth-fingerprint",
+        "logging",
+        "prompts",
+        "worker",
+    ]
     assert calls[-1] == "run"
 
 

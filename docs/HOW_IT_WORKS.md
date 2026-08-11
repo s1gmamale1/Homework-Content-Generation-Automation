@@ -808,11 +808,11 @@ dialog).
 
 `main.py` builds the FastAPI app, mounts the API under `/api/v1`, and — if the React app has
 been built into `web/dist` — serves that too (with a catch-all so client-side routes work on
-refresh). Executable startup first validates operator auth and hardens the SA-key vault; the
-head then reconciles delete quarantines and verifies the DB/file inventory. Only after those
-fail-closed gates does it load prompts, sweep orphaned rows, stamp the fleet version floor,
-start listeners, and start the embedded worker. Standalone workers run the same auth/vault
-preflight before heartbeat or claim activity.
+refresh). Executable startup first validates operator auth, hardens the SA-key vault, and
+loads prompts. The head then opens its DB session, reconciles delete quarantines, verifies the
+DB/file inventory, and sweeps orphaned rows; only afterward does it stamp the fleet version
+floor, start listeners, and start the embedded worker. Standalone workers run the same
+auth/vault preflight before prompts, heartbeat, or claim activity.
 
 Key endpoints:
 - `POST /books` — upload a PDF (+ subject). Saves to disk, starts TOC extraction in the

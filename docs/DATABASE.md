@@ -283,7 +283,7 @@ No mixins — tiny by design:
 | `last_heartbeat` | NOT NULL | always stamped with `func.now()` (DB clock) |
 | `status` | String(32) NOT NULL, server_default `'online'` | `online` / `draining`; **enforced (C5/P1):** the worker reads its own status each registry beat and self-drains when `draining` (stops claiming + lets in-flight finish) via `_drain_check_and_beat`. `claim_next_job` doesn't filter on it — the worker self-stops instead |
 | `notes` | Text NULL | |
-| `capabilities` | JSONB NULL (migration 0035) | the worker's published capability blob `{"cli": {<5 providers>: bool}, "api": {"claude": bool, "gemini": bool}}` — which provider CLIs are installed on this PC and which api creds are present. Written on every registry beat (`upsert_heartbeat(..., capabilities=)`, no-clobber on status-only beats). NULL = legacy/never-published. The head unions it over **online** workers (`aggregate_fleet_capability`) to tell the launcher which `(provider × transport)` picks the fleet can actually serve (`launcher-capability-gate-1`, worklog 0085). |
+| `capabilities` | JSONB NULL (migration 0035) | the worker's published capability blob: CLI/API serveability, code version/SHA, and `auth_token_fingerprint` (domain-separated SHA-256 of the canonical strong-token set; `local-dev` marker or NULL for invalid config; never raw token material). Written on every registry beat (`upsert_heartbeat(..., capabilities=)`, no-clobber on status-only beats) and refreshed after live capability rebind. NULL = legacy/never-published. The head unions provider flags over **online** workers for launcher serveability; operators compare the fingerprint per process during token rotation. |
 
 **Liveness is derived, never stored**: `GET /workers` fetches `SELECT now()` and computes
 `online = last_heartbeat >= db_now - worker_registry_stale_seconds` (default 90 s = 3 missed
@@ -370,7 +370,9 @@ identity swaps, files outside the vault, and access-denied fallbacks are
 rejected. Writes use a private same-directory exclusive temp, flush/fsync,
 rehash and type/link verification, atomic write-through replacement, destination
 verification, and directory fsync where available. Existing bytes are preserved
-when hardening permissions.
+when hardening permissions. `sa_key_vault.snapshot_uuid_inventory()` is the
+read-only operator snapshot: it returns only UUID→SHA-256 through that same
+anchored scan/hash path and fails on unsafe, unknown, or quarantined entries.
 
 **DB/file consistency.** Upload dedup is DB-atomic. If its COMMIT raises, the
 canonical UUID bytes remain as evidence: eventual commit is coherent; eventual

@@ -1383,8 +1383,14 @@ def _group_quarantines(names: list[str]) -> dict[UUID, DeleteQuarantine]:
     return {key_id: tickets[0] for key_id, tickets in grouped.items()}
 
 
-def verify_uuid_inventory(expected_sha256: Mapping[str, str]) -> None:
-    expected = _normalize_expected(expected_sha256)
+def snapshot_uuid_inventory() -> dict[str, str]:
+    """Return a verified UUID-key digest snapshot without exposing bytes.
+
+    This is the read-only operational evidence surface. It uses the same held
+    directory-fd / Windows-handle path as startup inventory verification, and
+    rejects every unresolved quarantine or unrecognized/unsafe vault entry.
+    """
+
     harden_vault()
     if not _IS_WINDOWS:
         observed: dict[str, str] = {}
@@ -1396,9 +1402,7 @@ def verify_uuid_inventory(expected_sha256: Mapping[str, str]) -> None:
                 digest, fd = _hash_posix_child(vault_fd, name)
                 os.close(fd)
                 observed[key_id] = digest
-        if observed != expected:
-            raise _raise_vault_error()
-        return
+        return observed
     observed: dict[str, str] = {}
     with _open_windows_vault("inventory") as (  # pragma: no cover - Windows CI
         vault,
@@ -1432,6 +1436,12 @@ def verify_uuid_inventory(expected_sha256: Mapping[str, str]) -> None:
                 _windows_require_named_identity(child, child_handle)
                 _windows_recheck_vault_identity(vault, identity)
             observed[key_id] = digest
+    return observed
+
+
+def verify_uuid_inventory(expected_sha256: Mapping[str, str]) -> None:
+    expected = _normalize_expected(expected_sha256)
+    observed = snapshot_uuid_inventory()
     if observed != expected:
         raise _raise_vault_error()
 

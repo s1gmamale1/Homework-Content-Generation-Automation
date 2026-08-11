@@ -314,13 +314,16 @@ These aren't wired yet but the data is in the DB / logs — easy to add a `/metr
 **Head restart is now fleet-safe.** As of Cluster 5 / P1, the API startup orphan sweep is peer-aware: it resets-all `running` jobs to `pending` only when the `workers` table shows no live peers (single-host fast recovery, behavior unchanged); when live peers are present, only jobs whose lease is older than `RECLAIM_STALE_SECONDS` are reset. This means restarting the head/API pod no longer yanks a peer worker's freshly-heartbeated jobs.
 
 **Operator-token changes are hard cuts.** Startup rejects the old `123` value
-even when it appears beside a strong value. Keep generation paused and drained,
-stage the same new token everywhere, then let the operator restart the head;
-only after head health and its automatic version-floor stamp may workers be
-rolled. Old workers receive 401 during that paused mismatch window. Automation
-must not kill/restart the user-owned head. Follow
+even when it appears beside a strong value. The API budget pause is not a global
+claim fence (CLI jobs still pass), so install a temporary version floor above
+the target version, drain/stop every worker process—including post-done archive
+work—and require zero active jobs and credential slots. Stage one token
+everywhere with `WORKER_CONCURRENCY=0` on the head; the operator restarts the
+head, then workers restart and publish the expected auth fingerprint while
+still fenced. Automation must not kill/restart the user-owned head. Follow
 [`docs/runbooks/operator-token-rotation.md`](./runbooks/operator-token-rotation.md),
-including owner-scoped unpause and the six-key/Host-59 preservation checks.
+including the owner-scoped floor restore/unpause or explicit foreign-pause
+handoff and the six-key/Host-59 preservation checks.
 
 **SPA + auth.** If `AUTH_TOKEN` is set but the SPA's sessionStorage has no token, every page load redirects to `/login`. The login form takes a token; paste-and-submit. In production, the upstream service either (a) injects the bearer token via reverse proxy, or (b) hands the token to the SPA via postMessage / URL fragment / iframe init.
 

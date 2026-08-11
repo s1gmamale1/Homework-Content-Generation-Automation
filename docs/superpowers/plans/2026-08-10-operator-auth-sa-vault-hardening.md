@@ -1151,124 +1151,134 @@ git add main.py app/services/worker.py \
 git commit -m "fix(startup): validate auth and harden key vault first"
 ```
 
-### Task 6: Document and rehearse the hard-cut `123` rotation without restarting the head
+### Task 6: Fence every claim and rehearse the hard-cut `123` rotation
 
 **Files:**
+- Modify: `app/services/operator_auth.py`
+- Modify: `app/services/worker.py`
+- Modify: `app/services/sa_key_vault.py`
+- Modify: `tests/services/test_operator_auth.py`
+- Modify: `tests/services/test_worker_capabilities.py`
+- Modify: `tests/services/test_worker_capability_rebind.py`
+- Modify: `tests/services/test_operator_security_startup.py`
+- Modify: `tests/services/test_sa_key_vault.py`
 - Create: `docs/runbooks/operator-token-rotation.md`
-- Modify: `.env.example`
-- Modify: `README.md`
-- Modify: `CLAUDE.md`
-- Modify: `docs/DEPLOY.md`
-- Modify: `docs/HOW_IT_WORKS.md`
-- Modify: `docs/CODE_MAP.md`
-- Modify: `docs/DATABASE.md`
-- Modify: `docs/fleet/worker-pc-setup.md`
+- Modify: `.env.example`, `README.md`, `CLAUDE.md`, `docs/DEPLOY.md`,
+  `docs/HOW_IT_WORKS.md`, `docs/CODE_MAP.md`, `docs/DATABASE.md`, and
+  `docs/fleet/worker-pc-setup.md`
 - Create: `tests/docs/test_operator_token_runbook.py`
 
 **Interfaces:**
-- Produces an operator-owned deployment/rollback contract; it is documentation and a command-shape test, not an automatic service restart.
-- Preserves the six key files and Host-59 assignment by explicit pre/post fingerprints and read-only DB checks.
+- Produces `runtime_token_set_fingerprint(raw, *, allow_insecure_local) -> str | None`:
+  a domain-separated SHA-256 over the sorted validated token set; exact local-dev
+  marker; `None` for invalid configuration. It never returns token material.
+- Extends every worker `CAPABILITY_BLOB`/heartbeat with
+  `auth_token_fingerprint`, refreshed at standalone startup and every live
+  capability rebind.
+- Produces `sa_key_vault.snapshot_uuid_inventory() -> dict[str, str]`, using the
+  same held-fd/held-handle scan/hash path as startup verification and failing on
+  unsafe, unknown, or quarantined entries.
+- Produces an operator-owned runbook. It never restarts/kills the head and never
+  mutates credentials during implementation.
 
-- [ ] **Step 1: Write runbook contract RED tests**
+- [ ] **Step 1: Write RED tests for runtime evidence and the safe vault snapshot**
 
-Create `tests/docs/test_operator_token_runbook.py` and assert the runbook contains, in order:
+Pin the fingerprint to a hand-derived literal, prove multi-token order
+independence, raw-token absence, explicit `local-dev`, and invalid→`None`.
+Prove startup rebinds it, live rebind refreshes it, and the actual registry
+heartbeat carries it. Add a POSIX mutation test that patches `Path.read_bytes`
+and `Path.iterdir` to fail while `snapshot_uuid_inventory` still succeeds; add
+unsafe-entry/quarantine failures and keep the real Windows handle acceptance.
 
-1. read the existing fleet pause; acquire `operator-auth-rotation` only when unpaused, otherwise preserve the foreign reason and record `pause_owned=false`;
-2. wait until scoped/live running job count is zero;
-3. read-only six-key count and Host-59 assignment snapshot;
-4. SHA-256 snapshot of UUID-named key files and zero unresolved delete quarantines (or an explicit stop/manual investigation before rotation);
-5. generate `secrets.token_urlsafe(48)` without printing it into logs/history;
-6. stage the same strong value into head and every worker `.env`;
-7. explicit prohibition on `AUTH_TOKEN=123,<new>`;
-8. explicit `DO NOT restart/kill the head from automation`; operator restarts head;
-9. worker rolling restarts only after the head is healthy;
-10. post-check hashes, zero unresolved quarantine, six DB rows, Host-59 key_id/scrub state, file permissions/ACLs, heartbeats/capabilities, auth 401/200 matrix;
-11. unpause only when `pause_owned=true` and with `WHERE api_paused_reason='operator-auth-rotation'`; never clear a pre-existing foreign pause;
-12. rollback uses another strong token or old code with the new strong token, never `123`.
+- [ ] **Step 2: Implement the two pure evidence surfaces**
 
-The test must fail if “temporarily allow 123”, “restart head automatically”, or an unscoped `UPDATE budget_state ... SET ... NULL` appears.
+The fingerprint canonical bytes are:
 
-- [ ] **Step 2: Run RED**
+```python
+_FINGERPRINT_DOMAIN = b"hcga.operator-auth-token-set.v1\x00"
+canonical = b"\x00".join(token.encode("ascii") for token in sorted(tokens))
+return "sha256:" + hashlib.sha256(_FINGERPRINT_DOMAIN + canonical).hexdigest()
+```
+
+Capability construction may return `None` before executable startup rejects an
+invalid config; it must not move validation to module import. Standalone startup
+rebinds only after auth + vault hardening. The vault snapshot reuses the exact
+verified inventory collector; `verify_uuid_inventory` compares its normalized
+DB expectation to that snapshot rather than maintaining a second scan.
+
+- [ ] **Step 3: Write structural runbook RED tests**
+
+Tests must require:
+
+1. snapshot prior pause + floor metadata; acquire the API pause only if unpaused;
+2. install `temporary_floor = max(prior_floor or 0, target_code_version) + 1`
+   with expected pause/floor predicates and stamped owner;
+3. one drain per online process ID, supervisor stop, head embedded-worker drain,
+   `WORKER_CONCURRENCY=0`, zero `running|cancelling`, zero credential slots, and
+   OS/process-level zero worker tasks (covers post-done Notion work);
+4. six-key/Host-59 snapshots and only production vault snapshot APIs—no direct
+   path enumeration/reads;
+5. private token generation plus the exact expected runtime fingerprint;
+6. user-owned head restart, head valid-token 200, then worker restarts while the
+   temporary floor remains above target;
+7. per-process exact fingerprint/version/concurrency/capability heartbeat;
+8. one final transaction that restores the prior floor and clears only an owned
+   `operator-auth-rotation` pause; an inherited foreign pause keeps the temporary
+   floor until its owner explicitly accepts a recorded floor-fence handoff;
+9. rollback never restores `123`.
+
+Extract every SQL clearing block and require the complete owner + temporary-floor
+predicate. An appended unscoped clear, API-pause-only fence, hostname-only drain,
+direct `Path.read_bytes`/`iterdir`, missing cancelling/slot check, missing runtime
+fingerprint, or early floor lower must turn RED.
+
+- [ ] **Step 4: Write the exact all-claim hard-cut runbook**
+
+State why `api_paused_at` is insufficient (CLI claims pass). Keep the temporary
+floor through drain, head restart, worker restart, and attestation. Stop/restart
+worker processes, not hostnames; require the head at `WORKER_CONCURRENCY=0`.
+Use `status IN ('running','cancelling')`, `credential_slots=0`, and runtime task
+exit. Do not treat terminal jobs as proof because Notion archival is post-done.
+Use `harden_vault` + `snapshot_uuid_inventory`; generate the token into a `0600`
+temp; calculate the fingerprint through `runtime_token_set_fingerprint`; prove
+the head accepts it and every worker heartbeat publishes it. Preserve the six
+Vertex objects, Host-59 assignment, plain-key posture, and offline fences.
+
+For an owned pause, restore prior floor metadata and clear the pause in one
+expected-state transaction. For a foreign pause, clear nothing and lower no
+floor until the foreign owner explicitly accepts the handoff; its later
+floor-only transaction predicates on the exact foreign pause and temporary
+floor owner. Automation never restarts/kills the head.
+
+- [ ] **Step 5: De-stale the live docs**
+
+Document strong startup policy, header-only SA routes, fingerprint evidence,
+safe vault snapshot, all-claim floor, per-process drain/attestation, foreign
+handoff, and exact real startup order:
+auth → harden → prompts → DB inventory/reconcile → version stamp → listener →
+optional worker. Do not edit historical worklogs/plans.
+
+- [ ] **Step 6: Run focused + canonical GREEN and commit**
 
 ```bash
-uv run pytest tests/docs/test_operator_token_runbook.py -q
-```
-
-Expected: FAIL because the runbook does not exist.
-
-- [ ] **Step 3: Write the exact rotation runbook**
-
-The runbook must first read `api_paused_at/api_paused_reason`. If unpaused, acquire
-the current database pause primitive with owner-scoped SQL:
-
-```sql
-UPDATE budget_state
-SET api_paused_at = now(), api_paused_reason = 'operator-auth-rotation'
-WHERE id = 1
-  AND (api_paused_at IS NULL OR api_paused_reason = 'operator-auth-rotation');
-```
-
-If a foreign pause reason (including the current blocker-remediation pause) is already
-present, do not overwrite it and do not abort merely because it is foreign: set
-`pause_owned=false`, require it to remain continuously set, and proceed only after
-running jobs reach zero. If this run acquired `operator-auth-rotation`, set
-`pause_owned=true`. Drain/wait; do not cancel running jobs. Capture these read-only
-facts without selecting key bytes:
-
-```sql
-SELECT count(*) AS stored_vertex_keys FROM sa_keys;
-SELECT hostname, key_id, scrub_requested_at
-FROM sa_key_assignments WHERE hostname = 'Host-59';
-SELECT count(*) AS running_jobs FROM homework_jobs WHERE status = 'running';
-```
-
-Require count `6`, one Host-59 row with non-null `key_id` and null `scrub_requested_at`, zero unresolved delete-quarantine files, and zero running jobs before restart. If a quarantine exists, do not delete it by hand or continue rotation: run the documented read-only DB/file classification and let the new head reconcile only after its exact state is understood. Hash only UUID-named stored files, not JSON output. Stage code + the same new token to head/workers while old processes remain paused. Explain the unavoidable mismatch window: after the operator restarts the head, old workers still have `123` in memory and receive 401 until each is restarted; no job is claimed, assignment rows and `active.json` remain untouched, and the window closes worker-by-worker.
-
-After the operator restarts the head, verify its automatic version-floor stamp equals
-the deployed code version. Roll workers only after that fence is visible. Attest every
-online model-calling process (not just hostnames): new code SHA/version, token
-fingerprint without disclosure, expected concurrency/capabilities, and healthy
-heartbeat. Any offline host remains fenced by the version floor and, where present,
-its tombstone until it is updated; it is not counted as rollout-complete merely because
-it is powered off.
-
-Unpause only after all verifications and only if this run owns the pause:
-
-```sql
-UPDATE budget_state
-SET api_paused_at = NULL, api_paused_reason = NULL
-WHERE id = 1 AND api_paused_reason = 'operator-auth-rotation';
-```
-
-When `pause_owned=false`, emit no clearing SQL: the pre-existing owner retains the
-pause and decides when the broader blocker remediation is complete.
-
-State explicitly: automation prepares worker files and reports readiness; the user/operator owns the head process and performs its restart. No agent kills/restarts the head without a new explicit instruction.
-
-- [ ] **Step 4: De-stale all live docs and env guidance**
-
-- `.env.example`: `AUTH_TOKEN=<strong-shared-token>`, `ALLOW_INSECURE_LOCAL_AUTH=false`; local-dev example is empty token plus explicit true and warns SA routes stay closed.
-- `README`/`HOW_IT_WORKS`/`CODE_MAP`: empty no longer silently opens production; general query auth remains only on normal routes; every SA route is header-only.
-- `DEPLOY`: replace default `123`/“strongly recommended” with default empty + “required unless explicit local dev”; link the rotation runbook.
-- `DATABASE`: vault path/permission/durability/hazard contract; no schema change.
-- fleet setup: workers must share the strong operator token; enumerate/attest every model-calling process, and keep offline stragglers version-fenced/tombstoned; SA assignment state, plain `GEMINI_API_KEY` values, all six stored Vertex objects, and Host-59's assignment are preserved through operator-token rotation.
-- `CLAUDE.md`: startup security order, local-dev opt-in, and do-not-bypass rules.
-
-- [ ] **Step 5: Run GREEN**
-
-```bash
-uv run pytest tests/docs/test_operator_token_runbook.py -q
-```
-
-Expected: PASS; no command exposes a real token or service-account JSON.
-
-- [ ] **Step 6: Commit Task 6**
-
-```bash
-git add docs/runbooks/operator-token-rotation.md .env.example README.md CLAUDE.md \
-  docs/DEPLOY.md docs/HOW_IT_WORKS.md docs/CODE_MAP.md docs/DATABASE.md \
-  docs/fleet/worker-pc-setup.md tests/docs/test_operator_token_runbook.py
-git commit -m "docs(security): add fail-closed operator token rotation"
+uv run pytest tests/services/test_operator_auth.py \
+  tests/services/test_worker_capabilities.py \
+  tests/services/test_worker_capability_rebind.py \
+  tests/services/test_operator_security_startup.py \
+  tests/services/test_sa_key_vault.py \
+  tests/docs/test_operator_token_runbook.py -q
+uv run pytest -q
+git add app/services/operator_auth.py app/services/worker.py \
+  app/services/sa_key_vault.py tests/services/test_operator_auth.py \
+  tests/services/test_worker_capabilities.py \
+  tests/services/test_worker_capability_rebind.py \
+  tests/services/test_operator_security_startup.py \
+  tests/services/test_sa_key_vault.py docs/runbooks/operator-token-rotation.md \
+  .env.example README.md CLAUDE.md docs/DEPLOY.md docs/HOW_IT_WORKS.md \
+  docs/CODE_MAP.md docs/DATABASE.md docs/fleet/worker-pc-setup.md \
+  tests/docs/test_operator_token_runbook.py \
+  docs/superpowers/plans/2026-08-10-operator-auth-sa-vault-hardening.md
+git commit -m "fix(security): fence operator token rotation"
 ```
 
 ### Task 7: Full acceptance, security scans, and external gate handoff
@@ -1345,7 +1355,11 @@ If the base moved, rebase, resolve composition on `config.py`/`main.py`/`worker.
 
 - [ ] **Step 6: Write finish records and archive the plan**
 
-Reserve the next worklog ID using the repository's counter convention, record exact test counts and the `$0` acceptance, and state “not deployed; `123` rotation still operator-owned under global pause.” Close only the matching P0 roadmap item. Move this plan with `git mv` into `plans/shipped/`.
+Reserve the next worklog ID using the repository's counter convention, record
+exact test counts and the `$0` acceptance, and state “not deployed; `123`
+rotation remains an operator-owned hard cut behind the temporary all-claim
+version floor and process drain.” Close only the matching P0 roadmap item. Move
+this plan with `git mv` into `plans/shipped/`.
 
 - [ ] **Step 7: Commit the finish**
 
@@ -1361,14 +1375,46 @@ Use `superpowers:requesting-code-review`, then `superpowers:finishing-a-developm
 
 ## Deployment and rollback gate (post-merge only)
 
-1. **Do not begin while generation is active.** Read the current pause. Acquire `operator-auth-rotation` only if unpaused; otherwise preserve the foreign reason and mark this run `pause_owned=false`. Require the pause to remain set and wait for `running_jobs=0`.
-2. **Preserve facts first.** Record six metadata rows, Host-59's exact `key_id` + null scrub timestamp, hashes of all six stored UUID JSON files, and current file permissions/ACLs.
-3. **Generate two strong values offline:** the primary and a sealed rollback replacement. Neither is printed into chat, logs, shell history, git, or artifacts.
-4. **Prepare, do not restart:** pull final code and stage the primary value plus `ALLOW_INSECURE_LOCAL_AUTH=false` into head and every worker `.env`. Automation reports host-by-host readiness only.
-5. **Operator restarts the head.** Verify startup accepts auth, hardens the vault through held handles without hash changes, reconciles no unexpected delete quarantine, health is live, query auth fails on every SA route, header auth works, six keys and Host-59 are intact, and the version floor auto-raised to the final code version. If an exact quarantine exists from an earlier interrupted explicit delete, stop and record the startup reconciliation result; the rotation itself never creates or deletes one.
-6. **Restart workers in guarded batches.** During the paused mismatch window, not-yet-restarted workers use in-memory `123` and cannot pull from the new head; the new version floor also prevents their DB claims. Confirm every online model-calling process (two processes on one PC count twice) uses the new token fingerprint, final SHA/version, expected concurrency, healthy heartbeat/capabilities, and retains its existing Vertex/plain-key posture. Offline processes remain floor-fenced/tombstoned until updated.
-7. **Verify the whole eligible fleet, then unpause only if `pause_owned=true`.** A foreign pause is never cleared; this run emits no clear when it inherited one.
-8. **Rollback:** keep the global pause. Roll code back only while retaining a strong token, or hard-cut to the sealed strong replacement and repeat head-then-worker restarts. Never restore `123`; never delete/re-upload stored Vertex keys; never change Host-59's assignment as part of auth rollback.
+The executable authority is `docs/runbooks/operator-token-rotation.md`; this
+summary must not be used as a shorter substitute.
+
+1. **Own the current state and install an all-claim fence.** Snapshot the exact
+   pause and version-floor metadata. Acquire `operator-auth-rotation` only when
+   unpaused; otherwise preserve the foreign pause and mark `pause_owned=false`.
+   Install a stamped temporary floor strictly above both the prior floor and the
+   target code version using full expected-state predicates.
+2. **Drain every model-calling process, not merely jobs or hostnames.** Disable
+   supervisor restarts, drain/stop every online worker process (including any
+   embedded head worker), stage `WORKER_CONCURRENCY=0` on the head, and require
+   zero `running|cancelling` jobs, zero credential slots, and zero OS/runtime
+   worker tasks twice. This process-level proof includes post-done Notion work.
+3. **Preserve facts through production-safe surfaces.** Record six DB key rows,
+   Host-59's exact non-scrubbed assignment, and the six UUID-file digests using
+   `harden_vault()` plus `snapshot_uuid_inventory()` only. No credential or
+   assignment is changed.
+4. **Generate and stage one strong primary token privately.** Calculate its
+   domain-separated expected token-set fingerprint. Pull final code and stage
+   the same token plus `ALLOW_INSECURE_LOCAL_AUTH=false` everywhere while every
+   worker remains stopped. Never print or retain `123` beside it.
+5. **The operator restarts the head behind the unchanged temporary floor.** The
+   head remains at `WORKER_CONCURRENCY=0`. Prove a real authenticated request
+   returns 200, invalid/missing auth returns 401, the vault/DB snapshots are
+   unchanged, and no embedded worker task exists. Automation never restarts or
+   kills the head.
+6. **Restart and attest every worker process behind the same floor.** Require
+   each full process-ID heartbeat to publish the exact expected token-set
+   fingerprint, target version/SHA, concurrency, and unchanged credential
+   posture. Offline hosts remain floor-fenced/tombstoned.
+7. **Reopen only with exact ownership.** When `pause_owned=true`, one
+   expected-state transaction restores the exact prior floor metadata and
+   clears only this operation's pause. When a foreign pause was inherited,
+   clear nothing and lower no floor until that owner explicitly accepts the
+   recorded handoff; its floor-only restore predicates on the exact foreign
+   pause and temporary-floor owner.
+8. **Rollback remains equally fenced.** Keep the temporary all-claim floor and
+   zero-task drain, retain or replace with another strong token, repeat the
+   process-level attestations, and use the same owner-scoped final gesture.
+   Never restore `123`, alter Host-59, or delete/re-upload stored Vertex keys.
 
 ## Plan self-review
 

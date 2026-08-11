@@ -136,12 +136,15 @@ logs which side is missing at startup) — cli jobs are unaffected.
 
 **Operator-token rotation is a coordinated hard cut.** Follow
 [`docs/runbooks/operator-token-rotation.md`](../runbooks/operator-token-rotation.md):
-keep the global pause (never overwrite/clear a foreign reason), drain running
-jobs, stage one strong token everywhere, let the operator restart the head,
-verify head health + automatic version floor, and only then perform rolling
-worker restarts. Attest every online model-calling process—two processes on one
-PC count twice—by code SHA/version, non-disclosing token fingerprint,
-concurrency, capabilities, and heartbeat. Offline stragglers remain
+preserve any foreign API pause, then install a temporary version floor above
+the target code because the API pause does not block CLI claims. Drain and stop
+every worker process (terminal DB rows alone do not prove post-done Notion work
+ended), require zero limiter slots, and stage one strong token everywhere with
+`WORKER_CONCURRENCY=0` on the head. The operator restarts the head; workers then
+restart behind the unchanged floor and publish the exact expected
+`auth_token_fingerprint`. Attest every online model-calling process—two
+processes on one PC count twice—by code SHA/version, fingerprint, concurrency,
+capabilities, and heartbeat. Offline stragglers remain
 version-fenced and, where applicable, tombstoned until updated; powered off is
 not rollout-complete.
 

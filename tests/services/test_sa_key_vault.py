@@ -67,6 +67,7 @@ def test_every_public_operation_creates_a_private_missing_vault(monkeypatch, tmp
         lambda: sa_key_vault.restore_quarantined_delete(ticket),
         lambda: sa_key_vault.discard_quarantined_delete(ticket),
         lambda: sa_key_vault.reconcile_delete_quarantines({}),
+        lambda: sa_key_vault.snapshot_uuid_inventory(),
         lambda: sa_key_vault.verify_uuid_inventory({}),
     ]
 
@@ -703,6 +704,44 @@ def test_inventory_accepts_exact_uuid_files_active_and_stale_temps(monkeypatch, 
         stale.chmod(0o600)
 
     sa_key_vault.verify_uuid_inventory(expected)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fd anchoring assertion")
+def test_snapshot_inventory_uses_vault_fd_and_never_path_reads(
+    monkeypatch, tmp_path
+):
+    _point_vault(monkeypatch, tmp_path)
+    expected: dict[str, str] = {}
+    for index in range(2):
+        key_id = uuid4()
+        body = f"key-{index}".encode()
+        sa_key_vault.atomic_write(storage.sa_key_path(key_id), body)
+        expected[str(key_id)] = _sha(body)
+
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda *_args, **_kwargs: pytest.fail("path read bypass"),
+    )
+    monkeypatch.setattr(
+        Path,
+        "iterdir",
+        lambda *_args, **_kwargs: pytest.fail("path iteration bypass"),
+    )
+
+    assert sa_key_vault.snapshot_uuid_inventory() == expected
+
+
+def test_snapshot_inventory_fails_closed_on_unsafe_entry(monkeypatch, tmp_path):
+    vault = _point_vault(monkeypatch, tmp_path)
+    sa_key_vault.atomic_write(storage.sa_key_path(uuid4()), b"credential")
+    unsafe = vault / "notes.txt"
+    unsafe.write_bytes(b"not a key")
+    if os.name != "nt":
+        unsafe.chmod(0o600)
+
+    with pytest.raises(sa_key_vault.SAKeyVaultError):
+        sa_key_vault.snapshot_uuid_inventory()
 
 
 @pytest.mark.parametrize(

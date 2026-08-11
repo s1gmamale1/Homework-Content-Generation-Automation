@@ -7,6 +7,7 @@ short injected test tokens once a process has passed its startup gate.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import string
 import unicodedata
@@ -30,6 +31,7 @@ _DENYLIST = frozenset(
         "development",
     }
 )
+_FINGERPRINT_DOMAIN = b"hcga.operator-auth-token-set.v1\x00"
 
 
 class OperatorAuthConfigurationError(RuntimeError):
@@ -90,6 +92,36 @@ def require_startup_auth(
     raise OperatorAuthConfigurationError(
         "AUTH_TOKEN is required unless ALLOW_INSECURE_LOCAL_AUTH=true"
     )
+
+
+def runtime_token_set_fingerprint(
+    raw: str, *, allow_insecure_local: bool
+) -> str | None:
+    """Return non-disclosing runtime evidence for the configured token set.
+
+    Token members are sorted before hashing so a strong-to-strong rotation
+    overlap has one stable set identity regardless of comma order. The domain
+    prefix prevents this digest from being confused with a vault/file hash.
+    Invalid startup configuration returns ``None`` because capability blobs are
+    created at import time; the executable startup gate remains the authority
+    that refuses the process. Explicit anonymous development is distinguishable
+    from invalid/missing production configuration without pretending it has a
+    token fingerprint.
+    """
+
+    try:
+        mode = require_startup_auth(
+            raw, allow_insecure_local=allow_insecure_local
+        )
+    except OperatorAuthConfigurationError:
+        return None
+    if mode == "local-dev":
+        return "local-dev"
+    members = sorted(parse_strong_tokens(raw))
+    canonical = b"\x00".join(member.encode("ascii") for member in members)
+    return "sha256:" + hashlib.sha256(
+        _FINGERPRINT_DOMAIN + canonical
+    ).hexdigest()
 
 
 def constant_time_token_match(

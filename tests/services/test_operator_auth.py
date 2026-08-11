@@ -50,6 +50,42 @@ def test_multiple_strong_tokens_are_valid_for_future_strong_to_strong_rotation()
     )
 
 
+def test_token_set_fingerprint_is_domain_separated_and_order_independent():
+    expected = (
+        "sha256:"
+        "e72f8a2ed5bd734f3d4884385cb678a2facf0d72ea723a30c519204570c195ce"
+    )
+    assert operator_auth.runtime_token_set_fingerprint(
+        f"{STRONG_A},{STRONG_B}", allow_insecure_local=False
+    ) == expected
+    assert operator_auth.runtime_token_set_fingerprint(
+        f"{STRONG_B},{STRONG_A}", allow_insecure_local=False
+    ) == expected
+    assert STRONG_A not in expected
+    assert STRONG_B not in expected
+
+
+def test_token_set_fingerprint_distinguishes_local_dev_from_invalid_config():
+    assert (
+        operator_auth.runtime_token_set_fingerprint(
+            "", allow_insecure_local=True
+        )
+        == "local-dev"
+    )
+    assert (
+        operator_auth.runtime_token_set_fingerprint(
+            "", allow_insecure_local=False
+        )
+        is None
+    )
+    assert (
+        operator_auth.runtime_token_set_fingerprint(
+            "123", allow_insecure_local=True
+        )
+        is None
+    )
+
+
 def test_token_match_uses_every_candidate_without_plain_membership(monkeypatch):
     calls = []
     real = operator_auth.hmac.compare_digest
