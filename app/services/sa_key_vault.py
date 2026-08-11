@@ -388,7 +388,7 @@ def _verify_private_windows_dacl(handle, *, directory: bool) -> None:  # pragma:
         ace_type != win32security.ACCESS_ALLOWED_ACE_TYPE
         or ace_flags != expected_flags
         or access_mask != ntsecuritycon.FILE_ALL_ACCESS
-        or not win32security.EqualSid(ace_sid, _windows_process_sid())
+        or ace_sid != _windows_process_sid()
     ):
         raise _raise_vault_error()
 
