@@ -864,7 +864,7 @@ git commit -m "feat(soak): add fail-closed read-only preflight"
 - Create: `tests/scripts/test_fenced_lease_soak_snapshot.py`
 
 **Interfaces:**
-- Produces `evaluate_runtime(scope, raw, previous_samples) -> list[Finding]`.
+- Produces `evaluate_runtime(scope, attestation, raw, previous_samples) -> list[Finding]`.
 - Produces `price_scoped_usage(rows) -> UsageCost` using `app.services.pricing.cost_usd`.
 - Produces `classify_error(text: str) -> ErrorClass | None` with stable values `provider_429`, `slot_exhaustion`, `auth`, `attempt_timeout`, `network`, and `other`.
 - Findings distinguish `hard_stop=True` from `stage_failure=True`. Hard stops trigger the armed circuit breaker; quality failures quarantine the stage but allow paid work already in flight to finish.
@@ -888,7 +888,10 @@ def test_error_classes_are_stable(message, expected):
 
 def test_successful_api_usage_must_be_token_bearing_and_priced():
     usage = usage_row(model_name="unknown", success=True, total_tokens=0)
-    findings = soak.evaluate_runtime(valid_scope(), raw_with_usage(usage), [])
+    scope = valid_scope()
+    findings = soak.evaluate_runtime(
+        scope, valid_attestation(scope), raw_with_usage(usage), []
+    )
     assert "unpriced_or_tokenless_usage" in hard_codes(findings)
 ```
 
@@ -927,17 +930,19 @@ Representative tests:
 def test_old_claim_cannot_leave_a_phase_with_foreign_token():
     raw = healthy_completed_snapshot(target=4)
     raw.phases[0].claim_token = uuid4()
-    findings = soak.evaluate_runtime(valid_scope(target=4), raw, [])
+    scope = valid_scope(target=4)
+    findings = soak.evaluate_runtime(scope, valid_attestation(scope), raw, [])
     assert "phase_token_mismatch" in hard_codes(findings)
 
 
 def test_two_high_db_samples_are_hard_but_one_is_not():
     scope = valid_scope(db_hard_stop_connection_limit=85)
     first = healthy_running_snapshot(db_total=85)
-    one = soak.evaluate_runtime(scope, first, [])
+    attestation = valid_attestation(scope)
+    one = soak.evaluate_runtime(scope, attestation, first, [])
     assert "db_connection_hard_stop" not in hard_codes(one)
     second = healthy_running_snapshot(db_total=86)
-    two = soak.evaluate_runtime(scope, second, [first])
+    two = soak.evaluate_runtime(scope, attestation, second, [first])
     assert "db_connection_hard_stop" in hard_codes(two)
 
 
@@ -945,7 +950,9 @@ def test_quality_failure_quarantines_but_does_not_emergency_pause():
     raw = healthy_completed_snapshot(target=4)
     raw.phases[0].judge_status = "major_shipped"
     finding = by_code(
-        soak.evaluate_runtime(valid_scope(target=4), raw, []),
+        soak.evaluate_runtime(
+            valid_scope(target=4), valid_attestation(valid_scope(target=4)), raw, []
+        ),
         "quality_major_shipped",
     )
     assert finding.stage_failure is True
@@ -973,11 +980,11 @@ For a clean completed stage:
 - every running/terminal claimed job retains a non-null token;
 - every phase token equals its job token;
 - each job has exactly `extract` plus `flow_for(job.subject)` (or the exact selected subset if `selected_phases` is non-null), with unique phase names and orders, all done;
-- no heartbeat exceeds the configured age for two samples;
+- every participant's live registry `pc_id` still equals the immutable preflight-attested `pc_id`, and no heartbeat exceeds the configured age for two samples;
 - no DB hard threshold, idle transaction, or non-client wait appears;
 - active credential slots never exceed `expected_credential_max_concurrent_gemini`; any slot-wait exhaustion text is an immediate hard stop;
-- every successful API usage row has a known price, positive tokens, and positive calculated cost;
-- exact operation/model routing matches `expected_models_by_operation_prefix`: exact keys `phase.run` and `lesson.extract`, plus prefixes `judge:` and `solve:`;
+- every scoped usage row is pinned to provider `gemini` and auth mode `api`; every failed row hard-stops even when its error text is blank; every successful row has a known price, positive tokens, and positive calculated cost;
+- exact operation/model routing matches `expected_models_by_operation_prefix`: exact keys `phase.run`, `lesson.extract`, `lesson.extract.coverage`, and `lesson.extract.verify`, plus prefixes `judge:` and `solve:`; any unknown operation remains fail-closed;
 - cumulative scoped cost is below the approved cap;
 - every scoped job has no Notion stamp and has a non-empty skip reason;
 - `major_shipped`, `major_regen_failed`, solver mismatch, or validation corruption marks the stage failed for distribution but is not an emergency pause unless it accompanies lease/token corruption.
@@ -1078,6 +1085,7 @@ Rules:
 
 - `preflight` writes one sample plus final summary and exits 0 only with zero hard findings.
 - `watch` runs the same pristine-job preflight while the exact staging pause is still active. It emits `READY_TO_RELEASE`, keeps sampling read-only, and waits for that exact pause to become null. This closes the launch-to-monitor race: the operator clears the staging pause only after the watcher is live. It refuses to monitor a dirty stage rather than “watching through” a bad baseline.
+- `watch` passes the immutable preflight `FleetAttestation` into every runtime evaluation; a same-host replacement process with a different `pc_id` is drift, even when SHA/version/capability still match.
 - Append one canonical JSON object per sample, flush and `os.fsync` before sleeping.
 - On first terminal sample, start the settle clock. Any new lease event, usage row, phase change, heartbeat breach, or finding resets the settle clock.
 - A stage cannot pass unless the observed running peak reached its target.
@@ -1469,6 +1477,8 @@ Expected launch routing in every scope:
 {
   "phase.run": "gemini-3.6-flash",
   "lesson.extract": "gemini-3.5-flash-lite",
+  "lesson.extract.coverage": "gemini-3.5-flash-lite",
+  "lesson.extract.verify": "gemini-3.5-flash-lite",
   "judge:": "gemini-3.5-flash",
   "solve:": "gemini-3.1-pro-preview"
 }
