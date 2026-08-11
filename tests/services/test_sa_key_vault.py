@@ -954,49 +954,32 @@ def test_windows_access_denied_never_falls_back_to_path_io(monkeypatch, tmp_path
 def test_windows_remove_missing_ok_never_treats_access_denied_as_absent(
     monkeypatch, tmp_path
 ):
-    import ntsecuritycon
-    import win32con
-    import win32security
+    import pywintypes
+    import winerror
 
     vault = _point_vault(monkeypatch, tmp_path)
     key_id, body = _seed_uuid_file()
     path = storage.sa_key_path(key_id)
     sa_key_vault.atomic_write(path, body)
-    original = win32security.GetFileSecurity(
-        str(path), win32security.DACL_SECURITY_INFORMATION
-    )
-    sid = sa_key_vault._windows_process_sid()
-    denied = win32security.ACL()
-    denied.AddAccessDeniedAce(
-        win32security.ACL_REVISION, win32con.DELETE, sid
-    )
-    denied.AddAccessAllowedAce(
-        win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, sid
-    )
-    descriptor = win32security.GetFileSecurity(
-        str(path), win32security.DACL_SECURITY_INFORMATION
-    )
-    descriptor.SetSecurityDescriptorDacl(1, denied, 0)
-    win32security.SetFileSecurity(
-        str(path), win32security.DACL_SECURITY_INFORMATION, descriptor
-    )
-    try:
-        # Restore the global Path probe before pytest formats a failure or tears
-        # down tmp_path; both pytest internals legitimately call Path.exists().
-        with monkeypatch.context() as path_probe:
-            path_probe.setattr(
-                Path,
-                "exists",
-                lambda *_args, **_kwargs: pytest.fail("Path.exists fail-open"),
-            )
-            with pytest.raises(sa_key_vault.SAKeyVaultError):
-                sa_key_vault._remove_windows_verified(
-                    vault, path.name, missing_ok=True
-                )
-    finally:
-        win32security.SetFileSecurity(
-            str(path), win32security.DACL_SECURITY_INFORMATION, original
+
+    def denied_delete(*_args, **_kwargs):
+        raise pywintypes.error(
+            winerror.ERROR_ACCESS_DENIED, "DeleteFile", "Access is denied."
         )
+
+    monkeypatch.setattr(sa_key_vault.win32file, "DeleteFile", denied_delete)
+    # Restore the global Path probe before pytest formats a failure or tears
+    # down tmp_path; both pytest internals legitimately call Path.exists().
+    with monkeypatch.context() as path_probe:
+        path_probe.setattr(
+            Path,
+            "exists",
+            lambda *_args, **_kwargs: pytest.fail("Path.exists fail-open"),
+        )
+        with pytest.raises(sa_key_vault.SAKeyVaultError):
+            sa_key_vault._remove_windows_verified(
+                vault, path.name, missing_ok=True
+            )
     assert path.read_bytes() == body
 
 

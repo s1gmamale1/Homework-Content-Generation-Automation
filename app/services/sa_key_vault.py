@@ -27,10 +27,15 @@ from app.services import storage
 
 if os.name == "nt":  # pragma: no cover - imported and exercised on Windows CI
     import ntsecuritycon
+    import pywintypes
     import win32api
     import win32con
     import win32file
     import win32security
+
+    _WINDOWS_OS_ERRORS = (OSError, pywintypes.error)
+else:
+    _WINDOWS_OS_ERRORS = (OSError,)
 
 
 _IS_WINDOWS = os.name == "nt"
@@ -277,7 +282,12 @@ def _windows_identity(handle) -> tuple[int, int, int]:  # pragma: no cover
     return information["volume"], *information["index"]
 
 
-def _windows_validate_handle(handle, *, directory: bool) -> None:  # pragma: no cover
+def _windows_validate_handle(
+    handle,
+    *,
+    directory: bool,
+    allowed_file_links: tuple[int, ...] = (1,),
+) -> None:  # pragma: no cover
     information = _windows_information(handle)
     attributes = information["attributes"]
     if attributes & win32con.FILE_ATTRIBUTE_REPARSE_POINT:
@@ -285,7 +295,7 @@ def _windows_validate_handle(handle, *, directory: bool) -> None:  # pragma: no 
     is_directory = bool(attributes & win32con.FILE_ATTRIBUTE_DIRECTORY)
     if is_directory != directory:
         raise SAKeyVaultError("SA-key vault contains an unsafe path type")
-    if not directory and information["links"] != 1:
+    if not directory and information["links"] not in allowed_file_links:
         raise SAKeyVaultError("SA-key vault file has multiple hard links")
 
 
@@ -310,7 +320,7 @@ def _open_windows_handle(
             flags,
             None,
         )
-    except OSError as exc:
+    except _WINDOWS_OS_ERRORS as exc:
         if getattr(exc, "winerror", None) in {2, 3}:
             raise _WindowsPathNotFound(
                 "SA-key vault path was not found"
@@ -321,7 +331,7 @@ def _open_windows_handle(
         yield handle
     except SAKeyVaultError:
         raise
-    except OSError as exc:
+    except _WINDOWS_OS_ERRORS as exc:
         raise _raise_vault_error() from exc
     finally:
         handle.Close()
@@ -844,7 +854,12 @@ def _remove_windows_verified(vault: Path, name: str, *, missing_ok: bool) -> Non
                 _windows_recheck_vault_identity(vault, identity)
                 win32file.DeleteFile(str(path))
                 _windows_recheck_vault_identity(vault, identity)
-                _windows_validate_handle(held_handle, directory=False)
+                # DeleteFile removes the directory entry while the verified,
+                # share-delete handle remains open.  Windows then reports a
+                # zero link count for that same held file object.
+                _windows_validate_handle(
+                    held_handle, directory=False, allowed_file_links=(0,)
+                )
         except _WindowsPathNotFound:
             if missing_ok:
                 return
@@ -1254,7 +1269,9 @@ def _finish_quarantine_windows(ticket: DeleteQuarantine, *, restore: bool) -> No
                         win32file.DeleteFile(str(quarantine))
                         _windows_recheck_vault_identity(vault, identity)
                         _windows_validate_handle(
-                            quarantine_handle, directory=False
+                            quarantine_handle,
+                            directory=False,
+                            allowed_file_links=(0,),
                         )
                         _windows_validate_handle(canonical_handle, directory=False)
                         _windows_require_named_identity(
@@ -1293,7 +1310,11 @@ def _finish_quarantine_windows(ticket: DeleteQuarantine, *, restore: bool) -> No
                 _windows_recheck_vault_identity(vault, identity)
                 win32file.DeleteFile(str(quarantine))
                 _windows_recheck_vault_identity(vault, identity)
-                _windows_validate_handle(quarantine_handle, directory=False)
+                _windows_validate_handle(
+                    quarantine_handle,
+                    directory=False,
+                    allowed_file_links=(0,),
+                )
 
 
 def restore_quarantined_delete(ticket: DeleteQuarantine) -> None:
