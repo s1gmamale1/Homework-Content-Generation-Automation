@@ -563,10 +563,16 @@ async def resume_batch(batch_id: UUID, session: AsyncSession = Depends(get_sessi
     batch = await session.get(Batch, batch_id)
     if batch is None:
         raise HTTPException(404, "batch not found")
-    result = await jobs_repo.resume_failed_in_batch(session, batch_id)
+    result = await jobs_repo.resume_failed_in_batch(
+        session, batch_id,
+        wave_size=settings.batch_launch_wave_size,
+        interval_seconds=settings.batch_launch_wave_interval_seconds)
     await session.commit()
     return {"batch_id": str(batch_id), "jobs_resumed": result["resumed"],
-            "jobs_skipped_retired": result["skipped_retired"]}
+            "jobs_skipped_retired": result["skipped_retired"],
+            "stagger": _stagger_summary(
+                result["resumed"], settings.batch_launch_wave_size,
+                settings.batch_launch_wave_interval_seconds)}
 
 
 @router.post("/jobs/batch/{batch_id}/pause")

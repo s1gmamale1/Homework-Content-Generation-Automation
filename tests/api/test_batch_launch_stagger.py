@@ -278,3 +278,55 @@ async def test_mixed_resume_and_create_share_one_wave_sequence(monkeypatch, fake
     assert body["jobs_resumed"] == 4
     assert body["jobs_created"] == 10
     assert body["stagger"]["jobs_launched"] == 14
+
+
+@pytest.mark.asyncio
+async def test_resume_endpoint_passes_the_wave_settings(monkeypatch):
+    from app.api.v1 import batch as batch_mod
+    from main import app
+
+    batch_id = uuid.uuid4()
+    seen = {}
+
+    async def _resume(session, bid, *, wave_size=0, interval_seconds=0):
+        seen["wave_size"] = wave_size
+        seen["interval_seconds"] = interval_seconds
+        return {"resumed": 7, "skipped_retired": []}
+
+    async def _lock(session, book_id):
+        return None
+
+    monkeypatch.setattr(batch_mod.jobs_repo, "resume_failed_in_batch", _resume)
+    monkeypatch.setattr(batch_mod.books_repo, "lock_book_shared", _lock)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_size", 6)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_interval_seconds", 60)
+
+    async def _get(model, pk):
+        return SimpleNamespace(id=batch_id, book_id=BOOK_ID)
+
+    class _FakeSession:
+        async def get(self, model, pk):
+            return await _get(model, pk)
+
+        def expire(self, obj):
+            return None
+
+        async def commit(self):
+            return None
+
+    app.dependency_overrides[batch_mod.get_session] = lambda: _FakeSession()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app),
+                               base_url="http://t") as c:
+            resp = await c.post(f"/api/v1/jobs/batch/{batch_id}/resume",
+                                headers={"Authorization": "Bearer 123"})
+    finally:
+        app.dependency_overrides.pop(batch_mod.get_session, None)
+
+    assert resp.status_code == 200
+    assert seen == {"wave_size": 6, "interval_seconds": 60}
+    body = resp.json()
+    assert body["jobs_resumed"] == 7
+    # 7 jobs at wave 6 -> last one is in wave 1
+    assert body["stagger"]["waves"] == 2
+    assert body["stagger"]["last_start_offset_seconds"] == 60
