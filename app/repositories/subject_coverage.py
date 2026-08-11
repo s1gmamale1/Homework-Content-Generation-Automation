@@ -53,6 +53,11 @@ async def job_status_by_book(
 
     "Latest job per (book, toc_entry)" is the same scope `rollup_for_batch`
     uses, so a retried lesson counts once. Still ONE query.
+
+    `kind='homework'` scopes the lookup so a `teacher_material` job never
+    replaces a lesson's homework status here (Task 9) — this dashboard is a
+    homework-only view; a teacher-deck job for the same (book, toc_entry)
+    created later must not shadow the homework job's status.
     """
     latest = (
         select(
@@ -60,7 +65,10 @@ async def job_status_by_book(
             HomeworkJob.toc_entry_id.label("toc_entry_id"),
             HomeworkJob.status.label("status"),
         )
-        .where(HomeworkJob.output_language == output_language)
+        .where(
+            HomeworkJob.output_language == output_language,
+            HomeworkJob.kind == "homework",
+        )
         .order_by(
             HomeworkJob.book_id,
             HomeworkJob.toc_entry_id,
@@ -81,10 +89,14 @@ async def batch_by_book(
 ) -> dict[str, tuple[str, bool]]:
     """Newest batch per book for this language → (batch_id, is_paused), for the
     drill-in link. Transport-agnostic: a viewer asking "is homework generated?"
-    does not care which transport produced it."""
+    does not care which transport produced it.
+
+    `kind='homework'` scopes the lookup (Task 9) — a `teacher_material` batch
+    forks its own row (`uq_batches_book_id_transport_output_language_kind`) and
+    must never be picked as "the" batch for a homework book's drill-in link."""
     stmt = (
         select(Batch.book_id, Batch.id, Batch.paused_at)
-        .where(Batch.output_language == output_language)
+        .where(Batch.output_language == output_language, Batch.kind == "homework")
         .order_by(Batch.book_id, Batch.created_at.desc())
         .distinct(Batch.book_id)
     )

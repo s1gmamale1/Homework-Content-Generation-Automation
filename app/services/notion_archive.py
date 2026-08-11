@@ -330,6 +330,18 @@ async def archive_job(
             job = await jobs_repo.get(session, job_id)
             if job is None:
                 return  # gone
+            if getattr(job, "kind", "homework") != "homework":
+                # Task 9: teacher-deck jobs are never pushed to Notion — there is
+                # no `_PAGES` entry a teacher deck could match, so pushing would
+                # only ever end in a skip. Guard here instead of letting every
+                # teacher job earn a permanent notion_skip_reason="no completed
+                # phase outputs" (it has no output_md phase either) and count
+                # forever as "unarchived" in the batch archive rollup.
+                log.info(
+                    "notion: job %s kind=%s — teacher decks are not archived, skipping",
+                    job_id, job.kind,
+                )
+                return
             if not _claim_token_ok(job, claim_token):
                 log.info(
                     "notion: job %s claim_token stale (status=%s) — obsolete worker, "

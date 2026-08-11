@@ -349,7 +349,8 @@ async def count_active_for_host(session: AsyncSession, hostname: str) -> int:
 
 
 async def latest_by_section(
-    session: AsyncSession, book_id: UUID, output_language: Optional[str] = None
+    session: AsyncSession, book_id: UUID, output_language: Optional[str] = None,
+    *, kind: str = "homework",
 ) -> dict[UUID, HomeworkJob]:
     """One row per (book, section): the most recent job for that section.
 
@@ -360,8 +361,13 @@ async def latest_by_section(
     so the launcher's per-lesson completion reflects the SELECTED language (a book
     complete in uz is not 'complete' under ru/en). Default `None` preserves the
     all-language aggregate for non-launcher callers (upload/retry/book detail).
+
+    `kind` scopes the lookup so a 'teacher_material' job never displays as a
+    section's "latest" on the homework TOC-status enrichment (Task 9, mirrors
+    `find_active_for_section`/`latest_for_section`). Default 'homework' keeps
+    every existing caller behavior-identical.
     """
-    conds = [HomeworkJob.book_id == book_id]
+    conds = [HomeworkJob.book_id == book_id, HomeworkJob.kind == kind]
     if output_language is not None:
         conds.append(HomeworkJob.output_language == output_language)
     stmt = (
