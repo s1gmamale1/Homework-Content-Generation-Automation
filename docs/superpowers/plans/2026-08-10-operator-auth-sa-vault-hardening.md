@@ -4,7 +4,7 @@
 
 **Goal:** Remove the guessable/open operator-auth states and make every service-account key file private, atomic, and hostile-path-safe without deleting or reassigning any Vertex credential.
 
-**Architecture:** A pure operator-auth policy validates process configuration at the first executable line of both server lifecycles, while request dependencies continue to support query auth only for the non-vault surfaces that require it. The complete `/sa-keys` router receives one strict header-only dependency. A focused `sa_key_vault` service owns all SA-key filesystem access and is called by upload, download, local pull, active-key replacement, deletion, scrub, head startup, and standalone-worker startup. Cross-resource deletion is an explicit same-vault quarantine protocol: the verified UUID file is renamed before the locked DB mutation, commit outcome is reconciled from fresh DB state, and head startup resolves only exact recognized quarantines before enforcing the final inventory.
+**Architecture:** A pure operator-auth policy validates process configuration at the first executable line of both server lifecycles, while request dependencies continue to support query auth only for the non-vault surfaces that require it. The complete `/sa-keys` router receives one strict header-only dependency. A focused `sa_key_vault` service owns all SA-key filesystem access and is called by upload, download, local pull, active-key replacement, deletion, scrub, head startup, and standalone-worker startup. Cross-resource deletion is an explicit same-vault quarantine protocol: the verified UUID file is renamed before the locked DB mutation; every COMMIT exception retains that exact quarantine without request-time guessing; head startup resolves only exact recognized quarantines from settled DB state before enforcing the final inventory.
 
 **Tech Stack:** Python 3.14, FastAPI dependencies/lifespan, Pydantic settings, POSIX modes and fsync, Windows security descriptors/write-through replace via conditional `pywin32`, pytest/pytest-asyncio/httpx, PostgreSQL scratch integration tests.
 
@@ -19,7 +19,7 @@
 - **Comparison and disclosure:** request matching UTF-8-encodes both sides and calls `hmac.compare_digest` for every candidate even after a match; malformed presented values return false. Exceptions, HTTP details, and logs identify only the failing rule/member index; they never include a configured/presented token or any service-account JSON bytes.
 - **Vault contract:** `<VAR_DIR>/sa_keys` is `0700` on POSIX and grants full control only to the current process-token SID on Windows. Every existing/new/stale-temp/delete-quarantine/UUID/`active.json` regular file is `0600` on POSIX and has the same protected, exactly-one-ACE Windows DACL. POSIX operations remain anchored to one verified open vault-directory fd for their whole check/use sequence. Windows ACL application and inspection use `SetSecurityInfo`/`GetSecurityInfo` on the already-open `CreateFileW(..., FILE_FLAG_OPEN_REPARSE_POINT)` handle; no authorization, ACL write, ACL verification, credential read/hash, temp write/flush/rehash, or quarantine verification re-resolves the child by path. The Windows wrapper has explicit operation profiles: every handle includes `READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES`, read/hash adds `GENERIC_READ`, temp write/flush/rehash adds `GENERIC_WRITE | GENERIC_READ`, and any future handle-based delete/rename adds `DELETE`; held handles use compatible `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` where publication/quarantine needs rename/delete. An access-denied result fails closed and never triggers a path-based reopen. After the protected DACL is installed, path publication additionally re-verifies the held vault identity immediately before/after `MoveFileExW`. The Windows contract rejects pre-existing/replaced reparse/hardlink objects and other identities; it does not claim to defend against an administrator or malicious process already running as the same SID (that principal can read/change the credential regardless). Because Task Scheduler launches the worker under that process identity, the scheduled-task account remains readable/writable; a worker launched under a different account fails closed rather than widening the ACL. Symlinks, Windows reparse points, hardlinks, directories, FIFOs, sockets, and devices in the vault fail closed.
 - **Durability:** writes first open/create and harden the vault themselves, then use a same-directory exclusive `0600` temp, file flush+fsync, pre-publication regular/single-link verification, atomic replacement, destination permission verification, and vault-directory-fd fsync on POSIX (Windows uses write-through replacement). A failed replacement leaves the old destination unchanged and cleans the new temp when the process is still alive.
-- **DB/filesystem consistency:** a filesystem and PostgreSQL commit cannot be one physical transaction. Upload dedup is made database-atomic, all compensation inputs (`row_id`, SHA, ownership) are copied to plain immutable values before commit/rollback, filesystem refusal rolls the row back, and an ambiguous upload commit is reconciled conservatively (never delete a file unless a fresh DB read proves the newly-owned row absent). Delete takes a key-row lock, rechecks assignments, atomically renames only the exact hash-matching UUID file to a private same-vault quarantine, then mutates/commits the DB. A definitive rollback restores it; commit success removes it; ambiguous outcomes use a fresh DB read (`exact row exists` => restore, `row absent` => remove, mismatch/lookup failure => retain evidence). Head startup resolves exact recognized quarantines with the same state table, then fails closed on any unresolved quarantine or missing, mismatched, or orphan UUID key file. This is an honest bounded-compensation + startup-reconciliation contract, not a false cross-resource atomicity claim.
+- **DB/filesystem consistency:** a filesystem and PostgreSQL commit cannot be one physical transaction. Upload dedup is database-atomic and filesystem refusal attempts rollback before any successful publication claim. Any upload COMMIT exception keeps the exact canonical bytes: eventual commit is coherent, while eventual rollback leaves an orphan UUID file that head startup inventory rejects for manual resolution. Delete takes a key-row lock, rechecks assignments, atomically renames only the exact hash-matching UUID file to a private same-vault quarantine, then mutates/commits the DB. Commit success removes it; every COMMIT exception retains it. Head startup alone restores an exact quarantine when the row/SHA exists or discards it when the row is absent, then fails closed on any unresolved quarantine or missing, mismatched, or orphan UUID key file. Assignment locks the key and verifies canonical bytes against the row SHA before touching host state. This is an honest fail-closed + startup-reconciliation contract, not a false cross-resource atomicity claim.
 - **Startup order:** auth validation, then vault hardening, occur before prompts, DB sessions/reconciliation, version-floor stamping, LISTEN, worker construction, heartbeat, or claim activity. Security validation remains out of module import/app construction so tests and tooling can import safely; the head's pre-existing import-time logging configuration is not falsely claimed to be behind the lifespan gate.
 - **Test-safe startup:** tests opt into anonymous local mode explicitly in `tests/conftest.py`; there is no `PYTEST_CURRENT_TEST`/environment-name bypass in production code. Tests exercising rejection turn the opt-in off and prove all startup side-effect seams remain untouched.
 - **No paid acceptance:** this lane changes security/startup/filesystem behavior, not generation. Acceptance is unit + real POSIX permission checks + scratch-Postgres API tests + full suite. No model/API call, production DB write, live fleet mutation, or real SA-byte upload is part of implementation acceptance.
@@ -29,7 +29,7 @@
 
 1. **Chosen: process-start validation plus route-scoped vault auth.** A global header-only change would break SSE and source-PDF clients that intentionally use the general auth contract. Strictness belongs on the credential-vault router, while startup validation removes the open/guessable production states. Header and general-query values are still exact and untrimmed.
 2. **Chosen: hard rotation from `123`.** The new startup validator rejects *every* weak member, so `AUTH_TOKEN=123,<strong>` cannot be used as a bridge. Under a global pause the head switches first, then workers; old in-memory workers temporarily cannot authenticate to the new head until restarted. That mismatch is deliberate and safe because claiming is paused and active Vertex files/DB assignments remain intact.
-3. **Chosen: one SA-specific vault service and explicit delete quarantine.** Scattered `chmod` calls do not close direct-write, torn-write, symlink-follow, special-file, stale-temp, read, delete, or Windows ACL gaps. All file operations route through one module. API delete never performs a post-commit best-effort unlink: it stages an exact file in the same vault, commits under the key-row/assignment guard, and reconciles the staged file from authoritative DB state.
+3. **Chosen: one SA-specific vault service and explicit delete quarantine.** Scattered `chmod` calls do not close direct-write, torn-write, symlink-follow, special-file, stale-temp, read, delete, or Windows ACL gaps. All file operations route through one module. API delete stages an exact file in the same vault and commits under the key-row/assignment guard. Successful commit discards it; any COMMIT exception leaves it untouched for head-startup reconciliation after DB state settles. No request-time fresh read guesses transaction outcome.
 4. **Rejected: deleting/re-uploading the six keys.** The filesystem hardener changes metadata only, proves byte hashes unchanged, and never touches the assignment tables. Host-59 remains assigned to its current Vertex object.
 5. **Rejected: validating at module import.** Import-time refusal would make unit tests, Alembic tooling, and read-only inspection depend on production secrets. Validation belongs at executable startup before side effects.
 6. **Rejected: silently repairing symlinks/nonregular entries.** A path substitution can point outside the vault; startup and I/O raise a generic vault error so the operator resolves the hazard explicitly.
@@ -812,7 +812,7 @@ git commit -m "feat(sa-keys): add private crash-safe vault primitives"
 
 **Interfaces:**
 - Consumes Task 3: `atomic_write`, `read_bytes`, `remove`, and the typed delete-quarantine functions.
-- Produces `create_or_get_for_upload(...) -> tuple[SAKey, bool]` (boolean = this transaction inserted the metadata row), `lock_key_for_assignment(...) -> SAKey | None`, `lock_unassigned_key_for_delete(...) -> tuple[SAKey | None, Literal["ready", "not_found", "assigned"]]`, and `uuid_hash_inventory(session) -> dict[str, str]`.
+- Produces `create_or_get_for_upload(...) -> tuple[SAKey, bool]` (boolean = this transaction inserted the metadata row), `lock_key_for_assignment(...) -> SAKey | None`, `lock_unassigned_key_for_delete(...) -> tuple[SAKey | None, Literal["ready", "not_found", "assigned"]]`, and `uuid_hash_inventory(session) -> dict[str, str]`. Assignment also reads the locked row's canonical vault bytes and requires their SHA to equal `row.sha256` before any host mutation.
 - Preserves API response shapes, SHA dedup, assignment locks, and worker capability behavior.
 - Does not change repository/table contents except the same explicit API mutations already requested by tests/operators.
 
@@ -842,11 +842,12 @@ Add tests that monkeypatch direct `Path.read_bytes`, `Path.write_bytes`, and `Pa
 - the existing six-file preservation test remains byte-identical.
 - two concurrent identical uploads resolve to one row/file without `IntegrityError`;
 - filesystem refusal rolls back newly inserted metadata;
-- a forced real-Postgres upload commit failure flushes then raises, performs an actual SQLAlchemy rollback, returns the generic 503 without `MissingGreenlet`, and removes a newly-owned file only after that rollback succeeds and a fresh DB read proves the exact pinned `row_id`/SHA absent; rollback failure or an unavailable/ambiguous fresh check keeps the private file for startup/manual reconciliation;
-- existing dedup rows/files are never removed by compensation, and missing/wrong-hash bytes are repaired only from a validated body whose SHA equals the row SHA.
+- a forced real-Postgres upload commit failure flushes then raises and returns the generic 503 without `MissingGreenlet`; every COMMIT exception keeps the exact canonical upload bytes because even a normally-returning rollback may be a no-op; eventual commit is immediately coherent, while eventual rollback leaves an orphan that Task 5 inventory rejects for manual resolution;
+- existing dedup rows/files are never removed on commit ambiguity, and missing/wrong-hash bytes are repaired only from a validated body whose SHA equals the row SHA;
 - assigned delete returns 409 before quarantine; concurrent assign/delete and dedup-upload/delete executions serialize on the key row and finish in one of the two valid whole states, never a dangling assignment, missing file for a live row, or UUID file for an absent row;
-- delete failure before DB mutation leaves the row/file unchanged; definitive rollback restores the exact quarantine; commit success removes it; after a successful rollback, an exception with ambiguous commit outcome opens a fresh session and follows `same row/SHA => restore`, `row absent => discard`, `different row/SHA or lookup error => retain quarantine + generic 503`; rollback failure retains the exact quarantine without consulting fresh DB state;
-- real two-session unresolved-transaction tests pause an uncommitted insert/delete after commit and rollback both raise, prove no fresh-session visibility is treated as authoritative, then drive both eventual outcomes: upload commit leaves row+canonical consistent, upload rollback retains the orphan as fail-closed evidence, delete commit lets startup discard the quarantine, and delete rollback lets startup restore it;
+- assignment returns generic 503 and performs no host mutation when the locked row's canonical vault object is missing, unsafe, or hashes differently—covering a visible row whose bytes remain quarantined after an ambiguous delete;
+- delete failure before DB mutation leaves the row/file unchanged; commit success removes it; every DELETE/commit exception retains the exact quarantine for Task 5 startup reconciliation, regardless of rollback's return or fresh-session visibility;
+- real two-session unresolved-transaction tests pause an uncommitted insert/delete after commit fails and rollback either raises or returns as a no-op, prove no fresh-session visibility is treated as authoritative, then drive both eventual outcomes: upload commit leaves row+canonical consistent, upload rollback retains the orphan as fail-closed evidence, delete commit lets startup discard the quarantine, and delete rollback lets startup restore it;
 - crash-boundary fixtures stop after quarantine with the row present and after committed DB deletion with the row absent; Task 5 startup reconciliation restores/removes respectively, and a neighboring row/file plus all assignments remain byte/row-identical.
 
 Run:
@@ -925,13 +926,7 @@ except sa_key_vault.SAKeyVaultError as exc:
 try:
     await session.commit()
 except Exception:
-    rollback_resolved = await _best_effort_rollback(session)
-    if rollback_resolved:
-        await _compensate_new_upload_if_definitively_uncommitted(
-            row_id=row_id,
-            sha256=row_sha256,
-            created=created_by_this_tx,
-        )
+    await _best_effort_rollback(session)
     raise HTTPException(503, "SA-key upload did not commit") from None
 ```
 
@@ -940,15 +935,11 @@ before the first filesystem operation, commit, or rollback. No exception path ma
 ORM attribute after `rollback()`; the real-DB test must retain normal SQLAlchemy rollback
 expiration so a regression produces `MissingGreenlet` and turns RED.
 
-`_compensate_new_upload_if_definitively_uncommitted` opens a fresh `SessionLocal`.
-It never removes for `created=False`, never removes when the exact row exists, removes
-only when absence is positively established, and treats a lookup error as unknown/keep.
-This is bounded compensation, not a false cross-resource transaction claim.
-`_best_effort_rollback` returns a boolean transaction-resolution signal. A fresh session's
-snapshot is authoritative for destructive compensation only when rollback returned normally.
-If rollback raises, the original transaction may still later commit or roll back; upload keeps
-the canonical bytes and delete keeps the quarantine so startup/manual reconciliation can decide
-after the database outcome becomes observable.
+`_best_effort_rollback` only attempts to release request locks; its return is never treated as
+proof of transaction resolution. A COMMIT exception is always ambiguous. Upload keeps canonical
+bytes untouched: eventual commit produces a coherent row/file, while eventual rollback leaves an
+orphan UUID object that Task 5 inventory rejects fail-closed for manual resolution. Delete keeps
+its already-created exact quarantine so Task 5 can restore/discard it after DB state settles.
 
 Implement API key deletion as this exact state machine; do not reuse the worker scrub's
 simple `remove`:
@@ -963,17 +954,15 @@ simple `remove`:
    Commit. On success call `discard_quarantined_delete(ticket)`; if final discard fails,
    return generic 503 and retain the exact quarantine for startup reconciliation—the DB
    deletion is already authoritative.
-4. On any DELETE/commit exception, attempt rollback. Only when rollback returns normally call
-   `_reconcile_delete_outcome(row_id, row_sha256, ticket)` using a fresh `SessionLocal`.
-   If the exact row/SHA exists, restore; if the row is absent, discard; if a different SHA,
-   DB lookup error, unsafe file, or restore/discard error occurs, retain the quarantine and
-   return generic 503. If rollback raises, retain the quarantine without a fresh lookup because
-   the unresolved transaction may still commit. Never infer commit outcome from the exception type.
+4. On any DELETE/commit exception, attempt rollback only to release locks, retain the exact
+   quarantine without a fresh lookup, and return generic 503. Task 5 startup alone restores when
+   the row/SHA exists or discards when the row is absent after DB state has settled. Never infer
+   commit outcome from the exception type or from rollback returning normally.
 
-The fresh-session reconciler uses only the pinned scalar values and frozen ticket. It does
-not delete or rename a canonical file belonging to any other UUID/SHA. Upload repair obtains
-the same key-row `FOR UPDATE` lock before inspecting/writing an existing dedup row, and assign
-obtains `FOR KEY SHARE`, so neither can recreate/rebind the file in the quarantine window.
+Upload repair obtains the same key-row `FOR UPDATE` lock before inspecting/writing an existing
+dedup row. Assignment obtains `FOR KEY SHARE`, then reads the exact canonical UUID file and checks
+its SHA against the locked row before taking the host lock or writing `SAKeyAssignment`; a missing,
+unsafe, or mismatched object returns generic 503 with no host mutation.
 
 Use generic 503 handling for download/read/remove hazards. Worker apply/scrub catches
 `SAKeyVaultError` separately and logs a fixed message without `logger.exception`, so

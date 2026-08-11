@@ -281,10 +281,10 @@ async def test_new_upload_publishes_vault_bytes_before_database_commit(
 
 
 @pytest.mark.asyncio
-async def test_commit_failure_rolls_back_and_removes_only_newly_owned_file(
+async def test_commit_failure_keeps_new_upload_as_fail_closed_evidence(
     monkeypatch, tmp_path
 ):
-    """Compensation must use pinned scalars after rollback and a fresh definitive read."""
+    """Even a normal rollback return cannot authorize deleting upload bytes."""
     project = f"t4-upload-commit-{uuid4()}"
     body = _good_key(project=project)
     sha = hashlib.sha256(body).hexdigest()
@@ -319,7 +319,11 @@ async def test_commit_failure_rolls_back_and_removes_only_newly_owned_file(
         async with SessionLocal() as session:
             row = await session.scalar(select(SAKey).where(SAKey.sha256 == sha))
         assert row is None
-        assert list((tmp_path / "sa_keys").glob("*.json")) == []
+        evidence = list((tmp_path / "sa_keys").glob("*.json"))
+        assert len(evidence) == 1
+        assert sa_key_vault.read_bytes(evidence[0]) == body
+        with pytest.raises(sa_key_vault.SAKeyVaultError):
+            sa_key_vault.verify_uuid_inventory({})
     finally:
         app.dependency_overrides.pop(get_session, None)
         await _delete_owned_rows(project)
@@ -327,8 +331,9 @@ async def test_commit_failure_rolls_back_and_removes_only_newly_owned_file(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("eventual_outcome", ["commit", "rollback"])
+@pytest.mark.parametrize("rollback_behavior", ["raise", "noop"])
 async def test_upload_rollback_error_preserves_bytes_until_original_tx_resolves(
-    monkeypatch, tmp_path, eventual_outcome
+    monkeypatch, tmp_path, eventual_outcome, rollback_behavior
 ):
     """Fresh absence cannot authorize removal while the request tx may still commit."""
     from app.api.v1 import sa_keys as api
@@ -349,7 +354,8 @@ async def test_upload_rollback_error_preserves_bytes_until_original_tx_resolves(
 
             async def fail_rollback():
                 rollback_calls.append(True)
-                raise RuntimeError("private rollback detail")
+                if rollback_behavior == "raise":
+                    raise RuntimeError("private rollback detail")
 
             monkeypatch.setattr(request_session, "commit", fail_commit)
             monkeypatch.setattr(request_session, "rollback", fail_rollback)
@@ -389,51 +395,6 @@ async def test_upload_rollback_error_preserves_bytes_until_original_tx_resolves(
                 sa_key_vault.verify_uuid_inventory({})
             assert sa_key_vault.read_bytes(storage.sa_key_path(row_id)) == body
     finally:
-        await _delete_owned_rows(project)
-
-
-@pytest.mark.asyncio
-async def test_upload_rollback_and_fresh_lookup_errors_retain_exact_evidence(
-    monkeypatch, tmp_path
-):
-    """When DB authority is unreadable, exact upload bytes remain for startup."""
-    from app.api.v1 import sa_keys as api
-
-    project = f"t4-upload-unknown-{uuid4()}"
-    body = _good_key(project=project)
-    real_session_local = api.SessionLocal
-
-    async def failing_session():
-        async with SessionLocal() as session:
-            async def fail_commit():
-                await session.flush()
-                raise RuntimeError("private commit detail")
-
-            monkeypatch.setattr(session, "commit", fail_commit)
-            yield session
-
-    class _UnreadableFresh:
-        async def __aenter__(self):
-            raise RuntimeError("fresh DB unavailable")
-
-        async def __aexit__(self, *_args):
-            return False
-
-    app.dependency_overrides[get_session] = failing_session
-    try:
-        async with _client(monkeypatch, tmp_path) as client:
-            monkeypatch.setattr(api, "SessionLocal", lambda: _UnreadableFresh())
-            response = await client.post(
-                "/api/v1/sa-keys",
-                files={"file": ("key.json", body, "application/json")},
-            )
-        assert response.status_code == 503
-        evidence = list((tmp_path / "sa_keys").glob("*.json"))
-        assert len(evidence) == 1
-        assert sa_key_vault.read_bytes(evidence[0]) == body
-    finally:
-        app.dependency_overrides.pop(get_session, None)
-        monkeypatch.setattr(api, "SessionLocal", real_session_local)
         await _delete_owned_rows(project)
 
 
@@ -528,25 +489,6 @@ async def test_existing_dedup_repairs_wrong_hash_bytes_from_validated_body(
         assert sa_key_vault.read_bytes(storage.sa_key_path(key_id)) == body
     finally:
         await _delete_owned_rows(project)
-
-
-@pytest.mark.asyncio
-async def test_upload_compensation_keeps_wrong_hash_evidence(monkeypatch, tmp_path):
-    """Fresh DB absence does not authorize deleting bytes unlike our pinned SHA."""
-    from app.api.v1.sa_keys import _compensate_new_upload_if_definitively_uncommitted
-
-    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
-    row_id = uuid4()
-    path = storage.sa_key_path(row_id)
-    sa_key_vault.atomic_write(path, b"different evidence")
-
-    await _compensate_new_upload_if_definitively_uncommitted(
-        row_id=row_id,
-        sha256=hashlib.sha256(b"our upload").hexdigest(),
-        created=True,
-    )
-
-    assert sa_key_vault.read_bytes(path) == b"different evidence"
 
 
 @pytest.mark.asyncio

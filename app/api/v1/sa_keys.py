@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFil
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import SessionLocal, get_session
+from app.db import get_session
 from app.repositories import sa_keys as repo
 from app.repositories import workers as workers_repo
 from app.services import credential_id, credential_limiter, sa_key_vault, storage
@@ -16,63 +16,12 @@ from app.services.sa_key_validate import InvalidServiceAccountKey, parse_and_val
 router = APIRouter(prefix="/sa-keys", tags=["sa-keys"])
 
 
-async def _best_effort_rollback(session: AsyncSession) -> bool:
-    """Return whether the request transaction was definitively rolled back."""
+async def _best_effort_rollback(session: AsyncSession) -> None:
+    """Try to release request locks without claiming transaction resolution."""
     try:
         await session.rollback()
     except Exception:
-        return False
-    return True
-
-
-async def _compensate_new_upload_if_definitively_uncommitted(
-    *,
-    row_id: UUID,
-    sha256: str,
-    created: bool,
-) -> None:
-    """Remove bytes only after a fresh DB read proves our new row absent."""
-    if not created:
         return
-    try:
-        async with SessionLocal() as fresh:
-            row = await repo.get(fresh, row_id)
-            if row is not None:
-                return
-    except Exception:
-        return
-    try:
-        body = sa_key_vault.read_bytes(storage.sa_key_path(row_id))
-        if hashlib.sha256(body).hexdigest() != sha256:
-            return
-        sa_key_vault.remove(storage.sa_key_path(row_id), missing_ok=True)
-    except sa_key_vault.SAKeyVaultError:
-        # Startup inventory reconciliation owns ambiguous filesystem residue.
-        return
-
-
-async def _reconcile_delete_outcome(
-    *,
-    row_id: UUID,
-    sha256: str,
-    ticket: sa_key_vault.DeleteQuarantine,
-) -> None:
-    """Resolve an ambiguous DELETE/commit outcome from fresh DB authority."""
-    try:
-        async with SessionLocal() as fresh:
-            row = await repo.get(fresh, row_id)
-            observed_sha = row.sha256 if row is not None else None
-    except Exception as exc:
-        raise sa_key_vault.SAKeyVaultError(
-            "SA-key delete outcome is unknown"
-        ) from exc
-    if observed_sha is None:
-        sa_key_vault.discard_quarantined_delete(ticket)
-        return
-    if observed_sha == sha256:
-        sa_key_vault.restore_quarantined_delete(ticket)
-        return
-    raise sa_key_vault.SAKeyVaultError("SA-key delete outcome is inconsistent")
 
 
 def _meta(row) -> dict:
@@ -132,13 +81,12 @@ async def upload_sa_key(
     try:
         await session.commit()
     except Exception:
-        rollback_resolved = await _best_effort_rollback(session)
-        if rollback_resolved:
-            await _compensate_new_upload_if_definitively_uncommitted(
-                row_id=row_id,
-                sha256=row_sha256,
-                created=created_by_this_tx,
-            )
+        # A COMMIT exception is ambiguous even when rollback returns normally:
+        # a broken/no-op driver seam can report success while the transaction
+        # remains live. Keep the exact canonical bytes. Eventual commit is
+        # immediately coherent; eventual rollback leaves an orphan that the
+        # startup inventory fails closed for manual resolution.
+        await _best_effort_rollback(session)
         raise HTTPException(503, "SA-key upload did not commit") from None
     return _meta(row)
 
@@ -190,16 +138,9 @@ async def delete_sa_key(key_id: UUID, session: AsyncSession = Depends(get_sessio
             raise RuntimeError("locked SA-key delete affected an unexpected row count")
         await session.commit()
     except Exception:
-        rollback_resolved = await _best_effort_rollback(session)
-        if rollback_resolved:
-            try:
-                await _reconcile_delete_outcome(
-                    row_id=row_id,
-                    sha256=row_sha256,
-                    ticket=ticket,
-                )
-            except sa_key_vault.SAKeyVaultError:
-                pass
+        # Retain the exact quarantine for startup reconciliation. A fresh
+        # request-time snapshot cannot decide an unresolved transaction.
+        await _best_effort_rollback(session)
         raise HTTPException(503, "SA-key delete outcome is unavailable") from None
     try:
         sa_key_vault.discard_quarantined_delete(ticket)
@@ -296,10 +237,21 @@ async def assign_sa_key(
     # The following exclusive host lock serializes against a claim holding
     # the shared host lock, so a tombstone/re-key write cannot
     # interleave with a claim that already re-read "no tombstone". The
-    # key_id existence check touches no host state, so it may run before
-    # or after; kept before for a cheap 404 without taking the lock first.
-    if await repo.lock_key_for_assignment(session, req.key_id) is None:
+    # Key existence and canonical-byte integrity touch no host state, so
+    # both checks stay before the host lock and any assignment mutation.
+    row = await repo.lock_key_for_assignment(session, req.key_id)
+    if row is None:
         raise HTTPException(404, "no such key")
+    row_id = row.id
+    row_sha256 = row.sha256
+    try:
+        body = sa_key_vault.read_bytes(storage.sa_key_path(row_id))
+    except sa_key_vault.SAKeyVaultError:
+        await _best_effort_rollback(session)
+        raise HTTPException(503, "SA-key vault is unavailable") from None
+    if hashlib.sha256(body).hexdigest() != row_sha256:
+        await _best_effort_rollback(session)
+        raise HTTPException(503, "SA-key vault is unavailable") from None
     await workers_repo.lock_host_exclusive(session, hostname)
     await repo.assign(session, hostname, req.key_id)
     await session.commit()
