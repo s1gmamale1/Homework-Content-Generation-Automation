@@ -448,6 +448,8 @@ def _windows_harden_file(path: Path) -> None:  # pragma: no cover
 def _posix_validate_crashed_restore_pair(
     vault_fd: int,
     ticket: DeleteQuarantine,
+    *,
+    harden_permissions: bool = False,
 ) -> bool:
     """Return whether two names are the exact two-link restore crash state."""
     quarantine_digest, quarantine_fd = _hash_posix_child(
@@ -475,10 +477,17 @@ def _posix_validate_crashed_restore_pair(
             if (
                 quarantine_info.st_nlink != 2
                 or canonical_info.st_nlink != 2
-                or stat.S_IMODE(quarantine_info.st_mode) != 0o600
-                or stat.S_IMODE(canonical_info.st_mode) != 0o600
                 or quarantine_digest != ticket.sha256
                 or canonical_digest != ticket.sha256
+            ):
+                raise _raise_vault_error()
+            if harden_permissions:
+                os.fchmod(quarantine_fd, 0o600)
+                quarantine_info = os.fstat(quarantine_fd)
+                canonical_info = os.fstat(canonical_fd)
+            if (
+                stat.S_IMODE(quarantine_info.st_mode) != 0o600
+                or stat.S_IMODE(canonical_info.st_mode) != 0o600
             ):
                 raise _raise_vault_error()
             _posix_verify_named_identity(
@@ -510,7 +519,11 @@ def _posix_crashed_restore_names(vault_fd: int, names: list[str]) -> set[str]:
         ticket = _ticket_from_name(name)
         if ticket.original_name not in present:
             continue
-        if _posix_validate_crashed_restore_pair(vault_fd, ticket):
+        if _posix_validate_crashed_restore_pair(
+            vault_fd,
+            ticket,
+            harden_permissions=True,
+        ):
             recovery_names.update((ticket.original_name, ticket.quarantine_name))
     return recovery_names
 

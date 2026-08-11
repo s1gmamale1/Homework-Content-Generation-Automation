@@ -470,7 +470,7 @@ def test_plain_harden_then_reconcile_recovers_a_crashed_restore_link(
 @pytest.mark.skipif(os.name == "nt", reason="hard-link recovery is POSIX")
 @pytest.mark.parametrize(
     "invalid_pair",
-    ["generic", "wrong-hash", "wrong-uuid", "third-link", "non-private"],
+    ["generic", "malformed", "wrong-hash", "wrong-uuid", "third-link"],
 )
 def test_harden_rejects_every_noncanonical_two_link_recovery_pair(
     monkeypatch, tmp_path, invalid_pair
@@ -480,12 +480,12 @@ def test_harden_rejects_every_noncanonical_two_link_recovery_pair(
     key_id, body = _seed_uuid_file()
     canonical = storage.sa_key_path(key_id)
     canonical.write_bytes(body)
-    canonical.chmod(0o600)
+    canonical.chmod(0o640)
     encoded_id = key_id
     encoded_sha = _sha(body)
     alias = vault / "generic-hard-link"
 
-    if invalid_pair == "generic":
+    if invalid_pair in {"generic", "malformed"}:
         pass
     elif invalid_pair == "wrong-hash":
         encoded_sha = _sha(b"different")
@@ -495,17 +495,40 @@ def test_harden_rejects_every_noncanonical_two_link_recovery_pair(
     if invalid_pair == "generic":
         os.link(canonical, alias)
     else:
-        quarantine = vault / (
+        quarantine_name = (
             f".{encoded_id}.json.{encoded_sha}.{'a' * 32}.delete-quarantine"
         )
+        if invalid_pair == "malformed":
+            quarantine_name = f".{encoded_id}.json.{encoded_sha}.bad.delete-quarantine"
+        quarantine = vault / quarantine_name
         os.link(canonical, quarantine)
         if invalid_pair == "third-link":
             os.link(canonical, alias)
-        elif invalid_pair == "non-private":
-            canonical.chmod(0o640)
 
     with pytest.raises(sa_key_vault.SAKeyVaultError):
         sa_key_vault.harden_vault()
+    assert stat.S_IMODE(canonical.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(os.name == "nt", reason="hard-link recovery is POSIX")
+def test_harden_makes_an_exact_crashed_restore_pair_private(monkeypatch, tmp_path):
+    vault = _point_vault(monkeypatch, tmp_path)
+    vault.mkdir(mode=0o700)
+    key_id, body = _seed_uuid_file()
+    canonical = storage.sa_key_path(key_id)
+    canonical.write_bytes(body)
+    canonical.chmod(0o640)
+    quarantine = vault / (
+        f".{key_id}.json.{_sha(body)}.{'a' * 32}.delete-quarantine"
+    )
+    os.link(canonical, quarantine)
+
+    sa_key_vault.harden_vault()
+
+    assert canonical.stat().st_ino == quarantine.stat().st_ino
+    assert canonical.stat().st_nlink == quarantine.stat().st_nlink == 2
+    assert stat.S_IMODE(canonical.stat().st_mode) == 0o600
+    assert stat.S_IMODE(quarantine.stat().st_mode) == 0o600
 
 
 def test_inventory_does_not_hide_a_db_absent_canonical_orphan(monkeypatch, tmp_path):
