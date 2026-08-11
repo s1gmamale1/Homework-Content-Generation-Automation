@@ -45,13 +45,14 @@ import { accentOf, subjectLabel, subjectLabelWithVariant } from "@/lib/subjects"
 import type {
   BatchSummary,
   Book,
+  JobKind,
   NotionSubject,
   OutputLanguage,
   RoleTransport,
   SessionLimitStrategy,
   Transport,
 } from "@/lib/types";
-import { CARD, GHOST_BTN, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
+import { CARD, FRAME_OFF, FRAME_ON, GHOST_BTN, PRESSABLE, PRIMARY_BTN, SELECT_TRIGGER } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { serveability, providerServeableAnyMode } from "@/lib/serveability";
 import { normalizeProviderTransport } from "@/lib/transport-policy";
@@ -257,15 +258,11 @@ export function FleetLauncher({
   });
 
   // ---- Tray (server-derived) ----
-  // The batch key is (book_id, transport): a book can carry a cli batch AND an
-  // api batch independently. Track which transports each book already has, so a
-  // cli-batched book is still launchable on api (and vice-versa).
-  const batchedTransports = new Map<string, Set<Transport>>();
-  for (const b of batches ?? []) {
-    const set = batchedTransports.get(b.book_id) ?? new Set<Transport>();
-    set.add(b.transport);
-    batchedTransports.set(b.book_id, set);
-  }
+  // The batch key is (book_id, transport, kind): a book can carry a cli batch
+  // AND an api batch independently, and a homework batch AND a teacher-material
+  // batch independently. Each ReadyCard resolves its own "already batched"/
+  // rollup state from its `bookBatches` prop, filtered by its own transport AND
+  // launchMode — see the kind-aware resolution inside ReadyCard.
   // Per-book Fleet lifecycle status, derived from the book's batches. A launched
   // book STAYS in the tray (it does NOT vanish once batched) — it moves from
   // "ready to launch" → "generating" → "complete" (all its homeworks done).
@@ -597,9 +594,6 @@ export function FleetLauncher({
                             <ReadyCard
                               key={b.id}
                               book={b}
-                              batchedTransports={
-                                batchedTransports.get(b.id) ?? new Set()
-                              }
                               bookBatches={(batches ?? []).filter(
                                 (bt) => bt.book_id === b.id,
                               )}
@@ -893,11 +887,9 @@ function SubjectBadge({ subject }: { subject: NotionSubject }) {
 
 function ReadyCard({
   book,
-  batchedTransports,
   bookBatches,
 }: {
   book: Book;
-  batchedTransports: Set<Transport>;
   bookBatches: BatchSummary[];
 }) {
   const qc = useQueryClient();
@@ -912,6 +904,11 @@ function ReadyCard({
   // Do NOT default to a concrete value — see launcher-role-transport-default-1 WISHLIST bug.
   const [outputLanguage, setOutputLanguage] = useState<OutputLanguage | null>(
     () => saved.outputLanguage ?? null,
+  );
+  // Homework vs teacher-material deck. Default "homework" keeps today's
+  // behavior identical for every existing card / saved config.
+  const [launchMode, setLaunchMode] = useState<JobKind>(
+    () => saved.launchMode ?? "homework",
   );
   const [contentSeeded, setContentSeeded] = useState(false);
   const [choosing, setChoosing] = useState(false);
@@ -1065,6 +1062,7 @@ function ReadyCard({
       sessionLimitStrategy,
       model,
       outputLanguage,
+      launchMode,
     };
     saveLauncherConfig(book.id, cfg);
   }, [
@@ -1074,15 +1072,24 @@ function ReadyCard({
     sessionLimitStrategy,
     model,
     outputLanguage,
+    launchMode,
   ]);
 
-  const alreadyBatched = batchedTransports.has(transport);
+  // Kind-aware batch identity: this card only ever resolves rollup/"already
+  // batched"/current-batch state from batches matching its OWN launchMode.
+  // bookBatches carries every batch for this book across BOTH kinds — a
+  // teacher-material batch must never leak into the homework card's state
+  // (and vice-versa), or the rollup/cancel/resume controls would act on the
+  // wrong kind's jobs.
+  const kindBatches = bookBatches.filter((b) => b.kind === launchMode);
+  const alreadyBatched = kindBatches.some((b) => b.transport === transport);
   // On api we must have an explicit model selected.
   const missingApiModel = transport === "api" && !model;
   const apiOnlyFleetBlocked = apiOnly && fleet?.online && !apiFleetCheck.ok;
 
-  // Current batch for this transport — used for cancel-all / resume buttons.
-  const currentBatch = bookBatches.find((b) => b.transport === transport) ?? null;
+  // Current batch for this transport (within the card's own kind) — used for
+  // cancel-all / resume buttons and the rollup display.
+  const currentBatch = kindBatches.find((b) => b.transport === transport) ?? null;
   const batchId = currentBatch?.batch_id ?? null;
   const rollup = currentBatch?.rollup ?? {};
   // Non-terminal = pending + running + cancelling (can be cancelled).
@@ -1094,6 +1101,7 @@ function ReadyCard({
   // Shared body builder for launch / preview calls.
   const launchBody = (opts: { force?: boolean; tocIds?: string[]; relaunch_mode?: "resume" | "discard" } = {}) => ({
     book_id: book.id,
+    kind: launchMode,
     provider,
     transport,
     extract_transport: "inherit" as RoleTransport,
@@ -1251,6 +1259,10 @@ function ReadyCard({
                 </p>
               )}
               <div className="flex flex-wrap items-center gap-2">
+                {/* Homework | Teacher material — which kind of deck this
+                    launch produces. Kind-scopes batch identity below: this
+                    card only ever shows/acts on batches of its own kind. */}
+                <LaunchModeToggle value={launchMode} onChange={setLaunchMode} />
                 <Select value={provider} onValueChange={setProvider}>
                   <SelectTrigger className={cn(SELECT_TRIGGER, "h-9 w-[8.5rem]")}>
                     <SelectValue placeholder="claude" />
@@ -1776,6 +1788,44 @@ function TransportToggle({
       {apiDisabledReason && (
         <p className="text-[0.7rem] leading-snug text-amber-300/90">{apiDisabledReason}</p>
       )}
+    </div>
+  );
+}
+
+const LAUNCH_MODE_LABEL: Record<JobKind, string> = {
+  homework: "Homework",
+  teacher_material: "Teacher material",
+};
+
+/** Homework | Teacher material segmented control. Picks which kind of deck
+ *  this card's launch produces — threaded into `launchBody` as `kind` and
+ *  used to kind-scope this card's batch-identity resolution (a book can
+ *  carry an independent batch per kind, same as it does per transport). */
+function LaunchModeToggle({
+  value,
+  onChange,
+}: {
+  value: JobKind;
+  onChange: (next: JobKind) => void;
+}) {
+  const modes: JobKind[] = ["homework", "teacher_material"];
+  return (
+    <div className="inline-flex h-9 gap-0.5 rounded-xl border border-white/[0.1] bg-white/[0.04] p-0.5">
+      {modes.map((m) => (
+        <button
+          key={m}
+          type="button"
+          aria-pressed={m === value}
+          onClick={() => onChange(m)}
+          className={cn(
+            "rounded-lg px-2.5 text-xs font-medium",
+            PRESSABLE,
+            m === value ? FRAME_ON : FRAME_OFF,
+          )}
+        >
+          {LAUNCH_MODE_LABEL[m]}
+        </button>
+      ))}
     </div>
   );
 }
