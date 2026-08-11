@@ -12,7 +12,9 @@ import type {
   BatchSummary,
   Book,
   CoverageResponse,
+  DeckResponse,
   Job,
+  JobKind,
   LaunchDefaults,
   NotionGrade,
   NotionSubject,
@@ -23,6 +25,7 @@ import type {
   SaKeyAssignment,
   SessionLimitStrategy,
   Subject,
+  TeacherDeck,
   TOCEntry,
   Transport,
   Worker,
@@ -296,6 +299,17 @@ export const api = {
   },
 
   /**
+   * Fetch the teacher-deck structured content for a `kind="teacher_material"`
+   * job — see `GET /api/v1/jobs/<id>/deck`. 404s (via `ApiError`) when the
+   * job doesn't exist, isn't `teacher_material`, or the `teacher-deck` phase
+   * hasn't produced `content_json` yet.
+   */
+  async getDeck(jobId: string): Promise<TeacherDeck> {
+    const res = await authFetch(`/api/v1/jobs/${encodeURIComponent(jobId)}/deck`);
+    return (await unwrap<DeckResponse>(res)).content_json;
+  },
+
+  /**
    * Retry a failed job in place — reuses the same job row (keeping the
    * pinned provider/model) instead of creating a new one. Server returns
    * 409 if the job is not in `failed` status. The "regenerate from scratch"
@@ -431,6 +445,9 @@ export const api = {
     session_limit_strategy?: SessionLimitStrategy;
     output_language?: OutputLanguage | null;
     include_classes?: string[];
+    /** "homework" (default, server-side) | "teacher_material" — forks its own
+     *  batch and never resumes/adopts the other kind's job for a section. */
+    kind?: JobKind;
   }): Promise<BatchLaunchResponse> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -451,6 +468,7 @@ export const api = {
     session_limit_strategy?: SessionLimitStrategy;
     output_language?: OutputLanguage | null;
     include_classes?: string[];
+    kind?: JobKind;
   }): Promise<BatchPreviewResponse> {
     const res = await authFetch("/api/v1/jobs/batch", {
       method: "POST", headers: { "Content-Type": "application/json" },

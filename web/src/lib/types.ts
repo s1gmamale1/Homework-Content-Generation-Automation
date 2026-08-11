@@ -63,6 +63,11 @@ export const SUBJECTS: Subject[] = [
 
 export type BookStatus = "uploading" | "toc_extracting" | "toc_ready" | "toc_review" | "failed";
 
+/** Job/batch kind discriminator (Task 8). "homework" (default) is the
+ *  full multi-phase flow; "teacher_material" is the fixed single-phase
+ *  teacher-deck flow — its own batch, never adopts/resumes a homework job. */
+export type JobKind = "homework" | "teacher_material";
+
 /** Generation transport: "cli" (local subprocess) vs "api" (pay-per-token SDK). */
 export type Transport = "cli" | "api";
 
@@ -421,6 +426,140 @@ export interface GamesPack {
   games: Game[];
 }
 
+/* Teacher deck — structured teacher lesson-plan deck for `kind="teacher_material"`
+   jobs. Mirrors app/schemas/content_json/teacher_deck.py EXACTLY (field names,
+   nesting, optionality). Served via GET /api/v1/jobs/{id}/deck as
+   `content_json` on that response. Field KEYS are English; VALUES are
+   generated in the book's language. */
+
+export type TeacherDeckBadge = "ekranga" | "teacher_only" | "none";
+export type TeacherDeckOptionLabel = "A" | "B" | "C" | "D";
+
+export interface TeacherDeckMeta {
+  subject_label: string;
+  grade: string;
+  topic_number: number;
+  topic_title: string;
+  duration_min: number;
+  lesson_type: string;
+  method: string[];
+  materials: string[];
+  video_ref: string | null;
+}
+
+export interface TeacherDeckPassport {
+  fan_sinf: string;
+  mavzu: string;
+  dars_turi: string;
+  metod: string;
+  kerakli_vosita: string;
+  baholash: string;
+}
+
+export interface TeacherDeckObjectives {
+  bilib_oladi: string;
+  qila_oladi: string;
+  tushunadi: string;
+}
+
+export interface TeacherDeckCoreIdea {
+  statement: string;
+  elaboration: string;
+}
+
+export interface TeacherDeckLessonMapItem {
+  index: number;
+  title: string;
+  description: string;
+  minutes: number;
+}
+
+export interface TeacherDeckPoint {
+  title: string;
+  detail: string;
+}
+
+export interface TeacherDeckStage {
+  index: number;
+  title: string;
+  minutes: number;
+  badge: TeacherDeckBadge;
+  points: TeacherDeckPoint[];
+  teacher_action: string;
+  student_action: string;
+  screen_text: string | null;
+}
+
+export interface TeacherDeckQuizOption {
+  label: TeacherDeckOptionLabel;
+  text: string;
+}
+
+export interface TeacherDeckQuizItem {
+  number: number;
+  question: string;
+  options: TeacherDeckQuizOption[];
+  correct_label: TeacherDeckOptionLabel;
+  hint: string;
+}
+
+export interface TeacherDeckAnswerKeyItem {
+  number: number;
+  correct_label: TeacherDeckOptionLabel;
+  explanation: string;
+}
+
+export interface TeacherDeckPairWorkTask {
+  title: string;
+  prompt: string;
+}
+
+export interface TeacherDeckPairWork {
+  intro: string;
+  tasks: TeacherDeckPairWorkTask[];
+}
+
+export interface TeacherDeckConclusion {
+  questions: string[];
+}
+
+export interface TeacherDeckRubricComponent {
+  points: number;
+  title: string;
+  detail: string;
+}
+
+export interface TeacherDeckRubricBand {
+  range: string;
+  grade: string;
+}
+
+export interface TeacherDeckRubric {
+  components: TeacherDeckRubricComponent[];
+  total: number;
+  bands: TeacherDeckRubricBand[];
+}
+
+export interface TeacherDeck {
+  meta: TeacherDeckMeta;
+  passport: TeacherDeckPassport;
+  objectives: TeacherDeckObjectives;
+  core_idea: TeacherDeckCoreIdea;
+  lesson_map: TeacherDeckLessonMapItem[];
+  stages: TeacherDeckStage[];
+  quiz: TeacherDeckQuizItem[];
+  answer_key: TeacherDeckAnswerKeyItem[];
+  pair_work: TeacherDeckPairWork;
+  conclusion: TeacherDeckConclusion;
+  rubric: TeacherDeckRubric;
+}
+
+/** Response from GET /api/v1/jobs/{id}/deck. */
+export interface DeckResponse {
+  job_id: string;
+  content_json: TeacherDeck;
+}
+
 /* SSE event payloads */
 export type TOCStreamEvent =
   | { event: "status"; data: { status: "uploading" | "toc_extracting" } }
@@ -471,6 +610,8 @@ export interface BatchSummary {
   subject: string;
   subject_variant?: string | null;
   grade: string | null;
+  /** "homework" | "teacher_material" — see `JobKind`. */
+  kind: JobKind;
   output_language: OutputLanguage;
   provider: string;
   model: string | null;
