@@ -2061,7 +2061,7 @@ class SqlSoakWriteStore:
                     "application_name": f"hcga-soak-stop:{os.getpid()}",
                     "idle_in_transaction_session_timeout": "300000",
                     "lock_timeout": "5000",
-                    "statement_timeout": "30000",
+                    "statement_timeout": "20000",
                 }
             },
         )

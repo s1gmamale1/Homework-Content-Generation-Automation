@@ -260,3 +260,6 @@ def test_sql_stop_writer_bounds_lock_and_statement_waits(monkeypatch):
     settings = captured["connect_args"]["server_settings"]
     assert 0 < int(settings["lock_timeout"]) <= 5_000
     assert 0 < int(settings["statement_timeout"]) <= 30_000
+    assert int(settings["statement_timeout"]) < int(
+        soak._ARMED_STOP_TIMEOUT_SECONDS * 1_000
+    )
