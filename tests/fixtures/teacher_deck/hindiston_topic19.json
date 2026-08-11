@@ -41,7 +41,7 @@
       "index": 1,
       "title": "Tashkiliy qism va davomat",
       "minutes": 3,
-      "badge": "none",
+      "badge": "teacher_only",
       "points": [
         {"title": "Salomlashish va sinf holati", "detail": "Doska, proyektor, daftarlarni tez koʻzdan kechiring."},
         {"title": "DAVOMAT olinadi", "detail": "Jurnalga jimgina belgilang — 60 soniyadan oshmasin."},
@@ -65,7 +65,7 @@
       "index": 3,
       "title": "Akademiya video darsi",
       "minutes": 9,
-      "badge": "none",
+      "badge": "teacher_only",
       "points": [
         {"title": "OLDIN — kuzatuv topshirigʻi bering", "detail": "«Videoda 3 ta ism va 3 ta sanani yozib oling.» Topshiriqsiz video — bu dam olish, dars emas."},
         {"title": "DAVOMIDA — jim, izohsiz", "detail": "Video ustidan gapirmang. Faqat texnik nosozlikda toʻxtating."},
@@ -79,7 +79,7 @@
       "index": 4,
       "title": "Mavzuning uchta tayanch nuqtasi",
       "minutes": 9,
-      "badge": "none",
+      "badge": "teacher_only",
       "points": [
         {"title": "1991 — inqiroz va burilish", "detail": "Rajiv Gandi oʻldiriladi → Narasimxa Rao bozor islohotlarini boshlaydi → davlat sektori qisqaradi, yirik korxonalar xususiylashtiriladi."},
         {"title": "1992–2014 — yuksalish", "detail": "1992-yildan gʻalla EKSPORT qilinadi · IT-kadrlar boʻyicha dunyoda 2-oʻrin (AQSHdan keyin) · Vajpai, Manmoxan Singx, Modi islohotlarni davom ettiradi."},

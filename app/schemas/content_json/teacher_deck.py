@@ -4,20 +4,39 @@ Field KEYS are English; VALUES are generated in the book's language. Nested
 Pydantic models (not raw dicts) so `model_json_schema()` is well-typed for the
 prompt embed, and `model_validate_json()` catches malformed model output before
 it reaches a teacher.
+
+Deliberately does NOT use the shared `StrictModel` (`common.py`): that class
+sets `strict=True`, which rejects well-formed-but-loosely-typed generated
+output (`"grade": 11` for a str field, `"minutes": 3.0` for an int field).
+`run_phase` only retries once on a schema-validation failure, so `strict=True`
+here would turn harmless type looseness into avoidable generation failures.
+`_TeacherDeckModel` below is this schema's own local base — `extra="forbid"`
+(unknown keys still reject) but `strict=False` (standard lossless coercion).
+Do not change the shared `StrictModel`/`common.py` — other schemas
+(`RlcConfig`, `SentenceFillConfig`) depend on its `strict=True` behavior.
 """
 from __future__ import annotations
 
 from typing import ClassVar, Literal
 
-from pydantic import Field, model_validator
-
-from .common import StrictModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 BADGE_VALUES = ("ekranga", "teacher_only", "none")
 OPTION_LABELS = ("A", "B", "C", "D")
 
 
-class Meta(StrictModel):
+class _TeacherDeckModel(BaseModel):
+    """Local base for every TeacherDeck model (see module docstring).
+
+    `coerce_numbers_to_str=True` on top of `strict=False`: lax mode alone does
+    NOT coerce int/float into a declared str field (e.g. `"grade": 11`) —
+    that needs this flag explicitly.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=False, coerce_numbers_to_str=True)
+
+
+class Meta(_TeacherDeckModel):
     subject_label: str = Field(min_length=1)
     grade: str = Field(min_length=1)
     topic_number: int = Field(gt=0)
@@ -29,7 +48,7 @@ class Meta(StrictModel):
     video_ref: str | None = None
 
 
-class Passport(StrictModel):
+class Passport(_TeacherDeckModel):
     fan_sinf: str = Field(min_length=1)
     mavzu: str = Field(min_length=1)
     dars_turi: str = Field(min_length=1)
@@ -38,30 +57,30 @@ class Passport(StrictModel):
     baholash: str = Field(min_length=1)
 
 
-class Objectives(StrictModel):
+class Objectives(_TeacherDeckModel):
     bilib_oladi: str = Field(min_length=1)
     qila_oladi: str = Field(min_length=1)
     tushunadi: str = Field(min_length=1)
 
 
-class CoreIdea(StrictModel):
+class CoreIdea(_TeacherDeckModel):
     statement: str = Field(min_length=1)
     elaboration: str = Field(min_length=1)
 
 
-class LessonMapItem(StrictModel):
+class LessonMapItem(_TeacherDeckModel):
     index: int = Field(gt=0)
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
     minutes: int = Field(gt=0)
 
 
-class Point(StrictModel):
+class Point(_TeacherDeckModel):
     title: str = Field(min_length=1)
     detail: str = Field(min_length=1)
 
 
-class Stage(StrictModel):
+class Stage(_TeacherDeckModel):
     index: int = Field(gt=0)
     title: str = Field(min_length=1)
     minutes: int = Field(gt=0)
@@ -72,12 +91,12 @@ class Stage(StrictModel):
     screen_text: str | None = None
 
 
-class QuizOption(StrictModel):
+class QuizOption(_TeacherDeckModel):
     label: Literal[OPTION_LABELS]  # type: ignore[valid-type]
     text: str = Field(min_length=1)
 
 
-class QuizItem(StrictModel):
+class QuizItem(_TeacherDeckModel):
     number: int = Field(gt=0)
     question: str = Field(min_length=1)
     options: list[QuizOption]
@@ -91,43 +110,45 @@ class QuizItem(StrictModel):
         labels = [o.label for o in self.options]
         if len(set(labels)) != 4:
             raise ValueError("quiz item option labels must be unique (A-D)")
-        if self.correct_label not in labels:
-            raise ValueError("correct_label must be one of the item's own option labels")
+        # No separate "correct_label must be among options" check: with exactly
+        # 4 uniquely-labeled options and both `label` and `correct_label` typed
+        # as Literal["A","B","C","D"], the option label set is structurally
+        # always {A,B,C,D} — correct_label is always a member by construction.
         return self
 
 
-class AnswerKeyItem(StrictModel):
+class AnswerKeyItem(_TeacherDeckModel):
     number: int = Field(gt=0)
     correct_label: Literal[OPTION_LABELS]  # type: ignore[valid-type]
     explanation: str = Field(min_length=1)
 
 
-class PairWorkTask(StrictModel):
+class PairWorkTask(_TeacherDeckModel):
     title: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
 
 
-class PairWork(StrictModel):
+class PairWork(_TeacherDeckModel):
     intro: str = Field(min_length=1)
     tasks: list[PairWorkTask] = Field(min_length=1)
 
 
-class Conclusion(StrictModel):
+class Conclusion(_TeacherDeckModel):
     questions: list[str] = Field(min_length=1)
 
 
-class RubricComponent(StrictModel):
+class RubricComponent(_TeacherDeckModel):
     points: int = Field(gt=0)
     title: str = Field(min_length=1)
     detail: str = Field(min_length=1)
 
 
-class RubricBand(StrictModel):
+class RubricBand(_TeacherDeckModel):
     range: str = Field(min_length=1)
     grade: str = Field(min_length=1)
 
 
-class Rubric(StrictModel):
+class Rubric(_TeacherDeckModel):
     components: list[RubricComponent] = Field(min_length=1)
     total: int = Field(gt=0)
     bands: list[RubricBand] = Field(min_length=1)
@@ -142,7 +163,7 @@ class Rubric(StrictModel):
         return self
 
 
-class TeacherDeck(StrictModel):
+class TeacherDeck(_TeacherDeckModel):
     # ClassVar, NOT a field — see rlc.py / sentence_fill.py: the version travels
     # in the envelope as content_schema_version, not inside content_json.
     SCHEMA_VERSION: ClassVar[str] = "teacher_deck@1"
@@ -171,6 +192,11 @@ class TeacherDeck(StrictModel):
 
     @model_validator(mode="after")
     def _answer_key_matches_quiz(self):
+        if len(self.answer_key) != len(self.quiz):
+            raise ValueError(
+                "answer_key must have exactly as many entries as quiz "
+                f"({len(self.quiz)}), got {len(self.answer_key)}"
+            )
         quiz_numbers = {q.number for q in self.quiz}
         answer_numbers = {a.number for a in self.answer_key}
         if quiz_numbers != answer_numbers:

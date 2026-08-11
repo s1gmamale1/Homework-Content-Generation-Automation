@@ -37,6 +37,13 @@ def test_fixture_validates(fixture_data):
     assert len(deck.stages) == 7
     assert len(deck.quiz) == 5
     assert len(deck.answer_key) == 5
+    # Stages 1/3/4 (Tashkiliy/Video/Tahlil) are badged "O'QITUVCHI UCHUN" in the
+    # PDF (teacher-only); stages 2/5/6/7 (hook/kviz/juftlikda ish/yakun) carry
+    # the on-screen "EKRANGA" pill.
+    assert [s.badge for s in deck.stages] == [
+        "teacher_only", "ekranga", "teacher_only", "teacher_only",
+        "ekranga", "ekranga", "ekranga",
+    ]
 
 
 def test_schema_version_is_classvar_not_a_payload_field(fixture_data):
@@ -67,18 +74,21 @@ def test_quiz_item_must_have_exactly_four_options(fixture_data):
         TeacherDeck.model_validate(bad)
 
 
-def test_quiz_correct_label_must_be_among_options(fixture_data):
+def test_quiz_item_rejects_duplicate_option_labels(fixture_data):
+    # 4 options but a duplicated label ("A" twice, "B" missing) — the
+    # uniqueness check, not the (removed, structurally-dead) "correct_label
+    # among options" branch: with correct_label/label both Literal["A".."D"]
+    # and exactly 4 unique labels required, the label set is always exactly
+    # {A,B,C,D}, so correct_label is a member by construction and needs no
+    # separate check. This test exercises the uniqueness rule specifically.
     bad = copy.deepcopy(fixture_data)
-    # All 4 options use labels A-D already; force an inconsistent correct_label
-    # by relabeling one option so A-D no longer includes the stated correct answer.
-    bad["quiz"][0]["correct_label"] = "B"
     bad["quiz"][0]["options"] = [
         {"label": "A", "text": "x"},
         {"label": "C", "text": "y"},
         {"label": "D", "text": "z"},
         {"label": "A", "text": "w"},
     ]
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="option labels must be unique"):
         TeacherDeck.model_validate(bad)
 
 
@@ -86,6 +96,18 @@ def test_answer_key_number_set_must_match_quiz(fixture_data):
     bad = copy.deepcopy(fixture_data)
     bad["answer_key"][0]["number"] = 99
     with pytest.raises(ValidationError, match="answer_key numbers must match quiz numbers"):
+        TeacherDeck.model_validate(bad)
+
+
+def test_answer_key_rejects_duplicate_entry(fixture_data):
+    # 6 answer_key entries for 5 quiz items (a duplicated number 1 appended).
+    # The number *set* would still equal quiz's {1..5} (sets collapse the
+    # duplicate), so only a cardinality check catches this — not the
+    # set-equality check alone.
+    bad = copy.deepcopy(fixture_data)
+    bad["answer_key"].append(dict(bad["answer_key"][0]))
+    assert len(bad["answer_key"]) == 6
+    with pytest.raises(ValidationError, match="exactly as many entries as quiz"):
         TeacherDeck.model_validate(bad)
 
 
@@ -103,6 +125,27 @@ def test_rubric_points_must_sum_to_total(fixture_data):
     bad["rubric"]["total"] = 999
     with pytest.raises(ValidationError, match="rubric component points"):
         TeacherDeck.model_validate(bad)
+
+
+def test_loose_types_coerce_but_extra_keys_still_reject(fixture_data):
+    # strict=False: generated JSON commonly emits an int where a str field is
+    # declared ("grade": 11) or a whole-number float where an int is declared
+    # ("minutes": 3.0) — run_phase only retries once on a validation failure,
+    # so these must validate rather than bounce the generation.
+    loose = copy.deepcopy(fixture_data)
+    loose["meta"]["grade"] = 11
+    assert loose["lesson_map"][0]["minutes"] == 3
+    loose["lesson_map"][0]["minutes"] = 3.0
+    deck = TeacherDeck.model_validate_json(json.dumps(loose))
+    assert deck.meta.grade == "11"
+    assert deck.lesson_map[0].minutes == 3
+    assert isinstance(deck.lesson_map[0].minutes, int)
+
+    # extra="forbid" must still hold despite strict=False.
+    with_extra = copy.deepcopy(fixture_data)
+    with_extra["unexpected_top_level_key"] = "nope"
+    with pytest.raises(ValidationError):
+        TeacherDeck.model_validate(with_extra)
 
 
 def test_hook_screen_text_round_trips(fixture_data):
