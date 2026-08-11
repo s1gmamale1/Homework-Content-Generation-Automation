@@ -48,6 +48,10 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     solver_transport: Mapped[str] = mapped_column(String(16), nullable=False, server_default="inherit")
     solver_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     solver_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # Deliverable discriminator: "homework" (default, student packet) vs
+    # "teacher_material" (future teacher deck). Pure schema plumbing here —
+    # nothing consumes `kind` yet.
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, server_default="homework")
     batch_id: Mapped[Optional[UUID]] = mapped_column(
         ForeignKey("batches.id"), nullable=True
     )
@@ -127,6 +131,10 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
         CheckConstraint(
             "output_language IN ('uz','en','ru')",
             name="ck_homework_jobs_output_language",
+        ),
+        CheckConstraint(
+            "kind IN ('homework','teacher_material')",
+            name="ck_homework_jobs_kind",
         ),
     )
 

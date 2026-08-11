@@ -11,12 +11,14 @@ from app.models.base import Base, Timestamps, UUIDPK
 
 class Batch(Base, UUIDPK, Timestamps):
     """One row per textbook generation batch. UNIQUE(book_id, transport,
-    output_language) -> one batch per (book, transport, output_language); a
-    different-transport or different-output-language re-launch forks a new
-    batch, same triple reuses it. That makes find-or-create race-safe
-    (ON CONFLICT) and adoption unambiguous. No status counters: the rollup is
-    computed on read (DISTINCT ON over the batch's jobs). provider/model are the
-    launch-default label only - per-job provider/model are authoritative."""
+    output_language, kind) -> one batch per (book, transport, output_language,
+    kind); a different-transport, different-output-language, or different-kind
+    re-launch forks a new batch, same tuple reuses it. That makes find-or-create
+    race-safe (ON CONFLICT) and adoption unambiguous. No status counters: the
+    rollup is computed on read (DISTINCT ON over the batch's jobs). provider/model
+    are the launch-default label only - per-job provider/model are authoritative.
+    `kind` is pure schema plumbing for now ("homework" default) - nothing
+    consumes it yet."""
 
     __tablename__ = "batches"
 
@@ -54,10 +56,14 @@ class Batch(Base, UUIDPK, Timestamps):
     session_limit_strategy: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default="inherit"
     )
+    # Deliverable discriminator: "homework" (default, student packet) vs
+    # "teacher_material" (future teacher deck). Pure schema plumbing here —
+    # nothing consumes `kind` yet.
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, server_default="homework")
 
     __table_args__ = (
-        UniqueConstraint("book_id", "transport", "output_language",
-                         name="uq_batches_book_id_transport_output_language"),
+        UniqueConstraint("book_id", "transport", "output_language", "kind",
+                         name="uq_batches_book_id_transport_output_language_kind"),
         CheckConstraint(
             "transport IN ('cli','api')",
             name="ck_batches_transport",
