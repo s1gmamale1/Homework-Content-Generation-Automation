@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 from contextlib import asynccontextmanager
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -89,6 +89,121 @@ async def test_two_concurrent_identical_uploads_share_one_owned_row_and_file(
         assert sa_key_vault.read_bytes(storage.sa_key_path(one.json()["id"])) == body
     finally:
         await _delete_owned_rows(project)
+
+
+@pytest.mark.asyncio
+async def test_dedup_upload_retries_when_concurrent_delete_wins(
+    monkeypatch, tmp_path
+):
+    """A delete between ON CONFLICT and SELECT must not escape as HTTP 500."""
+    from app.api.v1 import sa_keys as api
+
+    project = f"t4-upload-delete-race-{uuid4()}"
+    body = _good_key(project=project)
+    conflict_observed = asyncio.Event()
+    allow_conflict_select = asyncio.Event()
+
+    async def paused_upload_session():
+        async with SessionLocal() as session:
+            real_scalar = session.scalar
+            paused = False
+
+            async def pause_after_conflict(statement, *args, **kwargs):
+                nonlocal paused
+                result = await real_scalar(statement, *args, **kwargs)
+                if not paused and result is None:
+                    paused = True
+                    conflict_observed.set()
+                    await allow_conflict_select.wait()
+                return result
+
+            monkeypatch.setattr(session, "scalar", pause_after_conflict)
+            yield session
+
+    try:
+        async with _client(monkeypatch, tmp_path) as client:
+            seeded = await client.post(
+                "/api/v1/sa-keys",
+                files={"file": ("first.json", body, "application/json")},
+            )
+            old_id = seeded.json()["id"]
+            app.dependency_overrides[get_session] = paused_upload_session
+            uploading = asyncio.create_task(
+                client.post(
+                    "/api/v1/sa-keys",
+                    files={"file": ("again.json", body, "application/json")},
+                )
+            )
+            await asyncio.wait_for(conflict_observed.wait(), timeout=2)
+            async with SessionLocal() as delete_session:
+                deleted = await api.delete_sa_key(UUID(old_id), delete_session)
+            allow_conflict_select.set()
+            uploaded = await uploading
+
+        assert deleted == {"deleted": old_id}
+        assert uploaded.status_code == 201
+        new_id = uploaded.json()["id"]
+        assert new_id != old_id
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(select(SAKey).where(SAKey.project_id == project))
+            ).scalars().all()
+        assert [str(row.id) for row in rows] == [new_id]
+        assert not storage.sa_key_path(old_id).exists()
+        assert sa_key_vault.read_bytes(storage.sa_key_path(new_id)) == body
+    finally:
+        allow_conflict_select.set()
+        app.dependency_overrides.pop(get_session, None)
+        await _delete_owned_rows(project)
+
+
+@pytest.mark.asyncio
+async def test_exhausted_upload_contention_maps_to_generic_503(monkeypatch, tmp_path):
+    """Internal bounded-contention exhaustion must never escape as raw HTTP 500."""
+    from app.repositories import sa_keys as repo
+
+    project = f"t4-upload-contention-{uuid4()}"
+    body = _good_key(project=project)
+    contention_error = getattr(repo, "SAKeyUploadContentionError", RuntimeError)
+
+    async def exhaust(*_args, **_kwargs):
+        raise contention_error("private contention detail")
+
+    monkeypatch.setattr(repo, "create_or_get_for_upload", exhaust)
+    async with _client(monkeypatch, tmp_path) as client:
+        response = await client.post(
+            "/api/v1/sa-keys",
+            files={"file": ("key.json", body, "application/json")},
+        )
+    assert response.status_code == 503
+    assert response.json() == {"detail": "SA-key upload is temporarily unavailable"}
+    assert "private" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_upload_ownership_reacquisition_is_bounded():
+    """Perpetual insert/select disappearance terminates after three attempts."""
+    from app.repositories import sa_keys as repo
+
+    class _AlwaysMissingSession:
+        def __init__(self):
+            self.scalar_calls = 0
+
+        async def scalar(self, _statement):
+            self.scalar_calls += 1
+            return None
+
+    session = _AlwaysMissingSession()
+    with pytest.raises(repo.SAKeyUploadContentionError):
+        await repo.create_or_get_for_upload(
+            session,
+            original_filename="key.json",
+            project_id="bounded-project",
+            client_email="svc@bounded.invalid",
+            sha256="a" * 64,
+            byte_size=1,
+        )
+    assert session.scalar_calls == 6
 
 
 @pytest.mark.asyncio
@@ -205,6 +320,98 @@ async def test_commit_failure_rolls_back_and_removes_only_newly_owned_file(
         assert list((tmp_path / "sa_keys").glob("*.json")) == []
     finally:
         app.dependency_overrides.pop(get_session, None)
+        await _delete_owned_rows(project)
+
+
+@pytest.mark.asyncio
+async def test_upload_rollback_error_still_compensates_from_fresh_absence(
+    monkeypatch, tmp_path
+):
+    """Fresh DB absence, not rollback's exception, authorizes exact compensation."""
+    project = f"t4-upload-rollback-error-{uuid4()}"
+    body = _good_key(project=project)
+    rollback_calls = []
+
+    async def failing_session():
+        async with SessionLocal() as session:
+            async def fail_commit():
+                await session.flush()
+                raise RuntimeError("private commit detail")
+
+            async def fail_rollback():
+                rollback_calls.append(True)
+                raise RuntimeError("private rollback detail")
+
+            monkeypatch.setattr(session, "commit", fail_commit)
+            monkeypatch.setattr(session, "rollback", fail_rollback)
+            yield session
+
+    app.dependency_overrides[get_session] = failing_session
+    try:
+        async with _client(monkeypatch, tmp_path) as client:
+            response = await client.post(
+                "/api/v1/sa-keys",
+                files={"file": ("key.json", body, "application/json")},
+            )
+        assert response.status_code == 503
+        assert response.json() == {"detail": "SA-key upload did not commit"}
+        assert "private" not in response.text
+        assert rollback_calls == [True]
+        async with SessionLocal() as session:
+            row = await session.scalar(select(SAKey).where(SAKey.project_id == project))
+        assert row is None
+        assert list((tmp_path / "sa_keys").glob("*.json")) == []
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        await _delete_owned_rows(project)
+
+
+@pytest.mark.asyncio
+async def test_upload_rollback_and_fresh_lookup_errors_retain_exact_evidence(
+    monkeypatch, tmp_path
+):
+    """When DB authority is unreadable, exact upload bytes remain for startup."""
+    from app.api.v1 import sa_keys as api
+
+    project = f"t4-upload-unknown-{uuid4()}"
+    body = _good_key(project=project)
+    real_session_local = api.SessionLocal
+
+    async def failing_session():
+        async with SessionLocal() as session:
+            async def fail_commit():
+                await session.flush()
+                raise RuntimeError("private commit detail")
+
+            async def fail_rollback():
+                raise RuntimeError("private rollback detail")
+
+            monkeypatch.setattr(session, "commit", fail_commit)
+            monkeypatch.setattr(session, "rollback", fail_rollback)
+            yield session
+
+    class _UnreadableFresh:
+        async def __aenter__(self):
+            raise RuntimeError("fresh DB unavailable")
+
+        async def __aexit__(self, *_args):
+            return False
+
+    app.dependency_overrides[get_session] = failing_session
+    try:
+        async with _client(monkeypatch, tmp_path) as client:
+            monkeypatch.setattr(api, "SessionLocal", lambda: _UnreadableFresh())
+            response = await client.post(
+                "/api/v1/sa-keys",
+                files={"file": ("key.json", body, "application/json")},
+            )
+        assert response.status_code == 503
+        evidence = list((tmp_path / "sa_keys").glob("*.json"))
+        assert len(evidence) == 1
+        assert sa_key_vault.read_bytes(evidence[0]) == body
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        monkeypatch.setattr(api, "SessionLocal", real_session_local)
         await _delete_owned_rows(project)
 
 

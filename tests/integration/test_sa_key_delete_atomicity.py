@@ -228,6 +228,114 @@ async def test_delete_failure_before_commit_restores_exact_quarantine(
 
 
 @pytest.mark.asyncio
+async def test_delete_rollback_error_still_restores_from_fresh_live_row(
+    monkeypatch, tmp_path
+):
+    """Fresh live-row authority restores even when request rollback also raises."""
+    project = f"t4-delete-rollback-error-{uuid4()}"
+    hostname = f"t4-unused-{uuid4()}"
+    body = _good_key(project=project)
+    captured = []
+    real_quarantine = sa_key_vault.quarantine_for_delete
+
+    def capture(path, *, expected_sha256):
+        ticket = real_quarantine(path, expected_sha256=expected_sha256)
+        captured.append(ticket)
+        return ticket
+
+    async def failing_session():
+        async with SessionLocal() as session:
+            async def fail_commit():
+                await session.flush()
+                raise RuntimeError("private commit detail")
+
+            async def fail_rollback():
+                raise RuntimeError("private rollback detail")
+
+            monkeypatch.setattr(session, "commit", fail_commit)
+            monkeypatch.setattr(session, "rollback", fail_rollback)
+            yield session
+
+    try:
+        async with _client(monkeypatch, tmp_path) as client:
+            key_id = (
+                await client.post(
+                    "/api/v1/sa-keys",
+                    files={"file": ("key.json", body, "application/json")},
+                )
+            ).json()["id"]
+            monkeypatch.setattr(sa_key_vault, "quarantine_for_delete", capture)
+            app.dependency_overrides[get_session] = failing_session
+            response = await client.delete(f"/api/v1/sa-keys/{key_id}")
+        assert response.status_code == 503
+        assert response.json() == {"detail": "SA-key delete outcome is unavailable"}
+        assert "private" not in response.text
+        assert len(captured) == 1
+        ticket = captured[0]
+        async with SessionLocal() as session:
+            assert await session.get(SAKey, key_id) is not None
+        assert sa_key_vault.read_bytes(storage.sa_key_path(key_id)) == body
+        assert not (tmp_path / "sa_keys" / ticket.quarantine_name).exists()
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        await _cleanup(project, hostname)
+
+
+@pytest.mark.asyncio
+async def test_delete_ambiguous_commit_and_rollback_errors_discard_from_fresh_absence(
+    monkeypatch, tmp_path
+):
+    """Fresh DB absence discards quarantine even when rollback also reports failure."""
+    project = f"t4-delete-double-error-{uuid4()}"
+    hostname = f"t4-unused-{uuid4()}"
+    body = _good_key(project=project)
+    captured = []
+    real_quarantine = sa_key_vault.quarantine_for_delete
+
+    def capture(path, *, expected_sha256):
+        ticket = real_quarantine(path, expected_sha256=expected_sha256)
+        captured.append(ticket)
+        return ticket
+
+    async def ambiguous_session():
+        async with SessionLocal() as session:
+            real_commit = session.commit
+
+            async def commit_then_raise():
+                await real_commit()
+                raise RuntimeError("private after-commit detail")
+
+            async def fail_rollback():
+                raise RuntimeError("private rollback detail")
+
+            monkeypatch.setattr(session, "commit", commit_then_raise)
+            monkeypatch.setattr(session, "rollback", fail_rollback)
+            yield session
+
+    try:
+        async with _client(monkeypatch, tmp_path) as client:
+            key_id = (
+                await client.post(
+                    "/api/v1/sa-keys",
+                    files={"file": ("key.json", body, "application/json")},
+                )
+            ).json()["id"]
+            monkeypatch.setattr(sa_key_vault, "quarantine_for_delete", capture)
+            app.dependency_overrides[get_session] = ambiguous_session
+            response = await client.delete(f"/api/v1/sa-keys/{key_id}")
+        assert response.status_code == 503
+        assert len(captured) == 1
+        ticket = captured[0]
+        async with SessionLocal() as session:
+            assert await session.get(SAKey, key_id) is None
+        assert not (tmp_path / "sa_keys" / ticket.quarantine_name).exists()
+        assert not storage.sa_key_path(key_id).exists()
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        await _cleanup(project, hostname)
+
+
+@pytest.mark.asyncio
 async def test_exception_after_real_commit_discards_quarantine_from_fresh_state(
     monkeypatch, tmp_path
 ):

@@ -16,8 +16,19 @@ from app.services.sa_key_validate import InvalidServiceAccountKey, parse_and_val
 router = APIRouter(prefix="/sa-keys", tags=["sa-keys"])
 
 
+async def _best_effort_rollback(session: AsyncSession) -> None:
+    """Attempt to release the request transaction without masking recovery."""
+    try:
+        await session.rollback()
+    except Exception:
+        return
+
+
 async def _compensate_new_upload_if_definitively_uncommitted(
-    *, row_id: UUID, sha256: str, created: bool
+    *,
+    row_id: UUID,
+    sha256: str,
+    created: bool,
 ) -> None:
     """Remove bytes only after a fresh DB read proves our new row absent."""
     if not created:
@@ -40,7 +51,10 @@ async def _compensate_new_upload_if_definitively_uncommitted(
 
 
 async def _reconcile_delete_outcome(
-    *, row_id: UUID, sha256: str, ticket: sa_key_vault.DeleteQuarantine
+    *,
+    row_id: UUID,
+    sha256: str,
+    ticket: sa_key_vault.DeleteQuarantine,
 ) -> None:
     """Resolve an ambiguous DELETE/commit outcome from fresh DB authority."""
     try:
@@ -81,15 +95,22 @@ async def upload_sa_key(
     except InvalidServiceAccountKey as exc:
         raise HTTPException(422, f"not a valid service-account key: {exc}")
     sha = hashlib.sha256(body).hexdigest()
-    row, created = await repo.create_or_get_for_upload(
-        session, original_filename=file.filename or "key.json",
-        project_id=project_id, client_email=client_email, sha256=sha, byte_size=len(body),
-    )
+    try:
+        row, created = await repo.create_or_get_for_upload(
+            session, original_filename=file.filename or "key.json",
+            project_id=project_id, client_email=client_email, sha256=sha,
+            byte_size=len(body),
+        )
+    except repo.SAKeyUploadContentionError:
+        await _best_effort_rollback(session)
+        raise HTTPException(
+            503, "SA-key upload is temporarily unavailable"
+        ) from None
     row_id = row.id
     row_sha256 = row.sha256
     created_by_this_tx = bool(created)
     if hashlib.sha256(body).hexdigest() != row_sha256:
-        await session.rollback()
+        await _best_effort_rollback(session)
         raise HTTPException(503, "SA-key upload metadata is inconsistent")
     path = storage.sa_key_path(row_id)
     must_write = created_by_this_tx
@@ -105,12 +126,12 @@ async def upload_sa_key(
         try:
             sa_key_vault.atomic_write(path, body)
         except sa_key_vault.SAKeyVaultError as exc:
-            await session.rollback()
+            await _best_effort_rollback(session)
             raise HTTPException(503, "SA-key vault is unavailable") from exc
     try:
         await session.commit()
     except Exception:
-        await session.rollback()
+        await _best_effort_rollback(session)
         await _compensate_new_upload_if_definitively_uncommitted(
             row_id=row_id,
             sha256=row_sha256,
@@ -150,7 +171,7 @@ async def delete_sa_key(key_id: UUID, session: AsyncSession = Depends(get_sessio
     if outcome == "assigned":
         raise HTTPException(409, "key is still assigned to a worker; unassign first")
     if row is None:
-        await session.rollback()
+        await _best_effort_rollback(session)
         raise HTTPException(503, "SA-key delete state is inconsistent")
     row_id = row.id
     row_sha256 = row.sha256
@@ -159,7 +180,7 @@ async def delete_sa_key(key_id: UUID, session: AsyncSession = Depends(get_sessio
             storage.sa_key_path(row_id), expected_sha256=row_sha256
         )
     except sa_key_vault.SAKeyVaultError as exc:
-        await session.rollback()
+        await _best_effort_rollback(session)
         raise HTTPException(503, "SA-key vault is unavailable") from exc
     try:
         deleted = await repo.delete_locked_key(session, row_id)
@@ -167,10 +188,12 @@ async def delete_sa_key(key_id: UUID, session: AsyncSession = Depends(get_sessio
             raise RuntimeError("locked SA-key delete affected an unexpected row count")
         await session.commit()
     except Exception:
-        await session.rollback()
+        await _best_effort_rollback(session)
         try:
             await _reconcile_delete_outcome(
-                row_id=row_id, sha256=row_sha256, ticket=ticket
+                row_id=row_id,
+                sha256=row_sha256,
+                ticket=ticket,
             )
         except sa_key_vault.SAKeyVaultError:
             pass

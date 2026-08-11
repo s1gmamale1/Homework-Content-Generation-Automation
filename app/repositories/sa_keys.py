@@ -11,6 +11,13 @@ from app.models.base import _utcnow
 from app.models.sa_key import SAKey, SAKeyAssignment
 
 
+class SAKeyUploadContentionError(RuntimeError):
+    """A bounded upload/delete ownership race did not settle."""
+
+
+_UPLOAD_OWNERSHIP_ATTEMPTS = 3
+
+
 async def create_or_get(
     session: AsyncSession,
     *,
@@ -43,25 +50,31 @@ async def create_or_get_for_upload(
     session: AsyncSession, **values
 ) -> tuple[SAKey, bool]:
     """Race-safe upload ownership with the dedup row locked for file repair."""
-    inserted_id = await session.scalar(
-        pg_insert(SAKey)
-        .values(**values)
-        .on_conflict_do_nothing(index_elements=["sha256"])
-        .returning(SAKey.id)
-    )
-    if inserted_id is not None:
-        row = await session.get(SAKey, inserted_id)
-        if row is None:  # defensive: RETURNING identified a row in this transaction
-            raise RuntimeError("inserted SA-key upload row was not readable")
-        return row, True
-    row = await session.scalar(
-        select(SAKey)
-        .where(SAKey.sha256 == values["sha256"])
-        .with_for_update()
-    )
-    if row is None:
-        raise RuntimeError("SA-key upload conflict did not resolve")
-    return row, False
+    for _attempt in range(_UPLOAD_OWNERSHIP_ATTEMPTS):
+        inserted_id = await session.scalar(
+            pg_insert(SAKey)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["sha256"])
+            .returning(SAKey.id)
+        )
+        if inserted_id is not None:
+            row = await session.get(SAKey, inserted_id)
+            if row is None:
+                raise SAKeyUploadContentionError(
+                    "inserted SA-key upload row was not readable"
+                )
+            return row, True
+        row = await session.scalar(
+            select(SAKey)
+            .where(SAKey.sha256 == values["sha256"])
+            .with_for_update()
+        )
+        if row is not None:
+            return row, False
+        # The conflicting row was deleted after ON CONFLICT observed it but
+        # before this READ COMMITTED SELECT took its snapshot. Re-acquire:
+        # the next INSERT either owns a fresh row or locks a newer dedup row.
+    raise SAKeyUploadContentionError("SA-key upload ownership did not settle")
 
 
 async def get(session: AsyncSession, key_id: UUID) -> SAKey | None:
