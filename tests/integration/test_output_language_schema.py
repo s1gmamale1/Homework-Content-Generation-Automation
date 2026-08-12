@@ -53,9 +53,13 @@ async def test_batches_unique_constraint_swapped():
                 )
             ).all()
         ]
-    assert "uq_batches_book_id_transport_output_language" in names, (
+    assert "uq_batches_book_id_transport_output_language_kind" in names, (
         f"new unique constraint missing; found: {names}"
     )
     assert "uq_batches_book_id_transport" not in names, (
         f"old unique constraint still present; found: {names}"
+    )
+    assert "uq_batches_book_id_transport_output_language" not in names, (
+        f"pre-0054 3-column unique constraint still present (should have been "
+        f"widened by migration 0054); found: {names}"
     )

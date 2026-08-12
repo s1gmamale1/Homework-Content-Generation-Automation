@@ -29,6 +29,7 @@ def _section(job, *, page_id=None, archived_job_id=None):
     return SimpleNamespace(
         id=job.toc_entry_id, section_number="1", section_title="L",
         notion_homework_page_id=page_id, notion_archived_job_id=archived_job_id,
+        notion_lesson_page_id=None,
     )
 
 
@@ -64,7 +65,7 @@ async def test_obsolete_token_refused_no_publish_no_pointer(monkeypatch):
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
          patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()) as set_arch, \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
-         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=(None, "hw"))) as push:
         await na.archive_job(job.id, claim_token=obsolete_token)
     push.assert_not_awaited()
     set_ptr.assert_not_awaited()
@@ -87,7 +88,7 @@ async def test_obsolete_token_refused_when_job_no_longer_done(monkeypatch):
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()) as set_ptr, \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
-         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=(None, "hw"))) as push:
         await na.archive_job(job.id, claim_token=token)
     push.assert_not_awaited()
     set_ptr.assert_not_awaited()
@@ -110,7 +111,7 @@ async def test_winning_token_archives_once(monkeypatch):
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
          patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()) as set_arch, \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
-         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=(None, "hw"))) as push:
         await na.archive_job(job.id, claim_token=job.claim_token)
     push.assert_awaited_once()
     set_ptr.assert_awaited_once()
@@ -160,16 +161,22 @@ async def test_token_toctou_pointer_update_rechecked(monkeypatch):
          patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
          patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()) as set_ptr, \
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
+         patch.object(na.toc_repo, "set_notion_lesson_page_id", AsyncMock()) as set_lesson, \
          patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()) as set_arch, \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
-         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=("lesson-xyz", "hw"))) as push:
         await na.archive_job(job.id, claim_token=original_token)
     # The push (Notion I/O) already ran on the winning check in session 1 —
     # it is the pointer write that must be refused once the re-check (in the
-    # pointer-update session) finds the token no longer current.
+    # pointer-update session) finds the token no longer current. The push mock
+    # deliberately returns a non-None lesson_id here so a regression that moved
+    # the lesson-stamp write OUTSIDE the fence (or dropped the fence re-check
+    # for it) would show up as an unwanted await, not hide behind lesson_id
+    # always being None.
     push.assert_awaited_once()
     set_ptr.assert_not_awaited()
     stamp.assert_not_awaited()
+    set_lesson.assert_not_awaited()
     set_arch.assert_not_awaited()
 
 
@@ -189,7 +196,7 @@ async def test_token_less_call_archives_as_today(monkeypatch):
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
          patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()) as set_arch, \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
-         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=(None, "hw"))) as push:
         await na.archive_job(job.id)  # no claim_token — token-less path
     push.assert_awaited_once()
     set_ptr.assert_awaited_once()
@@ -221,7 +228,7 @@ async def test_force_rearchive_token_less_bypasses_idempotency_guard(monkeypatch
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
          patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()) as set_arch, \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
-         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=(None, "hw"))) as push:
         await na.archive_job(job.id, force=True)  # token-less, force
     push.assert_awaited_once()
     set_ptr.assert_awaited_once()

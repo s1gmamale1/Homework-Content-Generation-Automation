@@ -11,12 +11,15 @@ from app.models.base import Base, Timestamps, UUIDPK
 
 class Batch(Base, UUIDPK, Timestamps):
     """One row per textbook generation batch. UNIQUE(book_id, transport,
-    output_language) -> one batch per (book, transport, output_language); a
-    different-transport or different-output-language re-launch forks a new
-    batch, same triple reuses it. That makes find-or-create race-safe
-    (ON CONFLICT) and adoption unambiguous. No status counters: the rollup is
-    computed on read (DISTINCT ON over the batch's jobs). provider/model are the
-    launch-default label only - per-job provider/model are authoritative."""
+    output_language, kind) -> one batch per (book, transport, output_language,
+    kind); a different-transport, different-output-language, or different-kind
+    re-launch forks a new batch, same tuple reuses it. That makes find-or-create
+    race-safe (ON CONFLICT) and adoption unambiguous. No status counters: the
+    rollup is computed on read (DISTINCT ON over the batch's jobs). provider/model
+    are the launch-default label only - per-job provider/model are authoritative.
+    `kind` ("homework" default vs "teacher_material") scopes which deliverable type
+    the batch belongs to - every read path that resolves the latest job/batch for a
+    section or book is kind-scoped so the two deliverable types stay isolated."""
 
     __tablename__ = "batches"
 
@@ -54,10 +57,15 @@ class Batch(Base, UUIDPK, Timestamps):
     session_limit_strategy: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default="inherit"
     )
+    # Deliverable discriminator: "homework" (default, student packet, the
+    # 11-phase flow) vs "teacher_material" (single structured teacher-deck
+    # phase). Part of the batch's widened unique key below; scopes every
+    # section/book/batch read path so the two deliverable types stay isolated.
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, server_default="homework")
 
     __table_args__ = (
-        UniqueConstraint("book_id", "transport", "output_language",
-                         name="uq_batches_book_id_transport_output_language"),
+        UniqueConstraint("book_id", "transport", "output_language", "kind",
+                         name="uq_batches_book_id_transport_output_language_kind"),
         CheckConstraint(
             "transport IN ('cli','api')",
             name="ck_batches_transport",

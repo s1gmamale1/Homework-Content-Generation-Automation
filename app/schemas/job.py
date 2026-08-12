@@ -31,6 +31,7 @@ class JobOut(BaseModel):
     book_id: UUID
     toc_entry_id: UUID
     subject: str
+    kind: str = "homework"   # "homework" | "teacher_material" — routes the FE result link
     status: str
     current_phase: Optional[str] = None
     error_message: Optional[str] = None

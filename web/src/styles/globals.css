@@ -229,3 +229,66 @@
     animation: none !important;
   }
 }
+
+/* --- Teacher-deck PDF export (window.print() on /deck/:id, routes/deck.tsx) ---
+   The interactive pager (`web/src/routes/deck.tsx`) only mounts the ACTIVE
+   slide via AnimatePresence — printing that as-is would produce a one-page
+   PDF. `routes/deck.tsx` also renders a `.deck-print-view` container that
+   maps over EVERY assembled slide (each wrapped `.deck-slide`); it stays
+   `display: none` on screen and is flipped on only under `@media print`,
+   while the interactive chrome (marked `.print-hide`) is hidden instead. */
+.deck-print-view {
+  display: none;
+}
+
+@media print {
+  @page {
+    margin: 0.4in;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    overflow: visible !important;
+  }
+
+  /* Site chrome (nav header + footer from components/layout.tsx) is only
+     hidden on pages that actually render a print view — scoped via :has()
+     so printing any other route is untouched. */
+  body:has(.deck-print-view) header,
+  body:has(.deck-print-view) footer {
+    display: none !important;
+  }
+
+  /* The reading-width/padding wrapper (components/layout.tsx's <main>)
+     shouldn't constrain slide width on the printed page. */
+  body:has(.deck-print-view) main {
+    max-width: none !important;
+    padding: 0 !important;
+  }
+
+  /* Deck-page-only chrome: SpaceBackdrop, the interactive pager (chip nav +
+     active slide + prev/next footer), the page heading, the Back pill, and
+     the Download-PDF button — all marked `.print-hide` in routes/deck.tsx. */
+  .print-hide {
+    display: none !important;
+  }
+
+  .deck-print-view {
+    display: block !important;
+  }
+
+  /* Each assembled slide gets its own page and keeps the designed colors
+     (dark cover/quiz slides, light reference slides) instead of washing
+     out to print defaults. */
+  .deck-slide {
+    break-after: page;
+    break-inside: avoid;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .deck-slide:last-child {
+    break-after: auto;
+  }
+}

@@ -7,6 +7,7 @@ from app.api.v1.batch import _rollup_payload
 def _fake_batch():
     return SimpleNamespace(
         id=uuid4(), book_id=uuid4(), subject="math", grade="8",
+        kind="homework",
         output_language="uz", provider="gemini", model="gemini-2.5-pro",
         transport="api", extract_transport="inherit", judge_transport="inherit",
         solver_transport="inherit",

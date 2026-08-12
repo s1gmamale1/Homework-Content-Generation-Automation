@@ -67,11 +67,11 @@ def _apply_common_monkeypatches(monkeypatch, batch_mod):
         return _fake_launch_defaults()
 
     async def _fake_find_active_for_section(session, book_id, toc_entry_id, *, transport=None,
-                                             output_language):
+                                             output_language, kind="homework"):
         return None
 
     async def _fake_latest_for_section(session, book_id, toc_entry_id, *, transport=None,
-                                        output_language):
+                                        output_language, kind="homework"):
         return None
 
     monkeypatch.setattr(batch_mod.books_repo, "get", _fake_get_book)

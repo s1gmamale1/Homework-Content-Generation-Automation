@@ -6,6 +6,7 @@ import { Layout } from "@/components/layout";
 import { ProtectedRoute } from "@/components/protected-route";
 import { BookPage } from "@/routes/book";
 import { DashboardPage } from "@/routes/dashboard";
+import { DeckPage } from "@/routes/deck";
 import { FleetPage } from "@/routes/fleet";
 import { MonitorPage } from "@/routes/monitor";
 import { JobPage } from "@/routes/job";
@@ -64,6 +65,7 @@ export default function App() {
                 <Route path="/book/:bookId/section/:sectionId" element={<SectionPage />} />
                 <Route path="/job/:id" element={<JobPage />} />
                 <Route path="/preview/:id" element={<PreviewPage />} />
+                <Route path="/deck/:id" element={<DeckPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </>
             )}

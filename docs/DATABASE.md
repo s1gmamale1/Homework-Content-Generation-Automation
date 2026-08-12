@@ -142,6 +142,8 @@ perspective; a pushed Notion archive (if any) is the only surviving copy of the 
 | `order_index` | Integer NOT NULL | display + drill-in sort key; `ix_toc_entries_book_id_order (book_id, order_index)` |
 | `notion_homework_page_id` | String(128) NULL | set when the homework was archived to Notion |
 | `notion_archived_job_id` | UUID NULL (no FK) | migration 0045 — which `homework_jobs.id` produced the content currently on the Notion page; written only when `archive_job` actually writes (first archive or replace); drives auto-replace-own-older-output + the batch `stale` rollup; NULL = never archived by us or a pre-0129 husk |
+| `notion_lesson_page_id` | String(128) NULL | migration 0059 (worklog 0176) — the shared "Lesson Topic" Notion page id, parent of BOTH the Homework and Teacher Deck sub-pages; lets either deliverable adopt the page the other created (order-independent archival) |
+| `notion_teacher_deck_job_id` | UUID NULL (no FK) | migration 0059 (worklog 0176) — which `homework_jobs.id`'s deck is currently on the Teacher Deck Notion page; teacher-side mirror of `notion_archived_job_id`; drives the kind-aware `stale` rollup for teacher batches |
 
 ### 3.3 `homework_jobs` — one row per generation request (also the queue)
 
@@ -161,6 +163,7 @@ perspective; a pushed Notion archive (if any) is the only surviving copy of the 
 | `output_language` | String(16) NOT NULL, server_default `'uz'` | migration 0038: medium of instruction for generated content — `uz` (Uzbek), `en` (English), `ru` (Russian); **DB CHECK `uz\|en\|ru`**; resolved at launch from the per-launch override or the `launch_defaults.output_language` global default; threaded by `pipeline.run` to `get_prompt` (generator) and `phase_judge.judge` (judge) so both always use the same-language contract; extract is language-neutral (untouched). L2 language-class subjects (English/Russian class `subjects.language ∈ {english,russian}`) always use their Uzbek-bridged L2 rule regardless of this column. Default `'uz'` is byte-identical to pre-0038 behavior. |
 | `custom_prompts` | JSONB NULL | migration 0033 (PR37): `{phase: markdown}` per-phase prompt overrides replacing the built-in contract; NULL = built-in for all phases. Also seen by the judge as `contract_override`. |
 | `selected_phases` | JSONB NULL | migration 0033 (PR37): subset of content phases to run (dependency-closure-expanded at launch); NULL = full subject flow |
+| `kind` | String(32) NOT NULL, server_default `'homework'` | migration 0054 (worklog 0175): deliverable discriminator, `'homework'` (student packet, the 11-phase flow) vs `'teacher_material'` (single `teacher-deck` phase, structured `content_json` output). Every section/book/batch read path that resolves "the latest job for a lesson" or "the book's batch" is `kind`-scoped (`find_active_for_section`/`latest_for_section`/`latest_by_section`, `subject_coverage.job_status_by_book`/`batch_by_book`, Notion auto-archive skip) so a teacher-material launch can't be adopted into, or reported against, a homework batch. Default backfills every pre-existing row, so homework behavior is byte-identical. |
 | `current_phase` | String(64) NULL | live progress marker |
 | `error_message` | Text NULL | |
 | `started_at` / `completed_at` | NULL | `completed_at` is host-clock (record-only, see §2) |
@@ -192,7 +195,7 @@ UUIDPK only — **no** `created_at`/`updated_at`; it has `started_at`/`completed
 | `model_name` | String(128) NOT NULL | |
 | `provider` | String(32) NULL | who actually produced it (failover may differ from the job's provider; migration 0019) |
 | `output_md` | Text NULL | rendered markdown deliverable; for structured phases this is deterministically derived from `content_json`, while legacy/fallback modes remain markdown-authored |
-| `content_json` | JSONB NULL | migration 0050: canonical structured artifact for supported phases; NULL for legacy/fallback phases |
+| `content_json` | JSONB NULL | migration 0050: canonical structured artifact for supported phases; NULL for legacy/fallback phases. As of worklog 0175 this is also where the `kind="teacher_material"` job's single `teacher-deck` phase stores its validated `TeacherDeck` (`authoring_mode="structured"`) — that phase's `output_md` stays empty, so resume counts it as done via a `content_json`-bearing row rather than `output_md`. |
 | `authoring_mode` | String(32) NULL | migration 0050: `structured` / `markdown_fallback` / `markdown_builtin` / `markdown_custom` / `markdown_legacy`, CHECK-constrained |
 | `content_schema_version` / `renderer_version` | String(64) / String(16), NULL | migration 0050 provenance for structured artifacts and deterministic markdown rendering |
 | `tokens_input` / `tokens_output` | Integer NULL | |
@@ -252,7 +255,8 @@ consumption counts**, not provider quotas.
 | Column | Type | Notes |
 |---|---|---|
 | `id`, `created_at`, `updated_at` | mixins | |
-| `book_id` | FK → books NOT NULL, part of **UNIQUE (`uq_batches_book_id_transport_output_language`)** | one batch per `(book, transport, output_language)` since migration 0038 — a different-transport OR different-language re-launch forks a new batch; same transport+language reuses. The old `uq_batches_book_id_transport` constraint was dropped and replaced. |
+| `book_id` | FK → books NOT NULL, part of **UNIQUE (`uq_batches_book_id_transport_output_language_kind`)** | one batch per `(book, transport, output_language, kind)` since migration 0054 (worklog 0175), widened from the migration-0038 `(book, transport, output_language)` key — a different-transport, different-language, OR different-kind re-launch forks a new batch; same tuple reuses. The old `uq_batches_book_id_transport_output_language` constraint was dropped and replaced. **Downgrade caveat:** migration 0054's `downgrade()` recreates the narrower 3-col key and will raise if a book has both a `homework` and a `teacher_material` batch on the same `(transport, output_language)` — the upgrade path itself is data-safe. |
+| `kind` | String(32) NOT NULL, server_default `'homework'` | migration 0054 (worklog 0175): mirrors `homework_jobs.kind`, part of the widened batch UNIQUE key above. |
 | `transport` | String(16) NOT NULL, server_default `'cli'` | launch-time transport (also on every member job); **DB CHECK `cli\|api`** (migration 0028) |
 | `output_language` | String(16) NOT NULL, server_default `'uz'` | migration 0038: medium of instruction — `uz` / `en` / `ru`; **DB CHECK `uz\|en\|ru`**; part of the batch UNIQUE key (`uq_batches_book_id_transport_output_language`) so an EN re-launch never adopts a UZ batch. `batches_repo.get_or_create_for_book`, `find_active_for_section`, and `latest_for_section` are all language-scoped. |
 | `extract_transport` / `judge_transport` | String(16) NOT NULL, server_default `'inherit'` | Phase 4.1 launch-default labels stamped onto created jobs — **jobs carry the truth**; on re-launch these labels can go stale; **DB CHECK `cli\|api\|inherit`** (migration 0028) |
@@ -601,7 +605,9 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 | 50 | 0050_phase_output_structured | `0050_phase_output_structured` | adds nullable `phase_outputs.content_json` JSONB, `authoring_mode`, `content_schema_version`, and `renderer_version`, plus the authoring-mode CHECK constraint (content-JSON producer lane) |
 | 51 | 0051_launch_defaults_3x | `0051_launch_defaults_3x` | unconditional `UPDATE launch_defaults SET ... WHERE id=1` flipping the singleton to the 3.x-flash target tuple: content=`gemini`/`gemini-3.6-flash`, extract=`gemini`/`gemini-3.5-flash-lite`, judge=`gemini`/`gemini-3.5-flash`, solver=`gemini`/`gemini-3.1-pro-preview`, all 5 transport columns `'api'`. Converges both a fresh-seeded DB and the pre-existing prod row onto the same tuple; downgrade restores the exact pre-migration prod tuple (worklog 0161). |
 | 52 | 0052_job_lease_fencing | `0052_job_lease_fencing` | per-claim `claim_token` on jobs/phases plus append-only `job_lease_events`; obsolete owners cannot mutate reclaimed work (worklog 0163). |
-| 53 | 0053_solver_mismatch_blocked | `0053_solver_mismatch_blocked` | widens `ck_phase_outputs_solver_status` with `mismatch_blocked`; downgrade relabels blocked rows to legacy `mismatch_shipped` before restoring the old CHECK — **HEAD** |
+| 53 | 0053_solver_mismatch_blocked | `0053_solver_mismatch_blocked` | widens `ck_phase_outputs_solver_status` with `mismatch_blocked`; downgrade relabels blocked rows to legacy `mismatch_shipped` before restoring the old CHECK |
+| 54 | 0054_teacher_material_kind | `0054_teacher_material_kind` | adds `kind` String(32) NOT NULL server_default `'homework'` to `homework_jobs` + `batches` (`'homework'`\|`'teacher_material'`); widens the batches unique key from `uq_batches_book_id_transport_output_language` to `uq_batches_book_id_transport_output_language_kind`. Downgrade recreates the narrower key and raises if a book has both kinds on the same `(transport, output_language)` (worklog 0175) |
+| 59 | 0059_toc_teacher_deck_notion | `0059_toc_teacher_deck_notion` | adds `toc_entries.notion_lesson_page_id` + `notion_teacher_deck_job_id` (both NULL) — teacher-deck Notion archival as a Lesson-Topic sibling (worklog 0176) — **HEAD** |
 
 ---
 

@@ -31,6 +31,13 @@ class TOCEntry(Base, UUIDPK, Timestamps):
     # to auto-replace our own older output after a regen and to compute the
     # batch "stale" rollup. NULL = never archived by us, or a pre-stamp husk.
     notion_archived_job_id: Mapped[Optional[UUID]] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    # Shared "Lesson Topic" page id — parent of both the Homework sub-page
+    # (notion_homework_page_id) and the Teacher Deck sub-page. Distinct from
+    # notion_homework_page_id, which is the Homework sub-page itself.
+    notion_lesson_page_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # The homework_jobs.id whose deck currently sits on the Teacher Deck page.
+    # Teacher-side mirror of notion_archived_job_id.
+    notion_teacher_deck_job_id: Mapped[Optional[UUID]] = mapped_column(PgUUID(as_uuid=True), nullable=True)
 
     book: Mapped["Book"] = relationship(back_populates="toc_entries")
 

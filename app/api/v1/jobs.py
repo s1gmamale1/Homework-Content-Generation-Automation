@@ -39,7 +39,7 @@ from app.services.agent_models import (
     validate_role_provider,
     validate_transport,
 )
-from app.services.flows import order_phase_selection, flow_for, selection_missing_prompts
+from app.services.flows import order_phase_selection, flow_for, teacher_material_flow_for, selection_missing_prompts
 from app.services import job_reactivation
 from app.services.providers import PROVIDERS
 from app.services.worker import RUNNING_JOBS
@@ -651,6 +651,29 @@ async def download(
     )
 
 
+@router.get("/jobs/{job_id}/deck")
+async def get_deck(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return the teacher-deck phase's `content_json` for a `kind='teacher_material'` job.
+
+    404 when the job doesn't exist, isn't `teacher_material`, or the
+    `teacher-deck` phase hasn't produced `content_json` yet (not generated,
+    still running, or failed before producing structured output). Header-auth
+    via the router-level `get_current_user` dependency (app/api/v1/__init__.py),
+    same as every other route in this module.
+    """
+    job = await jobs_repo.get_with_phases(session, job_id)
+    if job is None or job.kind != "teacher_material":
+        raise HTTPException(404, "job not found")
+    deck_phase = next(
+        (p for p in job.phase_outputs if p.phase_name == "teacher-deck"), None)
+    if deck_phase is None or deck_phase.content_json is None:
+        raise HTTPException(404, "deck not generated yet")
+    return {"job_id": str(job_id), "content_json": deck_phase.content_json}
+
+
 async def _job_out(session: AsyncSession, job_id: UUID) -> JobOut:
     job = await jobs_repo.get_with_phases(session, job_id)
     if job is None:
@@ -662,7 +685,10 @@ async def _job_out(session: AsyncSession, job_id: UUID) -> JobOut:
     # already begun. Subset jobs stored their closure; full-packet jobs run the
     # subject's whole flow. Either way `extract` is the head, excluded here.
     try:
-        out.planned_phases = list(job.selected_phases) if job.selected_phases else list(flow_for(job.subject))
+        if getattr(job, "kind", "homework") == "teacher_material":
+            out.planned_phases = list(job.selected_phases) if job.selected_phases else list(teacher_material_flow_for(job.subject))
+        else:
+            out.planned_phases = list(job.selected_phases) if job.selected_phases else list(flow_for(job.subject))
     except KeyError:
         out.planned_phases = list(job.selected_phases or [])
     return out

@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from app.config import settings
 from app.db import SessionLocal
-from app.schemas.content_json import SCHEMAS
+from app.schemas.content_json import SCHEMAS, TeacherDeck
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
@@ -33,6 +33,7 @@ from app.services.errors import (
 from app.services.lease import CancelRequested, JobLease, LeaseLost
 from app.services.flows import (
     flow_for,
+    teacher_material_flow_for,
     file_needed_phases,
     filter_prior_outputs,
     max_output_tokens_for,
@@ -44,7 +45,13 @@ from app.services.phase_artifact import (
     artifact_from_config,
     artifact_from_markdown,
 )
-from app.services.prompts import get_prompt, get_prompt_hash, get_structured_prompt
+from app.services.prompts import (
+    get_prompt,
+    get_prompt_hash,
+    get_structured_prompt,
+    get_teacher_deck_fidelity_contract,
+)
+from app.services.teacher_deck import serialize_deck_for_fidelity
 
 _INTERNAL_PHASES = {"extract", "classify"}
 
@@ -174,11 +181,18 @@ async def _persist_solver_blocked_phase(
 
 
 def _done_phase_md(rows) -> dict[str, str]:
-    """Phase rows that are `done` with non-empty markdown — the resumable set."""
+    """Phase rows that are `done` and have a real deliverable — the resumable
+    set. Most phases carry that deliverable in `output_md`; content-only
+    phases (teacher-deck) carry it in `content_json` instead and persist
+    `output_md=""` — an empty string there must still count as done, or a
+    resume/reclaim would find nothing in `prior_outputs`, mark the phase
+    pending again, and `create_or_reset` would overwrite the existing
+    `content_json` with a fresh (billed, stochastic) regeneration."""
     return {
         r.phase_name: r.output_md
         for r in rows
-        if r.status == "done" and (r.output_md or "").strip()
+        if r.status == "done"
+        and ((r.output_md or "").strip() or getattr(r, "content_json", None) is not None)
     }
 
 
@@ -204,6 +218,18 @@ def _resolve_extract(job_extract_provider, job_extract_model, ld):
         job_extract_provider or ld.extract_provider,
         job_extract_model or ld.extract_model,
     )
+
+
+def _plan_full_flow(kind: str, subject: str) -> list[str]:
+    """Pure helper: pick the full content-phase flow for a job's `kind`.
+    Factored out of `run()`'s sequence-planning block so it's unit-testable
+    without a DB/pipeline run. `kind` must be a local captured ONCE from the
+    ORM `job` object earlier in `run()` (mirrors `provider`/`model`) — reading
+    `job.kind` this late risks `DetachedInstanceError` if the session has
+    since closed."""
+    if kind == "teacher_material":
+        return teacher_material_flow_for(subject)
+    return flow_for(subject)
 
 
 def _pending_phases(content_phases: list[str], prior_outputs: dict[str, str]) -> set[str]:
@@ -252,6 +278,11 @@ async def run(job_id: UUID, lease: Optional[JobLease] = None) -> None:
             # own default in that case.
             provider = job.provider
             model = job.model
+            # kind selects the phase flow (homework vs teacher_material) —
+            # captured ONCE here, alongside provider/model, so the later
+            # sequence-planning block never touches the possibly-detached
+            # ORM `job` object.
+            job_kind = getattr(job, "kind", "homework") or "homework"
             # Per-job auth transport: 'cli' (default) drives the CLI as today;
             # 'api' threads provider API keys via _auth_env and restricts
             # failover to the requested provider. Pinned at job creation.
@@ -339,7 +370,7 @@ async def run(job_id: UUID, lease: Optional[JobLease] = None) -> None:
         # ─── plan phase sequence (single flow — no classify/easy-hard) ──
         # Subset: job.selected_phases is the dependency-closure the endpoint stored.
         # Defensive re-order/filter against the live flow; None ⇒ full flow.
-        full_flow = flow_for(subject)
+        full_flow = _plan_full_flow(job_kind, subject)
         if selected_phases:
             chosen = set(selected_phases)
             content_planned = [p for p in full_flow if p in chosen]
@@ -702,36 +733,61 @@ async def _execute_one_phase(
     phase_prior = filter_prior_outputs(phase_name, prior_outputs)
 
     try:
-        output_md, tin, tout, _ph, parsed_struct = await _execute_phase(
-            job_id=job_id,
-            phase_name=phase_name,
-            phase_order=phase_order,
-            subject=subject,
-            provider=provider,
-            model=model,
-            pdf_path=pdf_path,
-            attach_file=phase_needs_file,
-            section=section_data,
-            lesson_context=lesson_context,
-            prior_outputs=phase_prior,
-            difficulty=difficulty,
-            source_map_digest=source_map_digest,
-            transport=transport,
-            extract_transport=extract_transport,
-            judge_transport=judge_transport,
-            solver_transport=solver_transport,
-            custom_prompts=custom_prompts,
-            judge_provider_ov=judge_provider_ov,
-            judge_model_ov=judge_model_ov,
-            solver_provider_ov=solver_provider_ov,
-            solver_model_ov=solver_model_ov,
-            solver_boss_arena_enabled=solver_boss_arena_enabled,
-            extract_provider=extract_provider,
-            extract_model=extract_model,
-            session_limit_strategy=session_limit_strategy,
-            output_language=output_language,
-            lease=lease,
-        )
+        if phase_name == "teacher-deck":
+            # Teacher-material deliverable: a single schema-validated call,
+            # fidelity-judged with regen-once, persisted as content_json —
+            # not routed through _execute_phase's content-phase branch (no
+            # solver/lint — see _execute_teacher_deck_phase's docstring). Uses
+            # ONLY the locals _execute_one_phase already received (provider/
+            # model/transport/judge_transport/judge_provider_ov/judge_model_ov/
+            # output_language), which `run()` captured once from the ORM `job`
+            # up front — no late re-read.
+            output_md, tin, tout, _ph, parsed_struct = await _execute_teacher_deck_phase(
+                job_id=job_id,
+                phase_order=phase_order,
+                subject=subject,
+                provider=provider,
+                model=model,
+                lesson_context=lesson_context,
+                transport=transport,
+                judge_transport=judge_transport,
+                judge_provider_ov=judge_provider_ov,
+                judge_model_ov=judge_model_ov,
+                session_limit_strategy=session_limit_strategy,
+                output_language=output_language,
+                lease=lease,
+            )
+        else:
+            output_md, tin, tout, _ph, parsed_struct = await _execute_phase(
+                job_id=job_id,
+                phase_name=phase_name,
+                phase_order=phase_order,
+                subject=subject,
+                provider=provider,
+                model=model,
+                pdf_path=pdf_path,
+                attach_file=phase_needs_file,
+                section=section_data,
+                lesson_context=lesson_context,
+                prior_outputs=phase_prior,
+                difficulty=difficulty,
+                source_map_digest=source_map_digest,
+                transport=transport,
+                extract_transport=extract_transport,
+                judge_transport=judge_transport,
+                solver_transport=solver_transport,
+                custom_prompts=custom_prompts,
+                judge_provider_ov=judge_provider_ov,
+                judge_model_ov=judge_model_ov,
+                solver_provider_ov=solver_provider_ov,
+                solver_model_ov=solver_model_ov,
+                solver_boss_arena_enabled=solver_boss_arena_enabled,
+                extract_provider=extract_provider,
+                extract_model=extract_model,
+                session_limit_strategy=session_limit_strategy,
+                output_language=output_language,
+                lease=lease,
+            )
     except (LeaseLostSignal, CancelWonSignal):
         raise  # control signal — never a content failure / job-failed write
     except SessionLimitPause:
@@ -1224,6 +1280,346 @@ async def _run_structured_attempt(
     # artifact_from_config may itself raise StructuredPhaseError (renderer
     # refused / produced nothing) — that is a fallback trigger, by design.
     return artifact_from_config(phase_name, parsed), tin, tout, produced_by
+
+
+async def _run_teacher_deck_attempt(
+    *,
+    structured_prompt: str,
+    requested_provider: str,
+    model: Optional[str],
+    transport: str = "cli",
+    session_limit_strategy: str = "pause",
+    lesson_context: Optional[str] = None,
+    job_id: Optional[UUID] = None,
+    po_id: Optional[UUID] = None,
+) -> tuple[Any, Optional[int], Optional[int], str]:
+    """The teacher-deck sibling of ``_run_structured_attempt``: same resilience
+    (``_run_with_failover`` — per-attempt timeout, ``SlotSaturation`` parking,
+    session-limit pause, same-provider retry) around one schema-validated
+    ``agent.run_phase`` call, but deliberately does NOT call
+    ``artifact_from_config`` at the end — there is no teacher-deck markdown
+    renderer, so that call would raise ``StructuredPhaseError``. Returns the
+    parsed ``TeacherDeck`` model directly.
+
+    Reuses the same ``_SCHEMA_EXHAUSTED`` sentinel technique as
+    ``_run_structured_attempt`` so a model that genuinely cannot produce this
+    config isn't burned through the classify/retry/failover budget a second
+    time — but where the content lane converts that into a (fallback-able)
+    ``StructuredPhaseError``, this re-raises ``agent.SchemaValidationExhausted``
+    UNCONVERTED: there is no markdown fallback for teacher-deck, so schema
+    exhaustion must fail the phase loudly instead of being caught anywhere.
+    """
+    schema = SCHEMAS["teacher-deck"]
+
+    async def _structured_run(prov: str, mdl: Optional[str]):
+        try:
+            result = await agent.run_phase(
+                provider=prov,
+                model=mdl,
+                phase_prompt=structured_prompt,
+                phase_name="teacher-deck",
+                homework_job_id=job_id,
+                phase_output_id=po_id,
+                lesson_context=lesson_context,
+                schema=schema,
+                max_output_tokens=max_output_tokens_for("teacher-deck"),
+                transport=transport,
+            )
+        except (agent.SchemaValidationExhausted, ValidationError):
+            return _SCHEMA_EXHAUSTED, None, None
+        if result.parsed is None:
+            return _SCHEMA_EXHAUSTED, None, None
+        tin_ = int(result.usage.get("prompt_tokens") or 0) or None
+        tout_ = int(result.usage.get("output_tokens") or 0) or None
+        return result.parsed, tin_, tout_
+
+    parsed, tin, tout, produced_by = await _run_with_failover(
+        requested_provider=requested_provider,
+        model=model,
+        run_fn=_structured_run,
+        transport=transport,
+        session_limit_strategy=session_limit_strategy,
+    )
+    if parsed is _SCHEMA_EXHAUSTED:
+        raise agent.SchemaValidationExhausted(
+            f"{schema.__name__}: model could not produce a valid teacher-deck config"
+        )
+    return parsed, tin, tout, produced_by
+
+
+async def _execute_teacher_deck_phase(
+    *,
+    job_id: UUID,
+    phase_order: int,
+    subject: str,
+    provider: str,
+    model: Optional[str],
+    lesson_context: Optional[str],
+    transport: str = "cli",
+    judge_transport: str = "cli",
+    judge_provider_ov: Optional[str] = None,
+    judge_model_ov: Optional[str] = None,
+    session_limit_strategy: str = "pause",
+    output_language: str = "uz",
+    lease: Optional[JobLease] = None,
+) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
+    """Generate the whole teacher-deck lesson-plan in ONE schema-validated call,
+    run the factual-fidelity gate against it, and persist the FINAL deck
+    (original or regenerated) as ``content_json`` — the teacher-material
+    sibling of ``_execute_phase``'s content-phase branch, called from
+    ``_execute_one_phase`` instead of it (not routed through it):
+
+    - ALWAYS structured. Bypasses ``settings.structured_output_enabled`` (the
+      content lane's kill switch) and its markdown fallback entirely — there is
+      no teacher-deck markdown renderer, and ``_generate_artifact``'s fallback
+      path would call ``artifact_from_config`` and raise
+      ``StructuredPhaseError``.
+    - Fidelity gate (Task 7): after generation, the deck's fact-bearing content
+      is serialized (`serialize_deck_for_fidelity`) and judged against
+      ``lesson_context`` via ``phase_judge.judge(..., contract_override=
+      get_teacher_deck_fidelity_contract())`` — the SAME shape as the content
+      lane's judge + regen-once loop (``pipeline.py`` ~2074-2187), mirrored
+      here instead of shared because this lane regenerates the WHOLE
+      structured deck (``_run_teacher_deck_attempt``), not a markdown
+      artifact. No solver / no content_lint here — those are content-phase
+      concerns that don't apply to a structured teacher deck.
+    - ``get_prompt_hash`` is NOT used: it hashes ``get_prompt`` (the markdown
+      glob under ``prompts/_general/*.md``), which has no ``teacher-deck.md``
+      and raises ``KeyError``. The structured prompt lives under
+      ``structured/`` instead, so its own content is hashed directly.
+    - On ``SchemaValidationExhausted`` (via ``_run_teacher_deck_attempt``), the
+      phase row is marked ``failed`` and the exception re-raised — mirroring
+      ``_execute_phase``'s generic-exception branch exactly, so
+      ``_execute_one_phase``'s existing error handling marks the JOB failed too
+      (no markdown to degrade to).
+    """
+    _token = _token_of(lease)
+    structured_prompt = get_structured_prompt(
+        subject, "teacher-deck", output_language=output_language
+    )
+    if not structured_prompt:
+        raise StructuredPhaseError("no structured prompt for phase 'teacher-deck'")
+    prompt_hash = "structured:sha256:" + hashlib.sha256(
+        structured_prompt.encode("utf-8")
+    ).hexdigest()
+    phase_model_label = model or "<provider-default>"
+
+    async with SessionLocal() as session:
+        po = await phase_repo.create_or_reset(
+            session,
+            job_id=job_id,
+            phase_name="teacher-deck",
+            phase_order=phase_order,
+            prompt_hash=prompt_hash,
+            model_name=phase_model_label,
+            lease=lease,
+        )
+        if po is LeaseLost:
+            raise LeaseLostSignal()
+        po_id = po.id
+        _pr = await phase_repo.set_status(
+            session, po_id, "running", started_at=_utcnow(), claim_token=_token,
+        )
+        _jr = await jobs_repo.set_status(
+            session, job_id, "running", current_phase="teacher-deck", claim_token=_token,
+        )
+        await session.commit()
+        _raise_on_lease_signal(_pr)
+        _raise_on_lease_signal(_jr)
+
+    try:
+        deck, tin, tout, produced_by = await _run_teacher_deck_attempt(
+            structured_prompt=structured_prompt,
+            requested_provider=provider,
+            model=model,
+            transport=transport,
+            session_limit_strategy=session_limit_strategy,
+            lesson_context=lesson_context,
+            job_id=job_id,
+            po_id=po_id,
+        )
+    except (LeaseLostSignal, CancelWonSignal):
+        raise  # control signal — never a phase-failed write (job is not ours)
+    except SessionLimitPause:
+        raise  # propagate to worker — phase must NOT be marked failed on a pause
+    except Exception as exc:
+        # Mirrors _execute_phase's generic-exception branch exactly, including
+        # SlotSaturation (raised by _run_with_failover) — it is NOT special-cased
+        # here either, same as the content lane: the phase row is marked failed,
+        # then the signal re-raises past this point for _execute_one_phase to
+        # re-classify and avoid marking the JOB failed on a park/pause.
+        async with SessionLocal() as session:
+            _fr = await phase_repo.set_status(
+                session, po_id, "failed",
+                completed_at=_utcnow(),
+                error_message=_error_text(exc),
+                claim_token=_token,
+            )
+            await session.commit()
+        _raise_on_lease_signal(_fr)
+        raise
+
+    # Factual-fidelity gate (Task 7): judge the deck's fact-bearing content
+    # against the lesson extract, regenerate the WHOLE deck once on a MAJOR
+    # contradiction, keep-original-on-regen-failure (fail-open — validation
+    # must never fail the job), and let an api-auth error from the judge
+    # propagate uncaught (phase_judge.judge already re-raises it for
+    # transport="api" — this mirrors the content lane's initial judge call,
+    # which is likewise OUTSIDE any try/except so an auth error fails the
+    # JOB, not just the phase).
+    def _gen_model_of(prod: str) -> Optional[str]:
+        # Same approximation as the content lane: after failover the fallback
+        # ran on model=None (provider default); tier selection then uses the
+        # provider's default model, which errs toward a stronger judge.
+        return model if prod == provider else None
+
+    judge_status: Optional[str] = None
+    serialized = serialize_deck_for_fidelity(deck)
+    _jp, _jm = model_tiers.resolve_judge(
+        produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
+    )
+    outcome = await _judge_with_timeout(
+        subject=subject, phase_name="teacher-deck", output_md=serialized,
+        lesson_context=lesson_context, prior_outputs={},
+        gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+        judge_provider=_jp, judge_model=_jm,
+        homework_job_id=job_id, phase_output_id=po_id,
+        transport=judge_transport,
+        contract_override=get_teacher_deck_fidelity_contract(),
+        output_language=output_language,
+    )
+    # Retry-once on unavailable: mirrors the content lane (pipeline.py
+    # ~2228-2246) — a transient CLI/parse failure (or timeout degraded by
+    # _judge_with_timeout) is worth one free retry. Auth errors never reach
+    # here — phase_judge re-raises them before degrading to unavailable — so
+    # retrying unavailable is always safe. A content-policy refusal
+    # (outcome.refused) is recorded distinctly and is NOT retried — it won't
+    # self-heal. Unlike the content lane's retry, contract_override is passed
+    # again here: teacher-deck has no `_general/teacher-deck.md` for
+    # get_prompt to fall back to, so omitting it would make the retry always
+    # degrade instead of actually re-judging.
+    if not outcome.available and not outcome.refused:
+        logger.info(
+            f"[job {job_id}] teacher-deck judge unavailable on first attempt — retrying once"
+        )
+        outcome = await _judge_with_timeout(
+            subject=subject, phase_name="teacher-deck", output_md=serialized,
+            lesson_context=lesson_context, prior_outputs={},
+            gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+            judge_provider=_jp, judge_model=_jm,
+            homework_job_id=job_id, phase_output_id=po_id,
+            transport=judge_transport,
+            contract_override=get_teacher_deck_fidelity_contract(),
+            output_language=output_language,
+        )
+    # Regenerate ONLY on a MAJOR fidelity issue; bounded by
+    # settings.max_judge_regens (default 1 → exactly one regeneration).
+    for _regen_attempt in range(settings.max_judge_regens):
+        if not (outcome.available and outcome.has_major):
+            break
+        logger.info(
+            f"[job {job_id}] teacher-deck judge found major fidelity issue(s) "
+            f"({len(outcome.warnings)} total) — regenerating "
+            f"(attempt {_regen_attempt + 1}/{settings.max_judge_regens}). "
+            f"Issues: {outcome.warnings}"
+        )
+        # The regen runs through _run_with_failover (inside
+        # _run_teacher_deck_attempt), which CAN exhaust all providers and
+        # raise. This block is OUTSIDE the generation try/except above (which
+        # marks the phase failed), so an unguarded raise here would fail the
+        # whole job — violating "validation never fails a job". Guard it: on
+        # regen failure keep the judge-rejected-but-complete original deck +
+        # its warnings and proceed to `done`.
+        try:
+            r_deck, r_tin, r_tout, r_prod = await _run_teacher_deck_attempt(
+                structured_prompt=(
+                    structured_prompt
+                    + "\n\n---\nFACTUAL-FIDELITY CORRECTION (previous attempt "
+                    "contradicted the lesson source — fix ALL of these before "
+                    f"regenerating the full deck):\n{outcome.feedback}"
+                ),
+                requested_provider=produced_by,
+                model=_gen_model_of(produced_by),
+                transport=transport,
+                session_limit_strategy=session_limit_strategy,
+                lesson_context=lesson_context,
+                job_id=job_id,
+                po_id=po_id,
+            )
+            # Commit to the regenerated deck only after it actually succeeded —
+            # the WHOLE deck is swapped, never a partial merge.
+            deck, tin, tout, produced_by = r_deck, r_tin, r_tout, r_prod
+            serialized = serialize_deck_for_fidelity(deck)
+            _jp2, _jm2 = model_tiers.resolve_judge(
+                produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
+            )
+            outcome = await _judge_with_timeout(
+                subject=subject, phase_name="teacher-deck", output_md=serialized,
+                lesson_context=lesson_context, prior_outputs={},
+                gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+                judge_provider=_jp2, judge_model=_jm2,
+                homework_job_id=job_id, phase_output_id=po_id,
+                transport=judge_transport,
+                contract_override=get_teacher_deck_fidelity_contract(),
+                output_language=output_language,
+            )
+        except (LeaseLostSignal, CancelWonSignal):
+            raise  # control signal — never degrade into the soft-keep path
+        except SessionLimitPause:
+            raise  # quota-pause during regen must propagate — not a content failure
+        except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job (except api auth, below)
+            if is_slot_saturation(exc):
+                raise SlotSaturation(str(exc)) from exc  # park, don't degrade
+            if (transport == "api" or judge_transport == "api") and phase_judge._is_auth_error(exc):
+                # Two spawns here can fail on auth: the regen GENERATION
+                # (transport) and the post-regen JUDGE (judge_transport). If
+                # EITHER ran under api, the failure must be LOUD — consistent
+                # with the initial judge call above — never silently degrade
+                # to the pre-regen deck. Only pure cli+cli keeps the soft
+                # degrade below.
+                logger.error(
+                    f"[job {job_id}] teacher-deck api auth failure during regen/judge ({exc!r})"
+                )
+                raise
+            logger.warning(
+                f"[job {job_id}] teacher-deck regen failed ({exc!r}); "
+                f"keeping the judge-rejected original deck + warnings"
+            )
+            # deck/tin/tout/produced_by and `outcome` retain their original
+            # pre-regen values — the phase still completes `done` with warnings.
+            judge_status = "major_regen_failed"
+            break
+
+    if judge_status is None:
+        if getattr(outcome, "refused", False):
+            judge_status = "refused"
+        elif not outcome.available:
+            judge_status = "unavailable"
+        elif outcome.passed or not outcome.has_major:
+            judge_status = "ok"
+        else:
+            judge_status = "major_shipped"
+    warnings = list(outcome.warnings) if outcome.available else []
+
+    async with SessionLocal() as session:
+        _dr = await phase_repo.set_status(
+            session, po_id, "done",
+            completed_at=_utcnow(),
+            output_md="",
+            tokens_input=tin,
+            tokens_output=tout,
+            provider=produced_by,
+            content_json=deck.model_dump(mode="json"),
+            authoring_mode="structured",
+            content_schema_version=TeacherDeck.SCHEMA_VERSION,
+            validation_warnings=warnings or None,
+            judge_status=judge_status,
+            claim_token=_token,
+        )
+        await session.commit()
+    _raise_on_lease_signal(_dr)
+
+    return "", tin, tout, prompt_hash, deck
 
 
 async def _generate_artifact(

@@ -154,6 +154,7 @@ class TestAvailableLanguagesEndpoint:
 def _fake_batch_for_rollup(output_language: str = "en"):
     return SimpleNamespace(
         id=uuid4(), book_id=uuid4(), subject="math-algebra", grade="8",
+        kind="homework",
         output_language=output_language,
         provider="gemini", model="gemini-2.5-flash", transport="api",
         extract_transport="inherit", judge_transport="inherit",

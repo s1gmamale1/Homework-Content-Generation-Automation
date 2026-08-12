@@ -14,6 +14,12 @@
 4. Each phase produces **markdown** (the deliverable). The operator console streams progress over SSE and renders each phase's markdown for review.
 5. The packet downloads as a **ZIP of one markdown file per phase**.
 
+Besides the student homework packet, the app also generates a per-lesson **teacher lesson-plan
+deck** (`kind="teacher_material"`) — a structured cover/objectives/lesson-map/stage-scripts/quiz/
+rubric deck built from the same cached lesson `extract`, in one schema-validated pass. It's launched
+from the Fleet launcher's mode toggle (its own batch, never mixed with homework), viewable at
+`/deck/:id`, with PDF export via the browser print dialog.
+
 The flow is a single fixed sequence of **11 phases** per subject (no easy/hard branching): `case-based-preview → flashcards → memory-check → practice-rlc → practice-error-detection → practice-memory-match → practice-tictactoe → practice-jigsaw → practice-sentence → boss-arena → reflection`. **All four interaction mini-games are generated every job** (the full Gamified Practices set, skipping none); which game best fits a subject is curated downstream (`SUBJECT_GAME` is now a recommendation hint, not a flow gate). Student-facing text defaults to **Uzbek** (formal "Siz"); a global **Output Language** setting at `/settings` (uz/en/ru) plus an optional per-launch override lets an operator generate English-medium or Russian-medium packets — with one carve-out: the English and Russian *language-class* subjects always use their existing Uzbek-bridged L2 scaffolding regardless of the chosen medium.
 
 ## Why it's interesting

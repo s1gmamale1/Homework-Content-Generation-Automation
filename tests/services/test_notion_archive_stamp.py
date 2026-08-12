@@ -21,6 +21,7 @@ def _section(job, *, page_id=None, archived_job_id=None):
     return SimpleNamespace(
         id=job.toc_entry_id, section_number="1", section_title="L", page_start=7, order_index=0,
         notion_homework_page_id=page_id, notion_archived_job_id=archived_job_id,
+        notion_lesson_page_id=None,
     )
 
 
@@ -51,7 +52,7 @@ async def test_first_archive_stamps_producing_job(monkeypatch):
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
          patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()), \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
-         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=(None, "hw"))) as push:
         await na.archive_job(job.id)
     assert push.await_args.kwargs["replace"] is False       # empty page → plain write
     stamp.assert_awaited_once()
@@ -74,7 +75,7 @@ async def test_regen_auto_replaces_own_older_output_and_restamps(monkeypatch):
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
          patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()), \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
-         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=(None, "hw"))) as push:
         await na.archive_job(job.id)                          # NO force
     assert push.await_args.kwargs["replace"] is True          # auto-replace fired
     assert stamp.await_args.args[2] == job.id                 # re-stamped to the newer job
@@ -100,7 +101,7 @@ async def test_older_job_does_not_clobber_newer_stamp(monkeypatch):
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
          patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()), \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
-         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=(None, "hw"))) as push:
         await na.archive_job(old_job.id)                      # NO force
     assert push.await_args.kwargs["replace"] is False         # skip preserved
     stamp.assert_not_awaited()                                # newer stamp untouched
@@ -123,7 +124,7 @@ async def test_missing_stamped_job_row_keeps_skip(monkeypatch):
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
          patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()), \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
-         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=(None, "hw"))) as push:
         await na.archive_job(job.id)
     assert push.await_args.kwargs["replace"] is False
     stamp.assert_not_awaited()
@@ -145,7 +146,62 @@ async def test_husk_no_stamp_no_replace(monkeypatch):
          patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()) as stamp, \
          patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()), \
          patch.object(na, "NotionClientWrapper", MagicMock()), \
-         patch.object(na, "_push_with_retry", AsyncMock(return_value="hw")) as push:
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=(None, "hw"))) as push:
         await na.archive_job(job.id)
     assert push.await_args.kwargs["replace"] is False
     stamp.assert_not_awaited()
+
+
+# --- Task 4 fix-review: the lesson-stamp branch has its own dedicated coverage ---
+# (every test above returns lesson_id=None from the push mock, so
+# `if lesson_id is not None and section_lesson_page_id is None: ...` never runs
+# there — these two close that gap.)
+
+
+@pytest.mark.asyncio
+async def test_lesson_page_id_stamped_when_learned_and_section_had_none(monkeypatch):
+    """When the push learns a lesson_id and the section didn't already own
+    one, archive_job must persist it via set_notion_lesson_page_id."""
+    job = _job()
+    section = _section(job, page_id=None, archived_job_id=None)   # never filed
+    assert section.notion_lesson_page_id is None
+    book, phase = _wire(monkeypatch, job, section)
+    with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
+         patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
+         patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
+         patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \
+         patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()), \
+         patch.object(na.toc_repo, "set_notion_lesson_page_id", AsyncMock()) as set_lesson, \
+         patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()), \
+         patch.object(na, "NotionClientWrapper", MagicMock()), \
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=("lesson-xyz", "hw"))):
+        await na.archive_job(job.id)
+    set_lesson.assert_awaited_once()
+    assert set_lesson.await_args.args[1] == section.id
+    assert set_lesson.await_args.args[2] == "lesson-xyz"
+
+
+@pytest.mark.asyncio
+async def test_lesson_page_id_not_overwritten_when_section_already_has_one(monkeypatch):
+    """A section that already owns a lesson-page id must not have it
+    clobbered by a later push (even if the push independently learns/backfills
+    a different one — the DB pointer, once set, is authoritative)."""
+    job = _job()
+    section = _section(job, page_id="hw", archived_job_id=None)
+    section.notion_lesson_page_id = "already-lid"
+    book, phase = _wire(monkeypatch, job, section)
+    with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
+         patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
+         patch.object(na.toc_repo, "titles_for_subject_grade", AsyncMock(return_value=[])), \
+         patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
+         patch.object(na.phase_repo, "list_for_job", AsyncMock(return_value=[phase])), \
+         patch.object(na.toc_repo, "set_notion_homework_page_id", AsyncMock()), \
+         patch.object(na.toc_repo, "set_notion_archived_job", AsyncMock()), \
+         patch.object(na.toc_repo, "set_notion_lesson_page_id", AsyncMock()) as set_lesson, \
+         patch.object(na.jobs_repo, "set_notion_archived", AsyncMock()), \
+         patch.object(na, "NotionClientWrapper", MagicMock()), \
+         patch.object(na, "_push_with_retry", AsyncMock(return_value=("new-lesson-id", "hw"))):
+        await na.archive_job(job.id)
+    set_lesson.assert_not_awaited()

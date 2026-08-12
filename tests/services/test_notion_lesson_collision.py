@@ -66,12 +66,13 @@ _PHASES = {"case-based-preview": "# Preview\n\nBody text."}
 
 
 def _push(client, title):
-    return na._push_to_notion(
+    _, homework_id = na._push_to_notion(
         client=client,
         subject_page_id="subject1",
         lesson_title=title,
         phase_md=_PHASES,
     )
+    return homework_id
 
 
 def test_two_lessons_sharing_a_title_get_two_pages():
@@ -125,7 +126,7 @@ def test_a_known_homework_page_is_reused_without_touching_titles():
     known = _push(c, "Проценты")          # first archive creates the tree
     c.content.clear()                     # pretend the leaves are empty again
 
-    again = na._push_to_notion(
+    _, again = na._push_to_notion(
         client=c,
         subject_page_id="subject1",
         lesson_title="COMPLETELY DIFFERENT TITLE",
@@ -232,6 +233,7 @@ def _wire_job(monkeypatch, *, section_page_id=None):
         id=UUID(_A), section_number=None, section_title="Вспомните",
         chapter_title="", page_start=2, order_index=1,
         notion_homework_page_id=section_page_id, notion_archived_job_id=None,
+        notion_lesson_page_id=None,
     )
     book = SimpleNamespace(id=job.book_id, grade="5", original_filename="m5.pdf")
     monkeypatch.setattr(na.settings, "notion_enabled", True)
@@ -253,7 +255,7 @@ def _wire_job(monkeypatch, *, section_page_id=None):
 async def test_archive_job_sends_the_DISAMBIGUATED_title_to_notion(monkeypatch):
     """Reverting this wiring to the pre-fix `_lesson_title(...)` must go RED."""
     job, section, book, siblings, phase = _wire_job(monkeypatch)
-    push = AsyncMock(return_value="hw1")
+    push = AsyncMock(return_value=(None, "hw1"))
     with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \
@@ -277,7 +279,7 @@ async def test_archive_job_forwards_an_owned_page_id(monkeypatch):
     protected by this one argument. Dropping it re-keys them onto fresh pages
     and orphans their content."""
     job, section, book, siblings, phase = _wire_job(monkeypatch, section_page_id="existing-hw")
-    push = AsyncMock(return_value="existing-hw")
+    push = AsyncMock(return_value=(None, "existing-hw"))
     with patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
          patch.object(na.books_repo, "get", AsyncMock(return_value=book)), \
          patch.object(na.toc_repo, "get", AsyncMock(return_value=section)), \

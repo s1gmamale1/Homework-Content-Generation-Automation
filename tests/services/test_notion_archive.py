@@ -192,3 +192,113 @@ def test_push_replace_false_still_skips_populated_page():
     )
     client.clear_content_blocks.assert_not_called()
     client.append_block_children.assert_not_called()
+
+
+# --- Task 4: _push_to_notion returns (lesson_id, homework_id) ----------------
+
+
+def test_push_to_notion_returns_lesson_and_homework_ids():
+    """CREATE branch: both ids in the returned tuple come from find_or_create,
+    and the leaf-page titles/order are unaffected by the return-type change
+    (regression guard for the byte-identical homework pages requirement)."""
+    client = MagicMock()
+    client.page_has_content.return_value = False
+    client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    na_find = MagicMock(side_effect=_fake_find)
+    lesson_id, homework_id = na._push_to_notion(
+        client=client, subject_page_id="subj", lesson_title="L",
+        phase_md={"case-based-preview": "# CBP"}, find_or_create=na_find,
+    )
+    assert lesson_id == "id::L"
+    assert homework_id == "id::Homework"
+    titles = [c.args[2] for c in na_find.call_args_list]
+    assert titles == ["Generated Homeworks", "L", "Homework", "Case-Based Preview"]
+
+
+def test_push_to_notion_adopts_passed_lesson_page_id():
+    """Passing lesson_page_id makes the Homework page a child of it directly —
+    find_or_create is never called for the lesson title (adoption, no re-key)."""
+    client = MagicMock()
+    client.page_has_content.return_value = False
+    client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    na_find = MagicMock(side_effect=_fake_find)
+    lesson_id, homework_id = na._push_to_notion(
+        client=client, subject_page_id="subj", lesson_title="L",
+        phase_md={"case-based-preview": "# CBP"}, find_or_create=na_find,
+        lesson_page_id="LID",
+    )
+    assert lesson_id == "LID"
+    homework_call = next(c for c in na_find.call_args_list if c.args[2] == "Homework")
+    assert homework_call.args[1] == "LID"  # Homework created directly under the adopted lesson
+    titles = [c.args[2] for c in na_find.call_args_list]
+    assert "L" not in titles  # lesson title never looked up
+
+
+def test_push_to_notion_reuse_branch_backfills_lesson_id_from_parent():
+    """REUSE branch, no lesson_page_id: get_page_parent(homework_page_id)
+    backfills lesson_id from the Homework sub-page's actual parent."""
+    client = MagicMock()
+    client.page_has_content.return_value = False
+    client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    client.get_page_parent.return_value = "PARENT_LESSON"
+    na_find = MagicMock(side_effect=_fake_find)
+    lesson_id, homework_id = na._push_to_notion(
+        client=client, subject_page_id="subj", lesson_title="L",
+        phase_md={"case-based-preview": "# CBP"}, find_or_create=na_find,
+        homework_page_id="HW",
+    )
+    assert homework_id == "HW"
+    assert lesson_id == "PARENT_LESSON"
+    client.get_page_parent.assert_called_once_with("HW")
+
+
+def test_push_to_notion_reuse_branch_backfill_failure_is_swallowed():
+    """If get_page_parent raises, lesson_id is None and no exception escapes —
+    the stamp is simply skipped this run and self-heals on the next archive."""
+    client = MagicMock()
+    client.page_has_content.return_value = False
+    client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    client.get_page_parent.side_effect = RuntimeError("boom")
+    na_find = MagicMock(side_effect=_fake_find)
+    lesson_id, homework_id = na._push_to_notion(
+        client=client, subject_page_id="subj", lesson_title="L",
+        phase_md={"case-based-preview": "# CBP"}, find_or_create=na_find,
+        homework_page_id="HW",
+    )
+    assert homework_id == "HW"
+    assert lesson_id is None
+
+
+def test_push_to_notion_reuse_branch_prefers_passed_lesson_page_id_over_backfill():
+    """A passed lesson_page_id wins over the get_page_parent backfill — no
+    need to ask Notion when the caller already knows the lesson page."""
+    client = MagicMock()
+    client.page_has_content.return_value = False
+    client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    na_find = MagicMock(side_effect=_fake_find)
+    lesson_id, homework_id = na._push_to_notion(
+        client=client, subject_page_id="subj", lesson_title="L",
+        phase_md={"case-based-preview": "# CBP"}, find_or_create=na_find,
+        homework_page_id="HW", lesson_page_id="LID",
+    )
+    assert lesson_id == "LID"
+    assert homework_id == "HW"
+    client.get_page_parent.assert_not_called()
+
+
+def test_push_to_notion_reuse_branch_skips_backfill_when_disabled():
+    """backfill_lesson_id=False must not call get_page_parent — used by the
+    repair sweep, which discards lesson_id and would otherwise waste a
+    rate-limited Notion API call for nothing."""
+    client = MagicMock()
+    client.page_has_content.return_value = False
+    client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    na_find = MagicMock(side_effect=_fake_find)
+    lesson_id, homework_id = na._push_to_notion(
+        client=client, subject_page_id="subj", lesson_title="L",
+        phase_md={"case-based-preview": "# CBP"}, find_or_create=na_find,
+        homework_page_id="HW", backfill_lesson_id=False,
+    )
+    assert homework_id == "HW"
+    assert lesson_id is None
+    client.get_page_parent.assert_not_called()
