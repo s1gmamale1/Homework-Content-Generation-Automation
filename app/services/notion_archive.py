@@ -212,7 +212,9 @@ def _push_to_notion(
     find_or_create: Callable = find_or_create,  # injectable for tests
     replace: bool = False,
     homework_page_id: Optional[str] = None,
-) -> str:
+    lesson_page_id: Optional[str] = None,
+    backfill_lesson_id: bool = True,
+) -> tuple[Optional[str], str]:
     """Synchronous Notion I/O. Unconditionally creates the path:
     Subject → 'Generated Homeworks' → <lesson_title> → 'Homework', then the
     grouped page layout (`_HOMEWORK_LAYOUT`): Case-Based Preview, Flashcards
@@ -220,16 +222,38 @@ def _push_to_notion(
     sub-pages), Boss Arena, Reflection. Idempotent: a page that already has
     content is skipped. When `replace` is True, a populated leaf page is
     cleared (`clear_content_blocks`) and rewritten instead of skipped — used
-    by the operator force-refresh path. Returns the Homework page id."""
+    by the operator force-refresh path. Returns `(lesson_id, homework_id)` —
+    `lesson_id` is `None` when it could not be determined (reuse branch,
+    no `lesson_page_id` given, and either the `get_page_parent` backfill
+    failed or `backfill_lesson_id=False` skipped it entirely — e.g. the repair
+    sweep, which discards `lesson_id` and would otherwise waste a
+    rate-limited Notion call for nothing)."""
     if homework_page_id:
         # Identity from the DB beats identity from the title. A section that
         # already owns a page reuses it directly — this is what stops a lesson
         # whose title IS ambiguous from being re-keyed onto a fresh suffixed
         # page and orphaning the content already filed under the old one.
         homework_id = homework_page_id
+        if lesson_page_id:
+            lesson_id = lesson_page_id
+        elif backfill_lesson_id:
+            # Backfill for the ~3,200 already-archived sections whose
+            # notion_lesson_page_id is NULL: the Homework sub-page's parent
+            # IS the lesson page. Best-effort — a failure here just skips the
+            # stamp this run; it self-heals on the next archive.
+            try:
+                lesson_id = client.get_page_parent(homework_page_id)
+            except Exception:  # noqa: BLE001 - best-effort backfill
+                log.warning(
+                    "notion: get_page_parent backfill failed for %s", homework_page_id,
+                    exc_info=True,
+                )
+                lesson_id = None
+        else:
+            lesson_id = None
     else:
         container_id, _ = find_or_create(client, subject_page_id, CONTAINER_TITLE)
-        lesson_id, _ = find_or_create(client, container_id, lesson_title)
+        lesson_id = lesson_page_id or find_or_create(client, container_id, lesson_title)[0]
         homework_id, _ = find_or_create(client, lesson_id, "Homework")
 
     def _write_leaf(parent_id: str, title: str, present: list[tuple[str, str]]) -> None:
@@ -252,11 +276,13 @@ def _push_to_notion(
             container_id, _ = find_or_create(client, homework_id, entry["title"])
             for phase_name, md in present:
                 _write_leaf(container_id, PHASE_TITLES.get(phase_name, phase_name), [(phase_name, md)])
-    return homework_id
+    return lesson_id, homework_id
 
 
 async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md, replace: bool = False,
-                          homework_page_id: Optional[str] = None) -> str:
+                          homework_page_id: Optional[str] = None,
+                          lesson_page_id: Optional[str] = None,
+                          backfill_lesson_id: bool = True) -> tuple[Optional[str], str]:
     """Run the idempotent Notion push in a worker thread, retrying transient
     failures with exponential backoff. Re-raises the last exception if every
     attempt fails, so the caller can record a skip reason."""
@@ -271,6 +297,8 @@ async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md, r
                 phase_md=phase_md,
                 replace=replace,
                 homework_page_id=homework_page_id,
+                lesson_page_id=lesson_page_id,
+                backfill_lesson_id=backfill_lesson_id,
             )
         except Exception as exc:  # noqa: BLE001 - retried, then recorded as a skip
             last_exc = exc
@@ -399,6 +427,7 @@ async def archive_job(
             first_archive = section.notion_homework_page_id is None
             # Captured inside the session: the push runs after it closes.
             section_page_id = section.notion_homework_page_id
+            section_lesson_page_id = section.notion_lesson_page_id
             prior_job_id = section.notion_archived_job_id
             auto_replace = False
             if prior_job_id is not None and prior_job_id != job_id:
@@ -433,7 +462,7 @@ async def archive_job(
 
         client = NotionClientWrapper(api_key=settings.notion_api_key)
         try:
-            homework_id = await _push_with_retry(
+            lesson_id, homework_id = await _push_with_retry(
                 client=client,
                 subject_page_id=subject_page_id,
                 lesson_title=lesson_title,
@@ -442,6 +471,7 @@ async def archive_job(
                 # Reuse the page this section already owns, so an ambiguous
                 # title cannot re-key it onto a fresh suffixed page.
                 homework_page_id=section_page_id,
+                lesson_page_id=section_lesson_page_id,
             )
         except Exception as exc:  # noqa: BLE001 - push exhausted retries; record + give up
             log.warning("notion: push failed for job %s after %d attempts (non-fatal)",
@@ -466,6 +496,8 @@ async def archive_job(
                     )
                     return
             await toc_repo.set_notion_homework_page_id(session, section_id, homework_id)
+            if lesson_id is not None and section_lesson_page_id is None:
+                await toc_repo.set_notion_lesson_page_id(session, section_id, lesson_id)
             if first_archive or do_replace:
                 await toc_repo.set_notion_archived_job(session, section_id, job_id)
             await jobs_repo.set_notion_archived(session, job_id, _utcnow())

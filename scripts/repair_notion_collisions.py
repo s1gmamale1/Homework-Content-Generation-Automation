@@ -1094,9 +1094,14 @@ async def refresh_owner_pages(
             continue
 
         try:
+            # backfill_lesson_id=False: this rewrite discards the return value
+            # entirely (the owner's Homework page identity is already known
+            # from the manifest) — skip the rate-limited get_page_parent call
+            # that _push_to_notion would otherwise make for nothing.
             await _push_with_retry(
                 client=client, subject_page_id="", lesson_title="",
                 phase_md=phase_md, replace=True, homework_page_id=page_id,
+                backfill_lesson_id=False,
             )
         except Exception as exc:  # noqa: BLE001 - fail-open per page, see docstring
             outcomes.append(OwnerRefreshOutcome(

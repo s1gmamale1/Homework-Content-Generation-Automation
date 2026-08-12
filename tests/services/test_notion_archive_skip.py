@@ -44,6 +44,7 @@ def test_archive_marks_skip_on_no_mapping():
     section = SimpleNamespace(
         id=uuid4(), section_number="1", section_title="T", page_start=7, order_index=0,
         notion_homework_page_id=None, notion_archived_job_id=None,
+        notion_lesson_page_id=None,
     )
     set_skip = AsyncMock()
     with patch.object(na.settings, "notion_enabled", True), \
@@ -78,6 +79,7 @@ def test_archive_marks_skip_on_push_exception():
     section = SimpleNamespace(
         id=uuid4(), section_number="1", section_title="T", page_start=7, order_index=0,
         notion_homework_page_id=None, notion_archived_job_id=None,
+        notion_lesson_page_id=None,
     )
     done_phase = SimpleNamespace(phase_name="case-based-preview", output_md="# x", status="done")
     push = MagicMock(side_effect=RuntimeError("boom"))
