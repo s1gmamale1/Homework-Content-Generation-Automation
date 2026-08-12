@@ -2642,3 +2642,38 @@ will raise if a book has BOTH a homework and a teacher_material batch on the sam
 output_language) after the feature is used (the upgrade path is data-safe).
 
 No production writes (scratch DB + read-only extract fetch; smoke script left untracked).
+
+## 0176 — Teacher decks archive to Notion as a Lesson-Topic sibling (2026-08-12)
+
+A `kind="teacher_material"` job now archives to Notion like homework: a **"Teacher Deck"** sub-page
+sibling to **"Homework"** under ONE shared **Lesson Topic** page — **order-independent**, whichever
+deliverable archives first creates the Lesson Topic and the other adopts it via the new
+`toc_entries.notion_lesson_page_id` (migration **0059**, also adds `notion_teacher_deck_job_id`;
+additive/nullable, down_revision `0054_teacher_material_kind`). The prior Task-9 skip in `archive_job`
+(decks never archived) is reversed; `archive_job` branches `is_teacher` at four points — content gather
+(`content_json` vs `phase_md`, `status=="done"` required), skip guard ("no teacher deck content"),
+push (`_push_teacher_with_retry` vs `_push_with_retry`), and pointer-update stamps (teacher writes ONLY
+`notion_lesson_page_id` + `notion_teacher_deck_job_id`, never homework's columns; all inside the
+claim-token fence). The deck renders through ONE markdown source (`render_teacher_deck_markdown`) → a
+readable Notion page + a **WeasyPrint** PDF attachment (`render_teacher_deck_pdf`, **lazy-imported** so
+a worker without pango/native libs degrades to page-only rather than crashing at import; PDF filename
+`{grade}-sinf {n}-mavzu {title} — dars ishlanma.pdf`, distinct from the FE slide export). Only the PDF
+*render* is swallowed on failure — `upload_bytes` is outside the try so a transient Notion error
+propagates into the bounded retry; the page body is built *before* `clear_content_blocks` so a force
+re-archive can never empty a page on failure. Homework archival is **byte-identical** (only new effect:
+it now also stamps the shared lesson id, backfilling pre-existing homework-only sections via
+`get_page_parent`, opt-out `backfill_lesson_id=False` on the repair sweep). The stale rollup is
+**kind-aware** (`archive_rollup_for_batch`/`done_stale_job_ids` key on `notion_teacher_deck_job_id` for
+teacher batches) so decks aren't perma-stale; `archived`/`unarchived` stay on `notion_archived_at`
+(both kinds stamp it). Acceptance: real **48,265-byte %PDF-1.7** rendered end-to-end through
+`archive_job` into a fake Notion client (zero real Notion I/O), degrade run writes the page PDF-less and
+still archives, order-independence proven both directions. Final whole-branch review: SPEC PASS /
+QUALITY APPROVED, no Critical. New deps `weasyprint` + `markdown`. Suite **2589 passed / 1 pre-existing
+env failure** (credential-limiter default, `.env` symlink), FE tsc-0. No production writes.
+**Deploy OWED:** (1) `brew install pango` (or platform equivalent) **fleet-wide** so decks ship WITH the
+PDF — the degrade is a safety net, not the plan; a pango-less worker ships the deck PDF-less and the
+next archive skips it (`page_has_content`). (2) Fleet must `uv sync` before pulling (new `markdown`
+top-level import in the `notion_archive` chain). (3) One-time head-side **force** re-archive sweep
+(`batch.py`, runs on the pango-equipped head) backfills any decks that shipped PDF-less — NOT the stale
+sweep (a PDF-less deck is current, not stale). (4) Heads-up to the `plan/notion-archive-outbox` owner:
+that lane rewrites `notion_archive.py` wholesale and must re-absorb `_push_teacher_deck_to_notion`.

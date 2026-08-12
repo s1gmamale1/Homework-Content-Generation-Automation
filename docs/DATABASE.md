@@ -142,6 +142,8 @@ perspective; a pushed Notion archive (if any) is the only surviving copy of the 
 | `order_index` | Integer NOT NULL | display + drill-in sort key; `ix_toc_entries_book_id_order (book_id, order_index)` |
 | `notion_homework_page_id` | String(128) NULL | set when the homework was archived to Notion |
 | `notion_archived_job_id` | UUID NULL (no FK) | migration 0045 — which `homework_jobs.id` produced the content currently on the Notion page; written only when `archive_job` actually writes (first archive or replace); drives auto-replace-own-older-output + the batch `stale` rollup; NULL = never archived by us or a pre-0129 husk |
+| `notion_lesson_page_id` | String(128) NULL | migration 0059 (worklog 0176) — the shared "Lesson Topic" Notion page id, parent of BOTH the Homework and Teacher Deck sub-pages; lets either deliverable adopt the page the other created (order-independent archival) |
+| `notion_teacher_deck_job_id` | UUID NULL (no FK) | migration 0059 (worklog 0176) — which `homework_jobs.id`'s deck is currently on the Teacher Deck Notion page; teacher-side mirror of `notion_archived_job_id`; drives the kind-aware `stale` rollup for teacher batches |
 
 ### 3.3 `homework_jobs` — one row per generation request (also the queue)
 
@@ -604,7 +606,8 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 | 51 | 0051_launch_defaults_3x | `0051_launch_defaults_3x` | unconditional `UPDATE launch_defaults SET ... WHERE id=1` flipping the singleton to the 3.x-flash target tuple: content=`gemini`/`gemini-3.6-flash`, extract=`gemini`/`gemini-3.5-flash-lite`, judge=`gemini`/`gemini-3.5-flash`, solver=`gemini`/`gemini-3.1-pro-preview`, all 5 transport columns `'api'`. Converges both a fresh-seeded DB and the pre-existing prod row onto the same tuple; downgrade restores the exact pre-migration prod tuple (worklog 0161). |
 | 52 | 0052_job_lease_fencing | `0052_job_lease_fencing` | per-claim `claim_token` on jobs/phases plus append-only `job_lease_events`; obsolete owners cannot mutate reclaimed work (worklog 0163). |
 | 53 | 0053_solver_mismatch_blocked | `0053_solver_mismatch_blocked` | widens `ck_phase_outputs_solver_status` with `mismatch_blocked`; downgrade relabels blocked rows to legacy `mismatch_shipped` before restoring the old CHECK |
-| 54 | 0054_teacher_material_kind | `0054_teacher_material_kind` | adds `kind` String(32) NOT NULL server_default `'homework'` to `homework_jobs` + `batches` (`'homework'`\|`'teacher_material'`); widens the batches unique key from `uq_batches_book_id_transport_output_language` to `uq_batches_book_id_transport_output_language_kind`. Downgrade recreates the narrower key and raises if a book has both kinds on the same `(transport, output_language)` (worklog 0175) — **HEAD** |
+| 54 | 0054_teacher_material_kind | `0054_teacher_material_kind` | adds `kind` String(32) NOT NULL server_default `'homework'` to `homework_jobs` + `batches` (`'homework'`\|`'teacher_material'`); widens the batches unique key from `uq_batches_book_id_transport_output_language` to `uq_batches_book_id_transport_output_language_kind`. Downgrade recreates the narrower key and raises if a book has both kinds on the same `(transport, output_language)` (worklog 0175) |
+| 59 | 0059_toc_teacher_deck_notion | `0059_toc_teacher_deck_notion` | adds `toc_entries.notion_lesson_page_id` + `notion_teacher_deck_job_id` (both NULL) — teacher-deck Notion archival as a Lesson-Topic sibling (worklog 0176) — **HEAD** |
 
 ---
 

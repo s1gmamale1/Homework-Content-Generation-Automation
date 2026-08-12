@@ -588,7 +588,9 @@ one regen-on-major and fail-open on judge unavailability. The FE renders the fin
 to language/stage-count rather than template-exact) with PDF export via `@media print` +
 `window.print()`. Every batch/book/section read path (adoption, resume, coverage rollups, Notion
 archive) is `kind`-scoped so a teacher-material launch can never be mistaken for, or silently
-absorbed into, a homework batch.
+absorbed into, a homework batch. **(0176)** teacher-material jobs now also archive to Notion — a
+"Teacher Deck" sub-page sibling to "Homework" under one shared Lesson Topic page, created by
+whichever deliverable archives first — rather than being skipped.
 
 ### Teaching-equivalence audit (worklog 0148, offline)
 The judge (§ above) and the extract coverage-contract (#84) both grade a packet against
