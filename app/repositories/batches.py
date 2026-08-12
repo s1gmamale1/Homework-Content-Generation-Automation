@@ -127,6 +127,11 @@ async def archive_rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dic
     output (toc_entries.notion_archived_job_id != this latest job's id) — e.g.
     after a regen that hasn't been re-archived yet. Mirrors rollup_for_batch's
     DISTINCT-ON latest-per-lesson so retries don't double-count."""
+    kind = (await session.execute(
+        select(Batch.kind).where(Batch.id == batch_id)
+    )).scalar_one_or_none()
+    stale_col = (TOCEntry.notion_teacher_deck_job_id
+                 if kind == "teacher_material" else TOCEntry.notion_archived_job_id)
     latest = (
         select(
             HomeworkJob.id.label("job_id"),
@@ -144,7 +149,7 @@ async def archive_rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dic
             select(
                 latest.c.job_id,
                 latest.c.notion_archived_at,
-                TOCEntry.notion_archived_job_id,
+                stale_col.label("stale_job_id"),
             )
             .join(TOCEntry, TOCEntry.id == latest.c.toc_entry_id)
             .where(latest.c.status == "done")
@@ -155,8 +160,8 @@ async def archive_rollup_for_batch(session: AsyncSession, batch_id: UUID) -> dic
     stale = sum(
         1 for r in rows
         if r.notion_archived_at is not None
-        and r.notion_archived_job_id is not None
-        and r.notion_archived_job_id != r.job_id
+        and r.stale_job_id is not None
+        and r.stale_job_id != r.job_id
     )
     return {"archived": archived, "unarchived": unarchived, "stale": stale}
 
@@ -217,6 +222,11 @@ async def done_stale_job_ids(session: AsyncSession, batch_id: UUID) -> list[UUID
     an OLDER job's output (toc_entries.notion_archived_job_id != this job). The
     targeted worklist for the operator 'refresh stale' sweep — a subset of
     done_job_ids, so a force-refresh rewrites only the husks, not all pages."""
+    kind = (await session.execute(
+        select(Batch.kind).where(Batch.id == batch_id)
+    )).scalar_one_or_none()
+    stale_col = (TOCEntry.notion_teacher_deck_job_id
+                 if kind == "teacher_material" else TOCEntry.notion_archived_job_id)
     latest = (
         select(
             HomeworkJob.id.label("job_id"),
@@ -235,8 +245,8 @@ async def done_stale_job_ids(session: AsyncSession, batch_id: UUID) -> list[UUID
             .join(TOCEntry, TOCEntry.id == latest.c.toc_entry_id)
             .where(latest.c.status == "done")
             .where(latest.c.notion_archived_at.is_not(None))
-            .where(TOCEntry.notion_archived_job_id.is_not(None))
-            .where(TOCEntry.notion_archived_job_id != latest.c.job_id)
+            .where(stale_col.is_not(None))
+            .where(stale_col != latest.c.job_id)
             .order_by(latest.c.toc_entry_id)
         )
     ).all()
