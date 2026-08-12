@@ -41,10 +41,49 @@ more, no less; the judge should never be told it's grading a section this
 serializer doesn't actually show it.
 
 Pure function — no I/O, unit-testable in isolation.
+
+`render_teacher_deck_pdf` (below) renders `render_teacher_deck_markdown`'s
+output to PDF via WeasyPrint. This module runs inside `notion_archive.py` on
+EVERY worker, including Windows boxes without WeasyPrint's native libs
+(pango/cairo/...) — so `import weasyprint` is deliberately kept INSIDE that
+function's body, never at module top level. A top-level import would turn a
+missing native lib into an import-time crash that breaks `notion_archive`
+(and thus the whole pipeline) fleet-wide; kept lazy, the ImportError/OSError
+instead surfaces only when `render_teacher_deck_pdf` is actually called, so
+the caller can catch it and degrade. `markdown` is pure Python and safe to
+import at module top.
 """
 from __future__ import annotations
 
+import markdown
+
 from app.schemas.content_json import TeacherDeck
+
+_PDF_CSS = """
+@page { size: A4; margin: 1.6cm; }
+body {
+    font-family: "Helvetica Neue", Arial, "Segoe UI", sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.45;
+    color: #1a1a1a;
+}
+h1 { font-size: 18pt; margin: 0 0 4pt 0; }
+h2 {
+    font-size: 13pt;
+    margin: 14pt 0 6pt 0;
+    border-bottom: 1pt solid #ccc;
+    padding-bottom: 2pt;
+}
+h3 {
+    font-size: 11.5pt;
+    margin: 10pt 0 4pt 0;
+    color: #1f4e8c;
+}
+p { margin: 4pt 0; }
+ul { margin: 4pt 0; padding-left: 16pt; }
+li { margin: 2pt 0; }
+strong { font-weight: 600; }
+"""
 
 
 def serialize_deck_for_fidelity(deck: TeacherDeck) -> str:
@@ -189,3 +228,17 @@ def render_teacher_deck_markdown(deck: TeacherDeck) -> str:
         lines.append(f"- {band.range}: {band.grade}")
 
     return "\n".join(lines)
+
+
+def render_teacher_deck_pdf(deck: TeacherDeck) -> bytes:
+    """Render `deck` to a PDF (bytes). Lazy-imports WeasyPrint so a worker
+    without its native libs fails HERE (caller degrades) rather than at import."""
+    import weasyprint  # lazy — see module note; missing native libs raise here, by design
+
+    md = render_teacher_deck_markdown(deck)
+    html_body = markdown.markdown(md, extensions=["extra"])
+    html_doc = (
+        f"<!doctype html><html><head><meta charset='utf-8'>"
+        f"<style>{_PDF_CSS}</style></head><body>{html_body}</body></html>"
+    )
+    return weasyprint.HTML(string=html_doc).write_pdf()
