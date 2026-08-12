@@ -89,3 +89,103 @@ def serialize_deck_for_fidelity(deck: TeacherDeck) -> str:
         lines.append(f"- {question}")
 
     return "\n".join(lines)
+
+
+def render_teacher_deck_markdown(deck: TeacherDeck) -> str:
+    """Full bilingual (uz/English) lesson-plan markdown for `deck`.
+
+    The ONE markdown source both the readable Notion page and the PDF render
+    from — see the module scene in the fidelity docstring above. Unlike
+    `serialize_deck_for_fidelity` (fact-bearing content only, for the judge),
+    this renders EVERY section including structural/teaching chrome (meta,
+    passport, lesson map, stage timings/badges, rubric) — nothing here is
+    dropped for a human reader.
+
+    Pure function — no I/O, deterministic.
+    """
+    lines: list[str] = []
+
+    lines.append(f"# {deck.meta.topic_number}. {deck.meta.topic_title}")
+    lines.append(
+        f"{deck.meta.subject_label} · {deck.meta.grade} · {deck.meta.lesson_type} · "
+        f"{deck.meta.duration_min} daqiqa"
+    )
+    lines.append("")
+
+    lines.append("## Pasport / Passport")
+    lines.append(f"- **Fan/sinf:** {deck.passport.fan_sinf}")
+    lines.append(f"- **Mavzu:** {deck.passport.mavzu}")
+    lines.append(f"- **Dars turi:** {deck.passport.dars_turi}")
+    lines.append(f"- **Metod:** {deck.passport.metod}")
+    lines.append(f"- **Kerakli vosita:** {deck.passport.kerakli_vosita}")
+    lines.append(f"- **Baholash:** {deck.passport.baholash}")
+    lines.append(f"- **Usullar / Method:** {', '.join(deck.meta.method)}")
+    lines.append(f"- **Materiallar / Materials:** {', '.join(deck.meta.materials)}")
+    if deck.meta.video_ref:
+        lines.append(f"- **Video:** {deck.meta.video_ref}")
+    lines.append("")
+
+    lines.append("## Maqsad / Objectives")
+    lines.append(f"- **Bilib oladi:** {deck.objectives.bilib_oladi}")
+    lines.append(f"- **Qila oladi:** {deck.objectives.qila_oladi}")
+    lines.append(f"- **Tushunadi:** {deck.objectives.tushunadi}")
+    lines.append("")
+
+    lines.append("## Asosiy g'oya / Core idea")
+    lines.append(deck.core_idea.statement)
+    lines.append("")
+    lines.append(deck.core_idea.elaboration)
+    lines.append("")
+
+    lines.append("## Dars xaritasi / Lesson map")
+    for item in sorted(deck.lesson_map, key=lambda i: i.index):
+        lines.append(
+            f"- {item.index}. **{item.title}** — {item.minutes} daqiqa: {item.description}"
+        )
+    lines.append("")
+
+    lines.append("## Bosqichlar / Stages")
+    for stage in sorted(deck.stages, key=lambda s: s.index):
+        lines.append(f"### {stage.index}-bosqich · {stage.title} ({stage.minutes} daqiqa)")
+        lines.append(f"- **O'qituvchi:** {stage.teacher_action}")
+        lines.append(f"- **O'quvchi:** {stage.student_action}")
+        for point in stage.points:
+            lines.append(f"- {point.title}: {point.detail}")
+        if stage.screen_text:
+            lines.append("")
+            lines.append(f"**Ekran:** {stage.screen_text}")
+    lines.append("")
+
+    lines.append("## Test / Quiz")
+    for q in deck.quiz:
+        lines.append(f"**{q.number}. {q.question}**")
+        for opt in q.options:
+            lines.append(f"- {opt.label}) {opt.text}")
+        lines.append(f"_To'g'ri javob: {q.correct_label} · Yordam: {q.hint}_")
+    lines.append("")
+
+    lines.append("## Javoblar kaliti / Answer key")
+    for a in deck.answer_key:
+        lines.append(f"- **{a.number}. ({a.correct_label})** {a.explanation}")
+    lines.append("")
+
+    lines.append("## Juftlikda ish / Pair work")
+    lines.append(deck.pair_work.intro)
+    for task in deck.pair_work.tasks:
+        lines.append(f"- **{task.title}:** {task.prompt}")
+    lines.append("")
+
+    lines.append("## Yakun / Conclusion")
+    for question in deck.conclusion.questions:
+        lines.append(f"- {question}")
+    lines.append("")
+
+    lines.append("## Baholash mezoni / Rubric")
+    for c in deck.rubric.components:
+        lines.append(f"- **{c.title}** — {c.points} ball: {c.detail}")
+    lines.append("")
+    lines.append(f"**Jami / Total: {deck.rubric.total} ball**")
+    for band in deck.rubric.bands:
+        lines.append(f"- {band.range}: {band.grade}")
+
+    return "\n".join(lines)
