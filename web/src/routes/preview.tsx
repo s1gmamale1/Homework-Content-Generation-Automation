@@ -3,7 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useState } from "react";
 import { ArrowLeft, ArrowRight, Download, Loader2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import { Link, useParams } from "react-router-dom";
+import { Link, Navigate, useParams } from "react-router-dom";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
 import { SpaceBackdrop } from "@/components/space-backdrop";
@@ -343,6 +343,12 @@ export function PreviewPage() {
         </div>
       </div>
     );
+  }
+
+  // A teacher_material job has no homework packet to preview — it produces a
+  // structured deck instead. Send it straight to the deck viewer.
+  if (job && job.kind === "teacher_material" && id) {
+    return <Navigate to={`/deck/${id}`} replace />;
   }
 
   if (error || !job || job.status !== "done") {

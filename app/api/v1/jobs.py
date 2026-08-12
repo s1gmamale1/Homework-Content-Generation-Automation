@@ -39,7 +39,7 @@ from app.services.agent_models import (
     validate_role_provider,
     validate_transport,
 )
-from app.services.flows import order_phase_selection, flow_for, selection_missing_prompts
+from app.services.flows import order_phase_selection, flow_for, teacher_material_flow_for, selection_missing_prompts
 from app.services import job_reactivation
 from app.services.providers import PROVIDERS
 from app.services.worker import RUNNING_JOBS
@@ -685,7 +685,10 @@ async def _job_out(session: AsyncSession, job_id: UUID) -> JobOut:
     # already begun. Subset jobs stored their closure; full-packet jobs run the
     # subject's whole flow. Either way `extract` is the head, excluded here.
     try:
-        out.planned_phases = list(job.selected_phases) if job.selected_phases else list(flow_for(job.subject))
+        if getattr(job, "kind", "homework") == "teacher_material":
+            out.planned_phases = list(job.selected_phases) if job.selected_phases else list(teacher_material_flow_for(job.subject))
+        else:
+            out.planned_phases = list(job.selected_phases) if job.selected_phases else list(flow_for(job.subject))
     except KeyError:
         out.planned_phases = list(job.selected_phases or [])
     return out

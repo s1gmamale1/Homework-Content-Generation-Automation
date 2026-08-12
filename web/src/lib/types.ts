@@ -233,6 +233,8 @@ export interface Job {
   book_id: string;
   toc_entry_id: string;
   subject: Subject;
+  /** "homework" | "teacher_material" — see `JobKind`. Routes the FE result link. */
+  kind: JobKind;
   status: JobStatus;
   current_phase: string | null;
   error_message: string | null;

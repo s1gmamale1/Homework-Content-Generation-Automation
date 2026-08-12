@@ -14,7 +14,7 @@ import {
 import { motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { Link, useParams } from "react-router-dom";
+import { Link, Navigate, useParams } from "react-router-dom";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
@@ -24,7 +24,7 @@ import { api } from "@/lib/api";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
 import { totalWarningCount } from "@/lib/phase-warnings";
 import { ApiBadge } from "@/components/fleet/launcher";
-import type { JobStatus, Transport } from "@/lib/types";
+import type { JobKind, JobStatus, Transport } from "@/lib/types";
 import { BACK_PILL, GLASS_BTN, PRIMARY_BTN } from "@/lib/ui";
 import { cn, formatPhaseName, formatTokens } from "@/lib/utils";
 
@@ -59,6 +59,7 @@ export function JobPage() {
     transport: Transport;
   } | null>(null);
   const [status, setStatus] = useState<JobStatus | null>(null);
+  const [kind, setKind] = useState<JobKind | null>(null);
   const [notionSkip, setNotionSkip] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -160,6 +161,7 @@ export function JobPage() {
     api
       .getJob(id)
       .then((j) => {
+        setKind(j.kind);
         setParents({ bookId: j.book_id, sectionId: j.toc_entry_id });
         if (j.provider)
           setAgent({
@@ -297,6 +299,13 @@ export function JobPage() {
 
   const doneCount = visiblePhases.filter((p) => p.status === "done").length;
   const totalCount = visiblePhases.length;
+
+  // A teacher_material job has no homework phases/preview — send it straight
+  // to the deck viewer instead of rendering the homework generation UI. Only
+  // fire once the job has loaded and its kind is known (kind starts null).
+  if (kind === "teacher_material" && id) {
+    return <Navigate to={`/deck/${id}`} replace />;
+  }
 
   return (
     <div className="relative min-h-[calc(100vh-9rem)]">
