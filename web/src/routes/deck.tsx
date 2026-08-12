@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, ArrowRight, Download, Loader2 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import {
@@ -17,9 +17,25 @@ import {
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import { api, ApiError } from "@/lib/api";
 import { springSoft } from "@/lib/motion";
-import type { TeacherDeck } from "@/lib/types";
+import type { TeacherDeck, TeacherDeckMeta } from "@/lib/types";
 import { BACK_PILL, GLASS_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
+
+/**
+ * Builds a filename-friendly document title from a deck's `meta`, e.g.
+ * `11-sinf 19-mavzu 1991–2017-yillarda Hindiston Respublikasi`.
+ * Any segment whose source field is empty/missing is dropped (never
+ * renders `undefined`/`null`); filesystem-hostile characters (`/`, `\`,
+ * newlines) are replaced with `-` since Chrome/Safari derive the print/PDF
+ * suggested filename from `document.title`.
+ */
+export function deckPdfTitle(meta: TeacherDeckMeta): string {
+  const segments: string[] = [];
+  if (meta.grade) segments.push(`${meta.grade}-sinf`);
+  if (meta.topic_number != null) segments.push(`${meta.topic_number}-mavzu`);
+  if (meta.topic_title) segments.push(meta.topic_title);
+  return segments.join(" ").replace(/[/\\\r\n]+/g, "-");
+}
 
 /** One entry in the assembled slide pager. */
 interface SlideEntry {
@@ -238,6 +254,22 @@ export function DeckPage() {
   // interactive pager and the print-only all-slides view render from the
   // exact same array.
   const slides = useMemo(() => (deck ? assembleSlides(deck) : []), [deck]);
+
+  // Chrome/Safari derive the print/PDF suggested filename from
+  // `document.title`. Once the deck has loaded, rename the tab to
+  // grade + topic number + topic title so "Download PDF" saves under a
+  // meaningful name instead of the app's generic title. Restored on
+  // unmount/deck-change so navigating away doesn't leave the tab titled
+  // after a lesson.
+  useEffect(() => {
+    if (!deck) return;
+    const previousTitle = document.title;
+    const title = deckPdfTitle(deck.meta);
+    if (title) document.title = title;
+    return () => {
+      document.title = previousTitle;
+    };
+  }, [deck]);
 
   if (isLoading) {
     return (
