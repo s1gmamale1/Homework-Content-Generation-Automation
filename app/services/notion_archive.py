@@ -27,6 +27,7 @@ from app.repositories import phase_outputs as phase_repo
 from app.services.notion import blocks
 from app.services.notion.client import NotionClientWrapper
 from app.services.notion.page_creator import _normalize, find_or_create
+from app.services.teacher_deck import render_teacher_deck_markdown, render_teacher_deck_pdf
 
 # All generated homeworks are filed under this container, created on demand
 # under the subject page. Human-page matching/adoption is not performed.
@@ -303,6 +304,85 @@ async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md, r
         except Exception as exc:  # noqa: BLE001 - retried, then recorded as a skip
             last_exc = exc
             log.warning("notion: push attempt %d/%d failed: %s",
+                        attempt, _PUSH_MAX_ATTEMPTS, exc)
+            if attempt < _PUSH_MAX_ATTEMPTS:
+                await asyncio.sleep(_PUSH_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+    assert last_exc is not None
+    raise last_exc
+
+
+def _teacher_deck_blocks(client: NotionClientWrapper, deck) -> list[dict]:
+    """Blocks for the Teacher Deck page: the readable page is the PRIMARY
+    deliverable, with the rendered PDF attached at the top when renderable.
+
+    Only the PDF *render* is inside the try/except — a missing native lib
+    (pango/cairo/...) degrades to a page-only write. The `upload_bytes` call
+    is deliberately OUTSIDE the try: a transient Notion 429/network blip must
+    PROPAGATE into `_push_teacher_with_retry` (which exists to retry it), not
+    silently degrade to a PDF-less page that the next archive then skips
+    forever via `page_has_content`."""
+    md = render_teacher_deck_markdown(deck)
+    content = blocks.markdown_to_notion_blocks(md)          # readable page: PRIMARY deliverable
+    try:                                                    # ONLY the render is swallowed
+        pdf = render_teacher_deck_pdf(deck)                 # missing pango/native lib → page-only
+    except Exception as exc:  # noqa: BLE001
+        log.warning("notion: teacher-deck PDF render failed, writing page without attachment: %s", exc)
+        return content
+    # Upload is OUTSIDE the try: a transient Notion 429 / network blip must
+    # propagate into _push_teacher_with_retry (which exists to retry it), NOT
+    # silently degrade to a PDF-less page that the next archive then skips
+    # forever via page_has_content. Distinct filename from the FE slide
+    # export (df4ee5f, same {grade}-sinf {n}-mavzu {title}) — this is the
+    # lesson-plan document.
+    fname = f"{deck.meta.grade}-sinf {deck.meta.topic_number}-mavzu {deck.meta.topic_title} — dars ishlanma.pdf"
+    upload = client.upload_bytes(pdf, fname, "application/pdf")
+    return [blocks.make_file_upload_block(upload, fname), blocks.make_divider(), *content]
+
+
+def _push_teacher_deck_to_notion(
+    *,
+    client: NotionClientWrapper,
+    subject_page_id: str,
+    lesson_title: str,
+    deck,
+    find_or_create: Callable = find_or_create,
+    replace: bool = False,
+    lesson_page_id: Optional[str] = None,
+) -> tuple[str, str]:
+    """Create/adopt Subject → 'Generated Homeworks' → <lesson> → 'Teacher Deck', then write the
+    readable deck page (+ PDF attachment when renderable). Idempotent: a populated page is skipped
+    unless `replace`. Returns `(lesson_id, deck_page_id)`."""
+    container_id, _ = find_or_create(client, subject_page_id, CONTAINER_TITLE)
+    lesson_id = lesson_page_id or find_or_create(client, container_id, lesson_title)[0]
+    deck_id, _ = find_or_create(client, lesson_id, "Teacher Deck")
+    populated = client.page_has_content(deck_id)
+    if populated and not replace:
+        return lesson_id, deck_id               # idempotent skip
+    # Build (render + upload) BEFORE clearing, so a render/upload failure on a force re-archive can
+    # never leave the page emptied — clear_content_blocks runs only once the new body is in hand.
+    body = _teacher_deck_blocks(client, deck)
+    if populated:                                # replace path
+        client.clear_content_blocks(deck_id)
+    client.append_block_children(deck_id, body)
+    return lesson_id, deck_id
+
+
+async def _push_teacher_with_retry(*, client, subject_page_id, lesson_title, deck,
+                                   replace: bool = False,
+                                   lesson_page_id: Optional[str] = None) -> tuple[str, str]:
+    """Run the idempotent teacher-deck push in a worker thread, retrying transient failures with
+    exponential backoff (mirrors `_push_with_retry`). Re-raises the last exception if all fail."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, _PUSH_MAX_ATTEMPTS + 1):
+        try:
+            return await asyncio.to_thread(
+                _push_teacher_deck_to_notion,
+                client=client, subject_page_id=subject_page_id, lesson_title=lesson_title,
+                deck=deck, replace=replace, lesson_page_id=lesson_page_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            log.warning("notion: teacher push attempt %d/%d failed: %s",
                         attempt, _PUSH_MAX_ATTEMPTS, exc)
             if attempt < _PUSH_MAX_ATTEMPTS:
                 await asyncio.sleep(_PUSH_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
