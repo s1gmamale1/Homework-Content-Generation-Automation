@@ -118,45 +118,6 @@ async def test_batch_by_book_ignores_teacher_material_batch():
         await s.rollback()
 
 
-def test_archive_job_skips_teacher_material_job_no_writes_no_notion():
-    """The auto-archive hook must no-op for a teacher-material job: no Notion
-    client touched, no notion_skip_reason write, no session-2 push."""
-    import app.services.notion_archive as na
-
-    jid = uuid4()
-    job = SimpleNamespace(
-        id=jid, kind="teacher_material", notion_archived_at=None,
-        subject="matematika", output_language="uz",
-        book_id=uuid4(), toc_entry_id=uuid4(), status="done", claim_token=None,
-    )
-
-    class _FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def commit(self):
-            return None
-
-    set_skip = AsyncMock()
-    push = AsyncMock()
-    client_cls = MagicMock()
-    with patch.object(na.settings, "notion_enabled", True), \
-         patch.object(na.settings, "notion_api_key", "k"), \
-         patch.object(na, "SessionLocal", lambda: _FakeSession()), \
-         patch.object(na.jobs_repo, "get", AsyncMock(return_value=job)), \
-         patch.object(na.jobs_repo, "set_notion_skip_reason", set_skip), \
-         patch.object(na, "_push_with_retry", push), \
-         patch.object(na, "NotionClientWrapper", client_cls):
-        asyncio.run(na.archive_job(jid))
-
-    set_skip.assert_not_awaited()
-    push.assert_not_awaited()
-    client_cls.assert_not_called()
-
-
 def test_archive_job_still_archives_homework_kind_default():
     """Sanity: a plain job with no `kind` attribute at all (test double, or a
     pre-migration row) still defaults to 'homework' behavior — the guard must

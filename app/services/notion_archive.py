@@ -18,12 +18,15 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from app.config import settings
 from app.db import SessionLocal
 from app.repositories import jobs as jobs_repo
 from app.repositories import books as books_repo
 from app.repositories import toc_entries as toc_repo
 from app.repositories import phase_outputs as phase_repo
+from app.schemas.content_json import TeacherDeck
 from app.services.notion import blocks
 from app.services.notion.client import NotionClientWrapper
 from app.services.notion.page_creator import _normalize, find_or_create
@@ -438,18 +441,16 @@ async def archive_job(
             job = await jobs_repo.get(session, job_id)
             if job is None:
                 return  # gone
-            if getattr(job, "kind", "homework") != "homework":
-                # Task 9: teacher-deck jobs are never pushed to Notion — there is
-                # no `_PAGES` entry a teacher deck could match, so pushing would
-                # only ever end in a skip. Guard here instead of letting every
-                # teacher job earn a permanent notion_skip_reason="no completed
-                # phase outputs" (it has no output_md phase either) and count
-                # forever as "unarchived" in the batch archive rollup.
-                log.info(
-                    "notion: job %s kind=%s — teacher decks are not archived, skipping",
-                    job_id, job.kind,
-                )
-                return
+            # is_teacher branches archive_job below at four points: content
+            # gather (phase_md vs content_json), the skip guard, the push
+            # (_push_with_retry vs _push_teacher_with_retry), and the
+            # pointer-update stamps (homework columns vs
+            # notion_lesson_page_id/notion_teacher_deck_job_id). Subject-page
+            # resolution is kind-independent (keys on subject/grade/language,
+            # which a teacher deck has too) — the real reason decks were
+            # previously skipped here was the missing `output_md` deliverable
+            # (they carry `content_json` instead), not a missing `_PAGES` entry.
+            is_teacher = getattr(job, "kind", "homework") == "teacher_material"
             if not _claim_token_ok(job, claim_token):
                 log.info(
                     "notion: job %s claim_token stale (status=%s) — obsolete worker, "
@@ -504,11 +505,19 @@ async def archive_job(
             # retry on a pre-regen job whose push failed) must never clobber a
             # newer page with stale content. force (operator override) is the
             # only direction-blind path.
-            first_archive = section.notion_homework_page_id is None
             # Captured inside the session: the push runs after it closes.
+            # section_page_id: homework-only (the Homework sub-page id).
+            # section_lesson_page_id: SHARED by both kinds — the one Lesson
+            # Topic page that is parent of both the Homework and Teacher Deck
+            # sub-pages, so either kind can adopt the page the other created.
             section_page_id = section.notion_homework_page_id
             section_lesson_page_id = section.notion_lesson_page_id
-            prior_job_id = section.notion_archived_job_id
+            if is_teacher:
+                first_archive = section.notion_teacher_deck_job_id is None
+                prior_job_id = section.notion_teacher_deck_job_id
+            else:
+                first_archive = section.notion_homework_page_id is None
+                prior_job_id = section.notion_archived_job_id
             auto_replace = False
             if prior_job_id is not None and prior_job_id != job_id:
                 prior_job = await jobs_repo.get(session, prior_job_id)
@@ -519,13 +528,33 @@ async def archive_job(
                         "notion: job %s is not newer than stamped job %s on section %s "
                         "— keeping skip (no auto-replace)",
                         job_id, prior_job_id, section_id)
-            phase_md = {
-                p.phase_name: (p.output_md or "")
-                for p in await phase_repo.list_for_job(session, job_id)
-                if p.status == "done" and p.phase_name != "extract" and (p.output_md or "").strip()
-            }
+            phases = await phase_repo.list_for_job(session, job_id)
+            phase_md: dict[str, str] = {}
+            deck: Optional[TeacherDeck] = None
+            if is_teacher:
+                for p in phases:
+                    if p.phase_name == "teacher-deck" and p.status == "done" and p.content_json is not None:
+                        try:
+                            deck = TeacherDeck.model_validate(p.content_json)
+                        except ValidationError:
+                            deck = None
+                        break
+            else:
+                phase_md = {
+                    p.phase_name: (p.output_md or "")
+                    for p in phases
+                    if p.status == "done" and p.phase_name != "extract" and (p.output_md or "").strip()
+                }
         # session closed — do NOT hold a DB connection during the Notion push
-        if not phase_md:
+        if is_teacher:
+            if deck is None:
+                log.info("notion: job %s has no teacher deck content — skipping", job_id)
+                async with SessionLocal() as session:
+                    await jobs_repo.set_notion_skip_reason(
+                        session, job_id, "no teacher deck content")
+                    await session.commit()
+                return
+        elif not phase_md:
             log.info("notion: job %s has no completed phase outputs — skipping", job_id)
             async with SessionLocal() as session:
                 await jobs_repo.set_notion_skip_reason(
@@ -542,17 +571,29 @@ async def archive_job(
 
         client = NotionClientWrapper(api_key=settings.notion_api_key)
         try:
-            lesson_id, homework_id = await _push_with_retry(
-                client=client,
-                subject_page_id=subject_page_id,
-                lesson_title=lesson_title,
-                phase_md=phase_md,
-                replace=do_replace,
-                # Reuse the page this section already owns, so an ambiguous
-                # title cannot re-key it onto a fresh suffixed page.
-                homework_page_id=section_page_id,
-                lesson_page_id=section_lesson_page_id,
-            )
+            if is_teacher:
+                lesson_id, deck_id = await _push_teacher_with_retry(
+                    client=client,
+                    subject_page_id=subject_page_id,
+                    lesson_title=lesson_title,
+                    deck=deck,
+                    replace=do_replace,
+                    # Reuse the shared lesson page, so an ambiguous title
+                    # cannot re-key the deck onto a fresh suffixed page.
+                    lesson_page_id=section_lesson_page_id,
+                )
+            else:
+                lesson_id, homework_id = await _push_with_retry(
+                    client=client,
+                    subject_page_id=subject_page_id,
+                    lesson_title=lesson_title,
+                    phase_md=phase_md,
+                    replace=do_replace,
+                    # Reuse the page this section already owns, so an ambiguous
+                    # title cannot re-key it onto a fresh suffixed page.
+                    homework_page_id=section_page_id,
+                    lesson_page_id=section_lesson_page_id,
+                )
         except Exception as exc:  # noqa: BLE001 - push exhausted retries; record + give up
             log.warning("notion: push failed for job %s after %d attempts (non-fatal)",
                         job_id, _PUSH_MAX_ATTEMPTS, exc_info=True)
@@ -575,14 +616,24 @@ async def archive_job(
                         job_id, fresh_job.status if fresh_job is not None else "gone",
                     )
                     return
-            await toc_repo.set_notion_homework_page_id(session, section_id, homework_id)
-            if lesson_id is not None and section_lesson_page_id is None:
-                await toc_repo.set_notion_lesson_page_id(session, section_id, lesson_id)
-            if first_archive or do_replace:
-                await toc_repo.set_notion_archived_job(session, section_id, job_id)
-            await jobs_repo.set_notion_archived(session, job_id, _utcnow())
+            if is_teacher:
+                if lesson_id is not None and section_lesson_page_id is None:
+                    await toc_repo.set_notion_lesson_page_id(session, section_id, lesson_id)
+                if first_archive or do_replace:
+                    await toc_repo.set_notion_teacher_deck_job(session, section_id, job_id)
+                await jobs_repo.set_notion_archived(session, job_id, _utcnow())
+            else:
+                await toc_repo.set_notion_homework_page_id(session, section_id, homework_id)
+                if lesson_id is not None and section_lesson_page_id is None:
+                    await toc_repo.set_notion_lesson_page_id(session, section_id, lesson_id)
+                if first_archive or do_replace:
+                    await toc_repo.set_notion_archived_job(session, section_id, job_id)
+                await jobs_repo.set_notion_archived(session, job_id, _utcnow())
             await session.commit()
-        log.info("notion: archived job %s → Homework page %s", job_id, homework_id)
+        if is_teacher:
+            log.info("notion: archived job %s → Teacher Deck page %s", job_id, deck_id)
+        else:
+            log.info("notion: archived job %s → Homework page %s", job_id, homework_id)
     except Exception:
         log.warning("notion: archive failed for job %s (non-fatal)", job_id, exc_info=True)
         await _record_skip(job_id, "archive error")
