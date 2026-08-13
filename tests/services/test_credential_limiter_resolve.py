@@ -166,7 +166,21 @@ def test_settings_reject_sub_one_slot_wait_seconds():
         )
 
 
-def test_settings_defaults():
+def test_settings_defaults(monkeypatch):
+    # `_env_file=None` is NOT enough to see the code defaults: app.config calls
+    # `load_dotenv(override=False)` at import, so the operator's .env is already in
+    # os.environ by the time any test runs, and pydantic-settings reads it from there.
+    # Without this the test asserts the deployment's config rather than the default and
+    # fails on any configured host (seen: a fleet head with
+    # CREDENTIAL_MAX_CONCURRENT_GEMINI=32 turned this into a permanent red).
+    for var in (
+        "CREDENTIAL_MAX_CONCURRENT_GEMINI",
+        "CREDENTIAL_MAX_CONCURRENT_CLAUDE",
+        "CREDENTIAL_MAX_CONCURRENT_CLODEX",
+        "CREDENTIAL_SLOT_WAIT_SECONDS",
+        "PER_ATTEMPT_TIMEOUT_SECONDS",
+    ):
+        monkeypatch.delenv(var, raising=False)
     s = Settings(database_url="postgresql+asyncpg://x/y", _env_file=None)
     assert s.credential_max_concurrent_gemini == 8
     assert s.credential_max_concurrent_claude == 8
