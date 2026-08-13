@@ -12,8 +12,38 @@ from app.repositories import books as books_repo
 from app.repositories import launch_defaults as launch_defaults_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import TOCEntryOut
-from app.services import agent, events_bus
+from app.services import agent, events_bus, toc_ingest_audit
 from app.services.toc_classifier import classify_entries
+
+
+def _merge_verdict(
+    result: "agent.TOCValidationResult | None", audit: toc_ingest_audit.IngestAudit
+) -> tuple[str | None, str | None]:
+    """Fold the deterministic ingest audit into the vision validator's verdict.
+
+    Two independent checks write one pair of columns, so the rules are explicit:
+
+    * **Detail** always carries both — the audit's findings first (they are
+      deterministic and name a concrete row), then the validator's prose.
+    * **Verdict** is the validator's, EXCEPT that a blocking audit finding
+      forces ``mismatch`` — which is what routes the book to ``toc_review``.
+      A blocking finding means "these lessons cannot succeed at any host", and
+      that is true whether or not an LLM was asked for a second opinion.
+    * The audit runs even when ``toc_validation_enabled=False``: that flag
+      gates a *paid vision call*, not a free arithmetic check on rows we just
+      wrote. When it is off and the audit found only advisories, the verdict
+      column stays ``NULL`` (its documented "not validated" value) while the
+      detail still records what ingestion saw — no verdict is invented.
+    """
+    parts: list[str] = []
+    if audit.detail:
+        parts.append(audit.detail)
+    if result is not None and result.detail:
+        parts.append(result.detail)
+    detail = "; ".join(parts) or None
+    if audit.blocking:
+        return "mismatch", detail
+    return (result.status if result is not None else None), detail
 
 
 async def run(book_id: UUID, file_path: Path, subject: str) -> None:
@@ -83,9 +113,23 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
                 "extract_toc_front_pages / extract_toc_back_pages and re-extract."
             )
 
+        # Deterministic ingest guards — free, no model call, run on every book.
+        # Catches at ingestion the two content defects that used to surface only
+        # after a worker had claimed a lesson and fetched the book: an inverted
+        # page range (`cannot scope page range 35-34`, 3 lessons) and a scanned
+        # PDF with no text layer (`sparse text layer (1 chars/page)`, 12 lessons
+        # across 5 hosts re-discovering one bad book). Off-by-one inversions are
+        # repaired IN PLACE on `extracted.entries` here, before bulk_create, so
+        # the row is never persisted inverted; everything else is surfaced.
+        # See app/services/toc_ingest_audit.py for the repair-vs-surface policy.
+        audit = toc_ingest_audit.audit_book(extracted.entries, file_path)
+        log.info(f"[book {book_id}] ingest audit | {audit.summary}")
+        for line in (*audit.blocking, *audit.repairs, *audit.advisory):
+            log.warning(f"[book {book_id}] ingest audit: {line}")
+
         # Soft-gate: run vision validator BEFORE persisting status.
-        # Disabled (toc_validation_enabled=False) → result stays None → behaves
-        # exactly like today (toc_ready, no toc_validation DB row written).
+        # Disabled (toc_validation_enabled=False) → result stays None → the
+        # verdict column stays NULL unless the ingest audit has something to say.
         result = None
         if settings.toc_validation_enabled:
             result = await agent.validate_toc(
@@ -98,6 +142,9 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
                 transport=toc_transport,
             )
 
+        # One verdict/detail pair from two independent checks (see _merge_verdict).
+        verdict, detail = _merge_verdict(result, audit)
+
         # Persist entries + flip status (toc_review on mismatch, toc_ready otherwise)
         async with SessionLocal() as session:
             # Clear-before-insert so a re-extract replaces rather than appends
@@ -109,17 +156,14 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
             # book (ingest_pdf) has no jobs yet.
             await toc_repo.delete_for_book(session, book_id)
             rows = await toc_repo.bulk_create(session, book_id, extracted.entries)
-            final_status = (
-                "toc_review" if (result is not None and result.status == "mismatch")
-                else "toc_ready"
-            )
+            final_status = "toc_review" if verdict == "mismatch" else "toc_ready"
             await books_repo.set_status(session, book_id, final_status)
             if final_status == "toc_ready":
                 await books_repo.set_toc_ready_at(session, book_id)
-            if result is not None:
-                await books_repo.set_toc_validation(
-                    session, book_id, result.status, result.detail or None
-                )
+            # Write the audit trail whenever EITHER check produced something.
+            # A clean book with the vision gate disabled still writes nothing.
+            if verdict is not None or detail is not None:
+                await books_repo.set_toc_validation(session, book_id, verdict, detail)
             await session.commit()
             entries_out = [TOCEntryOut.model_validate(r) for r in rows]
             # Enrich with entry_class so the live SSE push matches the REST
@@ -133,19 +177,33 @@ async def run(book_id: UUID, file_path: Path, subject: str) -> None:
         )
         log.info(
             f"[book {book_id}] toc validation: "
-            f"{result.status if result else 'disabled'} → status={final_status}"
+            f"{result.status if result else 'disabled'} | ingest audit: "
+            f"{'blocking' if audit.blocking else ('findings' if audit.has_findings else 'clean')} "
+            f"→ status={final_status}"
         )
 
         # Refetch invariant (events_bus): entries are committed above BEFORE
         # these publishes — an oversized payload's __refetch__ marker makes
         # the SSE endpoint re-read them. Do not reorder publish before commit.
         if final_status == "toc_review":
+            # `result` can legitimately be None here — a blocking ingest finding
+            # routes to review on its own, with the vision validator disabled or
+            # skipped — so the payload is built from the merged verdict, not from
+            # `result.status` (which would AttributeError).
             await events_bus.publish(
                 resource_id,
                 "toc_review",
                 {
                     "entries": [e.model_dump(mode="json") for e in entries_out],
-                    "validation": {"verdict": result.status, "issues": result.issues},
+                    "validation": {
+                        "verdict": verdict,
+                        "issues": [
+                            *(result.issues if result is not None else []),
+                            *audit.blocking,
+                            *audit.repairs,
+                            *audit.advisory,
+                        ],
+                    },
                 },
             )
         else:
