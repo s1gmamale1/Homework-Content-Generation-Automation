@@ -3,9 +3,9 @@ limiter (BE-16 tasks 3-4). RUN_DB_INTEGRATION=1 against a scratch DB
 (edu_scratch_credlim) — pin 127.0.0.1 (see scratch-db-localhost-dual-server
 trap in memory: localhost can resolve to a DIFFERENT server via IPv6).
 
-Each concurrent-acquirer task opens its OWN SessionLocal()/connection
-(never share one session across the two acquires) — the advisory xact lock
-would otherwise deadlock against itself within a single session/tx.
+Each concurrent-acquirer task opens its OWN SessionLocal()/connection —
+that is what makes these tests a real stand-in for separate fleet hosts
+rather than one process talking to itself.
 
 Task 4 additions (below the task-3 acquire/release/sweep bites-proofs) cover
 ``resolve_limit`` against REAL ``sa_keys`` rows: a project override winning,
@@ -87,6 +87,195 @@ async def test_limit_one_two_concurrent_acquires_one_wins_second_waits_then_wins
     assert await _count_rows(cred) == 0
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# The 2026-08 production defect: every slot acquisition fleet-wide serialized
+# through ONE `pg_advisory_xact_lock(hashtext(credential))`, because all 38
+# hosts share one Gemini key and therefore hash to the same lock. Measured:
+# 75 connections blocked on it, longest wait 822s, 54 of a 900-slot ceiling
+# in use. The two tests below are the regression proofs.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def test_acquire_is_unaffected_by_the_old_fleet_wide_advisory_lock():
+    """Nothing may serialize on a single per-credential advisory lock.
+
+    RED-proof: hold the exact lock the old implementation took and then try
+    to acquire. The old code blocked inside `pg_advisory_xact_lock` — which
+    is NOT bounded by `wait_budget_s` (the budget is only consulted between
+    polls), so it would hang here, pinning a pool connection, until the outer
+    `wait_for` fired. That is precisely the production symptom.
+    """
+    from app.services import credential_limiter
+
+    cred = _cred("nolock")
+
+    async with SessionLocal() as blocker:
+        async with blocker.begin():
+            await blocker.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:cred))"), {"cred": cred}
+            )
+            slot = await asyncio.wait_for(
+                credential_limiter.acquire(cred, 4, wait_budget_s=5.0), timeout=15.0
+            )
+
+    assert slot is not None, "acquire must not depend on a fleet-wide advisory lock"
+    await credential_limiter.release(slot)
+    assert await _count_rows(cred) == 0
+
+
+async def test_fleet_of_concurrent_acquirers_is_exact_and_takes_no_advisory_lock():
+    """A whole fleet hammering ONE credential at once: the ceiling holds
+    exactly, and no advisory lock is taken at any point.
+
+    RED-proof (two independent ways): on the old implementation every one of
+    these acquisitions took `pg_advisory_xact_lock`, so (a) the watcher below
+    observes advisory locks instead of zero, and (b) they ran strictly one at
+    a time — the whole point of the fix is that they no longer do.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.config import settings
+    from app.services import credential_limiter
+
+    cred = _cred("fleet")
+    limit, hosts = 24, 48
+
+    # Each simulated host gets its own connection. The app engine's pool is
+    # sized for ONE worker process (`db._pool_config`), so reusing it would
+    # serialize this test at the pool rather than exercising the DB.
+    engine = create_async_engine(
+        settings.database_url, pool_size=hosts, max_overflow=0
+    )
+    fleet_sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    held: set[object] = set()
+    peak_held = 0
+    advisory_samples: list[int] = []
+    row_samples: list[int] = []
+    stop = asyncio.Event()
+
+    async def watcher() -> None:
+        """Sample the two things that must never happen: an advisory lock
+        being taken, and more rows alive than the ceiling allows."""
+        async with SessionLocal() as session:
+            while not stop.is_set():
+                advisory_samples.append(
+                    (
+                        await session.execute(
+                            # Scoped to THIS database on purpose: pg_locks is
+                            # cluster-wide, and a scratch DB usually shares a
+                            # server with other databases whose own advisory
+                            # locks are none of this test's business.
+                            text(
+                                "SELECT count(*) FROM pg_locks "
+                                "WHERE locktype = 'advisory' "
+                                "AND database = ("
+                                "  SELECT oid FROM pg_database "
+                                "  WHERE datname = current_database())"
+                            )
+                        )
+                    ).scalar_one()
+                )
+                row_samples.append(
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT count(*) FROM credential_slots "
+                                "WHERE credential = :cred"
+                            ),
+                            {"cred": cred},
+                        )
+                    ).scalar_one()
+                )
+                await asyncio.sleep(0.003)
+
+    async def host(i: int) -> bool:
+        nonlocal peak_held
+        slot = await credential_limiter.acquire(cred, limit, wait_budget_s=20.0)
+        if slot is None:
+            return False
+        held.add(slot)
+        peak_held = max(peak_held, len(held))
+        await asyncio.sleep(0.02)  # stand in for the model call
+        held.discard(slot)
+        await credential_limiter.release(slot)
+        return True
+
+    watch_task = asyncio.create_task(watcher())
+    try:
+        with patch.object(credential_limiter, "SessionLocal", fleet_sessions):
+            results = await asyncio.gather(*[host(i) for i in range(hosts)])
+    finally:
+        stop.set()
+        await watch_task
+        await engine.dispose()
+
+    assert all(results), "every host must eventually get a slot inside its budget"
+    assert peak_held <= limit, f"ceiling exceeded: {peak_held} concurrent holders > {limit}"
+    assert max(row_samples) <= limit, (
+        f"ceiling exceeded in the table: {max(row_samples)} live rows > {limit}"
+    )
+    assert advisory_samples, "watcher never sampled"
+    assert max(advisory_samples) == 0, (
+        "an advisory lock was taken — slot acquisition is serializing "
+        f"fleet-wide again (peak {max(advisory_samples)})"
+    )
+    assert await _count_rows(cred) == 0
+
+
+async def test_waiting_acquirer_holds_no_db_connection_across_its_poll_sleep():
+    """A *waiting* worker must not pin a connection from the same tiny pool
+    (2+2 per worker process) that the real jobs need. Every poll opens its
+    own session and closes it before sleeping."""
+    from app.services import credential_limiter
+
+    cred = _cred("nopin")
+    blocker = await credential_limiter.acquire(cred, 1, wait_budget_s=5.0)
+    assert blocker is not None
+
+    live = 0
+    live_at_sleep: list[int] = []
+    real_session_local = credential_limiter.SessionLocal
+
+    class _CountingSession:
+        def __init__(self) -> None:
+            self._inner = real_session_local()
+
+        async def __aenter__(self):
+            nonlocal live
+            live += 1
+            return await self._inner.__aenter__()
+
+        async def __aexit__(self, *exc):
+            nonlocal live
+            live -= 1
+            return await self._inner.__aexit__(*exc)
+
+    real_sleep = asyncio.sleep
+
+    async def _watching_sleep(seconds):
+        live_at_sleep.append(live)
+        raise _StopPolling()
+
+    class _StopPolling(Exception):
+        pass
+
+    try:
+        with patch.object(credential_limiter, "SessionLocal", _CountingSession):
+            with patch.object(
+                credential_limiter.asyncio, "sleep", _watching_sleep
+            ):
+                with pytest.raises(_StopPolling):
+                    await credential_limiter.acquire(cred, 1, wait_budget_s=30.0)
+    finally:
+        await credential_limiter.release(blocker)
+        assert real_sleep is asyncio.sleep
+
+    assert live_at_sleep == [0], (
+        f"a poller held {live_at_sleep} connection(s) across its sleep"
+    )
+
+
 async def test_second_acquirer_times_out_with_small_wait_budget():
     from app.services import credential_limiter
 
@@ -109,29 +298,47 @@ async def test_stale_row_does_not_count_and_sweep_deletes_it():
     cred = _cred("stale")
     ttl = credential_limiter.STALE_TTL_SECONDS
 
+    async def _insert_stale() -> object:
+        async with SessionLocal() as session:
+            async with session.begin():
+                return (
+                    await session.execute(
+                        text(
+                            "INSERT INTO credential_slots "
+                            "(credential, slot_index, pc_id, acquired_at) "
+                            "VALUES (:cred, 0, 'stale-host:1', "
+                            "        now() - make_interval(secs => :backdate)) "
+                            "RETURNING id"
+                        ),
+                        {"cred": cred, "backdate": ttl + 300},
+                    )
+                ).scalar_one()
+
     # Backdate a slot row well past the TTL — a stale slot from a worker that
     # crashed without releasing.
-    async with SessionLocal() as session:
-        async with session.begin():
-            await session.execute(
-                text(
-                    "INSERT INTO credential_slots (credential, pc_id, acquired_at) "
-                    "VALUES (:cred, 'stale-host:1', now() - make_interval(secs => :backdate))"
-                ),
-                {"cred": cred, "backdate": ttl + 300},
-            )
+    stale_id = await _insert_stale()
 
     # limit=1 but the only existing row is stale — a fresh acquire must
     # still succeed (the stale row must not count against the limit).
     slot = await credential_limiter.acquire(cred, 1, wait_budget_s=2.0)
     assert slot is not None
 
-    await credential_limiter.release(slot)
-
-    # release() only removed the fresh row — the original stale row is still
-    # sitting there (nothing but sweep/explicit-delete touches stale rows).
+    # CHANGED with migration 0060: the stale row's slot index is TAKEN OVER
+    # in place rather than left behind for sweep() to find, so a crashed
+    # holder can never park on a slot index. There is exactly one row, and it
+    # carries a NEW id — which is what stops the crashed holder's late
+    # release() from deleting the slot its successor now owns.
+    assert slot != stale_id
     assert await _count_rows(cred) == 1
 
+    await credential_limiter.release(stale_id)  # the dead holder, waking up late
+    assert await _count_rows(cred) == 1, "a late release must not free someone else's slot"
+
+    await credential_limiter.release(slot)
+    assert await _count_rows(cred) == 0
+
+    # sweep() still reaps a stale row that nobody re-claimed in the meantime.
+    await _insert_stale()
     deleted = await credential_limiter.sweep()
     assert deleted >= 1
     assert await _count_rows(cred) == 0

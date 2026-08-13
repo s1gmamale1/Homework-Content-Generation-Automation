@@ -73,8 +73,13 @@ async def test_0047_credential_slots_table_and_sa_keys_column():
         assert not await _has_table(engine, "credential_slots")
         assert not await _has_column(engine, "sa_keys", "max_concurrent_calls")
 
-        # --- GREEN: upgrade to head (0047) creates both ---
-        _run_alembic(["upgrade", "head"])
+        # --- GREEN: upgrading to 0047 creates both ---
+        # Pinned to 0047 rather than `head` (0047 WAS head when this was
+        # written): this test asserts the shape 0047 itself produces, and the
+        # raw INSERT below deliberately omits every column 0047 does not add.
+        # 0060 later adds a NOT NULL `credential_slots.slot_index`, which that
+        # insert must not have to know about.
+        _run_alembic(["upgrade", "0047_credential_slots"])
         assert await _has_table(engine, "credential_slots")
         assert await _has_column(engine, "sa_keys", "max_concurrent_calls")
 
