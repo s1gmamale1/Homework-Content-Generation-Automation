@@ -33,6 +33,17 @@ def test_phase_error_message_never_blank():
     (RuntimeError("socket connection closed unexpectedly"), True),  # transient
     (RuntimeError("malformed response envelope"), False),    # hard
     (RuntimeError("quota exceeded for project"), False),     # wall stays terminal
+    # REGRESSION (2026-08-13): httpx's ConnectError text matched neither
+    # `agent._TRANSIENT_NET_TERMS` nor `failure_classifier._TRANSIENT`, so this
+    # returned False and the job went terminal at attempts=1 of 3 — on a host
+    # that was healthy seconds later. google-genai speaks httpx.
+    (RuntimeError(
+        "practice-jigsaw: phase.run practice-jigsaw: gemini api call failed "
+        "rc=1: All connection attempts failed :: All connection attempts failed"
+    ), True),
+    # The permanent shapes must stay terminal — retries bill real $.
+    (RuntimeError("401 UNAUTHENTICATED"), False),
+    (RuntimeError("prompt is too long"), False),
 ])
 def test_requeue_worthy_classes(exc, expected):
     assert pipeline._requeue_worthy(exc) is expected
