@@ -2684,8 +2684,8 @@ that lane rewrites `notion_archive.py` wholesale and must re-absorb `_push_teach
 (no generation billed by this work)** · ⚠️ **NOT DEPLOYED — see "Deploy owed" at the end.**
 
 **What:** two waves of fixes so the generation fleet can run every host at once, plus the
-field work that grew it from 15 to 40 live workers. Test suite **2739 passing**, single
-alembic head `0062_cap_pause_provenance`.
+field work that grew it from 15 to 40 live workers. Test suite **2749 passing / 513 skipped**,
+single alembic head `0062_cap_pause_provenance`.
 
 **Why this exists:** a 38-host × 4-worker test run produced only **~3.2 lessons/min against a
 theoretical ~23**, i.e. **25% utilisation**, while the Gemini API sat at 0.65 calls/sec —
@@ -2744,6 +2744,34 @@ Supporting fixes in the same wave:
   are inverted by 9–20 pages — genuinely corrupt, deliberately left for human review** rather
   than auto-"repaired".
 - **Batch stagger**: per-request `wave_size` / `wave_interval_seconds` override.
+
+### Wave 2 tail — the two residuals, closed
+
+- **Cross-process book fetch** (`r13-fetch-2`). The earlier fix deduped N *coroutines* and N
+  *threads* in one interpreter; `_book_locks` are module globals, so a host running two worker
+  processes still opened two full 237 MB transfers. Dedup is now **three layers deep** —
+  `asyncio.Lock` (coroutines) → `threading.Lock` (threads) → **OS lock on `source.pdf.lock`**
+  (processes). The payload is the **re-check after acquiring**: the winner promotes via atomic
+  rename, so the loser wakes, sees a complete file, and never opens a socket. Deliberately an
+  OS lock (`fcntl.flock` / `msvcrt.locking`) and **not** a "lockfile exists ⇒ held" scheme —
+  the kernel drops it on SIGKILL or power loss, whereas a presence-based file strands the book
+  on the first killed worker and then needs a staleness heuristic, which is a deadlock with
+  extra steps. Polled non-blockingly so the wait obeys the same `BOOK_FETCH_TIMEOUT_SECONDS`
+  budget (POSIX `LOCK_EX` takes no timeout; Windows' blocking `LK_LOCK` has a hardcoded ~10s
+  one). **No new threads** — one `to_thread` per book per process still, so the executor
+  starvation bug stays fixed (its `peak_in_thread == 1` test still passes). The lock file is
+  never unlinked, avoiding the unlink/inode race. Tests use **real subprocesses and real second
+  file descriptors** — an OS lock is worth what the OS enforces, and a mock proves nothing;
+  RED was 3 downloads from 3 processes.
+- **asyncio loop leak between integration tests.** `test_migration_0045_archived_job.py` was a
+  *sync* test reaching the DB via `asyncio.run(_check())` while using the **process-wide**
+  `app.db.engine`. asyncpg binds a connection to the loop that opened it and SQLAlchemy's pool
+  does not track loop affinity, so the connection was returned to the shared pool *alive* and
+  `asyncio.run` then closed the loop under it — poisoning the pool for everyone. It bit both
+  directions, which is why it read as someone else's bug: run 0045 first and the *next* file
+  fails; run anything else first and 0045 itself dies on a pooled connection. Made `async def`
+  like every sibling. Verified A/B on two fresh scratch DBs: 3 failed → 2 failed (the 2
+  residual are an unrelated pre-existing defect, identical in both runs).
 
 ### Field work (applied to the machines, not the repo)
 
