@@ -1,7 +1,7 @@
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -349,24 +349,49 @@ async def list_jobs(session: AsyncSession, batch_id: UUID) -> list[dict]:
 
 
 async def pause_batch(
-    session: AsyncSession, batch_id: UUID, reason: str
+    session: AsyncSession,
+    batch_id: UUID,
+    reason: str,
+    *,
+    cap_usd: Optional[float] = None,
+    paused_by: Optional[str] = None,
 ) -> None:
     """Gate a batch: set paused_at=now() + paused_reason. Does NOT alter any
     job row — pause affects only claim eligibility, never cancels in-flight work
-    ('never hard-cancel paid work' contract)."""
+    ('never hard-cancel paid work' contract).
+
+    `cap_usd` / `paused_by` are the pause's PROVENANCE (migration 0062): the
+    effective cap the deciding worker held and its worker id
+    (`hostname:pid@sha`). The budget monitor always supplies both; the manual
+    operator pause leaves them NULL. Without them a worker holding a different
+    cap cannot tell whose decision it would be reversing — see `clear_cap_pause`.
+    """
     await session.execute(
         update(Batch)
         .where(Batch.id == batch_id)
-        .values(paused_at=func.now(), paused_reason=reason)
+        .values(
+            paused_at=func.now(),
+            paused_reason=reason,
+            paused_cap_usd=cap_usd,
+            paused_by=paused_by,
+        )
     )
 
 
 async def unpause_batch(session: AsyncSession, batch_id: UUID) -> None:
-    """Lift the gate: clear paused_at + paused_reason for one batch."""
+    """Lift the gate unconditionally: clear the pause columns for one batch.
+
+    This is the OPERATOR escape hatch (POST /jobs/batch/{id}/unpause) — it
+    ignores provenance on purpose, so a human can always release a batch the
+    fleet is holding. The budget monitor must NOT use it: an automatic clear
+    goes through `clear_cap_pause`, which refuses to relax another host's
+    decision.
+    """
     await session.execute(
         update(Batch)
         .where(Batch.id == batch_id)
-        .values(paused_at=None, paused_reason=None)
+        .values(paused_at=None, paused_reason=None,
+                paused_cap_usd=None, paused_by=None)
     )
 
 
@@ -377,7 +402,8 @@ async def unpause_by_reason(session: AsyncSession, reason: str) -> int:
         update(Batch)
         .where(Batch.paused_at.is_not(None))
         .where(Batch.paused_reason == reason)
-        .values(paused_at=None, paused_reason=None)
+        .values(paused_at=None, paused_reason=None,
+                paused_cap_usd=None, paused_by=None)
     )
     return result.rowcount or 0
 
@@ -393,8 +419,9 @@ async def active_batch_ids(session: AsyncSession) -> list[UUID]:
 async def paused_batch_ids_by_reason(session: AsyncSession, reason: str) -> list[UUID]:
     """Return ids of all batches paused with the given reason.
 
-    Used by the budget monitor to reconcile its OWN pauses without touching
-    batches paused by a different reason (e.g. C5 manual / fleet gate).
+    Reason-scoped so a reconcile never touches batches paused for a different
+    reason (e.g. C5 manual / fleet gate). The budget monitor wants the pause
+    PROVENANCE too, so it reads `paused_cap_records` instead.
     """
     rows = await session.execute(
         select(Batch.id)
@@ -402,3 +429,68 @@ async def paused_batch_ids_by_reason(session: AsyncSession, reason: str) -> list
         .where(Batch.paused_reason == reason)
     )
     return list(rows.scalars().all())
+
+
+async def paused_cap_records(
+    session: AsyncSession, reason: str
+) -> list[tuple[UUID, Optional[float], Optional[str]]]:
+    """`(batch_id, paused_cap_usd, paused_by)` for every batch paused with this
+    reason — the reconcile worklist for the budget monitor.
+
+    The monitor needs the cap and the deciding worker, not just the id: the
+    pause is a fleet-wide flag decided from one host's env cap, so "may I lift
+    this?" is answerable only against the cap it was set under.
+    """
+    rows = await session.execute(
+        select(Batch.id, Batch.paused_cap_usd, Batch.paused_by)
+        .where(Batch.paused_at.is_not(None))
+        .where(Batch.paused_reason == reason)
+        .order_by(Batch.id)
+    )
+    return [(r.id, r.paused_cap_usd, r.paused_by) for r in rows.all()]
+
+
+async def clear_cap_pause(
+    session: AsyncSession,
+    batch_id: UUID,
+    *,
+    reason: str,
+    worker_cap_usd: float,
+    worker_host: str,
+) -> bool:
+    """Automatic (worker-driven) lift of a cap pause, guarded IN SQL so no
+    caller can bypass the fleet-safety rule and so two workers reconciling the
+    same tick cannot race past each other.
+
+    The UPDATE only fires when this worker is not RELAXING another host's
+    decision — i.e. one of:
+      * the pause carries no provenance (pre-0062 / paused by an older worker):
+        historical permissive behavior, so those rows drain instead of sticking;
+      * this worker runs on the host that decided the pause (it may revise its
+        own decision — e.g. the operator raised or disabled the cap there);
+      * this worker's own cap is at least as strict as the recorded one
+        (`paused_cap_usd >= worker_cap_usd`, with a disabled cap — <= 0 — being
+        the loosest possible and therefore never qualifying).
+
+    Mirrors `worker._may_lift_cap_pause`; that one decides + logs, this one
+    enforces. Returns True iff a row was actually cleared.
+    """
+    entitled = [
+        # No provenance recorded — legacy pause, keep the old semantics.
+        Batch.paused_cap_usd.is_(None),
+        # The deciding host itself (worker id is `hostname:pid@sha`).
+        func.split_part(func.coalesce(Batch.paused_by, ""), ":", 1) == worker_host,
+    ]
+    if worker_cap_usd > 0:
+        # At least as strict as whoever paused it.
+        entitled.append(Batch.paused_cap_usd >= worker_cap_usd)
+    result = await session.execute(
+        update(Batch)
+        .where(Batch.id == batch_id)
+        .where(Batch.paused_at.is_not(None))
+        .where(Batch.paused_reason == reason)
+        .where(or_(*entitled))
+        .values(paused_at=None, paused_reason=None,
+                paused_cap_usd=None, paused_by=None)
+    )
+    return (result.rowcount or 0) > 0

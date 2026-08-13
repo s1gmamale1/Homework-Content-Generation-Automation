@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, ForeignKey, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, Double, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -50,6 +50,14 @@ class Batch(Base, UUIDPK, Timestamps):
     # Pause primitive (C5 fleet-ctrl-3 reuses this). NULL = not paused.
     paused_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     paused_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Cap-pause provenance (migration 0062). `paused_at` is a FLEET-WIDE flag but
+    # the budget monitor decides it from a per-host env cap, so a pause must say
+    # WHICH cap tripped it and WHICH worker decided — otherwise a host holding a
+    # looser cap silently reverses a stricter host's decision (the uneven-rollout
+    # flip-flop) and the operator has nothing to look at. NULL on a manual pause
+    # or a pre-0062 cap pause.
+    paused_cap_usd: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
+    paused_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     # Session-limit strategy: what the worker does when a Claude session-limit hits.
     # "pause" = pause the batch and wait for the session to reset.
     # "switch" = switch to the failover provider and continue.

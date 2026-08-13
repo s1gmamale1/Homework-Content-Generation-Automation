@@ -173,6 +173,67 @@ def _worker_id() -> str:
     return f"{base}@{sha}" if sha else base
 
 
+def _pause_host(paused_by: str | None) -> str | None:
+    """Host segment of a worker id (`hostname:pid@sha` — see `_worker_id`).
+
+    Ownership of a cap pause is per HOST, not per process: a worker restart
+    mints a new pid (and a deploy a new sha), and the operator's cap lives in
+    that host's env, so the host is the unit that holds an opinion about cost.
+    """
+    if not paused_by:
+        return None
+    return paused_by.split(":", 1)[0]
+
+
+def _fmt_cap(cap_usd: float) -> str:
+    """Render an effective cap for the log: `$50.0000`, or "disabled" for <= 0."""
+    return f"${cap_usd:.4f}" if cap_usd > 0 else "disabled (no ceiling)"
+
+
+def _may_lift_cap_pause(
+    *,
+    worker_cap_usd: float,
+    worker_host: str,
+    paused_cap_usd: float | None,
+    paused_by: str | None,
+) -> bool:
+    """May THIS worker lift a cap pause that was decided under `paused_cap_usd`?
+
+    `batches.paused_at` / `budget_state.api_paused_at` gate the WHOLE fleet, but
+    each worker evaluates the cap from its own env. So a lift is only safe when
+    it does not RELAX another host's decision:
+
+      * no provenance recorded (`paused_cap_usd is None`) — a manual pause is
+        reason-scoped away before we get here, so this is a pre-0062 cap pause
+        or one written by a worker running older code. Keep the historical
+        permissive behavior so those rows drain rather than stick forever.
+      * this worker runs on the host that decided the pause — it is revising its
+        OWN decision (the operator raised or disabled the cap there), which is
+        also how the gate self-heals once an uneven rollout reaches that host.
+      * this worker's cap is at least as strict as the recorded one. A DISABLED
+        cap (<= 0) is the loosest setting there is — "no ceiling", not "no
+        opinion" — so it never qualifies for someone else's pause.
+
+    The strictest cap in the fleet therefore wins, and the flip-flop is gone:
+    the looser worker simply logs the divergence and leaves the gate alone.
+    Enforced again in SQL by `batches_repo.clear_cap_pause` /
+    `budget_repo.clear_api_pause_if_entitled`, so no caller can skip it.
+
+    Two residual cases this does NOT cover, both self-limiting:
+      * a worker still running PRE-0062 code clears through the unguarded
+        `unpause_batch` — it knows nothing about provenance. The flap ends when
+        every host runs this code.
+      * two worker processes on the SAME host holding different in-memory caps
+        (a partial restart after an env edit) both count as the owner. The flap
+        ends when that host's processes have all been restarted.
+    """
+    if paused_cap_usd is None:
+        return True
+    if worker_host and _pause_host(paused_by) == worker_host:
+        return True
+    return worker_cap_usd > 0 and paused_cap_usd >= worker_cap_usd
+
+
 def _warn_if_gemini_selected_type() -> None:
     """Advisory startup guard (spec §4): if `~/.gemini/settings.json` carries
     `security.auth.selectedType`, an interactive gemini run has re-persisted it.
@@ -769,19 +830,31 @@ class Worker:
         Runs at most once per `settings.cost_check_interval_seconds`. One
         session for the whole check — all reads/writes are consistent within it.
 
+        Both gates are FLEET-WIDE flags decided from a PER-HOST env cap, so
+        every pause is stamped with the cap that tripped it and the worker that
+        decided it, and a lift is refused when it would relax another host's
+        decision (`_may_lift_cap_pause` + the SQL guard in the repos). Without
+        that, an uneven cap rollout makes the gate flap: the 2026-08 38-host
+        operation had 7 hosts on COST_CAP_BATCH_USD=50 and 31 on 2000, so a
+        stale worker paused a batch and a patched worker unpaused it on the next
+        tick, every tick, with nothing in the DB naming the culprit.
+
         Per-batch gate (reason="batch-cap"):
           For each active (un-paused) batch: if its api spend exceeds
-          cost_cap_batch_usd (and the cap is enabled), pause it.
-          For each batch already paused with reason "batch-cap": if its cost
-          is now at/under cap (or the cap was disabled), unpause it.
-          Batches paused with a DIFFERENT reason (manual/fleet) are never touched.
+          cost_cap_batch_usd (and the cap is enabled), pause it — recording
+          (cap, this worker id).
+          For each batch already paused with reason "batch-cap": lift it only if
+          this worker is entitled to (see `_may_lift_cap_pause`) AND its cost is
+          now at/under THIS worker's cap (or this host disabled the cap it had
+          itself decided under). Batches paused with a DIFFERENT reason
+          (manual/fleet) are never touched.
 
         Fleet gate (reason="fleet-daily-cap"):
           If fleet api spend over the last 24h exceeds cost_cap_fleet_daily_usd
-          (and the cap is enabled), set the fleet-level api pause.
-          If the fleet is paused with reason "fleet-daily-cap" and cost is now
-          at/under cap (or the cap disabled), clear it.
-          Only reconciles its OWN reason — never clears a manual fleet pause.
+          (and the cap is enabled), set the fleet-level api pause — the
+          strictest claimant owns the record. Clear it only under the same
+          entitlement rule. Only reconciles its OWN reason — never clears a
+          manual fleet pause.
         """
         if (
             settings.cost_cap_batch_usd <= 0
@@ -800,26 +873,44 @@ class Worker:
                             if cost > cap:
                                 logger.warning(
                                     f"budget-monitor: batch={batch_id} api cost ${cost:.4f} "
-                                    f"> cap ${cap:.4f} — pausing (batch-cap)"
+                                    f"> cap ${cap:.4f} — pausing (batch-cap) by {self.id}"
                                 )
-                                await batches_repo.pause_batch(session, batch_id, "batch-cap")
+                                await batches_repo.pause_batch(
+                                    session, batch_id, "batch-cap",
+                                    cap_usd=cap, paused_by=self.id,
+                                )
 
-                    # Reconcile: batch-cap-paused batches now at/under cap → unpause
-                    for batch_id in await batches_repo.paused_batch_ids_by_reason(session, "batch-cap"):
-                        if cap <= 0:
-                            # Cap disabled — clear our own pause
-                            await batches_repo.unpause_batch(session, batch_id)
-                            logger.info(
-                                f"budget-monitor: batch={batch_id} batch-cap disabled — unpausing"
+                    # Reconcile: batch-cap pauses THIS worker is entitled to lift
+                    # and whose cost is now at/under its own cap.
+                    for batch_id, paused_cap, paused_by in await batches_repo.paused_cap_records(
+                        session, "batch-cap"
+                    ):
+                        if not _may_lift_cap_pause(
+                            worker_cap_usd=cap, worker_host=self.hostname,
+                            paused_cap_usd=paused_cap, paused_by=paused_by,
+                        ):
+                            logger.warning(
+                                f"budget-monitor: batch={batch_id} STAYS paused — decided by "
+                                f"{paused_by} at cap ${paused_cap:.4f}, this worker's cap is "
+                                f"{_fmt_cap(cap)} (looser). Fleet cap divergence: align "
+                                f"COST_CAP_BATCH_USD across the fleet, or unpause the batch "
+                                f"from the operator UI."
                             )
-                        else:
+                            continue
+                        if cap > 0:
                             cost = await cost_repo.batch_api_cost_usd(session, batch_id)
-                            if cost <= cap:
-                                logger.info(
-                                    f"budget-monitor: batch={batch_id} api cost ${cost:.4f} "
-                                    f"<= cap ${cap:.4f} — unpausing"
-                                )
-                                await batches_repo.unpause_batch(session, batch_id)
+                            if cost > cap:
+                                continue
+                            why = f"api cost ${cost:.4f} <= cap ${cap:.4f}"
+                        else:
+                            why = "batch-cap disabled on the deciding host"
+                        if await batches_repo.clear_cap_pause(
+                            session, batch_id, reason="batch-cap",
+                            worker_cap_usd=cap, worker_host=self.hostname,
+                        ):
+                            logger.info(
+                                f"budget-monitor: batch={batch_id} {why} — unpausing"
+                            )
 
                     # ── Fleet ─────────────────────────────────────────────
                     fleet_cap = settings.cost_cap_fleet_daily_usd
@@ -836,15 +927,34 @@ class Worker:
                         if not currently_fleet_paused_by_us:
                             logger.warning(
                                 f"budget-monitor: fleet api cost ${fleet_cost:.4f} "
-                                f"> cap ${fleet_cap:.4f} — setting fleet-daily-cap pause"
+                                f"> cap ${fleet_cap:.4f} — setting fleet-daily-cap pause "
+                                f"by {self.id}"
                             )
-                        await budget_repo.set_api_paused(session, "fleet-daily-cap")
-                    elif currently_fleet_paused_by_us:
-                        logger.info(
-                            f"budget-monitor: fleet api cost ${fleet_cost:.4f} "
-                            f"<= cap ${fleet_cap:.4f} (or cap disabled) — clearing fleet-daily-cap"
+                        await budget_repo.set_api_paused(
+                            session, "fleet-daily-cap",
+                            cap_usd=fleet_cap, paused_by=self.id,
                         )
-                        await budget_repo.clear_api_paused(session)
+                    elif currently_fleet_paused_by_us:
+                        if not _may_lift_cap_pause(
+                            worker_cap_usd=fleet_cap, worker_host=self.hostname,
+                            paused_cap_usd=budget_state.api_paused_cap_usd,
+                            paused_by=budget_state.api_paused_by,
+                        ):
+                            logger.warning(
+                                f"budget-monitor: fleet STAYS paused — decided by "
+                                f"{budget_state.api_paused_by} at cap "
+                                f"${budget_state.api_paused_cap_usd:.4f}, this worker's cap is "
+                                f"{_fmt_cap(fleet_cap)} (looser). Fleet cap divergence: align "
+                                f"COST_CAP_FLEET_DAILY_USD across the fleet."
+                            )
+                        elif await budget_repo.clear_api_pause_if_entitled(
+                            session, reason="fleet-daily-cap",
+                            worker_cap_usd=fleet_cap, worker_host=self.hostname,
+                        ):
+                            logger.info(
+                                f"budget-monitor: fleet api cost ${fleet_cost:.4f} "
+                                f"<= cap ${fleet_cap:.4f} (or cap disabled) — clearing fleet-daily-cap"
+                            )
         except Exception:
             logger.exception(f"worker {self.id} budget monitor failed")
 
