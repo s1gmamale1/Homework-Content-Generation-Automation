@@ -28,21 +28,29 @@ _FAKE_BATCH_PAUSED = SimpleNamespace(
     id=_BATCH_ID,
     paused_at=_PAUSED_AT,
     paused_reason="batch-cap",
+    paused_cap_usd=50.0,
+    paused_by="host-a:4242@abc1234",
     session_limit_strategy="inherit",
 )
 _FAKE_BATCH_UNPAUSED = SimpleNamespace(
     id=_BATCH_ID,
     paused_at=None,
     paused_reason=None,
+    paused_cap_usd=None,
+    paused_by=None,
     session_limit_strategy="inherit",
 )
 _FAKE_BUDGET_PAUSED = SimpleNamespace(
     api_paused_at=_PAUSED_AT,
     api_paused_reason="fleet-daily-cap",
+    api_paused_cap_usd=2000.0,
+    api_paused_by="host-b:777@def5678",
 )
 _FAKE_BUDGET_CLEAR = SimpleNamespace(
     api_paused_at=None,
     api_paused_reason=None,
+    api_paused_cap_usd=None,
+    api_paused_by=None,
 )
 
 _HDR = {"Authorization": "Bearer 123"}
@@ -111,6 +119,15 @@ async def test_cost_endpoint_paused_batch():
     assert data["paused_at"] is not None, "paused_at must be non-null for a paused batch"
     assert "paused_reason" in data, "paused_reason must be present"
     assert data["paused_reason"] == "batch-cap"
+    # "paused (batch-cap)" alone cannot tell an operator whether the fleet
+    # agrees on that cap — the provenance can, and it is what the uneven-rollout
+    # incident had no way to see.
+    assert data["paused_cap_usd"] == pytest.approx(50.0), (
+        "the cap the pause was decided under must be visible to the operator"
+    )
+    assert data["paused_by"] == "host-a:4242@abc1234", (
+        "the worker that decided the pause must be visible to the operator"
+    )
 
     # Fleet state must also be present (even if the fleet is not paused).
     assert "fleet_api_paused_at" in data, "fleet_api_paused_at must be present"
@@ -183,6 +200,8 @@ async def test_cost_endpoint_fleet_paused():
         "fleet_api_paused_at must be non-null when the fleet is paused"
     )
     assert data["fleet_api_paused_reason"] == "fleet-daily-cap"
+    assert data["fleet_api_paused_cap_usd"] == pytest.approx(2000.0)
+    assert data["fleet_api_paused_by"] == "host-b:777@def5678"
 
 
 @pytest.mark.asyncio

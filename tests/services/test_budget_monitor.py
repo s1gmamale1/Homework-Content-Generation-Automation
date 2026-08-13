@@ -28,10 +28,21 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def _budget_state(paused_reason: str | None = None) -> MagicMock:
+def _budget_state(
+    paused_reason: str | None = None,
+    *,
+    cap_usd: float | None = None,
+    paused_by: str | None = None,
+) -> MagicMock:
     s = MagicMock()
     s.api_paused_at = datetime.now(timezone.utc) if paused_reason is not None else None
     s.api_paused_reason = paused_reason
+    # Cap-pause provenance (migration 0062). Default None = a pause with no
+    # recorded cap/host, i.e. the pre-0062 rows, which keep the historical
+    # permissive reconcile. Divergence between hosts is covered by
+    # tests/services/test_budget_cap_divergence.py.
+    s.api_paused_cap_usd = cap_usd
+    s.api_paused_by = paused_by
     return s
 
 
@@ -68,17 +79,29 @@ async def _run_monitor(
     """Drive Worker._budget_monitor with fully-controlled mocks.
 
     ``paused_reasons_map`` is a dict of {batch_id: pause_reason} mirroring the
-    DB state faithfully.  The fake ``paused_batch_ids_by_reason`` returns only
-    the IDs whose stored reason equals the ``reason`` argument it is called
-    with — exactly what the real query does.  This means Test 5 bites: if
-    production ever calls with a non-scoped list (or drops the reason arg) the
-    wrong IDs bleed through and assertions fail.
+    DB state faithfully.  The fake ``paused_cap_records`` returns only the rows
+    whose stored reason equals the ``reason`` argument it is called with —
+    exactly what the real query does.  This means Test 5 bites: if production
+    ever calls with a non-scoped list (or drops the reason arg) the wrong IDs
+    bleed through and assertions fail.
+
+    Every seeded pause here carries NO provenance (paused_cap_usd/paused_by are
+    NULL), i.e. a pre-0062 row — those keep the historical reconcile semantics,
+    which is what these tests pin.  The fleet-safety rule for provenance-bearing
+    pauses lives in tests/services/test_budget_cap_divergence.py.
+
+    ``patch_batches_unpause`` stands in for the monitor's automatic clear
+    (``clear_cap_pause``); the unguarded ``unpause_batch`` primitive is patched
+    separately and asserted unused — the monitor must never reach for the
+    operator escape hatch.
     """
     from app.services.worker import Worker
 
     with patch("asyncio.Semaphore", return_value=MagicMock()):
         w = Worker(concurrency=1)
     w._stop_event = MagicMock()
+    w.hostname = "test-host"
+    w.id = "test-host:1@sha"
 
     # Session context manager
     mock_session = AsyncMock()
@@ -96,6 +119,13 @@ async def _run_monitor(
         # Faithful DB filter: return only IDs whose stored reason matches.
         return [bid for bid, r in paused_reasons_map.items() if r == reason]
 
+    async def _paused_cap_records(session, reason):
+        # Same filter, plus the (NULL, NULL) provenance of a pre-0062 pause.
+        return [(bid, None, None) for bid, r in paused_reasons_map.items() if r == reason]
+
+    unused_unpause_batch = AsyncMock()
+    unused_clear_api_paused = AsyncMock()
+
     async def _batch_cost(session, bid):
         return batch_costs.get(bid, 0.0)
 
@@ -112,13 +142,16 @@ async def _run_monitor(
         ),
         "app.services.worker.batches_repo.active_batch_ids": _active_ids,
         "app.services.worker.batches_repo.paused_batch_ids_by_reason": _paused_by_reason,
+        "app.services.worker.batches_repo.paused_cap_records": _paused_cap_records,
         "app.services.worker.batches_repo.pause_batch": patch_batches_pause,
-        "app.services.worker.batches_repo.unpause_batch": patch_batches_unpause,
+        "app.services.worker.batches_repo.clear_cap_pause": patch_batches_unpause,
+        "app.services.worker.batches_repo.unpause_batch": unused_unpause_batch,
         "app.services.worker.cost_repo.batch_api_cost_usd": _batch_cost,
         "app.services.worker.cost_repo.fleet_api_cost_usd": _fleet_cost_fn,
         "app.services.worker.budget_repo.get_state": _get_state,
         "app.services.worker.budget_repo.set_api_paused": patch_budget_set,
-        "app.services.worker.budget_repo.clear_api_paused": patch_budget_clear,
+        "app.services.worker.budget_repo.clear_api_pause_if_entitled": patch_budget_clear,
+        "app.services.worker.budget_repo.clear_api_paused": unused_clear_api_paused,
         "app.services.worker._utcnow": MagicMock(
             return_value=datetime(2026, 6, 19, tzinfo=timezone.utc)
         ),
@@ -128,6 +161,11 @@ async def _run_monitor(
         for target, mock_obj in patches.items():
             stack.enter_context(patch(target, mock_obj))
         await w._budget_monitor()
+
+    # The unguarded operator primitives must never be the monitor's clear path —
+    # they cannot express "only if I am not relaxing another host's decision".
+    unused_unpause_batch.assert_not_awaited()
+    unused_clear_api_paused.assert_not_awaited()
 
 
 # ===========================================================================
@@ -485,6 +523,7 @@ async def test_both_caps_disabled_no_db_calls():
 
     mock_session_local = MagicMock()
     mock_active = AsyncMock()
+    mock_records = AsyncMock()
     mock_batch_cost = AsyncMock()
     mock_fleet_cost = AsyncMock()
     mock_get_state = AsyncMock()
@@ -500,13 +539,16 @@ async def test_both_caps_disabled_no_db_calls():
         ),
         "app.services.worker.batches_repo.active_batch_ids": mock_active,
         "app.services.worker.batches_repo.paused_batch_ids_by_reason": AsyncMock(),
+        "app.services.worker.batches_repo.paused_cap_records": mock_records,
         "app.services.worker.batches_repo.pause_batch": mock_pause,
-        "app.services.worker.batches_repo.unpause_batch": mock_unpause,
+        "app.services.worker.batches_repo.clear_cap_pause": mock_unpause,
+        "app.services.worker.batches_repo.unpause_batch": AsyncMock(),
         "app.services.worker.cost_repo.batch_api_cost_usd": mock_batch_cost,
         "app.services.worker.cost_repo.fleet_api_cost_usd": mock_fleet_cost,
         "app.services.worker.budget_repo.get_state": mock_get_state,
         "app.services.worker.budget_repo.set_api_paused": mock_set_paused,
-        "app.services.worker.budget_repo.clear_api_paused": mock_clear_paused,
+        "app.services.worker.budget_repo.clear_api_pause_if_entitled": mock_clear_paused,
+        "app.services.worker.budget_repo.clear_api_paused": AsyncMock(),
     }
 
     from contextlib import ExitStack
@@ -518,6 +560,7 @@ async def test_both_caps_disabled_no_db_calls():
     # Early return fires — no DB session opened, no repo calls made
     mock_session_local.assert_not_called()
     mock_active.assert_not_awaited()
+    mock_records.assert_not_awaited()
     mock_batch_cost.assert_not_awaited()
     mock_fleet_cost.assert_not_awaited()
     mock_get_state.assert_not_awaited()
@@ -546,14 +589,30 @@ def test_budget_monitor_source_references_batch_cap():
     )
 
 
-def test_budget_monitor_source_uses_paused_batch_ids_by_reason():
-    """_budget_monitor must call paused_batch_ids_by_reason for reconcile (not just active_batch_ids)."""
+def test_budget_monitor_reconcile_is_reason_scoped_and_provenance_aware():
+    """The reconcile worklist must be the reason-scoped PROVENANCE query, and
+    the automatic clear must go through the guarded repo call — never the
+    unguarded operator primitives."""
     import inspect
     from app.services.worker import Worker
 
     src = inspect.getsource(Worker._budget_monitor)
-    assert "paused_batch_ids_by_reason" in src, (
-        "_budget_monitor must call paused_batch_ids_by_reason to limit reconcile to its own pauses"
+    assert "paused_cap_records" in src, (
+        "_budget_monitor must call paused_cap_records to limit reconcile to its own "
+        "pauses AND read the cap/host each pause was decided under"
+    )
+    assert "clear_cap_pause" in src, (
+        "_budget_monitor must clear batch pauses via the guarded clear_cap_pause"
+    )
+    assert "unpause_batch" not in src, (
+        "_budget_monitor must NOT use the unguarded operator unpause_batch — that "
+        "is what let a looser worker reverse a stricter host's decision"
+    )
+    assert "clear_api_paused" not in src.replace("clear_api_pause_if_entitled", ""), (
+        "_budget_monitor must NOT use the unguarded operator clear_api_paused"
+    )
+    assert "_may_lift_cap_pause" in src, (
+        "_budget_monitor must consult the fleet-safety entitlement rule before lifting"
     )
 
 

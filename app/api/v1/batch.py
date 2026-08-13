@@ -561,10 +561,19 @@ async def get_batch_cost(batch_id: UUID, session: AsyncSession = Depends(get_ses
         "batch_api_cost_usd": batch_cost,
         "paused_at": batch.paused_at.isoformat() if batch.paused_at else None,
         "paused_reason": batch.paused_reason,
+        # Cap-pause provenance (migration 0062): WHICH worker decided the pause
+        # and under WHICH effective cap. Both gates are fleet-wide flags decided
+        # from a per-host env cap, so "paused (batch-cap)" alone cannot tell an
+        # operator whether the fleet agrees — these two fields can. NULL on a
+        # manual pause.
+        "paused_cap_usd": batch.paused_cap_usd,
+        "paused_by": batch.paused_by,
         "fleet_api_paused_at": (
             fleet_state.api_paused_at.isoformat() if fleet_state.api_paused_at else None
         ),
         "fleet_api_paused_reason": fleet_state.api_paused_reason,
+        "fleet_api_paused_cap_usd": fleet_state.api_paused_cap_usd,
+        "fleet_api_paused_by": fleet_state.api_paused_by,
     }
 
 
