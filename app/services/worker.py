@@ -38,6 +38,12 @@ from pathlib import Path
 from uuid import UUID
 
 from loguru import logger
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.config import settings
 from app.db import SessionLocal
@@ -71,6 +77,165 @@ from app.services.storage import sa_key_active_path
 # few seconds; unthrottled this would flood the log for a stale worker that
 # never restarts.
 _STALE_LOG_INTERVAL_SECONDS = 300.0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Registry liveness: dedicated heartbeat pool + the prune arithmetic
+# ─────────────────────────────────────────────────────────────────────────
+#
+# 2026-08-13 incident. During a fleet generation run the roster oscillated
+# 38 -> 27 -> 34 -> 16 -> 22 within minutes. No host powered off; hosts lost
+# their heartbeat. The counter-intuitive measurement is the whole story: hosts
+# with ZERO jobs running had the STALEST beats (avg 153s, worst 533s) while
+# hosts running 1-4 jobs were fresh (31-62s).
+#
+# Mechanism. A worker process gets four database connections in total
+# (`db._pool_config` -> pool_size=2, max_overflow=2), shared between pipeline
+# writes, the per-job heartbeat, the credential limiter, the cost monitor and
+# THIS registry beat. A worker parked on a contended lock holds one of those
+# four and does nothing; the remaining sweeps hold the rest; the registry beat
+# then loses the race for a connection entirely. Because the old loop awaited
+# each beat inline and only then started its interval wait, one blocked beat
+# cost `block + interval` of silence. Past `worker_registry_stale_seconds`
+# (90s) the head calls the host offline; past `worker_registry_prune_seconds`
+# (600s) a PEER DELETED its row and it re-registered — the flap.
+#
+# Three properties fix it, none of which depend on the upstream lock
+# contention being resolved:
+#   1. the beat runs on its OWN engine below, so job saturation of the shared
+#      pool cannot starve it;
+#   2. every attempt is hard-bounded and retried with backoff inside one
+#      interval, and a failure is only ever counted — never acted on;
+#   3. the destructive DELETE horizon is derived from
+#      interval x tolerated-failures, with a floor a config typo cannot
+#      undercut, and is preceded by a non-destructive `status='offline'`.
+
+# Consecutive FAILED heartbeat cycles a worker rides out. It never surrenders
+# after these — nothing about a failed beat is a reason for a live process to
+# leave the fleet — but this is the number the DELETE horizon is sized against
+# and the point at which the log escalates WARNING -> ERROR.
+_HEARTBEAT_MAX_CONSECUTIVE_FAILURES = 10
+
+# Attempts inside ONE cycle, and the backoff between them. Sized so the whole
+# cycle (attempts x attempt-timeout + backoff) fits inside one heartbeat
+# interval: at the 30s default that is 3 x 7.5s + 1.5s = 24s.
+_HEARTBEAT_ATTEMPTS_PER_CYCLE = 3
+_HEARTBEAT_RETRY_BASE_DELAY_SECONDS = 0.5
+
+# Per-attempt bound, as a fraction of the interval and clamped. This is what
+# stops a beat blocked on a contended lock from stretching the cadence.
+_HEARTBEAT_ATTEMPT_TIMEOUT_FRACTION = 0.25
+_HEARTBEAT_ATTEMPT_TIMEOUT_MIN_SECONDS = 2.0
+_HEARTBEAT_ATTEMPT_TIMEOUT_MAX_SECONDS = 10.0
+
+# Margin between "we have given up expecting beats" and any registry write.
+_PRUNE_SAFETY_FACTOR = 2
+# How much longer than the offline marking the DELETE waits. The offline mark
+# already gives the dashboard its "this host went quiet" signal, so deletion
+# is pure retention housekeeping and can afford to be slow.
+_DELETE_AFTER_FACTOR = 6
+
+
+def _heartbeat_interval_seconds() -> float:
+    """Configured beat interval, read at call time so tests can patch it."""
+    return max(float(settings.heartbeat_seconds), 0.0)
+
+
+def _heartbeat_attempt_timeout() -> float:
+    """Hard bound on ONE beat attempt. Deliberately a small fraction of the
+    interval: a beat that cannot complete in a few seconds is queued behind
+    something (pool checkout, lock wait) that will not clear in time, and
+    retrying on a fresh connection beats waiting."""
+    return max(
+        _HEARTBEAT_ATTEMPT_TIMEOUT_MIN_SECONDS,
+        min(
+            _HEARTBEAT_ATTEMPT_TIMEOUT_MAX_SECONDS,
+            _heartbeat_interval_seconds() * _HEARTBEAT_ATTEMPT_TIMEOUT_FRACTION,
+        ),
+    )
+
+
+def _heartbeat_tolerance_seconds() -> float:
+    """Wall clock a worker may go without a single successful beat while still
+    being a worker we are prepared to wait for: interval x tolerated failures.
+    30s x 10 = 300s at the defaults."""
+    return max(_heartbeat_interval_seconds(), 1.0) * _HEARTBEAT_MAX_CONSECUTIVE_FAILURES
+
+
+def _offline_after_seconds() -> int:
+    """When a peer may mark a quiet row `offline` (non-destructive).
+
+    Never below the tolerance window x the safety factor, and never below four
+    times the head's own offline window — so the configured
+    `worker_registry_prune_seconds` can be RAISED by an operator but never
+    lowered into the range where a slow-but-live worker gets touched.
+    Defaults: max(600, 300 x 2, 90 x 4) = 600s."""
+    floor = max(
+        _heartbeat_tolerance_seconds() * _PRUNE_SAFETY_FACTOR,
+        float(settings.worker_registry_stale_seconds) * 4,
+    )
+    return int(max(float(settings.worker_registry_prune_seconds), floor))
+
+
+def _delete_after_seconds() -> int:
+    """When a row may finally be DELETED. Defaults: 600 x 6 = 3600s (1h).
+
+    The old code deleted at 600s, i.e. 12% above the WORST measured staleness
+    of a live host (533s). One more slow cycle and a working worker was erased.
+    """
+    return int(_offline_after_seconds() * _DELETE_AFTER_FACTOR)
+
+
+# Dedicated engine for the registry heartbeat — its own pool, so the beat can
+# never queue behind pipeline work on the shared `app.db` pool. Deliberately
+# defined HERE rather than in app/db.py: this is a worker-liveness concern, not
+# a general database concern, and nothing else may borrow the reserved slot.
+# One pooled connection + one overflow: enough for a beat plus the shutdown
+# deregister, small enough that adding it fleet-wide costs ~1 connection per
+# worker process. Lazily built (create_async_engine opens no socket, but the
+# lazy global keeps tests free to patch `heartbeat_sessionmaker`).
+_HEARTBEAT_ENGINE: AsyncEngine | None = None
+_HEARTBEAT_SESSIONMAKER: async_sessionmaker[AsyncSession] | None = None
+
+
+def _heartbeat_engine_kwargs() -> dict:
+    """Pool bounds for the heartbeat engine. `pool_timeout` is the attempt
+    bound so a checkout can never outlive the attempt that wants it."""
+    return {
+        "pool_size": 1,
+        "max_overflow": 1,
+        "pool_timeout": _heartbeat_attempt_timeout(),
+        "pool_pre_ping": True,
+        "pool_recycle": 1800,
+    }
+
+
+def heartbeat_sessionmaker() -> async_sessionmaker[AsyncSession]:
+    """Session factory bound to the dedicated heartbeat engine (built once)."""
+    global _HEARTBEAT_ENGINE, _HEARTBEAT_SESSIONMAKER
+    if _HEARTBEAT_SESSIONMAKER is None:
+        _HEARTBEAT_ENGINE = create_async_engine(
+            settings.database_url,
+            echo=False,
+            future=True,
+            **_heartbeat_engine_kwargs(),
+        )
+        _HEARTBEAT_SESSIONMAKER = async_sessionmaker(
+            _HEARTBEAT_ENGINE, expire_on_commit=False, class_=AsyncSession
+        )
+    return _HEARTBEAT_SESSIONMAKER
+
+
+async def dispose_heartbeat_engine() -> None:
+    """Release the dedicated heartbeat connection(s) on worker shutdown.
+    Idempotent; the next `heartbeat_sessionmaker()` rebuilds lazily."""
+    global _HEARTBEAT_ENGINE, _HEARTBEAT_SESSIONMAKER
+    engine = _HEARTBEAT_ENGINE
+    _HEARTBEAT_ENGINE = None
+    _HEARTBEAT_SESSIONMAKER = None
+    if engine is not None:
+        with contextlib.suppress(Exception):
+            await engine.dispose()
 
 
 # Maps job_id -> the in-flight _execute_job task, so a same-process cancel
@@ -258,6 +423,10 @@ class Worker:
         self._last_budget_check_at = 0.0
         self._cooldown_until: datetime | None = None
         self._stale_gate_logged_at: float | None = None
+        # Consecutive FAILED registry-heartbeat cycles. Counted for logging and
+        # for the prune arithmetic only — never a reason to stop or self-evict
+        # (see _registry_heartbeat).
+        self._consecutive_heartbeat_failures = 0
         # Fenced job leases (Task 7): the per-claim JobLease is minted inside
         # _claim_one but consumed in _execute_job (a separate task). _claim_one
         # keeps returning the bare job id (its long-standing contract), so the
@@ -351,9 +520,13 @@ class Worker:
             await self._drain()
             # Best-effort deregistration AFTER the heartbeat task is dead (a
             # live beat would just re-insert the row). Kills/crashes skip this
-            # path entirely — prune_stale in the sweep is the real cleanup.
+            # path entirely — the sweep's mark-offline + prune is the real
+            # cleanup. Runs on the RESERVED heartbeat connection, not the
+            # shared pool: shutdown happens while in-flight jobs are draining,
+            # which is precisely when the shared pool is still contended.
             try:
-                async with SessionLocal() as session:
+                factory = heartbeat_sessionmaker()
+                async with factory() as session:
                     await workers_repo.deregister(session, self.id)
                     await session.commit()
                 logger.info(f"worker {self.id} deregistered from fleet registry")
@@ -361,6 +534,7 @@ class Worker:
                 logger.warning(
                     f"worker {self.id} deregistration failed (prune will catch it)"
                 )
+            await dispose_heartbeat_engine()
             logger.info(f"worker {self.id} stopped")
 
     def stop(self) -> None:
@@ -865,9 +1039,23 @@ class Worker:
                         session,
                         stale_after_seconds=settings.reclaim_stale_seconds,
                     )
+                    # Registry cleanup, two stages. Stage 1 is non-destructive:
+                    # a quiet row is STAMPED `offline` (drain signals spared),
+                    # which is all the dashboard actually needed and which the
+                    # worker's own next beat undoes for free. Stage 2 deletes,
+                    # but only long after — and never a row that still owns a
+                    # live job, and never inside the window a slow-but-live
+                    # worker can occupy (`min_seconds` floor).
+                    offline_after = _offline_after_seconds()
+                    delete_after = _delete_after_seconds()
+                    n_offline = await workers_repo.mark_stale_offline(
+                        session,
+                        older_than_seconds=offline_after,
+                    )
                     n_pruned = await workers_repo.prune_stale(
                         session,
-                        older_than_seconds=settings.worker_registry_prune_seconds,
+                        older_than_seconds=delete_after,
+                        min_seconds=offline_after,
                     )
                     n_failed = await jobs_repo.fail_exhausted_pending_jobs(
                         session,
@@ -884,10 +1072,16 @@ class Worker:
                     f"worker {self.id} failed {n_failed} attempts-exhausted pending job(s) "
                     f"(stale-pending sweep)"
                 )
+            if n_offline > 0:
+                logger.info(
+                    f"worker {self.id} marked {n_offline} quiet worker row(s) "
+                    f"offline (no heartbeat for > {offline_after}s) — rows kept; "
+                    f"a returning worker flips itself back to online"
+                )
             if n_pruned > 0:
                 logger.info(
                     f"worker {self.id} pruned {n_pruned} dead worker row(s) "
-                    f"(no heartbeat for > {settings.worker_registry_prune_seconds}s)"
+                    f"(no heartbeat for > {delete_after}s and no live job)"
                 )
         except Exception:
             logger.exception(f"worker {self.id} stuck-job sweep failed")
@@ -922,33 +1116,127 @@ class Worker:
         await workers_repo.upsert_heartbeat(session, self.id, capabilities=CAPABILITY_BLOB)
         return True
 
-    async def _registry_heartbeat(self) -> None:
-        """Register this worker / refresh its heartbeat in the fleet `workers`
-        table so the head-side liveness view knows this PC is alive.
-        Reads own status first: if the head has set it to "draining", calls
-        self.stop() and skips the upsert so the drain signal is not clobbered.
-        Best-effort: a failed beat is logged, never fatal."""
-        try:
-            async with SessionLocal() as session:
-                kept_beating = await self._drain_check_and_beat(session)
-                if kept_beating:
-                    await session.commit()
-        except Exception:
-            logger.warning(f"worker {self.id} registry heartbeat failed")
+    async def _registry_beat_once(self) -> None:
+        """ONE heartbeat attempt, on the DEDICATED heartbeat pool.
+
+        Raises on any failure — the retry policy lives in `_registry_heartbeat`.
+
+        Two things make this safe to call under heavy job load. It never
+        touches `SessionLocal` (the shared four-connection worker pool that
+        pipeline work saturates), and it holds its session only across two
+        fast round trips — a `get_status` read and the upsert — with no slow
+        await in between, so the reserved connection is occupied for
+        milliseconds, not for the length of a model call."""
+        factory = heartbeat_sessionmaker()
+        async with factory() as session:
+            kept_beating = await self._drain_check_and_beat(session)
+            if kept_beating:
+                await session.commit()
+
+    async def _registry_heartbeat(self) -> bool:
+        """One heartbeat CYCLE: bounded attempts with backoff. Returns True if
+        the beat landed (or the drain branch fired), False if the whole cycle
+        failed.
+
+        Register this worker / refresh its heartbeat in the fleet `workers`
+        table so the head-side liveness view knows this PC is alive. Reads own
+        status first: if the head has set it to "draining", calls self.stop()
+        and skips the upsert so the drain signal is not clobbered — that path
+        is a SUCCESS, never retried.
+
+        A failed cycle is COUNTED and nothing else. There is deliberately no
+        threshold at which this worker removes itself, stops claiming, or
+        deregisters: a process that cannot reach the database is exactly the
+        process least able to judge whether it or the database is the problem,
+        and the 2026-08-13 flap was caused by that judgement being made (by a
+        peer) on far too little evidence. The counter drives log escalation and
+        sizes the DELETE horizon (`_delete_after_seconds`) — that is all."""
+        attempt_timeout = _heartbeat_attempt_timeout()
+        last_error: BaseException | None = None
+
+        for attempt in range(1, _HEARTBEAT_ATTEMPTS_PER_CYCLE + 1):
+            try:
+                await asyncio.wait_for(self._registry_beat_once(), timeout=attempt_timeout)
+            except asyncio.CancelledError:
+                raise  # shutdown — not a heartbeat failure
+            except Exception as exc:
+                last_error = exc
+                if isinstance(exc, asyncio.TimeoutError):
+                    # The attempt was cancelled mid-statement, so its pooled
+                    # connection may be left mid-protocol. With only one
+                    # reserved connection, keeping it would fail every later
+                    # beat too — drop the pool and let the next attempt build a
+                    # fresh one. Bounded: this must never outlast the cycle.
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(
+                            dispose_heartbeat_engine(), timeout=attempt_timeout
+                        )
+                if attempt < _HEARTBEAT_ATTEMPTS_PER_CYCLE:
+                    await asyncio.sleep(
+                        _HEARTBEAT_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                    )
+                continue
+
+            if self._consecutive_heartbeat_failures:
+                logger.info(
+                    f"worker {self.id} registry heartbeat RECOVERED after "
+                    f"{self._consecutive_heartbeat_failures} failed cycle(s)"
+                )
+            self._consecutive_heartbeat_failures = 0
+            return True
+
+        self._consecutive_heartbeat_failures += 1
+        detail = (
+            f"worker {self.id} registry heartbeat failed "
+            f"{_HEARTBEAT_ATTEMPTS_PER_CYCLE} time(s) this cycle "
+            f"({self._consecutive_heartbeat_failures} consecutive cycle(s), "
+            f"tolerating {_HEARTBEAT_MAX_CONSECUTIVE_FAILURES}) — "
+            f"still alive, still claiming: {last_error!r}"
+        )
+        if self._consecutive_heartbeat_failures >= _HEARTBEAT_MAX_CONSECUTIVE_FAILURES:
+            # Grep token: 'registry heartbeat: STARVED'.
+            logger.error(
+                f"registry heartbeat: STARVED — {detail}; the head will read "
+                f"this host offline (> {settings.worker_registry_stale_seconds}s) "
+                f"but no peer may delete its row before "
+                f"{_delete_after_seconds()}s"
+            )
+        else:
+            logger.warning(detail)
+        return False
 
     async def _registry_heartbeat_loop(self) -> None:
         """Beat on its OWN task — NOT the main loop — so a busy worker (all
         slots full with long jobs, main loop blocked in _wait_for_slot_or_stop)
         still reports alive. Mirrors the per-job _heartbeat; shutdown-aware via
-        stop_event so it exits promptly."""
+        stop_event so it exits promptly.
+
+        The next beat is scheduled from the previous beat's START, not from the
+        moment it returned. The old loop added the interval AFTER the beat
+        finished, so a beat that blocked for 300s on a contended lock meant
+        330s of silence — that compounding is what pushed live hosts past the
+        prune window. With `_registry_heartbeat` hard-bounded well inside one
+        interval, this keeps the cadence flat at `heartbeat_seconds` no matter
+        what the database is doing."""
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
         await self._registry_heartbeat()  # register immediately on startup
+        next_beat_at = max(started_at + _heartbeat_interval_seconds(), loop.time())
         while not self._stop_event.is_set():
             try:
                 await asyncio.wait_for(
-                    self._stop_event.wait(), timeout=settings.heartbeat_seconds
+                    self._stop_event.wait(),
+                    timeout=max(0.0, next_beat_at - loop.time()),
                 )
             except asyncio.TimeoutError:
-                await self._registry_heartbeat()
+                pass
+            else:
+                break  # stop requested
+            started_at = loop.time()
+            await self._registry_heartbeat()
+            next_beat_at = max(
+                started_at + _heartbeat_interval_seconds(), loop.time()
+            )
 
     async def _sync_sa_key(self) -> None:
         """Resolve this host's SA-key assignment and apply/scrub it LIVE when it

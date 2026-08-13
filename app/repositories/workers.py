@@ -8,11 +8,22 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import delete, exists, func, select, text, update
+from sqlalchemy import and_, delete, exists, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.homework_job import HomeworkJob
 from app.models.worker import WorkerNode
+
+# Statuses `mark_stale_offline` must never overwrite.
+#   - "draining" is an OPERATOR signal the worker has not read yet. Clobbering
+#     it would silently cancel a drain (the lever used to force config reloads).
+#   - "offline" is already the marker — re-writing it every sweep is pure churn.
+_OFFLINE_MARK_PROTECTED_STATUSES = ("draining", "offline")
+
+# A worker owning a job in one of these statuses is demonstrably alive, no
+# matter how stale its beat looks; `prune_stale` refuses to delete its row.
+_LIVE_JOB_STATUSES = ("running", "cancelling")
 
 
 async def lock_host_shared(session: AsyncSession, hostname: str) -> None:
@@ -103,18 +114,89 @@ async def upsert_heartbeat(
     await session.execute(stmt)
 
 
-async def prune_stale(session: AsyncSession, *, older_than_seconds: int) -> int:
-    """Delete worker rows whose heartbeat is older than the retention window.
-    pc_id is hostname:pid — a dead process never beats again, so its row is
-    pure dashboard clutter (every restart minted a new permanent card). This
-    is the LOAD-BEARING cleanup: graceful-shutdown deregistration rarely fires
-    in practice (kills/crashes skip it). Safe to delete: job attribution lives
-    in homework_jobs.claimed_by, a plain string with no FK to this table.
-    Compares against the DB clock, same as the heartbeat stamps."""
+async def mark_stale_offline(
+    session: AsyncSession, *, older_than_seconds: int
+) -> int:
+    """Stamp `status='offline'` on rows whose heartbeat aged past the window.
+
+    The NON-DESTRUCTIVE half of registry cleanup, and the one that runs first.
+    A row marked offline keeps its pc_id, its capabilities blob and its last
+    known heartbeat, so the dashboard can show "this host went quiet" instead
+    of the card simply vanishing — and the instant the worker beats again,
+    `upsert_heartbeat` flips it straight back to `online` with no re-register
+    round trip. Deleting used to be the only tool here, which is what turned a
+    merely-slow worker into a leave/rejoin flap (see `prune_stale`).
+
+    Two exclusions, both load-bearing:
+      - `draining` is never touched: it is an operator instruction the worker
+        has not read yet, and overwriting it would silently cancel a drain.
+      - `offline` is never re-written: without this the sweep would UPDATE
+        every dead row on every pass forever.
+
+    Compares against the DB clock, same as the heartbeat stamps.
+    """
     result = await session.execute(
-        delete(WorkerNode).where(
+        update(WorkerNode)
+        .where(
             WorkerNode.last_heartbeat
             < func.now() - timedelta(seconds=older_than_seconds)
+        )
+        .where(WorkerNode.status.not_in(_OFFLINE_MARK_PROTECTED_STATUSES))
+        .values(status="offline")
+    )
+    return result.rowcount or 0
+
+
+async def prune_stale(
+    session: AsyncSession,
+    *,
+    older_than_seconds: int,
+    min_seconds: int | None = None,
+) -> int:
+    """Delete worker rows long past the retention horizon. LAST resort.
+
+    pc_id is hostname:pid — a dead process never beats again, so its row is
+    eventually pure dashboard clutter (every restart minted a new permanent
+    card). Graceful-shutdown deregistration rarely fires in practice
+    (kills/crashes skip it), so something must reap. Safe to delete: job
+    attribution lives in homework_jobs.claimed_by, a plain string with no FK
+    to this table. Compares against the DB clock, same as the heartbeat stamps.
+
+    2026-08-13 — this is also the statement that erased LIVE workers. Any peer
+    may delete any row, so a host that merely lost the race for one of its
+    four pooled connections got its registry row deleted and re-registered:
+    the observed 38 -> 27 -> 34 -> 16 -> 22 roster flap. Two guards now make
+    that impossible:
+
+      `min_seconds` — a floor the caller cannot undercut. The window is
+      CLAMPED UP (never down) to it, so a misconfigured
+      `WORKER_REGISTRY_PRUNE_SECONDS` can shorten nothing. The worker passes
+      its own offline horizon here; see `worker._delete_after_seconds`.
+
+      live-job anti-join — a row whose pc_id still owns a `running` or
+      `cancelling` job is alive by definition (a dead worker's jobs are
+      released by `jobs_repo.reclaim_stuck_jobs` within
+      `reclaim_stale_seconds`, so this guard always clears itself).
+
+    Deletion is deliberately NOT the first response to staleness any more:
+    `mark_stale_offline` runs much earlier and non-destructively.
+    """
+    window = older_than_seconds
+    if min_seconds is not None and window < min_seconds:
+        window = min_seconds
+
+    owns_live_job = exists(
+        select(HomeworkJob.id).where(
+            HomeworkJob.claimed_by == WorkerNode.pc_id,
+            HomeworkJob.status.in_(_LIVE_JOB_STATUSES),
+        )
+    )
+    result = await session.execute(
+        delete(WorkerNode).where(
+            and_(
+                WorkerNode.last_heartbeat < func.now() - timedelta(seconds=window),
+                ~owns_live_job,
+            )
         )
     )
     return result.rowcount or 0
@@ -122,7 +204,9 @@ async def prune_stale(session: AsyncSession, *, older_than_seconds: int) -> int:
 
 async def deregister(session: AsyncSession, pc_id: str) -> None:
     """Remove this worker's own row on graceful shutdown. Best-effort bonus —
-    `prune_stale` is what actually guarantees cleanup."""
+    `mark_stale_offline` + `prune_stale` are what actually guarantee cleanup.
+    A worker may only ever delete its OWN row here; peer deletion lives in
+    `prune_stale` and is deliberately slow and guarded."""
     await session.execute(delete(WorkerNode).where(WorkerNode.pc_id == pc_id))
 
 
