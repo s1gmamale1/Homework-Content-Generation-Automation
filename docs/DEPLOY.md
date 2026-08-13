@@ -307,7 +307,19 @@ These aren't wired yet but the data is in the DB / logs — easy to add a `/metr
 
 ## Operational gotchas
 
-**Connection pool sizing.** API-only heads (`WORKER_CONCURRENCY=0`) retain a 20+30 request pool. Worker processes (`WORKER_CONCURRENCY>0`) use a bounded 2+2 pool because their DB transactions are short and the model calls happen outside those transactions. Do not enlarge every worker pool to match phase fan-out: across many worker processes, retained idle connections can exhaust shared Postgres even when no jobs are running. Scale Postgres only when measured active checkout demand—not idle worker residue—requires it.
+**Connection pool sizing.** API-only heads (`WORKER_CONCURRENCY=0`) retain a 20+30 request pool. Worker processes (`WORKER_CONCURRENCY>0`) take an explicitly sized pool from `WORKER_DB_POOL_SIZE` + `WORKER_DB_MAX_OVERFLOW`, **default 2+2** — unchanged from when those numbers were hardcoded, so a host that sets nothing behaves exactly as before. The pool is never derived from `WORKER_CONCURRENCY`: across many worker processes, retained idle connections can exhaust shared Postgres even when no jobs are running.
+
+That default is known to throttle, and it is a deliberate trade. Those 4 connections must cover `WORKER_CONCURRENCY` jobs *plus* the heartbeat loop, the credential limiter and the cost monitor, so a `WORKER_CONCURRENCY=4` host really runs 1–2 jobs; the rest fail `QueuePool limit of size 2 overflow 2 reached, connection timed out, timeout 30.00` (measured 2026-08-12 across 33 busy hosts: 17 ran 1 job, 14 ran 2, one 3, one 4). Those timeouts are **retryable**; the failure mode on the other side of the ceiling is not — a fleet-wide raise turns them into hard `too many clients` refusals that also lock the head out of its own database.
+
+**Before raising either value**, get headroom first (pgbouncer in front of Postgres, or a larger `max_connections`) and do the fleet arithmetic:
+
+```
+connections ≈ hosts × processes-per-host × (pool_size + max_overflow)   <   max_connections
+```
+
+Processes-per-host is 2–3 here, not 1 — the head runs the API *and* the read-only viewer (`viewer_main`), and each process builds its own pool. Measured today: 38 hosts draw ~203 of `max_connections=250` at only ~57 concurrent jobs, i.e. there is no room to raise anything fleet-wide until that ceiling moves. Raise per host, and leave room for the head, the viewer and an operator `psql`.
+
+*Sizing recommendation once pgbouncer is in front of Postgres* (not yet measured — recompute against the real fleet): for `WORKER_CONCURRENCY=4` hosts, `WORKER_DB_POOL_SIZE=6` (concurrency + heartbeat + one spare for the limiter/cost monitor) and `WORKER_DB_MAX_OVERFLOW=4` (absorbs the DAG wave bursts, then drains). That is 10 peak per process → 38 hosts × ~2.5 processes × 10 ≈ 950 *client* connections, which only works behind a transaction-mode pooler: size `max_client_conn` ≥ ~1200 and `default_pool_size` ~100–120 so real Postgres backends stay near 120 of 250. Straight at Postgres those same numbers are ~3.8× over the ceiling, which is why the default does not move.
 
 **Worker-claimed-but-died jobs stay `running` until reclaim sweep.** The sweep keys on `RECLAIM_STALE_SECONDS` (default **120s**, `config.py`): a dead worker's `running` job is reclaimed to `pending` within ~2 minutes. Heartbeats keep live jobs' claims fresh, so a long-running job is never falsely reclaimed. There is no "2× job timeout" threshold.
 
