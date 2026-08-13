@@ -1171,6 +1171,14 @@ async def mark_failed_with_retry(
                 "claimed_at": None,
                 "claimed_by": None,
                 "claim_token": None,  # requeue-to-pending clears the stale lease
+                # `reclaims` counts CONSECUTIVE never-executed reclaims, so real
+                # execution must clear it. Reaching here proves the job ran and
+                # failed inside a phase. Without this reset a job could bank 20
+                # never-started reclaims, then execute and fail normally, and have
+                # its NEXT never-started reclaim treated as over the cap — charging
+                # an execution attempt for a scheduling failure, which is the exact
+                # bug the reclaims counter exists to prevent.
+                "reclaims": 0,
             }
             release_event = lease.EVENT_RELEASED_RETRY
         outcome = await _fenced_update(
