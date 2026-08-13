@@ -302,6 +302,10 @@ async def reset_for_retry(
     job.started_at = None
     job.completed_at = None
     job.attempts = 0
+    # A manual retry is a fresh start for BOTH budgets — a job that previously
+    # hit the reclaim ceiling must get its refunds back, or the operator retry
+    # would burn straight through `attempts` again (retry-accounting-1).
+    job.reclaims = 0
     # Rotate the lease: a retried-from-failed job must not keep a dead claim
     # token or stale claim columns (fenced job leases, Task 4).
     job.claim_token = None
@@ -833,6 +837,7 @@ async def reclaim_stuck_jobs(
     stale_after_seconds: int,
     registry_stale_seconds: Optional[int] = None,
     job_timeout_seconds: Optional[int] = None,
+    max_reclaims: Optional[int] = None,
 ) -> int:
     """Promote `running` jobs whose claim is stale back to `pending`, ROTATING
     (clearing) the lease `claim_token` in the same UPDATE (fenced job leases,
@@ -859,8 +864,25 @@ async def reclaim_stuck_jobs(
     captured by a `FOR UPDATE SKIP LOCKED` snapshot taken BEFORE the nulling
     UPDATE — a plain `RETURNING claim_token` would return the NEW (NULL) value.
 
-    The `attempts` counter persists, so a poison-pill job runs at most
-    `max_attempts` times before being marked failed terminally.
+    Attempt accounting (retry-accounting-1). `attempts` is charged at CLAIM
+    time by `claim_next_job`, so a reclaim that happens before the job ever
+    started a phase would charge the retry budget for a SCHEDULING failure —
+    a worker blocking on a contended lock, a peer dying between claim and
+    first phase. That budget exists to bound EXECUTION failures. Each
+    reclaimed job is therefore partitioned by execution evidence:
+
+      * EXECUTED — `attempts` persists (unchanged behaviour), so a poison-pill
+        job still runs at most `max_attempts` times before being marked failed
+        terminally. `reclaims` resets to 0.
+      * NEVER EXECUTED, under the `max_reclaims` ceiling — the claim's
+        `attempts` increment is REFUNDED (`GREATEST(attempts - 1, 0)`, the
+        same idiom as `requeue_session_limited` / `requeue_slot_saturated`)
+        and `reclaims` is bumped instead. Queued work survives contention.
+      * NEVER EXECUTED, at the ceiling — refund stops. A job that is claimed
+        and reclaimed forever without ever starting a phase is genuinely
+        wedged, so it falls back to burning `attempts` and terminates through
+        the existing `fail_exhausted_pending_jobs` path rather than
+        free-requeueing (and re-occupying a worker slot) indefinitely.
 
     Same-transaction phase reconciliation (orphan-phase-reconciliation-1):
     every reclaimed job's abandoned phase rows are reset to `pending` too, so
@@ -870,6 +892,8 @@ async def reclaim_stuck_jobs(
         registry_stale_seconds = settings.worker_registry_stale_seconds
     if job_timeout_seconds is None:
         job_timeout_seconds = settings.job_timeout_seconds
+    if max_reclaims is None:
+        max_reclaims = settings.queue_max_reclaims
 
     # Owner is live iff a workers row for this job's claimed_by heartbeat-ed
     # within the registry window — the registry-liveness cross-check.
@@ -881,10 +905,38 @@ async def reclaim_stuck_jobs(
         )
     )
 
-    # NORMAL/stale snapshot — capture (id, OLD token) under a row lock BEFORE
-    # nulling. SKIP LOCKED so concurrent sweepers never collide on a row.
+    # Did THIS claim actually begin executing? (retry-accounting-1.) Both
+    # writes below are made by `pipeline._execute_phase` (and its teacher-deck
+    # twin) in ONE committed transaction at the top of the FIRST phase, so
+    # they flip together and neither can be observed without the other:
+    #   * homework_jobs.current_phase = <phase>   (jobs_repo.set_status, fenced)
+    #   * phase_outputs.claim_token   = <lease>   (create_or_reset(lease=...))
+    # Both are per-CLAIM, not per-job-history: every requeue-to-pending path
+    # NULLs `current_phase` (this sweep, mark_failed_with_retry,
+    # requeue_session_limited, requeue_slot_saturated, reset_for_retry), and a
+    # phase row only matches once `claim_token` has been re-stamped with the
+    # CURRENT lease (`reset_abandoned_phases` clears it on every requeue, and
+    # frozen `done` rows keep the OLD token, which cannot match).
+    # They are ORed, not ANDed, so a refund requires the ABSENCE of all
+    # evidence — the conservative direction: mis-charging a stuck job costs one
+    # retry, mis-refunding an executing one risks an unbounded re-run loop.
+    executed = or_(
+        HomeworkJob.current_phase.is_not(None),
+        exists(
+            select(PhaseOutput.id).where(
+                PhaseOutput.job_id == HomeworkJob.id,
+                PhaseOutput.claim_token == HomeworkJob.claim_token,
+            )
+        ),
+    )
+
+    # NORMAL/stale snapshot — capture (id, OLD token, execution evidence,
+    # reclaim streak) under a row lock BEFORE nulling. The evidence MUST be
+    # read here: the reclaim UPDATE below NULLs `current_phase` and
+    # `reset_abandoned_phases` clears the phase tokens, destroying both signals.
+    # SKIP LOCKED so concurrent sweepers never collide on a row.
     stale_snapshot = (
-        select(HomeworkJob.id, HomeworkJob.claim_token)
+        select(HomeworkJob.id, HomeworkJob.claim_token, executed, HomeworkJob.reclaims)
         .where(HomeworkJob.status == "running")
         .where(
             (HomeworkJob.claimed_at.is_(None))
@@ -907,7 +959,7 @@ async def reclaim_stuck_jobs(
     if stale_ids:
         forced_conds.append(HomeworkJob.id.not_in(stale_ids))
     forced_snapshot = (
-        select(HomeworkJob.id, HomeworkJob.claim_token)
+        select(HomeworkJob.id, HomeworkJob.claim_token, executed, HomeworkJob.reclaims)
         .where(*forced_conds)
         .with_for_update(skip_locked=True)
     )
@@ -916,17 +968,47 @@ async def reclaim_stuck_jobs(
 
     reclaimed = stale_ids + forced_ids
     if reclaimed:
-        await session.execute(
-            update(HomeworkJob)
-            .where(HomeworkJob.id.in_(reclaimed))
-            .values(
-                status="pending",
-                claimed_at=None,
-                claimed_by=None,
-                claim_token=None,
-                current_phase=None,
-            )
+        base_values = dict(
+            status="pending",
+            claimed_at=None,
+            claimed_by=None,
+            claim_token=None,
+            current_phase=None,
         )
+        # Partition by execution evidence (retry-accounting-1) — see the
+        # docstring. Every group shares the same requeue values and adds only
+        # the counter columns that differ; empty groups emit no UPDATE at all,
+        # so the common single-group sweep is still a single statement.
+        executed_ids: list = []
+        free_ids: list = []
+        capped_ids: list = []
+        for _id, _tok, did_execute, reclaims in stale_rows + forced_rows:
+            if did_execute:
+                executed_ids.append(_id)
+            elif reclaims < max_reclaims:
+                free_ids.append(_id)
+            else:
+                capped_ids.append(_id)
+        for ids, extra in (
+            # Ran and failed: the attempt was real — charge it, and clear the
+            # scheduling-failure streak.
+            (executed_ids, {"reclaims": 0}),
+            # Never started: refund the claim's increment, count the reclaim.
+            (free_ids, {
+                "attempts": func.greatest(HomeworkJob.attempts - 1, 0),
+                "reclaims": HomeworkJob.reclaims + 1,
+            }),
+            # Streak budget spent: stop refunding so `attempts` can terminate a
+            # genuinely wedged job. `reclaims` is deliberately NOT reset here —
+            # resetting would re-open the refund and loop forever.
+            (capped_ids, {}),
+        ):
+            if ids:
+                await session.execute(
+                    update(HomeworkJob)
+                    .where(HomeworkJob.id.in_(ids))
+                    .values(**base_values, **extra)
+                )
         # Same-transaction phase reconciliation (orphan-phase-reconciliation-1):
         # a reclaimed job's in-flight rows go back to WAITING. Marker-aware
         # because main.lifespan's boot sweep pre-marks them failed/"orphaned:
@@ -938,7 +1020,7 @@ async def reclaim_stuck_jobs(
             include_orphan_failed=True,
         )
         # Ledger the OLD (pre-rotation) token per reclaimed id.
-        for job_id, old_token in stale_rows:
+        for job_id, old_token, _did_execute, _reclaims in stale_rows:
             await lease_events.append_event(
                 session,
                 job_id=job_id,
@@ -946,7 +1028,7 @@ async def reclaim_stuck_jobs(
                 event_type=lease.EVENT_RECLAIMED_STALE,
                 reason="stale claim reclaimed (owner absent from registry)",
             )
-        for job_id, old_token in forced_rows:
+        for job_id, old_token, _did_execute, _reclaims in forced_rows:
             await lease_events.append_event(
                 session,
                 job_id=job_id,

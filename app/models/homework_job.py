@@ -89,6 +89,15 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     # `settings.queue_max_attempts` the worker marks the job as failed
     # terminally instead of retrying.
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # Consecutive SCHEDULING failures (retry-accounting-1): claims that were
+    # reclaimed by the stale sweep before the job ever started a phase. These do
+    # NOT consume `attempts` (that budget bounds *execution* failures) — the
+    # reclaim refunds the claim's increment and bumps this instead. Reset to 0
+    # the moment a claim actually executes, so it measures a streak, not a
+    # lifetime. Bounded by `settings.queue_max_reclaims`: past the ceiling the
+    # refund stops and the normal `attempts` machinery terminates the job, so a
+    # permanently-wedging job can't free-requeue forever.
+    reclaims: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     last_attempt_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
