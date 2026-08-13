@@ -281,6 +281,152 @@ async def test_mixed_resume_and_create_share_one_wave_sequence(monkeypatch, fake
     assert body["stagger"]["jobs_launched"] == 14
 
 
+# ── Per-request override: `wave_size` / `wave_interval_seconds` ─────────────
+# The global settings are only settable at process start and a head restart is
+# operationally reserved (it re-stamps the fleet version floor). The defaults
+# were measured on a 14-host fleet; a 38-host fleet launching 254 lessons at
+# 6/60s waits ~42 min before the last job is even claimable. These tests pin
+# that one launch can pick its own ramp — and that omitting the fields still
+# behaves EXACTLY as before.
+
+
+@pytest.mark.asyncio
+async def test_request_override_replaces_the_global_wave(monkeypatch, fake_session):
+    from app.api.v1 import batch as batch_mod
+    offsets = []
+    _wire(monkeypatch, batch_mod, offsets_sink=offsets)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_size", 6)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_interval_seconds", 60)
+
+    resp = await _launch({"book_id": str(BOOK_ID), "wave_size": 7,
+                          "wave_interval_seconds": 30})
+
+    assert resp.status_code == 201
+    # 14 lessons at wave 7 -> 7 x 0, 7 x 30. The global 6/60 would have produced
+    # 3 waves ending at 120s, so this cannot pass by inheriting settings.
+    assert offsets == [0] * 7 + [30] * 7
+    # The summary reports what was APPLIED, not what the settings singleton holds
+    # — otherwise an operator reading it can't tell this launch's ramp apart from
+    # a stuck queue.
+    assert resp.json()["stagger"] == {
+        "wave_size": 7, "interval_seconds": 30, "jobs_launched": 14,
+        "waves": 2, "last_start_offset_seconds": 30}
+    # Per-request means per-request: nothing is written back to the globals.
+    assert batch_mod.settings.batch_launch_wave_size == 6
+    assert batch_mod.settings.batch_launch_wave_interval_seconds == 60
+
+
+@pytest.mark.parametrize("override,applied", [
+    ({"wave_size": 0}, {"wave_size": 0, "interval_seconds": 60}),
+    ({"wave_interval_seconds": 0}, {"wave_size": 6, "interval_seconds": 0}),
+])
+@pytest.mark.asyncio
+async def test_override_zero_means_no_stagger(monkeypatch, fake_session,
+                                              override, applied):
+    """0 carries the settings kill-switch meaning per request: every job of THIS
+    launch is claimable immediately while the fleet default stays staggered.
+    This is what replaces flattening `scheduled_at` in the DB after launch."""
+    from app.api.v1 import batch as batch_mod
+    offsets = []
+    _wire(monkeypatch, batch_mod, offsets_sink=offsets)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_size", 6)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_interval_seconds", 60)
+
+    resp = await _launch({"book_id": str(BOOK_ID), **override})
+
+    assert resp.status_code == 201
+    assert offsets == [0] * 14
+    assert resp.json()["stagger"] == {
+        **applied, "jobs_launched": 14, "waves": 1,
+        "last_start_offset_seconds": 0}
+
+
+@pytest.mark.asyncio
+async def test_override_fields_resolve_independently(monkeypatch, fake_session):
+    """Each field inherits on its own: overriding only the size keeps the global
+    interval, so an operator widening a wave needn't restate the interval."""
+    from app.api.v1 import batch as batch_mod
+    offsets = []
+    _wire(monkeypatch, batch_mod, offsets_sink=offsets)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_size", 6)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_interval_seconds", 45)
+
+    resp = await _launch({"book_id": str(BOOK_ID), "wave_size": 3})
+
+    assert resp.status_code == 201
+    assert offsets == [(i // 3) * 45 for i in range(14)]
+    stagger = resp.json()["stagger"]
+    assert stagger["wave_size"] == 3           # from the request
+    assert stagger["interval_seconds"] == 45   # inherited from settings
+
+
+@pytest.mark.asyncio
+async def test_override_reaches_the_resume_branch_too(monkeypatch, fake_session):
+    """Both `stagger_offset` call sites — create AND resume — must read the
+    resolved ramp. Wiring the override into only the create branch would leave a
+    resume-heavy relaunch stuck on the global ramp."""
+    from app.api.v1 import batch as batch_mod
+    offsets = []
+    resume_offsets = []
+    resume_ids = {r.id for r in _ROWS[:4]}
+    saved = SimpleNamespace(id=uuid.uuid4(), status="failed", provider="gemini",
+                            model="gemini-3.6-flash", extract_provider=None,
+                            extract_model=None, judge_provider=None,
+                            judge_model=None, solver_provider=None,
+                            solver_model=None)
+    _wire(monkeypatch, batch_mod, offsets_sink=offsets, latest=saved,
+          resume_ids=resume_ids)
+
+    async def _reset(session, job_id, batch_id=None, *, start_offset_seconds=0):
+        resume_offsets.append(start_offset_seconds)
+
+    monkeypatch.setattr(batch_mod.jobs_repo, "reset_for_retry", _reset)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_size", 3)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_interval_seconds", 60)
+
+    resp = await _launch({"book_id": str(BOOK_ID), "wave_size": 7})
+
+    assert resp.status_code == 201
+    # One 7-wide ramp across both branches. The global wave of 3 would have put
+    # the 4th job (the last resume) at 60, not 0.
+    assert resume_offsets == [0, 0, 0, 0]
+    assert offsets == [0, 0, 0] + [60] * 7
+    assert resume_offsets + offsets == [(i // 7) * 60 for i in range(14)]
+
+
+@pytest.mark.asyncio
+async def test_explicit_null_override_inherits_the_global(monkeypatch, fake_session):
+    """`None` is the documented "inherit" value, so a client that always sends
+    both keys must land on byte-identical behaviour to today's caller that omits
+    them (compare `test_large_launch_is_spread_across_waves`)."""
+    from app.api.v1 import batch as batch_mod
+    offsets = []
+    _wire(monkeypatch, batch_mod, offsets_sink=offsets)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_size", 6)
+    monkeypatch.setattr(batch_mod.settings, "batch_launch_wave_interval_seconds", 60)
+
+    resp = await _launch({"book_id": str(BOOK_ID), "wave_size": None,
+                          "wave_interval_seconds": None})
+
+    assert resp.status_code == 201
+    assert offsets == [0] * 6 + [60] * 6 + [120] * 2
+    assert resp.json()["stagger"] == {
+        "wave_size": 6, "interval_seconds": 60, "jobs_launched": 14,
+        "waves": 3, "last_start_offset_seconds": 120}
+
+
+@pytest.mark.parametrize("override", [{"wave_size": -1},
+                                      {"wave_interval_seconds": -1}])
+@pytest.mark.asyncio
+async def test_negative_override_is_rejected(override):
+    """Rejected by pydantic body validation, i.e. before the book-scoped
+    advisory lock and before any row is touched — same `ge=0` contract the
+    settings fields carry (`tests/test_launch_stagger_settings.py`)."""
+    resp = await _launch({"book_id": str(BOOK_ID), **override})
+
+    assert resp.status_code == 422
+
+
 @pytest.mark.asyncio
 async def test_resume_endpoint_passes_the_wave_settings(monkeypatch):
     from app.api.v1 import batch as batch_mod

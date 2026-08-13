@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     # this works at the fleet's CURRENT configuration with no worker touch.
     # Set either to 0 to disable — every job becomes claimable immediately,
     # exactly as before this feature.
+    # These are the fleet-wide DEFAULT, not a ceiling: a bigger fleet would spend
+    # ~42 min ramping 254 lessons at 6/60s, and changing these needs a head
+    # restart (operationally reserved — it re-stamps the fleet version floor).
+    # `POST /jobs/batch` therefore takes optional per-request `wave_size` /
+    # `wave_interval_seconds` that override this pair for that launch only.
     batch_launch_wave_size: int = Field(default=6, ge=0)
     batch_launch_wave_interval_seconds: int = Field(default=60, ge=0)
     # Process-wide cap on simultaneous CLI subprocesses. Protects against
