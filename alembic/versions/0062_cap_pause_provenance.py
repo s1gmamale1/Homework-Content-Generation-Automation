@@ -26,7 +26,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "0062_cap_pause_provenance"
-down_revision = "0059_toc_teacher_deck_notion"
+down_revision = "0061_credential_slot_index"
 branch_labels = None
 depends_on = None
 

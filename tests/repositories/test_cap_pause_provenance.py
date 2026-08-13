@@ -223,6 +223,6 @@ def test_migration_0062_adds_the_provenance_columns():
     src = path.read_text(encoding="utf-8")
     for col in ("paused_cap_usd", "paused_by", "api_paused_cap_usd", "api_paused_by"):
         assert col in src, f"migration must add {col}"
-    assert 'down_revision = "0059_toc_teacher_deck_notion"' in src, (
+    assert 'down_revision = "0061_credential_slot_index"' in src, (
         "0062 must chain onto the migration head it was written against"
     )
