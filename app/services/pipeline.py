@@ -354,11 +354,12 @@ async def run(job_id: UUID, lease: Optional[JobLease] = None) -> None:
             next_lesson_title: Optional[str] = _next.section_title if _next else None
 
         # Local on-disk PDF; on a multi-PC fleet a worker may be missing it, so
-        # fetch-on-demand from the head (R13). Sync helper off the event loop —
-        # same idiom as read_whole_book_text below. Raises if it can't produce it.
-        pdf_path = await asyncio.to_thread(
-            book_fetch.ensure_book_pdf_sync, book_id, expected_pdf_size
-        )
+        # fetch-on-demand from the head (R13). `ensure_book_pdf` de-dupes N jobs
+        # of the same book on this host down to ONE transfer and bounds the wait
+        # with `book_fetch_timeout_seconds` (raises BookFetchTimeout), so an
+        # oversized book can no longer eat this job's whole generation budget
+        # before phase 1. Raises if it can't produce the file.
+        pdf_path = await book_fetch.ensure_book_pdf(book_id, expected_pdf_size)
 
         log.info(
             f"[job {job_id}] context loaded | subject={subject} "
