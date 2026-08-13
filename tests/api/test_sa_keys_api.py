@@ -155,13 +155,14 @@ async def test_list_serves_slots_in_use_and_effective_limit(monkeypatch, tmp_pat
         # Seed two fresh in-flight slots for this key's project credential.
         async with SessionLocal() as s:
             async with s.begin():
-                for pc in ("pc-x", "pc-y"):
+                for idx, pc in enumerate(("pc-x", "pc-y")):
                     await s.execute(
                         sa_text(
-                            "INSERT INTO credential_slots (credential, pc_id, acquired_at) "
-                            "VALUES (:cred, :pc, now())"
+                            "INSERT INTO credential_slots "
+                            "(credential, slot_index, pc_id, acquired_at) "
+                            "VALUES (:cred, :idx, :pc, now())"
                         ),
-                        {"cred": credential, "pc": pc},
+                        {"cred": credential, "idx": idx, "pc": pc},
                     )
 
         try:

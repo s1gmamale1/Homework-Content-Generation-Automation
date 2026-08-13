@@ -3,23 +3,54 @@ task 3). Core primitives ONLY — no wiring into `agent.py` (task 5) and no
 limit resolution from `sa_keys.max_concurrent_calls` (task 4).
 
 Design (see docs/superpowers/plans/2026-07-16-credential-rate-limit.md):
-`credential_slots(id, credential, pc_id, acquired_at)` has NO SQLAlchemy
-model (migration 0047 comment) — every access here is raw SQL via
+`credential_slots(id, credential, slot_index, pc_id, acquired_at)` has NO
+SQLAlchemy model (migration 0047 comment) — every access here is raw SQL via
 ``sqlalchemy.text()``. A row is a held "slot" against a credential
-fingerprint (see ``credential_id.credential_for``); the count of *fresh*
-rows (younger than ``STALE_TTL_SECONDS``) for a credential is compared
-against the caller-supplied ``limit``.
+fingerprint (see ``credential_id.credential_for``); only *fresh* rows
+(younger than ``STALE_TTL_SECONDS``) count against the caller-supplied
+``limit``.
 
-Concurrency is serialized per credential via
-``pg_advisory_xact_lock(hashtext(credential))`` — a transaction-scoped
-advisory lock that auto-releases at commit/rollback, so a crashed holder
-can never wedge the lock. The count-then-insert happens INSIDE that same
-transaction so two concurrent callers can't both observe `count < limit`
-and both insert (TOCTOU).
+ONE LOCK PER SLOT, NOT ONE LOCK PER CREDENTIAL
+----------------------------------------------
+This used to serialize every acquisition per credential via
+``pg_advisory_xact_lock(hashtext(credential))``, holding that lock across a
+count-then-insert. Measured in production on a 38-host fleet that shares one
+Gemini key — so every host hashed to the SAME lock: 75 database connections
+blocked on it, longest wait 822 seconds, while only 54 of a 900-slot ceiling
+were in use. The limiter throttled nothing and blocked everything; blocked
+workers could not even heartbeat and dropped out of the worker roster.
 
-Each poll iteration in ``acquire`` opens and closes its OWN short session —
-never held across the inter-poll sleep, so a slow poller doesn't pin a pool
-connection for the whole ``wait_budget_s`` window.
+The critical section was the real defect, not its width: it spanned four
+client round trips (BEGIN, lock, count, insert, COMMIT), so the fleet's whole
+acquisition rate was capped at one-per-round-trip-latency — and that latency
+degrades exactly when the fleet is busy.
+
+So the mutual exclusion is now sharded all the way down to one lock per
+*slot*, and each of those locks is a unique-index entry rather than an
+advisory lock: ``UNIQUE(credential, slot_index)`` (migration 0060) makes it
+physically impossible for more than ``limit`` rows to exist for a credential
+across the index range ``[0, limit)``. ``acquire`` picks a free index at
+random and claims it in ONE statement, so:
+
+- **The ceiling is exact, not approximate.** It is enforced by the unique
+  index, not by a count the caller races against. Verified against a real
+  Postgres at limits 1/2/8/25 with 60 truly-concurrent acquirers: never one
+  row over. (A plain ``INSERT ... SELECT ... WHERE (count) < :limit`` is NOT
+  race-free at READ COMMITTED — each statement's snapshot predates its
+  concurrent peers' commits, so the same probe overshot limit=1 to NINE rows.
+  Taking the advisory lock *inside* that one statement is worse still — the
+  statement's snapshot is taken BEFORE the lock is granted, so every waiter
+  reads the same pre-lock state and all 40 acquirers inserted.)
+- **Nothing serializes fleet-wide.** No advisory lock is taken at all. Two
+  acquirers collide only when they randomly pick the SAME free index, and
+  that collision is resolved inside a single statement.
+
+Each poll iteration in ``acquire`` opens and closes its OWN short session,
+runs exactly one statement in AUTOCOMMIT (no BEGIN/COMMIT round trips), and
+never holds it across the inter-poll sleep — so a waiting worker occupies a
+pool connection for one round trip per poll rather than for as long as it is
+queued. That matters: worker processes run a 2+2 connection pool
+(``db._pool_config``), the same pool the actual jobs need.
 
 STALE_TTL: reviewed (I5) at exactly 2x the per-attempt timeout — a TTL equal
 to the timeout itself would expire (and thus stop counting) the slot of a
@@ -71,7 +102,106 @@ _POLL_INTERVAL_MAX_S = 5.0
 _POLL_BACKOFF_FACTOR = 2.0
 _POLL_JITTER_S = 0.5
 
+# A claim attempt reports WHY it failed, which lets us tell the two cases
+# apart instead of sleeping through both:
+#   * no free slot index at all  -> the credential really is saturated; sleep.
+#   * a free index existed but a concurrent acquirer took it first -> retry
+#     straight away, because capacity almost certainly still exists.
+# Only the second case burns an immediate retry, and only this many per poll,
+# so a genuinely saturated credential still costs exactly one statement per
+# poll. Measured collision rate with 40 concurrent acquirers against a
+# 900-slot ceiling: ~4% of attempts — cheap to re-try, needlessly expensive
+# to sleep a full second over.
+_RACE_RETRIES_PER_POLL = 2
+
 SlotId = Union[UUID, object]
+
+# ONE statement, so the whole critical section is server-side: no advisory
+# lock, and nothing is held across a client round trip.
+#
+# `cand` picks one slot index that is free *right now* (no fresh row holds
+# it). MATERIALIZED is load-bearing twice over: it pins `random()` to a
+# single draw, and it keeps the `EXISTS` in the final SELECT reporting on the
+# same draw the INSERT used.
+#
+# The second qual in `cand` — total fresh rows < limit — is what keeps the
+# contract exact when a ceiling is LOWERED while calls are in flight: rows
+# parked at an index >= the new limit are invisible to the per-index NOT
+# EXISTS, so without this they would not hold new admissions back. It can
+# never over-admit (the unique index is the hard bound); at worst it costs a
+# retry.
+#
+# ON CONFLICT DO UPDATE is the stale-slot takeover: if the index we picked
+# turns out to be held by a row that has aged past the TTL (a holder that
+# crashed without releasing), we steal it. Rotating `id` on that steal is
+# deliberate — the previous holder's `release(old_id)` must not delete the
+# row now owned by someone else. That holds even when its DELETE was already
+# in flight: READ COMMITTED re-checks `id = :old` against the UPDATED row
+# version and matches nothing (verified against a real Postgres).
+# If the conflicting row is still fresh, the WHERE fails, no row comes back,
+# and we simply lost the race for that index.
+#
+# Cost is linear in the ceiling (the candidate scan walks `[0, limit)`), which
+# is free at the ceilings this system actually runs: measured 0.4ms at
+# limit=8 and 0.3ms at limit=900 with 890 held. It only becomes worth caring
+# about at absurd values — ~1.7ms at 10k, ~11ms at 100k.
+_ACQUIRE_SQL = text(
+    """
+    WITH cand AS MATERIALIZED (
+        SELECT g.i AS slot_index
+          FROM generate_series(0, :limit - 1) AS g(i)
+         WHERE NOT EXISTS (
+                SELECT 1 FROM credential_slots s
+                 WHERE s.credential = :cred
+                   AND s.slot_index = g.i
+                   AND s.acquired_at > now() - make_interval(secs => :ttl))
+           AND (SELECT count(*) FROM credential_slots s2
+                 WHERE s2.credential = :cred
+                   AND s2.acquired_at > now() - make_interval(secs => :ttl)) < :limit
+         ORDER BY random()
+         LIMIT 1
+    ), claimed AS (
+        INSERT INTO credential_slots (credential, slot_index, pc_id)
+        SELECT :cred, cand.slot_index, :pc_id FROM cand
+        ON CONFLICT (credential, slot_index) DO UPDATE
+           SET pc_id = EXCLUDED.pc_id,
+               acquired_at = now(),
+               id = gen_random_uuid()
+         WHERE credential_slots.acquired_at <= now() - make_interval(secs => :ttl)
+        RETURNING id
+    )
+    SELECT (SELECT id FROM claimed) AS slot_id,
+           EXISTS (SELECT 1 FROM cand) AS had_free_slot
+    """
+)
+
+
+async def _try_claim(
+    credential: str, limit: int, pc_id: str
+) -> tuple[Optional[UUID], bool]:
+    """One claim attempt. Returns ``(slot_id_or_None, had_free_slot)``.
+
+    AUTOCOMMIT, not ``session.begin()``: the claim is a single statement and
+    is therefore already atomic on its own, so an explicit transaction would
+    only add BEGIN and COMMIT round trips — tripling how long a *waiting*
+    worker holds one of the four connections its process has.
+    """
+    async with SessionLocal() as session:
+        conn = await session.connection(
+            execution_options={"isolation_level": "AUTOCOMMIT"}
+        )
+        row = (
+            await conn.execute(
+                _ACQUIRE_SQL,
+                {
+                    "cred": credential,
+                    "pc_id": pc_id,
+                    "ttl": STALE_TTL_SECONDS,
+                    "limit": limit,
+                },
+            )
+        ).one()
+    return row.slot_id, row.had_free_slot
 
 
 async def acquire(
@@ -89,10 +219,13 @@ async def acquire(
     - a slot id (pass to ``release``) once a slot is available.
     - ``None`` if ``wait_budget_s`` is exhausted without ever getting one.
 
-    Polls once per short-lived session/transaction; sleeps between polls
-    with exponential backoff (``1s`` -> ``5s``, doubling each miss, + jitter,
-    clipped to the remaining budget), never holding a connection across the
-    sleep.
+    Each poll is ONE statement in its own short-lived session — no advisory
+    lock, nothing held across a client round trip, and nothing held across
+    the inter-poll sleep. Sleeps between polls with exponential backoff
+    (``1s`` -> ``5s``, doubling each miss, + jitter, clipped to the remaining
+    budget). A poll that lost a race for a free slot index (rather than
+    finding the credential saturated) retries immediately instead of
+    sleeping — see ``_RACE_RETRIES_PER_POLL``.
     """
     if not limit or limit <= 0:
         return BYPASS
@@ -100,33 +233,12 @@ async def acquire(
     deadline = time.monotonic() + wait_budget_s
     poll_interval = _POLL_INTERVAL_MIN_S
     while True:
-        async with SessionLocal() as session:
-            async with session.begin():
-                await session.execute(
-                    text("SELECT pg_advisory_xact_lock(hashtext(:cred))"),
-                    {"cred": credential},
-                )
-                count = (
-                    await session.execute(
-                        text(
-                            "SELECT count(*) FROM credential_slots "
-                            "WHERE credential = :cred "
-                            "AND acquired_at > now() - make_interval(secs => :ttl)"
-                        ),
-                        {"cred": credential, "ttl": STALE_TTL_SECONDS},
-                    )
-                ).scalar_one()
-                if count < limit:
-                    slot_id = (
-                        await session.execute(
-                            text(
-                                "INSERT INTO credential_slots (credential, pc_id) "
-                                "VALUES (:cred, :pc_id) RETURNING id"
-                            ),
-                            {"cred": credential, "pc_id": pc_id},
-                        )
-                    ).scalar_one()
-                    return slot_id
+        for _ in range(_RACE_RETRIES_PER_POLL + 1):
+            slot_id, had_free_slot = await _try_claim(credential, limit, pc_id)
+            if slot_id is not None:
+                return slot_id
+            if not had_free_slot:
+                break  # genuinely saturated — wait for someone to release
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:

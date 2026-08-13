@@ -102,31 +102,37 @@ async def test_slots_in_use_by_credential_groups_fresh_rows_only():
         async with s.begin():
             # two fresh slots for cred_a, one fresh for cred_b, one STALE
             # for cred_a (acquired far in the past) that must NOT be counted.
+            # slot_index is part of UNIQUE(credential, slot_index) since
+            # migration 0060 — distinct per credential, reused across them.
             await s.execute(
                 text(
-                    "INSERT INTO credential_slots (credential, pc_id, acquired_at) "
-                    "VALUES (:cred, 'pc-1', now())"
+                    "INSERT INTO credential_slots "
+                    "(credential, slot_index, pc_id, acquired_at) "
+                    "VALUES (:cred, 0, 'pc-1', now())"
                 ),
                 {"cred": cred_a},
             )
             await s.execute(
                 text(
-                    "INSERT INTO credential_slots (credential, pc_id, acquired_at) "
-                    "VALUES (:cred, 'pc-2', now())"
+                    "INSERT INTO credential_slots "
+                    "(credential, slot_index, pc_id, acquired_at) "
+                    "VALUES (:cred, 1, 'pc-2', now())"
                 ),
                 {"cred": cred_a},
             )
             await s.execute(
                 text(
-                    "INSERT INTO credential_slots (credential, pc_id, acquired_at) "
-                    "VALUES (:cred, 'pc-3', now())"
+                    "INSERT INTO credential_slots "
+                    "(credential, slot_index, pc_id, acquired_at) "
+                    "VALUES (:cred, 0, 'pc-3', now())"
                 ),
                 {"cred": cred_b},
             )
             await s.execute(
                 text(
-                    "INSERT INTO credential_slots (credential, pc_id, acquired_at) "
-                    "VALUES (:cred, 'pc-stale', now() - interval '999999 seconds')"
+                    "INSERT INTO credential_slots "
+                    "(credential, slot_index, pc_id, acquired_at) "
+                    "VALUES (:cred, 2, 'pc-stale', now() - interval '999999 seconds')"
                 ),
                 {"cred": cred_a},
             )

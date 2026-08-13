@@ -798,10 +798,15 @@ the credential the call actually bills against (`app/services/credential_id.py:c
 `gemini:{project}` for a Vertex SA pair, `{provider}:{sha256[:16]}` for a raw key). The wire point
 is the api branch of `agent._spawn_once`, **inside** the local semaphore (a fleet-slot waiter
 still counts against the local cap — cli is retired, so the local semaphore is process
-protection only, not a second limiter). Acquire is a short Postgres transaction
-(`pg_advisory_xact_lock` + count-then-insert, never held during the model call); a slot that
-never gets released (crash) ages out of the count after `2 × per_attempt_timeout_seconds` and is
-swept by the worker's periodic loop. Ceiling = env default
+protection only, not a second limiter). Acquire is ONE Postgres statement in AUTOCOMMIT — it
+claims a free `slot_index` in `[0, limit)`, and `UNIQUE(credential, slot_index)` (migration 0060)
+is what makes the ceiling exact; nothing is held during the model call. It used to take
+`pg_advisory_xact_lock(hashtext(credential))` around a count-then-insert, which serialized every
+acquisition **fleet-wide** — all hosts share one Gemini key, so all of them hashed to one lock
+(2026-08: 75 connections blocked, longest wait 822s, 54 of a 900-slot ceiling in use, workers
+too blocked to heartbeat). A slot that never gets released (crash) ages out of the count after
+`2 × per_attempt_timeout_seconds`, is taken over in place by the next acquirer that lands on its
+index, and is swept by the worker's periodic loop. Ceiling = env default
 (`CREDENTIAL_MAX_CONCURRENT_GEMINI`/`_CLAUDE`/`_CLODEX`, default 8 each, `0` = limiter off for
 that provider) or a per-project override (`sa_keys.max_concurrent_calls`, edited in the SA-keys
 panel, `PATCH /api/v1/sa-keys/{id}` — project-wide atomic update since `project_id` isn't
