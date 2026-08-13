@@ -13,6 +13,27 @@ class AuthEnvError(RuntimeError):
     """The requested API transport lacks its provider credential."""
 
 
+class BookFetchError(RuntimeError):
+    """A worker could not obtain a book's ``source.pdf`` from the head (R13).
+
+    RuntimeError-derived on purpose: the read-site has always raised
+    ``RuntimeError`` and callers/tests match on that, so this narrows the type
+    without breaking anyone.
+    """
+
+
+class BookFetchTimeout(BookFetchError):
+    """The ``source.pdf`` fetch blew its own budget
+    (``settings.book_fetch_timeout_seconds``) — waiting behind another job's
+    in-flight fetch of the same book, or trickling bytes off the head.
+
+    Distinct from the job timeout by design: before this existed, a slow fetch
+    silently consumed the entire ``job_timeout_seconds`` and surfaced as a bare
+    ``timeout after 1800s`` with ``current_phase=NULL``, which names neither the
+    fetch nor the book that caused it.
+    """
+
+
 class SessionLimitPause(Exception):
     """Raised by _run_with_failover when ``session_limit_strategy='pause'`` and
     a session-limit error is detected on the requested provider.

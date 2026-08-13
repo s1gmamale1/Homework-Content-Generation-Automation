@@ -318,6 +318,26 @@ class Settings(BaseSettings):
     # and the head's own embedded worker are unchanged. Set on remote workers.
     fleet_head_url: str = ""
 
+    # Fleet R13 — the source.pdf fetch gets its OWN wall-clock budget, separate
+    # from `job_timeout_seconds`. Measured incident (2026-08-12, book "adabiyot
+    # g10", 237.2 MB): the fetch has no total-transfer bound (httpx's timeout is
+    # per read, and a trickling stream never trips it), so 24 workers each sat
+    # `current_phase IS NULL` for ~15 min and then died on the 1800 s JOB
+    # timeout — 35 failed / 16 timed out / 0 lessons. A download that can eat a
+    # whole generation budget is a transfer timeout wearing the wrong label.
+    # 600 s is deliberately generous: it is a ~400 KB/s floor for that same
+    # 237 MB file (a LAN pull of it takes ~25 s), so no healthy fetch notices —
+    # but a wedged one now fails at 600 s with a named error instead of
+    # occupying a worker slot for the full 1800 s.
+    book_fetch_timeout_seconds: int = Field(default=600, ge=1)
+    # Loud-warn threshold (MB) for an oversized book source PDF on the fetch
+    # path. Every worker missing the book pulls the whole file, so size is the
+    # variable that decides whether a launch is survivable — the five healthy
+    # books in that incident were 1.7-19.5 MB. Warn only (never refuse): a
+    # refusal would make big books unsupported, which is the opposite of the
+    # goal. 0 disables the warning.
+    book_fetch_warn_mb: int = Field(default=100, ge=0)
+
     # ─── Notion archive (Phase 1 push) ───
     notion_enabled: bool = False
     notion_api_key: str = ""
