@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import random
 import socket
 import signal
 from datetime import datetime, timedelta, timezone
@@ -71,6 +72,26 @@ from app.services.storage import sa_key_active_path
 # few seconds; unthrottled this would flood the log for a stale worker that
 # never restarts.
 _STALE_LOG_INTERVAL_SECONDS = 300.0
+
+# Jitter band for the empty-claim backoff, as a multiple of poll_interval.
+# Centred on 1.0 so the MEAN poll rate is exactly the configured one.
+_EMPTY_POLL_JITTER = (0.5, 1.5)
+
+
+def empty_poll_backoff(poll_interval: float) -> float:
+    """Seconds to wait after a claim that came back empty.
+
+    A fleet of workers all sleeping exactly ``WORKER_POLL_INTERVAL`` polls in
+    LOCKSTEP: every worker wakes on the same period, so the misses cluster on
+    the same instants and the same workers keep losing the same races instead
+    of the fleet's attempts spreading over the window. Full jitter across
+    [0.5x, 1.5x] decorrelates them without changing the average poll rate.
+
+    Floored just above zero so a 0/negative configured interval can't turn the
+    empty-queue path into a hot spin against Postgres.
+    """
+    lo, hi = _EMPTY_POLL_JITTER
+    return max(poll_interval * random.uniform(lo, hi), 0.05)
 
 
 # Maps job_id -> the in-flight _execute_job task, so a same-process cancel
@@ -328,12 +349,16 @@ class Worker:
 
                 claimed = await self._claim_one()
                 if claimed is None:
-                    # Empty queue — release the slot and wait before polling
-                    # again. Use stop_event.wait(timeout) so shutdown is fast.
+                    # Empty claim — release the slot and wait before polling
+                    # again. The wait is JITTERED (see empty_poll_backoff) so a
+                    # fleet of workers does not poll in lockstep; the mean rate
+                    # is still poll_interval. Use stop_event.wait(timeout) so
+                    # shutdown is fast.
                     self._slots.release()
                     try:
                         await asyncio.wait_for(
-                            self._stop_event.wait(), timeout=self.poll_interval
+                            self._stop_event.wait(),
+                            timeout=empty_poll_backoff(self.poll_interval),
                         )
                     except asyncio.TimeoutError:
                         pass

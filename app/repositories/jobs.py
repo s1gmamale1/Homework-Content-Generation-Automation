@@ -461,9 +461,40 @@ async def claim_next_job(
             peer's credential instead.
         Default `capabilities=None` is all-False (cli-only).
 
-    Order: highest priority first, then ascending lesson order
-    (toc_entries.order_index — so lesson 1 is claimed before lesson 2),
-    then oldest scheduled_at first (FIFO within a priority+lesson band).
+    Order — PRIORITY, then FAIR SHARE ACROSS BATCHES, then the historical
+    within-batch order (fleet-claim-fairness-1, measured 2026-08-12):
+
+      1. highest priority first — unchanged and still dominant, so raising a
+         batch's priority still jumps the queue rather than buying a share of
+         it. Everything below applies WITHIN one priority band.
+      2. ``lane_pos`` — the job's SERVICE position within its own launch lane
+         (its batch; a batchless ``/generate`` job lanes by book): how many of
+         that lane's jobs are already in flight, plus its position among the
+         lane's claimable rows. Every lane's next-up lesson is offered before
+         any lane's second, so N free workers spread over the N available
+         batches instead of draining whichever batch happens to sort first.
+      3. ascending lesson order (toc_entries.order_index — so lesson 1 is
+         claimed before lesson 2 *of the same batch*),
+      4. oldest scheduled_at first (FIFO within a priority+lesson band),
+      5. job id — a total order, so the pick is deterministic instead of
+         heap-order-dependent when 1-4 all tie.
+
+    WHY (1,3,4 alone was the bug): ``order_index`` is a per-BOOK TOC position, so
+    ranking on it globally is not a meaningful cross-book comparison — it just
+    makes every worker in the fleet target one contiguous head of the queue.
+    Whenever claimable work exceeds what the fleet can hold at once, all of the
+    capacity lands on the batches occupying that head and every other batch gets
+    ZERO share however many workers are idle. Measured on a real Postgres:
+    24 concurrent claimers, 72 claimable rows across 6 batches -> 2 batches took
+    all 24 slots and **4 batches ran zero with 48 rows still pending**. With the
+    lane rank the same run gives every batch a share.
+
+    The rank is derived per claim from the rows themselves — no per-batch
+    counters, no scheduler state, nothing to drift or reconcile. Ranking among
+    the claimable rows alone was NOT enough: it resets as soon as a lane's head
+    is claimed, so a lane would still drain end-to-end under serial claiming.
+    Seeding each lane with its in-flight count is what makes the position hold
+    across a whole run (see `lane_inflight` below).
     """
     from app.services.model_tiers import _PRIMARY_SELF_FALLBACK
     from app.services.agent_models import MODEL_MANIFEST, default_model as _default_model
@@ -581,28 +612,94 @@ async def claim_next_job(
     )
     fleet_gate = or_(~job_resolved_api, literal(not fleet_api_paused))
 
+    # Every eligibility gate, as one reusable list. It is applied TWICE on
+    # purpose: once inside the ranking CTE (so lane positions are computed over
+    # the claimable set only) and once on the outer, locked scan of
+    # `homework_jobs`. The outer copy is load-bearing for CORRECTNESS, not just
+    # symmetry: under READ COMMITTED, `FOR UPDATE` re-evaluates the qualification
+    # of the LOCKED relation's own scan when it meets a row a concurrent
+    # transaction updated (EvalPlanQual). Quals that live only inside a CTE are
+    # NOT part of that recheck, so a job another worker just flipped to
+    # `running` could survive the recheck and be claimed twice. Keeping the
+    # gates on the scanned relation preserves the exact single-table recheck the
+    # pre-fairness query relied on.
+    lesson_order = (
+        select(TOCEntry.order_index)
+        .where(TOCEntry.id == HomeworkJob.toc_entry_id)
+        .scalar_subquery()
+    )
+    gates = (
+        HomeworkJob.status == "pending",
+        HomeworkJob.scheduled_at <= func.now(),
+        HomeworkJob.attempts < max_attempts,
+        content_ok,
+        judge_ok,
+        extract_ok,
+        solver_ok,
+        not_in_paused_batch,
+        fleet_gate,
+    )
+    # Launch lane: a batch's jobs share one lane. `batch_id` is NULLable (a
+    # bare `/generate` job has none) so it falls back to `book_id`, which is NOT
+    # NULL — never to a literal NULL, which would collapse every batchless job
+    # in the fleet into ONE lane and reintroduce exactly the head-of-line
+    # blocking this ordering exists to remove.
+    lane = func.coalesce(HomeworkJob.batch_id, HomeworkJob.book_id)
+    within_lane = (
+        HomeworkJob.priority.desc(),
+        lesson_order.asc(),               # NULLS LAST by Postgres default
+        HomeworkJob.scheduled_at.asc(),
+        HomeworkJob.id.asc(),
+    )
+    # How much of the fleet each lane ALREADY occupies. This is what makes the
+    # rank hold up under serial claiming: ranking only among *pending* rows
+    # resets the moment a lane's head is claimed (its next lesson immediately
+    # becomes position 1 again and wins the tiebreak), so a lane would still
+    # drain end-to-end whenever workers claim one at a time rather than in one
+    # synchronised burst — which is the normal steady state as jobs finish and
+    # free slots one by one. Seeding each lane's rank with its in-flight count
+    # makes the rank a service position across the whole run, not a snapshot of
+    # the pending queue. `cancelling` counts too: it still occupies a worker.
+    inflight_lane = func.coalesce(HomeworkJob.batch_id, HomeworkJob.book_id).label("lane")
+    inflight = (
+        select(inflight_lane, func.count().label("n"))
+        .where(HomeworkJob.status.in_(("running", "cancelling")))
+        .group_by(inflight_lane)
+        .cte("lane_inflight")
+    )
+    ranked = (
+        select(
+            HomeworkJob.id.label("id"),
+            (
+                func.coalesce(inflight.c.n, 0)
+                + func.row_number().over(partition_by=lane, order_by=within_lane)
+            ).label("lane_pos"),
+            HomeworkJob.priority.label("priority"),
+            lesson_order.label("lesson_order"),
+            HomeworkJob.scheduled_at.label("scheduled_at"),
+        )
+        .outerjoin(inflight, inflight.c.lane == lane)
+        .where(*gates)
+        .cte("claimable_ranked")
+    )
     pick_stmt = (
         select(HomeworkJob.id)
-        .where(HomeworkJob.status == "pending")
-        .where(HomeworkJob.scheduled_at <= func.now())
-        .where(HomeworkJob.attempts < max_attempts)
-        .where(content_ok)
-        .where(judge_ok)
-        .where(extract_ok)
-        .where(solver_ok)
-        .where(not_in_paused_batch)
-        .where(fleet_gate)
+        .join(ranked, ranked.c.id == HomeworkJob.id)
+        .where(*gates)
         .order_by(
-            HomeworkJob.priority.desc(),
-            (
-                select(TOCEntry.order_index)
-                .where(TOCEntry.id == HomeworkJob.toc_entry_id)
-                .scalar_subquery()
-            ).asc(),                          # ascending lesson order (NULLS LAST by Postgres default)
-            HomeworkJob.scheduled_at.asc(),   # final FIFO tiebreaker
+            # Priority stays DOMINANT — an operator who raises a batch's
+            # priority must still jump the queue, not merely get a round-robin
+            # share of it. Fair share applies WITHIN a priority band.
+            ranked.c.priority.desc(),
+            ranked.c.lane_pos.asc(),          # round robin across batches
+            ranked.c.lesson_order.asc(),
+            ranked.c.scheduled_at.asc(),
+            ranked.c.id.asc(),                # total order — deterministic pick
         )
         .limit(1)
-        .with_for_update(skip_locked=True)
+        # `of=HomeworkJob`: lock (and SKIP LOCKED past) the job row only. The
+        # CTE side of the join is not lockable and must not be named here.
+        .with_for_update(skip_locked=True, of=HomeworkJob)
     )
     job_id = (await session.execute(pick_stmt)).scalar_one_or_none()
     if job_id is None:
