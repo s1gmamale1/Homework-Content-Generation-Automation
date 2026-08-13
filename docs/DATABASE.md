@@ -177,7 +177,8 @@ perspective; a pushed Notion archive (if any) is the only surviving copy of the 
 | `scheduled_at` | NOT NULL, **server_default `NOW()`** (DB clock) | claim eligibility + backoff re-scheduling |
 | `claimed_at` / `claimed_by` | NULL | lease timestamp (DB clock) + `"hostname:pid@sha"` of the worker. **`claimed_by` is provenance only — never in a mutating WHERE clause** (the `claim_token` below is the actual fence). |
 | `claim_token` | UUID NULL | **per-claim fencing token** (migration 0052, worklog 0163). Minted fresh on every `claim_next_job`; every worker-owned write is guarded `AND claim_token = :token` (via `jobs._fenced_update`) so a job that was reclaimed and re-claimed by another worker cannot be mutated/completed/archived by the obsolete worker. Rotated (cleared) on every reclaim/requeue; a reclaim snapshots the OLD token first for the `job_lease_events` ledger. |
-| `attempts` | Integer NOT NULL, server_default `0` | incremented on every claim |
+| `attempts` | Integer NOT NULL, server_default `0` | incremented on every claim; bounds **execution** failures only — a reclaim that finds no execution evidence refunds the increment (see `reclaims`) |
+| `reclaims` | Integer NOT NULL, server_default `0` (migration 0060) | **consecutive scheduling failures**: claims reclaimed by the stale sweep before the job ever started a phase. Bumped instead of `attempts` on a refunded reclaim; reset to `0` the moment a claim executes, and by `reset_for_retry`. Bounded by `queue_max_reclaims` — past the ceiling refunds stop so a permanently-wedging job still terminates. |
 | `last_attempt_at` / `last_error` | NULL | |
 
 **Partial queue index** — the claim query's index:
@@ -457,8 +458,12 @@ The job status state machine:
 - **`touch_claim`** — the per-job heartbeat: refreshes `claimed_at = func.now()` every
   `heartbeat_seconds` (30 s) while running; no-ops once the job leaves `running`.
 - **`reclaim_stuck_jobs`** — orphan recovery: any `running` row whose `claimed_at` is older
-  than `reclaim_stale_seconds` (120 s = 4 missed beats) goes back to `pending` (attempts
-  preserved, so a poison job still exhausts its budget). Runs periodically in the worker and,
+  than `reclaim_stale_seconds` (120 s = 4 missed beats) goes back to `pending`. Attempts are
+  preserved **only for jobs that actually began executing** (`current_phase IS NOT NULL`, or a
+  `phase_outputs` row stamped with the current `claim_token`), so a poison job still exhausts
+  its budget; a job reclaimed before it ever started a phase gets the claim's increment
+  refunded and bumps `reclaims` instead, so DB-lock contention defers work rather than
+  destroying it. Runs periodically in the worker and,
   wrapped by **`reclaim_orphans_on_startup`**, once at API startup — that wrapper is
   **peer-aware** (C5): if `workers_repo.has_live_workers` finds a fresh heartbeat, it reclaims
   with the full `reclaim_stale_seconds` window (a live peer may be mid-run on a
@@ -607,7 +612,8 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 | 52 | 0052_job_lease_fencing | `0052_job_lease_fencing` | per-claim `claim_token` on jobs/phases plus append-only `job_lease_events`; obsolete owners cannot mutate reclaimed work (worklog 0163). |
 | 53 | 0053_solver_mismatch_blocked | `0053_solver_mismatch_blocked` | widens `ck_phase_outputs_solver_status` with `mismatch_blocked`; downgrade relabels blocked rows to legacy `mismatch_shipped` before restoring the old CHECK |
 | 54 | 0054_teacher_material_kind | `0054_teacher_material_kind` | adds `kind` String(32) NOT NULL server_default `'homework'` to `homework_jobs` + `batches` (`'homework'`\|`'teacher_material'`); widens the batches unique key from `uq_batches_book_id_transport_output_language` to `uq_batches_book_id_transport_output_language_kind`. Downgrade recreates the narrower key and raises if a book has both kinds on the same `(transport, output_language)` (worklog 0175) |
-| 59 | 0059_toc_teacher_deck_notion | `0059_toc_teacher_deck_notion` | adds `toc_entries.notion_lesson_page_id` + `notion_teacher_deck_job_id` (both NULL) — teacher-deck Notion archival as a Lesson-Topic sibling (worklog 0176) — **HEAD** |
+| 59 | 0059_toc_teacher_deck_notion | `0059_toc_teacher_deck_notion` | adds `toc_entries.notion_lesson_page_id` + `notion_teacher_deck_job_id` (both NULL) — teacher-deck Notion archival as a Lesson-Topic sibling (worklog 0176) |
+| 60 | 0060_job_reclaims | `0060_job_reclaims` | adds `homework_jobs.reclaims` Integer NOT NULL server_default `0` — scheduling-failure counter kept separate from `attempts` so a stale-sweep reclaim of a job that never started a phase no longer consumes the execution retry budget (retry-accounting-1) — **HEAD** |
 
 ---
 
@@ -622,7 +628,8 @@ CLI subprocesses. The live semaphore reads **`agent_max_concurrency`** (env
 | `worker_registry_stale_seconds` | 90 | worker online/offline threshold (3 missed beats) |
 | `job_timeout_seconds` | 1800 | whole-job kill switch |
 | `per_attempt_timeout_seconds` | 600 | one failover attempt (one provider try) |
-| `queue_max_attempts` | 3 | claim attempts before terminal `failed` |
+| `queue_max_attempts` | 3 | **execution** attempts before terminal `failed` |
+| `queue_max_reclaims` | 20 | consecutive never-executed reclaims that get their attempt refunded; past the ceiling refunds stop so a wedged job still terminates via `queue_max_attempts` |
 | `queue_backpressure_limit` | 50 | pending depth → `/generate` 503 (0 disables) |
 | `agent_max_concurrency` | 8 | **the live** process-wide CLI subprocess cap (env `AGENT_MAX_CONCURRENCY`, `agent._effective_concurrency()`) |
 | `gemini_max_concurrency` | 8 | deprecated fallback — honored only when `agent_max_concurrency` is left at default 8 |

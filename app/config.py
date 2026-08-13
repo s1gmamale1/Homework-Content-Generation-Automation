@@ -68,7 +68,17 @@ class Settings(BaseSettings):
     job_timeout_seconds: int = 1800
     # Max retry attempts before terminal failure. Each Gemini transient
     # error consumes one attempt. After exhaustion the job stays `failed`.
+    # This budget bounds *execution* failures only: a claim reclaimed by the
+    # stale sweep before the job ever started a phase is refunded and counted
+    # against `queue_max_reclaims` instead (retry-accounting-1).
     queue_max_attempts: int = 3
+    # Ceiling on CONSECUTIVE never-executed reclaims that get their attempt
+    # refunded. Deliberately far above queue_max_attempts: transient lock/DB
+    # contention must never destroy queued work, but a job that is reclaimed
+    # this many times without EVER starting a phase is genuinely wedged, so the
+    # refund stops and the normal `attempts` machinery terminates it. Reset to
+    # 0 the moment a claim actually executes.
+    queue_max_reclaims: int = 20
     # When `pending` queue depth exceeds this, /generate returns 503. Set
     # to 0 to disable backpressure and accept-all.
     queue_backpressure_limit: int = 50
