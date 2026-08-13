@@ -72,6 +72,28 @@ class Settings(BaseSettings):
     # When `pending` queue depth exceeds this, /generate returns 503. Set
     # to 0 to disable backpressure and accept-all.
     queue_backpressure_limit: int = 50
+    # ─── Worker DB connection pool (fleet-wide connection budget) ─────────
+    # Per-process SQLAlchemy pool bounds for a WORKER process
+    # (WORKER_CONCURRENCY>0). API-only heads keep their own larger request pool
+    # — see app/db.py::_pool_config, which also carries the budget arithmetic.
+    # The DEFAULTS ARE THE VALUES db.py USED TO HARDCODE (2+2), deliberately: an
+    # untouched host behaves exactly as before this knob existed, and a fleet
+    # rollout that misses one .env degrades to "unchanged", never to
+    # "over-subscribed Postgres".
+    # 2+2 is known to throttle, and that is a priced trade: a
+    # WORKER_CONCURRENCY=4 host must serve 4 jobs PLUS its heartbeat loop, the
+    # credential limiter and the cost monitor out of those 4 connections, so
+    # measured 2026-08-12 across 33 hosts holding work only ONE ever reached 4
+    # concurrent jobs (17 ran 1, 14 ran 2, 1 ran 3) — the rest surfaced as
+    # RETRYABLE `QueuePool limit of size 2 overflow 2 reached ... timeout 30.00`.
+    # Raise these ONLY after the upstream ceiling is raised (pgbouncer in front
+    # of Postgres, or a larger max_connections): the budget is fleet-wide, and
+    # over-raising converts retryable timeouts into hard connection refusals that
+    # also lock the head out of its own database.
+    # ge=1 / ge=0 because SQLAlchemy reads pool_size=0 and max_overflow=-1 as
+    # UNBOUNDED — precisely the fleet-fatal case this budget exists to prevent.
+    worker_db_pool_size: int = Field(default=2, ge=1)     # env WORKER_DB_POOL_SIZE
+    worker_db_max_overflow: int = Field(default=2, ge=0)  # env WORKER_DB_MAX_OVERFLOW
     # ─── Batch-launch wave stagger (plan 2026-08-11) ──────────────────────
     # A batch launch stamps `scheduled_at` in waves instead of making every job
     # claimable at once. Sized against the MEASURED 2026-08-11 incident (batch
