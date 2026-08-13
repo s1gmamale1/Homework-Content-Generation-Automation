@@ -165,7 +165,7 @@ async def test_scrub_pending_for_host_true_when_scrub_requested_at_set():
 @pytest.mark.asyncio
 async def test_scrub_pending_for_host_false_when_keyed_assignment():
     from app.db import SessionLocal
-    from app.models.sa_key import SAKeyAssignment
+    from app.models.sa_key import SAKey, SAKeyAssignment
     from app.repositories import sa_keys as sa_keys_repo
 
     hostname = f"scrub-keyed-{uuid4().hex[:8]}"
@@ -185,6 +185,14 @@ async def test_scrub_pending_for_host_false_when_keyed_assignment():
             assert await sa_keys_repo.scrub_pending_for_host(s, hostname) is False
         finally:
             await s.execute(delete(SAKeyAssignment).where(SAKeyAssignment.hostname == hostname))
+            # …and the sa_keys row itself. Dropping only the assignment left a key
+            # row behind with NO matching file in the vault, and
+            # `sa_key_vault.verify_uuid_inventory` compares vault files against
+            # sa_keys rows and fails closed on a mismatch — so this leftover broke
+            # `test_sa_key_delete_atomicity.py`, a LATER file, with
+            # `SAKeyVaultError: SA-key vault operation failed closed`.
+            # Assignment first, then the key: the assignment references it.
+            await s.execute(delete(SAKey).where(SAKey.id == key.id))
             await s.commit()
 
 

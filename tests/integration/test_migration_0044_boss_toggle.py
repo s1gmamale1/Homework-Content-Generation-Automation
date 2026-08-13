@@ -42,15 +42,18 @@ async def _col(url):
 def test_0044_adds_and_drops_boss_toggle():
     url = os.environ["DATABASE_URL"].replace("+asyncpg", "")
     cfg = _cfg()
-    command.upgrade(cfg, REV)
-    row = asyncio.run(_col(url))
-    assert row is not None, "column missing after upgrade"
-    assert row["is_nullable"] == "NO"
-    assert "true" in (row["column_default"] or "").lower()
-    # the seeded singleton got the default
-    assert asyncio.run(_singleton_val(url)) is True
-    command.downgrade(cfg, PREV)
-    assert asyncio.run(_col(url)) is None
+    try:
+        command.upgrade(cfg, REV)
+        row = asyncio.run(_col(url))
+        assert row is not None, "column missing after upgrade"
+        assert row["is_nullable"] == "NO"
+        assert "true" in (row["column_default"] or "").lower()
+        # the seeded singleton got the default
+        assert asyncio.run(_singleton_val(url)) is True
+        command.downgrade(cfg, PREV)
+        assert asyncio.run(_col(url)) is None
+    finally:
+        command.upgrade(cfg, "head")   # never strand the shared scratch DB
 
 
 async def _singleton_val(url):

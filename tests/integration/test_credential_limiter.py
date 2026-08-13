@@ -17,6 +17,7 @@ cache / TTL / error-uncached / fingerprint-form coverage lives in
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import uuid
 from unittest.mock import patch
@@ -31,6 +32,49 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_DB_INTEGRATION") != "1",
     reason="needs a real Postgres; set RUN_DB_INTEGRATION=1 + DATABASE_URL",
 )
+
+
+@pytest.fixture(autouse=True)
+async def _drop_seeded_sa_keys():
+    """Remove every `sa_keys` row this module seeds, even if the test fails.
+
+    These tests deliberately want REAL rows — `resolve_limit` reads the table,
+    which is the whole point. But they seed rows with **no matching file in the
+    key vault**, and `sa_key_vault.verify_uuid_inventory` compares the vault's
+    files on disk against the `sa_keys` rows and **fails closed** on any
+    mismatch (correct, deliberate behaviour — see CLAUDE.md "prefer
+    fail-closed").
+
+    So a row left behind here did not break THIS file. It broke the next file
+    to run a head startup: `test_sa_key_delete_atomicity.py` died with
+    `SAKeyVaultError: SA-key vault operation failed closed`, pointing at code
+    it had nothing to do with. Same shape as the 0045 event-loop leak — the
+    victim looks like the culprit.
+
+    Snapshot-and-diff rather than a blanket `DELETE FROM sa_keys`, so this can
+    never destroy a row the run did not create.
+    """
+    async with SessionLocal() as session:
+        before = {
+            r for r in (await session.execute(text("SELECT id FROM sa_keys"))).scalars()
+        }
+    try:
+        yield
+    finally:
+        async with SessionLocal() as session:
+            async with session.begin():
+                after = {
+                    r
+                    for r in (
+                        await session.execute(text("SELECT id FROM sa_keys"))
+                    ).scalars()
+                }
+                added = after - before
+                if added:
+                    await session.execute(
+                        text("DELETE FROM sa_keys WHERE id = ANY(:ids)"),
+                        {"ids": list(added)},
+                    )
 
 
 def _cred(tag: str) -> str:
@@ -392,7 +436,13 @@ async def _insert_sa_key(project_id: str, *, max_concurrent_calls) -> None:
                     original_filename="k.json",
                     project_id=project_id,
                     client_email="sa@x.iam.gserviceaccount.com",
-                    sha256=f"sha-credlim-{uuid.uuid4().hex}",
+                    # A REAL sha256 shape (64 lowercase hex), not a readable label.
+                    # `sha_key_vault._validate_sha256` enforces ^[0-9a-f]{64}$, and the
+                    # head-startup vault reconcile walks every sa_keys row — so a
+                    # "sha-credlim-…" placeholder left here made a LATER, unrelated test
+                    # file die with `SAKeyVaultError: invalid credential digest`.
+                    # Still unique per row, so nothing dedups.
+                    sha256=hashlib.sha256(uuid.uuid4().bytes).hexdigest(),
                     byte_size=100,
                     max_concurrent_calls=max_concurrent_calls,
                 )
