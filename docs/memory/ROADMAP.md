@@ -164,9 +164,73 @@
 
 ---
 
+## R27 — The fleet fixes are written but not in the field (deploy debt) ⚠️ OPEN
+
+- **Issue:** worklog [0177] landed 24 local commits and 3 migrations that raise fleet throughput
+  and stop the roster flap, but **all 40 workers still report `@d27465f`**. Commits were kept
+  local by explicit operator instruction, so the fleet runs none of it. The symptoms those
+  commits fix are therefore still live and still being observed — most visibly the worker
+  roster flapping between 39 and 40, which is expected until the liveness fix ships, not a new
+  defect.
+- **Root cause of the gap:** workers pull from `origin`; nothing was pushed.
+- **Deliverable, in this order** (it is one pass, not four):
+  1. `alembic upgrade head` on `edu_copy` — migrations **0060, 0061, 0062** — *before* any
+     worker pulls, or a worker on new code hits an old schema.
+  2. Push, let workers pull.
+  3. Repoint worker `DATABASE_URL` at pgbouncer `:6432` **with
+     `prepared_statement_cache_size=0`** — asyncpg's prepared-statement cache is incompatible
+     with transaction pooling and will fail confusingly if this is missed.
+  4. Only then `WORKER_DB_POOL_SIZE=6` / `WORKER_DB_MAX_OVERFLOW=4`. Raising the pool before
+     pgbouncer is in place just moves the ceiling onto Postgres `max_connections`.
+  5. **Re-measure before tuning anything further.** Utilisation was 25%; do not touch
+     `WORKER_CONCURRENCY` (still 4) until the new number is known — 152 slots were configured
+     and 115 sat unused, so slots were never the shortage.
+- **Refs:** `~/srv/fleet-control/SCALE-BLOCKERS.md`, `~/srv/fleet-control/THROUGHPUT-PLAN.md`.
+
+## R28 — No worker can run a CLI job; every job bills tokens
+
+- **Issue:** every worker reports `cli.*=false`, so `transport=cli` is unclaimable fleet-wide
+  and **every** job must run `transport=api`. There is no $0 path, which makes the cost cap the
+  binding constraint on a campaign rather than a safety net.
+- **Root cause:** no provider CLI is logged in on any worker; the capability probe correctly
+  reports false. Not a code defect.
+- **Deliverable:** decide whether the fleet should have a CLI path at all (it is a real
+  subscription-vs-token cost question, not a technical one). If yes, log the CLIs in during
+  provisioning and extend `bootstrap-supervisor.ps1` so it is not manual per host.
+- **Note:** the standing decision in CLAUDE.md retires cli from *operational* use, so this may
+  be **WON'T FIX** by design — recorded so the `cli.*=false` reading is not re-diagnosed as a
+  provisioning bug a third time.
+
+## R29 — Three corrupt TOC page ranges need a human
+
+- **Issue:** `ona-tili g6 uz` has 3 rows whose page ranges are inverted by 9–20 pages
+  (105→85, 200→184, 208→199). The ingestion guard from [0177] repairs only *exact* off-by-one
+  inversions (5 fixed in `chizmachilik g8`); these are not off-by-one and auto-"repairing" them
+  would invent a page range.
+- **Deliverable:** someone with the book decides the true ranges, or the book is re-extracted.
+  Until then those 3 lessons fail at `extract` with `cannot scope page range`.
+
+---
+
 ## Shipped / Closed
 
 > One line per shipped/closed item — full detail in the cited worklog + git. Nothing here is open.
+
+- **Fleet scale blockers — wave 1 + wave 2 — ✅ CLOSED 2026-08-13 (worklog [0177]).** The fleet
+  was fighting itself: one `pg_advisory_xact_lock` per api call serialised every host (fixed via
+  a per-slot unique-index claim, migration 0061, ~15–27×); claim ordering by the *per-book*
+  `order_index` let one batch take the whole fleet; a 237 MB book had 24 workers each fetching
+  it at once and sank a quarter of the fleet at zero output; peer-deletable registry rows caused
+  the 38→27→34→16→22 roster flap; httpx faults were misclassified as permanent. Plus retry
+  accounting (0060), cost-cap provenance (0062), and ingestion guards for inverted ranges +
+  scanned books. Field: 15 → 40 live workers, Windows idle-sleep fixed fleet-wide with WoL
+  preserved, pgbouncer live. **Deploy is NOT part of this closure — see R27.**
+- **B4 — lesson-duration profiling — ✅ CLOSED 2026-08-13 (worklog [0177]), answer is "no lever
+  here".** Median wall 9.1 min vs 20.8 min of summed phase work = 2.36× intra-lesson
+  parallelism. No phase dominates, and **no concurrency cap exists in the code** — the 2.36 is
+  DAG arithmetic (12 phases across 5 dependency levels in `flows.PHASE_DEPS`). The two deps that
+  would collapse a level are load-bearing in the prompts, so the 8–18% they would buy costs
+  lesson quality. Concurrency, not duration, is the remaining lever.
 
 - **R21 — Content-quality cluster (boundary leakage + wrong answer keys) — ✅ CLOSED 2026-07-02 (CQ-A [0109] · CQ-B [0110] · CQ-D [0111] · CQ-C [0112]; re-audit 10/10 PASS 2026-07-03, GO for October).** All six deliverables shipped: boundary note, reflection fix, L2 bridge, content lint, answer-key solver, extract guards. Open residue lives in the follow-ups section above (R21.7/R21.9/R21.10).
 - **R20 — Golden-set eval / quality-regression harness — ✅ CLOSED 2026-07-06 (harness CQ-E [0113]; baseline-freeze [0120]).** Offline scorer + frozen 5-lesson golden set + baselines on the final system; gated dims = language/reflection (deterministic), LLM dims advisory. Follow-ups: `R20-expand`, `R20-llm-rubric-tuning` (WISHLIST).

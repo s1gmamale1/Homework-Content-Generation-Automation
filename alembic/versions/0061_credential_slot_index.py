@@ -1,8 +1,8 @@
 """credential_slots.slot_index: replace the fleet-wide advisory lock with a
 per-slot unique constraint.
 
-Revision ID: 0060_credential_slot_index
-Revises: 0059_toc_teacher_deck_notion
+Revision ID: 0061_credential_slot_index
+Revises: 0060_job_reclaims
 
 Why: `credential_limiter.acquire` serialized EVERY slot acquisition fleet-wide
 through one `pg_advisory_xact_lock(hashtext(credential))` — every host shares

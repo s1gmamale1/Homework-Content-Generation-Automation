@@ -2677,3 +2677,99 @@ top-level import in the `notion_archive` chain). (3) One-time head-side **force*
 (`batch.py`, runs on the pango-equipped head) backfills any decks that shipped PDF-less — NOT the stale
 sweep (a PDF-less deck is current, not stale). (4) Heads-up to the `plan/notion-archive-outbox` owner:
 that lane rewrites `notion_archive.py` wholesale and must re-absorb `_push_teacher_deck_to_notion`.
+
+## 0177 — Fleet reliability + throughput: the fleet was fighting itself (2026-08-13)
+
+**Branch:** `Nggaev-v2` (24 local commits, 10 merges) · **migrations 0060, 0061, 0062** · **$0
+(no generation billed by this work)** · ⚠️ **NOT DEPLOYED — see "Deploy owed" at the end.**
+
+**What:** two waves of fixes so the generation fleet can run every host at once, plus the
+field work that grew it from 15 to 40 live workers. Test suite **2739 passing**, single
+alembic head `0062_cap_pause_provenance`.
+
+**Why this exists:** a 38-host × 4-worker test run produced only **~3.2 lessons/min against a
+theoretical ~23**, i.e. **25% utilisation**, while the Gemini API sat at 0.65 calls/sec —
+nowhere near any upstream limit. Every constraint was on our side.
+
+### Wave 1 — the root cause
+
+`credential_limiter` took **one `pg_advisory_xact_lock(hashtext(credential))` per api call**.
+Every api call in the entire fleet serialised on a single lock keyed by the shared credential.
+Replaced with a **per-slot `UNIQUE(credential, slot_index)` claim in one AUTOCOMMIT statement**
+(migration 0061) — N slots, N independent claims, no fleet-wide mutex. Worth ~15–27×.
+
+Supporting fixes in the same wave:
+- **Worker liveness** (`worker.py`): a dedicated heartbeat engine so heartbeats cannot be
+  starved by job traffic contending for the 4-connection pool; bounded retries; fixed cadence;
+  prune window 600s → 3600s with a live-job anti-join. Any peer could previously delete any
+  peer's registry row, so a worker that merely lost the race for a pooled connection got
+  evicted and re-registered — the observed **38 → 27 → 34 → 16 → 22** roster flap.
+- **DB pool made operator-sized** (`db.py`): `WORKER_DB_POOL_SIZE` / `WORKER_DB_MAX_OVERFLOW`,
+  **defaults deliberately unchanged at 2+2** so this commit changes nothing until an operator
+  opts in.
+- **Retry accounting** (migration 0060): a `reclaims` counter separates *never-executed*
+  reclaims from real execution failures, so a job reclaimed by a dying worker no longer burns
+  its retry budget.
+- **Transient-fault classification**: `_TRANSIENT_NET_TERMS` matched requests/urllib3 and
+  Windows socket shapes but **not httpx**, which the google-genai SDK actually uses. A blip
+  was classified permanent and died at attempts=1 of 3 on a host that was healthy 6 seconds
+  later. Now one shared term list; added `all connection attempts failed`, `connecterror`,
+  `remoteprotocolerror`, `server disconnected`, `connection refused`.
+
+### Wave 2 — using the capacity
+
+- **Claim fairness** (`jobs.py`): the claim ordered by `order_index`, which is **per book**.
+  Across books that ranks every book's lesson 1 above every book's lesson 2, so one batch took
+  the whole fleet — measured `adabiyot g10` at 24 running while `adabiyot g7` had 2 running
+  against 19 pending. Now orders by priority, then **per-lane service position**. (My first
+  theory, `SKIP_LOCKED` starvation, was **disproved** — recorded so it is not re-chased.)
+- **Book fetch** (`book_fetch.py`): a 237 MB PDF — 12× the next largest — had **24 workers each
+  pulling it simultaneously** through one Windows relay hop (~5.7 GB). 21 of 24 jobs sat at
+  `current_phase=NULL` for ~15 min, hit the 1800s job timeout, retried, and repeated,
+  occupying a quarter of the fleet while producing **zero** lessons. A per-book
+  `threading.Lock` already existed but was useless: waiters each burned a thread from the
+  default `min(32, cpu+4)` executor — starving *other books'* jobs, which is how one bad book
+  sank a quarter of the fleet — nothing bounded the transfer (httpx's timeout is per-operation,
+  so a slow trickle satisfies it forever), and cancelling the job did not stop the thread, so
+  each retry stacked another blocked one. Now an **async** per-book lock taken *before* any
+  thread is used, a real wall-clock budget enforced inside the chunk loop (the only place that
+  can stop a wedged thread), and a named `BookFetchTimeout` reporting book, MB, stage and
+  throughput. New: `BOOK_FETCH_TIMEOUT_SECONDS` (600), `BOOK_FETCH_WARN_MB` (100, **warn not
+  refuse** — refusing turns 35 timeouts into 35 rejections, the same zero lessons).
+- **Cost-cap provenance** (migration 0062): the cap pause was decided by whichever worker
+  updated last. Now pauses record their origin and lift only monotonically.
+- **Ingestion guards** (`toc_ingest_audit.py` + `scripts/audit_toc_page_ranges.py`): catch
+  inverted page ranges (`page_end = page_start − 1`) and scanned books (sparse text layer) at
+  upload instead of failing per-lesson. Repaired 5 exact off-by-one rows; **3 in `ona-tili g6`
+  are inverted by 9–20 pages — genuinely corrupt, deliberately left for human review** rather
+  than auto-"repaired".
+- **Batch stagger**: per-request `wave_size` / `wave_interval_seconds` override.
+
+### Field work (applied to the machines, not the repo)
+
+Fleet **15 → 40 live workers**. Fleet-wide Windows **15-minute idle sleep** was the real cause
+of hosts vanishing and returning (Kernel-Power 42/107 confirmed); `powercfg standby/hibernate/
+disk-timeout-ac 0` with **Wake-on-LAN deliberately preserved**, verified by re-reading each
+setting. pgbouncer installed on `:6432` (tested to 300 clients). Two Hyper-V guests started.
+`CREDENTIAL_MAX_CONCURRENT_GEMINI=0` rolled out as the config-level bypass for the wave-1 lock.
+
+### B4 — lesson duration profiled and CLOSED
+
+3,597 jobs: median wall **9.1 min** vs **20.8 min** of summed phase work = **2.36× intra-lesson
+parallelism**. **No phase dominates** (all 12 within 3×), and there is **no concurrency cap in
+the code** — `pipeline._run_content_phases_parallel` launches every ready phase with no
+semaphore. The 2.36 is **pure DAG arithmetic**: `flows.PHASE_DEPS` has 12 phases in 5
+dependency levels (12÷5 = 2.4). Collapsing a level would buy 8–18%, but the two candidate deps
+are **load-bearing in the prompts** (`reflection.md:36` cites Boss Arena; `boss-arena.md:13`
+cites memory check). **Duration is effectively fixed at ~9 min; concurrency is the only lever
+left.** Do not re-open this without new evidence.
+
+### Deploy owed ⚠️
+
+**Nothing here is in the field.** All 40 workers report `@d27465f`; the commits are local by
+explicit operator instruction. Until deployed: (1) migrations 0060–0062 must be applied to
+`edu_copy` first; (2) repoint worker `DATABASE_URL` at pgbouncer `:6432` **with
+`prepared_statement_cache_size=0`** (asyncpg + transaction pooling), then set
+`WORKER_DB_POOL_SIZE=6` / `WORKER_DB_MAX_OVERFLOW=4` in the same pass; (3) the roster flap
+**will keep happening until the worker-liveness fix ships** — it is still being observed, as
+expected. Full detail: `~/srv/fleet-control/SCALE-BLOCKERS.md` and `THROUGHPUT-PLAN.md`.

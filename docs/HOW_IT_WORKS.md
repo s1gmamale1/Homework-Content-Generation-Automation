@@ -168,9 +168,16 @@ request open. So instead:
 - A **worker** (`app/services/worker.py`) loops forever, asking Postgres for the next
   pending job using `SELECT … FOR UPDATE SKIP LOCKED`. That SQL trick lets multiple workers
   grab *different* jobs safely without stepping on each other. The pick is ordered
-  `priority DESC, lesson order ASC (toc_entries.order_index), scheduled_at ASC` — so within a
-  batch lesson 1 is claimed before lesson 2 (they archive into Notion in reading order, not
-  randomly), and across the fleet `SKIP LOCKED` hands ascending lessons to successive workers.
+  `priority DESC`, then by each job's **position within its own batch**, then `scheduled_at ASC`
+  — so within a batch lesson 1 is still claimed before lesson 2 (they archive into Notion in
+  reading order, not randomly), while *across* batches the fleet spreads evenly.
+
+  > **Why not simply `order_index ASC`?** That was the original ordering and it starved whole
+  > books. `toc_entries.order_index` is numbered **per book**, so ordering by it globally ranks
+  > every book's lesson 1 above every book's lesson 2. With several batches live the fleet piles
+  > onto whichever book sorts first: measured 2026-08-13, one book had **24 jobs running** while
+  > another sat at **2 running against 19 pending**. Ranking by service position *within* each
+  > batch keeps reading order where it matters and makes the fleet fair across books.
 - The worker holds N "slots" (a semaphore, default 4) so it runs at most N jobs at once.
 
 **Launching a whole book doesn't start every lesson at once.** A batch launch stamps
