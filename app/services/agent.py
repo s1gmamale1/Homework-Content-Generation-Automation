@@ -48,7 +48,7 @@ from app.schemas import (
     TOCEntryExtracted,
     TOCValidation,
 )
-from app.services import agent_models, content_lint, errors
+from app.services import agent_models, content_lint, errors, failure_classifier
 from app.services.errors import AuthEnvError
 from app.services.providers import Provider, get_provider
 from app.services.proc_tree import kill_tree
@@ -382,36 +382,18 @@ _RATE_LIMIT_TERMS = (
 
 # Terms that mean "transient network / DNS / socket error; retry will likely
 # succeed once connectivity is restored".  Lower-cased substring match.
-# Covers: DNS failures (getaddrinfo / name resolution), urllib3 pool exhaustion
-# (httpsconnectionpool / max retries exceeded), TCP resets/aborts
-# (connection aborted / connection reset), Windows socket errors
-# (winerror 10053/10054/121/1232), and generic timeout shapes.
+#
+# The tuple itself lives in `failure_classifier` — the SINGLE SOURCE OF TRUTH,
+# shared with `failure_classifier._TRANSIENT` so this in-spawn retry loop and
+# the phase/queue-level retry decisions (`pipeline._run_with_failover`,
+# `pipeline._requeue_worthy`) can never drift apart again.  See that tuple's
+# comment for the 2026-08-13 httpx incident that the split caused.
 # Deliberately NOT auth (401/403/PERMISSION_DENIED/UNAUTHENTICATED) or
 # truncation (MAX_TOKENS / "prompt is too long"), which never self-heal.
 # Also deliberately NOT matching the Claude session-limit string
 # "You've hit your session limit · resets …" — that must propagate unchanged
 # so higher layers can detect and auto-pause the worker (tasks 2-5).
-_TRANSIENT_NET_TERMS = (
-    "getaddrinfo",
-    "name resolution",
-    "nameresolutionerror",
-    "temporary failure in name resolution",
-    "httpsconnectionpool",
-    "max retries exceeded",
-    "connection aborted",
-    "connectionabortederror",
-    "connection reset",
-    "connectionreseterror",
-    "network is unreachable",
-    "the network location cannot be reached",
-    "semaphore timeout",
-    "winerror 10053",
-    "winerror 10054",
-    "winerror 121",
-    "winerror 1232",
-    "timed out",
-    "timeout",
-)
+_TRANSIENT_NET_TERMS = failure_classifier.TRANSIENT_NET_TERMS
 
 
 def _is_rate_limited(text: str) -> bool:

@@ -21,21 +21,73 @@ class ExtractRefusal(Exception):
     same-provider retries), never a same-provider retry."""
 
 
+# ── Transient network/transport shapes — SINGLE SOURCE OF TRUTH ──────────────
+# Lower-cased substring match.  Re-exported as `agent._TRANSIENT_NET_TERMS` and
+# folded into `_TRANSIENT` below, so the in-spawn retry loop
+# (`agent._is_transient_net`) and the phase/queue-level retry decisions
+# (`pipeline._run_with_failover`, `pipeline._requeue_worthy`) can never disagree
+# about what a network blip looks like.  This module is pure (no app-level
+# imports at module scope), so `agent` can import it without a cycle.
+#
+# They DID disagree, and it cost a lesson: on 2026-08-13 a `practice-jigsaw`
+# phase died with `gemini api call failed rc=1: All connection attempts failed
+# :: All connection attempts failed` — httpx's `ConnectError` text.  Both lists
+# only knew requests/urllib3 and Windows-socket shapes, but `google-genai`
+# speaks **httpx**, so nothing matched: `_spawn` did not back off, `classify`
+# returned "hard", and `_requeue_worthy` was False → the job was marked
+# `failed` at attempts=1 of QUEUE_MAX_ATTEMPTS=3 on a host that was healthy
+# seconds later.
+#
+# Every term here must be impossible in a genuine PERMANENT failure — never
+# auth (401/403/PERMISSION_DENIED/UNAUTHENTICATED), never truncation
+# (MAX_TOKENS / "prompt is too long"), and never the Claude session-limit
+# string "You've hit your session limit · resets …" (which must propagate
+# unchanged so higher layers can auto-pause the worker).
+TRANSIENT_NET_TERMS = (
+    # DNS
+    "getaddrinfo",
+    "name resolution",
+    "nameresolutionerror",
+    "temporary failure in name resolution",
+    # requests / urllib3
+    "httpsconnectionpool",
+    "max retries exceeded",
+    "connection aborted",
+    "connectionabortederror",
+    "connection reset",
+    "connectionreseterror",
+    # httpx / httpcore — the stack google-genai and anthropic actually use
+    "all connection attempts failed",  # httpx ConnectError (the 2026-08-13 string)
+    "connecterror",                    # httpx/httpcore ConnectError repr
+    "remoteprotocolerror",             # peer closed mid-response / bad framing
+    "server disconnected",             # httpcore RemoteProtocolError text
+    "connection refused",              # ECONNREFUSED via httpx ConnectError
+    # OS / Windows socket
+    "network is unreachable",
+    "the network location cannot be reached",
+    "semaphore timeout",
+    "winerror 10053",
+    "winerror 10054",
+    "winerror 121",
+    "winerror 1232",
+    # generic (pre-existing; also covers httpx ConnectTimeout/ReadTimeout/
+    # PoolTimeout, whose lower-cased class names all contain "timeout")
+    "timed out",
+    "timeout",
+)
+
 # Checked FIRST. NOTE: 'not your usage limit' must be matched here before the
 # 'usage limit' wall substring below, or a transient server-shed is miscaught.
 _TRANSIENT = (
     "not your usage limit",
     "temporarily limiting requests",
     "socket connection closed unexpectedly",
-    "connection reset",
-    "timed out",
-    "timeout",
     "overloaded",
     "502",  # Bad Gateway — transient upstream/proxy blip (same family as 503)
     "503",
     "504",  # Gateway Timeout — transient upstream, retryable like 502/503
     "try again",
-)
+) + TRANSIENT_NET_TERMS
 _WALL = (
     "weekly limit",
     "usage limit reached",

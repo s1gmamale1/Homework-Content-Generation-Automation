@@ -21,7 +21,27 @@ from typing import Any
 import pytest
 
 from app.services import agent as agent_module
+from app.services import failure_classifier as fc
 from app.services.agent import _TRANSIENT_NET_TERMS, _is_transient_net
+
+# The verbatim production failure (2026-08-13): a `practice-jigsaw` phase died
+# on httpx's ConnectError text and the job was marked `failed` at attempts=1 of
+# QUEUE_MAX_ATTEMPTS=3 — the host was healthy seconds later.  Neither list knew
+# any httpx/httpcore shape, but google-genai speaks httpx.
+_PROD_HTTPX_CONNECT_ERROR = (
+    "practice-jigsaw: phase.run practice-jigsaw: gemini api call failed rc=1: "
+    "All connection attempts failed :: All connection attempts failed"
+)
+
+# httpx/httpcore transport shapes that must all be retryable.
+_HTTPX_SHAPES = [
+    "All connection attempts failed",
+    "httpx.ConnectError: All connection attempts failed",
+    "httpcore.ConnectError('[Errno 61] Connection refused')",
+    "httpx.ConnectTimeout: timed out",
+    "httpx.ReadTimeout",
+    "httpcore.RemoteProtocolError: Server disconnected without sending a response.",
+]
 
 
 class _StubProvider:
@@ -53,6 +73,30 @@ def test_is_transient_net_true(term: str) -> None:
 
 def test_is_transient_net_false_empty() -> None:
     assert _is_transient_net("") is False
+
+
+def test_terms_are_the_shared_source_of_truth() -> None:
+    """One tuple, two classifiers. The 2026-08-13 outage was caused by
+    ``agent`` and ``failure_classifier`` keeping SEPARATE transient-network
+    lists that drifted — pin that they are now literally the same object and
+    that every net term is also a ``failure_classifier`` transient signal."""
+    assert _TRANSIENT_NET_TERMS is fc.TRANSIENT_NET_TERMS
+    for term in _TRANSIENT_NET_TERMS:
+        assert fc.classify(term) == "transient", (
+            f"{term!r} retries in _spawn but is not 'transient' to "
+            "failure_classifier — the two classifiers have drifted apart again"
+        )
+
+
+def test_is_transient_net_production_httpx_string() -> None:
+    """The verbatim production string must be transient — this is the defect."""
+    assert _is_transient_net(_PROD_HTTPX_CONNECT_ERROR) is True
+
+
+@pytest.mark.parametrize("text", _HTTPX_SHAPES)
+def test_is_transient_net_httpx_shapes(text: str) -> None:
+    """httpx/httpcore error shapes — google-genai's actual HTTP stack."""
+    assert _is_transient_net(text) is True
 
 
 @pytest.mark.parametrize(
@@ -107,6 +151,40 @@ async def test_spawn_retries_on_transient_net_error(
     assert calls["n"] > 1, (
         f"Expected retry for net term {net_text!r}, got {calls['n']} call(s)"
     )
+
+
+@pytest.mark.asyncio
+async def test_spawn_retries_production_httpx_connect_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REGRESSION (2026-08-13): the verbatim production failure must retry with
+    a backoff sleep, not return after a single attempt."""
+    outputs: list[tuple[int, str, dict[str, Any], str]] = [
+        (1, "", {"raw": {}}, _PROD_HTTPX_CONNECT_ERROR),
+        (0, "ok", {"raw": {}}, ""),
+    ]
+    calls: dict[str, int] = {"n": 0}
+
+    async def fake_once(**_kwargs: Any) -> tuple[int, str, dict[str, Any], str]:
+        calls["n"] += 1
+        return outputs.pop(0)
+
+    monkeypatch.setattr(agent_module, "_spawn_once", fake_once)
+    sleeps = _patch_sleep(monkeypatch)
+
+    rc, text, _usage, _stderr = await agent_module._spawn(
+        provider=_StubProvider(),
+        model=None,
+        prompt="x",
+        attachments=[],
+        transport="api",
+    )
+
+    assert (rc, text) == (0, "ok")
+    assert calls["n"] == 2, (
+        f"httpx ConnectError must retry; got {calls['n']} call(s)"
+    )
+    assert sleeps and sleeps[0] > 0, "retry must back off, not spin"
 
 
 # ─── _spawn: terminal errors do NOT retry ────────────────────────────────────
