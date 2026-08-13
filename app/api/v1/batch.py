@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -99,6 +99,22 @@ class BatchLaunchRequest(BaseModel):
     # "homework" (default) | "teacher_material" — forks its own batch (Task 8)
     # and never resumes/adopts the other kind's job for the same section.
     kind: str = "homework"
+    # ─── Per-request launch-stagger override (None = inherit the global) ────
+    # `settings.batch_launch_wave_size`/`_interval_seconds` were sized against a
+    # MEASURED incident on a 14-host fleet (per-job peak fan-out 5.54, so 6
+    # jobs/wave ~= 33 calls against a credential ceiling of 32). That reasoning
+    # still holds for THAT fleet — but the knobs are global and only settable at
+    # process start, and a head restart re-stamps the fleet version floor (it can
+    # fence every worker), so it is operationally reserved. On the 38-host fleet
+    # 254 lessons at 6/60s means ~42 minutes before the last job is even
+    # claimable: the ramp, not the credential cap, becomes the bottleneck and the
+    # fleet can never saturate. These two fields let ONE launch pick its own ramp
+    # without touching the head; nothing is persisted and the global default is
+    # unchanged for every other launch.
+    # 0 carries the same meaning as the settings kill switch: no stagger, every
+    # job of this launch claimable immediately.
+    wave_size: Optional[int] = Field(default=None, ge=0)
+    wave_interval_seconds: Optional[int] = Field(default=None, ge=0)
 
 
 def _stagger_summary(launched: int, wave_size: int, interval_seconds: int) -> dict:
@@ -370,8 +386,17 @@ async def launch_batch(
     # sections are already running or already done: they add no load and must
     # not consume a wave slot, or a mostly-adopted relaunch of 8 new jobs would
     # be spread over 5 waves for nothing.
-    _wave_size = settings.batch_launch_wave_size
-    _wave_interval = settings.batch_launch_wave_interval_seconds
+    # Resolve the ramp ONCE, here: an explicit per-request value wins, None
+    # inherits the global setting, and the two fields resolve independently
+    # (overriding only the size keeps the global interval). Everything below —
+    # both offset call sites AND `_stagger_summary` in the response — reads these
+    # locals, so the payload always reports what was ACTUALLY applied rather than
+    # what the settings singleton happens to hold.
+    _wave_size = (settings.batch_launch_wave_size if body.wave_size is None
+                  else body.wave_size)
+    _wave_interval = (settings.batch_launch_wave_interval_seconds
+                      if body.wave_interval_seconds is None
+                      else body.wave_interval_seconds)
     launched = 0
     # fleet-api-4: per-section rebill warnings (only populated on force path).
     # Format: [{toc_entry_id, prior_api_cost_usd, would_rebill}, ...]

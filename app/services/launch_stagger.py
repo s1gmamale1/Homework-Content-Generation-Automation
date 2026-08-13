@@ -46,7 +46,11 @@ def stagger_offset(index: int, *, wave_size: int, interval_seconds: int) -> int:
     Either knob at <= 0 disables staggering (all offsets 0). That is the kill
     switch — `BATCH_LAUNCH_WAVE_SIZE=0` restores pre-plan behaviour with no code
     change (it is read from the settings singleton, so it needs a head restart,
-    not a deploy).
+    not a deploy). A single launch can also carry its own ramp without touching
+    the head at all: `POST /jobs/batch` accepts `wave_size` /
+    `wave_interval_seconds`, which the caller resolves against the settings pair
+    before calling this function — either of them at 0 reaches here as 0 and
+    lands on the same kill switch.
 
     KNOWN LIMIT: this shapes only the INITIAL release. Pausing a batch mid-ramp
     and unpausing after the waves have elapsed releases every overdue wave at
