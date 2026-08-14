@@ -56,7 +56,29 @@ def upgrade() -> None:
          WHERE c.id = r.id
         """
     )
-    op.alter_column("credential_slots", "slot_index", nullable=False)
+    # DELIBERATELY LEFT NULLABLE — this is the "expand" half of an expand/contract
+    # deploy, and making it NOT NULL here is a fleet outage.
+    #
+    # The fleet auto-pulls (`git pull --ff-only` every supervisor loop), so there is
+    # always a window where the DB is migrated and some workers still run the old
+    # sha. The OLD limiter inserts `(credential, pc_id)` with NO slot_index
+    # (`credential_limiter.py` at d27465f), so a NOT NULL column fails it outright:
+    #     null value in column "slot_index" ... violates not-null constraint
+    # Verified by replaying that exact INSERT against a 0062-migrated schema.
+    # It would break every host whose limiter is live (CG != 0) for the whole
+    # rollout — and a host with no CG line at all defaults to 8, i.e. live.
+    #
+    # Nullable makes the two versions interoperate correctly, in both directions:
+    #   - old code inserts NULL. Postgres treats NULLs as DISTINCT in a unique
+    #     index, so any number of them coexist and none of them occupies a
+    #     numbered slot (`s.slot_index = g.i` never matches NULL).
+    #   - new code inserts real indices and is still bounded by the unique index.
+    #   - the ceiling stays honest for BOTH: _ACQUIRE_SQL's `count(*)` filters only
+    #     on credential + freshness, so a NULL row from an old worker still counts
+    #     against the limit. It is a real in-flight call and should.
+    #
+    # The "contract" half — ALTER ... SET NOT NULL — belongs in a LATER migration,
+    # applied only once no worker is on a pre-0061 sha.
     op.create_index(
         "uq_credential_slots_credential_slot_index",
         "credential_slots",
