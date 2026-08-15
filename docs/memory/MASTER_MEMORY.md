@@ -2801,3 +2801,42 @@ explicit operator instruction. Until deployed: (1) migrations 0060–0062 must b
 `WORKER_DB_POOL_SIZE=6` / `WORKER_DB_MAX_OVERFLOW=4` in the same pass; (3) the roster flap
 **will keep happening until the worker-liveness fix ships** — it is still being observed, as
 expected. Full detail: `~/srv/fleet-control/SCALE-BLOCKERS.md` and `THROUGHPUT-PLAN.md`.
+
+## 0178 — R27 deploy: staged, canaried, and two liveness bugs the canary caught (2026-08-15)
+
+The operator authorized the deploy after the 2026-08-14 load test proved the field
+tuning had hit its ceiling. Sequence executed: pg_dump backup of edu_copy (90 MB) →
+FREEZE armed on 35 reachable hosts → **production migration 0059→0062** → push
+`d27465f..251d8bb` → single canary (Host-010) → two fix-forward commits → fleet adoption.
+
+**The migration fought for its lock.** `alembic upgrade` deadlocked repeatedly: the fleet
+polls `homework_jobs` every 2 s and ZOMBIE idle-in-transaction sessions up to **21 hours
+old** (abandoned server-side when workers were restarted through the .env rolls) held row
+locks indefinitely. ~40 zombies terminated; alembic still deadlocked (its multi-statement
+transactions interleave with claim transactions), so the three migrations were applied as
+ONE hand-rolled transaction that takes `LOCK TABLE ... ACCESS EXCLUSIVE` on every touched
+table FIRST (fixed lock order = no deadlock), `lock_timeout=20s` + retries; landed on
+attempt 5. Old workers ran undisturbed on the new schema (nullable `slot_index` doing its
+job).
+
+**The canary caught two real bugs in the liveness fix** — exactly what the canary stage
+exists for; FREEZE held the fleet safe throughout:
+1. `7441f2e` — the heartbeat's 7.5 s per-attempt budget could never fit a COLD CONNECT
+   through the Windows relay (field-measured 9.3–12.1 s), and each timeout disposed the
+   engine → the next attempt was cold again → permanent starvation. Budget raised to
+   2×14 s.
+2. `6556bb7` — still starved: a FULL first beat costs 22–28 s (connect 15–16 s + first
+   statements 4–8 s each through the relay at fleet-night latency). Fix: one generous
+   60 s single attempt per engine build (cold-start budget); warm clamps thereafter.
+   Warm-path tests pinned to warm state; two new cold-path tests.
+
+**Validated end-to-end:** canary registered (`Host-010:5320@6556bb7`), heartbeat stayed
+≤31 s fresh WHILE running a lesson (the exact thing d27465f could not do), claimed from a
+20-lesson queue, completed **12/12 phases → done, 0 failures**. Adoption roll: 20 idle
+hosts restarted onto 6556bb7, 5 busy hosts unfrozen-only (adopt on natural exit), 4
+unreachable. 23 hosts on the new sha within minutes; heartbeats fleet-wide 28/28 fresh.
+
+Residue: 7 hosts adopt on their next natural worker exit; the 71 pending jobs are held by
+the operator's own `manual` batch pause from 07:06 (provenance columns now say so — the
+0062 feature working); relay per-connection latency (~10 s cold, seconds per statement at
+night) is the fleet's next real bottleneck and deserves its own item.

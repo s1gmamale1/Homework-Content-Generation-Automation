@@ -164,7 +164,7 @@
 
 ---
 
-## R27 — The fleet fixes are written but not in the field (deploy debt) ⚠️ OPEN
+## R27 — The fleet fixes are written but not in the field (deploy debt) ✅ SHIPPED 2026-08-15
 
 - **Issue:** worklog [0177] landed 24 local commits and 3 migrations that raise fleet throughput
   and stop the roster flap, but **all 40 workers still report `@d27465f`**. Commits were kept
@@ -173,6 +173,15 @@
   roster flapping between 39 and 40, which is expected until the liveness fix ships, not a new
   defect.
 - **Root cause of the gap:** workers pull from `origin`; nothing was pushed.
+- **2026-08-14 load test raised the stakes.** A 260-lesson max-out wave (after the no-deploy
+  pool boost took real per-host concurrency to 8–12) hit exactly the defects these commits fix,
+  in production: at 12 slots/host the worker heartbeat lapsed past the 120 s reclaim window on
+  9/40 workers, the stale sweep reclaimed LIVE jobs, and 34 jobs were double-charged `attempts`
+  for scheduling failures (the `0060_job_reclaims` accounting). Worse, `_mark_failed`'s fenced
+  write is rejected after a reclaim and the real error is discarded — **10 of 27 failures ended
+  with an EMPTY `error_message`**, blinding diagnosis. Mitigated field-side by lowering the top
+  tier to 8 slots; the actual fixes (`d2cb3f0` liveness, `4639be8`/`0060` reclaim accounting)
+  ship with this deliverable. Full taxonomy: `~/srv/fleet-control/MAXOUT-FAILURE-ANALYSIS.md`.
 - **Deliverable, in this order** (it is one pass, not four):
   1. `alembic upgrade head` on `edu_copy` — migrations **0060, 0061, 0062** — *before* any
      worker pulls, or a worker on new code hits an old schema.
