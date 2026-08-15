@@ -176,6 +176,9 @@ async def test_dispose_heartbeat_engine_is_idempotent():
 
 
 async def test_transient_heartbeat_error_is_retried_inside_one_cycle(monkeypatch):
+    # Pin the WARM path: retries-with-backoff apply only once a beat has
+    # landed on this engine build; a cold engine gets one generous attempt.
+    monkeypatch.setattr(worker_mod, "_HEARTBEAT_ENGINE_IS_COLD", False)
     """One failed attempt must NOT cost a whole heartbeat interval.
 
     RED on the old code: ``_registry_heartbeat`` made exactly ONE attempt per
@@ -200,6 +203,9 @@ async def test_transient_heartbeat_error_is_retried_inside_one_cycle(monkeypatch
 
 
 async def test_retries_back_off_between_attempts(monkeypatch):
+    # Pin the WARM path: retries-with-backoff apply only once a beat has
+    # landed on this engine build; a cold engine gets one generous attempt.
+    monkeypatch.setattr(worker_mod, "_HEARTBEAT_ENGINE_IS_COLD", False)
     delays: list[float] = []
 
     async def _sleep(d):
@@ -503,3 +509,49 @@ async def test_unregistered_and_online_workers_keep_beating(monkeypatch):
         assert await w._registry_heartbeat() is True
         assert upsert.await_count == 1, f"status={status!r} must still beat"
         assert not w._stop_event.is_set(), f"status={status!r} must not stop the worker"
+
+
+async def test_cold_engine_gets_one_generous_attempt_then_goes_warm(monkeypatch):
+    """First beat after an engine (re)build pays the whole cold connect —
+    field-measured 22-28 s through the fleet relay — so the cycle makes ONE
+    attempt under the cold-start budget instead of several short ones that
+    each die mid-handshake and re-cold the engine. A landed beat marks the
+    engine warm; the normal clamps apply from then on."""
+    monkeypatch.setattr(worker_mod, "_HEARTBEAT_ENGINE_IS_COLD", True)
+    seen: list[float] = []
+    real_wait_for = asyncio.wait_for
+
+    async def _spy_wait_for(aw, timeout=None):
+        seen.append(timeout)
+        return await real_wait_for(aw, timeout=timeout)
+
+    monkeypatch.setattr(asyncio, "wait_for", _spy_wait_for)
+
+    async def _lands(self) -> None:
+        return None
+
+    monkeypatch.setattr(Worker, "_registry_beat_once", _lands)
+
+    w = _worker()
+    assert await w._registry_heartbeat() is True
+    assert seen[0] == worker_mod._HEARTBEAT_COLD_START_TIMEOUT_SECONDS
+    assert worker_mod._HEARTBEAT_ENGINE_IS_COLD is False, (
+        "a landed beat must mark the engine warm"
+    )
+
+
+async def test_cold_cycle_failure_stays_cold_for_the_next_cycle(monkeypatch):
+    """A failed cold attempt disposes the engine, so the NEXT cycle must be
+    cold again (another generous single attempt), not a warm cycle whose short
+    budget can never fit the reconnect."""
+    monkeypatch.setattr(worker_mod, "_HEARTBEAT_ENGINE_IS_COLD", True)
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock(return_value=None))
+
+    async def _fails(self) -> None:
+        raise OSError("db down")
+
+    monkeypatch.setattr(Worker, "_registry_beat_once", _fails)
+
+    w = _worker()
+    assert await w._registry_heartbeat() is False
+    assert worker_mod._HEARTBEAT_ENGINE_IS_COLD is True

@@ -159,6 +159,20 @@ _HEARTBEAT_ATTEMPT_TIMEOUT_FRACTION = 0.45
 _HEARTBEAT_ATTEMPT_TIMEOUT_MIN_SECONDS = 14.0
 _HEARTBEAT_ATTEMPT_TIMEOUT_MAX_SECONDS = 20.0
 
+# COLD-START budget: the first beat after the dedicated engine is (re)built has
+# to pay for the whole connect handshake, and behind the fleet's Windows relay
+# that alone was field-measured at 14.8-16.0 s — with the first statements on
+# the fresh connection adding several seconds more (full first beat: 22-28 s,
+# canary Host-010, 2026-08-15). No steady-state budget can cover that, and the
+# failure is self-sustaining: a timed-out attempt disposes the mid-protocol
+# connection (correctly), so the NEXT attempt is cold again and the beat never
+# lands. One generous, single-attempt budget per engine build breaks the loop;
+# once a beat has landed, the pooled connection is warm and the normal
+# per-attempt clamps apply again. A first beat landing late beats one that
+# never lands at all.
+_HEARTBEAT_COLD_START_TIMEOUT_SECONDS = 60.0
+_HEARTBEAT_ENGINE_IS_COLD: bool = True
+
 # Margin between "we have given up expecting beats" and any registry write.
 _PRUNE_SAFETY_FACTOR = 2
 # How much longer than the offline marking the DELETE waits. The offline mark
@@ -260,10 +274,11 @@ def heartbeat_sessionmaker() -> async_sessionmaker[AsyncSession]:
 async def dispose_heartbeat_engine() -> None:
     """Release the dedicated heartbeat connection(s) on worker shutdown.
     Idempotent; the next `heartbeat_sessionmaker()` rebuilds lazily."""
-    global _HEARTBEAT_ENGINE, _HEARTBEAT_SESSIONMAKER
+    global _HEARTBEAT_ENGINE, _HEARTBEAT_SESSIONMAKER, _HEARTBEAT_ENGINE_IS_COLD
     engine = _HEARTBEAT_ENGINE
     _HEARTBEAT_ENGINE = None
     _HEARTBEAT_SESSIONMAKER = None
+    _HEARTBEAT_ENGINE_IS_COLD = True
     if engine is not None:
         with contextlib.suppress(Exception):
             await engine.dispose()
@@ -1296,10 +1311,20 @@ class Worker:
         and the 2026-08-13 flap was caused by that judgement being made (by a
         peer) on far too little evidence. The counter drives log escalation and
         sizes the DELETE horizon (`_delete_after_seconds`) — that is all."""
-        attempt_timeout = _heartbeat_attempt_timeout()
+        global _HEARTBEAT_ENGINE_IS_COLD
+        if _HEARTBEAT_ENGINE_IS_COLD:
+            # First beat on a freshly built engine pays the whole cold connect
+            # (field-measured 22-28 s through the relay) — one generous attempt
+            # instead of several that each die mid-handshake and re-cold the
+            # engine. See _HEARTBEAT_COLD_START_TIMEOUT_SECONDS.
+            attempts_this_cycle = 1
+            attempt_timeout = _HEARTBEAT_COLD_START_TIMEOUT_SECONDS
+        else:
+            attempts_this_cycle = _HEARTBEAT_ATTEMPTS_PER_CYCLE
+            attempt_timeout = _heartbeat_attempt_timeout()
         last_error: BaseException | None = None
 
-        for attempt in range(1, _HEARTBEAT_ATTEMPTS_PER_CYCLE + 1):
+        for attempt in range(1, attempts_this_cycle + 1):
             try:
                 await asyncio.wait_for(self._registry_beat_once(), timeout=attempt_timeout)
             except asyncio.CancelledError:
@@ -1316,12 +1341,13 @@ class Worker:
                         await asyncio.wait_for(
                             dispose_heartbeat_engine(), timeout=attempt_timeout
                         )
-                if attempt < _HEARTBEAT_ATTEMPTS_PER_CYCLE:
+                if attempt < attempts_this_cycle:
                     await asyncio.sleep(
                         _HEARTBEAT_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
                     )
                 continue
 
+            _HEARTBEAT_ENGINE_IS_COLD = False
             if self._consecutive_heartbeat_failures:
                 logger.info(
                     f"worker {self.id} registry heartbeat RECOVERED after "
@@ -1333,7 +1359,7 @@ class Worker:
         self._consecutive_heartbeat_failures += 1
         detail = (
             f"worker {self.id} registry heartbeat failed "
-            f"{_HEARTBEAT_ATTEMPTS_PER_CYCLE} time(s) this cycle "
+            f"{attempts_this_cycle} time(s) this cycle "
             f"({self._consecutive_heartbeat_failures} consecutive cycle(s), "
             f"tolerating {_HEARTBEAT_MAX_CONSECUTIVE_FAILURES}) — "
             f"still alive, still claiming: {last_error!r}"
