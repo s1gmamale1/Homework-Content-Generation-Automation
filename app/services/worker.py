@@ -138,16 +138,26 @@ def empty_poll_backoff(poll_interval: float) -> float:
 _HEARTBEAT_MAX_CONSECUTIVE_FAILURES = 10
 
 # Attempts inside ONE cycle, and the backoff between them. Sized so the whole
-# cycle (attempts x attempt-timeout + backoff) fits inside one heartbeat
-# interval: at the 30s default that is 3 x 7.5s + 1.5s = 24s.
-_HEARTBEAT_ATTEMPTS_PER_CYCLE = 3
+# cycle (attempts x attempt-timeout + backoff) stays comparable to one
+# heartbeat interval: at the 30s default that is 2 x 15s + 0.5s = 30.5s.
+_HEARTBEAT_ATTEMPTS_PER_CYCLE = 2
 _HEARTBEAT_RETRY_BASE_DELAY_SECONDS = 0.5
 
 # Per-attempt bound, as a fraction of the interval and clamped. This is what
 # stops a beat blocked on a contended lock from stretching the cadence.
-_HEARTBEAT_ATTEMPT_TIMEOUT_FRACTION = 0.25
-_HEARTBEAT_ATTEMPT_TIMEOUT_MIN_SECONDS = 2.0
-_HEARTBEAT_ATTEMPT_TIMEOUT_MAX_SECONDS = 10.0
+#
+# The clamps MUST leave room for a COLD CONNECT, not just the two statements.
+# Field-measured on the 2026-08-15 canary (Host-010, fleet behind the Windows
+# relay at 192.168.1.70 -> pgbouncer): a fresh asyncpg connect took
+# 9.3-12.1 s under production load. The original 7.5 s bound could therefore
+# never fit attempt #1, and because a timed-out attempt disposes the dedicated
+# engine (correctly — the connection is mid-protocol), every retry began with
+# another cold connect: the beat starved PERMANENTLY while claims on the
+# long-lived main pool kept working. A per-attempt budget below the cold
+# connect cost converts one slow connect into total registry blindness.
+_HEARTBEAT_ATTEMPT_TIMEOUT_FRACTION = 0.45
+_HEARTBEAT_ATTEMPT_TIMEOUT_MIN_SECONDS = 14.0
+_HEARTBEAT_ATTEMPT_TIMEOUT_MAX_SECONDS = 20.0
 
 # Margin between "we have given up expecting beats" and any registry write.
 _PRUNE_SAFETY_FACTOR = 2
