@@ -2854,3 +2854,16 @@ Proof: `tsc --noEmit` clean, vite build clean, dist rsynced into the serving wor
 containing all four new strings. No head restart needed (static files are per-request
 reads), so running jobs were untouched. Launch-page copy ("No workers online…") left
 as-is — out of the requested scope.
+
+## 0180 — Hosts/workers vocabulary swept dashboard-wide (2026-08-17)
+
+Follow-up to 0179 at operator request: every user-visible "worker" that refers to a
+MACHINE now says "host", across the whole SPA — launch page online strip ("checking
+hosts…", "N hosts online", the 0-online amber line), launcher + section relaunch + role
+controls ("No hosts online…", "`<provider>` — no host runs it", "No keyed Clodex host is
+online"), serveability reason ("CLI not on any host"), and the SA-keys panel ("N hosts",
+"Unassign all hosts first", "host last seen >10 min ago", "No hosts or keys yet"). 14
+strings, 6 files, display-only; API routes/query keys/type names untouched. No test
+asserted the old strings. tsc + build clean; dist rsynced to `homework-head-restore`;
+live head verified serving the new bundle with all 9 distinct new strings and ZERO old
+ones. No restart, no job disruption.

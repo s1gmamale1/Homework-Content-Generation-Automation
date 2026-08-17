@@ -22,7 +22,7 @@ export function serveability(
     transport === "api" ? !!fleet.api[provider] : !!fleet.cli[provider];
   if (ok) return { ok: true, reason: null };
   const reason =
-    transport === "api" ? "no API creds on fleet" : "CLI not on any worker";
+    transport === "api" ? "no API creds on fleet" : "CLI not on any host";
   return { ok: false, reason };
 }
 

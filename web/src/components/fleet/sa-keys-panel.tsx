@@ -160,7 +160,7 @@ export function SaKeysPanel() {
                     </span>
                   </span>
                   <span className="font-mono text-[0.62rem] text-white/35 shrink-0">
-                    {k.worker_count} worker{k.worker_count !== 1 ? "s" : ""}
+                    {k.worker_count} host{k.worker_count !== 1 ? "s" : ""}
                   </span>
                   <span className="font-mono text-[0.62rem] text-white/35 shrink-0">
                     in-flight {k.slots_in_use}/{k.effective_limit}
@@ -195,7 +195,7 @@ export function SaKeysPanel() {
                       "h-6 px-1.5 text-[0.68rem] text-red-400/70 hover:text-red-300 disabled:opacity-40",
                     )}
                     disabled={k.worker_count > 0 || del.isPending}
-                    title={k.worker_count > 0 ? "Unassign all workers first" : "Delete key"}
+                    title={k.worker_count > 0 ? "Unassign all hosts first" : "Delete key"}
                     onClick={() => del.mutate(k.id)}
                   >
                     Delete
@@ -257,7 +257,7 @@ export function SaKeysPanel() {
                                   className="text-white/40"
                                   title={
                                     status === "gone"
-                                      ? "no registry row — worker last seen >10 min ago"
+                                      ? "no registry row — host last seen >10 min ago"
                                       : undefined
                                   }
                                 >
@@ -362,7 +362,7 @@ export function SaKeysPanel() {
 
         {hosts.length === 0 && keys.length === 0 && (
           <p className="text-sm text-white/40">
-            No workers or keys yet. Upload a service-account key to get started.
+            No hosts or keys yet. Upload a service-account key to get started.
           </p>
         )}
       </div>

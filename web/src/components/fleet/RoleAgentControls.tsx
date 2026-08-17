@@ -140,7 +140,7 @@ export function RoleAgentControls({
               const serveable = candidateApiOnly || providerServeableAnyMode(fleet, p);
               return (
                 <SelectItem key={p} value={p} disabled={!serveable || unsupportedRole}>
-                  {unsupportedRole ? `${p} — no vision CLI` : serveable ? p : `${p} — no worker runs it`}
+                  {unsupportedRole ? `${p} — no vision CLI` : serveable ? p : `${p} — no host runs it`}
                 </SelectItem>
               );
             })}

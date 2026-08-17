@@ -695,7 +695,7 @@ function AgentPicker({
           Nothing is greyed in this state (serveability helpers fail-open offline). */}
       {fleet && !fleet.online && (
         <p className="mt-3 text-[0.7rem] leading-snug text-amber-300/90">
-          No workers online — launches will queue until one connects.
+          No hosts online — launches will queue until one connects.
         </p>
       )}
 
@@ -718,7 +718,7 @@ function AgentPicker({
                 const serveable = candidateApiOnly || providerServeableAnyMode(fleet, name);
                 return (
                   <SelectItem key={name} value={name} disabled={!serveable}>
-                    {serveable ? name : `${name} — no worker runs it`}
+                    {serveable ? name : `${name} — no host runs it`}
                   </SelectItem>
                 );
               })}

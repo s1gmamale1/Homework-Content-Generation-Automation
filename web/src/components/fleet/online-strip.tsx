@@ -16,7 +16,7 @@ export function OnlineStrip() {
   const data = workers.data;
 
   if (!data) {
-    return <p className="text-xs text-white/45">checking workers…</p>;
+    return <p className="text-xs text-white/45">checking hosts…</p>;
   }
 
   if (data.online === 0) {
@@ -26,7 +26,7 @@ export function OnlineStrip() {
         className="inline-flex items-center gap-1.5 text-xs text-amber-300/90 transition-colors hover:text-amber-200"
       >
         <span className="size-1.5 rounded-full bg-amber-400" />
-        no machines online — launches will queue until a worker starts
+        no hosts online — launches will queue until a host comes online
       </Link>
     );
   }
@@ -37,7 +37,7 @@ export function OnlineStrip() {
       className="inline-flex items-center gap-1.5 text-xs text-emerald-400/90 transition-colors hover:text-emerald-300"
     >
       <span className="size-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_2px_rgba(52,211,153,0.7)]" />
-      {data.online} {data.online === 1 ? "machine" : "machines"} online
+      {data.online} {data.online === 1 ? "host" : "hosts"} online
     </Link>
   );
 }

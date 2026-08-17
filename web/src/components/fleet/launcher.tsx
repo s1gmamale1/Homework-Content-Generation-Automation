@@ -1283,7 +1283,7 @@ function ReadyCard({
                   worker is online. Nothing is greyed in this state (fail-open). */}
               {fleet && !fleet.online && (
                 <p className="text-[0.7rem] leading-snug text-amber-300/90">
-                  No workers online — launches will queue until one connects.
+                  No hosts online — launches will queue until one connects.
                 </p>
               )}
               <div className="flex flex-wrap items-center gap-2">
@@ -1301,7 +1301,7 @@ function ReadyCard({
                       const serveable = candidateApiOnly || providerServeableAnyMode(fleet, p);
                       return (
                         <SelectItem key={p} value={p} disabled={!serveable}>
-                          {serveable ? p : `${p} — no worker runs it`}
+                          {serveable ? p : `${p} — no host runs it`}
                         </SelectItem>
                       );
                     })}
@@ -1581,7 +1581,7 @@ function ReadyCard({
                     missingApiModel
                       ? "Pick a model to launch on API"
                       : apiOnlyFleetBlocked
-                        ? apiFleetCheck.reason ?? "No keyed Clodex worker is online"
+                        ? apiFleetCheck.reason ?? "No keyed Clodex host is online"
                       : complete
                         ? "All lessons done — use ⋯ Re-run all to regenerate"
                         : !choosing && remaining === 0
