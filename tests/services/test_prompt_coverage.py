@@ -27,7 +27,7 @@ def _squash_ws(text: str) -> str:
 
 def test_cbp_has_family_token():
     body = (pathlib.Path(__file__).resolve().parents[2]
-            / "prompts" / "_general" / "case-based-preview.md").read_text(encoding="utf-8")
+            / "prompts" / "sets" / "homework-v1" / "_general" / "case-based-preview.md").read_text(encoding="utf-8")
     assert "{{FAMILY_RULES}}" in body
 
 
@@ -45,7 +45,7 @@ def test_cbp_family_visual_defaults_distinct_and_clean():
 
 def test_flashcards_has_family_token_and_canonical_enum():
     body = (pathlib.Path(__file__).resolve().parents[2]
-            / "prompts" / "_general" / "flashcards.md").read_text(encoding="utf-8")
+            / "prompts" / "sets" / "homework-v1" / "_general" / "flashcards.md").read_text(encoding="utf-8")
     assert "{{FAMILY_RULES}}" in body
     for t in ("definition", "term_to_meaning", "process_step",
               "question_answer", "misconception", "image_label"):
@@ -66,7 +66,7 @@ def test_flashcards_families_distinct_and_clean():
 
 def test_memory_check_clean_and_consistent():
     body = (pathlib.Path(__file__).resolve().parents[2]
-            / "prompts" / "_general" / "memory-check.md").read_text(encoding="utf-8")
+            / "prompts" / "sets" / "homework-v1" / "_general" / "memory-check.md").read_text(encoding="utf-8")
     _assert_clean(_gp("biology", "memory-check"))
     assert "all 3 kinds" not in body
 
@@ -77,14 +77,14 @@ def test_rlc_and_error_detection_clean_with_strip_test():
         ("biology", "practice-error-detection", "practice-error-detection.md"),
     ]:
         body = (pathlib.Path(__file__).resolve().parents[2]
-                / "prompts" / "_general" / path).read_text(encoding="utf-8")
+                / "prompts" / "sets" / "homework-v1" / "_general" / path).read_text(encoding="utf-8")
         _assert_clean(_gp(subj, phase))
         assert "strip" in body.lower(), f"{path} missing the Strip Test rule"
 
 
 def test_boss_arena_clean_with_adaptation():
     body = (pathlib.Path(__file__).resolve().parents[2]
-            / "prompts" / "_general" / "boss-arena.md").read_text(encoding="utf-8")
+            / "prompts" / "sets" / "homework-v1" / "_general" / "boss-arena.md").read_text(encoding="utf-8")
     _assert_clean(_gp("biology", "boss-arena"))
     low = body.lower()
     assert "weak" in low, "missing weak-skill adaptation rule"
@@ -113,7 +113,7 @@ _MATH_ACCURACY_PROMPTS = [
 
 
 def test_math_accuracy_guardrails_cover_generation_prompts():
-    gdir = pathlib.Path(__file__).resolve().parents[2] / "prompts" / "_general"
+    gdir = pathlib.Path(__file__).resolve().parents[2] / "prompts" / "sets" / "homework-v1" / "_general"
     required = [
         "expansion or substitution",
         "rational expressions",
@@ -155,7 +155,7 @@ def test_flashcards_contract_scopes_coverage_to_deck_budget():
 
 def test_error_detection_requires_rederivation_and_feedback_consistency():
     body = _squash_ws((pathlib.Path(__file__).resolve().parents[2]
-                       / "prompts" / "_general" / "practice-error-detection.md").read_text(encoding="utf-8"))
+                       / "prompts" / "sets" / "homework-v1" / "_general" / "practice-error-detection.md").read_text(encoding="utf-8"))
     for needle in (
         "verify every non-broken block",
         "re-derive every block",
@@ -183,7 +183,7 @@ def test_games_clean_and_compact():
 
 def test_reflection_instructs_top_heading_and_markdown_only():
     body = (pathlib.Path(__file__).resolve().parents[2]
-            / "prompts" / "_general" / "reflection.md").read_text(encoding="utf-8")
+            / "prompts" / "sets" / "homework-v1" / "_general" / "reflection.md").read_text(encoding="utf-8")
     low = body.lower()
     assert "# " in body and ("top-level" in low or "begin your output with a single `#" in low)
     assert "markdown only" in low, "missing explicit markdown-only instruction"
@@ -198,14 +198,14 @@ def test_every_flow_phase_has_a_general_prompt(subject, phase):
 
 
 def test_every_general_prompt_has_language_token():
-    gdir = pathlib.Path(__file__).resolve().parents[2] / "prompts" / "_general"
+    gdir = pathlib.Path(__file__).resolve().parents[2] / "prompts" / "sets" / "homework-v1" / "_general"
     missing = [p.name for p in gdir.glob("*.md")
                if "{{LANGUAGE_RULES}}" not in p.read_text(encoding="utf-8")]
     assert not missing, f"prompts missing language token: {missing}"
 
 
 def test_no_dead_json_vocab_anywhere_in_general_prompts():
-    gdir = pathlib.Path(__file__).resolve().parents[2] / "prompts" / "_general"
+    gdir = pathlib.Path(__file__).resolve().parents[2] / "prompts" / "sets" / "homework-v1" / "_general"
     offenders = {}
     for p in gdir.glob("*.md"):
         low = p.read_text(encoding="utf-8").lower()

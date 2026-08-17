@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from app.services import agent
 from app.services.errors import SlotSaturation, is_slot_saturation
+from app.services.prompt_sets import LEGACY_PROMPT_SET_ID
 from app.services.prompts import get_prompt
 
 
@@ -214,6 +215,7 @@ async def judge(
     transport: str = "cli",
     contract_override: Optional[str] = None,
     output_language: str = "uz",
+    prompt_set_id: str = LEGACY_PROMPT_SET_ID,
 ) -> JudgeOutcome:
     """Grade `output_md` against its phase contract (the custom override when
     supplied, else the built-in prompt). Returns a JudgeOutcome;
@@ -224,8 +226,13 @@ async def judge(
     try:
         # judge_provider/judge_model are resolved upstream by
         # model_tiers.resolve_judge (per-role override + self-grade guard); use
-        # them as-given. contract_override carries a per-phase custom prompt.
-        contract = contract_override or get_prompt(subject, phase_name, output_language=output_language)
+        # them as-given. contract_override carries a per-phase custom prompt and
+        # bypasses prompt_set_id routing entirely -- an override is already the
+        # fully-resolved contract text, not a lookup key.
+        contract = contract_override or get_prompt(
+            subject, phase_name, output_language=output_language,
+            prompt_set_id=prompt_set_id,
+        )
         flags = _fidelity_flags(output_md, lesson_context)   # C3 advisory year-fidelity hints
         judge_prompt = _build_judge_prompt(
             contract=contract, output_md=output_md, fidelity_flags=flags,
