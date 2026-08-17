@@ -2840,3 +2840,17 @@ Residue: 7 hosts adopt on their next natural worker exit; the 71 pending jobs ar
 the operator's own `manual` batch pause from 07:06 (provenance columns now say so — the
 0062 feature working); relay per-connection latency (~10 s cold, seconds per statement at
 night) is the fleet's next real bottleneck and deserves its own item.
+
+## 0179 — Monitor tab vocabulary: "Workers" → "Hosts" (2026-08-17)
+
+Operator fixed the fleet vocabulary: **hosts** are the machines connected to the
+generation fleet; **workers** are the processes running on them. The Monitor tab lists
+machines (one card per `pc_id`), so its labels now say Hosts. Display-only rename in
+`web/src/components/fleet/worker-cards.tsx` (section header, empty state, drain/undrain
+toasts) and `monitor-stats.tsx` (stat tile label). Internal names untouched on purpose —
+`/api/v1/workers`, react-query keys, `WorkerCards`, types — so no API/data change.
+Proof: `tsc --noEmit` clean, vite build clean, dist rsynced into the serving worktree
+(`homework-head-restore`), and the LIVE head verified serving `index-DuVMZ9Oj.js`
+containing all four new strings. No head restart needed (static files are per-request
+reads), so running jobs were untouched. Launch-page copy ("No workers online…") left
+as-is — out of the requested scope.

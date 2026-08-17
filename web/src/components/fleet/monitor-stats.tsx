@@ -146,7 +146,7 @@ export function MonitorStats({
       />
       <StatTile
         icon={<Server className="size-4" />}
-        label="Workers"
+        label="Hosts"
         value={`${online} / ${totalWorkers}`}
         sub={allUp ? "all online" : online ? "partial" : "offline"}
         accent={allUp ? GREEN : BLUE}

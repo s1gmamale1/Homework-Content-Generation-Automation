@@ -16,7 +16,7 @@ export function WorkerCards({
   const drainMut = useMutation({
     mutationFn: (pcId: string) => api.drainWorker(pcId),
     onSuccess: () => {
-      toast.success("Worker draining — will stop claiming after current jobs");
+      toast.success("Host draining — will stop claiming after current jobs");
       qc.invalidateQueries({ queryKey: ["workers"] });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Drain failed"),
@@ -25,7 +25,7 @@ export function WorkerCards({
   const undrainMut = useMutation({
     mutationFn: (pcId: string) => api.undrainWorker(pcId),
     onSuccess: () => {
-      toast.success("Worker back online");
+      toast.success("Host back online");
       qc.invalidateQueries({ queryKey: ["workers"] });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Undrain failed"),
@@ -34,7 +34,7 @@ export function WorkerCards({
   return (
     <div className="space-y-3">
       <div className="flex items-baseline justify-between gap-3">
-        <h2 className="text-sm font-semibold tracking-tight text-white">Workers</h2>
+        <h2 className="text-sm font-semibold tracking-tight text-white">Hosts</h2>
         {data && (
           <span className="flex items-baseline gap-2">
             <span className="font-mono text-[0.72rem] text-white/45">
@@ -51,7 +51,7 @@ export function WorkerCards({
 
       {!data || data.workers.length === 0 ? (
         <div className={cn(CARD, "text-sm text-white/50")}>
-          No workers have checked in yet.
+          No hosts have checked in yet.
         </div>
       ) : (
         <div className="flex flex-wrap gap-2">
