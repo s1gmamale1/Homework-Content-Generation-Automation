@@ -1,5 +1,15 @@
 # Prompt: Practice Game — Tic-Tac-Toe Decision Grid — {{SUBJECT}}
 
+> **⚠️ DEPRECATED — this mechanic no longer renders as a game.** The platform's
+> `ttt_config` block kind has been removed (its validator, model-choice enum,
+> serializer whitelist, and redactor entries are all gone; only the legacy grader
+> `grade_ttt` remains so already-stored rows still score). Nothing this prompt
+> produces can reach a student as a playable board: the CHB transformer folds this
+> phase to answer-scrubbed **study text** every time. Authoring a genuine 3×3 game
+> here is wasted effort. **Recommendation to maintainers: retire this phase from the
+> generation flow.** Until it is removed, treat the goal below as *producing prose
+> that survives well as study notes* — because study text is this phase's only fate.
+
 You are generating ONE compact **Tic-Tac-Toe Decision Grid** practice game for this
 {{SUBJECT}} lesson. The student sees a 3×3 board of candidate actions or answers and
 must identify which cells correctly apply this lesson's concept and which do not. The
