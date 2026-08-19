@@ -7,6 +7,14 @@ variable, cause ↔ effect, evidence ↔ claim, step ↔ result, or term ↔ exa
 similarity is never enough; every connection — and its direction — must be traceable
 to this lesson.
 
+> **Where jigsaw content lands.** There is no `jigsaw_config` block on the platform;
+> a jigsaw phase is imported as a **`tile_match_config`** — each directed connection
+> becomes one left↔right match pair (source piece on the left, target piece on the
+> right). For that import to succeed the output must obey the tile-match contract:
+> pieces in the exact `- **P1:** …` form below, and **at least 3** directed pairs
+> (the validator rejects a board with fewer). Follow the shapes here precisely, or
+> the phase folds to plain study text instead of a playable board.
+
 Keep this a single short game. Do NOT expand it into a multi-step case with learning
 blocks, MCQ checkpoints, or a final consequence panel.
 
@@ -42,11 +50,16 @@ Write the game as Markdown sections, in this order:
   from concept↔definition, formula↔variable, cause↔effect, evidence↔claim,
   step↔result, term↔example), keeping only the types the lesson's content actually
   exhibits.
-- **Pieces** — **3–6** pieces, each a short labelled item (theorem, condition, given
-  data, conclusion, step, result, evidence, or claim) drawn from the lesson. Give each
-  a short tag (e.g. P1, P2) so the assembly can be stated.
-- **Correct assembly** — list the source-supported connections as directed pairs (e.g.
-  `P1 → P3 (cause ↔ effect)`), so the intended solution is unambiguous.
+- **Pieces** — **6–12** pieces, each a short labelled item (theorem, condition, given
+  data, conclusion, step, result, evidence, or claim) drawn from the lesson. Write each
+  piece as its own bullet in EXACTLY this form so it can be matched to its partner:
+  `- **P1:** <piece content>` (bold `P`-tag, a colon, then the content). Number the
+  tags P1, P2, P3, … in order.
+- **Correct assembly** — list the source-supported connections as **at least 3**
+  directed pairs, one per line, each in the form `P1 → P3 (cause ↔ effect)` (source
+  tag, an arrow `→`, target tag, then the relationship in parentheses). Each pair
+  becomes one tile-match pair, so give **3–6** pairs and make every tag resolve to a
+  piece listed above. Fewer than three pairs cannot be imported.
 - **Why prompt** — for math/science lessons this is **mandatory**; otherwise include
   it whenever the assembly turns on reasoning. ONE open question asking the student to
   explain which source concept/theorem they identified, why the assembly direction is
@@ -56,7 +69,8 @@ Write the game as Markdown sections, in this order:
 
 ## Non-negotiables
 
-- 3–6 source-supported pieces; at most 3 relationship types.
+- 6–12 source-supported pieces written as `- **P1:** …` bullets; at most 3 relationship types.
+- **At least 3** (up to 6) directed `P1 → P3` pairs — a board with fewer cannot be imported.
 - Connection direction is enforced — a reversed link is wrong.
 - Tempting wrong pairings are surface-related but unsupported — never random filler.
 - Terminology aligns with the lesson's Flashcards.

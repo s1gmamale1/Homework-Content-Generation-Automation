@@ -156,7 +156,23 @@ and note which textbook concept the case is built on.
 ## Output format
 
 Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
-title and `##`/`###` for the sections/items described above, in order. For visuals: do NOT emit `<svg>` or any image/HTML markup. For ANY visual (diagram
+title and `##`/`###` for the sections/items described above, in order.
+
+**Machine-readable structure (non-negotiable)** — the platform importer reads this
+phase with fixed rules:
+
+- Each checkpoint is its own `##`/`###` section whose heading contains the word
+  `Checkpoint` (Uzbek: `Nazorat nuqtasi`) plus its type word (Identify / Decide /
+  Justify, or their output-language forms), e.g. `### Checkpoint 1 — Identify`.
+  A checkpoint under any other heading shape is lost.
+- Checkpoint options are lettered lines `A) <option>` … (3–4 of them, one per line).
+  After the options, name the correct one on its own line: `**To'g'ri javob:**
+  <letter>` (stripped before the student sees the item). Checkpoint feedback goes
+  AFTER the options, never between the question and the options.
+- The case-setup heading must contain `Case setup` / `Vaziyat` / `Kirish`, and the
+  learning-block headings must keep `Learning Block` / `O'quv bloki` in the heading —
+  narrative sections whose headings match none of these are dropped from the
+  student-facing story. For visuals: do NOT emit `<svg>` or any image/HTML markup. For ANY visual (diagram
 OR photo), emit a described placeholder instead — never the visual itself:
 `![visual: <diagram|photo> — <what to depict, with every label, value, and axis> — image gen required](placeholder)`
 The description must be self-sufficient: name the medium and every label/value/axis
