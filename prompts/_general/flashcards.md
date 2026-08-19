@@ -31,7 +31,7 @@ Each card emits these fields:
 - `hint` (optional) — a nudge, ≤12 words, never gives away the answer.
 - `explanation` (optional, encouraged) — 1 short sentence on why/how it works.
 - `example` (optional, encouraged) — 1 short concrete example.
-- `misconception` (optional) — 1 sentence naming a common wrong idea. **Required for trap / false-friend cards.** Mark its provenance: `source` when the textbook itself states the mistake, `inferred` when you derived it. NEVER present an `inferred` misconception as a textbook-stated fact.
+- `misconception` (optional) — 1 sentence naming a common wrong idea. **Required for trap / false-friend cards.** Mark its provenance: `source` when the textbook itself states the mistake, `inferred` when you derived it. NEVER present an `inferred` misconception as a textbook-stated fact. *Platform note:* the importer currently carries only `hint`, `example`, `explanation`, `difficulty`, `type` to the student app — the `misconception` field itself is not imported, so when the wrong idea must reach the student, also state it (with its correction) in `explanation`.
 
 Rules:
 - One retrievable idea per card. Do NOT fold `explanation` / `example` / `misconception` into `back`.
