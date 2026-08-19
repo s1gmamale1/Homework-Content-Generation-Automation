@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { Worker } from "@/lib/types";
@@ -12,6 +13,27 @@ export function WorkerCards({
   data?: { workers: Worker[]; online: number; total: number; version_floor?: number | null };
 }) {
   const qc = useQueryClient();
+
+  // One card per MACHINE: worker restarts mint new pc_id rows and stale rows
+  // linger until the prune, so the raw list shows duplicate/dead entries after
+  // a restart sweep. Keep the best row per hostname (online beats offline,
+  // then freshest heartbeat) so Drain/Undrain act on the live worker.
+  const rows = useMemo(() => {
+    if (!data) return [];
+    const byHost = new Map<string, Worker>();
+    for (const w of data.workers) {
+      const host = w.pc_id.split(":")[0];
+      const prev = byHost.get(host);
+      const better =
+        !prev ||
+        (w.online && !prev.online) ||
+        (w.online === prev.online &&
+          Date.parse(w.last_heartbeat ?? "1970") > Date.parse(prev.last_heartbeat ?? "1970"));
+      if (better) byHost.set(host, w);
+    }
+    return Array.from(byHost.values()).sort((a, b) => a.pc_id.localeCompare(b.pc_id));
+  }, [data]);
+  const onlineHosts = rows.filter((w) => w.online).length;
 
   const drainMut = useMutation({
     mutationFn: (pcId: string) => api.drainWorker(pcId),
@@ -38,7 +60,7 @@ export function WorkerCards({
         {data && (
           <span className="flex items-baseline gap-2">
             <span className="font-mono text-[0.72rem] text-white/45">
-              online {data.online} / {data.total}
+              online {onlineHosts} / {rows.length}
             </span>
             {data.version_floor != null && (
               <span className="font-mono text-[0.72rem] text-white/45">
@@ -49,13 +71,13 @@ export function WorkerCards({
         )}
       </div>
 
-      {!data || data.workers.length === 0 ? (
+      {!data || rows.length === 0 ? (
         <div className={cn(CARD, "text-sm text-white/50")}>
           No hosts have checked in yet.
         </div>
       ) : (
         <div className="flex flex-wrap gap-2">
-          {data.workers.map((w) => {
+          {rows.map((w) => {
             const isDraining = w.status === "draining";
             const pendingDrain = drainMut.isPending && drainMut.variables === w.pc_id;
             const pendingUndrain = undrainMut.isPending && undrainMut.variables === w.pc_id;

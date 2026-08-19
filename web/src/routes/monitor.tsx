@@ -6,6 +6,7 @@ import { MonitorStats } from "@/components/fleet/monitor-stats";
 import { WorkerCards } from "@/components/fleet/worker-cards";
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import { api } from "@/lib/api";
+import { hostLiveness } from "@/lib/host-liveness";
 import { FRAME_OFF, FRAME_ON, PRESSABLE } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import {
@@ -103,7 +104,16 @@ export function MonitorPage() {
           batches={scoped}
           workers={
             workers.data
-              ? { online: workers.data.online, total: workers.data.total }
+              ? // count MACHINES, not registry rows — every worker restart mints a
+                // new pc_id row and stale rows linger until the prune, so the raw
+                // online/total would read e.g. "36 / 83" after a restart sweep
+                (() => {
+                  const hosts = hostLiveness(workers.data.workers);
+                  return {
+                    online: hosts.filter((h) => h.online).length,
+                    total: hosts.length,
+                  };
+                })()
               : undefined
           }
           onFilter={setStatusFilter}

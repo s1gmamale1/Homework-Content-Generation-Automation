@@ -2867,3 +2867,15 @@ strings, 6 files, display-only; API routes/query keys/type names untouched. No t
 asserted the old strings. tsc + build clean; dist rsynced to `homework-head-restore`;
 live head verified serving the new bundle with all 9 distinct new strings and ZERO old
 ones. No restart, no job disruption.
+
+## 0181 — Monitor "Hosts" tile counts machines, not registry rows (2026-08-19)
+
+Operator-reported display bug: the tile read "36 / 83" — but 83 was registry ROWS.
+Every worker restart mints a new `pc_id` row (host:pid@sha) and stale rows linger
+until the prune, so restart sweeps inflate the denominator. Fix (display-only):
+`monitor.tsx` now feeds MonitorStats through `hostLiveness()` (the dedup helper the
+SA-keys panel already used), and `WorkerCards` collapses to one card per hostname —
+best row wins (online beats offline, then freshest heartbeat) so Drain/Undrain still
+target the live worker's pc_id. Also fixes duplicate/grey dead cards in the grid.
+tsc + build clean, dist synced, live-verified: same registry snapshot renders
+35/35 machines vs 36/83 raw rows. API untouched.
