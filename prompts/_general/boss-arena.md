@@ -21,19 +21,39 @@ A set of **4–6 questions**, mixing difficulty tiers, each grounded ONLY in thi
 session's lesson content and aimed at a weak spot from earlier in the session.
 You may not know the exact grade — as a soft steer, lean toward **4** questions
 for early grades and **6** for senior grades, staying within the 4–6 range.
-Write each question as a Markdown section with these parts:
 
-- **Scenario** — a short, concrete, self-contained situation that sets up the
-  problem (a real or plausible context for this lesson's concept).
+Write each question as its own `##` section whose heading begins with the
+question word or a number followed by a period — `## Savol 1` / `## Question 1` /
+`## Вопрос 1` / `## 1. <short name>`. Other heading shapes are not recognized as
+question boundaries by the importer. Do NOT write any preamble text between the
+`#` title and the first question section. Each question has these parts:
+
+- **Scenario** — label it literally `Ssenariy` or `Vaziyat` (Uzbek), `Scenario`
+  (English), `Сценарий` (Russian); a question whose text carries none of these
+  labels is discarded by the importer. A short, concrete, self-contained
+  situation that sets up the problem (a real or plausible context for this
+  lesson's concept).
 - **The three-part question** — Why, How, and What, each spelled out:
   - **Why** — why does the relevant concept/rule apply here? (conceptual understanding)
   - **How** — how do you use it to reach the answer? (process / application)
   - **What** — what does the result mean, or what follows from it — including the
     counterfactual, *what would change if* a key condition were different? (interpretation / transfer)
+- **Teacher-only subsection** — after the three-part question, open a level-4
+  heading exactly `#### O'qituvchi uchun (teacher only)` (keep this heading
+  verbatim in every output language). ALL remaining parts of the question —
+  Concepts tested, Difficulty, Hints, Feedback lines — live INSIDE this
+  subsection. The platform strips it from the student's view; anything left
+  outside it ships verbatim inside the question text the student reads, and the
+  importer truncates each question at 1200 characters — so keep the
+  student-visible part (scenario + the three-part question) under ~1000
+  characters.
 - **Concepts tested** — the lesson concept(s) this question checks; name each as a
   short concept slug. At least one per question, and prefer a concept the student
   was weak on earlier.
-- **Difficulty** — `easy`, `medium`, or `hard`. Aim for a mix (e.g. for 5
+- **Difficulty** — a labelled line, `Qiyinchilik: <value>` or `Difficulty:
+  <value>`, whose value is the bare English word `easy`, `medium`, or `hard` —
+  never a localized value ("o'rta" is not readable by the importer) and never a
+  backticked value after a bold label. Aim for a mix (e.g. for 5
   questions: 2 easy, 2 medium, 1 hard). Easy questions ask the student to apply,
   medium to analyze, hard to evaluate or create — harder questions are worth more
   and demand deeper reasoning.
@@ -94,8 +114,10 @@ scenario — never emit `<svg>`. Add one only when it carries the question; defa
 
 ## Output format
 
-Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
-title and `##`/`###` for the sections/items described above, in order. For visuals: do NOT emit `<svg>` or any image/HTML markup. For ANY visual (diagram
+Respond in **Markdown only** (no JSON, no code-fenced JSON). Begin the output with
+the exact title shape `# Boss Arena — <boss name>` (the importer reads the boss
+name from this title; other title shapes fall back to a generic name). Use `##`
+for the question sections described above, in order. For visuals: do NOT emit `<svg>` or any image/HTML markup. For ANY visual (diagram
 OR photo), emit a described placeholder instead — never the visual itself:
 `![visual: <diagram|photo> — <what to depict, with every label, value, and axis> — image gen required](placeholder)`
 The description must be self-sufficient: name the medium and every label/value/axis
