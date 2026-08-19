@@ -23,8 +23,8 @@ Retrieval practice: "Do you know the key cards?" Not "Can you apply the concept?
 
 Write each item as a `###` heading that states which kind it is and which studied card it tests, followed by the question and the answer material described below.
 
-- **multiple_choice / choose_correct_explanation** — write the question, then give exactly 4 answer options as a labelled list (A–D). Mark which single option is correct. On every WRONG option add a short reason naming the real misconception it represents — for choose_correct_explanation that reason is the flawed reasoning that makes the option tempting to a half-learned student. Keep all four options similar in length, style, and register so formatting never gives away the answer. No blanks in these kinds.
-- **fill_blank** — write the prompt sentence with `_____` marking the missing concept-bearing word (never a function word). Then state the expected answer and list any alternative spellings or phrasings that should also count as correct. No options in this kind.
+- **multiple_choice / choose_correct_explanation** — write the question, then give exactly 4 answer options, one per line, each formatted `A) <option>` … `D) <option>` (letter + `)`). After the options, name the correct one on its own line: `**To'g'ri javob:** <letter>` — this line is stripped before the student sees the item. Then give each WRONG option's short reason on its own line, formatted `Noto'g'ri (<letter>): <reason>` — never inline in the option text (an inline note ships to the student inside the option label and marks the answer by elimination), and never starting a line with a bare letter + `.`/`)` (it would be mis-read as a fifth option). For choose_correct_explanation that reason is the flawed reasoning that makes the option tempting to a half-learned student. Keep all four options similar in length, style, and register so formatting never gives away the answer. No blanks in these kinds.
+- **fill_blank** — write the prompt sentence with `_____` marking the missing concept-bearing word (never a function word). State the expected answer on its own line as `**Kutilayotgan javob:** <answer>` and alternatives as `**Muqobil javoblar:** <list>` — exactly these labels, which are reliably stripped from student-facing text. No options in this kind. *Platform note:* today's importer folds fill_blank items into read-only recall text (not gradable yet) and routes the phase to review — prefer the two MCQ kinds for most items and use fill_blank sparingly, only where the recall target is inherently cloze-shaped.
 - **why reasoning prompt** — after the answer, add a short "why" reasoning prompt with the key ideas the answer should mention. REQUIRED when {{SUBJECT}} is a science (biology / physics / chemistry, or any subject whose lesson is concept-and-mechanism based); optional otherwise.
 - Short correct/wrong feedback lines are encouraged on each item.
 - Distractors must encode the flawed reasoning that makes them tempting to a half-learned student — every wrong option is a real misconception, never a joke, filler, or nonsense answer. Calibrate distractor subtlety to the grade band: **G5–6** plain, obvious mistakes; **G7–8** at least one plausible near-miss; **G9–11** subtle distractors that require knowing the rule, not just recognizing a familiar term. Each item must trace to a card the student studied; keep the kinds balanced (no more than ~60% one kind). Pass gate stays 60%.
@@ -57,12 +57,16 @@ The description must be self-sufficient: name the medium and every label/value/a
 so the visual can be produced from the text alone. Never output raw `<svg>`, never
 fabricate an image, never invent an image URL.
 
-Write each item as a `###` heading that names its kind and the studied card it tests,
-then in the body include: the question prompt; the answer material (four labelled A–D
-options with the correct one marked and a short reason on each wrong one, OR a
-`_____` blank with its expected answer and accepted alternatives); a short "why"
-reasoning prompt naming the key ideas the answer should mention (required for science);
-and short correct/wrong feedback lines. State the pass gate once as **0.60**.
+Write each item as a `###` heading that names its kind and the studied card it tests
+(the literal token `card N` must appear in the heading — e.g. `### multiple_choice —
+card 3` — the importer only recognizes items whose heading carries it), then in the
+body include: the question prompt; the answer material (four `A)`–`D)` option lines
+followed by a `**To'g'ri javob:** <letter>` line and a `Noto'g'ri (<letter>): <reason>`
+line per wrong option, OR a `_____` blank with its `**Kutilayotgan javob:**` /
+`**Muqobil javoblar:**` lines); a short "why" reasoning prompt naming the key ideas
+the answer should mention (required for science); and short correct/wrong feedback
+lines placed AFTER the options. State the pass gate once as **0.60** (decimal form,
+never the integer `60`).
 
 ## Self-check
 
