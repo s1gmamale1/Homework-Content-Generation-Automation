@@ -5,14 +5,18 @@ copy) and `validate_complete_snapshot` (the single authority for "is this phase
 row set a complete, usable homework snapshot"). Both are pure: no DB, no I/O.
 """
 
+import inspect
+import json
 from dataclasses import dataclass, fields
 
 import pytest
 
 from app.services import flows
 from app.services.regeneration_planner import (
+    PHASE_PLAN_JSON_VERSION,
     DependencyEdge,
     ExclusionAcknowledgementRequired,
+    PhasePlanSerializationError,
     PhaseRowView,
     RegenerationPhasePlan,
     SnapshotValidation,
@@ -683,3 +687,401 @@ def test_planner_exception_types_are_exact():
             excluded_affected_phases=["memory-check"],
         )
     assert type(exc.value) is ValueError
+
+
+# ───────────────────── plan serialization ─────────────────────
+#
+# `phase_plan` is a JSONB column, so the frozen dataclass has to survive a
+# round trip through JSON. The planner owns the ONLY serializer: Tasks 6, 7 and
+# 9 all read a stored plan, and three hand-rolled dataclass<->JSON conversions
+# are three independent chances to disagree about tuple-vs-list, edge key names
+# or field order.
+
+_PLAN_JSON_KEYS = (
+    "version",
+    "canonical_phases",
+    "selected_phases",
+    "auto_included_phases",
+    "regenerated_phases",
+    "copied_phases",
+    "excluded_affected_phases",
+    "broken_dependency_edges",
+    "refresh_extraction",
+)
+
+
+def _plain_plan() -> RegenerationPhasePlan:
+    """A leaf phase: one selected, nothing auto-included, no broken edges."""
+    return build_phase_plan(subject=SUBJECT, selected_phases=["reflection"])
+
+
+def _fanout_plan() -> RegenerationPhasePlan:
+    """A wide closure: flashcards drags in every content phase but the preview."""
+    return build_phase_plan(subject=SUBJECT, selected_phases=["flashcards"])
+
+
+def _excluded_plan() -> RegenerationPhasePlan:
+    """An acknowledged exclusion, so `broken_dependency_edges` is non-empty."""
+    return build_phase_plan(
+        subject=SUBJECT,
+        selected_phases=["flashcards"],
+        excluded_affected_phases=["reflection"],
+        exclusion_acknowledged=True,
+    )
+
+
+def _refresh_plan() -> RegenerationPhasePlan:
+    """`refresh_extraction=True`: `extract` itself is in `regenerated_phases`."""
+    return build_phase_plan(
+        subject=SUBJECT, selected_phases=[], refresh_extraction=True
+    )
+
+
+_PLAN_FACTORIES = {
+    "plain": _plain_plan,
+    "fanout": _fanout_plan,
+    "excluded": _excluded_plan,
+    "refresh": _refresh_plan,
+}
+
+
+def _json(factory=_plain_plan) -> dict:
+    """A fresh, mutable, VALID serialized plan for the refusal tests."""
+    return factory().to_json()
+
+
+@pytest.mark.parametrize("name", sorted(_PLAN_FACTORIES))
+def test_plan_round_trips_through_to_json_and_from_json(name):
+    plan = _PLAN_FACTORIES[name]()
+    assert RegenerationPhasePlan.from_json(plan.to_json()) == plan
+
+
+@pytest.mark.parametrize("name", sorted(_PLAN_FACTORIES))
+def test_plan_round_trips_through_real_json_text(name):
+    """The column is JSONB — the payload must survive `json.dumps`/`loads`,
+    which is what turns every tuple into a list."""
+    plan = _PLAN_FACTORIES[name]()
+    revived = RegenerationPhasePlan.from_json(json.loads(json.dumps(plan.to_json())))
+    assert revived == plan
+    # Exact dataclass equality means tuples came back as tuples, not lists.
+    assert isinstance(revived.canonical_phases, tuple)
+    assert all(isinstance(e, DependencyEdge) for e in revived.broken_dependency_edges)
+
+
+def test_excluded_plan_actually_carries_broken_edges():
+    """Guards the table above: if this plan ever stopped breaking an edge, the
+    round-trip coverage for `broken_dependency_edges` would silently vanish."""
+    assert _excluded_plan().broken_dependency_edges
+    assert _refresh_plan().refresh_extraction is True
+    assert _fanout_plan().auto_included_phases
+
+
+def test_to_json_emits_the_fixed_documented_key_order():
+    assert tuple(_json()) == _PLAN_JSON_KEYS
+    assert tuple(_json(_excluded_plan)) == _PLAN_JSON_KEYS
+
+
+def test_to_json_is_json_safe_scalars_only():
+    payload = _json(_excluded_plan)
+    assert payload["version"] == PHASE_PLAN_JSON_VERSION == 1
+    for key in _PLAN_JSON_KEYS[1:-2]:
+        assert isinstance(payload[key], list)
+        assert all(type(p) is str for p in payload[key])
+    assert all(
+        type(e) is dict and set(e) == {"upstream", "downstream"}
+        for e in payload["broken_dependency_edges"]
+    )
+    assert type(payload["refresh_extraction"]) is bool
+
+
+def test_to_json_is_byte_stable_for_equal_plans():
+    """Two plans built from differently-ordered inputs are equal, so the text
+    `to_json` serializes to must be identical WITHOUT `sort_keys`.
+
+    This is a guarantee about the SERIALIZER, *before storage* only: `phase_plan`
+    is `jsonb`, which normalizes key order and whitespace, so a plan read back
+    is never compared as text — it is compared by value through `from_json`.
+    What the fixed key order buys is that equal plans never produce differing
+    bytes on the write side (logs, hashes, request payloads, a pre-storage
+    diff), so a byte difference there always means a real plan difference.
+    """
+    a = build_phase_plan(
+        subject=SUBJECT,
+        selected_phases=["flashcards", "memory-check", "reflection"],
+    )
+    b = build_phase_plan(
+        subject=SUBJECT,
+        selected_phases=["reflection", "memory-check", "flashcards"],
+    )
+    assert a == b
+    assert json.dumps(a.to_json()) == json.dumps(b.to_json())
+
+
+def test_from_json_is_a_classmethod_on_the_plan():
+    assert isinstance(
+        inspect.getattr_static(RegenerationPhasePlan, "from_json"), classmethod
+    )
+
+
+def test_from_json_does_not_re_derive_the_flow(monkeypatch):
+    """A stored plan may legitimately predate a flow change; drift is
+    `validate_complete_snapshot`'s signal, not the deserializer's. Blow up if
+    `from_json` reaches for `flows` at all."""
+    plan = _fanout_plan()
+    payload = plan.to_json()
+
+    def _boom(*a, **kw):
+        raise AssertionError("from_json must not call flows.flow_for")
+
+    monkeypatch.setattr(flows, "flow_for", _boom)
+    assert RegenerationPhasePlan.from_json(payload) == plan
+
+
+# ── refusals: one test per rule, each asserting WHICH rule fired ──
+
+
+def test_from_json_refuses_a_bare_phase_name_list():
+    """The pre-correction shape. A flat list carries no copied/regenerated
+    split, no broken edges and no refresh flag."""
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(["flashcards"])
+    assert "mapping" in str(exc.value)
+
+
+@pytest.mark.parametrize("bad", [None, "flashcards", 7, ("a", "b")])
+def test_from_json_refuses_a_non_mapping(bad):
+    with pytest.raises(PhasePlanSerializationError, match="mapping"):
+        RegenerationPhasePlan.from_json(bad)
+
+
+@pytest.mark.parametrize("missing", _PLAN_JSON_KEYS)
+def test_from_json_refuses_a_missing_key(missing):
+    payload = _json(_excluded_plan)
+    del payload[missing]
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "missing" in str(exc.value) and missing in str(exc.value)
+
+
+def test_from_json_refuses_an_unknown_key():
+    payload = _json()
+    payload["solver_enabled"] = True
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "unknown" in str(exc.value) and "solver_enabled" in str(exc.value)
+
+
+@pytest.mark.parametrize("version", [0, 2, "1", None, True])
+def test_from_json_refuses_a_foreign_version(version):
+    payload = _json()
+    payload["version"] = version
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "version" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "canonical_phases",
+        "selected_phases",
+        "auto_included_phases",
+        "regenerated_phases",
+        "copied_phases",
+        "excluded_affected_phases",
+    ],
+)
+@pytest.mark.parametrize("bad", [("reflection",), None, 3, "reflection", [["a"]], [1]])
+def test_from_json_refuses_a_phase_list_that_is_not_a_list_of_str(key, bad):
+    payload = _json()
+    payload[key] = bad
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert key in str(exc.value)
+    assert "list of str" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        None,
+        {},
+        [["extract", "reflection"]],
+        [{"upstream": "extract"}],
+        [{"upstream": "extract", "downstream": "reflection", "why": "x"}],
+        [{"upstream": "extract", "downstream": 3}],
+        [{"upstream": None, "downstream": "reflection"}],
+    ],
+)
+def test_from_json_refuses_a_malformed_edge_list(bad):
+    payload = _json()
+    payload["broken_dependency_edges"] = bad
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "broken_dependency_edges" in str(exc.value)
+
+
+@pytest.mark.parametrize("bad", [0, 1, "true", "", None, []])
+def test_from_json_refuses_a_non_bool_refresh_extraction(bad):
+    """`isinstance(True, int)` is True, so `1` would sail through a lazy check
+    and silently mean 'the extraction was refreshed'."""
+    payload = _json()
+    payload["refresh_extraction"] = bad
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "refresh_extraction" in str(exc.value)
+
+
+def test_from_json_refuses_empty_canonical_phases():
+    payload = _json()
+    payload["canonical_phases"] = []
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "canonical_phases" in str(exc.value) and "empty" in str(exc.value)
+
+
+def test_from_json_refuses_duplicate_canonical_phases():
+    payload = _json()
+    payload["canonical_phases"] = list(payload["canonical_phases"]) + ["reflection"]
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "canonical_phases" in str(exc.value) and "duplicate" in str(exc.value)
+
+
+def test_from_json_refuses_canonical_phases_not_starting_with_extract():
+    payload = _json()
+    payload["canonical_phases"] = list(payload["canonical_phases"])[1:]
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "canonical_phases" in str(exc.value) and "extract" in str(exc.value)
+
+
+def test_from_json_refuses_a_regenerated_copied_overlap():
+    payload = _json()
+    # `reflection` is regenerated in the plain plan; claim it is copied too.
+    payload["copied_phases"] = list(payload["canonical_phases"])
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "partition" in str(exc.value)
+    assert "regenerated_phases" in str(exc.value)
+
+
+def test_from_json_refuses_a_regenerated_copied_gap():
+    payload = _json()
+    payload["copied_phases"] = list(payload["copied_phases"])[1:]
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "partition" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "key", ["selected_phases", "auto_included_phases", "excluded_affected_phases"]
+)
+def test_from_json_refuses_extract_in_a_content_only_list(key):
+    payload = _json()
+    payload[key] = ["extract"]
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert key in str(exc.value) and "content phase" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "key", ["selected_phases", "auto_included_phases", "excluded_affected_phases"]
+)
+def test_from_json_refuses_an_unknown_name_in_a_content_only_list(key):
+    payload = _json()
+    payload[key] = ["not-a-phase"]
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert key in str(exc.value) and "content phase" in str(exc.value)
+
+
+def test_from_json_refuses_a_list_out_of_canonical_order():
+    payload = _json(_fanout_plan)
+    payload["auto_included_phases"] = list(reversed(payload["auto_included_phases"]))
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "auto_included_phases" in str(exc.value)
+    assert "canonical order" in str(exc.value)
+
+
+def test_from_json_refuses_a_list_with_duplicates():
+    payload = _json()
+    payload["selected_phases"] = ["reflection", "reflection"]
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "selected_phases" in str(exc.value) and "duplicate" in str(exc.value)
+
+
+@pytest.mark.parametrize("side", ["upstream", "downstream"])
+def test_from_json_refuses_an_edge_endpoint_outside_canonical_phases(side):
+    payload = _json(_excluded_plan)
+    payload["broken_dependency_edges"][0][side] = "not-a-phase"
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "not-a-phase" in str(exc.value)
+    assert "canonical_phases" in str(exc.value)
+
+
+def test_from_json_refuses_refresh_extraction_disagreeing_with_regenerated():
+    payload = _json()  # refresh False, `extract` is copied
+    payload["refresh_extraction"] = True
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "refresh_extraction" in str(exc.value)
+    assert "regenerated_phases" in str(exc.value)
+
+    payload = _json(_refresh_plan)  # refresh True, `extract` IS regenerated
+    payload["refresh_extraction"] = False
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "refresh_extraction" in str(exc.value)
+
+
+def test_from_json_refuses_a_selection_that_is_not_regenerated():
+    payload = _json()  # selected == regenerated == ("reflection",)
+    payload["selected_phases"] = ["boss-arena"]
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "selected_phases" in str(exc.value)
+    assert "regenerated_phases" in str(exc.value)
+
+
+def test_from_json_refuses_an_exclusion_that_was_never_auto_included():
+    payload = _json(_excluded_plan)
+    # The preview is copied but was never in the closure, so excluding it is
+    # not something `build_phase_plan` can ever have produced.
+    payload["excluded_affected_phases"] = ["case-based-preview"]
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "excluded_affected_phases" in str(exc.value)
+    assert "auto_included_phases" in str(exc.value)
+
+
+def test_from_json_refuses_an_exclusion_that_is_still_regenerated():
+    payload = _json(_excluded_plan)
+    # `practice-jigsaw` IS auto-included, but it is also still regenerated —
+    # an excluded phase must have been moved into `copied_phases`.
+    payload["excluded_affected_phases"] = ["practice-jigsaw"]
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "excluded_affected_phases" in str(exc.value)
+    assert "copied_phases" in str(exc.value)
+
+
+def test_from_json_refuses_a_broken_edge_into_a_phase_that_was_not_excluded():
+    payload = _json(_excluded_plan)
+    payload["broken_dependency_edges"][0]["downstream"] = "boss-arena"
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "downstream" in str(exc.value)
+    assert "excluded_affected_phases" in str(exc.value)
+
+
+def test_from_json_refuses_a_broken_edge_from_a_phase_that_is_not_regenerated():
+    payload = _json(_excluded_plan)
+    payload["broken_dependency_edges"][0]["upstream"] = "case-based-preview"
+    with pytest.raises(PhasePlanSerializationError) as exc:
+        RegenerationPhasePlan.from_json(payload)
+    assert "upstream" in str(exc.value)
+    assert "regenerated_phases" in str(exc.value)

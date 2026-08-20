@@ -240,6 +240,10 @@ draft
 
 Campaign completion is derived from terminal targets; it is not based only on job completion.
 
+The approved launch contract carries provider/model/transport and the session-limit selection. It does **not** carry an output language: a lineage is scoped by `(toc_entry_id, output_language)`, one campaign may hold UZ and RU targets for the same lesson, and each revision copies its language from its immediate source job. It is **resolved exactly once, when the campaign is created, before it is stored**: one read of the `launch_defaults` row and one read of the fleet-wide session-limit default produce a contract in which every role's provider and model and the session-limit strategy are concrete, and the content model is the operator's own explicit pick. A draft "auto" placeholder (a null role provider, an `inherit` session-limit strategy) is a draft input and never a stored value; persistence refuses one. The content model is the exception: it is never substituted — a draft without one is refused, because no ordinary launch path resolves a content model and the operator's configured content default is not among the values the campaign reads. Everything afterwards — the cost estimate, the canary launch, the bulk approval, each revision job — copies that stored snapshot and may not re-resolve. This matters because a campaign is launched in two waves separated by a human gate: an operator editing the global launch defaults or the fleet session-limit default between the canary and the bulk is an ordinary action, and a second resolution at that second moment would give one immutable campaign two different meanings, so the canary's approval evidence would stop describing the bulk and the persisted approval record would no longer say what was approved.
+
+This draws a boundary worth stating explicitly. Provider, model and transport **do** have per-job columns, and every ordinary launch already resolves them against `launch_defaults` and stamps the concrete values onto the job row, so a revision left unstamped would be the only job in the system resolved from a mutable row at whatever moment it happened to run — a regression, not a preserved behavior. Values that have **no** per-job column stay global and are observed, not frozen: solver enablement and the boss-arena solver toggle are read from the process/global settings at run time exactly as they are today. Solver enablement is **not** part of the contract: it is existing global behavior (`settings.solver_enabled`) with no per-launch surface anywhere in the product. Regeneration preserves that behavior and **reports the observed value** at draft time as informational only; it does not freeze a per-job option that does not exist, because a frozen `true` would still stop the moment an operator flipped the global setting, and a frozen `false` would not stop the solver at all.
+
 ### 8.2 Regeneration target
 
 `RegenerationTarget` owns one lesson within one campaign:
@@ -256,6 +260,8 @@ Campaign completion is derived from terminal targets; it is not based only on jo
 - Notion page ID;
 - publication attempt count, last error and retry timing;
 - terminal reason where applicable.
+
+The frozen per-target phase plan is stored as the planner's **serialized object**, not a bare phase-name list: the pure phase planner owns the only serializer, and a stored plan is read back only through it, so the regenerated/copied split, the auto-included and acknowledged-excluded sets, the broken dependency edges and the extraction-refresh flag all survive to the orchestrator, the publisher and the report with one agreed meaning.
 
 Generation and publication states remain separate. A generated revision is never regenerated merely because Notion delivery failed.
 
@@ -290,6 +296,7 @@ A regeneration job remains a homework job so it can reuse the existing pipeline,
 
 - required `revision_of_job_id`;
 - required regeneration campaign/target identity;
+- its own concrete session-limit strategy, because a revision keeps `batch_id=NULL` and so has no batch row to resolve one from. The resolution happens once at campaign creation, into the approved contract; the revision job merely **copies** that already-concrete value onto its own column. An "inherit" placeholder is refused both at contract persistence and again by the database on the job row, because re-resolving it at job-creation time would read the mutable fleet-wide default at a second moment and split one campaign across two run policies. Ordinary Fleet jobs are unchanged and keep resolving batch-then-global;
 - a regeneration marker that makes the pipeline skip normal automatic Notion archival.
 
 The marker-column design is pinned: a revision remains `kind="homework"`, and `revision_of_job_id IS NOT NULL` identifies it as a regeneration job. This avoids widening the existing `kind` flow discriminator while giving every legacy query and archive entry point one unambiguous exclusion predicate.

@@ -46,9 +46,13 @@ class RegenerationCampaign(Base, UUIDPK, Timestamps):
     # operator was shown and acknowledged.
     requested_phases: Mapped[list] = mapped_column(JSONB, nullable=False)
     excluded_phases: Mapped[list] = mapped_column(JSONB, nullable=False)
-    # A serialized `app.schemas.regeneration_contract.LaunchContract` — the one
-    # owner of the provider/model/transport/language selection for every
-    # revision job this campaign creates.
+    # A serialized `app.schemas.regeneration_contract.ResolvedLaunchContract`
+    # (resolved once, at draft time, before it is stored) — the one owner of
+    # the provider/model/transport selection for every revision job this
+    # campaign creates. NOT the language: a revision's `output_language` is per
+    # target (`regeneration_targets.output_language`, chosen by
+    # `selection_spec`) and is copied from the immediate source job, because
+    # one campaign may hold a UZ and an RU target for the same lesson.
     launch_contract: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
     # Re-run the extract phase (pay for a fresh source read) instead of reusing

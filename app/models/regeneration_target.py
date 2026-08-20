@@ -120,7 +120,15 @@ class RegenerationTarget(Base, UUIDPK, Timestamps):
     is_canary: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     # Frozen per-target plan: which phases are regenerated and which are copied
     # from the source snapshot. Written at planning time, never mutated.
-    phase_plan: Mapped[list] = mapped_column(JSONB, nullable=False)
+    #
+    # The value is `RegenerationPhasePlan.to_json()` — a JSON OBJECT, not a bare
+    # phase-name list, and it is read back ONLY through
+    # `RegenerationPhasePlan.from_json`. A flat list cannot express what the
+    # later lanes need: the copied/regenerated split, the auto-included and
+    # acknowledged-excluded sets, the broken dependency edges and
+    # `refresh_extraction`. `app.services.regeneration_planner` owns the only
+    # serializer; nothing here or in the repositories hand-rolls that JSON.
+    phase_plan: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="planned")
 

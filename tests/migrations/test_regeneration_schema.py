@@ -198,6 +198,10 @@ async def test_0063_creates_regeneration_schema_and_reverts_cleanly():
 
         assert await _has_column(engine, "homework_jobs", "revision_of_job_id")
         assert await _has_column(engine, "homework_jobs", "regeneration_target_id")
+        # The THIRD homework_jobs column: a revision has batch_id NULL by
+        # construction, so it has no batch row to resolve a session-limit
+        # strategy from and must carry its own concrete one.
+        assert await _has_column(engine, "homework_jobs", "session_limit_strategy")
         assert await _has_column(engine, "phase_outputs", "copied_from_phase_output_id")
 
         # ── named constraints ───────────────────────────────────────────────
@@ -211,10 +215,28 @@ async def test_0063_creates_regeneration_schema_and_reverts_cleanly():
             "ck_regeneration_targets_publication_attempts",
             "ck_homework_jobs_revision_pair",
             "ck_homework_jobs_revision_no_batch",
+            "ck_homework_jobs_session_limit_strategy",
+            "ck_homework_jobs_revision_session_limit_strategy",
             "uq_regeneration_targets_campaign_toc_language",
             "uq_homework_jobs_regeneration_target_id",
         ):
             assert await _constraint_def(engine, name) is not None, f"{name} missing"
+
+        # The revision rule refuses 'inherit', not merely NULL: 'inherit'
+        # re-resolves against the mutable fleet-wide default at run time, which
+        # is precisely the no-op this column exists to close.
+        revision_rule = await _constraint_def(
+            engine, "ck_homework_jobs_revision_session_limit_strategy"
+        )
+        assert "'pause'" in revision_rule and "'switch'" in revision_rule
+        assert "'inherit'" not in revision_rule
+        assert "revision_of_job_id IS NULL" in revision_rule
+        # ...while an ordinary job may still say 'inherit' (or nothing at all).
+        general_rule = await _constraint_def(
+            engine, "ck_homework_jobs_session_limit_strategy"
+        )
+        assert "'inherit'" in general_rule
+        assert "session_limit_strategy IS NULL" in general_rule
 
         # ── partial unique indexes ──────────────────────────────────────────
         lineage = await _index_def(engine, "uq_regeneration_targets_active_lineage")
@@ -281,6 +303,12 @@ async def test_0063_creates_regeneration_schema_and_reverts_cleanly():
         # ── behavior: publication refused before approval, allowed after ────
         book_id, toc_id, job_id = await _seed_lesson(engine)
         campaign_id, target_id = uuid.uuid4(), uuid.uuid4()
+        # These are deliberately raw schema-level statements: they assert DDL
+        # and TRIGGER behavior and do not depend on plan contents at all. They
+        # still pass an OBJECT for `phase_plan` ('{}'::jsonb, not '[]'::jsonb)
+        # because a bare array is no longer a legal plan shape — the stored
+        # value is `RegenerationPhasePlan.to_json()`. They deliberately do NOT
+        # import the planner: this file must stay a pure schema test.
         try:
             async with engine.begin() as conn:
                 await conn.execute(
@@ -296,7 +324,7 @@ async def test_0063_creates_regeneration_schema_and_reverts_cleanly():
                     text(
                         "INSERT INTO regeneration_targets (id, campaign_id, toc_entry_id,"
                         " output_language, source_job_id, phase_plan, status, created_at,"
-                        " updated_at) VALUES (:id,:c,:toc,'uz',:job,'[]'::jsonb,'planned',"
+                        " updated_at) VALUES (:id,:c,:toc,'uz',:job,'{}'::jsonb,'planned',"
                         "now(),now())"
                     ),
                     {"id": target_id, "c": campaign_id, "toc": toc_id, "job": job_id},
@@ -322,7 +350,7 @@ async def test_0063_creates_regeneration_schema_and_reverts_cleanly():
                             "INSERT INTO regeneration_targets (id, campaign_id, toc_entry_id,"
                             " output_language, source_job_id, phase_plan, status,"
                             " publication_released_at, created_at, updated_at) VALUES "
-                            "(:id,:c,:toc,'ru',:job,'[]'::jsonb,'publication_pending',now(),"
+                            "(:id,:c,:toc,'ru',:job,'{}'::jsonb,'publication_pending',now(),"
                             "now(),now())"
                         ),
                         {
@@ -391,8 +419,14 @@ async def test_0063_creates_regeneration_schema_and_reverts_cleanly():
         assert not await _has_table(engine, "regeneration_targets")
         assert not await _has_column(engine, "homework_jobs", "revision_of_job_id")
         assert not await _has_column(engine, "homework_jobs", "regeneration_target_id")
+        assert not await _has_column(engine, "homework_jobs", "session_limit_strategy")
         assert not await _has_column(engine, "phase_outputs", "copied_from_phase_output_id")
         assert await _constraint_def(engine, "ck_homework_jobs_revision_pair") is None
+        for name in (
+            "ck_homework_jobs_session_limit_strategy",
+            "ck_homework_jobs_revision_session_limit_strategy",
+        ):
+            assert await _constraint_def(engine, name) is None, f"{name} survived"
         async with engine.begin() as conn:
             leftover = await conn.scalar(
                 text("SELECT proname FROM pg_proc WHERE proname=:n"), {"n": _FUNCTION}

@@ -21,14 +21,20 @@ async def create_target(
     campaign_id: UUID,
     toc_entry_id: UUID,
     output_language: str,
-    phase_plan: list,
+    phase_plan: dict,
     source_job_id: Optional[UUID] = None,
     is_canary: bool = False,
     status: str = "planned",
 ) -> RegenerationTarget:
     """Insert one lesson's target. The caller must be ready for an
     ``IntegrityError``: ``uq_regeneration_targets_active_lineage`` is what stops
-    two campaigns owning the same (lesson, language) at once, and it fires here."""
+    two campaigns owning the same (lesson, language) at once, and it fires here.
+
+    ``phase_plan`` is the serialized object produced by
+    ``app.services.regeneration_planner.RegenerationPhasePlan.to_json()`` — the
+    planner is the only producer, and ``from_json`` the only reader. This
+    repository deliberately does no serialization of its own, so there is
+    exactly one definition of the stored shape."""
     target = RegenerationTarget(
         campaign_id=campaign_id,
         toc_entry_id=toc_entry_id,

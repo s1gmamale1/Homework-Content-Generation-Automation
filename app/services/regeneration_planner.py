@@ -1,6 +1,6 @@
 """Pure phase planning for versioned homework regeneration.
 
-Two responsibilities, both deliberately free of I/O, DB access, async, network
+Three responsibilities, all deliberately free of I/O, DB access, async, network
 and logging so every later lane (discovery, snapshot copying, orchestration,
 publication) can import them without dragging in infrastructure:
 
@@ -10,6 +10,14 @@ publication) can import them without dragging in infrastructure:
 * :func:`validate_complete_snapshot` — the **single authority** for "is this set
   of phase rows a complete, usable homework snapshot". Discovery and the
   copy/publication gate both call this; neither may redefine row completeness.
+* :meth:`RegenerationPhasePlan.to_json` / :meth:`RegenerationPhasePlan.from_json`
+  — the **only** serializer for a stored plan. ``regeneration_targets.phase_plan``
+  is a JSONB object written by ``to_json`` and read back exclusively through
+  ``from_json``. No later lane may hand-roll plan JSON: three independent
+  dataclass<->JSON conversions are three independent chances to disagree about
+  tuple-vs-list, :class:`DependencyEdge` key names or field order, and the
+  column would then mean different things to the orchestrator, the publisher
+  and the UI.
 
 The only app import is :mod:`app.services.flows` (itself pure).
 
@@ -36,8 +44,24 @@ EXTRACT_PHASE = "extract"
 FLOW_DRIFT_REASON = "source flow differs from the currently deployed flow"
 
 
+# Bumped only when the stored shape changes incompatibly. `from_json` refuses
+# any other value outright rather than guessing at a migration.
+PHASE_PLAN_JSON_VERSION = 1
+
+
 class UnknownPhaseError(ValueError):
     """A phase name is not part of the subject's selectable content phases."""
+
+
+class PhasePlanSerializationError(ValueError):
+    """A stored ``phase_plan`` payload is not a plan this module produced.
+
+    Raised by :meth:`RegenerationPhasePlan.from_json` for every refusal —
+    malformed JSON shape, a foreign version, and structural round-trip
+    violations alike. A regeneration lane that trips this has read a plan that
+    no ``build_phase_plan`` call could have emitted, so it must fail loudly
+    rather than run half a homework.
+    """
 
 
 class ExclusionAcknowledgementRequired(ValueError):
@@ -54,6 +78,33 @@ class DependencyEdge:
     downstream: str
 
 
+# The six phase-name lists, in dataclass field order.
+_PLAN_PHASE_LIST_KEYS = (
+    "canonical_phases",
+    "selected_phases",
+    "auto_included_phases",
+    "regenerated_phases",
+    "copied_phases",
+    "excluded_affected_phases",
+)
+# The three that may only ever name CONTENT phases (`extract` is never
+# selectable, auto-included or excluded — it is driven by `refresh_extraction`).
+_PLAN_CONTENT_ONLY_KEYS = (
+    "selected_phases",
+    "auto_included_phases",
+    "excluded_affected_phases",
+)
+# The exact key order `to_json` emits: "version", then the dataclass fields in
+# declaration order. Fixed on purpose, so `json.dumps` of two equal plans is
+# byte-identical without `sort_keys`.
+_PLAN_JSON_KEYS = (
+    "version",
+    *_PLAN_PHASE_LIST_KEYS,
+    "broken_dependency_edges",
+    "refresh_extraction",
+)
+
+
 @dataclass(frozen=True)
 class RegenerationPhasePlan:
     canonical_phases: tuple[str, ...]
@@ -64,6 +115,238 @@ class RegenerationPhasePlan:
     excluded_affected_phases: tuple[str, ...]
     broken_dependency_edges: tuple[DependencyEdge, ...]
     refresh_extraction: bool
+
+    def to_json(self) -> dict:
+        """The canonical JSON-safe mapping stored in
+        ``regeneration_targets.phase_plan``.
+
+        Plain ``str``/``list``/``dict``/``bool``/``int`` only, with keys emitted
+        in the fixed order of :data:`_PLAN_JSON_KEYS` (which mirrors the
+        dataclass field order), so ``json.dumps(plan.to_json())`` is byte-stable
+        for equal plans without needing ``sort_keys``.
+        """
+        return {
+            "version": PHASE_PLAN_JSON_VERSION,
+            "canonical_phases": list(self.canonical_phases),
+            "selected_phases": list(self.selected_phases),
+            "auto_included_phases": list(self.auto_included_phases),
+            "regenerated_phases": list(self.regenerated_phases),
+            "copied_phases": list(self.copied_phases),
+            "excluded_affected_phases": list(self.excluded_affected_phases),
+            "broken_dependency_edges": [
+                {"upstream": edge.upstream, "downstream": edge.downstream}
+                for edge in self.broken_dependency_edges
+            ],
+            "refresh_extraction": bool(self.refresh_extraction),
+        }
+
+    @classmethod
+    def from_json(cls, data) -> "RegenerationPhasePlan":
+        """Rebuild a plan from its stored JSON. The ONLY way a plan is read back.
+
+        Strict by design: it never coerces a value and never fills in a default.
+        Anything that :func:`build_phase_plan` could not have produced raises
+        :class:`PhasePlanSerializationError` naming the offending key or rule —
+        a silently-repaired plan would regenerate the wrong phases, and copying
+        forward a phase that should have been re-run is invisible in the output.
+
+        It validates **internal consistency only**. It deliberately does NOT
+        call ``flows.flow_for`` or otherwise re-derive the subject's flow: a
+        stored plan may legitimately predate a flow change, and that drift
+        signal belongs to :func:`validate_complete_snapshot`, which grades a
+        real snapshot against the deployed flow. Re-deriving here would turn
+        every historical campaign row unreadable the day a phase is added.
+
+        ``from_json(plan.to_json()) == plan`` is exact dataclass equality: the
+        phase lists come back as ``tuple``s and the edges as
+        :class:`DependencyEdge` instances.
+        """
+        if not isinstance(data, Mapping):
+            raise PhasePlanSerializationError(
+                "phase_plan must be a JSON mapping, got "
+                f"{type(data).__name__}: {data!r}"
+            )
+
+        present = set(data)
+        missing = [key for key in _PLAN_JSON_KEYS if key not in present]
+        if missing:
+            raise PhasePlanSerializationError(
+                f"phase_plan is missing key(s): {missing}"
+            )
+        unknown = sorted(present - set(_PLAN_JSON_KEYS))
+        if unknown:
+            raise PhasePlanSerializationError(
+                f"phase_plan has unknown key(s): {unknown}"
+            )
+
+        # `type(...) is not int` (not isinstance) so a JSON `true` is refused.
+        version = data["version"]
+        if type(version) is not int or version != PHASE_PLAN_JSON_VERSION:
+            raise PhasePlanSerializationError(
+                f"phase_plan version {version!r} is not "
+                f"{PHASE_PLAN_JSON_VERSION}"
+            )
+
+        # ── shape ────────────────────────────────────────────────────────
+        lists: dict[str, list] = {}
+        for key in _PLAN_PHASE_LIST_KEYS:
+            value = data[key]
+            if type(value) is not list or any(type(p) is not str for p in value):
+                raise PhasePlanSerializationError(
+                    f"phase_plan.{key} must be a list of str, got {value!r}"
+                )
+            lists[key] = value
+
+        raw_edges = data["broken_dependency_edges"]
+        if type(raw_edges) is not list:
+            raise PhasePlanSerializationError(
+                "phase_plan.broken_dependency_edges must be a list of "
+                f"{{'upstream': str, 'downstream': str}} mappings, got {raw_edges!r}"
+            )
+        edges: list[DependencyEdge] = []
+        for raw in raw_edges:
+            if (
+                not isinstance(raw, Mapping)
+                or set(raw) != {"upstream", "downstream"}
+                or type(raw["upstream"]) is not str
+                or type(raw["downstream"]) is not str
+            ):
+                raise PhasePlanSerializationError(
+                    "phase_plan.broken_dependency_edges entries must have exactly "
+                    "the keys 'upstream' and 'downstream' with str values, got "
+                    f"{raw!r}"
+                )
+            edges.append(
+                DependencyEdge(
+                    upstream=raw["upstream"], downstream=raw["downstream"]
+                )
+            )
+
+        # `isinstance(True, int)` is True, so a lazy check would let `1` mean
+        # "the extraction was refreshed". Test the type exactly.
+        refresh_extraction = data["refresh_extraction"]
+        if type(refresh_extraction) is not bool:
+            raise PhasePlanSerializationError(
+                "phase_plan.refresh_extraction must be a real bool, got "
+                f"{refresh_extraction!r}"
+            )
+
+        # ── structural round-trip rules ──────────────────────────────────
+        canonical = lists["canonical_phases"]
+        if not canonical:
+            raise PhasePlanSerializationError("phase_plan.canonical_phases is empty")
+        if len(set(canonical)) != len(canonical):
+            raise PhasePlanSerializationError(
+                "phase_plan.canonical_phases contains duplicate phase names"
+            )
+        if canonical[0] != EXTRACT_PHASE:
+            raise PhasePlanSerializationError(
+                f"phase_plan.canonical_phases must start with {EXTRACT_PHASE!r}, "
+                f"got {canonical[0]!r}"
+            )
+        canonical_set = set(canonical)
+        content_set = canonical_set - {EXTRACT_PHASE}
+        canonical_index = {name: i for i, name in enumerate(canonical)}
+
+        for key in _PLAN_PHASE_LIST_KEYS[1:]:
+            value = lists[key]
+            if len(set(value)) != len(value):
+                raise PhasePlanSerializationError(
+                    f"phase_plan.{key} contains duplicate phase names"
+                )
+
+        for key in _PLAN_CONTENT_ONLY_KEYS:
+            outside = [p for p in lists[key] if p not in content_set]
+            if outside:
+                raise PhasePlanSerializationError(
+                    f"phase_plan.{key} names {outside}, which are not canonical "
+                    "content phase(s)"
+                )
+
+        regenerated = lists["regenerated_phases"]
+        copied = lists["copied_phases"]
+        overlap = sorted(set(regenerated) & set(copied))
+        if overlap:
+            raise PhasePlanSerializationError(
+                "phase_plan.regenerated_phases and phase_plan.copied_phases must "
+                f"partition canonical_phases; both claim {overlap}"
+            )
+        if set(regenerated) | set(copied) != canonical_set:
+            raise PhasePlanSerializationError(
+                "phase_plan.regenerated_phases and phase_plan.copied_phases must "
+                "partition canonical_phases exactly; their union is "
+                f"{sorted(set(regenerated) | set(copied))}"
+            )
+
+        # Safe now: every name in every list is known to be canonical.
+        for key in _PLAN_PHASE_LIST_KEYS[1:]:
+            value = lists[key]
+            if value != sorted(value, key=canonical_index.__getitem__):
+                raise PhasePlanSerializationError(
+                    f"phase_plan.{key} is not in canonical order: {value}"
+                )
+
+        for edge in edges:
+            for side in ("upstream", "downstream"):
+                name = getattr(edge, side)
+                if name not in canonical_set:
+                    raise PhasePlanSerializationError(
+                        f"phase_plan.broken_dependency_edges {side} {name!r} is "
+                        "not in canonical_phases"
+                    )
+
+        if refresh_extraction != (EXTRACT_PHASE in regenerated):
+            raise PhasePlanSerializationError(
+                f"phase_plan.refresh_extraction={refresh_extraction} disagrees "
+                f"with {EXTRACT_PHASE!r} in phase_plan.regenerated_phases"
+            )
+
+        stray = sorted(set(lists["selected_phases"]) - set(regenerated))
+        if stray:
+            raise PhasePlanSerializationError(
+                f"phase_plan.selected_phases {stray} are not in "
+                "phase_plan.regenerated_phases"
+            )
+
+        excluded = lists["excluded_affected_phases"]
+        stray = sorted(set(excluded) - set(lists["auto_included_phases"]))
+        if stray:
+            raise PhasePlanSerializationError(
+                f"phase_plan.excluded_affected_phases {stray} are not in "
+                "phase_plan.auto_included_phases"
+            )
+        stray = sorted(set(excluded) - set(copied))
+        if stray:
+            raise PhasePlanSerializationError(
+                f"phase_plan.excluded_affected_phases {stray} are not in "
+                "phase_plan.copied_phases"
+            )
+
+        excluded_set = set(excluded)
+        regenerated_set = set(regenerated)
+        for edge in edges:
+            if edge.downstream not in excluded_set:
+                raise PhasePlanSerializationError(
+                    "phase_plan.broken_dependency_edges downstream "
+                    f"{edge.downstream!r} is not in "
+                    "phase_plan.excluded_affected_phases"
+                )
+            if edge.upstream not in regenerated_set:
+                raise PhasePlanSerializationError(
+                    "phase_plan.broken_dependency_edges upstream "
+                    f"{edge.upstream!r} is not in phase_plan.regenerated_phases"
+                )
+
+        return cls(
+            canonical_phases=tuple(canonical),
+            selected_phases=tuple(lists["selected_phases"]),
+            auto_included_phases=tuple(lists["auto_included_phases"]),
+            regenerated_phases=tuple(regenerated),
+            copied_phases=tuple(copied),
+            excluded_affected_phases=tuple(excluded),
+            broken_dependency_edges=tuple(edges),
+            refresh_extraction=refresh_extraction,
+        )
 
 
 class PhaseRowView(Protocol):

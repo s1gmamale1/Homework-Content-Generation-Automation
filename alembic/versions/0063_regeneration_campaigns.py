@@ -4,9 +4,20 @@ Adds the schema for regenerating a complete homework snapshot with current
 prompts and publishing it as an immutable `Homework V2/V3/...` Notion sibling,
 never mutating V1.
 
-Two new tables (`regeneration_campaigns`, `regeneration_targets`), two nullable
-columns on `homework_jobs` that mark a job as a revision, and one on
-`phase_outputs` that marks a phase copied from an earlier snapshot.
+Two new tables (`regeneration_campaigns`, `regeneration_targets`), three
+nullable columns on `homework_jobs` — two that mark a job as a revision plus
+`session_limit_strategy` — and one on `phase_outputs` that marks a phase copied
+from an earlier snapshot.
+
+`homework_jobs.session_limit_strategy` is NULL for every ordinary job, which
+keeps the existing batch-then-global resolution completely untouched. A
+REVISION job must store a concrete `'pause'`/`'switch'`
+(`ck_homework_jobs_revision_session_limit_strategy`): it has `batch_id IS NULL`
+by construction (`ck_homework_jobs_revision_no_batch`), so there is no batch row
+to read the approved campaign's selection from, and `'inherit'` is refused
+there because it would silently re-resolve against the mutable fleet-wide
+`settings.session_limit_strategy` — which is exactly the no-op this column
+exists to close.
 
 A target row is audit history — it records a publication version that is
 consumed forever — so an implicit cascade from a TOC entry or a campaign would
@@ -370,6 +381,37 @@ def upgrade() -> None:
         "revision_of_job_id IS NULL OR batch_id IS NULL",
     )
 
+    # NULL on an ordinary job — batch-then-global resolution is unchanged.
+    # A revision has no batch row to resolve from, so it stores its own.
+    op.add_column(
+        "homework_jobs",
+        sa.Column("session_limit_strategy", sa.String(16), nullable=True),
+    )
+    op.create_check_constraint(
+        "ck_homework_jobs_session_limit_strategy",
+        "homework_jobs",
+        "session_limit_strategy IS NULL OR "
+        "session_limit_strategy IN ('pause','switch','inherit')",
+    )
+    # The accepted set is IN ('pause','switch') and deliberately NOT a bare
+    # "IS NOT NULL": a stored 'inherit' re-resolves against
+    # settings.session_limit_strategy at run time and recreates the very no-op
+    # this column closes, so 'inherit' must be refused on a revision.
+    #
+    # The explicit IS NOT NULL conjunct is NULL-safety, not a weakening of that
+    # rule. SQL is three-valued: `NULL IN ('pause','switch')` is UNKNOWN, and a
+    # CHECK constraint is SATISFIED by UNKNOWN — so the plain
+    # `revision_of_job_id IS NULL OR session_limit_strategy IN (...)` silently
+    # ACCEPTS a revision with no strategy at all, which is the exact hole this
+    # constraint exists to close.
+    op.create_check_constraint(
+        "ck_homework_jobs_revision_session_limit_strategy",
+        "homework_jobs",
+        "revision_of_job_id IS NULL OR "
+        "(session_limit_strategy IS NOT NULL "
+        "AND session_limit_strategy IN ('pause','switch'))",
+    )
+
     # ─── copied (not regenerated) phase provenance ────────────────────────
     op.add_column(
         "phase_outputs",
@@ -407,6 +449,14 @@ def downgrade() -> None:
         type_="foreignkey",
     )
     op.drop_column("phase_outputs", "copied_from_phase_output_id")
+
+    op.drop_constraint(
+        "ck_homework_jobs_revision_session_limit_strategy", "homework_jobs", type_="check"
+    )
+    op.drop_constraint(
+        "ck_homework_jobs_session_limit_strategy", "homework_jobs", type_="check"
+    )
+    op.drop_column("homework_jobs", "session_limit_strategy")
 
     op.drop_constraint("ck_homework_jobs_revision_no_batch", "homework_jobs", type_="check")
     op.drop_constraint("ck_homework_jobs_revision_pair", "homework_jobs", type_="check")

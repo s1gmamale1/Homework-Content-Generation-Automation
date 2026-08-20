@@ -139,14 +139,14 @@ The operations manager keeps at most four Claude controllers active and reserves
 
 `RegenerationTarget` contains:
 
-- `campaign_id`, `toc_entry_id`, `output_language`, `source_job_id`, `is_canary`, and immutable `phase_plan`;
+- `campaign_id`, `toc_entry_id`, `output_language`, `source_job_id`, `is_canary`, and immutable `phase_plan` — a JSONB **object**, the planner's serialized `RegenerationPhasePlan.to_json()`, never a bare phase-name list: a flat list carries neither the copied/regenerated split Task 6 reads nor the auto-included/excluded sets, broken dependency edges and `refresh_extraction` Task 9 renders. It is read back only through `RegenerationPhasePlan.from_json`;
 - `status`: `planned | generating | awaiting_canary_approval | publication_pending | publishing | published | generation_failed | publication_failed | abandoned`;
 - `publication_released_at`, `publication_version`, `notion_page_id`;
 - durable claim fields `publication_claim_token`, `publication_claimed_at`, `publication_attempts`, `publication_next_attempt_at`, `publication_last_error`;
 - `terminal_at` and `terminal_reason`.
 - cancellation convergence fields `abandon_requested_at` and `abandon_requested_reason`, used when a running revision must finish cancellation before the target can become terminal.
 
-`HomeworkJob` adds nullable `revision_of_job_id` with `ON DELETE RESTRICT` and nullable unique `regeneration_target_id` with `ON DELETE RESTRICT`. A check requires the two columns to be both null or both non-null. A second check requires `batch_id IS NULL` when `revision_of_job_id IS NOT NULL`.
+`HomeworkJob` adds nullable `revision_of_job_id` with `ON DELETE RESTRICT` and nullable unique `regeneration_target_id` with `ON DELETE RESTRICT`. A check requires the two columns to be both null or both non-null. A second check requires `batch_id IS NULL` when `revision_of_job_id IS NOT NULL`. It also adds a third nullable column, `session_limit_strategy` (`String(16)`), guarded by `ck_homework_jobs_session_limit_strategy` (`NULL`, or one of `'pause'`/`'switch'`/`'inherit'`) and `ck_homework_jobs_revision_session_limit_strategy` (a revision must carry a concrete `'pause'`/`'switch'`). Ordinary jobs leave the column NULL and keep the existing batch-then-global resolution unchanged; a revision has `batch_id IS NULL` by construction, so it has no batch row to resolve from and must store its own value. `'inherit'` is refused on a revision because it would re-resolve against the mutable fleet-wide `settings.session_limit_strategy` and reproduce the very no-op this column closes. The revision predicate is written NULL-safely (`revision_of_job_id IS NULL OR (session_limit_strategy IS NOT NULL AND session_limit_strategy IN ('pause','switch'))`): SQL is three-valued, `NULL IN (...)` is UNKNOWN, and a CHECK constraint is satisfied by UNKNOWN, so without the explicit conjunct a revision with no strategy at all would commit.
 
 `PhaseOutput` adds nullable `copied_from_phase_output_id` with `ON DELETE RESTRICT`.
 While editing the model, correct the existing `judge_status` comment to include the already-emitted soft value `refused`; this is documentation parity only and does not change its database type or pipeline behavior.
@@ -162,10 +162,13 @@ Database invariants:
 - publication states require `publication_released_at IS NOT NULL`;
 - a PostgreSQL trigger rejects transition into `publication_pending`, `publishing`, or `published` unless the owning campaign has `approved_at IS NOT NULL` and is not rejected/cancelled.
 - `RegenerationTarget.toc_entry_id` uses explicit `ON DELETE RESTRICT`; no implicit TOC cascade may erase or partially detach audit history.
+- a revision job (`revision_of_job_id IS NOT NULL`) must store a concrete `homework_jobs.session_limit_strategy` of `'pause'` or `'switch'`; `NULL` and `'inherit'` are both refused there, while an ordinary job may be `NULL` or any of the three values.
 
 Do not add `revision_job_id` to the target. The authoritative one-to-one link is `HomeworkJob.regeneration_target_id`; the target's revision job is read through that unique relationship, avoiding a cyclic pair of mutable foreign keys.
 
-`app/schemas/regeneration_contract.py` is the single owner of the immutable `LaunchContract` Pydantic model used by Tasks 5–7. It contains content/extract/judge/solver provider, model and transport values, output language, session-limit strategy, solver toggle, and any existing launch option required by `HomeworkJob`. It validates through the same production helpers as ordinary launches and serializes to the campaign JSON column; no later task defines a second launch-contract type.
+`app/schemas/regeneration_contract.py` is the single owner of the immutable launch contract used by Tasks 5–7. It contains content/extract/judge/solver provider, model and transport values, session-limit strategy, and any existing launch option required by `HomeworkJob`. Output language is deliberately NOT in the contract: it is per target (`regeneration_targets.output_language`) and Task 6 copies it from the immediate source job (line "Copy `book_id`, `toc_entry_id`, `subject`, and `output_language` exactly from the immediate source job" is the single authority), because a lineage is scoped by `(toc_entry_id, output_language)`, `uq_regeneration_targets_campaign_toc_language` lets ONE campaign hold a UZ and an RU target for the same lesson, and discovery takes `output_languages` (plural) — so there is no single campaign-wide language to freeze. Solver enablement is deliberately NOT in the contract: it stays a process-global setting (`settings.solver_enabled`, read by `pipeline.py`'s `_solver_on`), with no per-launch surface on `homework_jobs`, `batches`, `launch_defaults` or `jobs_repo.create`, so regeneration reports the observed global value rather than freezing a job option that does not exist. It validates through the same production helpers as ordinary launches and serializes to the campaign JSON column; no later task defines a second launch-contract type.
+
+This module is also the single owner of the contract's **resolution**, so one campaign has one concrete meaning. It defines three things: `LaunchContract` (the **draft** shape, in which a null model, a null role provider and an `inherit` session-limit strategy are legal operator inputs), `ResolvedLaunchContract` (the **stored** shape, in which all of those are concrete), and the pure function `resolve_launch_contract(draft, defaults=LaunchDefaultsSnapshot(...), session_limit_strategy=...)` that turns the first into the second — or **refuses**, when the draft names no content model. The function reads no database row and no settings object: its caller — Task 7's `create_campaign`, and only it — reads the `launch_defaults` row once and calls `agent_models.resolve_session_limit_strategy(draft.session_limit_strategy)` once, then hands both values in. Each ROLE is resolved with the same production helpers an ordinary launch uses (`resolve_role_selection`, `resolve_role_transport_default`, `default_model`), so regeneration cannot drift from `jobs.py`/`batch.py` stamping behavior. The CONTENT model is deliberately **not** resolved: a draft that leaves it null is refused with a clear error, because parity demands it (`jobs.py`/`batch.py` pass `model=body.model` verbatim and never call `default_model` for content) and because the operator's configured content default lives in `launch_defaults.content_provider`/`content_model`, which the roles-only `LaunchDefaultsSnapshot` deliberately cannot reach — substituting `default_model(provider)` would freeze `MODEL_MANIFEST[provider][0]` (for gemini the pro-tier `gemini-3.1-pro-preview`) onto a whole approved campaign. Task 7's API must therefore carry an explicit content model. A role transport may remain `inherit` after resolution and is still concrete: it is a deterministic relation to the contract's own already-fixed content transport, exactly as an ordinary job row stores it. `ensure_resolved(...)` is the persistence/read-back boundary and **refuses an unresolved contract**; it deliberately takes no defaults and no strategy argument, so a reader can verify but cannot resolve — that is what stops a second resolution creeping into the estimator, `launch_canary`, `approve_canary` or `create_revision_job`.
 
 The two repositories expose only common primitives needed by later lanes: `get_campaign_for_update`, `get_target_for_update`, `get_target_by_revision_job`, `revision_job_for_target`, `create_campaign`, `create_target`, and fenced status/claim updates. Task 5 creates separate read-only source queries; Task 6 uses these common target primitives; Tasks 7–8 extend the repositories sequentially.
 
@@ -176,6 +179,7 @@ Add a test-only collection guard in `tests/conftest.py`: when `REGEN_REQUIRE_DB=
 ### TDD steps
 
 1. Write model tests asserting the new columns, relationships, check names, partial index predicate, and restrictive FK semantics.
+   Also write contract-resolution tests in `tests/models/test_regeneration_models.py` (pure, no DB): resolution stamps the concrete role selections from the launch defaults; an explicit draft role pick beats the default and takes THAT provider's own default model; **resolution REFUSES a draft that names no content model** (it is never substituted with `default_model(provider)`, which no launch path would produce); the `LaunchDefaultsSnapshot` validates straight from the `launch_defaults` ORM row, reading a NULL role transport as `inherit` on the attribute path as well as the mapping path; the contract does **not** carry a campaign-wide `output_language` (assert the field's absence AND that `extra="forbid"` makes re-introducing it a loud draft-time error); **launch defaults edited after resolution do not alter the resolved contract** and the stored JSON reads back identically; **the fleet session-limit strategy is read once and frozen** (monkeypatch `settings.session_limit_strategy` to the other value after resolution and assert the stored contract is unmoved, while asserting the global really did move); an explicit draft strategy survives; persistence **refuses** an unresolved contract (`'inherit'`, null role provider/model, null content model); a role transport may stay `inherit` because the content transport is already concrete; resolution validates the resolved pair through the production rules (api-only extract provider, retired model, api-only model on a cli effective transport); resolution refuses when no provider exists anywhere; and the resolved contract round-trips through JSONB while staying frozen and `extra="forbid"`.
 2. Write migration tests that upgrade from the current head, inspect every table/index/check/FK/trigger, then downgrade cleanly. Because this repository has no trigger precedent, also assert the trigger function body, trigger timing/events, failed direct SQL before approval, allowed SQL after approval, and removal of both trigger and function on downgrade. The trigger reads the owning campaign `FOR KEY SHARE` before checking `approved_at`/status, so it waits for a concurrent approval transaction rather than deciding from a racing snapshot.
 3. Write PostgreSQL integration tests that race two active targets in the same language, allow UZ V2 and RU V2 independently, reject duplicate versions in one language, reject revision+batch, reject source deletion, and reject publication before approval.
 4. Run the tests and record the RED failures.
@@ -226,6 +230,14 @@ class RegenerationPhasePlan:
     broken_dependency_edges: tuple[DependencyEdge, ...]
     refresh_extraction: bool
 
+    def to_json(self) -> dict: ...
+    @classmethod
+    def from_json(cls, data) -> "RegenerationPhasePlan": ...
+
+PHASE_PLAN_JSON_VERSION = 1
+
+class PhasePlanSerializationError(ValueError): ...
+
 def build_phase_plan(
     *,
     subject: str,
@@ -246,11 +258,16 @@ class PhaseRowView(Protocol):
 class SnapshotValidation:
     usable: bool
     reasons: tuple[str, ...]
+    canonical_order: Mapping[str, int]
 
 def validate_complete_snapshot(
     *, subject: str, rows: Collection[PhaseRowView]
 ) -> SnapshotValidation: ...
 ```
+
+This module is the **single owner of plan serialization**: `regeneration_targets.phase_plan` stores `RegenerationPhasePlan.to_json()` and is read back only through `RegenerationPhasePlan.from_json`, and no later task (6, 7 or 9) hand-rolls that JSON — three independent dataclass↔JSON conversions are three independent chances to disagree about tuple-vs-list, `DependencyEdge` key names or field order. `to_json` emits a fixed key order so equal plans serialize byte-identically **before storage** (the guarantee is about the serializer, not about anything read back: `jsonb` normalizes key order, so a stored plan is compared by value through `from_json`, never as text); `from_json` is strict — it never coerces and never defaults, and raises `PhasePlanSerializationError` naming the offending key on a bad shape, a foreign `version`, or a structural round-trip violation (canonical order, the regenerated/copied partition, subset rules, edge endpoints, `refresh_extraction` disagreement). It validates internal consistency only and deliberately does not re-derive the subject's flow: a stored plan may legitimately predate a flow change, and that drift signal belongs to `validate_complete_snapshot`.
+
+`SnapshotValidation.canonical_order` is the verified phase→index mapping (empty when the snapshot is unusable). It exists because Task 6 must "use its verified canonical `phase_order`; never silently renumber it" and needs an authoritative source rather than recomputing the ordering from an unvalidated snapshot.
 
 The implementation imports the canonical subject flow and `PHASE_DEPS` from the same production authority used by the pipeline. It preserves canonical order, computes transitive downstream closure, refuses unknown or unavailable phases, and requires acknowledgement only when an exclusion actually breaks an affected edge. With extraction enabled, all content phases enter the closure before exclusions.
 
@@ -263,7 +280,8 @@ The implementation imports the canonical subject flow and `PHASE_DEPS` from the 
 1. Write table-driven tests for every subject flow and graph edge.
 2. Pin these measured examples: flashcards → 10/11 content phases, memory-check → 5, boss-arena → 2, reflection → 1.
 3. Test deterministic ordering, duplicate inputs, invalid phases, extraction off/on, warning-backed exclusion, and unaffected exclusions.
-4. Test complete-snapshot validation for missing, duplicate, failed, blank, structured, order-drifted, and flow-drifted rows; pin the stable reason codes/text.
+4. Test complete-snapshot validation for missing, duplicate, failed, blank, structured, order-drifted, and flow-drifted rows; pin the stable reason codes/text, and assert `canonical_order` is populated when usable and empty when not.
+4a. Test plan serialization: `from_json(to_json(p)) == p` round-trip equality over a table of representative plans (plain, auto-included fan-out, acknowledged exclusion with non-empty `broken_dependency_edges`, `refresh_extraction=True`), survival of a real `json.dumps`/`json.loads` cycle, the fixed documented key order, byte-stability of `json.dumps` for two equal plans built from differently-ordered inputs, and one test per strict-refusal class (non-mapping incl. the old bare `["flashcards"]` list, missing key, unknown key, foreign version, non-`list[str]` phase list, malformed edge list, non-`bool` `refresh_extraction`, empty/duplicated/non-`extract`-leading `canonical_phases`, a broken regenerated/copied partition, a non-content name in a content-only list, an out-of-canonical-order or duplicated list, an edge endpoint outside `canonical_phases`, `refresh_extraction` disagreeing with `extract in regenerated_phases`, `selected_phases` not a subset of `regenerated_phases`, `excluded_affected_phases` not a subset of both `auto_included_phases` and `copied_phases`, and a broken edge whose `downstream` is not excluded or whose `upstream` is not regenerated) — each asserting which rule fired, never one collapsed parametrized blob.
 5. Test every legal and illegal campaign/target transition and complete rollups including mixed published/abandoned/failure cases.
 6. Run RED, implement the smallest pure code, then run:
 
@@ -445,7 +463,7 @@ async def preflight_notion_destinations(
 ) -> list[NotionPreflightFailure]: ...
 ```
 
-Eligibility requires a done `kind="homework"` job whose rows pass Task 2's `validate_complete_snapshot`; Task 5 must import that predicate and surface its stable reasons rather than implement another completeness definition. For V3+, `resolve_default_source` chooses the highest successfully published `publication_version` for the same `(toc_entry_id, output_language)`; otherwise it chooses the latest completed non-revision V1 job in that language. Never choose an unpublished or abandoned revision. If later flow changes invalidate an old source, discovery explains that the source flow differs from the currently deployed flow.
+Eligibility requires a done `kind="homework"` job whose rows pass Task 2's `validate_complete_snapshot`; Task 5 must import that predicate and surface its stable reasons rather than implement another completeness definition. For V3+, `resolve_default_source` chooses the highest successfully published `publication_version` for the same `(toc_entry_id, output_language)`; otherwise it chooses the latest completed non-revision V1 job in that language. Never choose an unpublished or abandoned revision. Both `resolve_default_source` and `list_eligible_sources` must **exclude a target whose `source_job_id` is NULL**, refusing explicitly on the predicate `source_job_id IS NULL` and not merely on a general "source no longer eligible" reason: a child-first purge nulls that link (`fk_regeneration_targets_source_job_id` is `SET NULL`) while the target row survives as reporting history, so the row is still present and still non-terminal-looking but has no snapshot behind it. If later flow changes invalidate an old source, discovery explains that the source flow differs from the currently deployed flow.
 
 Preflight reuses `_resolve_subject_page_id`, existing lesson-title disambiguation, stored `notion_lesson_page_id`, and subject/grade/language mapping. It performs read-only validation and returns all missing mappings together. It makes no Notion writes and no model calls.
 
@@ -454,8 +472,8 @@ Preflight reuses `_resolve_subject_page_id`, existing lesson-title disambiguatio
 ```python
 async def estimate_regeneration(
     session: AsyncSession, *, targets: Sequence[EligibleRegenerationSource],
-    plans: Mapping[UUID, RegenerationPhasePlan], launch_contract: LaunchContract,
-    now: datetime,
+    plans: Mapping[UUID, RegenerationPhasePlan],
+    launch_contract: ResolvedLaunchContract, now: datetime,
 ) -> RegenerationEstimate: ...
 ```
 
@@ -470,11 +488,13 @@ The estimator:
 - falls back to a documented conservative token envelope multiplied by the existing static pricing table when no matching observation exists;
 - returns low/high USD estimates plus a line-item explanation and an explicit `is_estimate=true` marker.
 
+The estimator prices **the campaign's own stored concrete snapshot** — the same `ResolvedLaunchContract` `create_campaign` persisted — and never reads `launch_defaults` or the fleet session-limit default itself. Pricing an unresolved contract would price whatever the defaults happened to say at estimate time, which is not what the campaign will run.
+
 This task is the sole Wave-2 owner of `app/repositories/cost.py`. In the same commit, add `HomeworkJob.revision_of_job_id IS NULL` to `section_prior_api_cost` and every ordinary rebill/dedup cost lookup, with focused tests proving revision usage is excluded from normal Fleet prior-cost warnings while still included in regeneration actual-cost queries.
 
 ### TDD steps
 
-1. Write discovery tests for incomplete/failed/teacher-material exclusion, immediate source lineage, V1 fallback, latest-published V3 source choice, and language isolation.
+1. Write discovery tests for incomplete/failed/teacher-material exclusion, immediate source lineage, V1 fallback, latest-published V3 source choice, and language isolation. Include `test_discovery_excludes_a_target_whose_source_job_id_is_null`, asserting both `resolve_default_source` and `list_eligible_sources` refuse on the `source_job_id IS NULL` predicate specifically.
 2. Write preflight tests for stored lesson page, resolvable mapping, missing mapping aggregation, and no remote write.
 3. Write estimator tests with fixed time and fixed usage fixtures for exact 30-day window, phase linkage, copied-zero behavior, retry budgets, and static fallback.
 4. Write repository/integration tests for row locks and authoritative `latest_published_source` and `next_expected_version` queries.
@@ -525,12 +545,17 @@ RUN_DB_INTEGRATION=1 uv run pytest -q tests/integration/test_regeneration_source
 
 ```python
 async def create_revision_job(
-    session: AsyncSession, *, target_id: UUID, launch_contract: LaunchContract,
+    session: AsyncSession, *, target_id: UUID,
+    launch_contract: ResolvedLaunchContract,
     start_offset_seconds: int = 0,
 ) -> HomeworkJob: ...
 ```
 
-The service locks the target, returns the already-linked revision job on repeat without changing its schedule, verifies the source is still eligible, and creates a `kind="homework"`, `batch_id=NULL`, `selected_phases=NULL` revision linked to its immediate source and target. Copy `book_id`, `toc_entry_id`, `subject`, and `output_language` exactly from the immediate source job; apply provider/model/transport/role settings from the validated `LaunchContract`; and pass `start_offset_seconds` through to `jobs_repo.create` so `scheduled_at` is set atomically at first creation.
+The service locks the target, returns the already-linked revision job on repeat without changing its schedule, verifies the source is still eligible, and creates a `kind="homework"`, `batch_id=NULL`, `selected_phases=NULL` revision linked to its immediate source and target. Copy `book_id`, `toc_entry_id`, `subject`, and `output_language` exactly from the immediate source job; apply provider/model/transport/role settings from the validated `ResolvedLaunchContract`, passing each role's concrete `provider`/`model` **explicitly** to `jobs_repo.create` (never `None`, which would leave a revision as the only job in the system with unstamped role columns, resolved from the mutable `launch_defaults` row at whatever moment it happened to run); and pass `start_offset_seconds` through to `jobs_repo.create` so `scheduled_at` is set atomically at first creation.
+
+`create_revision_job` **copies** the contract's already-concrete `session_limit_strategy` verbatim onto the revision job — `jobs_repo.create` gains a `session_limit_strategy` parameter (this task owns `app/repositories/jobs.py`). It must **not** call `agent_models.resolve_session_limit_strategy`: Task 7's `create_campaign` already resolved it once, before the contract was stored, and a second read of the mutable fleet-wide default at this second moment is the bug — `launch_canary` and `approve_canary` call `create_revision_job` at two wall-clock moments separated by a human gate, so the canary wave and the bulk wave would run different policies on one immutable campaign. Task 6 reads the stored contract through `ensure_resolved`, which **refuses** a contract still carrying `'inherit'` (or a null role provider/model, or a null content model) rather than repairing it. A revision has `batch_id=NULL`, so without the stored concrete value the approved selection would be unreachable and would always fall through to the mutable fleet-wide default. `pipeline.py`'s single session-limit resolution reads `job.session_limit_strategy` when it is non-NULL and otherwise keeps the existing batch-then-global behavior **byte-for-byte unchanged** — an ordinary job's column is NULL, so nothing about Fleet resolution moves. The database refuses `'inherit'` (and NULL) on a revision via `ck_homework_jobs_revision_session_limit_strategy`, so an unresolved value fails loudly at insert rather than silently re-resolving later.
+
+`create_revision_job` **refuses a target whose `source_job_id` is NULL**, on that exact predicate: a child-first purge nulls the link while the reporting row survives, so the target still exists but has no snapshot to copy from.
 
 Copy exactly these `PhaseOutput` columns for each phase in `plan.copied_phases`:
 
@@ -592,7 +617,7 @@ Book deletion, `DELETE /books/{book_id}/toc/{entry_id}`, and TOC re-extraction/r
 
 ### TDD steps
 
-1. Write snapshot tests that fail first and pin source `book_id`/TOC/subject/language provenance, launch-contract fields, `start_offset_seconds`, the full copied-column set, exact `_done_phase_md` predicate, canonical-order validation/refusal, idempotent job creation without re-stagger, missing-source refusal, zero cloned usages, copied extract marker, and complete-snapshot validation.
+1. Write snapshot tests that fail first and pin source `book_id`/TOC/subject/language provenance, launch-contract fields, `start_offset_seconds`, the full copied-column set, exact `_done_phase_md` predicate, canonical-order validation/refusal, idempotent job creation without re-stagger, missing-source refusal, zero cloned usages, copied extract marker, and complete-snapshot validation. Add `test_create_revision_job_refuses_a_target_whose_source_job_id_is_null` (refusal on that exact predicate) and `test_revision_job_copies_the_contracts_concrete_session_limit_strategy` (the stored contract's `'pause'`/`'switch'` is copied verbatim onto the job, with no call to `resolve_session_limit_strategy` — assert the copy holds while `settings.session_limit_strategy` is monkeypatched to the *other* value — and a stored contract still carrying `'inherit'`, a null role provider/model, or a null content model is **refused** rather than re-resolved). Add `test_revision_job_stamps_every_role_provider_and_model_explicitly`, asserting the created job row carries the contract's concrete extract/judge/solver pairs and no NULL role column. Add a **regression** assertion — not merely a revision-side test — that an ordinary (non-revision) job's session-limit resolution in `pipeline.py` is byte-for-byte unchanged: its column is NULL and it still resolves batch-then-global exactly as before.
 2. Write pipeline tests using fake agent/judge/solver for mixed copied/regenerated flows, soft judge statuses, hard failure, solver blocked, canary hold, and approved publication release.
 3. Write one test for every Fleet query/caller listed above, including `subject_coverage.job_status_by_book`. Do not accept one indirect test as coverage for several SQL functions.
 4. Write archive tests proving `force=True`, automatic claim token, retry route, force route, and batch sweep all cannot read or write Notion for a revision.
@@ -634,7 +659,8 @@ RUN_DB_INTEGRATION=1 uv run pytest -q \
   tests/integration/test_regeneration_source_and_version_queries.py
 ```
 
-4. Run an Opus 5 integration review focused on revision leakage, copied data, usage accounting, and the V1 archive guard.
+4. Add one DB test pinning that the two source-deletion routes (`books_repo.delete`, `toc_entries_repo.delete`) delete the jobs **and** the TOC entry co-transactionally, so `fk_regeneration_targets_toc_entry_id`'s RESTRICT rolls the whole transaction back and `source_job_id`'s `SET NULL` never commits. This pins the reasoning, not just today's behavior: a future child-first purge route that deletes a job on its own — outside the transaction that also removes the TOC entry — would commit the `SET NULL` and silently strand targets with no source, and nothing else in the suite would notice.
+5. Run an Opus 5 integration review focused on revision leakage, copied data, usage accounting, and the V1 archive guard.
 
 ---
 
@@ -666,7 +692,7 @@ class RegenerationCampaignService:
     async def abandon(self, target_id: UUID, *, actor: str, reason: str) -> RegenerationTarget: ...
 ```
 
-Creation resolves and stores each target's source and phase plan, rejects any active same-language lineage, chooses deterministic canaries from a stable `(book_id, toc order, language, target id)` order, and creates no jobs or external calls. A draft intentionally holds the active-lineage lock until it is launched or cancelled; draft cancellation is supported and prominent, with no automatic expiry in v1. Launch preflights all destinations once, then creates only canary revision jobs. Non-canary targets remain `planned` with no job row.
+Creation **resolves the launch contract exactly once, before storing it**: it loads the `launch_defaults` singleton one time, calls `agent_models.resolve_session_limit_strategy(draft.session_limit_strategy)` one time, passes both into `regeneration_contract.resolve_launch_contract`, and persists the returned `ResolvedLaunchContract` into `regeneration_campaigns.launch_contract`. `'inherit'`, a null content model and a null role provider/model never reach storage — `resolve_launch_contract` refuses a null content model outright (it is never substituted) and `ensure_resolved` refuses all three at the boundary. `launch_canary`, `approve_canary` and every `create_revision_job` call **copy** that stored snapshot; none of them loads `launch_defaults` or reads the fleet session-limit default, and `resolve_launch_contract` is called nowhere but here. Creation also resolves and stores each target's source and phase plan, rejects any active same-language lineage, chooses deterministic canaries from a stable `(book_id, toc order, language, target id)` order, and creates no jobs or external calls. A draft intentionally holds the active-lineage lock until it is launched or cancelled; draft cancellation is supported and prominent, with no automatic expiry in v1. Launch preflights all destinations once, then creates only canary revision jobs. Non-canary targets remain `planned` with no job row.
 
 Approval locks the campaign and targets, sets `approved_at` once, releases successful canaries to `publication_pending`, creates all remaining revision jobs exactly once, and moves them to `generating`. Repeated approval returns the current campaign without duplicate jobs. A one-target campaign uses this same approval but has no separate bulk gate.
 
@@ -688,7 +714,9 @@ Use this complete cancel/abandon table:
 | `published` | unchanged | unchanged | illegal |
 | `abandoned` | unchanged | unchanged | idempotent |
 
-Campaign cancellation first stamps `abandon_requested_at/reason` on every generating revision, then uses the existing safe job-cancellation path. Terminal reconciliation completes those targets as `abandoned`; a crash or delayed running cancellation is repaired by the reconciler. Campaign cancellation is not terminal until every target is `published` or `abandoned`. It must never leave a nonterminal target hidden behind a terminal campaign. `completed` means all published; `completed_with_abandonments` means at least one abandoned; `cancelled` is used only when cancellation produced no published target and all targets are abandoned. Reports preserve reasons.
+Campaign cancellation first stamps `abandon_requested_at/reason` on every generating revision, then uses the existing safe job-cancellation path. Terminal reconciliation completes those targets as `abandoned`; a crash or delayed running cancellation is repaired by the reconciler. Campaign cancellation is not terminal until every target is `published` or `abandoned`. It must never leave a nonterminal target hidden behind a terminal campaign.
+
+**Cancellation convergence contract.** `cancel()` stamps `cancel_requested_at` / `cancel_requested_reason` and derives `status` **only** through `roll_up_campaign`; it never writes `cancelled` directly while any target is nonterminal. In particular, **campaign status must not enter `cancelled` while any target is `publishing`**: `regeneration_targets.claim_target_publication`'s publication-approval trigger *raises* (it does not return False) once the owning campaign is no longer approved, so a naive `set_campaign_status(new_status="cancelled")` turns every in-flight publication into a `check_violation` mid-delivery. `attention_required` is the correct intermediate state while cancellation converges, and it is deliberately not in the trigger's reject set (`rejected`, `cancelled`), so an already-claimed publication can still finish and write its `published` outcome. `completed` means all published; `completed_with_abandonments` means at least one abandoned; `cancelled` is used only when cancellation produced no published target and all targets are abandoned. Reports preserve reasons.
 
 Generation retry creates/requeues through the safe existing job retry semantics without duplicating snapshots or changing the phase plan. Publication retry clears backoff/claim error and moves the same target/version to `publication_pending`; it never calls a model.
 
@@ -696,7 +724,12 @@ Generation retry creates/requeues through the safe existing job retry semantics 
 
 1. Write exhaustive parameterized tests for every row of the table and for rollup outcomes.
 2. Test deterministic canary selection, all-target preflight before spend, only-canary job creation, one-target flow, staggered bulk scheduling, campaign-wide cancel without a batch, idempotent launch/approve/reject/cancel/retry, and no dangling nonterminal targets.
-3. Add DB race tests for two approvals, approval versus cancel, two job creators, and active-lineage conflicts.
+
+   Add `test_canary_and_bulk_revisions_share_one_resolved_launch_contract`, which **mutates the resolution inputs between the two waves** — the only test shape that can catch a second resolution, because a single-wave test is structurally blind to it. Create and `launch_canary` a multi-target campaign; then, before `approve_canary`, monkeypatch `settings.session_limit_strategy` to the other value **and** edit the `launch_defaults` row's judge/extract/solver provider+model; then approve. Assert that both waves' job rows carry byte-identical stamped values — `session_limit_strategy`, `provider`/`model`, and all three role `provider`/`model`/`transport` triples — and that they equal the campaign's stored `launch_contract`. Assert the mutation was real (resolving the same draft against the edited inputs would produce a different contract), so the test cannot pass by the inputs never having moved.
+3. Add DB race tests for two approvals, approval versus cancel, two job creators, and active-lineage conflicts. Add these three **DB-backed** cancellation-convergence tests (the trigger must be armed, so they cannot be pure/faked):
+   1. Cancel an approved campaign holding one `publishing` target → the campaign is **not** `cancelled`, and the publisher's fenced `published` write **succeeds**.
+   2. The same, with the Notion write failing → the target becomes `abandoned`, and the campaign then rolls up to `cancelled`.
+   3. A direct `set_campaign_status(..., "cancelled")` while a target is nonterminal is refused by the service layer.
 4. Run RED, implement with row locks and repository compare-and-set updates, then run:
 
 ```bash
@@ -769,7 +802,10 @@ Configuration declared by Task 1 is consumed here:
 
 1. Write unit tests for no-work, existing Lesson Topic reuse, missing-parent create/adopt/stamp, failed parent resolution, successful V2/V3, language-independent V2, stale claim fencing, transient backoff, exhausted retries, collision, no model call, V1 pointer non-mutation, and campaign rollup.
 2. Simulate crash after page creation but before DB stamp; expire the lease and prove the next attempt marker-adopts exactly one page.
-3. Write integration races for two publishers, expired-lease recovery, advisory version allocation, and unique-version fencing.
+3. Write integration races for two publishers, expired-lease recovery, advisory version allocation, and unique-version fencing. Mirror Task 7's three **DB-backed** cancellation-convergence tests from the publisher's side, so the trigger is armed against a real claim:
+   1. Cancel an approved campaign holding one `publishing` target → the campaign is **not** `cancelled`, and this publisher's fenced `published` write **succeeds**.
+   2. The same, with the Notion write failing → the target becomes `abandoned`, and the campaign then rolls up to `cancelled`.
+   3. A direct `set_campaign_status(..., "cancelled")` while a target is nonterminal is refused by the service layer.
 4. Write lifespan tests for all four flag combinations and clean shutdown.
 5. Run RED, implement, then run:
 
@@ -901,6 +937,8 @@ npm run build
 npm run lint
 ```
 
+Record the component-coverage boundary honestly: `npm test` is `node --import tsx --test src/lib/*.test.ts`, with no DOM runner and no component test harness in this repository, so **zero of the five regeneration components are covered by an automated test**. All five are verified only by `tsc`/`build`, `npm run lint`, and manual operator walkthrough. Do not report `npm test` green as evidence that the wired UI works. (`npm run lint` is separately red repo-wide at this base for pre-existing reasons; scope the gate to the files this task owns.)
+
 4. Commit: `feat(web): wire versioned regeneration campaigns`
 
 ---
@@ -956,8 +994,9 @@ Document in plain operator language:
 - canary is the only review gate;
 - what soft judge warnings versus hard generation failures mean;
 - how to retry generation, retry publication, or abandon;
-- feature/publisher flags and head-process ownership;
+- feature/publisher flags and head-process ownership. Pin the exact frontend string: the SPA is built with **`VITE_REGENERATION_ENABLED=1`** and `isRegenerationEnabled` matches the literal `"1"` only — `true`, `TRUE`, `yes` and `on` all silently leave the navigation and route hidden, with no error anywhere, so an operator who sets `=true` will report "the feature did not ship". The value is baked in at build time, not read at runtime, so changing it requires a rebuild;
 - flag-off deployment verification;
+- what to do about a `VersionPageCollision`: a same-title `Homework V{n}` page whose marker is missing or does not match is **never** cleared or overwritten, so the automatic path is permanently un-retryable for that version — retrying publication will raise the same collision forever. The operator has exactly two exits: manually clean up the offending Notion page and then retry publication, or `abandon` the target. Abandonment leaves a real, populated page in Notion with no `published` row behind it and **permanently consumes that version number** (the reserved version is preserved, not released), so the next successful regeneration of that lesson publishes at the following version. Say this in the runbook rather than leaving an operator to discover it mid-campaign;
 - no production enablement or sample campaign without a separate approval;
 - rollback: turn both flags off; existing V1/V2/V3 pages remain untouched.
 

@@ -94,6 +94,15 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
         ),
         nullable=True,
     )
+    # NULL on every ORDINARY job: session-limit resolution there is unchanged
+    # (the job's batch, else the fleet-wide `settings.session_limit_strategy`).
+    # A REVISION job must store a concrete 'pause'/'switch'. It has
+    # batch_id IS NULL by construction (ck_homework_jobs_revision_no_batch), so
+    # there is no batch row to read the approved campaign's frozen selection
+    # from. 'inherit' is refused on a revision: it would re-resolve against the
+    # mutable fleet-wide default at run time, which is precisely the silent
+    # no-op this column exists to close.
+    session_limit_strategy: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     current_phase: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -202,6 +211,25 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
         CheckConstraint(
             "revision_of_job_id IS NULL OR batch_id IS NULL",
             name="ck_homework_jobs_revision_no_batch",
+        ),
+        # Same names and same SQL text as migration 0063 — the ORM and the
+        # database must never drift on this rule.
+        CheckConstraint(
+            "session_limit_strategy IS NULL OR "
+            "session_limit_strategy IN ('pause','switch','inherit')",
+            name="ck_homework_jobs_session_limit_strategy",
+        ),
+        # The accepted set is IN ('pause','switch'), NOT a bare "IS NOT NULL":
+        # a revision storing 'inherit' would fall back to the mutable
+        # fleet-wide default and discard the operator-approved contract value.
+        # The IS NOT NULL conjunct is NULL-safety, not a weakening — SQL is
+        # three-valued, `NULL IN (...)` is UNKNOWN, and a CHECK is SATISFIED by
+        # UNKNOWN, so without it a revision with NO strategy would commit.
+        CheckConstraint(
+            "revision_of_job_id IS NULL OR "
+            "(session_limit_strategy IS NOT NULL "
+            "AND session_limit_strategy IN ('pause','switch'))",
+            name="ck_homework_jobs_revision_session_limit_strategy",
         ),
         UniqueConstraint(
             "regeneration_target_id",

@@ -9,12 +9,15 @@ no publication before the campaign is approved.
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import uuid
 
 import pytest
 from sqlalchemy import delete, text
 from sqlalchemy.exc import IntegrityError
+
+from app.services.regeneration_planner import RegenerationPhasePlan, build_phase_plan
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_DB_INTEGRATION") != "1",
@@ -24,6 +27,12 @@ pytestmark = pytest.mark.skipif(
 # Stamped on every campaign these tests create so the cleanup can find one that
 # never got a target (the loser of the lineage race).
 _MARKER = "pytest-regen"
+
+# `phase_plan` holds the planner's serialized OBJECT, never a bare phase-name
+# list. Built once, for the subject `_seed` actually seeds, so these rows carry
+# a payload the later lanes could really read back.
+_PLAN = build_phase_plan(subject="math-algebra", selected_phases=["flashcards"])
+_PHASE_PLAN = _PLAN.to_json()
 
 
 async def _seed(session, *, languages=("uz",)):
@@ -119,7 +128,9 @@ def _campaign(**overrides):
 def _target(**overrides):
     from app.models.regeneration_target import RegenerationTarget
 
-    kwargs = dict(status="planned", phase_plan=["flashcards"])
+    # deepcopy: every target gets its own payload, so one test mutating a row
+    # can never reach into another's.
+    kwargs = dict(status="planned", phase_plan=copy.deepcopy(_PHASE_PLAN))
     kwargs.update(overrides)
     return RegenerationTarget(**kwargs)
 
@@ -398,10 +409,15 @@ async def test_revision_job_may_not_belong_to_a_fleet_batch():
                     revision_of_job_id=jobs["uz"],
                     regeneration_target_id=target_id,
                     batch_id=batch_id,   # a revision is never a Fleet batch member
+                    # A VALID concrete strategy on purpose: this row must be
+                    # rejected for its batch membership, not incidentally by
+                    # ck_homework_jobs_revision_session_limit_strategy.
+                    session_limit_strategy="pause",
                 )
             )
-            with pytest.raises(IntegrityError):
+            with pytest.raises(IntegrityError) as exc:
                 await s.commit()
+        assert "ck_homework_jobs_revision_no_batch" in str(exc.value)
 
         # Half a revision is not a revision: both columns or neither.
         async with SessionLocal() as s:
@@ -415,10 +431,12 @@ async def test_revision_job_may_not_belong_to_a_fleet_batch():
                     transport="api",
                     output_language="uz",
                     revision_of_job_id=jobs["uz"],
+                    session_limit_strategy="pause",
                 )
             )
-            with pytest.raises(IntegrityError):
+            with pytest.raises(IntegrityError) as exc:
                 await s.commit()
+        assert "ck_homework_jobs_revision_pair" in str(exc.value)
 
         async with SessionLocal() as s:
             await s.execute(delete(Batch).where(Batch.id == batch_id))
@@ -458,6 +476,9 @@ async def test_one_revision_job_per_target_and_source_deletion_is_refused():
                 output_language="uz",
                 revision_of_job_id=jobs["uz"],
                 regeneration_target_id=target_id,
+                # Required on a revision: it has no batch row to resolve one
+                # from, and 'inherit' is refused there.
+                session_limit_strategy="pause",
             )
             s.add(revision)
             await s.commit()
@@ -483,10 +504,14 @@ async def test_one_revision_job_per_target_and_source_deletion_is_refused():
                     output_language="uz",
                     revision_of_job_id=jobs["uz"],
                     regeneration_target_id=target_id,
+                    # Valid on purpose: the refusal under test is the unique
+                    # target link, not the new session-limit rule.
+                    session_limit_strategy="pause",
                 )
             )
-            with pytest.raises(IntegrityError):
+            with pytest.raises(IntegrityError) as exc:
                 await s.commit()
+        assert "uq_homework_jobs_regeneration_target_id" in str(exc.value)
 
         # Deleting the source out from under a live revision must fail cleanly,
         # and it must be the REVISION CHILD that refuses. Asserting only
@@ -563,6 +588,7 @@ async def test_child_first_purge_frees_the_source_and_keeps_the_report():
                 output_language="uz",
                 revision_of_job_id=jobs["uz"],
                 regeneration_target_id=target_id,
+                session_limit_strategy="pause",
             )
             s.add(revision)
             await s.commit()
@@ -648,7 +674,7 @@ async def test_for_update_locks_and_fenced_status_updates():
                 output_language="uz",
                 source_job_id=jobs["uz"],
                 is_canary=True,
-                phase_plan=["flashcards"],
+                phase_plan=copy.deepcopy(_PHASE_PLAN),
             )
             await s.commit()
             campaign_id, target_id = campaign.id, target.id
@@ -911,5 +937,179 @@ async def test_publication_claim_is_durable_leased_and_fenced():
             assert t.publication_claim_token is None
             assert t.terminal_at is not None
             await s.rollback()
+    finally:
+        await _purge(book_id)
+
+
+async def test_stored_phase_plan_survives_the_jsonb_round_trip():
+    """The column shape and the planner's serializer must agree for real.
+
+    This row used to store a bare `["flashcards"]`, which carries none of what
+    the later lanes read back — the copied/regenerated split, the auto-included
+    and acknowledged-excluded sets, the broken dependency edges,
+    `refresh_extraction` — and nothing proved the JSONB column could return the
+    planner's object unchanged. `from_json` is strict, so it is the assertion:
+    anything the database gave back that `build_phase_plan` could not have
+    produced raises instead of quietly comparing equal.
+
+    Note it is the PLAN that must round-trip, not the JSON text: PostgreSQL
+    `jsonb` normalizes key order, so the byte-stability `to_json` guarantees
+    holds before storage, not after it.
+    """
+    from app.db import SessionLocal
+    from app.models.regeneration_target import RegenerationTarget
+    from app.repositories import regeneration_campaigns as campaigns_repo
+    from app.repositories import regeneration_targets as targets_repo
+
+    async with SessionLocal() as s:
+        book_id, toc_id, jobs = await _seed(s)
+    try:
+        async with SessionLocal() as s:
+            campaign = await campaigns_repo.create_campaign(
+                s,
+                selection_spec={"mode": "test"},
+                requested_phases=["flashcards"],
+                excluded_phases=[],
+                launch_contract={"provider": "gemini"},
+                canary_size=1,
+                app_git_revision=_MARKER,
+            )
+            target = await targets_repo.create_target(
+                s,
+                campaign_id=campaign.id,
+                toc_entry_id=toc_id,
+                output_language="uz",
+                source_job_id=jobs["uz"],
+                phase_plan=copy.deepcopy(_PHASE_PLAN),
+            )
+            await s.commit()
+            target_id = target.id
+
+        async with SessionLocal() as s:
+            stored = await s.get(RegenerationTarget, target_id)
+            assert isinstance(stored.phase_plan, dict), stored.phase_plan
+            assert RegenerationPhasePlan.from_json(stored.phase_plan) == _PLAN
+            # The split the orchestrator actually reads survived the column.
+            assert "flashcards" in stored.phase_plan["regenerated_phases"]
+            assert "case-based-preview" in stored.phase_plan["copied_phases"]
+    finally:
+        await _purge(book_id)
+
+
+async def test_revision_job_must_store_a_concrete_session_limit_strategy():
+    """A revision job carries its OWN session-limit strategy, or it has none.
+
+    `session_limit_strategy` otherwise lives on `batches` and in `settings`,
+    and `ck_homework_jobs_revision_no_batch` forces every revision to have
+    `batch_id IS NULL` — so the approved, frozen `LaunchContract` value had
+    nothing to be written to and always fell through to the mutable fleet-wide
+    default.
+
+    The revision rule is `IN ('pause','switch')`, not `IS NOT NULL`: `'inherit'`
+    re-resolves against `settings.session_limit_strategy` at run time and
+    reproduces exactly that no-op, so the database refuses to store it on a
+    revision. Ordinary jobs are untouched — NULL (or an explicit `'inherit'`)
+    keeps the existing batch-then-global resolution.
+    """
+    from app.db import SessionLocal
+    from app.models.homework_job import HomeworkJob
+
+    async with SessionLocal() as s:
+        book_id, toc_id, jobs = await _seed(s, languages=("uz", "ru"))
+
+    def _job(**overrides):
+        kwargs = dict(
+            book_id=book_id,
+            toc_entry_id=toc_id,
+            subject="math-algebra",
+            status="pending",
+            provider="gemini",
+            transport="api",
+            output_language="uz",
+        )
+        kwargs.update(overrides)
+        return HomeworkJob(**kwargs)
+
+    try:
+        # ── ordinary jobs: unchanged behavior ────────────────────────────
+        for value in (None, "inherit"):
+            async with SessionLocal() as s:
+                s.add(_job(session_limit_strategy=value))
+                await s.commit()  # must not raise
+
+        async with SessionLocal() as s:
+            s.add(_job(session_limit_strategy="bogus"))
+            with pytest.raises(IntegrityError) as exc:
+                await s.commit()
+        assert "ck_homework_jobs_session_limit_strategy" in str(exc.value)
+
+        # ── one target per (lesson, language); the lineage index allows uz
+        #    and ru to be live at the same time. ──────────────────────────
+        async with SessionLocal() as s:
+            c = _campaign()
+            s.add(c)
+            await s.flush()
+            uz = _target(
+                campaign_id=c.id,
+                toc_entry_id=toc_id,
+                output_language="uz",
+                source_job_id=jobs["uz"],
+            )
+            ru = _target(
+                campaign_id=c.id,
+                toc_entry_id=toc_id,
+                output_language="ru",
+                source_job_id=jobs["ru"],
+            )
+            s.add_all([uz, ru])
+            await s.commit()
+            uz_target_id, ru_target_id = uz.id, ru.id
+
+        def _revision(target_id, **overrides):
+            return _job(
+                revision_of_job_id=jobs["uz"],
+                regeneration_target_id=target_id,
+                **overrides,
+            )
+
+        # A revision with NO strategy is refused — a failed insert rolls back,
+        # so the target stays free for the next attempt.
+        async with SessionLocal() as s:
+            s.add(_revision(uz_target_id, session_limit_strategy=None))
+            with pytest.raises(IntegrityError) as exc:
+                await s.commit()
+        assert "ck_homework_jobs_revision_session_limit_strategy" in str(exc.value)
+
+        # ...and so is 'inherit', which the general check happily allows.
+        async with SessionLocal() as s:
+            s.add(_revision(uz_target_id, session_limit_strategy="inherit"))
+            with pytest.raises(IntegrityError) as exc:
+                await s.commit()
+        assert "ck_homework_jobs_revision_session_limit_strategy" in str(exc.value)
+
+        # Both concrete values commit.
+        async with SessionLocal() as s:
+            s.add(_revision(uz_target_id, session_limit_strategy="pause"))
+            await s.commit()
+
+        async with SessionLocal() as s:
+            s.add(
+                _revision(
+                    ru_target_id, output_language="ru", session_limit_strategy="switch"
+                )
+            )
+            await s.commit()
+
+        async with SessionLocal() as s:
+            stored = (
+                await s.execute(
+                    text(
+                        "SELECT session_limit_strategy FROM homework_jobs "
+                        "WHERE regeneration_target_id IS NOT NULL "
+                        "ORDER BY session_limit_strategy"
+                    )
+                )
+            ).scalars().all()
+        assert stored == ["pause", "switch"]
     finally:
         await _purge(book_id)
