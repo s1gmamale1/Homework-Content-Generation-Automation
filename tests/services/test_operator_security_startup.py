@@ -154,6 +154,12 @@ async def test_head_security_preflight_and_inventory_precede_later_startup(monke
         ("quarantines", expected),
         ("inventory", expected),
         "jobs",
+        # Versioned-regeneration crash repair: a SEPARATE session/transaction
+        # (hence the second "db"), deliberately after the critical job/book
+        # reconcile and still before the listener, the version floor and the
+        # worker — a regeneration hiccup must never be able to roll that
+        # reconcile back or stop the process from starting.
+        "db",
         "listener",
         "yield",
         "listener-stop",

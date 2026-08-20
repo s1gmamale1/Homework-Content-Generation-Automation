@@ -683,6 +683,12 @@ async def retry_archive_batch(batch_id: UUID, force: bool = False, stale: bool =
     else:
         job_ids = await batches_repo.done_unarchived_job_ids(session, batch_id)
         sweep_force = False
+    # Versioned regeneration, defensively: a revision can never be a batch
+    # member (`ck_homework_jobs_revision_no_batch`), so none of the three
+    # selections above can return one today. Filtered anyway so a future
+    # widening of the batch link cannot quietly push campaign revisions through
+    # the LEGACY archive, which writes the immutable V1 page.
+    job_ids = await jobs_repo.exclude_revisions(session, job_ids)
     if not job_ids:
         return {"batch_id": str(batch_id), "queued": 0, "already_running": False}
     _REARCHIVE_TASKS[batch_id] = asyncio.create_task(

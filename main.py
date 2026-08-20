@@ -19,7 +19,13 @@ from app.repositories import budget as budget_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import sa_keys as sa_keys_repo
-from app.services import code_version, events_bus, operator_auth, sa_key_vault
+from app.services import (
+    code_version,
+    events_bus,
+    operator_auth,
+    regeneration_job_state,
+    sa_key_vault,
+)
 from app.services.prompts import load_all as load_prompts
 from app.services.worker import Worker, build_worker_from_settings
 
@@ -72,6 +78,31 @@ async def _reconcile_on_startup(session) -> None:
     await session.commit()
 
 
+async def _reconcile_revision_targets_on_startup() -> None:
+    """Versioned regeneration crash-repair — a SEPARATE startup step.
+
+    Own session, own transaction and its own broad guard, deliberately NOT part
+    of `_reconcile_on_startup`: that one is critical (books, orphaned running
+    jobs, attempts-exhausted pending jobs) and a regeneration-side problem — a
+    head running ahead of the migration, a missing table — must never be able to
+    roll it back or stop the process from starting. Runs after it, so a revision
+    job the reclaim just failed is reconciled in the same boot.
+    """
+    try:
+        async with SessionLocal() as session:
+            n = await regeneration_job_state.reconcile_terminal_revision_jobs(session)
+        if n:
+            log.info(
+                f"Startup: reconciled {n} terminal revision job(s) onto their "
+                f"campaign target(s)"
+            )
+    except Exception:
+        log.exception(
+            "Startup: revision-target reconciliation failed — continuing "
+            "(the worker maintenance sweep will retry)"
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     operator_auth.require_startup_auth(
@@ -93,6 +124,10 @@ async def lifespan(app: FastAPI):
         sa_key_vault.verify_uuid_inventory(expected)
         await _reconcile_on_startup(session)
     log.info("Orphan sweep complete (books + phase_outputs)")
+
+    # Versioned regeneration: separate step, separate session/transaction,
+    # separate guard — see the function's docstring.
+    await _reconcile_revision_targets_on_startup()
 
     # Fleet version floor auto-stamp (fleet-worker-version-gate-1): raise-only —
     # any process starting on newer code fences out every stale worker; a

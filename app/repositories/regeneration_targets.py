@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.homework_job import HomeworkJob
 from app.models.regeneration_target import RegenerationTarget
+from app.models.toc_entry import TOCEntry
 
 
 async def create_target(
@@ -81,6 +82,41 @@ async def revision_job_for_target(
     return await session.scalar(
         select(HomeworkJob).where(HomeworkJob.regeneration_target_id == target_id)
     )
+
+
+async def history_for_toc_entry(
+    session: AsyncSession, toc_entry_id: UUID
+) -> list[RegenerationTarget]:
+    """Every regeneration target that references one TOC entry, oldest first.
+
+    ANY row counts, including terminal ones: a target is audit history that
+    records a permanently consumed publication version, which is exactly why
+    ``fk_regeneration_targets_toc_entry_id`` is ``RESTRICT``. The source-removing
+    routes call this to refuse with a readable 409 instead of letting that
+    RESTRICT surface as a raw foreign-key error.
+    """
+    return list((await session.execute(
+        select(RegenerationTarget)
+        .where(RegenerationTarget.toc_entry_id == toc_entry_id)
+        .order_by(RegenerationTarget.created_at)
+    )).scalars().all())
+
+
+async def history_for_book(
+    session: AsyncSession, book_id: UUID
+) -> list[RegenerationTarget]:
+    """The same, for every TOC entry of one book (book delete, TOC re-extract).
+
+    Joined through ``toc_entries`` because a target has no ``book_id`` of its
+    own — the lesson is the unit of regeneration, and the book is only its
+    container.
+    """
+    return list((await session.execute(
+        select(RegenerationTarget)
+        .join(TOCEntry, TOCEntry.id == RegenerationTarget.toc_entry_id)
+        .where(TOCEntry.book_id == book_id)
+        .order_by(RegenerationTarget.created_at)
+    )).scalars().all())
 
 
 async def set_target_status(

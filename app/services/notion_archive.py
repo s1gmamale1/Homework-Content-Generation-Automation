@@ -434,6 +434,12 @@ async def _push_teacher_with_retry(*, client, subject_page_id, lesson_title, dec
     raise last_exc
 
 
+# Deterministic, machine-greppable skip reason for a versioned-regeneration
+# revision. Constant (not an f-string) so an operator can filter on it and so
+# the API's 409s can name the same rule.
+REVISION_SKIP_REASON = "regeneration revision: use versioned publisher"
+
+
 async def _record_skip(job_id: UUID, reason: str) -> None:
     """Best-effort persist of a skip reason in a fresh session; never raises."""
     try:
@@ -482,6 +488,27 @@ async def archive_job(
             job = await jobs_repo.get(session, job_id)
             if job is None:
                 return  # gone
+            # ── versioned regeneration: the INTRINSIC guard ────────────────
+            # This function writes the lesson's EXISTING `Homework` page, which
+            # IS version 1 — the immutable thing a revision is created to
+            # preserve. Pushing a revision through here would overwrite V1 and
+            # leave no version at all.
+            #
+            # Deliberately the FIRST thing after the job load, ahead of the
+            # claim-token fence, the already-archived early return, page
+            # identity and any Notion client: `force=True` bypasses every one of
+            # those guards by design, and the operator/batch entry points call
+            # this function directly. A revision is delivered as a versioned
+            # sibling by its own publisher instead.
+            if getattr(job, "revision_of_job_id", None) is not None:
+                log.info(
+                    "notion: job %s is a regeneration revision — skipping the "
+                    "legacy archive (versioned publisher owns it)", job_id,
+                )
+                await jobs_repo.set_notion_skip_reason(
+                    session, job_id, REVISION_SKIP_REASON)
+                await session.commit()
+                return
             # is_teacher branches archive_job below at four points: content
             # gather (phase_md vs content_json), the skip guard, the push
             # (_push_with_retry vs _push_teacher_with_retry), and the
