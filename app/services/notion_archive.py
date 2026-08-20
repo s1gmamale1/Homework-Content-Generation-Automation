@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -207,6 +207,63 @@ def _leaf_blocks(client: NotionClientWrapper, present: list[tuple[str, str]]) ->
     return body
 
 
+def layout_groups(phase_md: Mapping[str, str]) -> list[tuple[dict, list[tuple[str, str]]]]:
+    """`(layout entry, present (phase_name, markdown) pairs)` for every non-empty
+    group of `_HOMEWORK_LAYOUT`, **in the order the renderer walks them**.
+
+    Pure — no client calls — and deliberately the ONLY place that decides which
+    phases render and in what order. The versioned writer
+    (`notion_versioned_homework`) hashes this exact sequence into its completion
+    digest, so a digest can never drift from what was actually written; deriving
+    the order from `phase_md`'s dict insertion order instead would make the
+    digest depend on how the caller happened to build the mapping."""
+    groups: list[tuple[dict, list[tuple[str, str]]]] = []
+    for entry in _HOMEWORK_LAYOUT:
+        present = [(pn, phase_md[pn]) for pn in entry["phases"] if pn in phase_md]
+        if not present:
+            continue  # nothing generated for this group
+        groups.append((entry, present))
+    return groups
+
+
+def write_homework_layout(
+    *,
+    client: NotionClientWrapper,
+    parent_id: str,
+    phase_md: Mapping[str, str],
+    find_or_create: Callable = find_or_create,  # injectable for tests
+    replace: bool = False,
+) -> None:
+    """Write the grouped homework layout (`_HOMEWORK_LAYOUT`) beneath `parent_id`.
+
+    Lifted verbatim out of `_push_to_notion` so the versioned publisher can
+    render the SAME page tree under a `Homework V{n}` root without duplicating
+    (and slowly diverging from) the layout walk. `_push_to_notion` still owns
+    resolving the `Homework` root itself, so V1's call sequence is unchanged and
+    V1 is never routed through any marker logic.
+
+    Idempotent: a leaf that already has content is skipped, or — with
+    `replace=True` — cleared and rewritten."""
+
+    def _write_leaf(parent_id: str, title: str, present: list[tuple[str, str]]) -> None:
+        page_id, _ = find_or_create(client, parent_id, title)
+        if client.page_has_content(page_id):
+            if not replace:
+                log.info("notion: page %s (%s) already populated — skipping", page_id, title)
+                return
+            log.info("notion: page %s (%s) already populated — clearing to rewrite (force)", page_id, title)
+            client.clear_content_blocks(page_id)
+        client.append_block_children(page_id, _leaf_blocks(client, present))
+
+    for entry, present in layout_groups(phase_md):
+        if entry["kind"] == _LEAF:
+            _write_leaf(parent_id, entry["title"], present)
+        else:  # container: one child leaf page per present phase
+            container_id, _ = find_or_create(client, parent_id, entry["title"])
+            for phase_name, md in present:
+                _write_leaf(container_id, PHASE_TITLES.get(phase_name, phase_name), [(phase_name, md)])
+
+
 def _push_to_notion(
     *,
     client: NotionClientWrapper,
@@ -260,26 +317,10 @@ def _push_to_notion(
         lesson_id = lesson_page_id or find_or_create(client, container_id, lesson_title)[0]
         homework_id, _ = find_or_create(client, lesson_id, "Homework")
 
-    def _write_leaf(parent_id: str, title: str, present: list[tuple[str, str]]) -> None:
-        page_id, _ = find_or_create(client, parent_id, title)
-        if client.page_has_content(page_id):
-            if not replace:
-                log.info("notion: page %s (%s) already populated — skipping", page_id, title)
-                return
-            log.info("notion: page %s (%s) already populated — clearing to rewrite (force)", page_id, title)
-            client.clear_content_blocks(page_id)
-        client.append_block_children(page_id, _leaf_blocks(client, present))
-
-    for entry in _HOMEWORK_LAYOUT:
-        present = [(pn, phase_md[pn]) for pn in entry["phases"] if pn in phase_md]
-        if not present:
-            continue  # nothing generated for this group
-        if entry["kind"] == _LEAF:
-            _write_leaf(homework_id, entry["title"], present)
-        else:  # container: one child leaf page per present phase
-            container_id, _ = find_or_create(client, homework_id, entry["title"])
-            for phase_name, md in present:
-                _write_leaf(container_id, PHASE_TITLES.get(phase_name, phase_name), [(phase_name, md)])
+    write_homework_layout(
+        client=client, parent_id=homework_id, phase_md=phase_md,
+        find_or_create=find_or_create, replace=replace,
+    )
     return lesson_id, homework_id
 
 

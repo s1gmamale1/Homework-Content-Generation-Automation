@@ -1,3 +1,5 @@
+import hashlib
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 import app.services.notion_archive as na
@@ -302,3 +304,177 @@ def test_push_to_notion_reuse_branch_skips_backfill_when_disabled():
     assert homework_id == "HW"
     assert lesson_id is None
     client.get_page_parent.assert_not_called()
+
+
+# --- Task 3: V1 renderer parity lock (golden transcript) --------------------
+#
+# The versioned-homework writer (`app/services/notion_versioned_homework.py`)
+# reuses V1's layout walk, which means that walk had to be lifted out of
+# `_push_to_notion` into a module-level helper. This test is the lock that the
+# extraction was behavior-preserving: it drives the REAL `_push_to_notion` (real
+# `find_or_create`, real block builders) with a full 11-phase `phase_md` through
+# a recording fake and freezes the exact ordered sequence of client calls and
+# their arguments — page titles, parents, upload names, and a content digest of
+# every appended block list.
+#
+# The golden below was captured from the PRE-refactor implementation and is
+# never regenerated: if a future change alters the Notion-block bytes V1 writes,
+# this test is supposed to go red.
+
+_GOLDEN_PHASE_MD: dict[str, str] = {
+    # All 11 content phases (`flows._BASE_PHASES` + games + boss-arena +
+    # reflection), each with markdown exercising a different converter branch:
+    # headings, bullets, inline bold/italic, `---` dividers, image placeholders.
+    "case-based-preview": "# Case\n\nA **bold** claim and *italic* aside.\n\n---\n\nTail line.",
+    "flashcards": "## Cards\n\n- front / back\n- 3 * 4 = 12\n",
+    "memory-check": "### Check\n\nOne line.\n\nAnother paragraph\nwrapped over two lines.",
+    "practice-rlc": "# RLC\n\n![a described diagram](placeholder)\n\nDo the thing.",
+    "practice-error-detection": "# ED\n\n- spot the ***error***\n",
+    "practice-memory-match": "# MM\n\npairs",
+    "practice-tictactoe": "# TTT\n\ngrid",
+    "practice-jigsaw": "# Jigsaw\n\n* piece one\n* piece two",
+    "practice-sentence": "# Sentence\n\nfill ___ in",
+    "boss-arena": "# Boss\n\nQ1. Answer?\n\n---\n\nQ2. Answer?",
+    "reflection": "# Reflection\n\nWhat stuck?",
+}
+
+
+def _digest(payload: object) -> str:
+    """Short stable digest of a JSON-serializable payload (block lists, bytes)."""
+    if isinstance(payload, (bytes, bytearray)):
+        raw = bytes(payload)
+    else:
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:12]
+
+
+class _RecordingNotion:
+    """Fake `NotionClientWrapper` that records every call, in order, as a
+    human-diffable string. Models Notion's 'a page keeps its content' behaviour
+    so `page_has_content` answers truthfully during the walk."""
+
+    def __init__(self) -> None:
+        self.transcript: list[str] = []
+        self.pages: dict[str, dict] = {}     # id -> {"title", "parent"}
+        self.content: dict[str, list] = {}   # id -> appended blocks
+        self._n = 0
+
+    def get_child_pages(self, parent_id: str) -> list[dict]:
+        self.transcript.append(f"get_child_pages parent={parent_id}")
+        return [{"id": pid, "title": p["title"]}
+                for pid, p in self.pages.items() if p["parent"] == parent_id]
+
+    def create_page(self, parent_id: str, title: str, children=None) -> dict:
+        self._n += 1
+        pid = f"pg{self._n}"
+        self.pages[pid] = {"title": title, "parent": parent_id}
+        kids = "none" if not children else f"n={len(children)} sha={_digest(children)}"
+        self.transcript.append(
+            f"create_page parent={parent_id} title={title!r} id={pid} children={kids}")
+        return {"id": pid}
+
+    def page_has_content(self, page_id: str) -> bool:
+        has = bool(self.content.get(page_id))
+        self.transcript.append(f"page_has_content id={page_id} -> {has}")
+        return has
+
+    def append_block_children(self, block_id: str, children: list) -> dict:
+        self.transcript.append(
+            f"append_block_children id={block_id} n={len(children)} "
+            f"types={[b['type'] for b in children]} sha={_digest(children)}")
+        self.content.setdefault(block_id, []).extend(children)
+        return {"results": []}
+
+    def clear_content_blocks(self, page_id: str) -> int:
+        n = len(self.content.pop(page_id, []))
+        self.transcript.append(f"clear_content_blocks id={page_id} deleted={n}")
+        return n
+
+    def delete_block(self, block_id: str) -> None:
+        self.transcript.append(f"delete_block id={block_id}")
+
+    def upload_bytes(self, data: bytes, file_name: str, content_type: str) -> str:
+        self.transcript.append(
+            f"upload_bytes name={file_name!r} type={content_type} sha={_digest(data)}")
+        return f"upl::{file_name}"
+
+    def get_page_parent(self, page_id: str):
+        self.transcript.append(f"get_page_parent id={page_id}")
+        return self.pages.get(page_id, {}).get("parent")
+
+
+_V1_GOLDEN_TRANSCRIPT: list[str] = [
+    'get_child_pages parent=subj',
+    "create_page parent=subj title='Generated Homeworks' id=pg1 children=none",
+    'get_child_pages parent=pg1',
+    "create_page parent=pg1 title='1-§ Sonli ifodalar' id=pg2 children=none",
+    'get_child_pages parent=pg2',
+    "create_page parent=pg2 title='Homework' id=pg3 children=none",
+    'get_child_pages parent=pg3',
+    "create_page parent=pg3 title='Case-Based Preview' id=pg4 children=none",
+    'page_has_content id=pg4 -> False',
+    "upload_bytes name='case-based-preview.md' type=text/markdown sha=8421f291a783",
+    "append_block_children id=pg4 n=6 types=['file', 'divider', 'heading_1', 'paragraph', 'divider', 'paragraph'] sha=e81b7fe094e7",
+    'get_child_pages parent=pg3',
+    "create_page parent=pg3 title='Flashcards' id=pg5 children=none",
+    'page_has_content id=pg5 -> False',
+    "upload_bytes name='flashcards.md' type=text/markdown sha=6521a7711b59",
+    "upload_bytes name='memory-check.md' type=text/markdown sha=475ea021eadd",
+    "append_block_children id=pg5 n=10 types=['file', 'file', 'divider', 'heading_2', 'bulleted_list_item', 'bulleted_list_item', 'divider', 'heading_3', 'paragraph', 'paragraph'] sha=2107c13977cf",
+    'get_child_pages parent=pg3',
+    "create_page parent=pg3 title='Gamified Practices' id=pg6 children=none",
+    'get_child_pages parent=pg6',
+    "create_page parent=pg6 title='Real-Life Challenge' id=pg7 children=none",
+    'page_has_content id=pg7 -> False',
+    "upload_bytes name='practice-rlc.md' type=text/markdown sha=1068885ee329",
+    "append_block_children id=pg7 n=5 types=['file', 'divider', 'heading_1', 'callout', 'paragraph'] sha=2769c749ca9b",
+    'get_child_pages parent=pg6',
+    "create_page parent=pg6 title='Error Detection' id=pg8 children=none",
+    'page_has_content id=pg8 -> False',
+    "upload_bytes name='practice-error-detection.md' type=text/markdown sha=afdbbebe65db",
+    "append_block_children id=pg8 n=4 types=['file', 'divider', 'heading_1', 'bulleted_list_item'] sha=b66b78cffc85",
+    'get_child_pages parent=pg6',
+    "create_page parent=pg6 title='Memory Matching' id=pg9 children=none",
+    'page_has_content id=pg9 -> False',
+    "upload_bytes name='practice-memory-match.md' type=text/markdown sha=78aa5b061c2e",
+    "append_block_children id=pg9 n=4 types=['file', 'divider', 'heading_1', 'paragraph'] sha=15539d4e41e9",
+    'get_child_pages parent=pg6',
+    "create_page parent=pg6 title='TicTacToe' id=pg10 children=none",
+    'page_has_content id=pg10 -> False',
+    "upload_bytes name='practice-tictactoe.md' type=text/markdown sha=9a0a42a56423",
+    "append_block_children id=pg10 n=4 types=['file', 'divider', 'heading_1', 'paragraph'] sha=419fc3ea9953",
+    'get_child_pages parent=pg6',
+    "create_page parent=pg6 title='Jigsaw Matching' id=pg11 children=none",
+    'page_has_content id=pg11 -> False',
+    "upload_bytes name='practice-jigsaw.md' type=text/markdown sha=493f0fd87bcf",
+    "append_block_children id=pg11 n=5 types=['file', 'divider', 'heading_1', 'bulleted_list_item', 'bulleted_list_item'] sha=bcd4348b019f",
+    'get_child_pages parent=pg6',
+    "create_page parent=pg6 title='Sentence Filling' id=pg12 children=none",
+    'page_has_content id=pg12 -> False',
+    "upload_bytes name='practice-sentence.md' type=text/markdown sha=4811ae1ee6c2",
+    "append_block_children id=pg12 n=4 types=['file', 'divider', 'heading_1', 'paragraph'] sha=7df08784b2ae",
+    'get_child_pages parent=pg3',
+    "create_page parent=pg3 title='Boss Arena' id=pg13 children=none",
+    'page_has_content id=pg13 -> False',
+    "upload_bytes name='boss-arena.md' type=text/markdown sha=e882ac32ef2f",
+    "append_block_children id=pg13 n=6 types=['file', 'divider', 'heading_1', 'paragraph', 'divider', 'paragraph'] sha=a8e9b8467eed",
+    'get_child_pages parent=pg3',
+    "create_page parent=pg3 title='Reflection' id=pg14 children=none",
+    'page_has_content id=pg14 -> False',
+    "upload_bytes name='reflection.md' type=text/markdown sha=472f71113b19",
+    "append_block_children id=pg14 n=4 types=['file', 'divider', 'heading_1', 'paragraph'] sha=8a3a5a4bf72e",
+]
+
+
+def test_v1_push_golden_transcript_is_byte_stable():
+    """Parity lock: the exact ordered Notion client calls V1 makes for a full
+    11-phase homework, including the block bytes of every write."""
+    client = _RecordingNotion()
+    lesson_id, homework_id = na._push_to_notion(
+        client=client,
+        subject_page_id="subj",
+        lesson_title="1-§ Sonli ifodalar",
+        phase_md=_GOLDEN_PHASE_MD,
+    )
+    assert client.transcript == _V1_GOLDEN_TRANSCRIPT
+    assert (lesson_id, homework_id) == ("pg2", "pg3")
