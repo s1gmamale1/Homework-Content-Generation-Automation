@@ -271,8 +271,8 @@ async def test_candidate_lineages_returns_one_row_per_lesson_and_language():
 
     toc_id, book_id = uuid.uuid4(), uuid.uuid4()
     rows = [
-        (toc_id, "uz", book_id, "math-algebra", "7", "b.pdf", "1", "L1", "C1", 4, None, 3),
-        (toc_id, "ru", book_id, "math-algebra", "7", "b.pdf", "1", "L1", "C1", 4, "pg", 3),
+        (toc_id, "uz", book_id, "7", "b.pdf", "1", "L1", "C1", 4, None, 3),
+        (toc_id, "ru", book_id, "7", "b.pdf", "1", "L1", "C1", 4, "pg", 3),
     ]
     session = _FakeSession(execute_results=[rows])
     got = await repo.candidate_lineages(
@@ -283,7 +283,6 @@ async def test_candidate_lineages_returns_one_row_per_lesson_and_language():
         (toc_id, "uz"),
         (toc_id, "ru"),
     ]
-    assert got[0].subject == "math-algebra"
     assert got[0].grade == "7"
     assert got[0].book_filename == "b.pdf"
     assert got[0].section_number == "1"
@@ -293,7 +292,13 @@ async def test_candidate_lineages_returns_one_row_per_lesson_and_language():
     assert got[0].notion_lesson_page_id is None
     assert got[0].order_index == 3
     assert got[1].notion_lesson_page_id == "pg"
-    assert "DISTINCT" in _sql(session.statements[0])
+    sql = _sql(session.statements[0])
+    assert "DISTINCT" in sql
+    # `homework_jobs.subject` is job-varying (a book's subject is editable), so
+    # it must never re-enter the DISTINCT key: it would split one lineage into
+    # two candidates. Proven on real rows in the integration file's
+    # `test_a_corrected_book_subject_does_not_split_one_lineage_in_two`.
+    assert "homework_jobs.subject" not in sql
 
 
 # ───────────────────────── phase_rows_for_jobs ───────────────────────

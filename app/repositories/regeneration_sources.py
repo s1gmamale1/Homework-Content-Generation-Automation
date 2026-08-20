@@ -51,12 +51,19 @@ class LineageCandidate:
     preflight must answer "is there a destination for this lesson" for a whole
     selection at once; a per-lesson round trip would turn a 200-lesson campaign
     preflight into 600 queries.
+
+    There is deliberately NO ``subject`` here. Every field above is functionally
+    determined by ``toc_entry_id`` (the book and the TOC row are fixed per
+    lesson), which is what keeps the DISTINCT below at one row per lineage.
+    ``homework_jobs.subject`` is not: it is stamped from the book at launch and
+    the book's subject is user-editable, so two ``done`` jobs of one lineage may
+    disagree on it and would split the lineage in two. The subject that matters
+    is the PICKED source job's — discovery reads it from there.
     """
 
     toc_entry_id: UUID
     output_language: str
     book_id: UUID
-    subject: str
     grade: Optional[str]
     book_filename: str
     section_number: Optional[str]
@@ -199,13 +206,19 @@ async def candidate_lineages(
     One row per ``(toc_entry_id, output_language)`` — ``DISTINCT``, because a
     lesson generated twice is still one lineage. Which of those jobs is the
     SOURCE is decided by discovery, not here.
+
+    That guarantee only holds while every OTHER selected column is functionally
+    determined by ``toc_entry_id``, so nothing job-varying may join the DISTINCT
+    key. ``HomeworkJob.subject`` used to, and split a lineage whose book had
+    been re-classified between two runs into two candidates — which prices and
+    preflights the lesson twice and then collides on
+    ``uq_regeneration_targets_campaign_toc_language``.
     """
     stmt = (
         select(
             HomeworkJob.toc_entry_id,
             HomeworkJob.output_language,
             HomeworkJob.book_id,
-            HomeworkJob.subject,
             Book.grade,
             Book.original_filename,
             TOCEntry.section_number,
@@ -241,15 +254,14 @@ async def candidate_lineages(
             toc_entry_id=row[0],
             output_language=row[1],
             book_id=row[2],
-            subject=row[3],
-            grade=row[4],
-            book_filename=row[5] or "",
-            section_number=row[6],
-            section_title=row[7] or "",
-            chapter_title=row[8] or "",
-            page_start=row[9],
-            notion_lesson_page_id=row[10],
-            order_index=row[11],
+            grade=row[3],
+            book_filename=row[4] or "",
+            section_number=row[5],
+            section_title=row[6] or "",
+            chapter_title=row[7] or "",
+            page_start=row[8],
+            notion_lesson_page_id=row[9],
+            order_index=row[10],
         )
         for row in rows
     ]

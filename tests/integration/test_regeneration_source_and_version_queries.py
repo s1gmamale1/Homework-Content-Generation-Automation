@@ -506,6 +506,61 @@ async def test_discovery_reports_an_incomplete_snapshot_instead_of_offering_it()
         await _purge(book.id)
 
 
+@pytest.mark.asyncio
+async def test_a_corrected_book_subject_does_not_split_one_lineage_in_two():
+    """`homework_jobs.subject` is stamped from the book at launch and the book's
+    subject is user-editable (`PATCH /books/{id}`), so two `done` jobs of ONE
+    lineage can legitimately disagree on it. A lineage is
+    `(toc_entry_id, output_language)` and nothing else: the older, stale-subject
+    job must not produce a second candidate that double-prices the lesson,
+    double-preflights it, and collides on
+    `uq_regeneration_targets_campaign_toc_language` at campaign creation.
+    """
+    from app.db import SessionLocal
+    from app.repositories import regeneration_sources as repo
+    from app.services import regeneration_discovery as discovery
+
+    async with SessionLocal() as s:
+        book, toc = await _seed_book(s)
+        # Generated while the book was mis-classified as `history` …
+        stale = await _add_job(
+            s, book=book, toc=toc,
+            subject="history", created_at=_now() - timedelta(hours=5),
+        )
+        await _add_snapshot(s, stale)
+        # … then the operator corrected the book, and the lesson was re-run.
+        corrected = await _add_job(
+            s, book=book, toc=toc,
+            subject=SUBJECT, created_at=_now() - timedelta(hours=1),
+        )
+        await _add_snapshot(s, corrected)
+        await s.commit()
+    try:
+        async with SessionLocal() as s:
+            lineages = await repo.candidate_lineages(
+                s, book_ids=[book.id], toc_entry_ids=None, output_languages=None
+            )
+            assert len(lineages) == 1, [
+                (c.toc_entry_id, c.output_language) for c in lineages
+            ]
+            assert (lineages[0].toc_entry_id, lineages[0].output_language) == (
+                toc.id,
+                "uz",
+            )
+
+            sources = await discovery.list_eligible_sources(
+                s, book_ids=[book.id], toc_entry_ids=None, output_languages=None
+            )
+            assert len(sources) == 1, [
+                (x.source_job_id, x.subject) for x in sources
+            ]
+            # The one source is the newest job, carrying the corrected subject.
+            assert sources[0].source_job_id == corrected.id
+            assert sources[0].subject == SUBJECT
+    finally:
+        await _purge(book.id)
+
+
 # ─────────────────── estimator observation window ────────────────────
 
 

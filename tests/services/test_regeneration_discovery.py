@@ -76,7 +76,6 @@ def _candidate(job: _Job, **overrides):
         toc_entry_id=job.toc_entry_id,
         output_language=job.output_language,
         book_id=job.book_id,
-        subject=job.subject,
         grade="7",
         book_filename="algebra-7.pdf",
         section_number="1",
@@ -375,9 +374,12 @@ async def test_an_unsupported_subject_is_reported_not_raised(monkeypatch):
     """A retired subject on an old job must not blow up a 200-lesson discovery."""
     from app.services import regeneration_discovery as discovery
 
+    # The retired subject lives on the JOB — which is the one discovery grades
+    # against (`_snapshot_reasons` reads `job.subject`); the lineage row has no
+    # subject of its own, on purpose.
     job = _Job(subject="quidditch")
     _FakeRepo(
-        candidates=[_candidate(job, subject="quidditch")],
+        candidates=[_candidate(job)],
         v1_jobs={(job.toc_entry_id, "uz"): job},
         phase_rows={job.id: _complete_rows()},
     ).install(monkeypatch)
