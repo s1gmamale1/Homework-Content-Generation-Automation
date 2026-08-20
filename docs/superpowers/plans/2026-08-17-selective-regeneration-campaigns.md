@@ -1,5 +1,13 @@
 # Selective Regeneration Campaigns Implementation Plan
 
+> **SUPERSEDED — DO NOT IMPLEMENT.** The product decisions changed on
+> 2026-08-20: regeneration uses the single currently deployed prompt tree,
+> publishes immutable `Homework V2` / `Homework V3` sibling pages after one
+> canary approval, and does not replace existing Notion homework. See
+> `docs/superpowers/specs/2026-08-20-versioned-homework-regeneration-design.md`.
+> A new implementation plan will be written only after that specification is
+> reviewed and approved.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > **Execution warning:** This is a delivery-program plan, not authorization for one 11-task implementation run. Execute only the delivery unit whose entry gate is satisfied, stop at its PR boundary, and obtain a fresh review before starting the next unit.
