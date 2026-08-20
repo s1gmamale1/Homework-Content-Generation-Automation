@@ -87,6 +87,8 @@ The operator launches a small canary. Canary targets:
 5. Record actual usage and cost from the revision jobs.
 6. Stop in `awaiting_canary_approval` without publishing to Notion.
 
+Only canary targets receive revision job rows before approval. Non-canary targets remain campaign-target rows with no pending homework job, so ordinary workers cannot claim bulk work before the human gate.
+
 The canary review shows the complete revised homework, phase provenance, judge statuses, warnings, latency and actual cost.
 
 ### 4.3 Approve or reject
@@ -98,6 +100,8 @@ The canary review shows the complete revised homework, phase provenance, judge s
 1. Makes successful canary targets eligible for automatic publication.
 2. Releases the remaining targets for generation.
 3. Makes each later successful target eligible for automatic publication as soon as its complete snapshot is ready.
+
+Approval creates/releases revision jobs for the remaining targets exactly once. A repeated approval request cannot create duplicate jobs.
 
 For a one-lesson campaign, that lesson is the canary. The flow is generate, review, approve, publish. There is no empty bulk-approval step.
 
@@ -160,6 +164,10 @@ Every successful revision contains exactly one terminal row for every required p
 
 This lets downloads, reports and Notion rendering read one self-contained revision job.
 
+Copied rows are seeded as `done` at their canonical positions in the complete subject flow. Regenerated phase rows are left absent for the existing pipeline to create. Internal revision jobs use the full-flow pipeline shape (`selected_phases=NULL`), not the normal custom-prompt subset contract: the existing resume logic skips seeded copied rows and runs only the missing rows while preserving canonical `phase_order`. The selected/affected/excluded regeneration plan lives on the immutable campaign target, not in `HomeworkJob.selected_phases`.
+
+This deliberately bypasses the normal `/generate` rule that a selected phase requires an uploaded custom prompt. Regeneration uses built-in currently deployed prompts and is created only through its own service/router.
+
 ## 6. Prompt Behavior and Provenance
 
 There is one active prompt tree: the prompt files deployed with the running application.
@@ -193,6 +201,8 @@ The soft statuses `unavailable`, `refused`, `major_shipped` and `major_regen_fai
 
 A real phase-generation failure, missing required phase, invalid structured artifact or other existing hard pipeline failure prevents publication.
 
+The existing terminal solver outcome `solver_status="mismatch_blocked"` persists the inspected phase as failed and maps the regeneration target to `generation_failed`; it is not a soft judge warning and cannot publish.
+
 Copied phases keep their recorded judge status; they are not re-judged and do not incur judge cost.
 
 ## 8. Data Model
@@ -222,7 +232,8 @@ draft
 → awaiting_canary_approval
 → approved / rejected
 → bulk_running
-→ completed / completed_with_failures / cancelled
+→ attention_required
+→ completed / completed_with_abandonments / cancelled
 ```
 
 Campaign completion is derived from terminal targets; it is not based only on job completion.
@@ -259,6 +270,17 @@ publication_failed
 abandoned
 ```
 
+Target terminality is explicit:
+
+- `published` and `abandoned` are terminal and set `terminal_at`;
+- every other target state is non-terminal and keeps `terminal_at=NULL`;
+- `generation_failed` and `publication_failed` are attention-required, retryable, non-terminal states;
+- the cross-campaign uniqueness constraint is a partial unique index on lesson/TOC identity where `terminal_at IS NULL`.
+
+A generation failure therefore blocks a competing campaign for the same lesson until the operator retries the existing target or explicitly abandons it. Generation abandonment records a reason, creates no Notion page, consumes no publication version when publication never began, and transitions the target to terminal `abandoned`.
+
+A campaign cannot report terminal completion while any target is attention-required. It reports `attention_required` until every failed target is retried to `published` or explicitly moved to `abandoned`. A terminal campaign distinguishes all-published completion from completion with abandoned targets.
+
 ### 8.3 Revision job
 
 A regeneration job remains a homework job so it can reuse the existing pipeline, phase, cost and download machinery. It additionally has:
@@ -267,7 +289,22 @@ A regeneration job remains a homework job so it can reuse the existing pipeline,
 - required regeneration campaign/target identity;
 - a regeneration marker that makes the pipeline skip normal automatic Notion archival.
 
+The marker-column design is pinned: a revision remains `kind="homework"`, and `revision_of_job_id IS NOT NULL` identifies it as a regeneration job. This avoids widening the existing `kind` flow discriminator while giving every legacy query and archive entry point one unambiguous exclusion predicate.
+
+Revision jobs are not normal Fleet jobs. They must:
+
+- keep `batch_id=NULL` and never become members of normal Fleet batches;
+- be excluded from normal `find_active_for_section`, `latest_for_section`, `latest_by_section`, batch adoption/resume, TOC status enrichment and prior-cost/dedup queries;
+- appear in lesson history and campaign aggregates only through regeneration-aware repositories and API responses;
+- remain eligible for the existing worker claim and pipeline machinery after the regeneration campaign explicitly creates/releases them.
+
+Existing by-ID worker, cancellation, phase, download and SSE machinery may operate on a revision job where that behavior is required for pipeline reuse. Existing by-ID archive operations are the explicit exception and must reject it.
+
+The database must reject a regeneration job with a normal Fleet `batch_id`. The implementation must not rely on callers remembering to avoid this combination.
+
 The source-job foreign key uses restrictive deletion semantics while a revision exists. Campaign reporting may keep nullable historical source links after an explicitly ordered child-first purge, but deleting a source out from under a live revision must fail cleanly rather than surface a raw database error.
+
+For this release, the existing book-delete route returns a clear `409` when regeneration history exists rather than attempting an implicit multi-table purge. A future explicit purge may delete revision children first, but raw foreign-key errors and automatic audit-history destruction are not acceptable.
 
 ### 8.4 Integrity and concurrency
 
@@ -280,6 +317,7 @@ Database constraints must enforce:
 - one revision job cannot be attached to multiple targets;
 - a published target has a version and Notion page ID;
 - a target cannot publish before campaign approval.
+- a revision job cannot carry a normal Fleet batch ID.
 
 ## 9. Version Allocation
 
@@ -287,6 +325,7 @@ The existing `Homework` page is logical version 1. It is not renamed.
 
 The next version is reserved atomically when publication first begins, not when the campaign or canary is created. Therefore:
 
+- the first allocated database version is 2 because logical V1 has no version row;
 - a rejected canary consumes no version;
 - a never-started or generation-failed target consumes no version;
 - once publication begins, its version is never reused, even if delivery fails or the campaign is later cancelled;
@@ -301,7 +340,11 @@ The allocator must serialize on lesson/TOC identity and enforce a unique `(toc_e
 
 Normal jobs continue through the existing `notion_archive.archive_job` path.
 
-When the pipeline completes a regeneration job, it finalizes the revision target and deliberately skips the normal `Homework` archive call. This is the only required branch in the normal completion path.
+When the pipeline completes a regeneration job, it finalizes the revision target and deliberately skips the normal `Homework` archive call.
+
+That pipeline branch is an optimization, not the load-bearing V1 guard. The existing legacy `notion_archive.archive_job` function itself must inspect the loaded job and refuse every job with `revision_of_job_id IS NOT NULL`, regardless of `force`, claim token or caller. It records a deterministic skip reason and performs no Notion read or write. This intrinsic guard covers automatic pipeline archival, per-job retry/force-rearchive, batch force sweeps and any future caller.
+
+Operator-facing legacy archive endpoints must reject a revision job synchronously with a clear conflict response instead of launching background work that will only be refused later. Batch re-archive selection must exclude revision jobs defensively even though revision jobs cannot have `batch_id`.
 
 ### 10.2 Versioned renderer and page identity
 
@@ -322,6 +365,8 @@ The stored page ID is authoritative after creation. On retry, the publisher:
 4. Creates a page only when neither exists.
 
 Title matching alone is insufficient for adoption.
+
+The implementation may enumerate the Lesson Topic's child pages to find the exact `Homework V{n}` title, but it must then read that candidate's blocks and validate the immutable marker before adoption. A same-title page with a different or missing marker is a visible collision failure and is never cleared, overwritten or silently adopted. The generic legacy `find_or_create(..., "Homework")` path is not reused without this validation.
 
 ### 10.3 Regeneration-scoped durable publisher
 
@@ -380,13 +425,17 @@ No cancellation path deletes a Notion page.
 The estimate counts only work expected from revision jobs:
 
 - copied phases cost zero;
-- regenerated phases use existing phase cost estimation;
+- regenerated phases use the regeneration estimator defined below;
 - copied extract costs zero;
 - extraction enabled adds extract cost;
 - judge and repair estimates follow current configuration;
 - Notion publication has no model-token cost.
 
 Actual campaign cost is derived only from `agent_usages` attached to revision jobs. Copied phases never duplicate source usage records or cost. A Notion publication retry never increases model cost.
+
+The regeneration estimator uses successful API `agent_usages` from the previous 30 days, joined through `phase_output_id` to phase name, and computes an observed mean for matching operation, phase, provider and model. Where no matching history exists, a documented conservative token envelope is priced with the existing static pricing table. Expected calls include one authoring and one judge call per regenerated judged phase, solver calls for solver-enabled phases, and extraction only when enabled. The high estimate adds the existing schema retry and configured judge/solver regeneration budgets. Estimates are explicitly labeled estimates.
+
+When extraction is copied, the revision records the existing zero-cost cache-usage marker with source job and source phase IDs. That marker is provenance, not a paid model call, and is excluded from real-call counts. Other copied phases keep row-level provenance and do not clone usage rows.
 
 The canary screen compares estimated and actual cost before approval.
 
@@ -405,7 +454,8 @@ The regeneration API is a separate router and namespace. It provides operations 
 - campaign cancellation;
 - campaign and target reports;
 - publication retry;
-- explicit abandonment of a permanently failed publication.
+- generation retry;
+- explicit abandonment of a permanently failed generation or publication.
 
 Normal `/generate`, Fleet batch launch and ordinary archive-retry endpoints do not become regeneration controls.
 
@@ -445,6 +495,8 @@ The report always renders human-readable reasons for failure or abandonment rath
 | Concurrent campaign for same lesson | Second campaign rejected before spend | Retry after first becomes terminal |
 | Campaign cancellation | Unfinished work stops; published pages remain | No automatic resume |
 
+Both `generation_failed` and `publication_failed` remain blocking until retry or explicit abandonment. Abandonment is audited and never deletes a Notion page.
+
 ## 15. Testing Strategy
 
 All automated model and Notion integrations use fakes. Development must not call paid models, production databases or live Notion.
@@ -477,12 +529,18 @@ All automated model and Notion integrations use fakes. Development must not call
 
 - normal generation still calls the legacy archive path unchanged;
 - regeneration completion never calls the legacy `Homework` publisher;
+- the legacy publisher intrinsically refuses revision jobs even with `force=True`;
+- per-job retry/force-rearchive and batch force-sweep paths reject or exclude revision jobs;
+- normal Fleet launch/resume never adopts a revision job and never attaches one to a batch;
+- `latest_for_section`, `latest_by_section`, TOC enrichment and normal prior-cost lookup exclude revision jobs;
 - copied phases form a complete snapshot without model calls;
+- copied rows plus missing regenerated rows preserve canonical phase order without uniqueness collisions;
 - selected phases and dependency closure regenerate exactly once;
 - current judge retry/repair/soft-degrade statuses are preserved;
 - hard incomplete snapshots cannot publish;
 - canaries remain unpublished before approval;
 - approval releases canary publication and bulk generation once;
+- no non-canary job row exists before approval;
 - bulk successes become publication-pending automatically;
 - Notion retries never rerun Gemini;
 - V2 then V3 create distinct sibling pages;
@@ -498,6 +556,7 @@ All automated model and Notion integrations use fakes. Development must not call
 - canary approval/rejection is idempotent;
 - report buckets and reasons are complete;
 - publication failure retry is visible;
+- generation failure retry/abandonment is visible;
 - permanently failed publication can be explicitly abandoned without reusing its version;
 - feature flag off hides UI and rejects mutation endpoints.
 
