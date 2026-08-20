@@ -390,6 +390,34 @@ async def retry_job(
     job = await jobs_repo.get(session, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
+    # Versioned regeneration: refuse BEFORE the status guard and before any
+    # status/schedule mutation. This route resets the JOB row only — it knows
+    # nothing about `regeneration_targets.status`, which stays `generation_failed`
+    # while the revision re-runs. Reconciliation lands only once the retried run
+    # is terminal, and `generation_failed -> publication_pending` is not a legal
+    # target transition, so even a SUCCESSFUL generic retry wedges the target
+    # permanently (the crash-repair sweep skips `generation_failed` too). A
+    # revision is re-driven through the regeneration retry workflow, which owns
+    # the target transition back to `generating`.
+    if getattr(job, "revision_of_job_id", None) is not None:
+        raise HTTPException(
+            409,
+            {
+                "error": "regeneration_revision",
+                "message": (
+                    "this job is a regeneration revision — retry it through the "
+                    "regeneration retry workflow, which re-drives its campaign "
+                    "target; a generic retry would leave the target stuck at "
+                    "generation_failed"
+                ),
+                "job_id": str(job_id),
+                "regeneration_target_id": (
+                    str(job.regeneration_target_id)
+                    if getattr(job, "regeneration_target_id", None) is not None
+                    else None
+                ),
+            },
+        )
     if job.status not in ("failed", "cancelled"):
         raise HTTPException(
             409,
