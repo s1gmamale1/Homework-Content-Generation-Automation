@@ -18,7 +18,11 @@ else:
    ``phase_output_id`` to the phase they belong to, averaged per
    (operation, phase, provider, model) and priced with ``pricing.cost_usd``.
    Where there is no matching history, a documented conservative envelope
-   (:data:`STATIC_TOKEN_ENVELOPE`) is priced with the same static table.
+   (:data:`STATIC_TOKEN_ENVELOPE`) is priced with the same static table. A
+   (provider, model) that table has no rate for is NOT quietly a $0 line: it
+   keeps the $0.00 figure (no rate is ever invented) but is marked
+   :data:`UNPRICED_BASIS` on the line, named in ``notes``, and flagged
+   campaign-wide by :attr:`RegenerationEstimate.has_unpriced_lines`.
 
 The join is an INNER join on purpose: a usage row with no ``phase_output_id``
 (a TOC extraction, a golden eval, a fidelity audit) is not evidence about a
@@ -133,6 +137,41 @@ STATIC_TOKEN_ENVELOPE: dict[str, dict[str, int]] = {
 
 STATIC_BASIS = "conservative static token envelope"
 
+#: Stable, machine-matchable prefix for a line whose (provider, model) has no
+#: rate in ``pricing.PRICE_MAP``.
+#:
+#: ``pricing.cost_usd`` bills such a pair $0 — correct for a cli-served call,
+#: which costs no tokens, but silently WRONG as an estimate: the fallback fires
+#: exactly when there is no evidence, and a model that reached the manifest
+#: before the price map would otherwise render as a free line whose basis still
+#: read "conservative". The dollar figure stays ``0.0`` (no rate is invented and
+#: no arithmetic changes); the LINE says the price is absent, and
+#: :attr:`RegenerationEstimate.has_unpriced_lines` says the TOTAL is incomplete.
+UNPRICED_BASIS = (
+    "UNPRICED: no rate for this provider/model in the static price table — "
+    "$0.00 is an ABSENT price, not a free call"
+)
+
+#: Token keys that make an envelope "real work" — the detector below asks
+#: ``pricing`` behaviorally (nonzero volume that still prices at $0 means no
+#: rate exists) rather than re-reading ``PRICE_MAP``, whose model resolution and
+#: per-provider fallbacks belong to that module alone.
+_TOKEN_KEYS = (
+    "prompt_tokens",
+    "output_tokens",
+    "cached_tokens",
+    "cache_creation_tokens",
+)
+
+
+def price_unit(
+    provider: str, model: Optional[str], usage: Mapping
+) -> tuple[float, bool]:
+    """``(unit cost, is_unpriced)`` for one call of ``usage`` shape."""
+    unit = pricing.cost_usd(provider, model, dict(usage))
+    volume = sum(int(usage.get(key) or 0) for key in _TOKEN_KEYS)
+    return unit, (unit == 0.0 and volume > 0)
+
 
 @dataclass(frozen=True)
 class EstimateLineItem:
@@ -154,6 +193,9 @@ class EstimateLineItem:
     cost_high_usd: float
     basis: str
     observations: int
+    #: True when no rate exists for this (provider, model): the $0.00 on this
+    #: line is a missing price, not a free call.
+    is_unpriced: bool = False
 
 
 @dataclass(frozen=True)
@@ -174,6 +216,12 @@ class RegenerationEstimate:
     #: Always True. A field rather than a docstring so the value travels with
     #: the number into every UI and report that renders it.
     is_estimate: bool = True
+    #: True when at least one line has no rate. ``low_usd``/``high_usd`` then
+    #: UNDER-STATE the campaign by an unknown amount, and no caller may render
+    #: them as a complete figure. A field, not just a note, so the condition
+    #: survives into every screen and report machine-side. Appended LAST so the
+    #: existing field order (and any positional construction) is untouched.
+    has_unpriced_lines: bool = False
 
 
 @dataclass
@@ -371,7 +419,11 @@ async def estimate_regeneration(
                 "target must be priced against the plan it will run"
             ) from None
         target_count += 1
-        copied_phases += len(plan.copied_phases)
+        # CONTENT phases only, on BOTH sides: extract is reported solely by
+        # `copied_extract_count`/`regenerated_extract_count`, so that
+        # `regenerated_phase_count + copied_phase_count` is the same
+        # (content-phase) total whatever the extraction does.
+        copied_phases += len([p for p in plan.copied_phases if p != EXTRACT_PHASE])
         if plan.refresh_extraction:
             regenerated_extract += 1
             counter.add(
@@ -445,30 +497,45 @@ async def estimate_regeneration(
         observed, observation_notes = summarize_observations(rows)
         notes.extend(observation_notes)
 
-        priced: dict[tuple[str, str, Optional[str]], tuple[float, str, int]] = {}
+        priced: dict[tuple[str, str, Optional[str]], tuple[float, str, int, bool]] = {}
+        unpriced_pairs: set[tuple[str, Optional[str]]] = set()
         items: list[EstimateLineItem] = []
         for (budget, kind, phase, provider, model), calls in counter.calls.items():
             cache_key = (kind, phase, provider, model)
             if cache_key not in priced:
                 observation = observed.get(cache_key)
                 if observation is None:
-                    unit = pricing.cost_usd(
-                        provider, model, STATIC_TOKEN_ENVELOPE[kind]
-                    )
-                    priced[cache_key] = (unit, STATIC_BASIS, 0)
+                    usage = STATIC_TOKEN_ENVELOPE[kind]
+                    basis, samples = STATIC_BASIS, 0
                     notes.append(
                         f"no successful api {kind} call for phase {phase!r} on "
                         f"{provider}/{model} in the last {OBSERVATION_WINDOW_DAYS} "
                         f"days — priced from the {STATIC_BASIS}"
                     )
                 else:
-                    priced[cache_key] = (
-                        pricing.cost_usd(provider, model, observation.usage()),
+                    usage = observation.usage()
+                    basis = (
                         f"observed mean of {observation.samples} api call(s) in "
-                        f"the last {OBSERVATION_WINDOW_DAYS} days",
-                        observation.samples,
+                        f"the last {OBSERVATION_WINDOW_DAYS} days"
                     )
-            unit, basis, samples = priced[cache_key]
+                    samples = observation.samples
+                unit, unpriced = price_unit(provider, model, usage)
+                if unpriced:
+                    # The volume provenance stays in the string — what changes
+                    # is that the line no longer CLAIMS to be priced.
+                    basis = f"{UNPRICED_BASIS}; volume from {basis}"
+                    if (provider, model) not in unpriced_pairs:
+                        unpriced_pairs.add((provider, model))
+                        notes.append(
+                            f"UNPRICED: {provider}/{model} has no entry in the "
+                            "static price table — every line for it shows $0.00, "
+                            "which means the rate is UNKNOWN, not that the calls "
+                            "are free; this estimate UNDER-STATES the campaign by "
+                            "an unknown amount and must not be approved as a "
+                            "complete figure"
+                        )
+                priced[cache_key] = (unit, basis, samples, unpriced)
+            unit, basis, samples, unpriced = priced[cache_key]
             calls_low = calls if budget == BASE else 0
             items.append(
                 EstimateLineItem(
@@ -484,6 +551,7 @@ async def estimate_regeneration(
                     cost_high_usd=unit * calls,
                     basis=basis,
                     observations=samples,
+                    is_unpriced=unpriced,
                 )
             )
         items.sort(
@@ -508,4 +576,5 @@ async def estimate_regeneration(
         window_start=window_start,
         window_end=now,
         notes=tuple(notes),
+        has_unpriced_lines=any(li.is_unpriced for li in line_items),
     )

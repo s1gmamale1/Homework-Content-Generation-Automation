@@ -246,8 +246,8 @@ async def test_copied_phases_and_a_copied_extract_cost_zero():
     )
 
     assert est.regenerated_phase_count == 1
-    assert est.copied_phase_count == 11        # 10 content phases + extract
-    assert est.copied_extract_count == 1
+    assert est.copied_phase_count == 10        # content phases only; extract
+    assert est.copied_extract_count == 1       # is reported by its own field
     assert est.regenerated_extract_count == 0
     priced_phases = {li.phase for li in est.line_items}
     assert priced_phases == {"reflection"}
@@ -659,3 +659,240 @@ def test_two_observation_groups_of_one_key_combine_by_sample_weighted_mean():
     # (10,000×1 + 20,000×3) / 4
     assert forward[key].prompt_tokens == pytest.approx(17_500)
     assert backward[key].prompt_tokens == pytest.approx(forward[key].prompt_tokens)
+
+
+# ───────────── the copied/regenerated CONTENT-phase partition ────────
+
+
+def _content_phases():
+    from app.services import flows
+
+    return list(flows.flow_for(SUBJECT))
+
+
+@pytest.mark.asyncio
+async def test_copied_and_regenerated_counts_partition_the_content_phases_only():
+    """`extract` is reported by the two `*_extract_count` fields and by nothing
+    else: the phase counts are a partition of the 11 CONTENT phases, so
+    `regenerated + copied` is the same number whatever the extraction does."""
+    from app.services import regeneration_estimator as estimator
+
+    content = _content_phases()
+    source, plans, session = _one_target_setup(rows=[_AUTHORING_OBS, _JUDGE_OBS])
+    est = await estimator.estimate_regeneration(
+        session, targets=[source], plans=plans, launch_contract=_contract(), now=NOW
+    )
+
+    assert est.regenerated_phase_count == 1
+    assert est.copied_phase_count == len(content) - 1 == 10
+    assert est.regenerated_phase_count + est.copied_phase_count == len(content)
+    # extract travels ONLY on its own two fields
+    assert (est.copied_extract_count, est.regenerated_extract_count) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_refreshed_extraction_does_not_shrink_the_phase_partition():
+    """With `refresh_extraction=True` the old code reported 11 + 0 = 11 while
+    the copied case reported 1 + 11 = 12: the same snapshot, two different
+    totals. Both must total the content-phase count."""
+    from app.services import regeneration_estimator as estimator
+
+    content = _content_phases()
+    source = _source()
+    plan = build_phase_plan(
+        subject=SUBJECT, selected_phases=["reflection"], refresh_extraction=True
+    )
+    est = await estimator.estimate_regeneration(
+        _FakeSession([]),
+        targets=[source],
+        plans={source.source_job_id: plan},
+        launch_contract=_contract(),
+        now=NOW,
+    )
+
+    assert est.regenerated_phase_count == len(content) == 11
+    assert est.copied_phase_count == 0
+    assert est.regenerated_phase_count + est.copied_phase_count == len(content)
+    assert (est.copied_extract_count, est.regenerated_extract_count) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_every_content_phase_regenerated_with_a_copied_extract_still_partitions():
+    """The mixed case the other two miss: all 11 content phases regenerated
+    while the extraction is COPIED. `copied_phase_count` must be 0 — the copied
+    extract belongs to `copied_extract_count`."""
+    from app.services import regeneration_estimator as estimator
+
+    content = _content_phases()
+    source = _source()
+    plan = build_phase_plan(subject=SUBJECT, selected_phases=content)
+    est = await estimator.estimate_regeneration(
+        _FakeSession([]),
+        targets=[source],
+        plans={source.source_job_id: plan},
+        launch_contract=_contract(),
+        now=NOW,
+    )
+
+    assert est.regenerated_phase_count == len(content)
+    assert est.copied_phase_count == 0
+    assert (est.copied_extract_count, est.regenerated_extract_count) == (1, 0)
+    assert not any(li.kind == "extract" for li in est.line_items)
+
+
+@pytest.mark.asyncio
+async def test_the_partition_holds_across_a_mix_of_targets():
+    """One campaign, two lessons, different plans: the counts are per-campaign
+    sums of the same per-target partition."""
+    from app.services import regeneration_estimator as estimator
+
+    content = _content_phases()
+    a, b = _source(), _source()
+    refreshed = build_phase_plan(
+        subject=SUBJECT, selected_phases=["reflection"], refresh_extraction=True
+    )
+    selective = build_phase_plan(subject=SUBJECT, selected_phases=["reflection"])
+    est = await estimator.estimate_regeneration(
+        _FakeSession([]),
+        targets=[a, b],
+        plans={a.source_job_id: refreshed, b.source_job_id: selective},
+        launch_contract=_contract(),
+        now=NOW,
+    )
+
+    assert est.target_count == 2
+    assert est.regenerated_phase_count + est.copied_phase_count == 2 * len(content)
+    assert est.regenerated_phase_count == len(content) + 1
+    assert est.copied_phase_count == len(content) - 1
+    assert (est.copied_extract_count, est.regenerated_extract_count) == (1, 1)
+
+
+# ───────────────────── unpriced provider/model lines ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_model_absent_from_the_price_table_is_never_shown_as_a_free_line(
+    monkeypatch,
+):
+    """`pricing.cost_usd` bills $0 for a pair it has no rate for. Priced through
+    the conservative envelope that is a $0.00 line whose basis reads
+    "conservative static token envelope" — the estimate reads CHEAP in exactly
+    the case where the cost is UNKNOWN. The number stays 0.0 for compatibility;
+    the line and the estimate must say so."""
+    from app.services import pricing
+    from app.services import regeneration_estimator as estimator
+
+    monkeypatch.delitem(pricing.PRICE_MAP, ("gemini", GEN_MODEL))
+
+    source, plans, session = _one_target_setup(rows=[])  # static envelope
+    est = await estimator.estimate_regeneration(
+        session, targets=[source], plans=plans, launch_contract=_contract(), now=NOW
+    )
+
+    (authoring,) = [
+        li for li in est.line_items if li.kind == "authoring" and li.budget == "base"
+    ]
+    # the envelope really is nonzero — this is a missing PRICE, not no work
+    assert estimator.STATIC_TOKEN_ENVELOPE["authoring"]["prompt_tokens"] > 0
+    assert authoring.unit_cost_usd == 0.0 and authoring.cost_low_usd == 0.0
+    assert authoring.is_unpriced is True
+    assert authoring.basis.startswith(estimator.UNPRICED_BASIS)
+    assert authoring.basis != estimator.STATIC_BASIS
+    assert estimator.STATIC_BASIS in authoring.basis  # volume provenance kept
+
+    # the judge model is still priced, and is untouched
+    (judge,) = [li for li in est.line_items if li.kind == "judge" and li.budget == "base"]
+    assert judge.is_unpriced is False
+    assert judge.basis == estimator.STATIC_BASIS
+    assert judge.unit_cost_usd > 0
+
+    # aggregate marker + a loud, human-readable note naming the pair
+    assert est.has_unpriced_lines is True
+    unpriced_notes = [n for n in est.notes if estimator.UNPRICED_BASIS.split(":")[0] in n]
+    assert unpriced_notes, est.notes
+    assert any(GEN_MODEL in n and "gemini" in n for n in unpriced_notes)
+
+
+@pytest.mark.asyncio
+async def test_an_observed_unpriced_model_is_marked_too(monkeypatch):
+    """Real observed volume priced against a missing rate is the same lie."""
+    from app.services import pricing
+    from app.services import regeneration_estimator as estimator
+
+    monkeypatch.delitem(pricing.PRICE_MAP, ("gemini", GEN_MODEL))
+    source, plans, session = _one_target_setup(rows=[_AUTHORING_OBS, _JUDGE_OBS])
+    est = await estimator.estimate_regeneration(
+        session, targets=[source], plans=plans, launch_contract=_contract(), now=NOW
+    )
+
+    (authoring,) = [
+        li for li in est.line_items if li.kind == "authoring" and li.budget == "base"
+    ]
+    assert authoring.is_unpriced is True
+    assert authoring.observations == 4
+    assert "observed" in authoring.basis
+    assert authoring.basis.startswith(estimator.UNPRICED_BASIS)
+    assert est.has_unpriced_lines is True
+    # the priced judge line still carries the whole (nonzero) total
+    assert est.low_usd == pytest.approx(JUDGE_UNIT)
+
+
+@pytest.mark.asyncio
+async def test_known_priced_models_are_untouched_by_the_unpriced_marker():
+    """Regression fence: the normal, fully priced estimate keeps its exact
+    numbers, its plain basis strings and a clean aggregate marker."""
+    from app.services import regeneration_estimator as estimator
+
+    source, plans, session = _one_target_setup(rows=[_AUTHORING_OBS, _JUDGE_OBS])
+    est = await estimator.estimate_regeneration(
+        session, targets=[source], plans=plans, launch_contract=_contract(), now=NOW
+    )
+
+    assert est.low_usd == pytest.approx(AUTHORING_UNIT + JUDGE_UNIT)
+    assert est.has_unpriced_lines is False
+    assert all(li.is_unpriced is False for li in est.line_items)
+    assert all(not li.basis.startswith(estimator.UNPRICED_BASIS) for li in est.line_items)
+    assert not any("UNPRICED" in note for note in est.notes)
+
+
+@pytest.mark.asyncio
+async def test_copied_work_is_zero_without_being_called_unpriced():
+    """Zero because nothing runs is not the same as zero because the rate is
+    unknown: copied phases and a copied extract emit no line at all, and an
+    empty campaign is a clean $0."""
+    from app.services import regeneration_estimator as estimator
+
+    source, plans, session = _one_target_setup(rows=[_AUTHORING_OBS, _JUDGE_OBS])
+    est = await estimator.estimate_regeneration(
+        session, targets=[source], plans=plans, launch_contract=_contract(), now=NOW
+    )
+    assert {li.phase for li in est.line_items} == {"reflection"}
+    assert est.low_usd == pytest.approx(AUTHORING_UNIT + JUDGE_UNIT)
+    assert est.has_unpriced_lines is False
+
+    empty = await estimator.estimate_regeneration(
+        _FakeSession([]), targets=[], plans={}, launch_contract=_contract(), now=NOW
+    )
+    assert (empty.low_usd, empty.high_usd) == (0.0, 0.0)
+    assert empty.has_unpriced_lines is False
+
+
+@pytest.mark.asyncio
+async def test_a_priced_model_with_a_zero_token_observation_is_not_called_unpriced():
+    """Non-vacuity fence for the detector: the marker is about a MISSING RATE,
+    not about any $0.00 line. A priced pair whose observed mean happens to be
+    zero tokens keeps its observed basis."""
+    from app.services import regeneration_estimator as estimator
+
+    empty_obs = _obs("phase.run", "reflection", GEN_MODEL, prompt=0, output=0)
+    source, plans, session = _one_target_setup(rows=[empty_obs])
+    est = await estimator.estimate_regeneration(
+        session, targets=[source], plans=plans, launch_contract=_contract(), now=NOW
+    )
+    (authoring,) = [
+        li for li in est.line_items if li.kind == "authoring" and li.budget == "base"
+    ]
+    assert authoring.unit_cost_usd == 0.0
+    assert authoring.is_unpriced is False
+    assert authoring.basis.startswith("observed")
+    assert est.has_unpriced_lines is False
