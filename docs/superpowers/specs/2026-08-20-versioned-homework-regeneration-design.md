@@ -51,7 +51,7 @@ Normal Fleet generation and its existing Notion archival behavior remain unchang
 5. Publishing a partial revision.
 6. Per-lesson publication approval after the campaign canary is approved.
 7. Deleting earlier V1/V2/V3 pages when a later version publishes.
-8. Running multiple active regeneration campaigns for the same lesson.
+8. Running multiple active regeneration campaigns for the same lesson and output language.
 
 ## 4. Operator Workflow
 
@@ -115,7 +115,7 @@ The campaign report separates:
 - generation failed;
 - cancelled or abandoned before completion.
 
-It also reports copied/regenerated phase counts, judge-status counts, token usage, API cost, Notion version and Notion page link per lesson.
+It also reports copied/regenerated phase counts, judge-status counts, token usage, API cost, Notion version and Notion page link per lesson and output language.
 
 ## 5. Phase Selection and Complete Snapshots
 
@@ -123,7 +123,9 @@ It also reports copied/regenerated phase counts, judge-status counts, token usag
 
 A source job must be a completed homework job with a complete usable phase snapshot. A failed, cancelled, partial or teacher-material job cannot be used as a source.
 
-For V3 and later, the default source is the latest successfully published homework revision for that lesson. If no regeneration version has been published, the source is the existing completed V1 job.
+Every regeneration lineage is scoped by `(toc_entry_id, output_language)`. UZ, RU and EN homework for the same TOC lesson have independent sources, active-campaign locks and V2/V3 sequences.
+
+For V3 and later, the default source is the latest successfully published homework revision for that lesson and output language. If no regeneration version has been published in that language, the source is the existing completed V1 job in that language.
 
 `revision_of_job_id` records the immediate source job and is required for every regeneration job.
 
@@ -244,6 +246,7 @@ Campaign completion is derived from terminal targets; it is not based only on jo
 
 - campaign ID;
 - lesson/TOC entry ID;
+- output language;
 - source job ID;
 - revision job ID;
 - canary membership;
@@ -275,9 +278,9 @@ Target terminality is explicit:
 - `published` and `abandoned` are terminal and set `terminal_at`;
 - every other target state is non-terminal and keeps `terminal_at=NULL`;
 - `generation_failed` and `publication_failed` are attention-required, retryable, non-terminal states;
-- the cross-campaign uniqueness constraint is a partial unique index on lesson/TOC identity where `terminal_at IS NULL`.
+- the cross-campaign uniqueness constraint is a partial unique index on `(toc_entry_id, output_language)` where `terminal_at IS NULL`.
 
-A generation failure therefore blocks a competing campaign for the same lesson until the operator retries the existing target or explicitly abandons it. Generation abandonment records a reason, creates no Notion page, consumes no publication version when publication never began, and transitions the target to terminal `abandoned`.
+A generation failure therefore blocks a competing campaign for the same lesson and output language until the operator retries the existing target or explicitly abandons it. Generation abandonment records a reason, creates no Notion page, consumes no publication version when publication never began, and transitions the target to terminal `abandoned`.
 
 A campaign cannot report terminal completion while any target is attention-required. It reports `attention_required` until every failed target is retried to `published` or explicitly moved to `abandoned`. A terminal campaign distinguishes all-published completion from completion with abandoned targets.
 
@@ -312,8 +315,8 @@ Database constraints must enforce:
 
 - a revision job always has a source job and campaign target;
 - one target per campaign and lesson;
-- no more than one non-terminal regeneration target for a lesson across campaigns;
-- one publication version per lesson;
+- no more than one non-terminal regeneration target for a lesson and output language across campaigns;
+- one publication version per lesson, output language and version number;
 - one revision job cannot be attached to multiple targets;
 - a published target has a version and Notion page ID;
 - a target cannot publish before campaign approval.
@@ -332,7 +335,7 @@ The next version is reserved atomically when publication first begins, not when 
 - every retry uses the same reserved version and page identity;
 - a later campaign is blocked while an earlier version for the lesson is active or retryable.
 
-The allocator must serialize on lesson/TOC identity and enforce a unique `(toc_entry_id, publication_version)` constraint. It must not infer authority from page titles alone.
+The allocator must serialize on `(toc_entry_id, output_language)` and enforce a unique `(toc_entry_id, output_language, publication_version)` constraint. It must not infer authority from page titles alone. UZ V2 and RU V2 are valid independent publications.
 
 ## 10. Notion Publication
 
@@ -353,6 +356,7 @@ The versioned publisher reuses the existing homework rendering and upload primit
 Each page includes a machine-readable marker containing at least:
 
 - lesson/TOC entry ID;
+- output language;
 - revision job ID;
 - regeneration campaign ID;
 - publication version.
@@ -492,7 +496,7 @@ The report always renders human-readable reasons for failure or abandonment rath
 | Transient Notion failure | Revision preserved; target retryable | Automatic bounded retry, then operator retry |
 | Crash after page creation before DB stamp | Target lease expires | Marker-backed adoption of the same page/version |
 | Duplicate approval request | No duplicate launch or page | Idempotent success/current state |
-| Concurrent campaign for same lesson | Second campaign rejected before spend | Retry after first becomes terminal |
+| Concurrent campaign for same lesson and output language | Second campaign rejected before spend | Retry after first becomes terminal |
 | Campaign cancellation | Unfinished work stops; published pages remain | No automatic resume |
 
 Both `generation_failed` and `publication_failed` remain blocking until retry or explicit abandonment. Abandonment is audited and never deletes a Notion page.
@@ -517,8 +521,8 @@ All automated model and Notion integrations use fakes. Development must not call
 ### 15.2 Repository and migration tests
 
 - required revision/source/campaign relationships;
-- unique active target per lesson;
-- unique publication version per lesson;
+- unique active target per lesson and output language;
+- unique publication version per lesson, output language and version number;
 - source deletion rejects cleanly while revisions exist;
 - concurrent version allocation;
 - durable publication claim and expired-lease recovery;
@@ -568,10 +572,11 @@ Using fake Gemini and fake Notion:
 2. Regenerate selected phases into a complete canary revision.
 3. Prove no Notion call occurs before approval.
 4. Approve and publish `Homework V2`.
-5. Run a later campaign and publish `Homework V3`.
-6. Prove V1 and V2 were never cleared or rewritten.
-7. Inject a Notion timeout after page creation and prove retry adopts one V3 page.
-8. Verify cost counts only actual revision model usage.
+5. Run a later campaign in the same output language and publish `Homework V3`.
+6. Independently publish `Homework V2` for a second output language.
+7. Prove V1 and V2 were never cleared or rewritten.
+8. Inject a Notion timeout after page creation and prove retry adopts one V3 page.
+9. Verify cost counts only actual revision model usage.
 
 ## 16. Rollout
 
