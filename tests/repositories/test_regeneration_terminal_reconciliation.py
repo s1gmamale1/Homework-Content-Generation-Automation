@@ -277,6 +277,37 @@ async def test_an_abandon_request_converges_a_terminal_failure_to_abandoned(
 
 
 @db_only
+@pytest.mark.parametrize("approved", [False, True])
+async def test_an_abandon_request_beats_a_done_and_complete_revision(approved):
+    """Abandonment is decided BEFORE publication, not after.
+
+    The normal way an abandon lands is on a job that is still in flight: the
+    operator asks, and the revision commits `done` before the abandon-driven
+    cancel takes effect. If the mapping looks at `done` + complete first, an
+    approved campaign releases that target for publication — and publication is
+    irreversible (a public Notion page and a permanently consumed version
+    number). Any terminal job whose target carries an abandon request is
+    abandoned, whatever the job's own verdict was.
+    """
+    ids = await _seed(
+        job_status="done", complete=True, abandon_requested=True,
+        approved=approved,
+        campaign_status="bulk_running" if approved else "canary_running")
+    try:
+        await _reconcile(ids)
+        target = await _target(ids)
+        assert target.status == "abandoned"
+        assert target.terminal_at is not None, (
+            "abandoned is terminal — the stamp is what frees the lineage")
+        assert target.publication_released_at is None, (
+            "an abandoned target must never be released to the publisher")
+        assert target.terminal_reason == "operator", (
+            "the operator's own abandon reason is what the lineage records")
+    finally:
+        await _purge(ids)
+
+
+@db_only
 async def test_reconciliation_is_idempotent():
     ids = await _seed(job_status="done", approved=True)
     try:

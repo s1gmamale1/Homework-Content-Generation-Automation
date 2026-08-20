@@ -67,7 +67,10 @@ TERMINAL_JOB_STATUSES = ("done", "failed", "cancelled")
 # it is terminal it belongs to nobody.
 _REPAIRABLE_TARGET_STATUSES = ("planned", "generating")
 
-_ABANDON_REASON = "abandon requested before the revision reached a usable snapshot"
+# Fallback only — the operator's own reason wins when one was recorded. It no
+# longer says "before a usable snapshot" because an abandon request now also
+# beats a `done` revision WITH one.
+_ABANDON_REASON = "operator requested abandonment before the target was published"
 
 
 def desired_target_status(
@@ -79,6 +82,19 @@ def desired_target_status(
 ) -> str:
     """Map current job truth onto the target status it implies. Pure.
 
+    The order of the three questions is load-bearing:
+
+    1. a job that can still do work keeps the target ``generating`` — an
+       abandon request is only decided once the job is actually terminal, so a
+       cancel still in flight is not pre-empted;
+    2. any TERMINAL job whose target carries an abandon request is
+       ``abandoned``, whatever its own verdict was. The normal way an abandon
+       lands is on an in-flight job, so ``done`` committing before the
+       abandon-driven cancel takes effect is the expected race — not a reason
+       to release the target for an irreversible publication (a public Notion
+       page and a permanently consumed version number);
+    3. only then may a ``done`` job publish.
+
     ``done`` WITHOUT a usable snapshot deliberately lands in the same bucket as
     ``failed``/``cancelled``: the job finished, so leaving the target
     ``generating`` would strand the campaign forever, and publishing a packet
@@ -87,9 +103,11 @@ def desired_target_status(
     """
     if job_status in ("pending", "running", "cancelling"):
         return "generating"
+    if abandon_requested:
+        return "abandoned"
     if job_status == "done" and snapshot_usable:
         return "publication_pending" if campaign_approved else "awaiting_canary_approval"
-    return "abandoned" if abandon_requested else "generation_failed"
+    return "generation_failed"
 
 
 def _campaign_is_approved(campaign) -> bool:
