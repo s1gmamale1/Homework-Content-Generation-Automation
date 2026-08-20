@@ -149,6 +149,7 @@ The operations manager keeps at most four Claude controllers active and reserves
 `HomeworkJob` adds nullable `revision_of_job_id` with `ON DELETE RESTRICT` and nullable unique `regeneration_target_id` with `ON DELETE RESTRICT`. A check requires the two columns to be both null or both non-null. A second check requires `batch_id IS NULL` when `revision_of_job_id IS NOT NULL`.
 
 `PhaseOutput` adds nullable `copied_from_phase_output_id` with `ON DELETE RESTRICT`.
+While editing the model, correct the existing `judge_status` comment to include the already-emitted soft value `refused`; this is documentation parity only and does not change its database type or pipeline behavior.
 
 Database invariants:
 
@@ -175,7 +176,7 @@ Add a test-only collection guard in `tests/conftest.py`: when `REGEN_REQUIRE_DB=
 ### TDD steps
 
 1. Write model tests asserting the new columns, relationships, check names, partial index predicate, and restrictive FK semantics.
-2. Write migration tests that upgrade from the current head, inspect every table/index/check/FK/trigger, then downgrade cleanly. Because this repository has no trigger precedent, also assert the trigger function body, trigger timing/events, failed direct SQL before approval, allowed SQL after approval, and removal of both trigger and function on downgrade.
+2. Write migration tests that upgrade from the current head, inspect every table/index/check/FK/trigger, then downgrade cleanly. Because this repository has no trigger precedent, also assert the trigger function body, trigger timing/events, failed direct SQL before approval, allowed SQL after approval, and removal of both trigger and function on downgrade. The trigger reads the owning campaign `FOR KEY SHARE` before checking `approved_at`/status, so it waits for a concurrent approval transaction rather than deciding from a racing snapshot.
 3. Write PostgreSQL integration tests that race two active targets in the same language, allow UZ V2 and RU V2 independently, reject duplicate versions in one language, reject revision+batch, reject source deletion, and reject publication before approval.
 4. Run the tests and record the RED failures.
 5. Implement the models and migration with named constraints.
@@ -234,6 +235,13 @@ def build_phase_plan(
     exclusion_acknowledged: bool = False,
 ) -> RegenerationPhasePlan: ...
 
+class PhaseRowView(Protocol):
+    phase_name: str
+    phase_order: int
+    status: str
+    output_md: str | None
+    content_json: dict | None
+
 @dataclass(frozen=True)
 class SnapshotValidation:
     usable: bool
@@ -263,7 +271,7 @@ The implementation imports the canonical subject flow and `PHASE_DEPS` from the 
 uv run pytest -q tests/services/test_regeneration_planner.py tests/services/test_regeneration_states.py
 ```
 
-6. Commit: `feat(regeneration): add phase planning and state rules`
+7. Commit: `feat(regeneration): add phase planning and state rules`
 
 ---
 
@@ -499,7 +507,7 @@ RUN_DB_INTEGRATION=1 uv run pytest -q tests/integration/test_regeneration_source
 - Modify `app/services/pipeline.py`
 - Modify `app/services/worker.py`
 - Modify `app/services/notion_archive.py` for the intrinsic revision guard
-- Modify `app/api/v1/jobs.py` for synchronous archive-route conflicts
+- Modify `app/api/v1/jobs.py` for synchronous archive-route conflicts and revision-aware cancel reconciliation
 - Modify `app/api/v1/batch.py` for defensive sweep exclusion
 - Modify `app/api/v1/books.py` for clean book-delete conflict and TOC isolation
 - Modify `main.py` only to reconcile revision targets after existing startup terminal-job sweeps
@@ -518,10 +526,11 @@ RUN_DB_INTEGRATION=1 uv run pytest -q tests/integration/test_regeneration_source
 ```python
 async def create_revision_job(
     session: AsyncSession, *, target_id: UUID, launch_contract: LaunchContract,
+    start_offset_seconds: int = 0,
 ) -> HomeworkJob: ...
 ```
 
-The service locks the target, returns the already-linked revision job on repeat, verifies the source is still eligible, and creates a `kind="homework"`, `batch_id=NULL`, `selected_phases=NULL` revision linked to its immediate source and target.
+The service locks the target, returns the already-linked revision job on repeat without changing its schedule, verifies the source is still eligible, and creates a `kind="homework"`, `batch_id=NULL`, `selected_phases=NULL` revision linked to its immediate source and target. Copy `book_id`, `toc_entry_id`, `subject`, and `output_language` exactly from the immediate source job; apply provider/model/transport/role settings from the validated `LaunchContract`; and pass `start_offset_seconds` through to `jobs_repo.create` so `scheduled_at` is set atomically at first creation.
 
 Copy exactly these `PhaseOutput` columns for each phase in `plan.copied_phases`:
 
@@ -552,7 +561,9 @@ It joins the job, target, and campaign under row locks and maps current job trut
 - `cancelled` → `generation_failed` unless `abandon_requested_at` is set, then terminal `abandoned`;
 - `pending`, `running`, or `cancelling` remain `generating`.
 
-The worker calls `reconcile_revision_job` from `_execute_job`'s `finally` in its **own new session/transaction and guarded try/except**, before removing local running-job bookkeeping. This single placement covers normal `pipeline.run` return, hard-return failure, raised `CancelWonSignal`, `LeaseLostSignal`, worker crash/`_mark_failed`, and the `SessionLimitPause` / `SlotSaturation` branches whose requeue can finalize a concurrent cancellation. API cancel of a pending revision also reconciles after its job transaction.
+At claim time, stash whether the claimed `HomeworkJob.revision_of_job_id` is non-null beside the existing lease handoff; direct-call tests pass the same explicit marker. This lets ordinary jobs short-circuit without opening a reconciliation session.
+
+In `_execute_job`'s `finally`, preserve the existing cleanup order first: remove local running/lease bookkeeping, cancel and settle the heartbeat, and release `self._slots`. Only then, as the **last operation**, reconcile when the stashed marker says this is a revision. Mirror the existing shutdown-safe pattern: run the own-session reconciliation through `asyncio.shield`, guard it with `except BaseException` so a second shutdown cancellation cannot bypass cleanup or escape as a new failure, and never re-raise a reconciliation error. This placement covers normal `pipeline.run` return, hard-return failure, raised `CancelWonSignal`, `LeaseLostSignal`, worker crash/`_mark_failed`, and the `SessionLimitPause` / `SlotSaturation` branches whose requeue can finalize a concurrent cancellation without leaking a semaphore permit or heartbeat. API cancel of a pending revision also reconciles after its job transaction.
 
 The repair sweep never shares a transaction with `fail_exhausted_pending_jobs`, `reclaim_stale_cancelling`, worker-registry maintenance, or startup's critical reconcile. In both worker maintenance and `main._reconcile_on_startup`, run `reconcile_terminal_revision_jobs` as a subsequent named step with its own session/transaction and its own broad logging guard. If the regeneration table/migration is temporarily unavailable, ordinary stuck-job reclaim and process startup continue unaffected. The bulk function repairs a crash between a job terminal commit and its target update; Task 7 invokes it before campaign actions/reports, and Task 8 invokes it at the start of each publisher pass.
 
@@ -581,12 +592,12 @@ Book deletion, `DELETE /books/{book_id}/toc/{entry_id}`, and TOC re-extraction/r
 
 ### TDD steps
 
-1. Write snapshot tests that fail first and pin the full copied-column set, exact `_done_phase_md` predicate, canonical-order validation/refusal, idempotent job creation, missing-source refusal, zero cloned usages, copied extract marker, and complete-snapshot validation.
+1. Write snapshot tests that fail first and pin source `book_id`/TOC/subject/language provenance, launch-contract fields, `start_offset_seconds`, the full copied-column set, exact `_done_phase_md` predicate, canonical-order validation/refusal, idempotent job creation without re-stagger, missing-source refusal, zero cloned usages, copied extract marker, and complete-snapshot validation.
 2. Write pipeline tests using fake agent/judge/solver for mixed copied/regenerated flows, soft judge statuses, hard failure, solver blocked, canary hold, and approved publication release.
 3. Write one test for every Fleet query/caller listed above, including `subject_coverage.job_status_by_book`. Do not accept one indirect test as coverage for several SQL functions.
 4. Write archive tests proving `force=True`, automatic claim token, retry route, force route, and batch sweep all cannot read or write Notion for a revision.
 5. Write clean 409 tests for book delete, TOC-entry delete, TOC retry/re-extract, and repository deletion.
-6. Write a test for every worker exit/terminal writer: pipeline hard-return failure, successful return, worker crash retry/terminal failure, raised `CancelWonSignal`, `SessionLimitPause` cancel-wins race, `SlotSaturation` cancel-wins race, `LeaseLostSignal`, pending cancel, running cancel finalization, stale-cancelling sweep, exhausted-pending sweep, and crash-repair bulk reconciliation. Assert no terminal job leaves its target `generating`; assert reconciliation failure cannot abort critical sweeps/startup; and assert no active-lineage lock is permanently orphaned.
+6. Write a test for every worker exit/terminal writer: pipeline hard-return failure, successful return, worker crash retry/terminal failure, raised `CancelWonSignal`, `SessionLimitPause` cancel-wins race, `SlotSaturation` cancel-wins race, `LeaseLostSignal`, pending cancel, running cancel finalization, stale-cancelling sweep, exhausted-pending sweep, and crash-repair bulk reconciliation. Assert ordinary jobs open no reconciliation session; heartbeat settles and semaphore releases before reconciliation; a second shutdown cancel during reconciliation cannot leak either resource; no terminal job leaves its target `generating`; reconciliation failure cannot abort critical sweeps/startup; and no active-lineage lock is permanently orphaned.
 7. Run RED, implement, then run:
 
 ```bash
@@ -655,11 +666,11 @@ class RegenerationCampaignService:
     async def abandon(self, target_id: UUID, *, actor: str, reason: str) -> RegenerationTarget: ...
 ```
 
-Creation resolves and stores each target's source and phase plan, rejects any active same-language lineage, chooses deterministic canaries from a stable `(book_id, toc order, language, target id)` order, and creates no jobs or external calls. Launch preflights all destinations once, then creates only canary revision jobs. Non-canary targets remain `planned` with no job row.
+Creation resolves and stores each target's source and phase plan, rejects any active same-language lineage, chooses deterministic canaries from a stable `(book_id, toc order, language, target id)` order, and creates no jobs or external calls. A draft intentionally holds the active-lineage lock until it is launched or cancelled; draft cancellation is supported and prominent, with no automatic expiry in v1. Launch preflights all destinations once, then creates only canary revision jobs. Non-canary targets remain `planned` with no job row.
 
 Approval locks the campaign and targets, sets `approved_at` once, releases successful canaries to `publication_pending`, creates all remaining revision jobs exactly once, and moves them to `generating`. Repeated approval returns the current campaign without duplicate jobs. A one-target campaign uses this same approval but has no separate bulk gate.
 
-Bulk release must reuse `app.services.launch_stagger.stagger_offset`. Order only the jobs actually created/released, then set each revision job's `scheduled_at` from `regeneration_launch_wave_size` and `regeneration_launch_wave_interval_seconds`. Compute the wave count inside the campaign service; do not import the private router helper `app.api.v1.batch._stagger_summary`. The response/report records wave count and final scheduled offset. Tests pin that a campaign larger than one wave is decorrelated, a one-target canary starts immediately, repeated approval does not re-stagger existing jobs, and zero-valued knobs are the explicit kill switch. Revision jobs intentionally have no normal batch pause; campaign cancel is their authoritative bulk stop control and must visit every nonterminal target/job. Running-job cancellation may converge on the next worker heartbeat rather than killing an in-process task immediately; the UI/report stays nonterminal until reconciliation confirms it. Because batchless queue fairness lanes by `book_id`, campaigns spanning many books can occupy many lanes; the regeneration stagger knobs are the explicit shaping control.
+Bulk release must reuse `app.services.launch_stagger.stagger_offset`. Order only the jobs actually created/released, compute each offset from `regeneration_launch_wave_size` and `regeneration_launch_wave_interval_seconds`, and pass it as `start_offset_seconds` to Task 6's `create_revision_job`; do not update `scheduled_at` afterward. Compute the wave count inside the campaign service; do not import the private router helper `app.api.v1.batch._stagger_summary`. The response/report records wave count and final scheduled offset. Tests pin that a campaign larger than one wave is decorrelated, a one-target canary starts immediately, repeated approval does not re-stagger existing jobs, and zero-valued knobs are the explicit kill switch. Revision jobs intentionally have no normal batch pause; campaign cancel is their authoritative bulk stop control and must visit every nonterminal target/job. Running-job cancellation may converge on the next worker heartbeat rather than killing an in-process task immediately; the UI/report stays nonterminal until reconciliation confirms it. Because batchless queue fairness lanes by `book_id`, campaigns spanning many books can occupy many lanes; the regeneration stagger knobs are the explicit shaping control.
 
 Reject-before-approval transitions every canary revision target and every planned target to terminal `abandoned`, sets a reason distinguishing rejected canary, creates no version, and never publishes.
 
@@ -736,7 +747,7 @@ At the beginning of every `run_once`, call `reconcile_terminal_revision_jobs` be
 
 1. Reload and validate campaign approval, target claim, complete revision snapshot, source language, and Notion destination.
 2. Reserve/reuse the version.
-3. Resolve the Lesson Topic parent. If `toc_entries.notion_lesson_page_id` is present, reuse it. Otherwise resolve the language-aware subject page with `_resolve_subject_page_id`, `find_or_create` the existing `Generated Homeworks` container, compute the collision-safe title with `resolve_lesson_title`, and `find_or_create` the Lesson Topic page. A crash before stamping is safe because the same title-resolution path adopts it on retry. Persist only `toc_entries.notion_lesson_page_id`, fenced by the current target claim.
+3. While the async DB session is open, load siblings with `toc_repo.titles_for_subject_grade(session, subject=job.subject, grade=book.grade)` and compute the collision-safe `lesson_title = resolve_lesson_title(section, siblings)`. Also resolve the language-aware subject-page ID and copy all scalar inputs needed remotely; close the DB session before Notion I/O. In one `asyncio.to_thread` call, resolve the Lesson Topic parent: reuse `toc_entries.notion_lesson_page_id` when present, otherwise synchronously `find_or_create` the existing `Generated Homeworks` container and then `find_or_create` the computed Lesson Topic title. No `NotionClientWrapper`, `find_or_create`, child listing, block read, upload, append, or clear call may run on the event loop. A crash before stamping is safe because the same collision-aware title path adopts the parent on retry. In a new fenced DB transaction, persist only `toc_entries.notion_lesson_page_id`.
 4. Build the full `phase_md` mapping before version-page remote I/O.
 5. Call `write_or_adopt_versioned_homework` in a worker thread with the resolved lesson page, stored version-page ID, and immutable marker.
 6. On success, compare claim token and set page ID, `published`, `terminal_at`; then roll up the campaign.
@@ -807,6 +818,8 @@ Mount under `/api/v1/regeneration`:
 - `POST /targets/{target_id}/retry-publication`;
 - `POST /targets/{target_id}/abandon`.
 
+In `app/api/v1/__init__.py`, include `regeneration.router` with `dependencies=[Depends(get_current_user)]`, exactly like books/batch/jobs. Do not rely on route location or the feature flag for authentication. API tests must prove an anonymous request cannot read eligible sources, estimates, campaigns, or reports and cannot invoke any mutation; then prove a valid operator token reaches the feature/state gate. Do not use the strict SA-key-only dependency for this operator workflow.
+
 Every route is unavailable with HTTP 404 when `REGENERATION_ENABLED=false`, so the hidden feature cannot be mutated by a stale UI. State conflicts return 409 with a human-readable reason. Invalid exclusion acknowledgement returns 422. Preflight failures return one structured 409 response containing every affected lesson. Repeated idempotent operations return the current resource, not a duplicate or generic error.
 
 Campaign detail includes:
@@ -826,7 +839,7 @@ Do not expose a prompt-set selector or a per-target publication approval endpoin
 ### TDD steps
 
 1. Write schema tests for stable JSON shape and exclusion validation.
-2. Write API tests with service fakes for every route, idempotency, 404 flag-off behavior, 409 state conflicts, aggregated preflight failures, and single-target approval.
+2. Write API tests with service fakes for every route, router-level authentication on reads and writes, idempotency, 404 flag-off behavior, 409 state conflicts, aggregated preflight failures, and single-target approval.
 3. Write report tests for all buckets, soft judge counts, copied provenance, actual cost isolation, publication history, and human-readable reasons.
 4. Run RED, implement the thin router/schemas, then run:
 
@@ -952,7 +965,11 @@ Repository completion documentation is mandatory, not conditional: write the ind
 
 Immediately before committing the worklog, re-read `docs/memory/INDEX.md`, choose the next unused counter, and apply the same number to both the INDEX row and the `docs/memory/MASTER_MEMORY.md` heading. Do not reserve the number earlier in a parallel lane.
 
-The runbook also states that revision API usage still counts toward the existing fleet-daily API cost cap (the fleet cost query intentionally has no job-kind filter), so a large regeneration can pause ordinary API batches; operators must budget and stage the campaign accordingly.
+The runbook states both cost-cap scopes precisely: revision jobs have `batch_id=NULL`, so they do **not** count toward any individual batch cost cap; their API usage does count toward the fleet-daily API cap (the fleet query intentionally has no job-kind filter), so a large regeneration can pause ordinary API batches. Operators must budget and stage the campaign accordingly.
+
+The runbook also states that regeneration history deliberately makes the containing book/TOC entry undeletable through current delete routes until a future explicit child-first purge exists. Cancellation/abandonment does not erase audit history.
+
+Automated fake-provider acceptance is the implementation gate. CLAUDE.md's real-generation acceptance remains explicitly outstanding and is deferred to the separately authorized bounded rollout sample; neither local suite success nor branch review claims to satisfy that paid/live gate.
 
 ### Verification steps
 
