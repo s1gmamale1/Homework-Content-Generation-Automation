@@ -2,7 +2,17 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -56,6 +66,34 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     batch_id: Mapped[Optional[UUID]] = mapped_column(
         ForeignKey("batches.id"), nullable=True
     )
+    # ─── versioned regeneration (revision jobs) ───────────────────────────
+    # NULL on every normal job. A revision job keeps kind="homework" (so it
+    # reuses the whole pipeline/phase/cost/download machinery) and is identified
+    # ONLY by revision_of_job_id IS NOT NULL — one unambiguous exclusion
+    # predicate for every legacy query and archive entry point, without
+    # widening the `kind` flow discriminator.
+    # RESTRICT (not CASCADE): deleting the source out from under a live
+    # revision must fail cleanly rather than shred the regeneration audit
+    # history. See ck_homework_jobs_revision_pair / _revision_no_batch below.
+    revision_of_job_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey(
+            "homework_jobs.id",
+            ondelete="RESTRICT",
+            name="fk_homework_jobs_revision_of_job_id",
+        ),
+        nullable=True,
+    )
+    # The campaign target this revision fulfils. UNIQUE — this column IS the
+    # one-to-one link (RegenerationTarget deliberately has no revision_job_id),
+    # so one revision job can never be attached to two targets.
+    regeneration_target_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey(
+            "regeneration_targets.id",
+            ondelete="RESTRICT",
+            name="fk_homework_jobs_regeneration_target_id",
+        ),
+        nullable=True,
+    )
     current_phase: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -106,6 +144,11 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     phase_outputs: Mapped[list["PhaseOutput"]] = relationship(
         back_populates="job", cascade="all, delete-orphan", order_by="PhaseOutput.phase_order"
     )
+    regeneration_target: Mapped[Optional["RegenerationTarget"]] = relationship(
+        "RegenerationTarget",
+        back_populates="revision_job",
+        foreign_keys=[regeneration_target_id],
+    )
 
     __table_args__ = (
         Index("ix_homework_jobs_book_toc", "book_id", "toc_entry_id"),
@@ -146,7 +189,27 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
             "kind IN ('homework','teacher_material')",
             name="ck_homework_jobs_kind",
         ),
+        # A revision is meaningless without its campaign target, and a job
+        # pointing at a target is by definition a revision: both columns or
+        # neither — never half a revision.
+        CheckConstraint(
+            "(revision_of_job_id IS NULL) = (regeneration_target_id IS NULL)",
+            name="ck_homework_jobs_revision_pair",
+        ),
+        # Revision jobs are NOT Fleet jobs: they never join a batch, so batch
+        # rollups, adoption, resume and dedup queries stay untouched by
+        # regeneration. Enforced here rather than trusting every caller.
+        CheckConstraint(
+            "revision_of_job_id IS NULL OR batch_id IS NULL",
+            name="ck_homework_jobs_revision_no_batch",
+        ),
+        UniqueConstraint(
+            "regeneration_target_id",
+            name="uq_homework_jobs_regeneration_target_id",
+        ),
+        Index("ix_homework_jobs_revision_of_job_id", "revision_of_job_id"),
     )
 
 
 from app.models.phase_output import PhaseOutput  # noqa: E402
+from app.models.regeneration_target import RegenerationTarget  # noqa: E402

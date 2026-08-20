@@ -26,6 +26,9 @@ if str(_REPO_ROOT) not in sys.path:
 
 # Sentinel env so Settings() doesn't blow up on import. These values are
 # never used because nothing in the test path actually opens a connection.
+# Captured BEFORE the setdefault below, so the REGEN_REQUIRE_DB guard can tell
+# an operator-supplied DATABASE_URL from the sentinel this file injects.
+_DATABASE_URL_WAS_EXPLICIT = bool(os.environ.get("DATABASE_URL"))
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+asyncpg://test:test@localhost:5432/test_db",
@@ -89,7 +92,52 @@ def _guard_db_integration_target() -> None:
         )
 
 
+# ── regeneration lane: a SKIP is a false green ───────────────────────────
+# The regeneration schema/constraint tests are `skipif RUN_DB_INTEGRATION != 1`
+# like every other real-DB test here — so forgetting the flag makes them report
+# a green run that proved nothing about the database. The lane and integration
+# commands set `REGEN_REQUIRE_DB=1`; with it set, a missing flag or an unusable
+# DATABASE_URL is a COLLECTION-TIME error, not a skip. No-op when unset, so the
+# ordinary suite is untouched.
+_LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _guard_regen_require_db() -> None:
+    if os.getenv("REGEN_REQUIRE_DB") != "1":
+        return
+    if os.getenv("RUN_DB_INTEGRATION") != "1":
+        raise RuntimeError(
+            "REGEN_REQUIRE_DB=1 but RUN_DB_INTEGRATION is not 1 — the real-DB "
+            "regeneration tests would SKIP and report a false green. Set "
+            "RUN_DB_INTEGRATION=1 with a localhost scratch DATABASE_URL."
+        )
+    if not _DATABASE_URL_WAS_EXPLICIT:
+        raise RuntimeError(
+            "REGEN_REQUIRE_DB=1 requires an EXPLICIT DATABASE_URL. This worktree "
+            "has no .env of its own, so nothing may be derived — pass a "
+            "127.0.0.1 scratch database on the command line."
+        )
+    from urllib.parse import urlparse
+
+    parsed = urlparse(
+        os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
+    )
+    name = (parsed.path or "").lstrip("/")
+    host = parsed.hostname or ""
+    if not name or name in _PROD_DB_NAMES:
+        raise RuntimeError(
+            f"REGEN_REQUIRE_DB=1 refuses database {name!r} — it is production or "
+            "unparseable. Point DATABASE_URL at a scratch database."
+        )
+    if host not in _LOCAL_HOSTS:
+        raise RuntimeError(
+            f"REGEN_REQUIRE_DB=1 refuses host {host!r} — these tests migrate and "
+            "write; a non-local host is a real fleet machine. Pin 127.0.0.1."
+        )
+
+
 _guard_db_integration_target()
+_guard_regen_require_db()
 
 
 @pytest.fixture(autouse=True)
