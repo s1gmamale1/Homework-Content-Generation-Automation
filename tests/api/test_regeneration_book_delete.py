@@ -161,7 +161,13 @@ def test_toc_retry_still_reports_blocking_JOBS_separately():
 # ─────────────────────────────────────────────────────────────────────────
 
 
-async def _seed():
+async def _seed(*, published: bool = False):
+    """Seed one lesson with a V1 source, a regeneration target and its revision
+    job. `published=True` gives the target real, irreplaceable audit history: an
+    approved campaign and a consumed `publication_version` that may never be
+    reused."""
+    from datetime import datetime, timezone
+
     from app.db import SessionLocal
     from app.models.book import Book
     from app.models.homework_job import HomeworkJob
@@ -187,14 +193,22 @@ async def _seed():
             status="done", provider="gemini", output_language="uz")
         session.add(v1)
         await session.flush()
+        now = datetime.now(timezone.utc)
         campaign = RegenerationCampaign(
-            status="draft", selection_spec={}, requested_phases=[],
+            status="approved" if published else "draft",
+            approved_at=now if published else None,
+            selection_spec={}, requested_phases=[],
             excluded_phases=[], launch_contract={})
         session.add(campaign)
         await session.flush()
+        target_extra = dict(
+            status="published", publication_version=2,
+            notion_page_id="notion-page", publication_released_at=now,
+            terminal_at=now,
+        ) if published else dict(status="generating")
         target = RegenerationTarget(
             campaign_id=campaign.id, toc_entry_id=toc.id, output_language="uz",
-            phase_plan=plan, source_job_id=v1.id, status="generating")
+            phase_plan=plan, source_job_id=v1.id, **target_extra)
         session.add(target)
         await session.flush()
         revision = HomeworkJob(
@@ -298,5 +312,143 @@ async def test_history_helpers_see_the_real_rows():
         assert [t.id for t in by_entry] == [ids["target_id"]]
         async with SessionLocal() as session:
             assert await targets_repo.history_for_book(session, uuid.uuid4()) == []
+    finally:
+        await _purge(ids)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# the two source-deletion routes must remove jobs and the TOC entry in ONE
+# transaction (Integration Checkpoint 2, item 4)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def _delete_via_books_repo(session, ids):
+    from app.repositories import books as books_repo
+
+    return await books_repo.delete(session, ids["book_id"])
+
+
+async def _delete_via_toc_repo(session, ids):
+    from app.repositories import toc_entries as toc_repo
+
+    return await toc_repo.delete(session, ids["toc_id"])
+
+
+@db_only
+@pytest.mark.parametrize(
+    "route",
+    [_delete_via_books_repo, _delete_via_toc_repo],
+    ids=["books_repo.delete", "toc_repo.delete"],
+)
+async def test_source_deletion_routes_are_co_transactional_and_never_strand_a_target(route):
+    """Both source-deletion routes delete the jobs AND the TOC entry inside one
+    transaction, so `fk_regeneration_targets_toc_entry_id`'s RESTRICT aborts the
+    whole unit of work and `fk_regeneration_targets_source_job_id`'s SET NULL
+    never reaches disk.
+
+    This pins the REASONING, not today's line order. The dangerous future edit
+    is a child-first purge route that deletes the source job on its own, in its
+    own transaction, outside the one that removes the TOC entry: nothing would
+    then RESTRICT, the SET NULL would commit, and the target would survive as a
+    published row with a consumed version number and no snapshot behind it.
+    Stage 3 below runs exactly that job-only delete and shows it DOES strand the
+    target — which is what makes stages 1 and 2 non-vacuous.
+    """
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import IntegrityError
+
+    from app.db import SessionLocal
+    from app.models.book import Book
+    from app.models.homework_job import HomeworkJob
+    from app.models.regeneration_target import RegenerationTarget
+    from app.models.toc_entry import TOCEntry
+
+    async def _state():
+        """Everything the rollback has to have preserved, read fresh."""
+        async with SessionLocal() as session:
+            target = await session.get(RegenerationTarget, ids["target_id"])
+            revision = await session.get(HomeworkJob, ids["revision_id"])
+            return {
+                "book": await session.get(Book, ids["book_id"]) is not None,
+                "toc": await session.get(TOCEntry, ids["toc_id"]) is not None,
+                "source": await session.get(HomeworkJob, ids["v1_id"]) is not None,
+                "revision": revision is not None,
+                "revision_of": revision.revision_of_job_id if revision else None,
+                "revision_target": revision.regeneration_target_id if revision else None,
+                "target": target is not None,
+                "source_link": target.source_job_id if target else None,
+                "version": target.publication_version if target else None,
+                # The strand this whole rule exists to prevent.
+                "stranded": await session.scalar(
+                    select(func.count())
+                    .select_from(RegenerationTarget)
+                    .where(
+                        RegenerationTarget.id == ids["target_id"],
+                        RegenerationTarget.source_job_id.is_(None),
+                    )
+                ),
+            }
+
+    ids = await _seed(published=True)
+    try:
+        # Precondition: the rows this test reasons about really are on disk, so
+        # a later "everything survived" assertion cannot pass over an empty DB.
+        before = await _state()
+        assert before == {
+            "book": True, "toc": True, "source": True, "revision": True,
+            "revision_of": ids["v1_id"], "revision_target": ids["target_id"],
+            "target": True, "source_link": ids["v1_id"], "version": 2,
+            "stranded": 0,
+        }, before
+
+        # ── stage 1: with the revision child alive, the revision guard is the
+        # first RESTRICT the shared transaction hits.
+        async with SessionLocal() as session:
+            with pytest.raises(IntegrityError) as exc:
+                await route(session, ids)
+                await session.commit()
+            await session.rollback()
+        assert "fk_homework_jobs_revision_of_job_id" in str(exc.value)
+        assert await _state() == before, "a refused delete must change nothing"
+
+        # ── stage 2: after the documented child-first purge (spec §8.3) removes
+        # the revision job, the TOC-entry RESTRICT is the ONLY thing left, and
+        # it must still abort the same transaction that deletes the source job.
+        async with SessionLocal() as session:
+            await session.execute(
+                sa_delete(HomeworkJob).where(HomeworkJob.id == ids["revision_id"]))
+            await session.commit()
+
+        async with SessionLocal() as session:
+            with pytest.raises(IntegrityError) as exc:
+                await route(session, ids)
+                await session.commit()
+            await session.rollback()
+        assert "fk_regeneration_targets_toc_entry_id" in str(exc.value), (
+            "the TOC entry's RESTRICT must be what refuses here — if some other "
+            "key fires first, the SET NULL half of this rule is untested")
+
+        after = await _state()
+        assert after["book"] and after["toc"] and after["source"], after
+        assert after["target"] and after["version"] == 2, after
+        assert after["source_link"] == ids["v1_id"], (
+            "the SET NULL was rolled back with the rest of the transaction")
+        assert after["stranded"] == 0
+
+        # ── stage 3: the counterfactual. Deleting the source job ALONE, in its
+        # own transaction, commits — proving the SET NULL in stage 2 was real,
+        # live, and stopped only by sharing a transaction with the TOC delete.
+        async with SessionLocal() as session:
+            await session.execute(
+                sa_delete(HomeworkJob).where(HomeworkJob.id == ids["v1_id"]))
+            await session.commit()
+
+        stranded = await _state()
+        assert stranded["source"] is False
+        assert stranded["toc"] and stranded["target"] and stranded["version"] == 2
+        assert stranded["source_link"] is None and stranded["stranded"] == 1, (
+            "a job-only purge outside the TOC transaction is exactly the "
+            "regression this test exists to catch")
     finally:
         await _purge(ids)
