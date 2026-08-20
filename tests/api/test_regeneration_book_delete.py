@@ -402,14 +402,34 @@ async def test_source_deletion_routes_are_co_transactional_and_never_strand_a_ta
             "stranded": 0,
         }, before
 
-        # ── stage 1: with the revision child alive, the revision guard is the
-        # first RESTRICT the shared transaction hits.
+        # ── stage 1: with the revision child alive, the shared transaction is
+        # refused outright. WHICH of the two RESTRICTs refuses is deliberately
+        # not pinned here. Both routes ORM-delete every job of the lesson in one
+        # unit of work, and the jobs come back from an ORDER BY-less SELECT
+        # (books.py / toc_entries.py), so their delete order is Postgres heap
+        # order, not a declared dependency — `HomeworkJob` has no relationship
+        # on `revision_of_job_id`. Source job first => the live revision child
+        # trips `fk_homework_jobs_revision_of_job_id`; revision job first => that
+        # key is satisfied, the source delete's SET NULL is attempted, and the
+        # TOC entry's `fk_regeneration_targets_toc_entry_id` refuses instead.
+        # (Verified: one ordinary lifecycle UPDATE on the source job rewrites its
+        # tuple to the end of the heap and flips the observed key on both
+        # routes.) Both are correct refusals of the same unit of work, so
+        # ordering is irrelevant to what stage 1 claims — the full before-state
+        # equality below is the real assertion: nothing at all reached disk.
+        # Stage 2 then pins the exact key on the state that actually matters,
+        # where only one job is left and no ordering can vary.
         async with SessionLocal() as session:
             with pytest.raises(IntegrityError) as exc:
                 await route(session, ids)
                 await session.commit()
             await session.rollback()
-        assert "fk_homework_jobs_revision_of_job_id" in str(exc.value)
+        assert (
+            "fk_homework_jobs_revision_of_job_id" in str(exc.value)
+            or "fk_regeneration_targets_toc_entry_id" in str(exc.value)
+        ), (
+            "the delete must be refused by one of the two RESTRICTs guarding "
+            f"this lineage, not by some unrelated failure: {exc.value}")
         assert await _state() == before, "a refused delete must change nothing"
 
         # ── stage 2: after the documented child-first purge (spec §8.3) removes
