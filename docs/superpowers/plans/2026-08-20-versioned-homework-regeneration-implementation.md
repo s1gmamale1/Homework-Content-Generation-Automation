@@ -25,6 +25,7 @@ Before the first implementation worktree is created, and again whenever the base
 5. Stop on equivalent work. On partial overlap, establish ownership and integration order before an edit.
 6. Create manual isolated worktrees from the verified base. Do not use Claude's native `--worktree` option.
 7. Confirm every worktree starts clean and at the recorded SHA before dispatching an agent.
+8. Always cut worktrees from the fully qualified remote ref, for example `git worktree add <explicit-path> -b <task-branch> origin/Nggaev-v2`; never cut from the stale local `Nggaev-v2` branch.
 
 Collision snapshot at planning time:
 
@@ -34,9 +35,26 @@ Collision snapshot at planning time:
 - `feat/selective-regeneration-preview@a5666f6` is the shelved broad-outbox implementation, not an implementation base;
 - `feat/selective-regeneration-integration@f2b325f` and its Claude worktree remain untouched;
 - `origin/pigganigeon@e0e499d` is the separate current-prompt review lane and is not merged by this feature;
-- PRs #117/#118 overlap pipeline/prompt/phase paths and must be re-inspected immediately before work begins.
+- PRs #117/#118 overlap pipeline/prompt/phase paths. They are not dependencies and are not integrated into the preview branch. Cut the preview from the then-current `origin/Nggaev-v2`; if either PR has merged before that cut, re-gate its actual merged diff and adapt the plan before dispatch. If either merges after the cut, finish and test the feature on its isolated preview base first; then, only in a separate integration worktree and only after user approval, rebase onto the newer remote base, resolve the concrete conflicts, and rerun the complete gate. Do not let a parallel agent edit either PR branch.
 
 The migration number `0063` below is provisional. The schema agent must derive the filename and `down_revision` from the single Alembic head on the verified execution base. If the head is no longer `0062`, rename the migration rather than creating a second head.
+
+The preview branch is created from `origin/Nggaev-v2`, receives the approved specification/plan commits, and stays in its own worktree for the entire build. No task branch or preview branch is merged into `Nggaev-v2`. After the feature is completely assembled, the **preview worktree itself** must pass migration, fake E2E, focused regression, full regression, frontend build/lint, and whole-branch Opus 5 review. Even then, integration into `Nggaev-v2` is a separate explicit user decision.
+
+### Disposable PostgreSQL test database
+
+Database-backed claims may not be accepted from skipped tests. Parallel lanes never share a writable database. The operations manager provisions these explicit localhost-only disposable databases before their owning tasks: `hcga_regen_lane_a_test`, `hcga_regen_lane_e_test`, `hcga_regen_lane_f_test`, `hcga_regen_lane_g_test`, `hcga_regen_lane_h_test`, and final integration database `hcga_regeneration_preview_test`. The command shape below is shown for the final database and is repeated with the exact owning lane name:
+
+```bash
+psql -h 127.0.0.1 -U macmini5 -d postgres -Atc \
+  "SELECT datname FROM pg_database WHERE datname='hcga_regeneration_preview_test'"
+createdb -h 127.0.0.1 -U macmini5 hcga_regeneration_preview_test
+export DATABASE_URL='postgresql+asyncpg://macmini5@127.0.0.1:5432/hcga_regeneration_preview_test'
+export RUN_DB_INTEGRATION=1
+uv run alembic upgrade head
+```
+
+If any database already exists, stop and establish ownership; do not drop or reuse an unknown database. If local PostgreSQL or the role is unavailable, the DB-owning task is blocked—do not waive the database tests and report green. Every database command must pass the repository's localhost/non-production guard. Agents receive only their lane's explicit `DATABASE_URL`. At final cleanup, only after re-resolving and validating each exact database name and host, matching explicit `dropdb -h 127.0.0.1 -U macmini5 <exact-name>` commands are allowed; preserve the final preview database until the user has received the test evidence.
 
 ## 2. External-Agent Operating Protocol
 
@@ -93,15 +111,19 @@ The operations manager keeps at most four Claude controllers active and reserves
 
 - Create `app/models/regeneration_campaign.py`
 - Create `app/models/regeneration_target.py`
+- Create `app/schemas/regeneration_contract.py`
+- Create `app/repositories/regeneration_campaigns.py`
+- Create `app/repositories/regeneration_targets.py`
 - Modify `app/models/homework_job.py`
 - Modify `app/models/phase_output.py`
 - Modify `app/models/__init__.py`
+- Modify `app/config.py`
 - Create the next migration under `alembic/versions/`
 - Create `tests/models/test_regeneration_models.py`
 - Create `tests/migrations/test_regeneration_schema.py`
 - Create `tests/integration/test_regeneration_constraints.py`
 
-**Must not touch:** services, repositories, API, `pipeline.py`, Notion code, or web files.
+**Must not touch:** orchestration services, API, `pipeline.py`, Notion code, or web files.
 
 ### Data contract
 
@@ -119,6 +141,7 @@ The operations manager keeps at most four Claude controllers active and reserves
 - `publication_released_at`, `publication_version`, `notion_page_id`;
 - durable claim fields `publication_claim_token`, `publication_claimed_at`, `publication_attempts`, `publication_next_attempt_at`, `publication_last_error`;
 - `terminal_at` and `terminal_reason`.
+- cancellation convergence fields `abandon_requested_at` and `abandon_requested_reason`, used when a running revision must finish cancellation before the target can become terminal.
 
 `HomeworkJob` adds nullable `revision_of_job_id` with `ON DELETE RESTRICT` and nullable unique `regeneration_target_id` with `ON DELETE RESTRICT`. A check requires the two columns to be both null or both non-null. A second check requires `batch_id IS NULL` when `revision_of_job_id IS NOT NULL`.
 
@@ -137,22 +160,28 @@ Database invariants:
 
 Do not add `revision_job_id` to the target. The authoritative one-to-one link is `HomeworkJob.regeneration_target_id`; the target's revision job is read through that unique relationship, avoiding a cyclic pair of mutable foreign keys.
 
+`app/schemas/regeneration_contract.py` is the single owner of the immutable `LaunchContract` Pydantic model used by Tasks 5–7. It contains content/extract/judge/solver provider, model and transport values, output language, session-limit strategy, solver toggle, and any existing launch option required by `HomeworkJob`. It validates through the same production helpers as ordinary launches and serializes to the campaign JSON column; no later task defines a second launch-contract type.
+
+The two repositories expose only common primitives needed by later lanes: `get_campaign_for_update`, `get_target_for_update`, `get_target_by_revision_job`, `revision_job_for_target`, `create_campaign`, `create_target`, and fenced status/claim updates. Task 5 creates separate read-only source queries; Task 6 uses these common target primitives; Tasks 7–8 extend the repositories sequentially.
+
+Configuration is declared here so later lanes share one contract: `regeneration_enabled=false`, `regeneration_publisher_enabled=false`, publisher interval/lease/attempt/backoff settings, and `regeneration_launch_wave_size` / `regeneration_launch_wave_interval_seconds` conservative stagger defaults. No task enables either flag.
+
 ### TDD steps
 
 1. Write model tests asserting the new columns, relationships, check names, partial index predicate, and restrictive FK semantics.
-2. Write migration tests that upgrade from the current head, inspect every table/index/check/FK/trigger, then downgrade cleanly.
+2. Write migration tests that upgrade from the current head, inspect every table/index/check/FK/trigger, then downgrade cleanly. Because this repository has no trigger precedent, also assert the trigger function body, trigger timing/events, failed direct SQL before approval, allowed SQL after approval, and removal of both trigger and function on downgrade.
 3. Write PostgreSQL integration tests that race two active targets in the same language, allow UZ V2 and RU V2 independently, reject duplicate versions in one language, reject revision+batch, reject source deletion, and reject publication before approval.
 4. Run the tests and record the RED failures.
 5. Implement the models and migration with named constraints.
 6. Run:
 
 ```bash
-uv run pytest -q tests/models/test_regeneration_models.py tests/migrations/test_regeneration_schema.py
+RUN_DB_INTEGRATION=1 uv run pytest -q tests/models/test_regeneration_models.py tests/migrations/test_regeneration_schema.py
 RUN_DB_INTEGRATION=1 uv run pytest -q tests/integration/test_regeneration_constraints.py
 uv run alembic heads
 ```
 
-Expected: all named tests pass and `alembic heads` prints exactly one head.
+Expected: all named tests pass with **zero skips**, and `alembic heads` prints exactly one head. Run `pytest ... -ra` and fail the gate if any regeneration migration/integration test reports skipped.
 
 7. Commit: `feat(regeneration): add campaign and revision schema`
 
@@ -256,13 +285,15 @@ def write_or_adopt_versioned_homework(
 ) -> str: ...
 ```
 
-The first block of `Homework V{n}` is a deterministic machine-readable marker containing all five fields. The stored page ID wins. Without it, enumerate exact-title child pages, read the candidate's first blocks, and adopt only an exact marker match. A same-title page with missing/different marker raises `VersionPageCollision`; it is never cleared or overwritten. With no candidate, create the page with the marker and the same grouped homework layout used by V1. The function is synchronous; retry/leases remain Task 8's responsibility.
+The first block of `Homework V{n}` is a deterministic machine-readable marker containing all five fields. The stored page ID wins only after its marker is revalidated. Without it, enumerate exact-title child pages, read the candidate's first blocks, and adopt only an exact marker match. A same-title page with missing/different marker raises `VersionPageCollision`; it is never cleared or overwritten. With no candidate, create the page with the marker and the same grouped homework layout used by V1. The function is synchronous; retry/leases remain Task 8's responsibility.
+
+Crash recovery covers the **whole page tree**, not only root-page creation. Compute a deterministic digest over the ordered phase names and markdown. Append a completion marker only after every expected child/leaf is populated. When a matching root marker exists without the matching completion digest, the writer may clear and rebuild only the child/leaf pages owned beneath that exact marked revision page, then stamp completion. It must never clear the root marker, V1, a different version, or a same-title page whose marker does not match. A retry with the matching completion digest performs no uploads or writes.
 
 Refactor the existing V1 renderer into shared pure helpers while preserving the current `Homework` title, file attachments, nested layout, replace semantics, and call ordering byte-for-byte at the Notion-block level. Do not route V1 through marker logic.
 
 ### TDD steps
 
-1. Write fake-client tests for marker round-trip, stored-ID reuse, crash-window marker adoption, wrong-marker collision, missing-marker collision, independent UZ/RU V2 markers, and V2/V3 sibling titles.
+1. Write fake-client tests for marker round-trip, stored-ID revalidation/reuse, root-only crash repair, partially populated leaf repair, completion-digest idempotency, wrong-marker collision, missing-marker collision, independent UZ/RU V2 markers, and V2/V3 sibling titles.
 2. Add parity tests proving the legacy V1 `_push_to_notion` produces the same page tree and blocks before/after helper extraction.
 3. Run RED, implement, then run:
 
@@ -293,7 +324,7 @@ uv run pytest -q tests/services/test_notion_versioned_homework.py tests/services
 
 **Must not touch:** backend files, `web/src/lib/api.ts`, or `web/src/lib/types.ts`.
 
-Use local fixture objects declared in `regeneration-state.test.ts` and component files; Task 10 replaces them with typed API data. `regeneration-feature.ts` exports `IS_REGENERATION_ENABLED = import.meta.env.VITE_REGENERATION_ENABLED === "1"`; the route and nav item are absent when false. The backend flag remains the authoritative safety gate. The UI must say **Regenerating**, never reuse Fleet's **Generating** label.
+Use local fixture objects declared in `regeneration-state.test.ts` and component files; Task 10 replaces them with typed API data. `regeneration-feature.ts` exports a pure `isRegenerationEnabled(env)` helper plus `IS_REGENERATION_ENABLED`, reading `(import.meta as ImportMeta & { env?: Record<string, string> }).env ?? {}` so Node's `tsx --test` runner does not throw when `import.meta.env` is absent. The route and nav item are absent when false. The backend flag remains the authoritative safety gate. The UI must say **Regenerating**, never reuse Fleet's **Generating** label.
 
 The shell must visibly support:
 
@@ -357,8 +388,7 @@ cd web && npm test && npm run build
 
 **Owns:**
 
-- Create `app/repositories/regeneration_campaigns.py`
-- Create `app/repositories/regeneration_targets.py`
+- Create `app/repositories/regeneration_sources.py`
 - Create `app/services/regeneration_discovery.py`
 - Create `app/services/regeneration_estimator.py`
 - Modify `app/repositories/cost.py`
@@ -367,7 +397,7 @@ cd web && npm test && npm run build
 - Create `tests/services/test_regeneration_estimator.py`
 - Create `tests/integration/test_regeneration_source_and_version_queries.py`
 
-**Must not touch:** `app/repositories/jobs.py`, `pipeline.py`, phase-output writes, legacy archive callers, API router, publisher, main lifespan, or web files.
+**Must not touch:** `app/repositories/regeneration_campaigns.py`, `app/repositories/regeneration_targets.py`, `app/repositories/jobs.py`, `pipeline.py`, phase-output writes, legacy archive callers, API router, publisher, main lifespan, or web files.
 
 ### Source and discovery contract
 
@@ -414,6 +444,8 @@ The estimator:
 - falls back to a documented conservative token envelope multiplied by the existing static pricing table when no matching observation exists;
 - returns low/high USD estimates plus a line-item explanation and an explicit `is_estimate=true` marker.
 
+This task is the sole Wave-2 owner of `app/repositories/cost.py`. In the same commit, add `HomeworkJob.revision_of_job_id IS NULL` to `section_prior_api_cost` and every ordinary rebill/dedup cost lookup, with focused tests proving revision usage is excluded from normal Fleet prior-cost warnings while still included in regeneration actual-cost queries.
+
 ### TDD steps
 
 1. Write discovery tests for incomplete/failed/teacher-material exclusion, immediate source lineage, V1 fallback, latest-published V3 source choice, and language isolation.
@@ -441,22 +473,28 @@ RUN_DB_INTEGRATION=1 uv run pytest -q tests/integration/test_regeneration_source
 **Owns:**
 
 - Create `app/services/regeneration_snapshot.py`
+- Create `app/services/regeneration_job_state.py`
 - Modify `app/repositories/jobs.py`
 - Modify `app/repositories/phase_outputs.py`
+- Modify `app/repositories/regeneration_targets.py`
+- Modify `app/repositories/subject_coverage.py`
 - Modify `app/services/pipeline.py`
+- Modify `app/services/worker.py`
 - Modify `app/services/agent.py` only for copied-extract provenance if the existing helper cannot accept the source identifiers
 - Modify `app/services/notion_archive.py` for the intrinsic revision guard
 - Modify `app/api/v1/jobs.py` for synchronous archive-route conflicts
 - Modify `app/api/v1/batch.py` for defensive sweep exclusion
 - Modify `app/api/v1/books.py` for clean book-delete conflict and TOC isolation
+- Modify `main.py` only to reconcile revision targets after existing startup terminal-job sweeps
 - Create `tests/services/test_regeneration_snapshot.py`
 - Create `tests/services/test_regeneration_pipeline.py`
 - Create `tests/services/test_regeneration_archive_isolation.py`
 - Create `tests/repositories/test_regeneration_fleet_isolation.py`
+- Create `tests/repositories/test_regeneration_terminal_reconciliation.py`
 - Create `tests/api/test_regeneration_archive_isolation.py`
 - Create `tests/api/test_regeneration_book_delete.py`
 
-**Must not touch:** Task 5 files, campaign state orchestration, publisher, new regeneration API router, config/main, or web files.
+**Must not touch:** Task 5 files (including `app/repositories/cost.py` and `app/repositories/regeneration_sources.py`), campaign state orchestration, publisher, new regeneration API router, config, or web files. `main.py` ownership is limited to the existing startup sweep transaction; Task 8 later adds the publisher lifespan sequentially.
 
 ### Snapshot service
 
@@ -476,9 +514,28 @@ Copy exactly these `PhaseOutput` columns for each phase in `plan.copied_phases`:
 - `content_json`, `authoring_mode`, `content_schema_version`, `renderer_version`;
 - set `claim_token=NULL` and `copied_from_phase_output_id=source_phase.id`.
 
-Copied rows must be source-terminal and usable. Do not copy `id`, `job_id`, or the source claim token. Seed copied rows at their canonical original `phase_order`; leave regenerated rows absent. When extraction is copied, also call the existing zero-cost `record_cached_lesson_extract` path with source job/phase provenance. Do not clone any paid `AgentUsage` row for any copied phase.
+Copied rows must be source-terminal and satisfy the pipeline's exact resumability predicate: `status == "done"` and either nonblank `output_md` or non-null `content_json`. For each source row, compute the expected canonical position from the current full subject sequence and require `source.phase_order == expected_order`; fail source eligibility if it differs rather than ambiguously copying or renumbering it. Do not copy `id`, `job_id`, or the source claim token. Seed copied rows at that verified canonical `phase_order`; leave regenerated rows absent. When extraction is copied, also call the existing zero-cost `record_cached_lesson_extract` path with source job/phase provenance. Do not clone any paid `AgentUsage` row for any copied phase.
 
-The ordinary pipeline then sees `selected_phases=NULL`, skips seeded done rows, creates missing rows, and preserves existing judge/solver behavior unchanged. On successful revision completion, update the target to `awaiting_canary_approval` or `publication_pending` according to campaign approval and **do not** call legacy `archive_job`. Hard job failure maps to `generation_failed`; `solver_status="mismatch_blocked"` remains hard. Soft judge states remain publishable exactly as specified.
+The ordinary pipeline then sees `selected_phases=NULL`, skips seeded done rows, creates missing rows, and preserves existing judge/solver behavior unchanged. Pipeline completion must **not** call legacy `archive_job` for a revision. Soft judge states remain publishable exactly as specified; `solver_status="mismatch_blocked"` remains a hard job failure.
+
+### Terminal job → target reconciliation
+
+`regeneration_job_state.py` owns one idempotent function and one repair sweep:
+
+```python
+async def reconcile_revision_job(session: AsyncSession, job_id: UUID) -> None: ...
+async def reconcile_terminal_revision_jobs(session: AsyncSession) -> int: ...
+```
+
+It joins the job, target, and campaign under row locks and maps current job truth:
+
+- `done` + complete snapshot + campaign not approved → `awaiting_canary_approval`;
+- `done` + complete snapshot + approved/released campaign → `publication_pending`;
+- `failed` → `generation_failed` unless `abandon_requested_at` is set, then terminal `abandoned`;
+- `cancelled` → `generation_failed` unless `abandon_requested_at` is set, then terminal `abandoned`;
+- `pending`, `running`, or `cancelling` remain `generating`.
+
+The worker calls it after every `pipeline.run` return, inside `_mark_failed` before commit, and after every worker-owned cancel finalization. API cancel of a pending revision calls it in the cancel transaction. Both existing terminal sweeps—`fail_exhausted_pending_jobs` and `reclaim_stale_cancelling` in startup/worker maintenance—run the bulk reconciliation before commit. The bulk function also repairs a crash between a job terminal commit and its target update; Task 7 invokes it before campaign actions/reports, and Task 8 invokes it at the start of each publisher pass. This enumeration is load-bearing: no terminal writer may leave a target permanently `generating`.
 
 Before the target becomes publication-pending, assert a complete terminal row exists for every required canonical phase and every phase is usable under the existing structured-content rules.
 
@@ -492,22 +549,26 @@ Every normal Fleet query must explicitly include `HomeworkJob.revision_of_job_id
 - batch adoption and resume selection;
 - batch status/rollup paths that query jobs outside a batch join;
 - book TOC status enrichment;
+- `subject_coverage.job_status_by_book` used by the dashboard;
 - `section_prior_api_cost` and normal dedup/rebill warnings.
+
+Task 5 owns the `section_prior_api_cost` implementation and its focused tests; Task 6's integration test verifies the combined checkpoint behavior without editing `cost.py`.
 
 Revision jobs remain claimable through the generic worker queue and available by explicit job ID for pipeline, phase, SSE, download, cancellation, and safe retry reuse.
 
 When legacy archival is enabled and `notion_archive.archive_job` loads a job, reject any `revision_of_job_id IS NOT NULL` before resolving lesson/page identity or constructing a Notion client: persist deterministic skip reason `regeneration revision: use versioned publisher` and return. This guard applies even with `force=True` or a claim token. The pipeline completion branch already avoids calling it for revisions; when Notion is globally disabled, retain the current no-DB-work early return. `POST /jobs/{id}/retry-archive` and the force route must synchronously return 409 for revision jobs. Batch rearchive selection excludes them defensively.
 
-Book deletion with any regeneration campaign/target/revision history returns a controlled 409 before deletes; do not leak a raw restrictive-FK error.
+Book deletion, `DELETE /books/{book_id}/toc/{entry_id}`, and TOC re-extraction/replacement with any regeneration campaign/target/revision history return controlled 409 responses before deletes; do not leak a raw restrictive-FK error. Test the repository-level book delete, the book route, the TOC-entry route, and the `/toc/retry` guard separately.
 
 ### TDD steps
 
-1. Write snapshot tests that fail first and pin the full copied-column set, canonical ordering, idempotent job creation, missing-source refusal, zero cloned usages, copied extract marker, and complete-snapshot validation.
+1. Write snapshot tests that fail first and pin the full copied-column set, exact `_done_phase_md` predicate, canonical-order validation/refusal, idempotent job creation, missing-source refusal, zero cloned usages, copied extract marker, and complete-snapshot validation.
 2. Write pipeline tests using fake agent/judge/solver for mixed copied/regenerated flows, soft judge statuses, hard failure, solver blocked, canary hold, and approved publication release.
-3. Write one test for every Fleet query/caller listed above. Do not accept one indirect test as coverage for several SQL functions.
+3. Write one test for every Fleet query/caller listed above, including `subject_coverage.job_status_by_book`. Do not accept one indirect test as coverage for several SQL functions.
 4. Write archive tests proving `force=True`, automatic claim token, retry route, force route, and batch sweep all cannot read or write Notion for a revision.
-5. Write the clean book-delete 409 test.
-6. Run RED, implement, then run:
+5. Write clean 409 tests for book delete, TOC-entry delete, TOC retry/re-extract, and repository deletion.
+6. Write a test for every terminal writer: pipeline hard-return failure, successful pipeline return, worker crash retry/terminal failure, pending cancel, running cancel finalization, stale-cancelling sweep, exhausted-pending sweep, and crash-repair bulk reconciliation. Assert no terminal job leaves its target `generating` and no active-lineage lock is permanently orphaned.
+7. Run RED, implement, then run:
 
 ```bash
 uv run pytest -q \
@@ -515,6 +576,7 @@ uv run pytest -q \
   tests/services/test_regeneration_pipeline.py \
   tests/services/test_regeneration_archive_isolation.py \
   tests/repositories/test_regeneration_fleet_isolation.py \
+  tests/repositories/test_regeneration_terminal_reconciliation.py \
   tests/api/test_regeneration_archive_isolation.py \
   tests/api/test_regeneration_book_delete.py \
   tests/services/test_pipeline_flow1.py \
@@ -523,7 +585,7 @@ uv run pytest -q \
   tests/api/test_never_pay_twice.py
 ```
 
-7. Commit: `feat(regeneration): create isolated complete revision jobs`
+8. Commit: `feat(regeneration): create isolated complete revision jobs`
 
 ---
 
@@ -578,6 +640,8 @@ Creation resolves and stores each target's source and phase plan, rejects any ac
 
 Approval locks the campaign and targets, sets `approved_at` once, releases successful canaries to `publication_pending`, creates all remaining revision jobs exactly once, and moves them to `generating`. Repeated approval returns the current campaign without duplicate jobs. A one-target campaign uses this same approval but has no separate bulk gate.
 
+Bulk release must reuse `app.services.launch_stagger.stagger_offset`. Order only the jobs actually created/released, then set each revision job's `scheduled_at` from `regeneration_launch_wave_size` and `regeneration_launch_wave_interval_seconds`. The response/report records wave count and final scheduled offset. Tests pin that a campaign larger than one wave is decorrelated, a one-target canary starts immediately, repeated approval does not re-stagger existing jobs, and zero-valued knobs are the explicit kill switch. Revision jobs intentionally have no normal batch pause; campaign cancel is their authoritative bulk stop control and must visit every nonterminal target/job.
+
 Reject-before-approval transitions every canary revision target and every planned target to terminal `abandoned`, sets a reason distinguishing rejected canary, creates no version, and never publishes.
 
 Use this complete cancel/abandon table:
@@ -588,20 +652,20 @@ Use this complete cancel/abandon table:
 | `generating` | request safe job cancellation, then `abandoned` when terminal | same | same |
 | `awaiting_canary_approval` | `abandoned`, no version | not reachable after approval | `abandoned` |
 | `publication_pending` | not reachable before approval | `abandoned`, preserve reserved version if any | `abandoned` |
-| `publishing` | not reachable before approval | do not revoke unknown remote request; set cancel intent and let claim resolve to `published` or `publication_failed`, then operator resolves | same safe rule |
-| `generation_failed` | `abandoned` | remains attention-required unless explicit abandonment is part of cancel | `abandoned` |
-| `publication_failed` | not reachable before approval | remains attention-required unless explicit abandonment is part of cancel | `abandoned`, preserve version |
+| `publishing` | not reachable before approval | do not revoke unknown remote request; set abandon intent and let claim resolve to `published` or `abandoned` after a failed request | same safe rule |
+| `generation_failed` | `abandoned` | `abandoned` with campaign-cancel reason | `abandoned` |
+| `publication_failed` | not reachable before approval | `abandoned` with campaign-cancel reason, preserve version | `abandoned`, preserve version |
 | `published` | unchanged | unchanged | illegal |
 | `abandoned` | unchanged | unchanged | idempotent |
 
-Campaign cancellation is not terminal until every target is `published` or `abandoned`. It must never leave a nonterminal target hidden behind a terminal campaign. `completed` means all published; `completed_with_abandonments` means at least one abandoned; `cancelled` is used only when cancellation produced no published target and all targets are abandoned. Reports preserve reasons.
+Campaign cancellation first stamps `abandon_requested_at/reason` on every generating revision, then uses the existing safe job-cancellation path. Terminal reconciliation completes those targets as `abandoned`; a crash or delayed running cancellation is repaired by the reconciler. Campaign cancellation is not terminal until every target is `published` or `abandoned`. It must never leave a nonterminal target hidden behind a terminal campaign. `completed` means all published; `completed_with_abandonments` means at least one abandoned; `cancelled` is used only when cancellation produced no published target and all targets are abandoned. Reports preserve reasons.
 
 Generation retry creates/requeues through the safe existing job retry semantics without duplicating snapshots or changing the phase plan. Publication retry clears backoff/claim error and moves the same target/version to `publication_pending`; it never calls a model.
 
 ### TDD steps
 
 1. Write exhaustive parameterized tests for every row of the table and for rollup outcomes.
-2. Test deterministic canary selection, all-target preflight before spend, only-canary job creation, one-target flow, idempotent launch/approve/reject/cancel/retry, and no dangling nonterminal targets.
+2. Test deterministic canary selection, all-target preflight before spend, only-canary job creation, one-target flow, staggered bulk scheduling, campaign-wide cancel without a batch, idempotent launch/approve/reject/cancel/retry, and no dangling nonterminal targets.
 3. Add DB race tests for two approvals, approval versus cancel, two job creators, and active-lineage conflicts.
 4. Run RED, implement with row locks and repository compare-and-set updates, then run:
 
@@ -622,7 +686,6 @@ RUN_DB_INTEGRATION=1 uv run pytest -q tests/integration/test_regeneration_campai
 
 - Create `app/services/regeneration_publisher.py`
 - Extend `app/repositories/regeneration_targets.py`
-- Modify `app/config.py`
 - Modify `main.py`
 - Create `tests/services/test_regeneration_publisher.py`
 - Create `tests/services/test_regeneration_publisher_lifespan.py`
@@ -650,17 +713,17 @@ Claim approved `publication_pending` and retry-due `publication_failed` rows usi
 
 `reserve_publication_version` takes a transaction-scoped PostgreSQL advisory lock derived from `(toc_entry_id, output_language)`, returns an existing reserved version unchanged, otherwise stores `max(existing version, 1) + 1`. The database unique constraint remains the final fence. Version 1 is logical and absent from the table. Reserved numbers are never cleared or reused.
 
-For each claim:
+At the beginning of every `run_once`, call `reconcile_terminal_revision_jobs` before selecting publication work, so a crash between a job terminal write and target update self-heals even without an API read. For each claim:
 
 1. Reload and validate campaign approval, target claim, complete revision snapshot, source language, and Notion destination.
 2. Reserve/reuse the version.
 3. Build the full `phase_md` mapping before remote I/O.
 4. Call `write_or_adopt_versioned_homework` in a worker thread with the stored page ID and immutable marker.
 5. On success, compare claim token and set page ID, `published`, `terminal_at`; then roll up the campaign.
-6. On transient failure, preserve page/version identity, calculate bounded exponential backoff, and return to retryable `publication_failed`.
+6. On transient failure, preserve page/version identity and either calculate bounded exponential backoff into retryable `publication_failed`, or transition to terminal `abandoned` when campaign cancellation already stamped an abandon intent.
 7. On collision or exhausted automatic attempts, leave `publication_failed` for operator retry/abandonment.
 
-Configuration:
+Configuration declared by Task 1 is consumed here:
 
 - `regeneration_enabled: bool = False` gates the feature;
 - `regeneration_publisher_enabled: bool = False` gates the loop separately;
@@ -733,6 +796,8 @@ Campaign detail includes:
 - per-target source version, revision job, generation state, publication state, version, page link, attempts, errors, terminal reason;
 - explicit buckets `published`, `publication_pending`, `publication_failed`, `generation_failed`, `abandoned`;
 - human-readable reason text for every failure/abandonment.
+
+Before campaign detail/report and before every state-changing campaign action, run terminal revision reconciliation in the same request transaction. This is the operator-facing crash-repair path and prevents a terminal job from remaining visibly or logically `generating` if the worker died between commits.
 
 Do not expose a prompt-set selector or a per-target publication approval endpoint.
 
@@ -815,8 +880,15 @@ npm run lint
 - Create `tests/integration/test_regeneration_failure_e2e.py`
 - Create `docs/runbooks/versioned-homework-regeneration.md`
 - Modify `.env.example`
-- Modify `README.md` only to link the runbook and describe the disabled flag
-- Add a worklog entry only if repository policy requires it at this local completion point
+- Modify `README.md`
+- Modify `docs/HOW_IT_WORKS.md`
+- Modify `docs/CODE_MAP.md`
+- Modify `docs/DATABASE.md`
+- Modify `docs/DEPLOY.md`
+- Modify `docs/memory/MASTER_MEMORY.md`
+- Modify `docs/memory/INDEX.md`
+- Modify `docs/memory/ROADMAP.md`
+- Move this plan with `git mv` to `docs/superpowers/plans/shipped/2026-08-20-versioned-homework-regeneration-implementation.md` only after every implementation and acceptance test passes
 
 **Must not:** enable the feature, call live Notion/Gemini, deploy, push, or change prompt files.
 
@@ -853,6 +925,8 @@ Document in plain operator language:
 - flag-off deployment verification;
 - no production enablement or sample campaign without a separate approval;
 - rollback: turn both flags off; existing V1/V2/V3 pages remain untouched.
+
+Repository completion documentation is mandatory, not conditional: write the indexed worklog, close the shipped roadmap item, update all live architecture/database/deploy references above, and history-preserve the plan move. These documentation changes describe the code as shipped-but-flag-off; they do not authorize enablement or merge.
 
 ### Verification steps
 
@@ -902,6 +976,8 @@ uv run pytest -q tests/services tests/repositories tests/api
 ```bash
 RUN_DB_INTEGRATION=1 uv run pytest -q tests/integration
 ```
+
+Run the regeneration DB/migration subsets with `-ra` and require zero skipped regeneration tests. A skipped constraint, trigger, lease, race, or migration test fails this gate even if pytest exits zero.
 
 5. Run frontend verification:
 
