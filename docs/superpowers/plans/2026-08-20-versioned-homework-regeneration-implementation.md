@@ -51,6 +51,7 @@ psql -h 127.0.0.1 -U macmini5 -d postgres -Atc \
 createdb -h 127.0.0.1 -U macmini5 hcga_regeneration_preview_test
 export DATABASE_URL='postgresql+asyncpg://macmini5@127.0.0.1:5432/hcga_regeneration_preview_test'
 export RUN_DB_INTEGRATION=1
+export REGEN_REQUIRE_DB=1
 uv run alembic upgrade head
 ```
 
@@ -67,6 +68,7 @@ For every task:
 5. The operations manager independently inspects the diff, verifies no out-of-scope files changed, runs the named task tests, and records the reviewer verdict.
 6. Failed review returns to the same task branch. A task is not integrated because an agent merely says it is complete.
 7. Integration uses cherry-picks into a local preview branch in the dependency order below. Resolve overlaps deliberately; never accept a blanket conflict resolution.
+8. Frontend worktree setup runs `cd web && npm ci` against the committed lockfile before frontend tests; `web/node_modules` is not shared or assumed to exist.
 
 All automated provider and Notion tests use fakes. Set `REGENERATION_ENABLED=false`, `NOTION_ENABLED=false`, and fake-provider settings in test invocations unless a test explicitly opts into the guarded behavior.
 
@@ -118,6 +120,7 @@ The operations manager keeps at most four Claude controllers active and reserves
 - Modify `app/models/phase_output.py`
 - Modify `app/models/__init__.py`
 - Modify `app/config.py`
+- Modify `tests/conftest.py`
 - Create the next migration under `alembic/versions/`
 - Create `tests/models/test_regeneration_models.py`
 - Create `tests/migrations/test_regeneration_schema.py`
@@ -157,6 +160,7 @@ Database invariants:
 - `abandoned` requires terminal time; all other target states require `terminal_at IS NULL`;
 - publication states require `publication_released_at IS NOT NULL`;
 - a PostgreSQL trigger rejects transition into `publication_pending`, `publishing`, or `published` unless the owning campaign has `approved_at IS NOT NULL` and is not rejected/cancelled.
+- `RegenerationTarget.toc_entry_id` uses explicit `ON DELETE RESTRICT`; no implicit TOC cascade may erase or partially detach audit history.
 
 Do not add `revision_job_id` to the target. The authoritative one-to-one link is `HomeworkJob.regeneration_target_id`; the target's revision job is read through that unique relationship, avoiding a cyclic pair of mutable foreign keys.
 
@@ -165,6 +169,8 @@ Do not add `revision_job_id` to the target. The authoritative one-to-one link is
 The two repositories expose only common primitives needed by later lanes: `get_campaign_for_update`, `get_target_for_update`, `get_target_by_revision_job`, `revision_job_for_target`, `create_campaign`, `create_target`, and fenced status/claim updates. Task 5 creates separate read-only source queries; Task 6 uses these common target primitives; Tasks 7–8 extend the repositories sequentially.
 
 Configuration is declared here so later lanes share one contract: `regeneration_enabled=false`, `regeneration_publisher_enabled=false`, publisher interval/lease/attempt/backoff settings, and `regeneration_launch_wave_size` / `regeneration_launch_wave_interval_seconds` conservative stagger defaults. No task enables either flag.
+
+Add a test-only collection guard in `tests/conftest.py`: when `REGEN_REQUIRE_DB=1`, collection fails immediately unless `RUN_DB_INTEGRATION=1` and an explicit localhost, non-production `DATABASE_URL` are present. The lane and final integration commands set both flags; this converts an accidental skip into a hard failure.
 
 ### TDD steps
 
@@ -227,9 +233,20 @@ def build_phase_plan(
     refresh_extraction: bool = False,
     exclusion_acknowledged: bool = False,
 ) -> RegenerationPhasePlan: ...
+
+@dataclass(frozen=True)
+class SnapshotValidation:
+    usable: bool
+    reasons: tuple[str, ...]
+
+def validate_complete_snapshot(
+    *, subject: str, rows: Collection[PhaseRowView]
+) -> SnapshotValidation: ...
 ```
 
 The implementation imports the canonical subject flow and `PHASE_DEPS` from the same production authority used by the pipeline. It preserves canonical order, computes transitive downstream closure, refuses unknown or unavailable phases, and requires acknowledgement only when an exclusion actually breaks an affected edge. With extraction enabled, all content phases enter the closure before exclusions.
+
+`validate_complete_snapshot` is the single Wave-1 authority used by both Task 5 discovery and Task 6 copy/publication gates. It requires exactly one row for extract plus every canonical content phase; each row must satisfy the pipeline's resumability predicate (`status == "done"` and nonblank `output_md` or non-null `content_json`); and each phase name/order must match the current canonical sequence. It returns stable operator-facing reasons, including an explicit `source flow differs from the currently deployed flow` reason. Later lanes may add job-kind/status checks around it but may not redefine row completeness.
 
 `regeneration_states.py` exposes pure functions for legal campaign/target transitions and `roll_up_campaign(target_statuses, approved, cancelled)` so services do not duplicate terminality rules. `generation_failed` and `publication_failed` remain nonterminal/attention-required; only `published` and `abandoned` are terminal.
 
@@ -238,8 +255,9 @@ The implementation imports the canonical subject flow and `PHASE_DEPS` from the 
 1. Write table-driven tests for every subject flow and graph edge.
 2. Pin these measured examples: flashcards → 10/11 content phases, memory-check → 5, boss-arena → 2, reflection → 1.
 3. Test deterministic ordering, duplicate inputs, invalid phases, extraction off/on, warning-backed exclusion, and unaffected exclusions.
-4. Test every legal and illegal campaign/target transition and complete rollups including mixed published/abandoned/failure cases.
-5. Run RED, implement the smallest pure code, then run:
+4. Test complete-snapshot validation for missing, duplicate, failed, blank, structured, order-drifted, and flow-drifted rows; pin the stable reason codes/text.
+5. Test every legal and illegal campaign/target transition and complete rollups including mixed published/abandoned/failure cases.
+6. Run RED, implement the smallest pure code, then run:
 
 ```bash
 uv run pytest -q tests/services/test_regeneration_planner.py tests/services/test_regeneration_states.py
@@ -347,7 +365,7 @@ For a one-target campaign, label the approval `Approve canary and publish V2`; n
 
 ```bash
 cd web
-npm test -- --test-name-pattern=regeneration
+npm test
 npm run build
 npm run lint
 ```
@@ -419,7 +437,7 @@ async def preflight_notion_destinations(
 ) -> list[NotionPreflightFailure]: ...
 ```
 
-Eligibility requires a done `kind="homework"` job with a complete usable snapshot. For V3+, `resolve_default_source` chooses the highest successfully published `publication_version` for the same `(toc_entry_id, output_language)`; otherwise it chooses the latest completed non-revision V1 job in that language. Never choose an unpublished or abandoned revision.
+Eligibility requires a done `kind="homework"` job whose rows pass Task 2's `validate_complete_snapshot`; Task 5 must import that predicate and surface its stable reasons rather than implement another completeness definition. For V3+, `resolve_default_source` chooses the highest successfully published `publication_version` for the same `(toc_entry_id, output_language)`; otherwise it chooses the latest completed non-revision V1 job in that language. Never choose an unpublished or abandoned revision. If later flow changes invalidate an old source, discovery explains that the source flow differs from the currently deployed flow.
 
 Preflight reuses `_resolve_subject_page_id`, existing lesson-title disambiguation, stored `notion_lesson_page_id`, and subject/grade/language mapping. It performs read-only validation and returns all missing mappings together. It makes no Notion writes and no model calls.
 
@@ -480,7 +498,6 @@ RUN_DB_INTEGRATION=1 uv run pytest -q tests/integration/test_regeneration_source
 - Modify `app/repositories/subject_coverage.py`
 - Modify `app/services/pipeline.py`
 - Modify `app/services/worker.py`
-- Modify `app/services/agent.py` only for copied-extract provenance if the existing helper cannot accept the source identifiers
 - Modify `app/services/notion_archive.py` for the intrinsic revision guard
 - Modify `app/api/v1/jobs.py` for synchronous archive-route conflicts
 - Modify `app/api/v1/batch.py` for defensive sweep exclusion
@@ -494,7 +511,7 @@ RUN_DB_INTEGRATION=1 uv run pytest -q tests/integration/test_regeneration_source
 - Create `tests/api/test_regeneration_archive_isolation.py`
 - Create `tests/api/test_regeneration_book_delete.py`
 
-**Must not touch:** Task 5 files (including `app/repositories/cost.py` and `app/repositories/regeneration_sources.py`), campaign state orchestration, publisher, new regeneration API router, config, or web files. `main.py` ownership is limited to the existing startup sweep transaction; Task 8 later adds the publisher lifespan sequentially.
+**Must not touch:** Task 5 files (including `app/repositories/cost.py` and `app/repositories/regeneration_sources.py`), `app/services/agent.py` (its existing cached-extract helper already accepts both source identifiers), `app/repositories/books.py`, `app/repositories/toc_entries.py`, campaign state orchestration, publisher, new regeneration API router, config, or web files. `main.py` ownership is limited to a separate guarded reconciliation step after the existing startup sweep; Task 8 later adds the publisher lifespan sequentially.
 
 ### Snapshot service
 
@@ -514,7 +531,7 @@ Copy exactly these `PhaseOutput` columns for each phase in `plan.copied_phases`:
 - `content_json`, `authoring_mode`, `content_schema_version`, `renderer_version`;
 - set `claim_token=NULL` and `copied_from_phase_output_id=source_phase.id`.
 
-Copied rows must be source-terminal and satisfy the pipeline's exact resumability predicate: `status == "done"` and either nonblank `output_md` or non-null `content_json`. For each source row, compute the expected canonical position from the current full subject sequence and require `source.phase_order == expected_order`; fail source eligibility if it differs rather than ambiguously copying or renumbering it. Do not copy `id`, `job_id`, or the source claim token. Seed copied rows at that verified canonical `phase_order`; leave regenerated rows absent. When extraction is copied, also call the existing zero-cost `record_cached_lesson_extract` path with source job/phase provenance. Do not clone any paid `AgentUsage` row for any copied phase.
+Before copying, call Task 2's `validate_complete_snapshot`; do not duplicate its predicate. For each source row already validated there, use its verified canonical `phase_order`; never silently renumber it. Do not copy `id`, `job_id`, or the source claim token. Seed copied rows at that verified canonical `phase_order`; leave regenerated rows absent. When extraction is copied, call the existing zero-cost `record_cached_lesson_extract` path with source job/phase provenance without changing `agent.py`. Do not clone any paid `AgentUsage` row for any copied phase.
 
 The ordinary pipeline then sees `selected_phases=NULL`, skips seeded done rows, creates missing rows, and preserves existing judge/solver behavior unchanged. Pipeline completion must **not** call legacy `archive_job` for a revision. Soft judge states remain publishable exactly as specified; `solver_status="mismatch_blocked"` remains a hard job failure.
 
@@ -535,7 +552,9 @@ It joins the job, target, and campaign under row locks and maps current job trut
 - `cancelled` → `generation_failed` unless `abandon_requested_at` is set, then terminal `abandoned`;
 - `pending`, `running`, or `cancelling` remain `generating`.
 
-The worker calls it after every `pipeline.run` return, inside `_mark_failed` before commit, and after every worker-owned cancel finalization. API cancel of a pending revision calls it in the cancel transaction. Both existing terminal sweeps—`fail_exhausted_pending_jobs` and `reclaim_stale_cancelling` in startup/worker maintenance—run the bulk reconciliation before commit. The bulk function also repairs a crash between a job terminal commit and its target update; Task 7 invokes it before campaign actions/reports, and Task 8 invokes it at the start of each publisher pass. This enumeration is load-bearing: no terminal writer may leave a target permanently `generating`.
+The worker calls `reconcile_revision_job` from `_execute_job`'s `finally` in its **own new session/transaction and guarded try/except**, before removing local running-job bookkeeping. This single placement covers normal `pipeline.run` return, hard-return failure, raised `CancelWonSignal`, `LeaseLostSignal`, worker crash/`_mark_failed`, and the `SessionLimitPause` / `SlotSaturation` branches whose requeue can finalize a concurrent cancellation. API cancel of a pending revision also reconciles after its job transaction.
+
+The repair sweep never shares a transaction with `fail_exhausted_pending_jobs`, `reclaim_stale_cancelling`, worker-registry maintenance, or startup's critical reconcile. In both worker maintenance and `main._reconcile_on_startup`, run `reconcile_terminal_revision_jobs` as a subsequent named step with its own session/transaction and its own broad logging guard. If the regeneration table/migration is temporarily unavailable, ordinary stuck-job reclaim and process startup continue unaffected. The bulk function repairs a crash between a job terminal commit and its target update; Task 7 invokes it before campaign actions/reports, and Task 8 invokes it at the start of each publisher pass.
 
 Before the target becomes publication-pending, assert a complete terminal row exists for every required canonical phase and every phase is usable under the existing structured-content rules.
 
@@ -558,7 +577,7 @@ Revision jobs remain claimable through the generic worker queue and available by
 
 When legacy archival is enabled and `notion_archive.archive_job` loads a job, reject any `revision_of_job_id IS NOT NULL` before resolving lesson/page identity or constructing a Notion client: persist deterministic skip reason `regeneration revision: use versioned publisher` and return. This guard applies even with `force=True` or a claim token. The pipeline completion branch already avoids calling it for revisions; when Notion is globally disabled, retain the current no-DB-work early return. `POST /jobs/{id}/retry-archive` and the force route must synchronously return 409 for revision jobs. Batch rearchive selection excludes them defensively.
 
-Book deletion, `DELETE /books/{book_id}/toc/{entry_id}`, and TOC re-extraction/replacement with any regeneration campaign/target/revision history return controlled 409 responses before deletes; do not leak a raw restrictive-FK error. Test the repository-level book delete, the book route, the TOC-entry route, and the `/toc/retry` guard separately.
+Book deletion, `DELETE /books/{book_id}/toc/{entry_id}`, and TOC re-extraction/replacement with any regeneration campaign/target/revision history return controlled 409 responses in `app/api/v1/books.py` before any repository delete; do not leak a raw restrictive-FK error. The underlying `books_repo.delete` and `toc_repo.delete` retain their restrictive-FK behavior and are not modified by this task; DB tests assert they reject when called without the route guard. Critically, `jobs_repo.list_for_book` must **not** gain a revision filter: `/toc/retry` relies on it to see revision history and return the structured 409 before replacement.
 
 ### TDD steps
 
@@ -567,7 +586,7 @@ Book deletion, `DELETE /books/{book_id}/toc/{entry_id}`, and TOC re-extraction/r
 3. Write one test for every Fleet query/caller listed above, including `subject_coverage.job_status_by_book`. Do not accept one indirect test as coverage for several SQL functions.
 4. Write archive tests proving `force=True`, automatic claim token, retry route, force route, and batch sweep all cannot read or write Notion for a revision.
 5. Write clean 409 tests for book delete, TOC-entry delete, TOC retry/re-extract, and repository deletion.
-6. Write a test for every terminal writer: pipeline hard-return failure, successful pipeline return, worker crash retry/terminal failure, pending cancel, running cancel finalization, stale-cancelling sweep, exhausted-pending sweep, and crash-repair bulk reconciliation. Assert no terminal job leaves its target `generating` and no active-lineage lock is permanently orphaned.
+6. Write a test for every worker exit/terminal writer: pipeline hard-return failure, successful return, worker crash retry/terminal failure, raised `CancelWonSignal`, `SessionLimitPause` cancel-wins race, `SlotSaturation` cancel-wins race, `LeaseLostSignal`, pending cancel, running cancel finalization, stale-cancelling sweep, exhausted-pending sweep, and crash-repair bulk reconciliation. Assert no terminal job leaves its target `generating`; assert reconciliation failure cannot abort critical sweeps/startup; and assert no active-lineage lock is permanently orphaned.
 7. Run RED, implement, then run:
 
 ```bash
@@ -640,7 +659,7 @@ Creation resolves and stores each target's source and phase plan, rejects any ac
 
 Approval locks the campaign and targets, sets `approved_at` once, releases successful canaries to `publication_pending`, creates all remaining revision jobs exactly once, and moves them to `generating`. Repeated approval returns the current campaign without duplicate jobs. A one-target campaign uses this same approval but has no separate bulk gate.
 
-Bulk release must reuse `app.services.launch_stagger.stagger_offset`. Order only the jobs actually created/released, then set each revision job's `scheduled_at` from `regeneration_launch_wave_size` and `regeneration_launch_wave_interval_seconds`. The response/report records wave count and final scheduled offset. Tests pin that a campaign larger than one wave is decorrelated, a one-target canary starts immediately, repeated approval does not re-stagger existing jobs, and zero-valued knobs are the explicit kill switch. Revision jobs intentionally have no normal batch pause; campaign cancel is their authoritative bulk stop control and must visit every nonterminal target/job.
+Bulk release must reuse `app.services.launch_stagger.stagger_offset`. Order only the jobs actually created/released, then set each revision job's `scheduled_at` from `regeneration_launch_wave_size` and `regeneration_launch_wave_interval_seconds`. Compute the wave count inside the campaign service; do not import the private router helper `app.api.v1.batch._stagger_summary`. The response/report records wave count and final scheduled offset. Tests pin that a campaign larger than one wave is decorrelated, a one-target canary starts immediately, repeated approval does not re-stagger existing jobs, and zero-valued knobs are the explicit kill switch. Revision jobs intentionally have no normal batch pause; campaign cancel is their authoritative bulk stop control and must visit every nonterminal target/job. Running-job cancellation may converge on the next worker heartbeat rather than killing an in-process task immediately; the UI/report stays nonterminal until reconciliation confirms it. Because batchless queue fairness lanes by `book_id`, campaigns spanning many books can occupy many lanes; the regeneration stagger knobs are the explicit shaping control.
 
 Reject-before-approval transitions every canary revision target and every planned target to terminal `abandoned`, sets a reason distinguishing rejected canary, creates no version, and never publishes.
 
@@ -717,11 +736,14 @@ At the beginning of every `run_once`, call `reconcile_terminal_revision_jobs` be
 
 1. Reload and validate campaign approval, target claim, complete revision snapshot, source language, and Notion destination.
 2. Reserve/reuse the version.
-3. Build the full `phase_md` mapping before remote I/O.
-4. Call `write_or_adopt_versioned_homework` in a worker thread with the stored page ID and immutable marker.
-5. On success, compare claim token and set page ID, `published`, `terminal_at`; then roll up the campaign.
-6. On transient failure, preserve page/version identity and either calculate bounded exponential backoff into retryable `publication_failed`, or transition to terminal `abandoned` when campaign cancellation already stamped an abandon intent.
-7. On collision or exhausted automatic attempts, leave `publication_failed` for operator retry/abandonment.
+3. Resolve the Lesson Topic parent. If `toc_entries.notion_lesson_page_id` is present, reuse it. Otherwise resolve the language-aware subject page with `_resolve_subject_page_id`, `find_or_create` the existing `Generated Homeworks` container, compute the collision-safe title with `resolve_lesson_title`, and `find_or_create` the Lesson Topic page. A crash before stamping is safe because the same title-resolution path adopts it on retry. Persist only `toc_entries.notion_lesson_page_id`, fenced by the current target claim.
+4. Build the full `phase_md` mapping before version-page remote I/O.
+5. Call `write_or_adopt_versioned_homework` in a worker thread with the resolved lesson page, stored version-page ID, and immutable marker.
+6. On success, compare claim token and set page ID, `published`, `terminal_at`; then roll up the campaign.
+7. On transient failure, preserve page/version identity and either calculate bounded exponential backoff into retryable `publication_failed`, or transition to terminal `abandoned` when campaign cancellation already stamped an abandon intent.
+8. On collision or exhausted automatic attempts, leave `publication_failed` for operator retry/abandonment.
+
+The versioned publisher must never write or clear `toc_entries.notion_homework_page_id`, `toc_entries.notion_archived_job_id`, `homework_jobs.notion_archived_at`, or `homework_jobs.notion_skip_reason`. Those columns remain V1/legacy-archive authority. The only TOC pointer this feature may backfill is the shared `notion_lesson_page_id`; version-page identity lives on `RegenerationTarget.notion_page_id`.
 
 Configuration declared by Task 1 is consumed here:
 
@@ -730,11 +752,11 @@ Configuration declared by Task 1 is consumed here:
 - bounded interval, lease, automatic attempts, and backoff settings have conservative defaults;
 - production enables the publisher only on the designated head/API process, but the claim protocol is safe if two processes accidentally run it.
 
-`main.py` starts the loop only when both flags are true and stops/awaits it during lifespan shutdown. It must not start under test unless explicitly enabled. Ordinary worker and event-bus lifespan behavior remains unchanged.
+`main.py` starts the loop only when both flags are true, after `events_bus.start_listener()` and beside the embedded worker startup, then stops/signals/awaits it using the same shutdown shape as the worker. It must not start under test unless explicitly enabled. The security-sensitive auth, vault, prompt, database-reconcile, version-floor, and listener ordering before it remains unchanged.
 
 ### TDD steps
 
-1. Write unit tests for no-work, successful V2/V3, language-independent V2, stale claim fencing, transient backoff, exhausted retries, collision, no model call, and campaign rollup.
+1. Write unit tests for no-work, existing Lesson Topic reuse, missing-parent create/adopt/stamp, failed parent resolution, successful V2/V3, language-independent V2, stale claim fencing, transient backoff, exhausted retries, collision, no model call, V1 pointer non-mutation, and campaign rollup.
 2. Simulate crash after page creation but before DB stamp; expire the lease and prove the next attempt marker-adopts exactly one page.
 3. Write integration races for two publishers, expired-lease recovery, advisory version allocation, and unique-version fencing.
 4. Write lifespan tests for all four flag combinations and clean shutdown.
@@ -927,6 +949,10 @@ Document in plain operator language:
 - rollback: turn both flags off; existing V1/V2/V3 pages remain untouched.
 
 Repository completion documentation is mandatory, not conditional: write the indexed worklog, close the shipped roadmap item, update all live architecture/database/deploy references above, and history-preserve the plan move. These documentation changes describe the code as shipped-but-flag-off; they do not authorize enablement or merge.
+
+Immediately before committing the worklog, re-read `docs/memory/INDEX.md`, choose the next unused counter, and apply the same number to both the INDEX row and the `docs/memory/MASTER_MEMORY.md` heading. Do not reserve the number earlier in a parallel lane.
+
+The runbook also states that revision API usage still counts toward the existing fleet-daily API cost cap (the fleet cost query intentionally has no job-kind filter), so a large regeneration can pause ordinary API batches; operators must budget and stage the campaign accordingly.
 
 ### Verification steps
 
