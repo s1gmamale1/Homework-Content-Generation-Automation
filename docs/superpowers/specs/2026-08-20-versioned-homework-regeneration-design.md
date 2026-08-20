@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-20
 
-**Status:** Approved in conversation; written specification awaiting user review
+**Status:** Approved by the user and independent design review
 
 **Feature flag:** `REGENERATION_ENABLED=false` until a separate rollout decision
 **Supersedes:** the prompt-set-selection and replace-current-publication assumptions in `docs/superpowers/plans/2026-08-17-selective-regeneration-campaigns.md`
