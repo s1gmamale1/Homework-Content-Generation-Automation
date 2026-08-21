@@ -9,6 +9,7 @@ import {
   regenerationCampaignStatusLabel,
   regenerationJudgeCounts,
   regenerationReasonError,
+  regenerationStrandedRelease,
 } from "@/lib/api";
 import { costComparison, formatUsd } from "@/lib/regeneration-state";
 import type { RegenerationCampaignDetail, RegenerationTargetReport } from "@/lib/types";
@@ -27,6 +28,13 @@ import { cn } from "@/lib/utils";
  * The complete revision is deliberately NOT re-rendered here: it is a normal
  * homework job, so the existing job-detail route and download endpoint show the
  * real thing, phase by phase, instead of a second half-faithful viewer.
+ *
+ * One more campaign-level action lives here, and it is NOT a gate: a campaign
+ * that was approved but whose release never landed can never move again, and
+ * the repair is to re-run the same idempotent approve call. It is labelled as
+ * a retry of the RELEASE, renders in states well past `awaiting_canary_approval`,
+ * and deliberately offers no second decision — there is nothing new to review,
+ * so nothing to decline.
  */
 import {
   CircleAlert,
@@ -97,6 +105,10 @@ export function CanaryReview({
 
   const canLaunchCanary = detail.status === "draft";
   const atGate = detail.status === "awaiting_canary_approval";
+  // Non-null only for an approved, non-terminal campaign with lessons that
+  // never got a revision job. Never overlaps `atGate`: the status derivation
+  // cannot return `awaiting_canary_approval` once `approved_at` is stamped.
+  const stranded = regenerationStrandedRelease(detail);
 
   return (
     <div className="space-y-4">
@@ -315,16 +327,28 @@ export function CanaryReview({
 
           {confirmingReject && (
             <div className="space-y-2 rounded-xl border border-amber-300/25 bg-amber-300/[0.07] p-3">
-              <p className="max-w-[75ch] text-xs leading-5 text-amber-100/90">
+              <p
+                id="regeneration-reject-explainer"
+                className="max-w-[75ch] text-xs leading-5 text-amber-100/90"
+              >
                 {REGENERATION_REJECT_CONFIRMATION}
               </p>
               <p className="max-w-[75ch] text-xs leading-5 text-amber-100/70">
                 {gate.rejectDetail}
               </p>
+              <label
+                htmlFor="regeneration-reject-reason"
+                className="block text-xs font-medium text-amber-100/90"
+              >
+                Reason for declining this canary (stored as the audit record)
+              </label>
               <input
+                id="regeneration-reject-reason"
                 type="text"
+                aria-label="Reason for declining this canary"
+                aria-describedby="regeneration-reject-explainer"
                 value={rejectReason}
-                placeholder="Why are you rejecting this canary?"
+                placeholder="Why are you declining this canary?"
                 onChange={(e) => setRejectReason(e.target.value)}
                 className={cn(INPUT_GLASS, "w-full text-sm")}
               />
@@ -341,6 +365,29 @@ export function CanaryReview({
               </div>
             </div>
           )}
+        </section>
+      )}
+
+      {stranded && (
+        <section className={cn(CARD, "space-y-3 border-amber-300/25 bg-amber-300/[0.06]")}>
+          <div className="flex items-start gap-2">
+            <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-200" />
+            <div>
+              <h3 className="text-sm font-semibold text-amber-100">{stranded.headline}</h3>
+              <p className="mt-1 max-w-[75ch] text-xs leading-5 text-amber-100/80">
+                {stranded.detail}
+              </p>
+            </div>
+          </div>
+          <ul className="space-y-0.5 pl-6 text-xs leading-5 text-amber-100/75 [list-style:disc]">
+            {stranded.rows.map((row) => (
+              <li key={row.targetId}>{row.text}</li>
+            ))}
+          </ul>
+          <button type="button" className={PRIMARY_BTN} disabled={busy} onClick={onApprove}>
+            <RefreshCw className="size-4" />
+            {approving ? stranded.pendingLabel : stranded.actionLabel}
+          </button>
         </section>
       )}
     </div>

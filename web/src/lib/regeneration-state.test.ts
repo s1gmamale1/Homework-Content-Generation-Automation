@@ -23,14 +23,24 @@ import {
   REGENERATION_POLL_MS,
   REGENERATION_REJECT_CONFIRMATION,
   cascadeFromPlan,
+  clampCanarySize,
+  mergeReleasedFailures,
   phaseSelectionFromPlan,
   regenerationApprovalGate,
+  regenerationBookFacets,
+  regenerationBookOptions,
   regenerationBucketViews,
   regenerationCampaignStatusLabel,
+  regenerationEligibleQuery,
   regenerationListPollMs,
+  regenerationNarrowScope,
   regenerationPollDecision,
   regenerationPublicationStateLabel,
   regenerationReasonError,
+  regenerationReleasedFailureLines,
+  regenerationRetryAudit,
+  regenerationSourceRow,
+  regenerationStrandedRelease,
   regenerationTargetActions,
 } from "./api";
 import {
@@ -68,8 +78,10 @@ import {
 } from "./regeneration-state";
 import type { Campaign, PhaseSelection, PlanTarget, TargetOutcome } from "./regeneration-state";
 import type {
+  Book,
   RegenerationPhasePlan as RegenerationApiPhasePlan,
   RegenerationCampaignDetail,
+  RegenerationEligibleSource,
   RegenerationTargetReport,
 } from "./types";
 
@@ -1594,6 +1606,578 @@ function apiPlan(over: Partial<RegenerationApiPhasePlan> = {}): RegenerationApiP
   const warning = exclusionWarning(phaseSelectionFromPlan(plan));
   assert.ok(warning !== null);
   assert.match(warning.message, /Reflection/);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * 18. Stranded release — approved, but the release never happened
+ *
+ * `approve` stamps `approved_at` in one transaction and creates the wave in
+ * another, and `_prepare_wave` moves a target out of `planned` BEFORE its job
+ * exists. So a target still `planned` with no `revision_job_id` on an approved
+ * campaign means the release transaction never committed for it: nothing on
+ * the server will ever start it, and the reconciler only walks jobs, so it
+ * cannot repair a target that has none. The campaign nevertheless rolls up to
+ * `bulk_running` (`planned` is an in-flight target status), which is exactly
+ * the state that used to poll forever behind "still releasing revision jobs".
+ * ──────────────────────────────────────────────────────────────────── */
+
+const STRANDED_TARGET = apiTarget({
+  id: "stranded-1",
+  status: "planned",
+  bucket: "in_flight",
+  revision_job_id: null,
+});
+
+{
+  // The exact review fixture: bulk_running + approved_at + a planned target
+  // with no revision job. This must NOT poll.
+  const detail = apiDetail({
+    status: "bulk_running",
+    approved_at: "2026-08-20T10:00:00Z",
+    targets: [STRANDED_TARGET],
+  });
+  const decision = regenerationPollDecision(detail);
+  assert.strictEqual(decision.shouldPoll, false, "a stranded release must stop polling");
+  assert.strictEqual(decision.intervalMs, false);
+  assert.ok(
+    !/still releasing revision jobs/.test(decision.reason),
+    "bulk_running must not be reported as active work when the release never landed",
+  );
+  assert.match(decision.reason, /releas/i);
+  assert.match(decision.reason, /approv/i);
+}
+
+{
+  // The stranded condition wins over target-level work too: a partial release
+  // is the realistic shape of this failure, and a lesson that will never start
+  // must not stay hidden behind the lessons that did.
+  const decision = regenerationPollDecision(
+    apiDetail({
+      status: "bulk_running",
+      approved_at: "2026-08-20T10:00:00Z",
+      targets: [STRANDED_TARGET, apiTarget({ id: "moving", status: "generating" })],
+    }),
+  );
+  assert.strictEqual(decision.shouldPoll, false);
+  assert.match(decision.reason, /releas/i);
+}
+
+{
+  // Normal bulk polling is untouched: a planned target that HAS its job is
+  // simply scheduled by the stagger and will start on its own.
+  const decision = regenerationPollDecision(
+    apiDetail({
+      status: "bulk_running",
+      approved_at: "2026-08-20T10:00:00Z",
+      targets: [
+        apiTarget({
+          status: "planned",
+          revision_job_id: "cafe0000-0000-4000-8000-000000000009",
+          revision_job_scheduled_at: "2026-08-20T10:05:00Z",
+        }),
+      ],
+    }),
+  );
+  assert.strictEqual(decision.shouldPoll, true, "a scheduled revision still moves on its own");
+  assert.strictEqual(decision.intervalMs, REGENERATION_POLL_MS);
+}
+
+{
+  // The pure predicate behind both the poll stop and the recovery action.
+  const stranded = regenerationStrandedRelease(
+    apiDetail({
+      status: "bulk_running",
+      approved_at: "2026-08-20T10:00:00Z",
+      targets: [STRANDED_TARGET],
+    }),
+  );
+  assert.ok(stranded !== null, "an approved campaign with an unreleased target is stranded");
+  assert.strictEqual(stranded.count, 1);
+  assert.deepStrictEqual(stranded.targetIds, ["stranded-1"]);
+  // M-6: the lesson is named, not its UUID.
+  assert.ok(stranded.lines.some((line) => line.includes("1-mavzu. Hujayra tuzilishi")));
+  assert.ok(!stranded.lines.some((line) => line.includes("stranded-1")));
+  // It is a retry of the release, never a second approval.
+  assert.ok(
+    !/approve/i.test(stranded.actionLabel),
+    `the recovery action must not read as an approval: ${stranded.actionLabel}`,
+  );
+  assert.match(stranded.actionLabel, /releas/i);
+  assert.match(stranded.detail, /idempotent|creates nothing twice|nothing twice/i);
+  assert.match(stranded.detail, /publish/i);
+  assert.match(stranded.headline, /1 lesson/);
+}
+
+{
+  // Two lessons can legitimately carry the SAME title in one campaign — two
+  // books, or a repeated "Kirish" — so the rendered list must key on the
+  // target id. Keying on the text would collide and drop a row.
+  const stranded = regenerationStrandedRelease(
+    apiDetail({
+      status: "bulk_running",
+      approved_at: "2026-08-20T10:00:00Z",
+      targets: [
+        apiTarget({ id: "twin-a", status: "planned", revision_job_id: null }),
+        apiTarget({ id: "twin-b", status: "planned", revision_job_id: null }),
+      ],
+    }),
+  );
+  assert.ok(stranded !== null);
+  assert.strictEqual(stranded.count, 2);
+  assert.strictEqual(stranded.lines[0], stranded.lines[1], "the fixture really is a duplicate");
+  assert.deepStrictEqual(
+    stranded.rows.map((r) => r.targetId),
+    ["twin-a", "twin-b"],
+  );
+  assert.strictEqual(new Set(stranded.rows.map((r) => r.targetId)).size, 2, "keys must be unique");
+  assert.deepStrictEqual(
+    stranded.rows.map((r) => r.text),
+    stranded.lines,
+    "rows and lines must say the same thing",
+  );
+  assert.match(stranded.headline, /2 lessons were/);
+}
+
+// Not stranded: nothing is approved yet, the job exists, the campaign is
+// finished, or the operator already asked to stop.
+{
+  const withJob = apiTarget({ revision_job_id: "cafe0000-0000-4000-8000-000000000009" });
+  assert.strictEqual(regenerationStrandedRelease(undefined), null);
+  assert.strictEqual(
+    regenerationStrandedRelease(apiDetail({ status: "draft", targets: [STRANDED_TARGET] })),
+    null,
+    "an unapproved campaign has nothing to re-release",
+  );
+  assert.strictEqual(
+    regenerationStrandedRelease(
+      apiDetail({
+        status: "bulk_running",
+        approved_at: "2026-08-20T10:00:00Z",
+        targets: [withJob],
+      }),
+    ),
+    null,
+  );
+  assert.strictEqual(
+    regenerationStrandedRelease(
+      apiDetail({
+        status: "cancelled",
+        is_terminal: true,
+        approved_at: "2026-08-20T10:00:00Z",
+        targets: [STRANDED_TARGET],
+      }),
+    ),
+    null,
+    "a finished campaign can no longer be released",
+  );
+  assert.strictEqual(
+    regenerationStrandedRelease(
+      apiDetail({
+        status: "attention_required",
+        approved_at: "2026-08-20T10:00:00Z",
+        cancel_requested_at: "2026-08-20T10:30:00Z",
+        targets: [STRANDED_TARGET],
+      }),
+    ),
+    null,
+    "re-releasing a cancelling campaign would fight the cancellation",
+  );
+  assert.strictEqual(
+    regenerationStrandedRelease(
+      apiDetail({
+        status: "bulk_running",
+        approved_at: "2026-08-20T10:00:00Z",
+        targets: [
+          apiTarget({
+            status: "planned",
+            revision_job_id: null,
+            abandon_requested_at: "2026-08-20T10:30:00Z",
+          }),
+        ],
+      }),
+    ),
+    null,
+    "the release skips a target the operator asked to abandon, so it is not recoverable",
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * 19. Release failures survive the refresh that clears them (M-1, M-6)
+ * ──────────────────────────────────────────────────────────────────── */
+
+{
+  const failure = {
+    target_id: "stranded-1",
+    source_job_id: null,
+    reason: "revision job could not be created: incomplete snapshot",
+    current_status: "generation_failed" as const,
+  };
+  // GET /campaigns/{id} never carries released_failures, so a plain refetch
+  // would erase the only record of the wave that failed.
+  assert.deepStrictEqual(mergeReleasedFailures([], [failure]), [failure]);
+  assert.deepStrictEqual(mergeReleasedFailures(undefined, undefined), []);
+  // The server's own copy wins when both have the same target.
+  const server = { ...failure, reason: "server copy" };
+  assert.deepStrictEqual(mergeReleasedFailures([server], [failure]), [server]);
+  // Two different targets are both kept.
+  const other = { ...failure, target_id: "other-1", reason: "second" };
+  assert.strictEqual(mergeReleasedFailures([server], [other]).length, 2);
+
+  // M-6: the lines name lessons, and fall back to the id only when the report
+  // does not carry that target.
+  const detail = apiDetail({
+    status: "bulk_running",
+    approved_at: "2026-08-20T10:00:00Z",
+    targets: [STRANDED_TARGET],
+  });
+  const lines = regenerationReleasedFailureLines(detail, [failure, other]);
+  assert.strictEqual(lines.length, 2);
+  assert.ok(lines[0].text.includes("1-mavzu. Hujayra tuzilishi"));
+  assert.ok(!lines[0].text.includes("stranded-1"));
+  assert.ok(lines[0].text.includes("incomplete snapshot"));
+  // The read-back status is rendered as words, never as a raw token.
+  assert.ok(!lines[0].text.includes("generation_failed"));
+  assert.ok(lines[1].text.includes("other-1"), "an unknown target still identifies itself");
+  assert.strictEqual(lines[0].targetId, "stranded-1");
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * 20. Retry keeps the audit context the backend cleared (M-2)
+ * ──────────────────────────────────────────────────────────────────── */
+
+{
+  const audit = regenerationRetryAudit({
+    target: apiTarget({ status: "publication_pending", publication_attempts: 0 }),
+    campaign_id: CAMPAIGN_ID,
+    campaign_status: "bulk_running",
+    released_failures: [],
+    previous_publication_error: "VersionPageCollision: Homework V2 exists without a marker",
+    previous_publication_attempts: 3,
+    previous_publication_next_attempt_at: "2026-08-20T11:00:00Z",
+  });
+  assert.ok(audit !== null, "a retry that cleared a real error must say what it cleared");
+  assert.ok(audit.includes("VersionPageCollision"));
+  assert.match(audit, /3/);
+  assert.match(audit, /attempt/i);
+  // Nothing preserved (retry-generation, or a first attempt) — nothing to say.
+  assert.strictEqual(
+    regenerationRetryAudit({
+      target: apiTarget(),
+      campaign_id: CAMPAIGN_ID,
+      campaign_status: "bulk_running",
+      released_failures: [],
+      previous_publication_error: null,
+      previous_publication_attempts: null,
+      previous_publication_next_attempt_at: null,
+    }),
+    null,
+  );
+  assert.strictEqual(regenerationRetryAudit(null), null);
+  // A campaign whose row vanished answers "unknown" — the renderer must cope.
+  assert.ok(!regenerationCampaignStatusLabel("unknown").includes("_"));
+  assert.ok(regenerationCampaignStatusLabel("unknown").length > 0);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * 21. Canary size is clamped in STATE, not only on screen (M-3)
+ * ──────────────────────────────────────────────────────────────────── */
+
+assert.strictEqual(clampCanarySize(5, 3), 3, "a canary can never exceed the campaign");
+assert.strictEqual(clampCanarySize(0, 3), 1);
+assert.strictEqual(clampCanarySize(-2, 3), 1);
+assert.strictEqual(clampCanarySize(2, 3), 2);
+assert.strictEqual(clampCanarySize(2.7, 3), 2, "canary_size is an integer count");
+assert.strictEqual(clampCanarySize(Number.NaN, 3), 1);
+assert.strictEqual(clampCanarySize(4, 0), 1, "with no lessons the canary is still a legal 1");
+
+/* ────────────────────────────────────────────────────────────────────
+ * 22. Bounded, unambiguous lesson discovery (I-3)
+ * ──────────────────────────────────────────────────────────────────── */
+
+function apiBook(over: Partial<Book> = {}): Book {
+  return {
+    id: "aaaabbbb-cccc-dddd-eeee-ffff00001111",
+    subject: "biology" as Book["subject"],
+    grade: "8",
+    original_filename: "biologiya_8_sinf.pdf",
+    source_language: "uz",
+    status: "toc_ready" as Book["status"],
+    error_message: null,
+    gemini_file_expires_at: null,
+    file_size_bytes: 1024,
+    created_at: "2026-08-01T00:00:00Z",
+    toc: null,
+    ...over,
+  };
+}
+
+{
+  // The eligible query is bounded by ONE book and is disabled until there is
+  // one: `/eligible` unfiltered walks every lesson lineage in the database.
+  const blocked = regenerationEligibleQuery(null);
+  assert.strictEqual(blocked.enabled, false);
+  assert.deepStrictEqual(blocked.filters.bookIds, []);
+  assert.ok((blocked.blockedReason ?? "").length > 0);
+  assert.strictEqual(regenerationEligibleQuery("").enabled, false, "an empty id is not a book");
+
+  const ready = regenerationEligibleQuery("aaaabbbb-cccc-dddd-eeee-ffff00001111");
+  assert.strictEqual(ready.enabled, true);
+  assert.deepStrictEqual(ready.filters.bookIds, ["aaaabbbb-cccc-dddd-eeee-ffff00001111"]);
+  assert.strictEqual(ready.blockedReason, null);
+}
+
+{
+  const books = [
+    apiBook(),
+    apiBook({ id: "book-2", grade: "9", original_filename: "biologiya_9_sinf.pdf" }),
+    apiBook({ id: "book-3", subject: "english" as Book["subject"], grade: "8" }),
+    // Real rows in this database are missing a grade, and a title can be blank.
+    apiBook({ id: "book-4", grade: null, original_filename: "" }),
+  ];
+  const all = regenerationBookOptions(books);
+  assert.strictEqual(all.length, 4);
+  const untitled = all.find((b) => b.id === "book-4");
+  assert.ok(untitled !== undefined);
+  assert.ok(untitled.title.length > 0, "a book with no filename still identifies itself");
+  assert.ok(
+    untitled.gradeLabel.length > 0,
+    "a book with no grade says so rather than showing null",
+  );
+  assert.ok(!untitled.gradeLabel.includes("null"));
+  assert.ok(untitled.label.includes(untitled.title));
+
+  // Subject and grade narrowing, over the ~246-row books list rather than
+  // over every lesson lineage.
+  assert.strictEqual(regenerationBookOptions(books, { subject: "biology" }).length, 3);
+  assert.strictEqual(regenerationBookOptions(books, { subject: "biology", grade: "8" }).length, 1);
+  assert.strictEqual(regenerationBookOptions(undefined).length, 0);
+
+  const facets = regenerationBookFacets(books, { subject: "biology" });
+  assert.deepStrictEqual(facets.subjects.map((s) => s.value).sort(), ["biology", "english"]);
+  assert.ok(facets.subjects.every((s) => !s.label.includes("_") && s.label.length > 0));
+  // Grades are scoped to the chosen subject, and the missing-grade bucket is
+  // offered rather than silently dropping those books.
+  assert.deepStrictEqual(facets.grades.map((g) => g.value).sort(), ["", "8", "9"]);
+  assert.strictEqual(facets.subjects.find((s) => s.value === "biology")?.count, 3);
+}
+
+{
+  // Narrowing must clear whatever it invalidates, and nothing else.
+  const scope = {
+    subjectFilter: "biology" as string | null,
+    gradeFilter: "8" as string | null,
+    bookId: "book-1" as string | null,
+    language: "uz" as const,
+    selectedTocEntryIds: ["toc-1", "toc-2"],
+    selectedPhases: ["flashcards"],
+    excludedPhases: ["reflection"],
+    acknowledged: true,
+    canarySize: 2,
+    provider: "gemini",
+  };
+
+  const bySubject = regenerationNarrowScope(scope, { subjectFilter: "english" });
+  assert.strictEqual(bySubject.subjectFilter, "english");
+  assert.strictEqual(bySubject.gradeFilter, null, "a grade from another subject is meaningless");
+  assert.strictEqual(bySubject.bookId, null);
+  assert.deepStrictEqual(bySubject.selectedTocEntryIds, []);
+  assert.deepStrictEqual(bySubject.selectedPhases, [], "the phase flow is per subject");
+  assert.deepStrictEqual(bySubject.excludedPhases, []);
+  assert.strictEqual(bySubject.acknowledged, false);
+  assert.strictEqual(bySubject.canarySize, 1);
+  assert.strictEqual(bySubject.provider, "gemini", "unrelated draft fields survive");
+
+  const byGrade = regenerationNarrowScope(scope, { gradeFilter: "9" });
+  assert.strictEqual(byGrade.bookId, null);
+  assert.deepStrictEqual(byGrade.selectedTocEntryIds, []);
+  assert.deepStrictEqual(byGrade.selectedPhases, ["flashcards"], "same subject, same flow");
+
+  const byBook = regenerationNarrowScope(scope, { bookId: "book-2" });
+  assert.strictEqual(byBook.bookId, "book-2");
+  assert.deepStrictEqual(byBook.selectedTocEntryIds, [], "lessons belong to the old book");
+  assert.deepStrictEqual(byBook.selectedPhases, [], "another book can be another subject");
+  assert.strictEqual(byBook.acknowledged, false);
+
+  const byLanguage = regenerationNarrowScope(scope, { language: "ru" });
+  assert.strictEqual(byLanguage.language, "ru");
+  assert.strictEqual(byLanguage.bookId, "book-1", "a book carries every language");
+  assert.deepStrictEqual(byLanguage.selectedTocEntryIds, []);
+
+  // Re-picking the same value changes nothing at all.
+  assert.deepStrictEqual(regenerationNarrowScope(scope, { bookId: "book-1" }), scope);
+  assert.deepStrictEqual(regenerationNarrowScope(scope, {}), scope);
+}
+
+{
+  // Every duplicate-title lesson must be distinguishable on screen: two
+  // "Kirish" rows from different books/chapters/languages are a real shape in
+  // this database.
+  const source1: RegenerationEligibleSource = {
+    toc_entry_id: "toc-1",
+    output_language: "uz",
+    source_job_id: "job-1",
+    book_id: "aaaabbbb-cccc-dddd-eeee-ffff00001111",
+    subject: "biology",
+    grade: "8",
+    source_publication_version: 1,
+    next_expected_version: 2,
+    source_is_revision: false,
+    section_number: "1",
+    section_title: "Kirish",
+    chapter_title: "Hujayra",
+    order_index: 1,
+    has_notion_lesson_page: true,
+  };
+  const row = regenerationSourceRow(source1, regenerationBookOptions([apiBook()])[0]);
+  assert.strictEqual(row.headline, "1. Kirish", "the section number disambiguates the title");
+  for (const needle of [
+    "Kirish", // section title
+    "Hujayra", // chapter title
+    "Biology", // subject, as a label
+    "Grade 8", // grade, in words
+    "biologiya_8_sinf.pdf", // book identity
+    "Uzbek", // output language
+    "V1", // source version
+    "V2", // the version this will publish as
+  ]) {
+    assert.ok(
+      row.searchText.includes(needle),
+      `a lesson row must show ${needle} so duplicate titles cannot be confused`,
+    );
+  }
+  assert.strictEqual(row.key, "toc-1:uz");
+  assert.strictEqual(row.noPageWarning, null);
+
+  // A second "Kirish", other book, other chapter, other language: every line
+  // that distinguishes them differs.
+  const source2: RegenerationEligibleSource = {
+    ...source1,
+    toc_entry_id: "toc-2",
+    output_language: "ru",
+    book_id: "book-2",
+    grade: "9",
+    section_number: null,
+    chapter_title: "Введение",
+    source_publication_version: 2,
+    next_expected_version: 3,
+    source_is_revision: true,
+    has_notion_lesson_page: false,
+  };
+  const other = regenerationSourceRow(
+    source2,
+    regenerationBookOptions([
+      apiBook({ id: "book-2", grade: "9", original_filename: "b9.pdf" }),
+    ])[0],
+  );
+  assert.notStrictEqual(other.key, row.key);
+  assert.notStrictEqual(other.contextLine, row.contextLine);
+  assert.notStrictEqual(other.bookLine, row.bookLine);
+  assert.ok(other.searchText.includes("V2"));
+  assert.ok(other.searchText.includes("V3"));
+  assert.ok(other.searchText.includes("Russian"));
+  assert.ok((other.noPageWarning ?? "").length > 0, "no Notion page yet must stay visible");
+  // A source that is itself a revision is stated, not implied.
+  assert.match(other.contextLine, /regenerat|revision/i);
+
+  // A book the list never returned still renders an honest row.
+  const orphan = regenerationSourceRow(source1, undefined);
+  assert.ok(orphan.bookLine.length > 0);
+  assert.ok(!orphan.bookLine.includes("undefined"));
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * 23. Structural guards for the surfaces no DOM test can reach
+ * ──────────────────────────────────────────────────────────────────── */
+
+{
+  // I-3: the page must never ask for every lineage in the database on mount.
+  assert.ok(
+    !/listRegenerationEligible\(\s*\)/.test(routeSrc),
+    "the route must never call /eligible unfiltered",
+  );
+  assert.ok(
+    routeSrc.includes("regenerationEligibleQuery"),
+    "the eligible query must be gated by regenerationEligibleQuery()",
+  );
+  assert.ok(routeSrc.includes("api.listBooks"), "book selection is the bounded first step");
+  assert.ok(
+    /enabled:\s*eligibleQuery\.enabled/.test(routeSrc),
+    "the eligible query must be disabled until a book is picked",
+  );
+  assert.ok(
+    routeSrc.includes("mergeReleasedFailures"),
+    "M-1: mutation-only release failures must survive the next poll",
+  );
+  assert.ok(
+    routeSrc.includes("regenerationRetryAudit"),
+    "M-2: the retry must surface the audit context the backend cleared",
+  );
+
+  // I-2: the recovery action renders for the stranded state, reuses approve,
+  // and never offers Reject as though the canary were still under review.
+  assert.ok(
+    canarySrc.includes("regenerationStrandedRelease"),
+    "canary-review must render the stranded-release recovery action",
+  );
+  const strandedAt = canarySrc.indexOf("stranded && (");
+  assert.ok(strandedAt > 0, "the recovery section must be gated on the stranded predicate");
+  const strandedBlock = canarySrc.slice(strandedAt);
+  assert.ok(
+    !/eject/i.test(strandedBlock),
+    "the recovery section must not offer Reject: this is not the canary gate",
+  );
+  assert.ok(
+    strandedBlock.includes("onApprove"),
+    "the recovery action must reuse the idempotent approve mutation",
+  );
+  assert.ok(
+    strandedBlock.includes("stranded.actionLabel"),
+    "the recovery button must use the retry-the-release label, not an approval label",
+  );
+  assert.ok(
+    canarySrc.indexOf("atGate &&") < strandedAt,
+    "the canary gate stays first; the recovery section is a separate, later block",
+  );
+
+  // I-3 rendering: identity comes from the tested helper, not from inline JSX.
+  assert.ok(
+    wizardSrc.includes("regenerationSourceRow"),
+    "wizard lesson rows must render the tested identity helper",
+  );
+  assert.ok(
+    wizardSrc.includes("regenerationBookOptions"),
+    "wizard must narrow books before asking for lessons",
+  );
+  assert.ok(
+    wizardSrc.includes("regenerationNarrowScope"),
+    "changing subject/grade/book must clear stale selections through the tested helper",
+  );
+  assert.ok(
+    wizardSrc.includes("clampCanarySize"),
+    "M-3: the canary size must be clamped in state before it is posted",
+  );
+
+  // M-4: every free-text reason input needs a name a screen reader can read.
+  for (const rel of [
+    "../components/regeneration/canary-review.tsx",
+    "../components/regeneration/campaign-report.tsx",
+    "../components/regeneration/regeneration-wizard.tsx",
+  ]) {
+    const src = source(rel);
+    for (const tag of src.match(/<input[\s\S]*?\/>/g) ?? []) {
+      if (!/type="text"/.test(tag)) continue;
+      assert.ok(
+        /aria-label=/.test(tag),
+        `${rel} has an unlabelled reason input: ${tag.slice(0, 90)}`,
+      );
+    }
+  }
+
+  // M-5: a campaign row that vanished answers "unknown"; the type must say so.
+  assert.ok(
+    /campaign_status:\s*RegenerationCampaignStatus \| "unknown"/.test(source("./types.ts")),
+    'TargetActionOut.campaign_status must admit the backend\'s "unknown"',
+  );
 }
 
 console.log("OK");

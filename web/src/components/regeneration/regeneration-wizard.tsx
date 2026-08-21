@@ -2,8 +2,16 @@ import {
   REGENERATION_CREATE_LABEL,
   REGENERATION_NO_SPEND_NOTE,
   type RegenerationErrorView,
+  type RegenerationScopeChange,
+  type RegenerationScopeState,
   cascadeFromPlan,
+  clampCanarySize,
   phaseSelectionFromPlan,
+  regenerationBookFacets,
+  regenerationBookOptions,
+  regenerationLanguageLabel,
+  regenerationNarrowScope,
+  regenerationSourceRow,
 } from "@/lib/api";
 import {
   exclusionWarning,
@@ -12,6 +20,7 @@ import {
   lessonCountLabel,
 } from "@/lib/regeneration-state";
 import type {
+  Book,
   ProviderModelManifest,
   RegenerationEligibleSource,
   RegenerationEstimateResponse,
@@ -37,20 +46,13 @@ import { cn, formatPhaseName } from "@/lib/utils";
  */
 import { CircleAlert, CircleDollarSign, Layers, ListChecks, TriangleAlert } from "lucide-react";
 
-const LANGUAGES: { id: RegenerationOutputLanguage; label: string }[] = [
-  { id: "uz", label: "Uzbek" },
-  { id: "ru", label: "Russian" },
-  { id: "en", label: "English" },
-];
+const LANGUAGES: RegenerationOutputLanguage[] = ["uz", "ru", "en"];
 
-export interface RegenerationDraftState {
-  language: RegenerationOutputLanguage;
-  selectedTocEntryIds: string[];
-  selectedPhases: string[];
-  excludedPhases: string[];
+/** Everything the draft holds. The scope half — subject/grade/book, language,
+ *  lessons, phases, acknowledgement, canary — is shared with
+ *  `regenerationNarrowScope`, which owns what a narrowing clears. */
+export interface RegenerationDraftState extends RegenerationScopeState {
   refreshExtraction: boolean;
-  acknowledged: boolean;
-  canarySize: number;
   provider: string;
   /** Never defaulted for the operator: the server refuses a campaign with no
    *  content model precisely so nobody freezes a whole campaign onto whatever
@@ -60,6 +62,9 @@ export interface RegenerationDraftState {
 
 export function defaultRegenerationDraft(): RegenerationDraftState {
   return {
+    subjectFilter: null,
+    gradeFilter: null,
+    bookId: null,
     language: "uz",
     selectedTocEntryIds: [],
     selectedPhases: [],
@@ -156,9 +161,13 @@ function Problem({ view }: { view: RegenerationErrorView }) {
 }
 
 export function RegenerationWizard({
+  books,
+  booksLoading,
+  booksError,
   sources,
   ineligible,
   sourcesLoading,
+  pickBookReason,
   phaseCatalog,
   plan,
   planError,
@@ -172,9 +181,17 @@ export function RegenerationWizard({
   creating,
   createError,
 }: {
+  /** `GET /api/v1/books` — the BOUNDED first step (~246 rows). Lessons are
+   *  never listed database-wide; they are listed one book at a time. */
+  books: Book[] | undefined;
+  booksLoading: boolean;
+  booksError: RegenerationErrorView | null;
+  /** `GET /eligible?book_id=…` for the SELECTED book only. */
   sources: RegenerationEligibleSource[];
   ineligible: RegenerationIneligibleLineage[];
   sourcesLoading: boolean;
+  /** Non-null while the eligible query is deliberately switched off. */
+  pickBookReason: string | null;
   /** `canonical_phases` for the primary subject, so the operator has something
    *  to tick before any phase is selected. `/phase-plan` refuses an empty
    *  selection outright, so this arrives from its own probe query. */
@@ -194,8 +211,23 @@ export function RegenerationWizard({
   createError: RegenerationErrorView | null;
 }) {
   const patch = (over: Partial<RegenerationDraftState>) => onChange({ ...state, ...over });
+  /** Every subject/grade/book/language change goes through the one helper that
+   *  decides what it invalidates — a lesson belongs to one book in one
+   *  language, and a phase list belongs to one subject's flow. */
+  const narrow = (change: RegenerationScopeChange) =>
+    onChange(regenerationNarrowScope(state, change));
   const toggle = (list: string[], value: string): string[] =>
     list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+
+  const facets = regenerationBookFacets(books, { subject: state.subjectFilter });
+  const bookOptions = regenerationBookOptions(books, {
+    subject: state.subjectFilter,
+    grade: state.gradeFilter,
+  });
+  // Unfiltered, so a lesson's own book always resolves even when the narrowing
+  // chips have moved on.
+  const bookById = new Map(regenerationBookOptions(books).map((b) => [b.id, b]));
+  const selectedBook = state.bookId ? bookById.get(state.bookId) : undefined;
 
   const visible = sources.filter((s) => s.output_language === state.language);
   const chosen = visible.filter((s) => state.selectedTocEntryIds.includes(s.toc_entry_id));
@@ -224,8 +256,9 @@ export function RegenerationWizard({
     .sort();
   const models = manifest?.providers?.[state.provider] ?? [];
 
-  const blockedReason: string | null =
-    targetCount === 0
+  const blockedReason: string | null = !state.bookId
+    ? "Pick the textbook these lessons come from."
+    : targetCount === 0
       ? "Select at least one lesson to regenerate."
       : !plan
         ? "Pick at least one phase, or turn on the extract refresh."
@@ -237,64 +270,150 @@ export function RegenerationWizard({
               ? "Pick the model this campaign will be frozen to."
               : null;
 
-  const canarySize = Math.max(1, Math.min(state.canarySize, Math.max(1, targetCount)));
+  const canarySize = clampCanarySize(state.canarySize, targetCount);
 
   return (
     <div className="space-y-4">
       <Step
         index={1}
+        title="Pick the textbook"
+        hint="Lessons are listed one book at a time. Narrowing by subject and grade first is what makes two lessons called the same thing tellable apart — and it keeps this screen from asking the server for every lesson lineage in the database."
+      >
+        {booksError && <Problem view={booksError} />}
+        {booksLoading && books === undefined && (
+          <p className="text-xs text-white/40">Loading textbooks…</p>
+        )}
+
+        <div className="flex flex-wrap gap-1">
+          <Chip
+            active={state.subjectFilter === null}
+            onClick={() => narrow({ subjectFilter: null })}
+          >
+            All subjects
+          </Chip>
+          {facets.subjects.map((facet) => (
+            <Chip
+              key={facet.value}
+              active={state.subjectFilter === facet.value}
+              onClick={() => narrow({ subjectFilter: facet.value })}
+            >
+              {facet.label} · {facet.count}
+            </Chip>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap gap-1">
+          <Chip active={state.gradeFilter === null} onClick={() => narrow({ gradeFilter: null })}>
+            All grades
+          </Chip>
+          {facets.grades.map((facet) => (
+            <Chip
+              key={facet.value || "no-grade"}
+              active={state.gradeFilter === facet.value}
+              onClick={() => narrow({ gradeFilter: facet.value })}
+            >
+              {facet.label} · {facet.count}
+            </Chip>
+          ))}
+        </div>
+
+        {books !== undefined && bookOptions.length === 0 && (
+          <p className="text-xs text-white/40">
+            {books.length === 0
+              ? "No textbook has been uploaded yet, so there is nothing to regenerate from."
+              : "No textbook matches this narrowing. Widen the subject or grade above."}
+          </p>
+        )}
+        {bookOptions.length > 0 && (
+          <ul className="max-h-64 space-y-1 overflow-y-auto pr-1">
+            {bookOptions.map((book) => (
+              <li key={book.id}>
+                <button
+                  type="button"
+                  onClick={() => narrow({ bookId: book.id })}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left",
+                    PRESSABLE,
+                    state.bookId === book.id ? FRAME_ON : FRAME_OFF,
+                  )}
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm text-white/85">{book.title}</span>
+                    <span className="mt-0.5 block font-mono text-[0.62rem] text-white/40">
+                      {book.subjectLabel} · {book.gradeLabel}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="text-[0.68rem] leading-5 text-white/35">
+          {bookOptions.length} textbook{bookOptions.length === 1 ? "" : "s"} listed
+          {selectedBook ? ` · selected: ${selectedBook.label}` : " · none selected yet"}
+        </p>
+      </Step>
+
+      <Step
+        index={2}
         title="Pick completed lessons and an output language"
         hint="Only a finished homework job with a complete snapshot can be a source. Uzbek, Russian and English are independent lineages with their own version sequences."
       >
         <div className="flex flex-wrap gap-1">
-          {LANGUAGES.map((l) => (
+          {LANGUAGES.map((language) => (
             <Chip
-              key={l.id}
-              active={state.language === l.id}
-              onClick={() => patch({ language: l.id, selectedTocEntryIds: [] })}
+              key={language}
+              active={state.language === language}
+              onClick={() => narrow({ language })}
             >
-              {l.label}
+              {regenerationLanguageLabel(language)}
             </Chip>
           ))}
         </div>
+        {pickBookReason && (
+          <p className="max-w-[75ch] text-xs leading-5 text-white/45">{pickBookReason}</p>
+        )}
         {sourcesLoading && <p className="text-xs text-white/40">Loading eligible lessons…</p>}
-        {!sourcesLoading && visible.length === 0 && (
+        {!pickBookReason && !sourcesLoading && visible.length === 0 && (
           <p className="text-xs text-white/40">
-            No lesson in this language has a complete published homework job to regenerate from.
+            No lesson in this book has a complete published homework job in this language to
+            regenerate from.
           </p>
         )}
         <ul className="space-y-1">
-          {visible.map((source) => (
-            <li key={`${source.toc_entry_id}:${source.output_language}`}>
-              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-sm text-white/75 transition-colors hover:bg-white/[0.05]">
-                <input
-                  type="checkbox"
-                  className="size-4 accent-[#7c5cff]"
-                  checked={state.selectedTocEntryIds.includes(source.toc_entry_id)}
-                  onChange={() =>
-                    patch({
-                      selectedTocEntryIds: toggle(state.selectedTocEntryIds, source.toc_entry_id),
-                    })
-                  }
-                />
-                <span className="min-w-0 flex-1 truncate">
-                  {source.section_number ? `${source.section_number}. ` : ""}
-                  {source.section_title}
-                </span>
-                {!source.has_notion_lesson_page && (
-                  <span
-                    className="font-mono text-[0.6rem] text-amber-200/80"
-                    title="No Lesson Topic page is known yet; the canary preflight will try to resolve one."
-                  >
-                    no page yet
+          {visible.map((source) => {
+            const row = regenerationSourceRow(source, bookById.get(source.book_id));
+            return (
+              <li key={row.key}>
+                <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-sm text-white/75 transition-colors hover:bg-white/[0.05]">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 size-4 accent-[#7c5cff]"
+                    checked={state.selectedTocEntryIds.includes(source.toc_entry_id)}
+                    onChange={() =>
+                      patch({
+                        selectedTocEntryIds: toggle(state.selectedTocEntryIds, source.toc_entry_id),
+                      })
+                    }
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{row.headline}</span>
+                    <span className="mt-0.5 block truncate font-mono text-[0.62rem] text-white/40">
+                      {row.bookLine}
+                    </span>
+                    <span className="mt-0.5 block font-mono text-[0.62rem] text-white/40">
+                      {row.contextLine}
+                    </span>
+                    {row.noPageWarning && (
+                      <span className="mt-0.5 block text-[0.62rem] leading-4 text-amber-200/80">
+                        {row.noPageWarning}
+                      </span>
+                    )}
                   </span>
-                )}
-                <span className="font-mono text-[0.65rem] text-white/40">
-                  V{source.source_publication_version} → V{source.next_expected_version}
-                </span>
-              </label>
-            </li>
-          ))}
+                </label>
+              </li>
+            );
+          })}
         </ul>
         {ineligible.length > 0 && (
           <details className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
@@ -305,7 +424,8 @@ export function RegenerationWizard({
             <ul className="mt-1 space-y-0.5 text-xs leading-5 text-white/45">
               {ineligible.map((row) => (
                 <li key={`${row.toc_entry_id}:${row.output_language}`}>
-                  {row.toc_entry_id} ({row.output_language}) — {row.reasons.join("; ")}
+                  {row.toc_entry_id} ({regenerationLanguageLabel(row.output_language)}) —{" "}
+                  {row.reasons.join("; ")}
                   {row.detail ? ` — ${row.detail}` : ""}
                 </li>
               ))}
@@ -315,7 +435,7 @@ export function RegenerationWizard({
       </Step>
 
       <Step
-        index={2}
+        index={3}
         title="Pick the phases to rebuild"
         hint="Ticking a phase also rebuilds everything downstream of it. Step 3 shows the real expansion the planner returned."
       >
@@ -344,7 +464,7 @@ export function RegenerationWizard({
         {planError && <Problem view={planError} />}
       </Step>
 
-      <Step index={3} title="Review what the dependency graph pulls in">
+      <Step index={4} title="Review what the dependency graph pulls in">
         {cascade ? (
           <>
             <div className="flex items-center gap-2 text-sm font-semibold text-white">
@@ -390,7 +510,7 @@ export function RegenerationWizard({
       </Step>
 
       <Step
-        index={4}
+        index={5}
         title="Optionally drop an auto-included phase"
         hint="Dropping a downstream phase leaves its current text beside rebuilt upstream phases."
       >
@@ -449,7 +569,7 @@ export function RegenerationWizard({
       </Step>
 
       <Step
-        index={5}
+        index={6}
         title="Re-run the source extract"
         hint="Off by default. Turning it on puts every content phase downstream of a brand-new extract, so the estimate below jumps to a near-full rebuild."
       >
@@ -471,7 +591,7 @@ export function RegenerationWizard({
       </Step>
 
       <Step
-        index={6}
+        index={7}
         title="Choose the model this campaign is frozen to"
         hint="Resolved once, when the campaign is created, and copied onto every revision. Regeneration runs over the api transport only."
       >
@@ -498,7 +618,7 @@ export function RegenerationWizard({
         </div>
       </Step>
 
-      <Step index={7} title="Review the estimate">
+      <Step index={8} title="Review the estimate">
         {estimateLoading && <p className="text-xs text-white/40">Pricing this draft…</p>}
         {estimateError && <Problem view={estimateError} />}
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -590,7 +710,9 @@ export function RegenerationWizard({
             min={1}
             max={Math.max(1, targetCount)}
             value={canarySize}
-            onChange={(e) => patch({ canarySize: Number(e.target.value) || 1 })}
+            onChange={(e) =>
+              patch({ canarySize: clampCanarySize(Number(e.target.value), targetCount) })
+            }
             className="w-20 rounded-lg border border-white/[0.1] bg-white/[0.05] px-2 py-1 text-sm text-white"
           />
           <span>

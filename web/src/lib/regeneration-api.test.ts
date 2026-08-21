@@ -26,6 +26,7 @@ import {
   ApiError,
   api,
   regenerationCampaignBody,
+  regenerationEligibleQuery,
   regenerationErrorView,
   regenerationEstimateBody,
 } from "./api";
@@ -631,6 +632,100 @@ const CREATE_ONLY_KEYS = [
   const view = regenerationErrorView(new TypeError("Failed to fetch"));
   assert.ok(view.message.includes("Failed to fetch"));
   assert.strictEqual(view.details.length, 0);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * 16. /eligible is BOUNDED: one selected book, never the whole database
+ *
+ * `GET /eligible` with no filters walks every completed homework lineage
+ * there is. The page therefore picks a book first — off the ~246-row books
+ * list — and only then asks for that book's lessons.
+ * ════════════════════════════════════════════════════════════════════ */
+
+{
+  const gate = regenerationEligibleQuery(null);
+  assert.strictEqual(gate.enabled, false, "no book picked ⇒ the query must not run");
+  assert.deepStrictEqual(gate.filters.bookIds, []);
+  assert.ok((gate.blockedReason ?? "").length > 0, "the operator is told what to do first");
+
+  const ready = regenerationEligibleQuery(BOOK_ID);
+  assert.strictEqual(ready.enabled, true);
+  assert.deepStrictEqual(ready.filters.bookIds, [BOOK_ID]);
+
+  // The gate's filters go straight to the client, and serialize as repeated
+  // `book_id` params — the name the route's `Query(default=[])` declares.
+  const call = await sent(() => api.listRegenerationEligible(ready.filters), {
+    sources: [],
+    ineligible: [],
+    eligible_count: 0,
+    ineligible_count: 0,
+  });
+  assert.strictEqual(path(call.url), "/api/v1/regeneration/eligible");
+  const q = query(call.url);
+  assert.deepStrictEqual(q.getAll("book_id"), [BOOK_ID]);
+  assert.deepStrictEqual(q.getAll("toc_entry_id"), [], "the book is the only bound needed");
+  assert.deepStrictEqual(q.getAll("output_language"), []);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * 17. A FastAPI validation error is a LIST, and must read as plain language
+ *
+ * A schema-level 422 does not carry `{error, message}` — `detail` is
+ * `[{loc, msg, type}, ...]`. `extractErrorMessage` cannot find a `message`
+ * there, so it falls back to the RAW BODY TEXT: without special handling the
+ * operator is shown a JSON blob.
+ * ════════════════════════════════════════════════════════════════════ */
+
+{
+  const err = await failed(() => api.createRegenerationCampaign(DRAFT), 422, {
+    detail: [
+      {
+        type: "greater_than_equal",
+        loc: ["body", "canary_size"],
+        msg: "Input should be greater than or equal to 1",
+        input: 0,
+      },
+      {
+        type: "missing",
+        loc: ["body", "contract", "model"],
+        msg: "Field required",
+      },
+    ],
+  });
+  assert.strictEqual(err.status, 422);
+  const view = regenerationErrorView(err);
+  assert.ok(!/[{[]"?(detail|loc|msg)/.test(view.message), "raw JSON must never reach the screen");
+  assert.ok(!view.message.includes('"loc"'), `raw payload leaked: ${view.message}`);
+  assert.ok(!/^\s*[[{]/.test(view.message), "the message must be a sentence, not a payload");
+  assert.strictEqual(view.details.length, 2, "one plain-language line per rejected field");
+  assert.ok(
+    view.details.some((line) => /canary size/i.test(line)),
+    `the offending field must be named in words: ${view.details.join(" | ")}`,
+  );
+  assert.ok(view.details.some((line) => /model/i.test(line)));
+  assert.ok(
+    view.details.every((line) => !line.includes("[") && !line.includes("{")),
+    "each line is prose, not a serialized loc tuple",
+  );
+  assert.ok(!/422/.test(view.message), "the operator must not be shown a bare status code");
+}
+
+{
+  // A single-item list, and an empty one, must both survive.
+  const err = await failed(() => api.estimateRegeneration(DRAFT), 422, {
+    detail: [
+      { type: "int_parsing", loc: ["query", "limit"], msg: "Input should be a valid integer" },
+    ],
+  });
+  const view = regenerationErrorView(err);
+  assert.strictEqual(view.details.length, 1);
+  assert.ok(view.details[0].length > 0);
+
+  const empty = await failed(() => api.estimateRegeneration(DRAFT), 422, { detail: [] });
+  const emptyView = regenerationErrorView(empty);
+  assert.strictEqual(emptyView.details.length, 0);
+  assert.ok(emptyView.message.length > 0, "an empty list still needs something to read");
+  assert.ok(!/^\s*\[/.test(emptyView.message));
 }
 
 console.log("OK");

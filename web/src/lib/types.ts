@@ -1266,7 +1266,11 @@ export interface RegenerationCampaignDetail extends RegenerationCampaignSummary 
 export interface RegenerationTargetActionResult {
   target: RegenerationTargetReport;
   campaign_id: string;
-  campaign_status: RegenerationCampaignStatus;
+  /** `"unknown"` is a REAL value here: `regeneration._campaign_status` answers
+   *  it when the campaign row cannot be read back (`get_campaign` → `None`).
+   *  Typing it as the closed status union makes an exhaustive switch look
+   *  total when it is not. */
+  campaign_status: RegenerationCampaignStatus | "unknown";
   released_failures: RegenerationWaveFailure[];
   previous_publication_error: string | null;
   previous_publication_attempts: number | null;

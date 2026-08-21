@@ -7,12 +7,14 @@ import {
   regenerationNextVersion,
   regenerationPublicationStateLabel,
   regenerationReasonError,
+  regenerationReleasedFailureLines,
   regenerationTargetActions,
 } from "@/lib/api";
 import type {
   RegenerationBucket,
   RegenerationCampaignDetail,
   RegenerationTargetReport,
+  RegenerationWaveFailure,
 } from "@/lib/types";
 import { CARD, GHOST_BTN, GLASS_BTN, INPUT_GLASS } from "@/lib/ui";
 import { cn } from "@/lib/utils";
@@ -29,6 +31,13 @@ import { cn } from "@/lib/utils";
  * Retry and abandon sit at their real positions and are genuinely wired. Both
  * are idempotent server-side; the disabled state exists so the screen does not
  * pretend a click did nothing.
+ *
+ * Two things on this screen do NOT come from the report, because the report
+ * cannot carry them: the lessons a release could not start (`released_failures`
+ * exists only on a mutation response) and what a publication retry cleared
+ * (`previous_publication_*`, captured by the API before it wiped the error).
+ * The route holds both and passes them in; rendering only what a refetch
+ * returns would silently destroy both.
  */
 import { Ban, CircleAlert, Download, ExternalLink, RotateCcw, TriangleAlert } from "lucide-react";
 import { useState } from "react";
@@ -67,11 +76,15 @@ function TargetRow({
   target,
   pendingKind,
   campaignTerminal,
+  retryAudit,
   onAction,
 }: {
   target: RegenerationTargetReport;
   pendingKind: RegenerationActionKind | null;
   campaignTerminal: boolean;
+  /** What the last retry from this session cleared. Mutation-only: it is gone
+   *  from the server the moment the retry succeeds. */
+  retryAudit: string | null;
   onAction: (
     kind: RegenerationActionKind,
     target: RegenerationTargetReport,
@@ -142,6 +155,7 @@ function TargetRow({
           Last delivery error: {target.delivery_error}
         </p>
       )}
+      {retryAudit && <p className="max-w-[80ch] text-xs leading-5 text-white/45">{retryAudit}</p>}
       {target.source_note && (
         <p className="max-w-[80ch] text-xs leading-5 text-white/40">{target.source_note}</p>
       )}
@@ -210,15 +224,31 @@ function TargetRow({
 
       {open && (
         <div className="space-y-2 rounded-xl border border-white/[0.09] bg-white/[0.03] p-3">
-          <p className="max-w-[80ch] text-xs leading-5 text-white/60">{open.detail}</p>
+          <p
+            id={`regeneration-abandon-explainer-${target.id}`}
+            className="max-w-[80ch] text-xs leading-5 text-white/60"
+          >
+            {open.detail}
+          </p>
           {open.requiresReason && (
-            <input
-              type="text"
-              value={reason}
-              placeholder="Why are you abandoning this lesson?"
-              onChange={(e) => setReason(e.target.value)}
-              className={cn(INPUT_GLASS, "w-full text-sm")}
-            />
+            <>
+              <label
+                htmlFor={`regeneration-abandon-reason-${target.id}`}
+                className="block text-xs font-medium text-white/70"
+              >
+                Reason for abandoning this lesson (stored as the audit record)
+              </label>
+              <input
+                id={`regeneration-abandon-reason-${target.id}`}
+                type="text"
+                aria-label="Reason for abandoning this lesson"
+                aria-describedby={`regeneration-abandon-explainer-${target.id}`}
+                value={reason}
+                placeholder="Why are you abandoning this lesson?"
+                onChange={(e) => setReason(e.target.value)}
+                className={cn(INPUT_GLASS, "w-full text-sm")}
+              />
+            </>
           )}
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -244,6 +274,8 @@ function TargetRow({
 
 export function CampaignReport({
   detail,
+  releasedFailures,
+  retryAuditByTarget,
   pendingByTarget,
   onAction,
   onCancelCampaign,
@@ -251,6 +283,10 @@ export function CampaignReport({
   actionError,
 }: {
   detail: RegenerationCampaignDetail;
+  /** The report's own list MERGED with the ones only a mutation reported, so
+   *  a poll cannot quietly erase them. */
+  releasedFailures: RegenerationWaveFailure[];
+  retryAuditByTarget: Record<string, string>;
   pendingByTarget: Record<string, RegenerationActionKind | null>;
   onAction: (
     kind: RegenerationActionKind,
@@ -266,6 +302,9 @@ export function CampaignReport({
   const cancelReasonError = regenerationReasonError(cancelReason);
 
   const buckets = regenerationBucketViews(detail);
+  // Names, not UUIDs: WaveFailureOut carries ids and the titles live on the
+  // report's targets, so the two are joined before anything is rendered.
+  const failureLines = regenerationReleasedFailureLines(detail, releasedFailures);
 
   return (
     <section className={cn(CARD, "space-y-3")}>
@@ -291,26 +330,25 @@ export function CampaignReport({
           refresh: {detail.rollup_error}
         </p>
       )}
-      {detail.released_failures.length > 0 && (
+      {failureLines.length > 0 && (
         <div className="space-y-1 rounded-xl border border-amber-300/25 bg-amber-300/[0.07] p-3 text-xs leading-5 text-amber-100/90">
           <div className="flex items-start gap-2 font-semibold">
             <TriangleAlert className="mt-0.5 size-4 shrink-0" />
             <span>
-              The release reached {detail.released_failures.length} lesson
-              {detail.released_failures.length === 1 ? "" : "s"} it could not start
+              The release reached {failureLines.length} lesson
+              {failureLines.length === 1 ? "" : "s"} it could not start
             </span>
           </div>
           <ul className="space-y-0.5">
-            {detail.released_failures.map((failure) => (
-              <li key={failure.target_id}>
-                {failure.target_id} — {failure.reason}
-                {failure.current_status ? ` (now ${failure.current_status})` : ""}
-              </li>
+            {failureLines.map((line) => (
+              <li key={line.targetId}>{line.text}</li>
             ))}
           </ul>
           <p>
             Everything else in the wave started normally; these rows are in the report below with
-            their own retry and abandon controls.
+            their own retry and abandon controls. This list is kept from the release that reported
+            it — the campaign report itself does not carry it — and clears when a later release for
+            this campaign succeeds.
           </p>
         </div>
       )}
@@ -345,6 +383,7 @@ export function CampaignReport({
                     target={target}
                     pendingKind={pendingByTarget[target.id] ?? null}
                     campaignTerminal={detail.is_terminal}
+                    retryAudit={retryAuditByTarget[target.id] ?? null}
                     onAction={onAction}
                   />
                 ))}
@@ -366,13 +405,25 @@ export function CampaignReport({
           </button>
           {confirmingCancel && (
             <div className="space-y-2 rounded-xl border border-amber-300/25 bg-amber-300/[0.07] p-3">
-              <p className="max-w-[80ch] text-xs leading-5 text-amber-100/90">
+              <p
+                id="regeneration-cancel-explainer"
+                className="max-w-[80ch] text-xs leading-5 text-amber-100/90"
+              >
                 {REGENERATION_CANCEL_CONFIRMATION}
               </p>
+              <label
+                htmlFor="regeneration-cancel-reason"
+                className="block text-xs font-medium text-amber-100/90"
+              >
+                Reason for stopping this campaign (stored as the audit record)
+              </label>
               <input
+                id="regeneration-cancel-reason"
                 type="text"
+                aria-label="Reason for stopping this campaign"
+                aria-describedby="regeneration-cancel-explainer"
                 value={cancelReason}
-                placeholder="Why are you cancelling this campaign?"
+                placeholder="Why are you stopping this campaign?"
                 onChange={(e) => setCancelReason(e.target.value)}
                 className={cn(INPUT_GLASS, "w-full text-sm")}
               />

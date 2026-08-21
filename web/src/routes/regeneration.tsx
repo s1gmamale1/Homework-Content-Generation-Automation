@@ -11,15 +11,20 @@ import {
   REGENERATION_NO_SPEND_NOTE,
   type RegenerationActionKind,
   api,
+  clampCanarySize,
+  mergeReleasedFailures,
+  regenerationEligibleQuery,
   regenerationErrorView,
   regenerationListPollMs,
   regenerationPollDecision,
+  regenerationRetryAudit,
 } from "@/lib/api";
 import type {
   RegenerationCampaignDetail,
   RegenerationCampaignDraft,
   RegenerationPhasePlanRequest,
   RegenerationTargetReport,
+  RegenerationWaveFailure,
 } from "@/lib/types";
 import { CARD } from "@/lib/ui";
 import { cn } from "@/lib/utils";
@@ -38,7 +43,18 @@ import { cn } from "@/lib/utils";
  * Polling follows work, not screens: `regenerationPollDecision` refreshes a
  * campaign only while generation, publication or the publisher's own bounded
  * retries can move it, and stops dead on a terminal campaign, on the canary's
- * human gate, and on a target parked waiting for an operator.
+ * human gate, on a target parked waiting for an operator, and on an approved
+ * campaign whose release never landed — which polling could never fix.
+ *
+ * Discovery is BOUNDED. `/eligible` is never called unfiltered: the books list
+ * (~246 rows) is the first step, subject and grade narrow it, and only an
+ * explicitly chosen book switches the lesson query on.
+ *
+ * Two payloads exist ONLY on a mutation response and are therefore held here
+ * as transient per-campaign / per-target state: `released_failures` (the
+ * lessons a release could not start) and the `previous_publication_*` audit a
+ * publication retry clears. Both would otherwise be erased by the very
+ * refetch that follows the mutation.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
@@ -79,7 +95,10 @@ function campaignDraft(
 ): RegenerationCampaignDraft {
   return {
     selection: {
-      book_ids: [],
+      // The filters AND server-side, so naming the book alongside the lessons
+      // narrows nothing away — it records WHICH book was regenerated on the
+      // frozen campaign's `selection_spec`.
+      book_ids: draft.bookId ? [draft.bookId] : [],
       toc_entry_ids: draft.selectedTocEntryIds,
       output_languages: [draft.language],
     },
@@ -104,7 +123,10 @@ function campaignDraft(
     excluded_affected_phases: draft.excludedPhases,
     refresh_extraction: draft.refreshExtraction,
     exclusion_acknowledged: draft.acknowledged,
-    canary_size: draft.canarySize,
+    // Clamped again at the boundary: `canary_size` has a `ge=1` server refusal
+    // that arrives as a raw validation payload, and deselecting lessons after
+    // sizing the canary is the ordinary way to get there.
+    canary_size: clampCanarySize(draft.canarySize, draft.selectedTocEntryIds.length),
     // Echoed back so the frozen campaign records the figure that was SHOWN,
     // not one recomputed at insert time.
     estimated_cost_low_usd: estimateLow,
@@ -122,10 +144,34 @@ export function RegenerationPage() {
   const [pendingByTarget, setPendingByTarget] = useState<
     Record<string, RegenerationActionKind | null>
   >({});
+  /** Wave failures live ONLY on a mutation response; the next GET returns an
+   *  empty list, so holding them here is what keeps them readable. Keyed by
+   *  campaign, and cleared only when a later release for that campaign
+   *  SUCCEEDS — see `forgetFailures`. */
+  const [releaseFailures, setReleaseFailures] = useState<Record<string, RegenerationWaveFailure[]>>(
+    {},
+  );
+  /** Same problem, per target: `retry_publication` CLEARS the error it
+   *  retried, and `previous_*` is the only surviving copy. */
+  const [retryAuditByTarget, setRetryAuditByTarget] = useState<Record<string, string>>({});
 
+  const rememberFailures = (campaignId: string, failures: RegenerationWaveFailure[]) => {
+    if (failures.length === 0) return;
+    setReleaseFailures((prev) => ({
+      ...prev,
+      [campaignId]: mergeReleasedFailures(failures, prev[campaignId]),
+    }));
+  };
+
+  /** Books are the bounded first step — ~246 rows, shared with Fleet's cache.
+   *  `/eligible` is asked for ONE book's lessons and nothing wider. */
+  const books = useQuery({ queryKey: ["books"], queryFn: api.listBooks });
+
+  const eligibleQuery = regenerationEligibleQuery(draft.bookId);
   const eligible = useQuery({
-    queryKey: ["regeneration", "eligible"],
-    queryFn: () => api.listRegenerationEligible(),
+    queryKey: ["regeneration", "eligible", draft.bookId],
+    queryFn: () => api.listRegenerationEligible(eligibleQuery.filters),
+    enabled: eligibleQuery.enabled,
   });
 
   const campaigns = useQuery({
@@ -143,16 +189,19 @@ export function RegenerationPage() {
 
   const manifest = useQuery({ queryKey: ["agent-models"], queryFn: api.getAgentModels });
 
-  const sources = eligible.data?.sources ?? [];
-  /** The plan is per SUBJECT. A campaign may legitimately span subjects; the
-   *  wizard previews the first one and the estimate returns a plan per subject. */
+  const sources = useMemo(() => eligible.data?.sources ?? [], [eligible.data]);
+  /** The plan is per SUBJECT. Scoping to one book makes that unambiguous: the
+   *  selected book's own subject wins, and the eligible rows are the fallback
+   *  while the books list is still loading. */
   const subject = useMemo(() => {
+    const fromBook = books.data?.find((b) => b.id === draft.bookId)?.subject;
+    if (fromBook) return fromBook;
     const chosen = sources.find(
       (s) =>
         s.output_language === draft.language && draft.selectedTocEntryIds.includes(s.toc_entry_id),
     );
     return chosen?.subject ?? sources.find((s) => s.output_language === draft.language)?.subject;
-  }, [sources, draft.language, draft.selectedTocEntryIds]);
+  }, [books.data, draft.bookId, sources, draft.language, draft.selectedTocEntryIds]);
 
   const catalog = useQuery({
     queryKey: ["regeneration", "phase-catalog", subject],
@@ -181,6 +230,9 @@ export function RegenerationPage() {
    *  the authority for campaign state; nothing here guesses it. */
   const adopt = (fresh: RegenerationCampaignDetail) => {
     qc.setQueryData(campaignKey(fresh.id), fresh);
+    // Do this BEFORE invalidating: the refetch that follows returns
+    // `released_failures: []`, because only the mutation route reports them.
+    rememberFailures(fresh.id, fresh.released_failures);
     qc.invalidateQueries({ queryKey: CAMPAIGNS_KEY });
     qc.invalidateQueries({ queryKey: campaignKey(fresh.id) });
   };
@@ -201,9 +253,25 @@ export function RegenerationPage() {
     },
   });
 
+  /** A release that SUCCEEDS is the one intentional boundary at which the
+   *  previous attempt's failures stop being the current truth. Deliberately
+   *  not `onMutate`: a retry that is refused (publisher off, stale state) must
+   *  leave the record of the wave that failed on screen, and clearing it
+   *  before the round trip would delete exactly the list the operator is
+   *  acting on. Both updates are functional, so the clear lands before the
+   *  merge in `adopt`. */
+  const forgetFailures = (campaignId: string) =>
+    setReleaseFailures((prev) => {
+      if (!(campaignId in prev)) return prev;
+      const next = { ...prev };
+      delete next[campaignId];
+      return next;
+    });
+
   const canaryMut = useMutation({
     mutationFn: (campaignId: string) => api.launchRegenerationCanary(campaignId),
     onSuccess: (fresh) => {
+      forgetFailures(fresh.id);
       adopt(fresh);
       toast.success("Canary started. It will wait here for your review.");
     },
@@ -212,6 +280,7 @@ export function RegenerationPage() {
   const approveMut = useMutation({
     mutationFn: (campaignId: string) => api.approveRegenerationCampaign(campaignId, { actor: "" }),
     onSuccess: (fresh) => {
+      forgetFailures(fresh.id);
       adopt(fresh);
       toast.success("Approved. Remaining lessons release and successful versions publish.");
     },
@@ -254,11 +323,28 @@ export function RegenerationPage() {
     },
     onMutate: (vars) => {
       setPendingByTarget((prev) => ({ ...prev, [vars.target.id]: vars.kind }));
+      // A new action on this target supersedes the note the previous one left.
+      setRetryAuditByTarget((prev) => {
+        if (!(vars.target.id in prev)) return prev;
+        const next = { ...prev };
+        delete next[vars.target.id];
+        return next;
+      });
     },
     onSuccess: (result) => {
+      // `retry_publication` clears the error it retried; `previous_*` is the
+      // only remaining record of what prompted it, so it is kept on screen
+      // rather than spent on a toast that disappears.
+      const audit = regenerationRetryAudit(result);
+      if (audit) {
+        setRetryAuditByTarget((prev) => ({ ...prev, [result.target.id]: audit }));
+      }
+      // A target action can release a wave too, and those failures are just as
+      // mutation-only as the campaign ones.
+      rememberFailures(result.campaign_id, result.released_failures);
       qc.invalidateQueries({ queryKey: campaignKey(result.campaign_id) });
       qc.invalidateQueries({ queryKey: CAMPAIGNS_KEY });
-      toast.success(result.target.reason);
+      toast.success(result.target.reason, audit ? { description: audit } : undefined);
     },
     onSettled: (_result, _error, vars) => {
       setPendingByTarget((prev) => ({ ...prev, [vars.target.id]: null }));
@@ -303,9 +389,13 @@ export function RegenerationPage() {
           <div className="space-y-4">
             <h2 className="text-sm font-semibold text-white/70">New campaign</h2>
             <RegenerationWizard
+              books={books.data}
+              booksLoading={books.isLoading}
+              booksError={view(books.error)}
               sources={sources}
               ineligible={eligible.data?.ineligible ?? []}
-              sourcesLoading={eligible.isLoading}
+              sourcesLoading={eligibleQuery.enabled && eligible.isLoading}
+              pickBookReason={eligibleQuery.blockedReason}
               phaseCatalog={catalog.data?.canonical_phases ?? []}
               plan={plan.data ?? null}
               planError={view(plan.error ?? catalog.error ?? eligible.error)}
@@ -344,6 +434,11 @@ export function RegenerationPage() {
                 />
                 <CampaignReport
                   detail={selected}
+                  releasedFailures={mergeReleasedFailures(
+                    selected.released_failures,
+                    releaseFailures[selected.id],
+                  )}
+                  retryAuditByTarget={retryAuditByTarget}
                   pendingByTarget={pendingByTarget}
                   onAction={(kind, target, reason) => targetMut.mutate({ kind, target, reason })}
                   onCancelCampaign={(reason) =>

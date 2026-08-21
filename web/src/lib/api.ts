@@ -1,5 +1,6 @@
 import { clearToken, getToken } from "./auth";
 import { cascadeDisclosure, judgeSignal, lessonCountLabel } from "./regeneration-state";
+import { subjectLabel } from "./subjects";
 import type {
   ApprovalGate,
   CascadeSummary,
@@ -35,6 +36,7 @@ import type {
   RegenerationCampaignList,
   RegenerationCampaignStatus,
   RegenerationCampaignSummary,
+  RegenerationEligibleSource,
   RegenerationEligibleSources,
   RegenerationEstimateRequest,
   RegenerationEstimateResponse,
@@ -46,6 +48,7 @@ import type {
   RegenerationTargetActionResult,
   RegenerationTargetReport,
   RegenerationTargetStatus,
+  RegenerationWaveFailure,
   RoleTransport,
   SaKey,
   SaKeyAssignment,
@@ -976,7 +979,13 @@ const REGENERATION_CAMPAIGN_STATUS_LABELS: Record<RegenerationCampaignStatus, st
   cancelled: "Cancelled",
 };
 
-export function regenerationCampaignStatusLabel(status: RegenerationCampaignStatus): string {
+/** `"unknown"` is accepted because `TargetActionOut.campaign_status` really can
+ *  be it: the router answers "unknown" when the campaign row cannot be read
+ *  back. It gets its own words rather than the humanised token. */
+export function regenerationCampaignStatusLabel(
+  status: RegenerationCampaignStatus | "unknown",
+): string {
+  if (status === "unknown") return "Status unavailable";
   return REGENERATION_CAMPAIGN_STATUS_LABELS[status] ?? humanise(status);
 }
 
@@ -1096,6 +1105,458 @@ export function regenerationBucketViews(
   });
 }
 
+/* ── stranded release: approved, but the wave never landed ───────────── */
+
+/** The recovery action's label. Deliberately NOT an approval word: the
+ *  approval already happened and there is nothing new to review. */
+export const REGENERATION_RELEASE_RETRY_LABEL = "Retry the release";
+
+export interface RegenerationStrandedRelease {
+  count: number;
+  targetIds: string[];
+  /** One line per stranded lesson, named — never a bare UUID when the report
+   *  carries the lesson. */
+  lines: string[];
+  /** The same lines carrying their target id. Two lessons in one campaign can
+   *  legitimately share a title — different books, or a repeated "Kirish" —
+   *  so the TEXT is not a usable render key. */
+  rows: RegenerationReleasedFailureLine[];
+  headline: string;
+  /** The full promise the recovery action makes. */
+  detail: string;
+  actionLabel: string;
+  pendingLabel: string;
+  /** What `regenerationPollDecision` says when it stops for this. */
+  pollReason: string;
+}
+
+/**
+ * A campaign that was approved but still has lessons with no revision job.
+ *
+ * `approve_canary` stamps `approved_at` in one transaction and creates the
+ * wave in another, and `_prepare_wave` moves a target OUT of `planned` before
+ * its job exists. So `planned` + no `revision_job_id` on an approved campaign
+ * means the release transaction never committed for that target. Nothing on
+ * the server repairs it: the reconciler walks revision JOBS, and this target
+ * has none. Re-running approve is the documented, idempotent repair.
+ *
+ * `null` — i.e. no recovery offered — when the campaign is finished, was never
+ * approved, or is being rejected/cancelled (re-releasing would fight that),
+ * and for a target the operator has already asked to abandon, because the wave
+ * skips those and re-running would promise a fix that cannot happen.
+ */
+export function regenerationStrandedRelease(
+  detail: RegenerationCampaignDetail | null | undefined,
+): RegenerationStrandedRelease | null {
+  if (!detail || detail.is_terminal) return null;
+  if (detail.approved_at === null) return null;
+  if (detail.rejected_at !== null || detail.cancel_requested_at !== null) return null;
+
+  const stranded = detail.targets.filter(
+    (t) =>
+      t.status === "planned" &&
+      t.revision_job_id === null &&
+      !t.is_terminal &&
+      t.abandon_requested_at === null,
+  );
+  if (stranded.length === 0) return null;
+
+  const count = stranded.length;
+  const were = plural(count, "was", "were");
+  return {
+    count,
+    targetIds: stranded.map((t) => t.id),
+    lines: stranded.map((t) => regenerationTargetLabel(detail, t.id)),
+    rows: stranded.map((t) => ({
+      targetId: t.id,
+      text: regenerationTargetLabel(detail, t.id),
+    })),
+    headline: `${lessonCountLabel(count)} ${were} approved but never started`,
+    detail:
+      "Approval and the release are two separate steps on the server, so an approval can be " +
+      "recorded with nothing released. Retrying the release is idempotent: it re-runs the same " +
+      "approve call, creates nothing twice, gives no lesson a second revision job and consumes " +
+      "no extra version. There is nothing new to review, and every version that generates " +
+      "successfully still publishes to Notion automatically.",
+    actionLabel: REGENERATION_RELEASE_RETRY_LABEL,
+    pendingLabel: "Retrying the release…",
+    pollReason: [
+      `${lessonCountLabel(count)} ${were} approved but never got a revision job.`,
+      `Nothing starts ${plural(count, "it", "them")} on its own and refreshing cannot fix it,`,
+      `so this report has stopped ticking: use "${REGENERATION_RELEASE_RETRY_LABEL}" on this`,
+      "campaign — it re-runs the same idempotent approve call and creates nothing twice.",
+      "Any lesson that did start keeps running in the background.",
+    ].join(" "),
+  };
+}
+
+/** One lesson, named. The target id is the fallback, not the default. */
+export function regenerationTargetLabel(
+  detail: RegenerationCampaignDetail | null | undefined,
+  targetId: string,
+): string {
+  const target = detail?.targets.find((t) => t.id === targetId);
+  if (!target) return `lesson ${targetId}`;
+  const number = target.lesson.section_number ? `${target.lesson.section_number}. ` : "";
+  const title = target.lesson.section_title ?? target.toc_entry_id;
+  return `${number}${title} (${regenerationLanguageLabel(target.output_language)})`;
+}
+
+export interface RegenerationReleasedFailureLine {
+  targetId: string;
+  text: string;
+}
+
+/**
+ * The wave failures, as lines an operator can act on.
+ *
+ * `WaveFailureOut` carries only ids; the lesson titles live on the report's
+ * targets, so the two are joined here rather than printing a UUID at somebody.
+ */
+export function regenerationReleasedFailureLines(
+  detail: RegenerationCampaignDetail | null | undefined,
+  failures: RegenerationWaveFailure[] | undefined,
+): RegenerationReleasedFailureLine[] {
+  return (failures ?? []).map((failure) => {
+    const status = failure.current_status
+      ? ` (now ${regenerationTargetStatusLabel(failure.current_status).toLowerCase()})`
+      : "";
+    return {
+      targetId: failure.target_id,
+      text: `${regenerationTargetLabel(detail, failure.target_id)} — ${failure.reason}${status}`,
+    };
+  });
+}
+
+/**
+ * Keep a mutation-only payload alive across the refetch that would erase it.
+ *
+ * `released_failures` exists ONLY on the mutation response — `GET
+ * /campaigns/{id}` never carries it — so writing the fresh report into the
+ * cache and then invalidating destroys the only record of which lessons the
+ * release could not start. The server's copy wins per target; anything it no
+ * longer mentions is kept from the transient copy.
+ */
+export function mergeReleasedFailures(
+  server: RegenerationWaveFailure[] | undefined,
+  transient: RegenerationWaveFailure[] | undefined,
+): RegenerationWaveFailure[] {
+  const merged = [...(server ?? [])];
+  const seen = new Set(merged.map((f) => f.target_id));
+  for (const failure of transient ?? []) {
+    if (seen.has(failure.target_id)) continue;
+    seen.add(failure.target_id);
+    merged.push(failure);
+  }
+  return merged;
+}
+
+/** "2026-08-20 11:00 UTC" — one timestamp format, timezone stated. */
+function formatWhen(iso: string): string {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return iso;
+  return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+/**
+ * What a retry cleared, in words.
+ *
+ * `retry_publication` CLEARS `publication_last_error`, the attempt count and
+ * the backoff stamp; the API captures them beforehand into `previous_*`
+ * precisely so the UI can still show them. Dropping that on the floor throws
+ * away the only surviving record of why the retry was needed.
+ *
+ * `null` when there is nothing preserved — a first attempt, or a generation
+ * retry, which has no publication history to clear.
+ */
+export function regenerationRetryAudit(
+  result: RegenerationTargetActionResult | null | undefined,
+): string | null {
+  if (!result) return null;
+  const error = result.previous_publication_error;
+  const attempts = result.previous_publication_attempts ?? 0;
+  const due = result.previous_publication_next_attempt_at;
+  if (!error && attempts <= 0 && !due) return null;
+
+  const parts: string[] = [];
+  if (attempts > 0) {
+    parts.push(`${attempts} delivery ${plural(attempts, "attempt", "attempts")} had failed`);
+  }
+  if (due) parts.push(`the next automatic attempt was due ${formatWhen(due)}`);
+  if (error) parts.push(`the last error was: ${error}`);
+  return `Before this retry: ${parts.join("; ")}.`;
+}
+
+/* ── the draft's bounded scope: book → lessons ────────────────────────── */
+
+/** Clamp the canary to something the campaign can actually honour.
+ *
+ *  Applied to the STORED value, not only to the rendered one: `canary_size` is
+ *  posted from state, and the server's `ge=1` refusal arrives as a raw
+ *  validation payload rather than as anything an operator can act on. */
+export function clampCanarySize(value: number, targetCount: number): number {
+  const ceiling = Math.max(1, Math.floor(Number.isFinite(targetCount) ? targetCount : 0));
+  const wanted = Number.isFinite(value) ? Math.floor(value) : 1;
+  return Math.min(Math.max(1, wanted), ceiling);
+}
+
+export const REGENERATION_PICK_BOOK_HINT =
+  "Pick a textbook first. Regenerable lessons are listed one book at a time — asking the " +
+  "server for every lesson lineage at once is neither bounded nor readable, and two lessons " +
+  "called the same thing in different books are impossible to tell apart in one flat list.";
+
+export interface RegenerationEligibleQuery {
+  enabled: boolean;
+  /** Straight into `api.listRegenerationEligible`. */
+  filters: { bookIds: string[] };
+  blockedReason: string | null;
+}
+
+/**
+ * `/eligible`, bounded to ONE book.
+ *
+ * With no filter the route walks every completed homework lineage in the
+ * database, which is thousands of rows for a list nobody can read. The books
+ * list (~246 rows) is the bounded first step, and this gate keeps the lesson
+ * query switched OFF until one is chosen.
+ */
+export function regenerationEligibleQuery(
+  bookId: string | null | undefined,
+): RegenerationEligibleQuery {
+  const id = (bookId ?? "").trim();
+  if (!id) {
+    return { enabled: false, filters: { bookIds: [] }, blockedReason: REGENERATION_PICK_BOOK_HINT };
+  }
+  return { enabled: true, filters: { bookIds: [id] }, blockedReason: null };
+}
+
+export interface RegenerationBookOption {
+  id: string;
+  title: string;
+  subject: string;
+  subjectLabel: string;
+  grade: string | null;
+  gradeLabel: string;
+  /** One line that identifies the book on its own. */
+  label: string;
+}
+
+function bookOption(book: Book): RegenerationBookOption {
+  // Real rows are missing a grade, and a filename can be blank — neither may
+  // render as "null" or as an empty chip.
+  const title = (book.original_filename ?? "").trim() || `Untitled book ${book.id.slice(0, 8)}`;
+  const grade = (book.grade ?? "").trim() || null;
+  const gradeLabel = grade ? `Grade ${grade}` : "Grade not recorded";
+  const label = `${subjectLabel(book.subject)} · ${gradeLabel} · ${title}`;
+  return {
+    id: book.id,
+    title,
+    subject: book.subject,
+    subjectLabel: subjectLabel(book.subject),
+    grade,
+    gradeLabel,
+    label,
+  };
+}
+
+/** Grades sort numerically where they are numbers, and a book with no grade
+ *  sorts last rather than disappearing. */
+function gradeRank(grade: string | null): number {
+  const n = Number.parseInt(grade ?? "", 10);
+  return Number.isNaN(n) ? Number.POSITIVE_INFINITY : n;
+}
+
+export function regenerationBookOptions(
+  books: Book[] | undefined,
+  filters: { subject?: string | null; grade?: string | null } = {},
+): RegenerationBookOption[] {
+  const subject = filters.subject ?? null;
+  const grade = filters.grade ?? null;
+  return (books ?? [])
+    .filter((b) => subject === null || b.subject === subject)
+    .filter((b) => grade === null || ((b.grade ?? "").trim() || "") === grade)
+    .map(bookOption)
+    .sort(
+      (a, b) =>
+        a.subjectLabel.localeCompare(b.subjectLabel) ||
+        gradeRank(a.grade) - gradeRank(b.grade) ||
+        a.title.localeCompare(b.title),
+    );
+}
+
+export interface RegenerationFacet {
+  value: string;
+  label: string;
+  count: number;
+}
+
+export interface RegenerationBookFacets {
+  subjects: RegenerationFacet[];
+  /** Scoped to the chosen subject; `""` is the real "no grade recorded"
+   *  bucket, offered rather than silently dropping those books. */
+  grades: RegenerationFacet[];
+}
+
+export function regenerationBookFacets(
+  books: Book[] | undefined,
+  filters: { subject?: string | null } = {},
+): RegenerationBookFacets {
+  const all = books ?? [];
+  const subjects = new Map<string, number>();
+  for (const book of all) subjects.set(book.subject, (subjects.get(book.subject) ?? 0) + 1);
+
+  const subject = filters.subject ?? null;
+  const grades = new Map<string, number>();
+  for (const book of all) {
+    if (subject !== null && book.subject !== subject) continue;
+    const key = (book.grade ?? "").trim();
+    grades.set(key, (grades.get(key) ?? 0) + 1);
+  }
+
+  return {
+    subjects: [...subjects.entries()]
+      .map(([value, count]) => ({ value, label: subjectLabel(value), count }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+    grades: [...grades.entries()]
+      .map(([value, count]) => ({
+        value,
+        label: value ? `Grade ${value}` : "No grade recorded",
+        count,
+      }))
+      .sort((a, b) => gradeRank(a.value || null) - gradeRank(b.value || null)),
+  };
+}
+
+/** The draft fields narrowing touches. The wizard's draft extends this. */
+export interface RegenerationScopeState {
+  subjectFilter: string | null;
+  gradeFilter: string | null;
+  bookId: string | null;
+  language: RegenerationOutputLanguage;
+  selectedTocEntryIds: string[];
+  selectedPhases: string[];
+  excludedPhases: string[];
+  acknowledged: boolean;
+  canarySize: number;
+}
+
+export interface RegenerationScopeChange {
+  subjectFilter?: string | null;
+  gradeFilter?: string | null;
+  bookId?: string | null;
+  language?: RegenerationOutputLanguage;
+}
+
+/**
+ * Narrow the draft, clearing exactly what the change invalidated.
+ *
+ * A selected lesson belongs to one book in one language; a phase list belongs
+ * to one subject's flow. Leaving either behind posts a campaign the operator
+ * never composed. Re-picking the same value changes nothing at all — a no-op
+ * click must not wipe somebody's work.
+ */
+export function regenerationNarrowScope<T extends RegenerationScopeState>(
+  state: T,
+  change: RegenerationScopeChange,
+): T {
+  // Selection always dies with the scope; the canary can never outlive it.
+  const dropSelection = { selectedTocEntryIds: [], acknowledged: false, canarySize: 1 };
+  const dropPhases = { selectedPhases: [], excludedPhases: [] };
+  // The cast is the documented TS limitation on spreading a generic: every
+  // patch below only ever narrows fields declared on RegenerationScopeState.
+  const patched = (over: Partial<RegenerationScopeState>): T => ({ ...state, ...over }) as T;
+
+  if ("subjectFilter" in change && change.subjectFilter !== state.subjectFilter) {
+    return patched({
+      subjectFilter: change.subjectFilter ?? null,
+      // A grade and a book from the previous subject mean nothing here.
+      gradeFilter: null,
+      bookId: null,
+      ...dropPhases,
+      ...dropSelection,
+    });
+  }
+  if ("gradeFilter" in change && change.gradeFilter !== state.gradeFilter) {
+    // Same subject, same flow: the phase ticks survive.
+    return patched({ gradeFilter: change.gradeFilter ?? null, bookId: null, ...dropSelection });
+  }
+  if ("bookId" in change && change.bookId !== state.bookId) {
+    // Another book may be another subject, so the phase list goes too.
+    return patched({ bookId: change.bookId ?? null, ...dropPhases, ...dropSelection });
+  }
+  if (change.language !== undefined && change.language !== state.language) {
+    // One book carries every language, so only the lessons are cleared.
+    return patched({ language: change.language, ...dropSelection });
+  }
+  return state;
+}
+
+export const REGENERATION_LANGUAGE_LABELS: Record<RegenerationOutputLanguage, string> = {
+  uz: "Uzbek",
+  ru: "Russian",
+  en: "English",
+};
+
+export function regenerationLanguageLabel(language: string): string {
+  return REGENERATION_LANGUAGE_LABELS[language as RegenerationOutputLanguage] ?? language;
+}
+
+export interface RegenerationSourceRow {
+  key: string;
+  tocEntryId: string;
+  /** "1. Kirish" — the section number is what tells two "Kirish" apart. */
+  headline: string;
+  bookLine: string;
+  contextLine: string;
+  versionText: string;
+  languageLabel: string;
+  noPageWarning: string | null;
+  /** Everything the row renders, joined — the thing a filter box matches and
+   *  the thing the test asserts nothing was dropped from. */
+  searchText: string;
+}
+
+/**
+ * One selectable lesson, fully identified.
+ *
+ * `EligibleSourceOut` has no book title, so the book is joined in from the
+ * books list. Every axis that can distinguish two identically-titled lessons
+ * is rendered: book, subject, grade, chapter, section number, language and
+ * the version this regeneration would move it from and to.
+ */
+export function regenerationSourceRow(
+  source: RegenerationEligibleSource,
+  book: RegenerationBookOption | undefined,
+): RegenerationSourceRow {
+  const number = source.section_number ? `${source.section_number}. ` : "";
+  const headline = `${number}${source.section_title}`.trim() || source.toc_entry_id;
+  const grade = (source.grade ?? "").trim();
+  const bookLine = book
+    ? book.label
+    : `${subjectLabel(source.subject)} · ${grade ? `Grade ${grade}` : "Grade not recorded"} · ` +
+      `Book ${source.book_id.slice(0, 8)}`;
+  const languageLabel = regenerationLanguageLabel(source.output_language);
+  const versionText = `V${source.source_publication_version} → V${source.next_expected_version}`;
+  const chapter = source.chapter_title.trim() || "no chapter recorded";
+  const revisionNote = source.source_is_revision
+    ? " · the source is itself a regenerated version, not the original"
+    : "";
+  const contextLine = `Chapter: ${chapter} · ${languageLabel} · ${versionText}${revisionNote}`;
+  return {
+    key: `${source.toc_entry_id}:${source.output_language}`,
+    tocEntryId: source.toc_entry_id,
+    headline,
+    bookLine,
+    contextLine,
+    versionText,
+    languageLabel,
+    noPageWarning: source.has_notion_lesson_page
+      ? null
+      : "No Lesson Topic page is known for this lesson yet; the canary preflight will try to resolve one.",
+    searchText: [headline, bookLine, contextLine].join(" · "),
+  };
+}
+
 /* ── polling ──────────────────────────────────────────────────────────── */
 
 export interface RegenerationPollDecision {
@@ -1124,6 +1585,16 @@ const REGENERATION_RELEASING_STATUSES = new Set<RegenerationCampaignStatus>([
  * cannot change until somebody acts — refreshing those is pure request burn,
  * and on `awaiting_canary_approval` it would poll for as long as the tab is
  * open.
+ *
+ * A STRANDED RELEASE is checked before any of that, including before the
+ * campaign-status line. `bulk_running` is derived from target statuses and
+ * `planned` counts as in flight, so a campaign whose release never landed
+ * looks busy at the status level while being permanently stuck at the target
+ * level: this used to poll forever behind "the campaign is still releasing
+ * revision jobs", which is a claim the data contradicts. It wins over
+ * observed target work too — a partial release is the realistic shape of this
+ * failure, and a lesson that can never start must not stay hidden behind the
+ * lessons that did.
  */
 export function regenerationPollDecision(
   detail: RegenerationCampaignDetail | null | undefined,
@@ -1143,6 +1614,12 @@ export function regenerationPollDecision(
       `This campaign is ${regenerationCampaignStatusLabel(detail.status).toLowerCase()}; the report does not change on its own any more.`,
     );
   }
+
+  // Approval and the bulk release are two transactions, so an approval can be
+  // recorded with nothing released. Polling that forever would never fix it;
+  // re-running the release does, and it creates nothing twice.
+  const stranded = regenerationStrandedRelease(detail);
+  if (stranded !== null) return stopped(stranded.pollReason);
 
   const targets = detail.targets;
   const tally = (predicate: (t: RegenerationTargetReport) => boolean): number =>
@@ -1172,16 +1649,6 @@ export function regenerationPollDecision(
       activity,
       reason: `Refreshing while ${activity.join(", ")}.`,
     };
-  }
-
-  // Approval and the bulk release are two transactions, so an approval can be
-  // recorded with nothing released. Polling that forever would never fix it;
-  // re-running approve does, and it creates nothing twice.
-  const stranded = tally((t) => t.status === "planned" && t.revision_job_id === null);
-  if (detail.approved_at !== null && stranded > 0) {
-    return stopped(
-      `${lessonCountLabel(stranded)} still have no revision job even though this campaign is approved. Nothing will start on its own — run approve again; it is idempotent and creates nothing twice.`,
-    );
   }
 
   const needsYou = tally((t) => t.action_required);
@@ -1486,6 +1953,22 @@ function rowsOf(record: Record<string, unknown>, key: string): Record<string, un
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
 
+/** One `{loc, msg}` row of a FastAPI validation error, as a sentence.
+ *
+ *  `loc` is a tuple like `["body", "contract", "model"]`; the transport prefix
+ *  (`body`/`query`/`path`) means nothing to an operator, and an array index is
+ *  spelled out rather than shown as a bare number. */
+function validationLine(row: Record<string, unknown>): string {
+  const loc = Array.isArray(row.loc) ? row.loc : [];
+  const parts = loc
+    .filter((p): p is string | number => typeof p === "string" || typeof p === "number")
+    .map(String)
+    .filter((p) => p !== "body" && p !== "query" && p !== "path" && p !== "header")
+    .map((p) => (/^\d+$/.test(p) ? `item ${Number(p) + 1}` : humanise(p)));
+  const field = parts.length > 0 ? parts.join(" → ") : "This request";
+  return `${field} — ${text(row, "msg") || "is not valid"}`;
+}
+
 const REGENERATION_STALE_HINT =
   "The campaign moved on while this screen was open — refresh to see where it is now.";
 
@@ -1504,6 +1987,11 @@ export function regenerationErrorView(err: unknown): RegenerationErrorView {
   const status = err instanceof ApiError ? err.status : null;
   const fallback = err instanceof Error ? err.message : String(err);
   const detail = err instanceof ApiError && isRecord(err.detail) ? err.detail : null;
+  // A schema-level 422 carries a LIST, not `{error, message}` — so `unwrap`
+  // could find no message and fell back to the raw response text. Rendering
+  // that puts a JSON payload on screen.
+  const invalidFields =
+    err instanceof ApiError && Array.isArray(err.detail) ? err.detail.filter(isRecord) : null;
   const code = detail ? text(detail, "error") || null : null;
   const message = detail ? text(detail, "message") || fallback : fallback;
 
@@ -1517,6 +2005,22 @@ export function regenerationErrorView(err: unknown): RegenerationErrorView {
         "a UI one.",
       details: [],
       hint: null,
+      code: null,
+      status,
+    };
+  }
+
+  if (invalidFields !== null) {
+    return {
+      title: "That request was rejected before it ran",
+      message:
+        "The server refused this request because some of its fields are not valid. Nothing was " +
+        "created, nothing was spent and nothing was published.",
+      details: invalidFields.map(validationLine),
+      hint:
+        invalidFields.length === 0
+          ? "The server did not say which field it objected to; re-check the draft and try again."
+          : null,
       code: null,
       status,
     };
