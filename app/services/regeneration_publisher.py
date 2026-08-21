@@ -206,6 +206,13 @@ class _StaleClaim(RuntimeError):
 #: The partial unique index that makes a publication version consumed forever.
 _VERSION_INDEX = "uq_regeneration_targets_publication_version"
 
+#: The DIAGNOSTIC tail of a version refusal, kept out of the sentence the
+#: operator is meant to act on — an index identifier names no remedy. It stays
+#: in the message rather than only in the log because
+#: `publication_last_error` is also where an engineer looks to see which fence
+#: actually fired.
+_VERSION_INDEX_NOTE = f" (diagnostic: {_VERSION_INDEX})"
+
 
 def _is_version_collision(exc: IntegrityError) -> bool:
     """Is this integrity error the version index, and only that one?
@@ -579,11 +586,33 @@ class RegenerationPublisher:
                     # behind a version message would tell an operator to pick
                     # another number for a fault no number can fix.
                     raise
-                return _Refusal(
-                    "the publication version this campaign declared is already "
-                    f"consumed for this lesson and language ({_VERSION_INDEX})",
-                    retryable=False,
-                )
+                # `campaign` is bound here: the only statements in this
+                # block that can violate a constraint are the reservation's
+                # UPDATE and the trailing commit, both after it is loaded.
+                declared = campaign.publication_version
+                if declared is not None:
+                    refusal = (
+                        f"Homework V{declared} is already consumed for this "
+                        "lesson and language, and a campaign's declared "
+                        "version is immutable — retrying this delivery "
+                        "reserves the same number and parks again; publish "
+                        "this lesson from a new campaign at a different "
+                        "version, or abandon this target"
+                    )
+                else:
+                    # A campaign declaring no version allocates
+                    # `max(existing, 1) + 1` instead, so the number that
+                    # collided is not knowable from the campaign — and the next
+                    # allocation DOES see the row that took it. Hence no
+                    # "retrying cannot help" here: that is true of a declared
+                    # version, not of this one.
+                    refusal = (
+                        "the publication version reserved for this lesson and "
+                        "language is already consumed; this campaign declares "
+                        "no version, so a retry allocates the next free number "
+                        "instead"
+                    )
+                return _Refusal(refusal + _VERSION_INDEX_NOTE, retryable=False)
         return inputs
 
     # ─── step 2: the two remote steps, both off the event loop ───────────

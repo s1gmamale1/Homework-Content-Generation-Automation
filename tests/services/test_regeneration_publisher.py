@@ -167,6 +167,10 @@ class _Harness:
         self.campaign = SimpleNamespace(
             id=self.campaign_id, status="approved", approved_at=_now(),
             cancel_requested_at=None, rejected_at=None,
+            # The number the operator approved. Coherent with
+            # `reserved_version` on purpose: the declared version IS what the
+            # reservation hands back, and it is what a version refusal names.
+            publication_version=self.reserved_version,
         )
         self.job = SimpleNamespace(
             id=self.job_id, book_id=self.book_id, subject=_SUBJECT,
@@ -1174,6 +1178,39 @@ async def test_a_version_violation_with_no_name_anywhere_falls_back_to_the_text(
     assert write["publication_next_attempt_at"] is None, "parked, not retried"
     assert h.rollbacks == 1
     assert h.notion.calls == []
+
+
+async def test_the_index_fence_refusal_names_the_version_not_the_index(h):
+    """What an OPERATOR reads when the final fence fires.
+
+    The sibling refusal, raised by `reserve_publication_version`, already says
+    `Homework V4 is already consumed …`. This branch is the same condition
+    caught one layer lower, so it must not degrade into a bare index name: the
+    NUMBER is the actionable part, and
+    `uq_regeneration_targets_publication_version` is an identifier, not an
+    instruction — it belongs in the diagnostic tail.
+    """
+    h.campaign.publication_version = 4
+    h.reserve_error = _asyncpg_integrity_error(pub._VERSION_INDEX)
+    h.claim()
+    assert await h.publisher().run_once() is True
+
+    message = h.write("publication_failed")["publication_last_error"]
+    assert message.endswith(pub._VERSION_INDEX_NOTE), (
+        f"the index belongs in the diagnostic tail, not the sentence: {message!r}"
+    )
+    sentence = message[: -len(pub._VERSION_INDEX_NOTE)]
+    assert "Homework V4" in sentence, (
+        f"the operator sentence does not name the version: {sentence!r}"
+    )
+    assert pub._VERSION_INDEX not in sentence, (
+        f"a raw index identifier leaked into the instruction: {sentence!r}"
+    )
+    assert "new campaign" in sentence and "abandon" in sentence, (
+        "a declared version is immutable, so `retry_publication` re-reserves "
+        "the same consumed number and parks again — the refusal has to name "
+        f"the remedy that actually works: {sentence!r}"
+    )
 
 
 async def test_an_unrelated_integrity_error_is_not_a_publication_version_conflict(h):
