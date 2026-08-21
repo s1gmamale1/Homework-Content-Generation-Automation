@@ -345,6 +345,124 @@ def test_eligible_lists_sources_and_says_why_the_rest_were_left_out(monkeypatch)
     assert kwargs["output_languages"] == ["uz", "ru"]
 
 
+# ─── selection scope (one rule, three routes) ────────────────────────────
+#
+# `book_ids`/`toc_entry_ids` are the only axes that bound a selection — this
+# API has no subject or grade selector — so a request carrying only
+# `output_languages` asks for every regenerable lesson in every book. The two
+# routes that commit to a selection refuse it; `/eligible` is a browse and
+# stays broad, but is still capped at what one campaign may hold.
+
+
+def test_eligible_still_browses_without_a_book_or_lesson_filter(monkeypatch):
+    """The picker populates from here. Browsing broadly is the point of the
+    route — only the RESULT is bounded."""
+    monkeypatch.setattr(
+        discovery, "list_source_candidates", AsyncMock(return_value=[_candidate()])
+    )
+    assert client.get(f"{BASE}/eligible").status_code == 200
+
+
+def test_eligible_refuses_more_lineages_than_one_campaign_may_hold(monkeypatch):
+    over = campaign_service.MAX_CAMPAIGN_TARGETS + 1
+    monkeypatch.setattr(
+        discovery, "list_source_candidates",
+        AsyncMock(return_value=[_candidate() for _ in range(over)]),
+    )
+    response = client.get(f"{BASE}/eligible", params={"book_id": str(uuid4())})
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["error"] == "selection_too_large"
+    assert detail["count"] == over
+    assert detail["maximum"] == campaign_service.MAX_CAMPAIGN_TARGETS
+
+
+def test_estimate_refuses_an_unbounded_selection_without_scanning(monkeypatch):
+    """Refused BEFORE discovery: the scan an unbounded selection would run is
+    itself the thing being prevented, not just the campaign behind it."""
+    listed = AsyncMock(return_value=[])
+    monkeypatch.setattr(discovery, "list_source_candidates", listed)
+
+    response = client.post(
+        f"{BASE}/estimate",
+        json=_estimate_body(selection={"output_languages": ["uz"]}),
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["error"] == "unbounded_selection"
+    assert "book_id" in detail["message"] and "toc_entry_id" in detail["message"]
+    assert listed.await_count == 0
+
+
+def test_estimate_refuses_more_lineages_than_one_campaign_may_hold(monkeypatch):
+    over = campaign_service.MAX_CAMPAIGN_TARGETS + 1
+    monkeypatch.setattr(
+        discovery, "list_source_candidates",
+        AsyncMock(return_value=[_candidate() for _ in range(over)]),
+    )
+    priced = AsyncMock()
+    monkeypatch.setattr(regen_api, "_estimate_regeneration", priced)
+
+    response = client.post(
+        f"{BASE}/estimate", json=_estimate_body(selection={"book_ids": [str(uuid4())]})
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "selection_too_large"
+    assert priced.await_count == 0, "an over-wide selection was priced anyway"
+
+
+@pytest.mark.parametrize(
+    "error, code",
+    [
+        (campaign_service.UnboundedSelection(), "unbounded_selection"),
+        (
+            campaign_service.SelectionTooLarge(
+                campaign_service.MAX_CAMPAIGN_TARGETS + 1,
+                maximum=campaign_service.MAX_CAMPAIGN_TARGETS,
+                what="create a regeneration campaign",
+            ),
+            "selection_too_large",
+        ),
+    ],
+)
+def test_create_maps_a_scope_refusal_to_a_structured_422(monkeypatch, error, code):
+    """The RULE is the service's — one definition — and the router's job is to
+    render its refusal as something an operator can act on."""
+    _install_service(
+        monkeypatch,
+        _fake_service(create_campaign=AsyncMock(side_effect=error)),
+    )
+    response = client.post(f"{BASE}/campaigns", json=_create_body())
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == code
+
+
+def test_the_approval_gate_refusal_is_reported_as_its_own_conflict(monkeypatch):
+    """`CanaryNotReviewable` is an `IllegalCampaignAction`, so it would map to
+    the generic `illegal_campaign_state` by inheritance. It gets its own code
+    because the operator's next move is specific: retry or abandon the blocked
+    canaries, then approve."""
+    _install_service(
+        monkeypatch,
+        _fake_service(approve_canary=AsyncMock(
+            side_effect=campaign_service.CanaryNotReviewable(
+                "1 of 2 canary target(s) are ['generation_failed']",
+                blockers=["generation_failed"], total=2,
+            )
+        )),
+    )
+    response = client.post(
+        f"{BASE}/campaigns/{uuid4()}/approve", json={"actor": "operator"}
+    )
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["error"] == "canary_not_reviewable"
+    assert detail["blockers"] == ["generation_failed"]
+    assert detail["canary_count"] == 2
+
+
 def test_phase_plan_previews_broken_edges_without_refusing_the_preview():
     response = client.post(
         f"{BASE}/phase-plan",

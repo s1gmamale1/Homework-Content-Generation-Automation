@@ -93,10 +93,12 @@ from app.services.regeneration_states import (
 )
 
 __all__ = [
+    "MAX_CAMPAIGN_TARGETS",
     "ActiveLineageConflict",
     "CampaignError",
     "CampaignNotFound",
     "CampaignSelection",
+    "CanaryNotReviewable",
     "CreateCampaignSpec",
     "IllegalCampaignAction",
     "IllegalTargetAction",
@@ -107,20 +109,37 @@ __all__ = [
     "PreflightBlocked",
     "RegenerationCampaignService",
     "RetiredModelRefusal",
+    "SelectionTooLarge",
     "TargetNotFound",
     "TerminalCampaignWithLiveTargets",
+    "UnboundedSelection",
     "WaveFailure",
+    "assert_canary_gate_ready",
     "assert_not_hiding_live_targets",
     "derive_campaign_status",
     "plan_launch_stagger",
     "require_api_transport",
+    "require_bounded_selection",
     "require_live_models",
+    "require_selection_within_cap",
     "retired_models_in_job",
     "roll_up_campaign",
     "target_sort_key",
 ]
 
 _ROLES = ("extract", "judge", "solver")
+
+#: The most lesson/language lineages one selection may resolve to.
+#:
+#: Applied to what DISCOVERY returned — the same quantity ``/eligible``,
+#: ``/estimate`` and creation each report — so an operator who is refused on
+#: the preview is refused on creation for the identical reason and number, and
+#: never the other way round. It is a SCOPE guard, not a cost guard: the
+#: estimate prices the selection, but a campaign is also one canary gate, one
+#: cancel control and one active-lineage lock over everything it holds, and
+#: those do not scale with a fleet-wide sweep. Several bounded campaigns are
+#: the supported way to do more; each keeps its own gate and its own report.
+MAX_CAMPAIGN_TARGETS = 500
 
 # Target states a wave may still create a revision job for. `generating` is in
 # the set on purpose: `create_revision_job` commits, so a crash between the
@@ -277,6 +296,74 @@ class IllegalTargetAction(CampaignError):
     """The target is not in a state where this action is meaningful."""
 
 
+class CanaryNotReviewable(IllegalCampaignAction):
+    """Approval was attempted over a canary wave nobody could review.
+
+    The campaign STATUS cannot answer this question and must not be asked. It
+    is derived, the report-driven rollup is debounced per campaign, and
+    ``attention_required`` is deliberately one of ``approve_canary``'s accepted
+    pre-approval statuses (a canary that failed and was retried back to health
+    arrives in exactly that one). So a stale or generous status sits one
+    compare-and-set away from ``approved`` — which is the predicate
+    ``trg_regeneration_targets_publication_gate`` reads before letting ANY
+    target publish.
+
+    The gate is therefore checked against the canary ROWS, immediately before
+    the write that stamps ``approved_at``. Approval is not per lesson: one
+    click releases every remaining target in the campaign, so it may only be
+    offered over evidence that actually exists.
+    """
+
+    def __init__(self, reason: str, *, blockers: Sequence[str] = (), total: int = 0):
+        self.blockers = sorted(blockers)
+        self.total = int(total)
+        super().__init__(
+            f"the canary wave is not reviewable: {reason}. Approval releases "
+            "every remaining lesson in one click, so the gate opens only once "
+            "every canary that was not abandoned is awaiting approval — retry "
+            "or abandon the blocked canaries first."
+        )
+
+
+class UnboundedSelection(CampaignError):
+    """A selection naming neither a book nor a lesson.
+
+    Empty means "do not filter on this axis" (see :class:`CampaignSelection`),
+    so a selection carrying only ``output_languages`` — or nothing at all —
+    resolves to EVERY regenerable lineage the fleet has ever produced: a
+    full-table discovery scan, and behind it a campaign that would regenerate
+    the whole content library from one request.
+
+    There is no subject or grade selector on this API, so ``book_ids`` and
+    ``toc_entry_ids`` are the only two axes that bound a selection, and at
+    least one of them is required. A language is a filter applied WITHIN a
+    scope, never a scope itself.
+    """
+
+    def __init__(self):
+        super().__init__(
+            "a regeneration selection must name at least one book_id or "
+            "toc_entry_id — output_languages alone is a filter, not a scope, "
+            "and would select every regenerable lesson in every book"
+        )
+
+
+class SelectionTooLarge(CampaignError):
+    """A selection resolving to more lineages than one campaign may hold."""
+
+    def __init__(self, count: int, *, maximum: int, what: str):
+        self.count = int(count)
+        self.maximum = int(maximum)
+        super().__init__(
+            f"cannot {what}: this selection resolves to {self.count} "
+            f"lesson/language lineages, over the limit of {self.maximum}. "
+            "Narrow it — fewer books, explicit toc_entry_ids, or one output "
+            "language at a time — and run it as several campaigns; each keeps "
+            "its own canary gate, its own cancel control and its own cost "
+            "report."
+        )
+
+
 class TerminalCampaignWithLiveTargets(CampaignError):
     """A terminal campaign status was attempted over a non-terminal target.
 
@@ -414,6 +501,70 @@ def require_live_models(pinned, *, what: str) -> None:
         raise RetiredModelRefusal(retired, what=what)
 
 
+def assert_canary_gate_ready(canary_statuses: Sequence[str]) -> None:
+    """Refuse approval unless every non-abandoned canary is approval-ready.
+
+    Three refusals, and the third is the one worth naming. A canary the
+    operator ABANDONED is excluded rather than blocking — that was their own
+    decision to drop the lesson, and holding the wave for it would make an
+    abandonment un-recoverable. But an abandoned canary is not evidence
+    either, so it may only be excluded while at least one canary is genuinely
+    ``awaiting_canary_approval``: a wave whose every canary was abandoned had
+    nothing reviewed, and approving it would release the bulk on the strength
+    of work that was thrown away.
+
+    Status-only by design, and sound because of it: ``_converge_target`` takes
+    an ``awaiting_canary_approval`` target straight to terminal ``abandoned``,
+    so a canary carrying an abandon INTENT while still presenting the gate is
+    not a reachable state.
+    """
+    statuses = list(canary_statuses)
+    if not statuses:
+        raise CanaryNotReviewable(
+            "this campaign has no canary target at all", total=0
+        )
+    blockers = [
+        status for status in statuses
+        if status not in ("awaiting_canary_approval", "abandoned")
+    ]
+    if blockers:
+        raise CanaryNotReviewable(
+            f"{len(blockers)} of {len(statuses)} canary target(s) are "
+            f"{sorted(set(blockers))}, not awaiting approval",
+            blockers=blockers,
+            total=len(statuses),
+        )
+    if "awaiting_canary_approval" not in statuses:
+        raise CanaryNotReviewable(
+            f"every one of the {len(statuses)} canary target(s) was abandoned, "
+            "so nothing was reviewed",
+            blockers=statuses,
+            total=len(statuses),
+        )
+
+
+def require_bounded_selection(selection) -> None:
+    """Refuse a selection that names neither a book nor a lesson.
+
+    Duck-typed on the three selection axes so the ONE definition serves both
+    the service's :class:`CampaignSelection` and the API's
+    ``CampaignSelectionIn`` — the rule must not exist twice.
+    """
+    if not (tuple(selection.book_ids) or tuple(selection.toc_entry_ids)):
+        raise UnboundedSelection()
+
+
+def require_selection_within_cap(count: int, *, what: str) -> None:
+    """Refuse a selection resolving to more than :data:`MAX_CAMPAIGN_TARGETS`.
+
+    Takes the count rather than the rows because it is applied AFTER discovery
+    — the number of lineages a selection resolves to is not knowable before
+    the read — and at the same point on all three paths that use it.
+    """
+    if count > MAX_CAMPAIGN_TARGETS:
+        raise SelectionTooLarge(count, maximum=MAX_CAMPAIGN_TARGETS, what=what)
+
+
 def plan_launch_stagger(
     job_count: int,
     *,
@@ -527,6 +678,9 @@ class RegenerationCampaignService:
                 "canary_size must be at least 1 — the canary IS the human gate; "
                 "a campaign with no canary would publish unreviewed content"
             )
+        # Before a session exists: an unfiltered discovery is a scan of every
+        # lineage the fleet has ever generated, so it must not even start.
+        require_bounded_selection(spec.selection)
         async with self._sessions() as session:
             contract = await self._resolve_contract_once(session, spec.contract)
 
@@ -536,6 +690,14 @@ class RegenerationCampaignService:
                 book_ids=selection.book_ids or None,
                 toc_entry_ids=selection.toc_entry_ids or None,
                 output_languages=selection.output_languages or None,
+            )
+            # On the DISCOVERED count, before the campaign row, before the
+            # targets, and therefore before any active-lineage lock is taken —
+            # an over-wide selection costs one read and leaves nothing behind.
+            # The same count the operator was shown by `/eligible` and
+            # `/estimate`, so the refusal cannot appear for the first time here.
+            require_selection_within_cap(
+                len(candidates), what="create a regeneration campaign"
             )
             eligible = [c for c in candidates if c.source is not None]
             if not eligible:
@@ -741,6 +903,16 @@ class RegenerationCampaignService:
             contract = self._stored_contract(campaign, what="approve the canary")
 
             if campaign.approved_at is None:
+                # The canary ROWS, not the campaign status — see
+                # `CanaryNotReviewable`. Row-locked and inside the same
+                # transaction as the stamp below, so a canary cannot fail
+                # between the check and the approval it authorised.
+                canaries = await targets_repo.list_for_campaign(
+                    session, campaign_id, for_update=True
+                )
+                assert_canary_gate_ready(
+                    [t.status for t in canaries if t.is_canary]
+                )
                 moved = await campaigns_repo.set_campaign_status(
                     session,
                     campaign_id=campaign_id,

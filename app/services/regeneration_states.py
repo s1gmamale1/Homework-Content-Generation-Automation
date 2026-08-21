@@ -162,8 +162,10 @@ def roll_up_campaign(
        (cancellation is not terminal until every target converges; a terminal
        campaign must never hide a non-terminal target)
     3. before approval → publication states are a caller bug (``ValueError``);
-       otherwise ``canary_running`` / ``awaiting_canary_approval`` /
-       ``attention_required`` / ``draft``
+       otherwise ``canary_running`` (anything still generating), then
+       ``attention_required`` (anything failed — it outranks the gate, because
+       the gate is an invitation to release the bulk), then
+       ``awaiting_canary_approval``, else ``draft``
     4. after approval → ``bulk_running`` while any work is in flight (that beats
        attention-required; the report buckets still show the failures), else
        ``attention_required``
@@ -199,10 +201,19 @@ def roll_up_campaign(
             )
         if "generating" in present:
             return "canary_running"
-        if "awaiting_canary_approval" in present:
-            return "awaiting_canary_approval"
+        # Attention BEATS the gate, and the order is the whole point.
+        # `awaiting_canary_approval` is not a description, it is an INVITATION:
+        # the operator's next click approves, and approval releases the entire
+        # bulk wave. A canary wave holding one reviewable revision and one
+        # `generation_failed` has nothing to review for that second lesson, so
+        # reporting the gate would offer a decision over evidence that does not
+        # exist. Failed first means such a wave reads `attention_required` —
+        # retry it or abandon it, and the gate reappears once every canary is
+        # genuinely reviewable.
         if present & ATTENTION_TARGET_STATUSES:
             return "attention_required"
+        if "awaiting_canary_approval" in present:
+            return "awaiting_canary_approval"
         return "draft"
 
     # 4 — post-approval.

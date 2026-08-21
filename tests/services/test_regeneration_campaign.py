@@ -309,6 +309,216 @@ def test_a_terminal_campaign_status_over_terminal_targets_is_allowed():
     svc.assert_not_hiding_live_targets("bulk_running", ["publishing"])
 
 
+# ─── the canary gate: a stale rollup must never release the bulk ─────────
+#
+# The campaign status is DERIVED, and it can lag: the report-driven `roll_up`
+# is debounced per campaign, a worker may have moved a canary since it last
+# ran, and `approve_canary`'s own compare-and-set deliberately accepts
+# `attention_required` (a canary that failed and was retried back to health
+# arrives in exactly that status). So the status is not evidence that a human
+# had something to review. The canary ROWS are.
+
+
+def test_the_gate_opens_only_when_every_canary_is_reviewable():
+    svc.assert_canary_gate_ready(["awaiting_canary_approval"])
+    svc.assert_canary_gate_ready(
+        ["awaiting_canary_approval", "awaiting_canary_approval"]
+    )
+
+
+@pytest.mark.parametrize(
+    "blocker",
+    ["planned", "generating", "generation_failed", "publication_failed"],
+)
+def test_one_unreviewable_canary_closes_the_gate_for_the_whole_wave(blocker):
+    """Approval is not per lesson — ONE click releases every remaining target.
+    A wave holding one reviewable revision beside one that nobody could review
+    is therefore not a decision an operator is in a position to make."""
+    with pytest.raises(svc.CanaryNotReviewable):
+        svc.assert_canary_gate_ready(["awaiting_canary_approval", blocker])
+
+
+def test_an_abandoned_canary_is_excluded_only_beside_a_reviewable_one():
+    """Abandonment is the operator's own decision to drop that lesson, so it
+    does not hold the others hostage — but it is not evidence either. A wave
+    whose every canary was abandoned has nothing anybody approved."""
+    svc.assert_canary_gate_ready(["abandoned", "awaiting_canary_approval"])
+    with pytest.raises(svc.CanaryNotReviewable):
+        svc.assert_canary_gate_ready(["abandoned"])
+    with pytest.raises(svc.CanaryNotReviewable):
+        svc.assert_canary_gate_ready(["abandoned", "abandoned"])
+
+
+def test_a_campaign_with_no_canary_row_at_all_cannot_be_approved():
+    with pytest.raises(svc.CanaryNotReviewable):
+        svc.assert_canary_gate_ready([])
+
+
+def test_the_gate_refusal_is_an_illegal_campaign_action():
+    """So every existing caller — the API's 409 mapping included — keeps
+    handling it without growing a second branch."""
+    assert issubclass(svc.CanaryNotReviewable, svc.IllegalCampaignAction)
+
+
+def _returns(value):
+    """A stand-in for any awaitable repository/service call."""
+    async def _call(*_args, **_kwargs):
+        return value
+    return _call
+
+
+class _NullSession:
+    """Enough session for the guard to be REACHED. Every real read below is
+    monkeypatched, so nothing here talks to a database."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def commit(self):
+        return None
+
+
+async def test_approval_reads_the_canary_rows_not_the_campaign_status(monkeypatch):
+    """The guard is wired AHEAD of the approval write, not beside it.
+
+    `attention_required` is in `approve_canary`'s own expected-status set, so a
+    campaign whose canary failed sits exactly one compare-and-set away from
+    `approved` — and `approved` is the predicate
+    `trg_regeneration_targets_publication_gate` checks before a target may
+    publish. This drives the REAL method and asserts nothing was stamped.
+    """
+    campaign_id = uuid.uuid4()
+    campaign = SimpleNamespace(
+        id=campaign_id, status="attention_required", approved_at=None,
+        rejected_at=None, cancel_requested_at=None,
+        launch_contract=_CONTRACT.model_dump(),
+    )
+    monkeypatch.setattr(
+        svc.RegenerationCampaignService, "roll_up", _returns(campaign)
+    )
+    monkeypatch.setattr(
+        svc.campaigns_repo, "get_campaign_for_update", _returns(campaign)
+    )
+    monkeypatch.setattr(
+        svc.targets_repo, "list_for_campaign",
+        _returns([SimpleNamespace(
+            id=uuid.uuid4(), status="generation_failed", is_canary=True,
+            abandon_requested_at=None, publication_released_at=None,
+        )]),
+    )
+    stamped: list = []
+    monkeypatch.setattr(
+        svc.campaigns_repo, "set_campaign_status",
+        lambda *a, **kw: stamped.append(kw) or _returns(True)(),
+    )
+
+    service = svc.RegenerationCampaignService(session_factory=_NullSession)
+    with pytest.raises(svc.CanaryNotReviewable):
+        await service.approve_canary(campaign_id, actor="operator")
+    assert stamped == [], (
+        "the campaign was approved over a canary nobody could review"
+    )
+
+
+# ─── selection scope: a campaign is never fleet-wide by accident ─────────
+
+
+def test_a_selection_must_name_books_or_lessons():
+    with pytest.raises(svc.UnboundedSelection):
+        svc.require_bounded_selection(svc.CampaignSelection())
+
+
+def test_output_languages_alone_are_not_a_scope():
+    """A language FILTERS a scope; it does not bound one. On its own it selects
+    every regenerable lesson of every book in that language — the whole fleet's
+    content, priced and then spent."""
+    with pytest.raises(svc.UnboundedSelection):
+        svc.require_bounded_selection(
+            svc.CampaignSelection(output_languages=("uz",))
+        )
+
+
+def test_books_or_lessons_each_bound_a_selection():
+    svc.require_bounded_selection(svc.CampaignSelection(book_ids=(uuid.uuid4(),)))
+    svc.require_bounded_selection(
+        svc.CampaignSelection(toc_entry_ids=(uuid.uuid4(),))
+    )
+    svc.require_bounded_selection(
+        svc.CampaignSelection(book_ids=(uuid.uuid4(),), output_languages=("uz",))
+    )
+
+
+def test_the_campaign_scope_cap_is_five_hundred_lineages():
+    assert svc.MAX_CAMPAIGN_TARGETS == 500
+
+
+def test_the_cap_admits_its_own_boundary_and_refuses_one_more():
+    svc.require_selection_within_cap(
+        svc.MAX_CAMPAIGN_TARGETS, what="create a regeneration campaign"
+    )
+    with pytest.raises(svc.SelectionTooLarge) as excinfo:
+        svc.require_selection_within_cap(
+            svc.MAX_CAMPAIGN_TARGETS + 1, what="create a regeneration campaign"
+        )
+    assert excinfo.value.count == svc.MAX_CAMPAIGN_TARGETS + 1
+    assert excinfo.value.maximum == svc.MAX_CAMPAIGN_TARGETS
+
+
+async def test_an_unbounded_selection_is_refused_before_a_session_is_opened():
+    """The cheapest possible refusal: an unfiltered discovery is a scan of
+    every lineage the fleet has ever generated, so it must not even start."""
+    def _explode():
+        raise AssertionError(
+            "create_campaign opened a session for an unbounded selection"
+        )
+
+    service = svc.RegenerationCampaignService(session_factory=_explode)
+    with pytest.raises(svc.UnboundedSelection):
+        await service.create_campaign(svc.CreateCampaignSpec(
+            selection=svc.CampaignSelection(output_languages=("uz",)),
+            contract=LaunchContract(**_CONTRACT.model_dump()),
+            selected_phases=("flashcards",),
+        ))
+
+
+async def test_an_oversized_selection_is_refused_before_any_campaign_row(
+    monkeypatch
+):
+    """The cap is applied to what DISCOVERY returned and BEFORE the insert, so
+    an over-wide selection costs one read and leaves no row, no target and no
+    active-lineage lock behind it."""
+    def _never(*_args, **_kwargs):
+        raise AssertionError("an oversized selection reached a write")
+
+    monkeypatch.setattr(
+        svc.RegenerationCampaignService, "_resolve_contract_once",
+        _returns(_CONTRACT),
+    )
+    monkeypatch.setattr(
+        svc.discovery, "list_source_candidates",
+        _returns([
+            SimpleNamespace(
+                toc_entry_id=uuid.uuid4(), output_language="uz",
+                source=None, reasons=(),
+            )
+            for _ in range(svc.MAX_CAMPAIGN_TARGETS + 1)
+        ]),
+    )
+    monkeypatch.setattr(svc.campaigns_repo, "create_campaign", _never)
+    monkeypatch.setattr(svc.targets_repo, "create_target", _never)
+
+    service = svc.RegenerationCampaignService(session_factory=_NullSession)
+    with pytest.raises(svc.SelectionTooLarge):
+        await service.create_campaign(svc.CreateCampaignSpec(
+            selection=svc.CampaignSelection(book_ids=(uuid.uuid4(),)),
+            contract=LaunchContract(**_CONTRACT.model_dump()),
+            selected_phases=("flashcards",),
+        ))
+
+
 # ─── deterministic ordering ──────────────────────────────────────────────
 
 

@@ -406,9 +406,30 @@ def test_pre_approval_generating_beats_awaiting_and_failures():
 
 def test_pre_approval_awaiting_canary_approval():
     assert roll_up_campaign(
-        ["planned", "awaiting_canary_approval", "generation_failed"],
+        ["planned", "awaiting_canary_approval"], approved=False, cancelled=False,
+    ) == "awaiting_canary_approval"
+    assert roll_up_campaign(
+        ["planned", "awaiting_canary_approval", "abandoned"],
         approved=False, cancelled=False,
     ) == "awaiting_canary_approval"
+
+
+def test_pre_approval_attention_beats_awaiting_canary_approval():
+    """A MIXED canary wave is not a reviewable gate.
+
+    Two canaries, one reviewable and one failed: reporting
+    `awaiting_canary_approval` invites an operator to approve — which releases
+    the whole bulk — over a canary nobody could review. Only a wave with
+    nothing failed and nothing in flight may present the gate.
+    """
+    assert roll_up_campaign(
+        ["planned", "awaiting_canary_approval", "generation_failed"],
+        approved=False, cancelled=False,
+    ) == "attention_required"
+    assert roll_up_campaign(
+        ["awaiting_canary_approval", "publication_failed"],
+        approved=False, cancelled=False,
+    ) == "attention_required"
 
 
 def test_pre_approval_failure_is_attention_required():

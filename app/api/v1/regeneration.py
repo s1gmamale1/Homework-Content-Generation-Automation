@@ -88,6 +88,7 @@ from app.services.regeneration_campaign import (
     CampaignError,
     CampaignNotFound,
     CampaignSelection,
+    CanaryNotReviewable,
     CreateCampaignSpec,
     IllegalCampaignAction,
     IllegalTargetAction,
@@ -97,10 +98,14 @@ from app.services.regeneration_campaign import (
     PreflightBlocked,
     RegenerationCampaignService,
     RetiredModelRefusal,
+    SelectionTooLarge,
     TargetNotFound,
     TerminalCampaignWithLiveTargets,
+    UnboundedSelection,
     require_api_transport,
+    require_bounded_selection,
     require_live_models,
+    require_selection_within_cap,
 )
 from app.services.regeneration_estimator import estimate_regeneration
 from app.services.regeneration_states import CAMPAIGN_STATUSES
@@ -320,6 +325,25 @@ def _translate_campaign_error(exc: CampaignError, *, request_shaped: bool):
             _unprocessable("non_api_transport", str(exc), **detail)
             if request_shaped
             else _conflict("non_api_transport", str(exc), **detail)
+        )
+    if isinstance(exc, UnboundedSelection):
+        # A property of the REQUEST on either path — an unbounded selection is
+        # not a state an existing campaign can be in.
+        return _unprocessable("unbounded_selection", str(exc))
+    if isinstance(exc, SelectionTooLarge):
+        return _unprocessable(
+            "selection_too_large", str(exc), count=exc.count, maximum=exc.maximum
+        )
+    if isinstance(exc, CanaryNotReviewable):
+        # BEFORE the `IllegalCampaignAction` branch it would otherwise fall
+        # into: the operator's next move is specific (retry or abandon the
+        # blocked canaries, then approve), so it gets its own code and names
+        # them, rather than a generic "illegal campaign state".
+        return _conflict(
+            "canary_not_reviewable",
+            str(exc),
+            blockers=list(exc.blockers),
+            canary_count=exc.total,
         )
     if isinstance(exc, IllegalTargetAction):
         return _conflict("illegal_target_state", str(exc))
@@ -792,6 +816,17 @@ async def list_eligible(
         toc_entry_ids=list(toc_entry_id) or None,
         output_languages=list(output_language) or None,
     )
+    # A browse may be BROAD — this is the screen an operator picks from, and
+    # requiring a book here would make the picker unusable — but it may not
+    # return more than one campaign could ever hold. Capping the same number
+    # `/estimate` and creation cap means the refusal an operator meets is the
+    # same one at every step, and never a surprise at the last.
+    try:
+        require_selection_within_cap(
+            len(candidates), what="list regenerable lessons"
+        )
+    except SelectionTooLarge as exc:
+        raise _translate_campaign_error(exc, request_shaped=True) from exc
     return out.EligibleSourcesOut.from_candidates(candidates)
 
 
@@ -858,12 +893,26 @@ async def estimate(
 ) -> out.EstimateOut:
     """Price a draft and preflight its destinations. Creates nothing, spends
     nothing, and makes no Notion call."""
+    # The same two guards creation applies, in the same order and through the
+    # same helpers — an estimate an operator can act on must be refused for
+    # exactly the reasons the campaign behind it would be. The scope check
+    # precedes discovery: the unfiltered scan IS part of what it prevents.
+    try:
+        require_bounded_selection(body.selection)
+    except UnboundedSelection as exc:
+        raise _translate_campaign_error(exc, request_shaped=True) from exc
     candidates = await discovery.list_source_candidates(
         session,
         book_ids=body.selection.book_ids or None,
         toc_entry_ids=body.selection.toc_entry_ids or None,
         output_languages=body.selection.output_languages or None,
     )
+    try:
+        require_selection_within_cap(
+            len(candidates), what="estimate a regeneration campaign"
+        )
+    except SelectionTooLarge as exc:
+        raise _translate_campaign_error(exc, request_shaped=True) from exc
     sources = [c.source for c in candidates if c.source is not None]
     listing = out.EligibleSourcesOut.from_candidates(candidates)
     if not sources:
