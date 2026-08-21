@@ -2799,6 +2799,14 @@ export function regenerationErrorView(err: unknown): RegenerationErrorView {
         title: "Automatic publishing is switched off",
         hint: "Nothing was changed by this request.",
       };
+    case "notion_unavailable":
+      return {
+        ...base,
+        title: "Notion publication is not configured on this head",
+        hint:
+          "Enable Notion with a valid credential on the designated head, restart it, and " +
+          "then approve again. No target was released and no version was reserved.",
+      };
     case "preflight_blocked":
       return {
         ...base,

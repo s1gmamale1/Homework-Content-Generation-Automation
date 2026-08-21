@@ -695,6 +695,15 @@ for (const row of [
     title: /canary/i,
     hint: /retry or abandon/i,
   },
+  {
+    status: 409,
+    detail: {
+      error: "notion_unavailable",
+      message: "Notion publication is unavailable: NOTION_ENABLED is off",
+    },
+    title: /notion/i,
+    hint: /configure|credential|enable/i,
+  },
 ] as const) {
   const view = regenerationErrorView(new ApiError(row.status, row.detail.message, row.detail));
   assert.match(view.title, row.title);

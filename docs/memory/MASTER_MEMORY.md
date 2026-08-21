@@ -3004,3 +3004,55 @@ was **not applied to any production or head database**; `REGENERATION_ENABLED` a
 `VITE_REGENERATION_ENABLED`. Enabling either flag, running a sample or production campaign,
 deploying a prompt change, making a paid model call, or writing to live Notion is each a
 separate operator decision.
+
+## 0183 — Versioned regeneration final gate corrections (2026-08-21)
+
+**What:** Integrated the four final correction lanes into `feat/regen-wave5-acceptance`.
+`refresh_extraction=true` now bypasses the cross-job extract cache through
+`run → _execute_one_phase → _execute_phase`; ordinary and copy-extract jobs keep the
+existing cache. Publication readiness has one side-effect-free authority shared by
+startup, `run_once`, approval and publication retry: both the publisher flag and a
+constructor-valid Notion credential are required before any target is released or version
+reserved. Estimate, create, canary generation and generation retry remain available with
+publication dark.
+
+Canary rollup and approval now share one verdict over the actual canary rows. A failed,
+planned or wholly-abandoned canary wave retracts to `attention_required` and cannot be
+approved; structured refusals carry a stable reason and remedy. Approval locks only canary
+rows for the human gate before loading the full campaign for release. Scope is bounded
+twice for different reasons: discovery fetches at most
+`REGENERATION_MAX_DISCOVERY_LINEAGES + 1` (default 1000 + 1) and refuses before its
+per-lineage fan-out, while `REGENERATION_MAX_CAMPAIGN_TARGETS` (default 500) counts only
+eligible targets that would actually be inserted, locked and generated. Unbounded create
+requests are rejected before provenance resolution or reconciliation.
+
+The UI gives reject, cancel and per-target abandon the same promise-backed rule: a refusal
+keeps the confirmation and typed audit reason; only success clears them. Campaign-keyed
+panels use distinct sibling keys, progress stays visible after switching away and back,
+and the newest submitted gate action owns the displayed error so an older approval refusal
+cannot mask a newer reject result. `unbounded_selection`, both size guards,
+`canary_not_reviewable`, and `notion_unavailable` have explicit operator guidance.
+
+**Why:** Whole-branch review found four gaps that contradicted the operator promise despite
+the original acceptance suite: refresh could silently reuse V1 extraction, a publisher
+could reserve versions with no Notion destination, campaign status could advertise an
+approval the row-level canary guard refused, and destructive UI forms could discard the
+only copy of their audit reason after a 409.
+
+**Files:** `app/services/pipeline.py`, `app/services/regeneration_{campaign,states,discovery,publisher}.py`,
+`app/repositories/regeneration_{sources,targets}.py`, `app/api/v1/regeneration.py`,
+`app/services/notion/client.py`, `app/config.py`, `main.py`, regeneration frontend
+components/helpers/tests, deployment/runbook docs and focused tests.
+
+**Verified:** On the assembled local branch: `pytest -k regeneration` **887 passed / 227
+skipped**; full offline backend **3686 passed / 738 skipped**; frontend **18/18 test files**
+and production build; a brand-new localhost PostgreSQL database migrated from empty to the
+sole Alembic head `0063_regeneration_campaigns`, then full `tests/integration` ran **336/336**
+with `REGEN_REQUIRE_DB=1`. All provider and Notion boundaries were fake/off. Final external
+Claude Opus 5 whole-branch review is pending at this commit.
+
+**Notes:** No paid model call, live Notion call/write, production DB write, push, PR update,
+merge, deployment or feature-flag enablement occurred. The final scratch database is
+preserved for audit. The branch still intentionally predates overlapping read-only PR #118;
+any rebase belongs in a separately approved integration worktree after the local feature
+gate is complete.
