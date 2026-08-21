@@ -623,10 +623,22 @@ async def _claimed_target(ids, *, publication_version, terminal: bool):
 async def test_two_campaigns_racing_one_publication_version_create_only_one():
     """Both operators ask for V4 on the same lesson at the same instant.
 
-    Exactly one campaign exists afterwards and it owns V4; the loser gets a
-    typed, non-retryable refusal. The campaign insert and the target inserts
-    share one transaction, so `_versioned_campaigns()` is what proves the loser
-    left no half-made campaign holding a number nobody can publish.
+    What decides this race is `uq_regeneration_targets_active_lineage`, exactly
+    as in the sibling above — NOT anything the requested-version check adds.
+    `RequestedPublicationVersionConflict` is unreachable here by construction:
+    targets are inserted with `publication_version = NULL`, so a concurrent
+    creator's row cannot be seen as consumed, and neither source is above V1,
+    so neither can be seen as not-older. Two campaigns can never both hold one
+    live lineage, so a same-lineage version race at creation cannot happen. The
+    loser is therefore an `ActiveLineageConflict`, asserted exactly — the same
+    strength as the sibling, which this test had silently dropped to
+    `CampaignError`.
+
+    What this test uniquely pins, over that sibling, is the version bookkeeping
+    around the same race: the WINNER really froze V4, and the loser left no
+    half-made campaign holding a number nobody can publish. The campaign insert
+    and the target inserts share one transaction, so `_versioned_campaigns()`
+    is what proves the second half.
     """
     ids = await _seed()
     try:
@@ -640,8 +652,19 @@ async def test_two_campaigns_racing_one_publication_version_create_only_one():
         losers = [r for r in results if isinstance(r, BaseException)]
         assert len(winners) == 1, results
         assert winners[0].publication_version == 4
-        assert len(losers) == 1 and isinstance(losers[0], svc.CampaignError), losers
+        assert len(losers) == 1, losers
+        assert isinstance(losers[0], svc.ActiveLineageConflict), losers
         assert await _versioned_campaigns() == [4]
+
+        from sqlalchemy import text
+
+        from app.db import SessionLocal
+        async with SessionLocal() as session:
+            live = await session.scalar(
+                text("SELECT count(*) FROM regeneration_targets "
+                     "WHERE toc_entry_id=:t AND terminal_at IS NULL"),
+                {"t": ids["toc_ids"][0]})
+        assert live == 1, "the loser's targets outlived its rolled-back campaign"
     finally:
         await _purge(ids)
 
