@@ -360,7 +360,13 @@ def fakes(monkeypatch, tmp_path):
 
     monkeypatch.setattr(settings, "regeneration_enabled", True)
     monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
-    monkeypatch.setattr(settings, "notion_enabled", False)
+    # A head CONFIGURED to publish: `run_once` refuses to claim anything without
+    # a usable Notion destination, and these tests drive it. Nothing here reaches
+    # real Notion — the pipeline's legacy `archive_job` is a recorder (above),
+    # the publisher's client is `FakeNotion`, and `NotionClientWrapper()` itself
+    # is a tripwire below, which the readiness check must not trip.
+    monkeypatch.setattr(settings, "notion_enabled", True)
+    monkeypatch.setattr(settings, "notion_api_key", "secret_pytest_not_a_real_token")
     monkeypatch.setattr(settings, "notion_subject_pages", {
         f"{SUBJECT}|{GRADE}": SUBJECT_PAGE_UZ,
         f"ru:{SUBJECT}|{GRADE}": SUBJECT_PAGE_RU,

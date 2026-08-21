@@ -189,21 +189,37 @@ async def lifespan(app: FastAPI):
     # the startup reconcile and the version floor is the shape those steps exist
     # to prevent. Production enables it on the designated head/API process only,
     # but the claim protocol is safe if two processes accidentally run it.
+    #
+    # The flags say an operator WANTS delivery; they do not say this head CAN
+    # deliver. A loop started with no usable Notion destination claims targets
+    # and reserves their version numbers — spent forever — before discovering,
+    # inside the delivery step, that it cannot even build a client. So the
+    # destination is a third condition on starting, and its absence is a WARNING
+    # rather than a silent no-op: the operator asked for a publisher.
     publisher_stop: Optional[asyncio.Event] = None
     publisher_task: Optional[asyncio.Task] = None
     if settings.regeneration_enabled and settings.regeneration_publisher_enabled:
-        publisher_stop = asyncio.Event()
-        publisher_task = asyncio.create_task(
-            regeneration_publisher.build_publisher_from_settings().run_forever(
-                publisher_stop
-            ),
-            name="regeneration-publisher",
-        )
-        log.info(
-            "Regeneration publisher started | "
-            f"interval={settings.regeneration_publisher_interval_seconds}s "
-            f"lease={settings.regeneration_publisher_lease_seconds}s"
-        )
+        unavailable = regeneration_publisher.publication_unavailable_reason()
+        if unavailable is not None:
+            log.warning(
+                f"Regeneration publisher NOT started: {unavailable}. The rest of "
+                "the regeneration feature (drafting, estimation, canary "
+                "generation) is unaffected, and approval is refused with a 409 "
+                "until a Notion destination is configured."
+            )
+        else:
+            publisher_stop = asyncio.Event()
+            publisher_task = asyncio.create_task(
+                regeneration_publisher.build_publisher_from_settings().run_forever(
+                    publisher_stop
+                ),
+                name="regeneration-publisher",
+            )
+            log.info(
+                "Regeneration publisher started | "
+                f"interval={settings.regeneration_publisher_interval_seconds}s "
+                f"lease={settings.regeneration_publisher_lease_seconds}s"
+            )
 
     try:
         yield

@@ -54,6 +54,13 @@ SERVER_SHA = "0ddba11"
 def _feature_on(monkeypatch):
     monkeypatch.setattr(settings, "regeneration_enabled", True)
     monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
+    # A head CONFIGURED to publish. `approve` and `retry-publication` refuse
+    # with a 409 without a usable Notion destination, and the ambient value is
+    # whatever the host's `.env` says — so it is pinned here rather than
+    # inherited. The refusal itself is covered in
+    # `test_regeneration_feature_flag.py`, which owns both gates.
+    monkeypatch.setattr(settings, "notion_enabled", True)
+    monkeypatch.setattr(settings, "notion_api_key", "secret_pytest_not_a_real_token")
     monkeypatch.setattr(code_version, "GIT_SHA", SERVER_SHA)
     # The deployed image bakes its commit into APP_GIT_REVISION, and that
     # source outranks `code_version.GIT_SHA`. Clear it unconditionally so the

@@ -17,16 +17,31 @@ logger = logging.getLogger("notion.client")
 
 _NOTION_VERSION = "2022-06-28"
 _MIN_INTERVAL = 0.35  # ~3 req/s
+_KEY_PREFIXES = ("ntn_", "secret_")
+
+
+def normalize_api_key(api_key: str) -> str:
+    """The one place the Notion credential's shape is decided. Raises
+    ``ValueError`` on anything unusable.
+
+    Lifted out of the constructor so a caller can ask *"could a client be built
+    from this?"* WITHOUT building one — constructing `NotionClientWrapper` opens
+    an HTTP client, which is not work an event loop or a request handler may do.
+    A second copy of the prefix rule would drift from this one, and a readiness
+    check that disagrees with the constructor is worse than none: it would pass
+    a credential that then fails at the point of use.
+    """
+    key = (api_key or "").strip().strip('"').strip("'")
+    if not key or not key.startswith(_KEY_PREFIXES):
+        raise ValueError(
+            "NOTION_API_KEY missing or invalid (must start with 'ntn_' or 'secret_')."
+        )
+    return key
 
 
 class NotionClientWrapper:
     def __init__(self, api_key: str):
-        key = (api_key or "").strip().strip('"').strip("'")
-        if not key or not key.startswith(("ntn_", "secret_")):
-            raise ValueError(
-                "NOTION_API_KEY missing or invalid (must start with 'ntn_' or 'secret_')."
-            )
-        self.api_key = key
+        self.api_key = normalize_api_key(api_key)
         self.client = Client(auth=self.api_key)
         self._min_interval = _MIN_INTERVAL
         self._last_request_time = 0.0

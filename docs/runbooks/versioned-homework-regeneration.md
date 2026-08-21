@@ -92,12 +92,12 @@ supply it. The remedies are exactly:
 ## 3. Turning it on — the three flags
 
 Three separate switches. All three must be right or you will see a partial, confusing
-state rather than an error.
+state rather than an error. **Plus one prerequisite that is not a flag** — see §3d.
 
 | Flag | Where | Default | What it gates |
 |---|---|---|---|
 | `REGENERATION_ENABLED` | backend env, head/API process | `false` | The whole feature. Off ⇒ every `/api/v1/regeneration*` route returns **404** (not 403 — a stale browser tab must not be able to tell the routes exist). |
-| `REGENERATION_PUBLISHER_ENABLED` | backend env, **head/API process only** | `false` | The loop that writes `Homework V{n}` pages to Notion. Independent so generation can be exercised with delivery dark — but **not sufficient alone**: `main.py` starts the loop only when `REGENERATION_ENABLED` **and** this flag are both true, so setting this one with the master flag off starts nothing and logs no start line. |
+| `REGENERATION_PUBLISHER_ENABLED` | backend env, **head/API process only** | `false` | The loop that writes `Homework V{n}` pages to Notion. Independent so generation can be exercised with delivery dark — but **not sufficient alone**: `main.py` starts the loop only when `REGENERATION_ENABLED` **and** this flag are both true **and** this head has a usable Notion destination (§3d), so setting this one alone starts nothing. |
 | `VITE_REGENERATION_ENABLED` | **SPA build**, not runtime | unset | Whether the SPA has the `Regeneration` nav item and the `/regeneration` route compiled into it. |
 
 ### 3a. The frontend flag has exactly one working value: `1`
@@ -124,33 +124,42 @@ Also note the shipped `Dockerfile` runs a plain `npm run build` with no
 regeneration UI hidden**. On the current bare-metal head, build the SPA on the host
 (`cd web && VITE_REGENERATION_ENABLED=1 npm run build`) — FastAPI serves `web/dist`.
 
-### 3b. Ordering: approval needs the publisher already on
+### 3b. Ordering: approval needs delivery already possible
 
-Two routes refuse with a `409 publisher_disabled` while
-`REGENERATION_PUBLISHER_ENABLED` is off, because they queue delivery work that nobody
-would serve:
+Two routes refuse with a structured `409` unless delivery can actually happen, because
+they queue work that nobody would serve:
 
 - `POST /regeneration/campaigns/{id}/approve`
 - `POST /regeneration/targets/{id}/retry-publication`
 
-So the flag-on order for a real campaign is: **schema → backend flag → publisher flag
-→ SPA rebuild.** You *can* deliberately run with the publisher off to exercise
-drafting, estimation and canary generation — you just cannot approve until you turn
-it on.
+Two distinct refusals, and the body names which:
+
+| `detail.error` | Means |
+|---|---|
+| `publisher_disabled` | `REGENERATION_PUBLISHER_ENABLED` is off. Answered first — it is the switch you turn first. |
+| `notion_unavailable` | The flag is on but this head has no usable Notion destination (§3d). |
+
+So the flag-on order for a real campaign is: **schema → Notion prerequisite → backend
+flag → publisher flag → SPA rebuild.** You *can* deliberately run with the publisher
+off, or with Notion unconfigured, to exercise drafting, estimation, canary generation
+and `retry-generation` — none of those are gated. You just cannot **approve** until
+delivery is possible.
 
 ### 3c. Schema and process ownership
 
 - **Migration 0063** (`0063_regeneration_campaigns`) must be applied to the shared
   database: `uv run alembic upgrade head`. That is one migration on the shared DB, not
   a per-host step.
-- **The publisher runs on the head/API process only, and needs BOTH backend flags.** It
-  starts from `main.py`'s lifespan — guarded by `if settings.regeneration_enabled and
-  settings.regeneration_publisher_enabled` — after the startup reconcile, the
-  version-floor stamp and the LISTEN bus, beside the embedded worker.
+- **The publisher runs on the head/API process only, and needs BOTH backend flags plus
+  a Notion destination.** It starts from `main.py`'s lifespan — guarded by `if
+  settings.regeneration_enabled and settings.regeneration_publisher_enabled`, then by
+  `regeneration_publisher.publication_unavailable_reason()` — after the startup
+  reconcile, the version-floor stamp and the LISTEN bus, beside the embedded worker.
   `REGENERATION_PUBLISHER_ENABLED=true` with `REGENERATION_ENABLED` still false starts
   **no** loop and prints **no** `Regeneration publisher started` line; nothing warns you.
-  The claim protocol is safe if two processes accidentally run it, but enable it on one
-  designated head anyway.
+  The missing-Notion case is different — it logs `Regeneration publisher NOT started`
+  with the reason (§3d). The claim protocol is safe if two processes accidentally run
+  it, but enable it on one designated head anyway.
 - **Worker PCs need neither regeneration flag.** They run a campaign's revision jobs as
   ordinary queue work and reconcile the outcome onto the campaign target. What they
   **do** need is **current code**, because a revision job is a `homework_jobs` row with
@@ -162,7 +171,41 @@ All API paths below are relative to `/api/v1` (so `POST /regeneration/campaigns`
 anonymous request fails authentication *before* the feature gate, so it never learns
 whether the routes are hidden.
 
-### 3d. Publisher tuning knobs (`app/config.py`)
+### 3d. The prerequisite that is not a flag: a usable Notion destination
+
+The two flags say you **want** delivery. They do not say this head **can** deliver.
+Delivery needs, on the head, both of:
+
+| Setting | Requirement |
+|---|---|
+| `NOTION_ENABLED` | `true` |
+| `NOTION_API_KEY` | present and starting with `ntn_` or `secret_` — the same rule `NotionClientWrapper` enforces. A blank, quoted-empty or wrong-shaped value counts as missing. |
+
+`REGENERATION_PUBLISHER_ENABLED` does **not** imply either. They are the same two
+settings the legacy Notion archive already uses, so a head that archives homework today
+already satisfies this; a head that has never archived does not.
+
+**Why it is a hard gate and not a runtime failure.** A version number is spent forever:
+`reserve_publication_version` allocates one per target and every retry reuses it. The
+credential is not needed until the delivery step, which runs *after* that reservation is
+committed. So a head with both flags on and no Notion destination used to claim a target,
+burn its `Homework V2` identity, fail to build a client, retry on backoff, and park in
+`publication_failed` — repeated once per target across the campaign. Now it refuses at
+three points, none of which costs anything:
+
+1. **Startup** — the loop does not start, and the head logs
+   `Regeneration publisher NOT started: <reason>`. Check for this line if approved
+   targets sit in `publication_pending` and nothing moves.
+2. **Approval** — `approve` and `retry-publication` answer `409 notion_unavailable`
+   (§3b) before any target is released.
+3. **The loop itself** — `run_once` re-checks before claiming, so a publisher built by
+   anything other than `main.py` still refuses. It logs the reason **once**, not once
+   per sweep.
+
+Everything that does not publish is unaffected: drafting, estimation, `POST /campaigns`,
+canary generation and `retry-generation` all work normally with Notion unconfigured.
+
+### 3e. Publisher tuning knobs (`app/config.py`)
 
 | Setting | Default | Means |
 |---|---|---|
@@ -562,6 +605,12 @@ rollback:
 
 - no publication loop starts;
 - every regeneration route returns 404;
+- **do not roll back by turning `NOTION_ENABLED` off instead.** It stops the publisher
+  (§3d) and it stops the legacy `Homework` archive for every ordinary Fleet job with it —
+  a much wider blast radius than this feature — while leaving all the regeneration routes
+  live and answering. Non-terminal targets are stranded exactly as below, but `abandon`
+  and `cancel` still work, so it is a worse version of the flag rollback, not a lighter
+  one. The two backend flags are the rollback;
 - in-flight revision jobs already in the queue still finish as ordinary jobs (they are
   `homework_jobs`), and they are **never** archived to the legacy `Homework` page —
   `notion_archive.archive_job` intrinsically refuses any job with
@@ -639,20 +688,25 @@ or writing to live Notion. Each is a separate operator decision.
 ### Suggested first-enable sequence, when it is authorized
 
 This is the one order used throughout this runbook and in `docs/DEPLOY.md` — **schema
-→ `REGENERATION_ENABLED` → `REGENERATION_PUBLISHER_ENABLED` → SPA rebuild** (§3b). The
-UI goes last on purpose: it is the only step that puts an `Approve` button in front of a
-human, and approving before the publisher is on can only answer `409 publisher_disabled`.
+→ Notion prerequisite → `REGENERATION_ENABLED` → `REGENERATION_PUBLISHER_ENABLED` →
+SPA rebuild** (§3b). The UI goes last on purpose: it is the only step that puts an
+`Approve` button in front of a human, and approving before delivery is possible can only
+answer `409 publisher_disabled` or `409 notion_unavailable`.
 
 1. Apply migration 0063 to the shared database.
-2. Enable `REGENERATION_ENABLED` on the head only; confirm routes answer and ordinary
+2. Confirm the head's Notion destination: `NOTION_ENABLED=true` and a `NOTION_API_KEY`
+   starting with `ntn_`/`secret_` (§3d). A head that already archives homework to Notion
+   has this; check rather than assume.
+3. Enable `REGENERATION_ENABLED` on the head only; confirm routes answer and ordinary
    Fleet generation and archival are unchanged.
-3. Enable `REGENERATION_PUBLISHER_ENABLED` on that same one head and restart it. The
-   publisher loop requires **both** backend flags together, so confirm the
+4. Enable `REGENERATION_PUBLISHER_ENABLED` on that same one head and restart it. The
+   publisher loop requires **both** backend flags together **and** step 2, so confirm the
    `Regeneration publisher started` log line rather than assuming this flag alone
-   started it.
-4. Rebuild the SPA with `VITE_REGENERATION_ENABLED=1`; confirm the nav item appears.
-5. Run **one single-lesson campaign** on a lesson you are willing to spend on. Review
+   started it — a `Regeneration publisher NOT started` warning names the missing
+   prerequisite.
+5. Rebuild the SPA with `VITE_REGENERATION_ENABLED=1`; confirm the nav item appears.
+6. Run **one single-lesson campaign** on a lesson you are willing to spend on. Review
    the canary against the estimate, approve, and confirm exactly one `Homework V2`
    sibling appears with V1 untouched.
-6. Only then consider a larger campaign — and check the fleet-daily cap headroom
+7. Only then consider a larger campaign — and check the fleet-daily cap headroom
    first (§9).

@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import app.auth as auth_module
@@ -35,6 +36,8 @@ client = TestClient(app)
 
 BASE = "/api/v1/regeneration"
 SUBJECT = "math-algebra"
+#: Shaped like a real Notion integration token; never used against Notion.
+_KEY = "secret_pytest_not_a_real_notion_token"
 
 READ_ROUTES = (
     ("get", f"{BASE}/eligible", None),
@@ -87,6 +90,23 @@ def _fake_service():
     ):
         setattr(service, name, AsyncMock())
     return service
+
+
+def _notion(monkeypatch, *, enabled: bool, key: str = _KEY) -> None:
+    """Set this head's Notion prerequisite explicitly. Every test that touches a
+    delivery route says which state it is in, because the ambient state is not a
+    constant: `config.load_dotenv` means these settings come from whatever `.env`
+    the host has, so a developer machine or the real head reads *configured*
+    while a clean checkout reads *unconfigured*. A test that leaned on either
+    would pass for the wrong reason on the other."""
+    monkeypatch.setattr(settings, "notion_enabled", enabled)
+    monkeypatch.setattr(settings, "notion_api_key", key)
+
+
+async def _teapot(*_args, **_kwargs):
+    """Stands in for a route body. 418 is a status no gate in this router
+    produces, so seeing it means the request got past every gate."""
+    raise HTTPException(418, "route body reached")
 
 
 # ═════════════════════════ the master flag ═══════════════════════════════
@@ -187,6 +207,7 @@ def test_a_valid_token_with_the_flag_on_reaches_the_state_gate(monkeypatch):
 def test_delivery_routes_refuse_with_409_when_the_publisher_is_off(monkeypatch, url):
     monkeypatch.setattr(settings, "regeneration_enabled", True)
     monkeypatch.setattr(settings, "regeneration_publisher_enabled", False)
+    _notion(monkeypatch, enabled=True)
     app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
     service = _fake_service()
     monkeypatch.setattr(regen_api, "_service", lambda: service)
@@ -201,6 +222,74 @@ def test_delivery_routes_refuse_with_409_when_the_publisher_is_off(monkeypatch, 
     assert service.retry_publication.await_count == 0
 
 
+# ═════════════════════ the Notion prerequisite ═══════════════════════════
+#
+# The publisher flag says an operator wants delivery; it does not say the head
+# can deliver. Approving with no usable Notion destination releases every target
+# to a loop that claims them and reserves their `Homework V{n}` numbers — spent
+# forever — before failing to build a client. So the answer is given here,
+# before approval, and it is a 409 rather than a 404 for the same reason the
+# publisher flag's is: the campaign exists and the operator may still generate,
+# reject, cancel and abandon.
+
+
+@pytest.mark.parametrize(
+    "notion_enabled, key",
+    [(False, _KEY), (True, ""), (True, "   "), (True, "not-a-notion-key")],
+    ids=["disabled", "no-key", "blank-key", "wrong-shape"],
+)
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"{BASE}/campaigns/{uuid4()}/approve",
+        f"{BASE}/targets/{uuid4()}/retry-publication",
+    ],
+)
+def test_delivery_routes_refuse_with_409_when_notion_is_unavailable(
+    monkeypatch, url, notion_enabled, key
+):
+    monkeypatch.setattr(settings, "regeneration_enabled", True)
+    monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
+    _notion(monkeypatch, enabled=notion_enabled, key=key)
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
+    service = _fake_service()
+    monkeypatch.setattr(regen_api, "_service", lambda: service)
+
+    response = client.post(url, json={})
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["error"] == "notion_unavailable"
+    assert "NOTION_" in detail["message"]
+    assert service.approve_canary.await_count == 0
+    assert service.retry_publication.await_count == 0
+
+
+def test_the_publisher_flag_is_answered_before_the_notion_prerequisite(monkeypatch):
+    """Both wrong is one answer, not two. The flag is the switch the operator
+    turns first (§3b), so it is the one named."""
+    monkeypatch.setattr(settings, "regeneration_enabled", True)
+    monkeypatch.setattr(settings, "regeneration_publisher_enabled", False)
+    _notion(monkeypatch, enabled=False)
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
+    monkeypatch.setattr(regen_api, "_service", _fake_service)
+
+    response = client.post(f"{BASE}/campaigns/{uuid4()}/approve", json={})
+
+    assert response.json()["detail"]["error"] == "publisher_disabled"
+
+
+def test_the_notion_gate_never_precedes_the_feature_404(monkeypatch):
+    """A hidden feature stays hidden: an unconfigured head must not answer 409
+    and reveal that regeneration exists."""
+    monkeypatch.setattr(settings, "regeneration_enabled", False)
+    monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
+    _notion(monkeypatch, enabled=False)
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
+
+    assert client.post(f"{BASE}/campaigns/{uuid4()}/approve", json={}).status_code == 404
+
+
 @pytest.mark.parametrize(
     "method,url,body",
     [
@@ -213,8 +302,11 @@ def test_delivery_routes_refuse_with_409_when_the_publisher_is_off(monkeypatch, 
 def test_reads_and_generation_routes_ignore_the_publisher_flag(
     monkeypatch, method, url, body
 ):
+    """Drafting, pricing and eligibility stay open with delivery dark AND with
+    Notion unconfigured — that combination is a supported way to run."""
     monkeypatch.setattr(settings, "regeneration_enabled", True)
     monkeypatch.setattr(settings, "regeneration_publisher_enabled", False)
+    _notion(monkeypatch, enabled=False)
     app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
     monkeypatch.setattr(regen_api, "_service", _fake_service)
     monkeypatch.setattr(regen_api, "_list_campaigns", AsyncMock(return_value=([], {}, 0)))
@@ -223,6 +315,46 @@ def test_reads_and_generation_routes_ignore_the_publisher_flag(
     )
 
     assert _call(method, url, body).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "url, seam",
+    [
+        (f"{BASE}/campaigns/{uuid4()}/canary", "_campaign_action"),
+        (f"{BASE}/targets/{uuid4()}/retry-generation", "_target_action"),
+    ],
+    ids=["canary", "retry-generation"],
+)
+def test_generation_routes_still_run_with_notion_unavailable(monkeypatch, url, seam):
+    """Canary generation and generation retry spend model budget but write no
+    Notion page and reserve no version, so an unconfigured head must still serve
+    them. The route body is replaced by a teapot: reaching it at all is the
+    assertion, and 418 is a status neither gate can produce."""
+    monkeypatch.setattr(settings, "regeneration_enabled", True)
+    monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
+    _notion(monkeypatch, enabled=False)
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
+    monkeypatch.setattr(regen_api, "_service", _fake_service)
+    monkeypatch.setattr(regen_api, seam, _teapot)
+
+    assert client.post(url, json={}).status_code == 418
+
+
+@pytest.mark.parametrize("url", [f"{BASE}/estimate", f"{BASE}/campaigns"])
+def test_pricing_and_creation_are_not_gated_on_notion(monkeypatch, url):
+    """Estimating prices a draft and creation freezes one; neither writes a
+    Notion page or reserves a version, so both stay open on an unconfigured
+    head. A **422** on this empty body is the proof, and a precise one: a route
+    dependency raises before the body is validated (that is exactly why the
+    feature 404 beats request validation above), so reaching validation at all
+    means no gate refused the request."""
+    monkeypatch.setattr(settings, "regeneration_enabled", True)
+    monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
+    _notion(monkeypatch, enabled=False)
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
+    monkeypatch.setattr(regen_api, "_service", _fake_service)
+
+    assert client.post(url, json={}).status_code == 422
 
 
 def test_both_flags_default_to_off():

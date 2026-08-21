@@ -880,6 +880,13 @@ def _gated_writer(monkeypatch, notion, *, fail: bool):
 
     import app.services.regeneration_publisher as pub
 
+    # A head CONFIGURED to publish: `run_once` refuses to claim anything without
+    # a usable Notion destination, and `notion` here is `FakeNotion`, so only the
+    # credential's SHAPE matters.
+    monkeypatch.setattr(pub.settings, "notion_enabled", True)
+    monkeypatch.setattr(
+        pub.settings, "notion_api_key", "secret_pytest_not_a_real_token")
+
     reached, release = threading.Event(), threading.Event()
     real = pub.write_or_adopt_versioned_homework
 

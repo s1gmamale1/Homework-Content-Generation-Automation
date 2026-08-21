@@ -60,6 +60,10 @@ _CANONICAL = ("extract", *flow_for(_SUBJECT))
 _SUBJECT_PAGE = "subject-page-uz-math-5"
 _SUBJECT_PAGE_RU = "subject-page-ru-math-5"
 _CONTAINER = pub.notion_archive.CONTAINER_TITLE
+#: Shaped like a real Notion integration token and never used against Notion —
+#: `FakeNotion` is the client here. Only its SHAPE matters: the readiness gate
+#: rejects anything the real client's constructor would reject.
+_USABLE_KEY = "secret_pytest_not_a_real_notion_token"
 
 
 def _now() -> datetime:
@@ -382,6 +386,14 @@ def _install(monkeypatch, h: _Harness) -> None:
     monkeypatch.setattr(agent_mod, "run_phase", _forbidden("agent.run_phase"))
     monkeypatch.setattr(agent_mod, "_spawn", _forbidden("agent._spawn"))
 
+    # ── the head this harness models is CONFIGURED for Notion ─────────────
+    # `run_once` refuses to claim anything without a usable destination, so
+    # every delivery test below needs the prerequisite the operator would have
+    # set. Stated here rather than per-test so the refusal tests are the only
+    # ones that talk about it — they take it away again.
+    monkeypatch.setattr(pub.settings, "notion_enabled", True)
+    monkeypatch.setattr(pub.settings, "notion_api_key", _USABLE_KEY)
+
 
 def _speak_russian(h: _Harness) -> None:
     """Turn the harness into a `ru` lineage of the SAME lesson: the target, its
@@ -407,6 +419,125 @@ def _raise(exc: BaseException):
 async def test_run_once_with_no_claimable_target_does_nothing(h):
     assert await h.publisher().run_once() is False
     assert h.status_writes == []
+
+
+# ═════════════ the Notion prerequisite: fail closed, spend nothing ═══════════
+#
+# A version number is spent FOREVER — `reserve_publication_version` allocates
+# once per target and every retry reuses it. `_prepare` reserves it, and only
+# `_deliver`, afterwards, builds the client that needs a credential. So a head
+# running with the two regeneration flags on but no usable Notion destination
+# used to claim a target, burn its `Homework V{n}` identity, and only then
+# discover it could never deliver. This is the guard that makes the whole pass
+# refuse BEFORE the claim, which is the only point at which nothing is lost.
+
+
+async def test_a_pass_refuses_before_claiming_when_notion_is_disabled(h, monkeypatch):
+    monkeypatch.setattr(pub.settings, "notion_enabled", False)
+    h.claim()
+
+    assert await h.publisher().run_once() is False
+    assert len(h.claims) == 1, "the queued target must not have been claimed"
+    assert h.reconciles == 0, "the refusal must precede the whole pass"
+    assert h.target.publication_version is None
+    assert h.status_writes == []
+    assert list(h.notion.calls) == []
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["", "   ", "not-a-notion-key", "ntn", '""'],
+    ids=["empty", "blank", "wrong-shape", "truncated-prefix", "empty-quotes"],
+)
+async def test_a_pass_refuses_before_claiming_on_an_unusable_credential(
+    h, monkeypatch, key
+):
+    """Enabled is not the same as configured. Every value here is one the real
+    `NotionClientWrapper` constructor rejects, so letting the pass run would
+    reserve a version for a delivery that cannot even build a client."""
+    monkeypatch.setattr(pub.settings, "notion_enabled", True)
+    monkeypatch.setattr(pub.settings, "notion_api_key", key)
+    h.claim()
+
+    assert await h.publisher().run_once() is False
+    assert len(h.claims) == 1
+    assert h.target.publication_version is None
+    assert h.status_writes == []
+
+
+async def test_an_unconfigured_head_never_reserves_a_version_it_cannot_deliver(
+    h, monkeypatch
+):
+    """The regression, driven through the REAL client factory.
+
+    `_default_client` is what production uses, and it raises on a missing
+    credential — inside `_deliver`, which runs after the version is reserved and
+    committed. Before the gate this pass returned True having consumed V2 and
+    parked the target in `publication_failed`; now it never starts.
+    """
+    monkeypatch.setattr(pub.settings, "notion_enabled", True)
+    monkeypatch.setattr(pub.settings, "notion_api_key", "")
+    h.claim()
+    publisher = h.publisher(
+        client_factory=pub.RegenerationPublisher._default_client
+    )
+
+    assert await publisher.run_once() is False
+    assert h.target.publication_version is None, "a version was consumed"
+    assert h.target.status == "publishing", "no outcome may be written"
+    assert h.status_writes == []
+    assert h.rollups == []
+
+
+async def test_the_refusal_names_the_setting_that_is_wrong(monkeypatch):
+    """An operator reading the log has to know WHICH prerequisite is missing;
+    "publication unavailable" alone sends them to the wrong file."""
+    monkeypatch.setattr(pub.settings, "notion_enabled", False)
+    monkeypatch.setattr(pub.settings, "notion_api_key", _USABLE_KEY)
+    assert "NOTION_ENABLED" in (pub.publication_unavailable_reason() or "")
+
+    monkeypatch.setattr(pub.settings, "notion_enabled", True)
+    monkeypatch.setattr(pub.settings, "notion_api_key", "nonsense")
+    assert "NOTION_API_KEY" in (pub.publication_unavailable_reason() or "")
+
+
+async def test_a_configured_head_reports_no_reason_to_refuse(monkeypatch):
+    monkeypatch.setattr(pub.settings, "notion_enabled", True)
+    monkeypatch.setattr(pub.settings, "notion_api_key", _USABLE_KEY)
+    assert pub.publication_unavailable_reason() is None
+
+
+async def test_the_readiness_check_never_builds_a_notion_client(monkeypatch):
+    """It runs on the event loop and inside request handlers, and
+    `NotionClientWrapper.__init__` opens an HTTP client — which is exactly the
+    work this module keeps off the loop."""
+    from app.services.notion import client as client_mod
+
+    def _boom(*_a, **_kw):
+        raise AssertionError("the readiness check must not construct a client")
+
+    monkeypatch.setattr(client_mod.NotionClientWrapper, "__init__", _boom)
+    monkeypatch.setattr(pub.settings, "notion_enabled", True)
+    monkeypatch.setattr(pub.settings, "notion_api_key", _USABLE_KEY)
+
+    assert pub.publication_unavailable_reason() is None
+
+
+async def test_run_forever_with_notion_unavailable_publishes_nothing(h, monkeypatch):
+    """Defence in depth is only worth anything if the LOOP honours it too."""
+    monkeypatch.setattr(pub.settings, "notion_enabled", False)
+    h.claim()
+    stop = asyncio.Event()
+    publisher = h.publisher()
+
+    task = asyncio.create_task(publisher.run_forever(stop))
+    await asyncio.sleep(0.05)
+    stop.set()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert len(h.claims) == 1
+    assert h.status_writes == []
+    assert h.target.publication_version is None
     assert h.notion.calls == []
     assert h.rollups == []
 

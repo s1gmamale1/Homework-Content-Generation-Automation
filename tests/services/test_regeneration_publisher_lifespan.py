@@ -31,6 +31,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+#: Shaped like a real Notion integration token; never used against Notion.
+_USABLE_KEY = "secret_pytest_not_a_real_notion_token"
+
 
 class _RecordingPublisher:
     """Stands in for `RegenerationPublisher`. Records that it ran and honours
@@ -50,6 +53,23 @@ class _RecordingPublisher:
             except (asyncio.TimeoutError, TimeoutError):
                 pass
         self.stopped = True
+
+
+class _RecordingLog:
+    """Stands in for `main.log` (loguru), which pytest's `caplog` does not see.
+    Only `warning` is inspected; the rest must exist or `lifespan` breaks."""
+
+    def __init__(self, warnings: list[str]) -> None:
+        self._warnings = warnings
+
+    def warning(self, message) -> None:
+        self._warnings.append(str(message))
+
+    def info(self, message) -> None:
+        pass
+
+    def exception(self, message) -> None:
+        pass
 
 
 class _HangingPublisher(_RecordingPublisher):
@@ -114,6 +134,15 @@ def wired(monkeypatch):
     monkeypatch.setattr(main_mod.events_bus, "stop_listener", _stop_listener)
     monkeypatch.setattr(main_mod.settings, "worker_concurrency", 0)
 
+    # A head an operator has configured for Notion. The flags are what the
+    # tests below vary; the Notion prerequisite is varied only by the tests that
+    # are about it, via `notion()`.
+    monkeypatch.setattr(main_mod.settings, "notion_enabled", True)
+    monkeypatch.setattr(main_mod.settings, "notion_api_key", _USABLE_KEY)
+
+    warnings: list[str] = []
+    monkeypatch.setattr(main_mod, "log", _RecordingLog(warnings))
+
     def _use(publisher) -> None:
         def _build():
             order.append("publisher-built")
@@ -126,7 +155,14 @@ def wired(monkeypatch):
         monkeypatch.setattr(
             main_mod.settings, "regeneration_publisher_enabled", publisher)
 
-    return SimpleNamespace(main=main_mod, order=order, use=_use, flags=_flags)
+    def _notion(*, enabled: bool, key: str = _USABLE_KEY) -> None:
+        monkeypatch.setattr(main_mod.settings, "notion_enabled", enabled)
+        monkeypatch.setattr(main_mod.settings, "notion_api_key", key)
+
+    return SimpleNamespace(
+        main=main_mod, order=order, use=_use, flags=_flags, notion=_notion,
+        warnings=warnings,
+    )
 
 
 # ═══════════════════════ the four flag combinations ══════════════════════
@@ -174,6 +210,83 @@ async def test_the_default_settings_leave_the_publisher_off(wired):
     async with wired.main.lifespan(MagicMock()):
         await asyncio.sleep(0.02)
     assert not publisher.started.is_set()
+
+
+# ══════════════════ the Notion prerequisite (fail closed) ════════════════
+#
+# The two flags say an operator WANTS delivery. They do not say this head CAN
+# deliver. A loop started without a usable Notion destination claims targets and
+# reserves version numbers — spent forever — before it discovers, in `_deliver`,
+# that it cannot build a client. So the prerequisite is a third condition on the
+# start, not something the loop finds out at run time.
+
+
+@pytest.mark.parametrize(
+    "notion_enabled, key",
+    [(False, _USABLE_KEY), (True, ""), (True, "   "), (True, "not-a-notion-key")],
+    ids=["disabled", "no-key", "blank-key", "wrong-shape"],
+)
+async def test_the_publisher_does_not_start_without_a_usable_notion_destination(
+    wired, notion_enabled, key
+):
+    publisher = _RecordingPublisher()
+    wired.use(publisher)
+    wired.flags(enabled=True, publisher=True)
+    wired.notion(enabled=notion_enabled, key=key)
+
+    async with wired.main.lifespan(MagicMock()):
+        await asyncio.sleep(0.02)
+    assert not publisher.started.is_set()
+    assert "publisher-built" not in wired.order
+
+
+async def test_refusing_to_start_the_publisher_is_a_visible_warning(wired):
+    """Both flags on and nothing happening is the confusing state §3c already
+    warns about for the flag pair. Here it is preventable — this head was told
+    to publish and can't, so it says so."""
+    publisher = _RecordingPublisher()
+    wired.use(publisher)
+    wired.flags(enabled=True, publisher=True)
+    wired.notion(enabled=False)
+
+    async with wired.main.lifespan(MagicMock()):
+        await asyncio.sleep(0.02)
+
+    assert any(
+        "NOTION_ENABLED" in message and "publisher" in message.lower()
+        for message in wired.warnings
+    ), f"no warning naming the missing prerequisite; got {wired.warnings}"
+
+
+async def test_notion_alone_does_not_start_the_publisher(wired):
+    """The prerequisite is an ADDITIONAL condition, never a replacement for the
+    flags — a configured Notion must not switch delivery on by itself."""
+    publisher = _RecordingPublisher()
+    wired.use(publisher)
+    wired.flags(enabled=True, publisher=False)
+    wired.notion(enabled=True)
+
+    async with wired.main.lifespan(MagicMock()):
+        await asyncio.sleep(0.02)
+    assert not publisher.started.is_set()
+
+
+async def test_the_generation_side_still_runs_with_notion_off(wired):
+    """Regeneration drafting, estimation and canary generation are deliberately
+    usable with delivery dark — refusing to start the publisher must not take
+    the startup path down with it."""
+    publisher = _RecordingPublisher()
+    wired.use(publisher)
+    wired.flags(enabled=True, publisher=True)
+    wired.notion(enabled=False)
+
+    async with wired.main.lifespan(MagicMock()):
+        await asyncio.sleep(0.02)
+
+    assert wired.order == [
+        "auth", "vault", "prompts", "db-reconcile", "revision-reconcile",
+        "version-floor", "listener", "listener-stopped",
+    ]
 
 
 # ═══════════════════════════ ordering ════════════════════════════════════

@@ -5,7 +5,17 @@ versioned Notion sibling pages. It is deliberately narrow — it publishes
 regeneration targets and nothing else, and it never touches V1 or the legacy
 archive's columns.
 
-Six rules run through the whole module.
+Seven rules run through the whole module.
+
+**Nothing starts without a destination.** `publication_unavailable_reason` is
+the deployment-level answer to "can anything be published here at all?", and it
+is checked at the TOP of `run_once`, before the claim. A version number is spent
+forever once reserved, and the credential is not needed until `_deliver` — one
+step too late — so a head with the regeneration flags on but no usable Notion
+destination would otherwise claim targets and burn their `Homework V{n}`
+identities on deliveries that could never happen. `main.lifespan` uses the same
+function to decline to start the loop, and the API to refuse approval before any
+target is released; all three read this one function so they cannot disagree.
 
 **The claim is durable, and it is the unit of work.** `claim_next_publication`
 moves one target to ``publishing``, stamps a UUID lease and increments the
@@ -75,7 +85,7 @@ from app.repositories import phase_outputs as phase_repo
 from app.repositories import regeneration_targets as targets_repo
 from app.repositories import toc_entries as toc_repo
 from app.services import notion_archive, regeneration_job_state
-from app.services.notion.client import NotionClientWrapper
+from app.services.notion.client import NotionClientWrapper, normalize_api_key
 from app.services.notion_versioned_homework import (
     HomeworkRevisionMarker,
     VersionPageCollision,
@@ -89,6 +99,7 @@ __all__ = [
     "PublicationInputs",
     "RegenerationPublisher",
     "build_publisher_from_settings",
+    "publication_unavailable_reason",
 ]
 
 # Written to `terminal_reason` on a successful delivery. `terminal_reason` is
@@ -103,6 +114,36 @@ _ABANDONED_REASON = (
 # 2**30 seconds already dwarfs `backoff_max_seconds`; clamping the exponent
 # keeps a pathological attempt count from building a giant int for nothing.
 _MAX_BACKOFF_SHIFT = 30
+
+
+def publication_unavailable_reason() -> Optional[str]:
+    """Why nothing can be published on this deployment, or ``None`` when it can.
+
+    The whole feature's fail-closed answer, in one place, so the three callers
+    that must agree — `main.lifespan` (don't start the loop), the two API routes
+    that promise delivery (refuse before approval) and `run_once` itself (refuse
+    before claiming) — cannot drift apart.
+
+    It is deliberately about the DEPLOYMENT, not about one target: whether this
+    head has a Notion destination at all. A per-lesson destination problem is a
+    different thing and stays where it is, in `_prepare`, which refuses before
+    reserving a version.
+
+    Cheap and side-effect free by contract. It runs on the event loop and inside
+    request handlers, so it must not build a client, open a socket or touch the
+    database — `normalize_api_key` is the constructor's own credential rule with
+    the client construction left out.
+    """
+    if not settings.notion_enabled:
+        return (
+            "NOTION_ENABLED is off, so this deployment has no Notion destination "
+            "to publish a revision to"
+        )
+    try:
+        normalize_api_key(settings.notion_api_key)
+    except ValueError as exc:
+        return f"the Notion credential is unusable: {exc}"
+    return None
 
 
 @dataclass(frozen=True)
@@ -213,6 +254,21 @@ class RegenerationPublisher:
             settings.regeneration_publisher_backoff_max_seconds
             if backoff_max_seconds is None else backoff_max_seconds
         )
+        # `run_forever` would otherwise repeat the same refusal every interval
+        # for as long as the process lives.
+        self._warned_unavailable = False
+
+    def _warn_unavailable(self, reason: str) -> None:
+        """Say it once, loudly. A silently idle publisher reads exactly like an
+        empty queue, which is the wrong thing for an operator to conclude when
+        approved targets are waiting."""
+        if self._warned_unavailable:
+            return
+        self._warned_unavailable = True
+        logger.warning(
+            f"regeneration publisher: refusing to publish — {reason}. No target "
+            "will be claimed and no version reserved until this is fixed."
+        )
 
     @staticmethod
     def _default_client() -> NotionClientWrapper:
@@ -263,6 +319,16 @@ class RegenerationPublisher:
         when there was nothing releasable — which is what lets ``run_forever``
         drain a backlog without sleeping between targets.
         """
+        # The Notion prerequisite, BEFORE the claim — the last point at which
+        # refusing is free. `main.lifespan` already declines to start this loop
+        # without a destination, so reaching here means something else built the
+        # publisher; it still refuses, because the cost of not doing so is a
+        # version number spent on a delivery that never had a chance.
+        unavailable = publication_unavailable_reason()
+        if unavailable is not None:
+            self._warn_unavailable(unavailable)
+            return False
+
         # Crash repair FIRST: a revision job can commit its terminal status and
         # die before its target is updated, and with no API read involved this
         # loop is the only thing that would ever notice.

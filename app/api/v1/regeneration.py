@@ -17,9 +17,16 @@ and the SSE/query-token form belongs to it.
 **The feature gate is a 404, not a 403.** With ``REGENERATION_ENABLED=false``
 every route is absent, so a stale UI cannot mutate a hidden feature. The two
 routes that hand work to the publication loop (``approve``, ``retry-publication``)
-additionally require ``REGENERATION_PUBLISHER_ENABLED``, because the loop that
-would carry out their promise is started only under both flags — approving a
-campaign into a queue nobody serves is a lie, so it is a structured 409 instead.
+additionally require that delivery is actually POSSIBLE — the
+``REGENERATION_PUBLISHER_ENABLED`` flag AND a usable Notion destination, which
+are exactly the conditions under which `main.py` starts the loop — because
+approving a campaign into a queue nobody serves is a lie, and it is an expensive
+one: approval releases
+every target, and each release ends in a `Homework V{n}` number reserved
+forever. So it is a structured 409 instead, naming which of the two is missing.
+Generation-only routes (estimate, create, canary, ``retry-generation``) are
+deliberately NOT gated on any of this: running the feature with delivery dark is
+a supported way to work.
 
 **This router owns no state machine.** Every transition belongs to
 ``RegenerationCampaignService``; the routes translate its refusals into status
@@ -69,7 +76,12 @@ from app.schemas.regeneration_contract import (
     LaunchDefaultsSnapshot,
     resolve_launch_contract,
 )
-from app.services import agent_models, code_version, regeneration_job_state
+from app.services import (
+    agent_models,
+    code_version,
+    regeneration_job_state,
+    regeneration_publisher,
+)
 from app.services import regeneration_discovery as discovery
 from app.services.regeneration_campaign import (
     ActiveLineageConflict,
@@ -109,9 +121,21 @@ def require_regeneration_enabled() -> None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
 
 
-def require_publisher_enabled() -> None:
-    """Refuse the two routes that promise automatic delivery when the
-    publication loop is not running."""
+def require_publication_available() -> None:
+    """Refuse the two routes that promise automatic delivery unless something
+    can actually carry it out.
+
+    Two independent reasons, and the operator has to be told WHICH — they live
+    in different files. The flag is answered first because it is the switch the
+    rollout turns first (runbook §3b); the Notion destination is answered second
+    and is the one that used to be invisible here.
+
+    Refusing the destination case BEFORE approval is the whole point: approval
+    releases every target to the publication loop, and each release ends in a
+    reserved `Homework V{n}` number that is spent forever. Discovering the
+    missing credential at delivery time — where it used to surface — costs a
+    version per target for deliveries that never had a chance.
+    """
     if not settings.regeneration_publisher_enabled:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -122,6 +146,21 @@ def require_publisher_enabled() -> None:
                     "REGENERATION_PUBLISHER_ENABLED is off, so no publication "
                     "loop is running and this action would queue delivery work "
                     "nobody serves. Enable the publisher first."
+                ),
+            },
+        )
+    unavailable = regeneration_publisher.publication_unavailable_reason()
+    if unavailable is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {
+                "error": "notion_unavailable",
+                "message": (
+                    f"Notion publication is unavailable: {unavailable}. Set "
+                    "NOTION_ENABLED and a valid NOTION_API_KEY on the head and "
+                    "restart it — the publication loop is not running either. "
+                    "Proceeding would reserve a version number for every target "
+                    "and deliver none of them."
                 ),
             },
         )
@@ -1048,7 +1087,7 @@ async def launch_canary(
 @router.post(
     "/campaigns/{campaign_id}/approve",
     response_model=out.CampaignDetailOut,
-    dependencies=[Depends(require_publisher_enabled)],
+    dependencies=[Depends(require_publication_available)],
 )
 async def approve_canary(
     campaign_id: UUID,
@@ -1156,7 +1195,7 @@ async def retry_generation(
 @router.post(
     "/targets/{target_id}/retry-publication",
     response_model=out.TargetActionOut,
-    dependencies=[Depends(require_publisher_enabled)],
+    dependencies=[Depends(require_publication_available)],
 )
 async def retry_publication(
     target_id: UUID,
