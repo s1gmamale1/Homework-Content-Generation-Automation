@@ -654,6 +654,34 @@ async def test_campaign_cap_counts_only_eligible_targets(monkeypatch):
     assert reached_write is True
 
 
+# ─── the campaign's own declared publication version ─────────────────────
+
+
+@pytest.mark.parametrize("requested", [1, 0, -3])
+async def test_create_campaign_refuses_a_publication_version_below_two(requested):
+    """Refused before a session is ever opened.
+
+    `campaigns_repo.create_campaign` raises the same `ValueError`, and stays
+    the authority for direct repository callers — but it only fires after a
+    whole discovery scan has run and the lineage rows have been read, and an
+    operator typo must not cost that. Logical V1 is the pre-existing `Homework`
+    page, which no campaign produced.
+    """
+    def _no_session():
+        raise AssertionError(
+            "a session was opened before the publication-version guard ran"
+        )
+
+    service = svc.RegenerationCampaignService(session_factory=_no_session)
+    with pytest.raises(ValueError, match="publication_version"):
+        await service.create_campaign(svc.CreateCampaignSpec(
+            selection=svc.CampaignSelection(book_ids=(uuid.uuid4(),)),
+            contract=LaunchContract(**_CONTRACT.model_dump()),
+            selected_phases=("flashcards",),
+            publication_version=requested,
+        ))
+
+
 # ─── deterministic ordering ──────────────────────────────────────────────
 
 
@@ -890,6 +918,198 @@ async def test_creation_stores_the_planner_object_per_target(seeded):
     expected = build_phase_plan(subject=_SUBJECT, selected_phases=["flashcards"])
     assert plan == expected
     assert target.source_job_id == seeded["jobs"][(seeded["toc_ids"][0], "uz")]
+
+
+@db_only
+async def test_creation_freezes_the_requested_publication_version(seeded):
+    """A V1 lineage may be taken straight to V3.
+
+    The number lives on the CAMPAIGN. Every target stays at
+    `publication_version IS NULL` until the publisher reserves it, so drafting
+    a campaign consumes nothing and a cancelled draft frees the number.
+    """
+    campaign = await _service().create_campaign(
+        _spec(seeded, publication_version=3))
+
+    assert campaign.publication_version == 3
+    # read back through the repository, not `campaign.targets`: the service
+    # closed its session, and a lazy relationship would emit IO on a detached
+    # instance rather than answer the question.
+    assert [version for _, _, version in await _statuses(campaign.id)] == [None]
+
+
+@db_only
+async def test_creation_without_a_publication_version_stays_automatic(seeded):
+    """`None` remains legal through Tasks 2-5: every internal and API
+    constructor that has not been taught the field yet must keep working, and
+    such a campaign falls back to the historical per-lineage `max + 1`."""
+    campaign = await _service().create_campaign(_spec(seeded))
+
+    assert campaign.publication_version is None
+
+
+@db_only
+async def test_creation_refuses_a_publication_version_already_consumed(seeded):
+    """Consumed by a target that never reached Notion, at that.
+
+    A number is spent when it is RESERVED, not when it is published, so the
+    check has to see terminal rows too. Without it the collision would surface
+    as an `IntegrityError` deep inside publication — after the generation spend,
+    on one lesson at a time.
+    """
+    await _consume_publication_version(seeded, 3)
+
+    with pytest.raises(svc.RequestedPublicationVersionConflict) as exc:
+        await _service().create_campaign(_spec(seeded, publication_version=3))
+
+    (conflict,) = exc.value.conflicts
+    assert conflict.reason == "already_consumed"
+    assert conflict.toc_entry_id == seeded["toc_ids"][0]
+    assert conflict.output_language == "uz"
+    assert conflict.requested_version == 3
+    assert conflict.existing_version == 3
+    assert await _versioned_campaigns() == [], "a campaign row survived the refusal"
+
+
+@db_only
+async def test_creation_refuses_a_publication_version_its_source_already_has(seeded):
+    """The comparison is against the IMMEDIATE source's own published version:
+    a lineage whose newest publication is V2 cannot produce another V2 — the
+    revision would be generated from the page it would overwrite."""
+    await _publish_version(seeded, 2)
+
+    with pytest.raises(svc.RequestedPublicationVersionConflict) as exc:
+        await _service().create_campaign(_spec(seeded, publication_version=2))
+
+    (conflict,) = exc.value.conflicts
+    assert conflict.reason == "source_not_older"
+    assert conflict.existing_version == 2
+    assert conflict.requested_version == 2
+    assert await _versioned_campaigns() == []
+
+
+@db_only
+async def test_creation_accepts_a_publication_version_above_its_source(seeded):
+    """The other side of the same rule — a published V2 is a legal source for
+    V3, and that is the ordinary case the wizard produces."""
+    revision_job_id = await _publish_version(seeded, 2)
+
+    campaign = await _service().create_campaign(
+        _spec(seeded, publication_version=3))
+
+    assert campaign.publication_version == 3
+    (target,) = await _targets(campaign.id)
+    assert target.source_job_id == revision_job_id
+    assert target.publication_version is None
+
+
+async def _versioned_campaigns() -> list:
+    """Every version this test file's campaigns have claimed. `[]` is the proof
+    that a refused creation left NO campaign row behind — the insert and the
+    target inserts share one transaction, so a rollback must take both."""
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models.regeneration_campaign import RegenerationCampaign
+
+    async with SessionLocal() as session:
+        return sorted((await session.execute(
+            select(RegenerationCampaign.publication_version)
+            .where(RegenerationCampaign.app_git_revision == _MARKER)
+            .where(RegenerationCampaign.publication_version.is_not(None))
+        )).scalars().all())
+
+
+async def _consume_publication_version(ids, version, *, language="uz", lesson=0):
+    """A TERMINAL target of this lineage that already holds `version`.
+
+    `abandoned` rather than `published` on purpose: it proves the consumed-
+    version check does not look at status, and a terminal row leaves
+    `uq_regeneration_targets_active_lineage` free so campaign creation still
+    reaches the version check instead of stopping at the lineage conflict.
+    """
+    from datetime import datetime, timezone
+
+    from app.db import SessionLocal
+    from app.models.regeneration_campaign import RegenerationCampaign
+    from app.models.regeneration_target import RegenerationTarget
+
+    now = datetime.now(timezone.utc)
+    async with SessionLocal() as session:
+        campaign = RegenerationCampaign(
+            status="draft", selection_spec={}, requested_phases=["flashcards"],
+            excluded_phases=[], launch_contract={}, canary_size=1,
+            app_git_revision=_MARKER,
+        )
+        session.add(campaign)
+        await session.flush()
+        session.add(RegenerationTarget(
+            campaign_id=campaign.id, toc_entry_id=ids["toc_ids"][lesson],
+            output_language=language,
+            phase_plan=build_phase_plan(
+                subject=_SUBJECT, selected_phases=["flashcards"]).to_json(),
+            status="abandoned", terminal_at=now, terminal_reason="pytest",
+            publication_version=version, publication_released_at=now,
+        ))
+        await session.commit()
+
+
+async def _publish_version(ids, version, *, language="uz", lesson=0):
+    """Publish `version` on this lineage for real: a terminal `published`
+    target plus the revision job behind it, with a complete snapshot.
+
+    Discovery then picks THAT job as the source and reports
+    `source_publication_version == version`, which is the only way to exercise
+    the `source_not_older` branch end to end. Returns the revision job id.
+    """
+    from datetime import datetime, timezone
+
+    from app.db import SessionLocal
+    from app.models.homework_job import HomeworkJob
+    from app.models.phase_output import PhaseOutput
+    from app.models.regeneration_campaign import RegenerationCampaign
+    from app.models.regeneration_target import RegenerationTarget
+
+    now = datetime.now(timezone.utc)
+    toc_entry_id = ids["toc_ids"][lesson]
+    source_job_id = ids["jobs"][(toc_entry_id, language)]
+    async with SessionLocal() as session:
+        campaign = RegenerationCampaign(
+            status="completed", selection_spec={}, requested_phases=["flashcards"],
+            excluded_phases=[], launch_contract={}, canary_size=1,
+            app_git_revision=_MARKER, approved_at=now,
+        )
+        session.add(campaign)
+        await session.flush()
+        target = RegenerationTarget(
+            campaign_id=campaign.id, toc_entry_id=toc_entry_id,
+            output_language=language,
+            phase_plan=build_phase_plan(
+                subject=_SUBJECT, selected_phases=["flashcards"]).to_json(),
+            status="published", terminal_at=now, terminal_reason="published",
+            publication_version=version, publication_released_at=now,
+            notion_page_id=f"page-{uuid.uuid4()}", source_job_id=source_job_id,
+        )
+        session.add(target)
+        await session.flush()
+        revision = HomeworkJob(
+            book_id=ids["book_id"], toc_entry_id=toc_entry_id, subject=_SUBJECT,
+            status="done", provider="gemini", model="gemini-3.6-flash",
+            transport="api", output_language=language,
+            revision_of_job_id=source_job_id, regeneration_target_id=target.id,
+            session_limit_strategy="pause",
+        )
+        session.add(revision)
+        await session.flush()
+        for order, name in enumerate(_CANONICAL):
+            session.add(PhaseOutput(
+                job_id=revision.id, phase_name=name, phase_order=order,
+                prompt_hash=f"builtin:{name}:v9", provider="gemini",
+                model_name="gemini-3.6-flash", output_md=f"# {name}\nbody",
+                status="done",
+            ))
+        await session.commit()
+        return revision.id
 
 
 @db_only

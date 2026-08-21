@@ -734,3 +734,104 @@ async def test_two_lineages_can_be_locked_concurrently():
         assert await asyncio.gather(_hold(toc_a.id), _hold(toc_b.id)) == [1, 1]
     finally:
         await _purge(book.id)
+
+
+# ─────────────────── publication_version_conflicts ───────────────────
+
+
+def _eligible(toc_entry_id, output_language, *, source_publication_version=1):
+    """One `EligibleRegenerationSource` for a lineage.
+
+    Built directly rather than through discovery: what is under test here is
+    the conflict QUERY, and driving a whole discovery pass for each case would
+    make the verdict depend on source selection as well.
+    """
+    from app.services.regeneration_discovery import EligibleRegenerationSource
+
+    return EligibleRegenerationSource(
+        source_job_id=uuid.uuid4(),
+        toc_entry_id=toc_entry_id,
+        book_id=uuid.uuid4(),
+        subject=SUBJECT,
+        grade="7",
+        output_language=output_language,
+        source_publication_version=source_publication_version,
+        next_expected_version=source_publication_version + 1,
+        source_is_revision=source_publication_version > 1,
+        book_filename="regen_sources.pdf",
+        section_number="1",
+        section_title="Kirish",
+        chapter_title="",
+        page_start=1,
+        notion_lesson_page_id=None,
+        order_index=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_consumed_publication_version_is_seen_in_any_state_one_lineage_only():
+    """A number is spent when it is RESERVED. An `abandoned` target that never
+    reached Notion still owns V5, while the SAME lesson's other language does
+    not — `uq_regeneration_targets_publication_version` is per
+    `(toc_entry_id, output_language)`, and so is this read."""
+    from app.db import SessionLocal
+    from app.repositories import regeneration_sources as repo
+
+    async with SessionLocal() as s:
+        book, toc = await _seed_book(s)
+        job = await _add_job(s, book=book, toc=toc)
+        campaign = await _add_campaign(s)
+        await _add_target(
+            s, campaign=campaign, toc=toc, output_language="uz",
+            source_job_id=job.id, status="abandoned", terminal_at=_now(),
+            terminal_reason="pytest", publication_version=5,
+            publication_released_at=_now(),
+        )
+        await s.commit()
+    try:
+        uz, ru = _eligible(toc.id, "uz"), _eligible(toc.id, "ru")
+        async with SessionLocal() as s:
+            conflicts = await repo.publication_version_conflicts(
+                s, sources=[uz, ru], requested_version=5
+            )
+        assert [(c.output_language, c.reason) for c in conflicts] == [
+            ("uz", "already_consumed")
+        ]
+        assert conflicts[0].existing_version == 5
+        assert conflicts[0].toc_entry_id == toc.id
+
+        async with SessionLocal() as s:
+            assert await repo.publication_version_conflicts(
+                s, sources=[uz, ru], requested_version=6
+            ) == ()
+    finally:
+        await _purge(book.id)
+
+
+@pytest.mark.asyncio
+async def test_a_source_not_older_than_the_requested_version_is_refused():
+    """Compared against the source's OWN published version, not against the
+    table: a lineage already at V3 cannot produce another V3 even on a database
+    where V3's row has since been purged."""
+    from app.db import SessionLocal
+    from app.repositories import regeneration_sources as repo
+
+    async with SessionLocal() as s:
+        book, toc = await _seed_book(s)
+        await _add_job(s, book=book, toc=toc)
+        await s.commit()
+    try:
+        at_v3 = _eligible(toc.id, "uz", source_publication_version=3)
+        async with SessionLocal() as s:
+            for requested in (2, 3):
+                conflicts = await repo.publication_version_conflicts(
+                    s, sources=[at_v3], requested_version=requested
+                )
+                assert [c.reason for c in conflicts] == ["source_not_older"], requested
+                assert conflicts[0].existing_version == 3
+                assert conflicts[0].requested_version == requested
+            assert await repo.publication_version_conflicts(
+                s, sources=[at_v3], requested_version=4
+            ) == ()
+    finally:
+        await _purge(book.id)

@@ -101,8 +101,8 @@ class _Session:
     async def commit(self) -> None:
         self._harness.commits += 1
 
-    async def rollback(self) -> None:  # pragma: no cover - defensive
-        pass
+    async def rollback(self) -> None:
+        self._harness.rollbacks += 1
 
 
 @dataclass
@@ -125,6 +125,9 @@ class _Harness:
     write_hook: Optional[Callable] = None       # wraps the real versioned writer
     parent_hook: Optional[Callable] = None      # wraps the real find_or_create
     reserve_hook: Optional[Callable] = None     # runs after a real reservation
+    #: raised by the reservation before it writes anything — the shape of a
+    #: refused version, as opposed to `reserve_hook`'s post-write inspection.
+    reserve_error: Optional[BaseException] = None
 
     claims: list = field(default_factory=list)      # queue the sweep pops
     issued: list = field(default_factory=list)      # every claim ever handed out
@@ -134,6 +137,7 @@ class _Harness:
     reconciles: int = 0
     sessions_opened: int = 0
     commits: int = 0
+    rollbacks: int = 0
     client_threads: list[threading.Thread] = field(default_factory=list)
     subject_page_call: tuple = ()
 
@@ -277,6 +281,8 @@ def _install(monkeypatch, h: _Harness) -> None:
     async def _reserve(session, *, target_id, claim_token):
         if h.target.publication_claim_token != claim_token:
             raise StalePublicationClaim("claim token is no longer current")
+        if h.reserve_error is not None:
+            raise h.reserve_error
         if h.target.publication_version is None:
             h.target.publication_version = h.reserved_version
         version = h.target.publication_version
@@ -1004,3 +1010,79 @@ async def test_a_takeover_detected_during_version_reservation_writes_nothing(h,
     assert h.status_writes == [], "the new owner's row must not be touched"
     assert h.notion.calls == []
     assert h.rollups == []
+
+
+# ═════════════ the campaign's declared publication version ═══════════════
+
+
+def _integrity_error(constraint: str):
+    """An `IntegrityError` shaped like the one asyncpg raises: the constraint
+    name is on `.orig`, which is what the translation must read — matching on
+    the message alone would misfire on generated content that happens to quote
+    an index name."""
+    from sqlalchemy.exc import IntegrityError
+
+    return IntegrityError(
+        "UPDATE regeneration_targets SET publication_version=$1",
+        {},
+        SimpleNamespace(constraint_name=constraint),
+    )
+
+
+async def test_a_refused_publication_version_parks_the_target_for_an_operator(h):
+    """`PublicationVersionUnavailable` is NOT a lease handover.
+
+    `_TAKEOVER` returns without recording anything, which is right for a stolen
+    claim and catastrophic here: retrying cannot free a consumed number, so the
+    row would be re-claimed every lease forever. It must land a NON-retryable
+    outcome instead — and the failed preparation session must be rolled back
+    before that outcome is written in its own fresh session.
+    """
+    from app.repositories.regeneration_targets import PublicationVersionUnavailable
+
+    h.reserve_error = PublicationVersionUnavailable(
+        "Homework V4 is already consumed for this lesson and language"
+    )
+    h.claim()
+    assert await h.publisher().run_once() is True
+
+    write = h.write("publication_failed")
+    assert "already consumed" in write["publication_last_error"]
+    assert write["publication_next_attempt_at"] is None, "parked, not retried"
+    assert h.rollbacks == 1, "the failed preparation session was not rolled back"
+    assert h.notion.calls == []
+    assert h.target.publication_version is None
+
+
+async def test_a_publication_version_unique_violation_parks_the_target_too(h):
+    """The partial unique index is the final fence and it fires at the UPDATE
+    inside the reservation, not only at the trailing commit — so the whole
+    preparation is covered, and the operator sees the version message rather
+    than a raw database error that would be retried three times first."""
+    h.reserve_error = _integrity_error(
+        "uq_regeneration_targets_publication_version"
+    )
+    h.claim()
+    assert await h.publisher().run_once() is True
+
+    write = h.write("publication_failed")
+    assert write["publication_next_attempt_at"] is None, "parked, not retried"
+    assert h.rollbacks == 1
+    assert h.notion.calls == []
+
+
+async def test_an_unrelated_integrity_error_is_not_a_publication_version_conflict(h):
+    """A different constraint is a database defect, not a spent number. Hiding
+    it behind the version message would tell an operator to pick another
+    version for a fault no version can fix."""
+    h.reserve_error = _integrity_error("fk_regeneration_targets_source_job_id")
+    h.claim()
+    assert await h.publisher().run_once() is True
+
+    write = h.write("publication_failed")
+    assert "consumed" not in write["publication_last_error"]
+    assert "IntegrityError" in write["publication_last_error"]
+    assert write["publication_next_attempt_at"] is not None, (
+        "an unexplained database error is retryable; only a spent version is not"
+    )
+    assert h.rollbacks == 1

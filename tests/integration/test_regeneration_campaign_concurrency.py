@@ -147,7 +147,7 @@ async def _purge(ids: dict) -> None:
         await session.commit()
 
 
-def _spec(ids, *, canary_size=1, lessons=None):
+def _spec(ids, *, canary_size=1, lessons=None, publication_version=None):
     toc_ids = ids["toc_ids"] if lessons is None else ids["toc_ids"][:lessons]
     return svc.CreateCampaignSpec(
         selection=svc.CampaignSelection(
@@ -155,6 +155,7 @@ def _spec(ids, *, canary_size=1, lessons=None):
         contract=LaunchContract(**_CONTRACT.model_dump()),
         selected_phases=("flashcards",),
         canary_size=canary_size,
+        publication_version=publication_version,
         app_git_revision=_MARKER,
         actor="pytest",
     )
@@ -551,5 +552,132 @@ async def test_a_direct_terminal_status_write_is_refused_by_the_service():
         with pytest.raises(svc.TerminalCampaignWithLiveTargets):
             await service.set_campaign_status(campaign.id, "cancelled")
         assert (await _campaign(campaign.id)).status != "cancelled"
+    finally:
+        await _purge(ids)
+
+
+# ═════════════ racing for one exact publication version ══════════════════
+
+
+async def _versioned_campaigns() -> list:
+    """Every version this file's campaigns have claimed."""
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models.regeneration_campaign import RegenerationCampaign
+
+    async with SessionLocal() as session:
+        return sorted((await session.execute(
+            select(RegenerationCampaign.publication_version)
+            .where(RegenerationCampaign.app_git_revision == _MARKER)
+            .where(RegenerationCampaign.publication_version.is_not(None))
+        )).scalars().all())
+
+
+async def _claimed_target(ids, *, publication_version, terminal: bool):
+    """`(target_id, claim_token)` for a claimed target of `toc_ids[0]`'s uz
+    lineage, in a campaign declaring `publication_version`.
+
+    `terminal=True` is the only way a SECOND row of one lineage may exist —
+    `uq_regeneration_targets_active_lineage` permits exactly one row with a
+    null `terminal_at`. It is also a shape the fleet really produces: a crash
+    between the claim and the abandon write leaves the token on a terminal row.
+    The allocator does not read `status`, which is exactly why the loser of the
+    race below has to be refused on the VERSION rather than on terminality.
+    """
+    import uuid as _uuid
+
+    from app.db import SessionLocal
+    from app.models.regeneration_campaign import RegenerationCampaign
+    from app.models.regeneration_target import RegenerationTarget
+    from app.services.regeneration_planner import build_phase_plan
+
+    now = datetime.now(timezone.utc)
+    token = _uuid.uuid4()
+    async with SessionLocal() as session:
+        campaign = RegenerationCampaign(
+            status="approved", selection_spec={}, requested_phases=["flashcards"],
+            excluded_phases=[], launch_contract={}, canary_size=1,
+            app_git_revision=_MARKER, approved_at=now,
+            publication_version=publication_version,
+        )
+        session.add(campaign)
+        await session.flush()
+        target = RegenerationTarget(
+            campaign_id=campaign.id, toc_entry_id=ids["toc_ids"][0],
+            output_language="uz",
+            phase_plan=build_phase_plan(
+                subject=_SUBJECT, selected_phases=["flashcards"]).to_json(),
+            status="abandoned" if terminal else "publishing",
+            terminal_at=now if terminal else None,
+            terminal_reason="pytest" if terminal else None,
+            publication_released_at=now, publication_claimed_at=now,
+            publication_claim_token=token, publication_attempts=1,
+        )
+        session.add(target)
+        await session.flush()
+        await session.commit()
+        return target.id, token
+
+
+async def test_two_campaigns_racing_one_publication_version_create_only_one():
+    """Both operators ask for V4 on the same lesson at the same instant.
+
+    Exactly one campaign exists afterwards and it owns V4; the loser gets a
+    typed, non-retryable refusal. The campaign insert and the target inserts
+    share one transaction, so `_versioned_campaigns()` is what proves the loser
+    left no half-made campaign holding a number nobody can publish.
+    """
+    ids = await _seed()
+    try:
+        service = svc.RegenerationCampaignService()
+        results = await asyncio.gather(
+            service.create_campaign(_spec(ids, publication_version=4)),
+            service.create_campaign(_spec(ids, publication_version=4)),
+            return_exceptions=True,
+        )
+        winners = [r for r in results if not isinstance(r, BaseException)]
+        losers = [r for r in results if isinstance(r, BaseException)]
+        assert len(winners) == 1, results
+        assert winners[0].publication_version == 4
+        assert len(losers) == 1 and isinstance(losers[0], svc.CampaignError), losers
+        assert await _versioned_campaigns() == [4]
+    finally:
+        await _purge(ids)
+
+
+async def test_two_reservations_racing_one_publication_version_produce_one_number():
+    """Two claimed targets of one lineage, both owned by a campaign declaring
+    V6. The advisory lock serialises them and the version check refuses the
+    loser: one number, one page, and an operator-facing refusal rather than a
+    silent renumber to V7."""
+    from app.db import SessionLocal
+    from app.repositories import regeneration_targets as targets_repo
+
+    ids = await _seed()
+    try:
+        live = await _claimed_target(ids, publication_version=6, terminal=False)
+        ghost = await _claimed_target(ids, publication_version=6, terminal=True)
+
+        async def _reserve(pair):
+            target_id, token = pair
+            async with SessionLocal() as session:
+                version = await targets_repo.reserve_publication_version(
+                    session, target_id=target_id, claim_token=token)
+                await session.commit()
+                return version
+
+        results = await asyncio.gather(
+            _reserve(live), _reserve(ghost), return_exceptions=True)
+        numbers = [r for r in results if not isinstance(r, BaseException)]
+        refusals = [r for r in results if isinstance(r, BaseException)]
+        assert numbers == [6], results
+        assert len(refusals) == 1
+        assert isinstance(refusals[0], targets_repo.PublicationVersionUnavailable), (
+            refusals
+        )
+        assert not isinstance(refusals[0], targets_repo.StalePublicationClaim), (
+            "a version refusal read as a lease handover is discarded, not parked"
+        )
     finally:
         await _purge(ids)

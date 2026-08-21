@@ -393,6 +393,140 @@ async def test_lineage_targets_missing_source_selects_on_the_null_predicate():
     assert "regeneration_targets.output_language = " in sql
 
 
+# ──────────────────── publication_version_conflicts ──────────────────
+
+
+def _source(**overrides):
+    """One `EligibleRegenerationSource`, defaulted to a V1 original.
+
+    The REAL dataclass rather than a `SimpleNamespace`: the conflict query
+    reads three of its attributes by name, and a rename in
+    `regeneration_discovery` must break here rather than at runtime on an
+    operator's campaign.
+    """
+    from app.services.regeneration_discovery import EligibleRegenerationSource
+
+    fields = dict(
+        source_job_id=uuid.uuid4(),
+        toc_entry_id=uuid.uuid4(),
+        book_id=uuid.uuid4(),
+        subject="math-algebra",
+        grade="5",
+        output_language="uz",
+        source_publication_version=1,
+        next_expected_version=2,
+        source_is_revision=False,
+        book_filename="algebra5.pdf",
+        section_number="1",
+        section_title="Lesson one",
+        chapter_title="",
+        page_start=7,
+        notion_lesson_page_id=None,
+        order_index=0,
+    )
+    fields.update(overrides)
+    return EligibleRegenerationSource(**fields)
+
+
+@pytest.mark.asyncio
+async def test_publication_version_conflicts_flags_a_source_not_older_than_requested():
+    """The comparison is against the IMMEDIATE source's own published version.
+    A lineage whose newest publication is already V3 cannot produce another V3
+    — the revision would be generated from the very page it would overwrite."""
+    from app.repositories import regeneration_sources as repo
+
+    at_v3 = _source(source_publication_version=3)
+    session = _FakeSession(execute_results=[[]])
+    conflicts = await repo.publication_version_conflicts(
+        session, sources=[at_v3], requested_version=3
+    )
+
+    assert [c.reason for c in conflicts] == ["source_not_older"]
+    assert conflicts[0].existing_version == 3
+    assert conflicts[0].requested_version == 3
+    assert conflicts[0].toc_entry_id == at_v3.toc_entry_id
+    assert conflicts[0].output_language == "uz"
+
+
+@pytest.mark.asyncio
+async def test_publication_version_conflicts_counts_terminal_rows_as_consumed():
+    """A consumed number is never reusable, so this query must NOT filter on
+    `status` or `terminal_at`: `uq_regeneration_targets_publication_version` is
+    partial on `publication_version IS NOT NULL` alone, and an abandoned target
+    pins its number exactly as hard as a published one."""
+    from app.repositories import regeneration_sources as repo
+
+    source = _source()
+    session = _FakeSession(
+        execute_results=[[(source.toc_entry_id, source.output_language)]]
+    )
+    conflicts = await repo.publication_version_conflicts(
+        session, sources=[source], requested_version=4
+    )
+
+    assert [c.reason for c in conflicts] == ["already_consumed"]
+    assert conflicts[0].existing_version == 4
+    sql = _sql(session.statements[0])
+    assert "regeneration_targets.publication_version = " in sql
+    assert "regeneration_targets.toc_entry_id = " in sql
+    assert "regeneration_targets.output_language = " in sql
+    assert "status" not in sql
+    assert "terminal_at" not in sql
+    assert 4 in _params(session.statements[0]).values()
+
+
+@pytest.mark.asyncio
+async def test_publication_version_conflicts_reports_one_reason_per_lineage():
+    """`source_not_older` wins. A source already AT the requested number means
+    that number was consumed too, and emitting both would make the operator's
+    blocked-lesson list longer than their selection."""
+    from app.repositories import regeneration_sources as repo
+
+    at_v3 = _source(source_publication_version=3)
+    at_v1 = _source()
+    session = _FakeSession(execute_results=[[
+        (at_v3.toc_entry_id, at_v3.output_language),
+        (at_v1.toc_entry_id, at_v1.output_language),
+    ]])
+    conflicts = await repo.publication_version_conflicts(
+        session, sources=[at_v3, at_v1], requested_version=3
+    )
+
+    assert [(c.toc_entry_id, c.reason) for c in conflicts] == [
+        (at_v3.toc_entry_id, "source_not_older"),
+        (at_v1.toc_entry_id, "already_consumed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_publication_version_conflicts_asks_nothing_for_no_sources():
+    """An empty `IN`-style predicate would compile to a statement that matches
+    every lineage in the table; refusing to build one is the guard."""
+    from app.repositories import regeneration_sources as repo
+
+    session = _FakeSession()
+    assert await repo.publication_version_conflicts(
+        session, sources=[], requested_version=2
+    ) == ()
+    assert session.statements == []
+
+
+def test_publication_version_unavailable_is_not_a_stale_publication_claim():
+    """`regeneration_publisher._TAKEOVER` catches `StalePublicationClaim` and
+    returns WITHOUT recording any outcome — that is an ordinary lease handover.
+    A version refusal that inherited from it would be swallowed the same way:
+    the target would never park for an operator and would be re-claimed every
+    lease, forever."""
+    from app.repositories.regeneration_targets import (
+        PublicationVersionUnavailable,
+        StalePublicationClaim,
+    )
+
+    assert issubclass(PublicationVersionUnavailable, RuntimeError)
+    assert not issubclass(PublicationVersionUnavailable, StalePublicationClaim)
+    assert not issubclass(StalePublicationClaim, PublicationVersionUnavailable)
+
+
 # ═══════════════ ordinary-Fleet cost isolation (app/repositories/cost.py) ══
 #
 # A revision job is NOT Fleet work: it has no batch, it re-runs a lesson the

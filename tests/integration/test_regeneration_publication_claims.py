@@ -55,6 +55,7 @@ async def _seed(
     campaign_status: str = "approved",
     target_status: str = "publication_pending",
     languages: tuple[str, ...] = ("uz",),
+    publication_version: int | None = None,
 ) -> dict:
     """One book, `lessons` TOC rows, a source job + complete phase snapshot per
     (lesson, language), one campaign and one target per pair.
@@ -87,6 +88,7 @@ async def _seed(
             requested_phases=["flashcards"], excluded_phases=[],
             launch_contract={}, canary_size=1, app_git_revision=_MARKER,
             approved_at=_now() if approved else None,
+            publication_version=publication_version,
         )
         session.add(campaign)
         await session.flush()
@@ -636,6 +638,156 @@ async def test_the_unique_index_refuses_a_duplicate_version_for_one_lineage():
                 row = await session.get(RegenerationTarget, second)
                 row.publication_version = 2
                 await session.commit()
+    finally:
+        await _purge(ids)
+
+
+# ══════════ the campaign's declared version, exactly ═════════════════════
+
+
+async def _consume_version(ids, version, *, language: str = "uz"):
+    """A TERMINAL target of `ids['toc_ids'][0]`'s lineage already holding
+    `version`, in a campaign of its own.
+
+    Terminal, so `uq_regeneration_targets_active_lineage` still permits the
+    live target beside it; its own campaign, because
+    `uq_regeneration_targets_campaign_toc_language` allows one (campaign,
+    lesson, language) triple only. `abandoned` rather than `published` is the
+    harder case: the number was reserved and never delivered, and it is spent
+    all the same.
+    """
+    from app.db import SessionLocal
+    from app.models.regeneration_campaign import RegenerationCampaign
+    from app.models.regeneration_target import RegenerationTarget
+
+    async with SessionLocal() as session:
+        campaign = RegenerationCampaign(
+            status="cancelled", selection_spec={}, requested_phases=["flashcards"],
+            excluded_phases=[], launch_contract={}, canary_size=1,
+            app_git_revision=_MARKER,
+        )
+        session.add(campaign)
+        await session.flush()
+        session.add(RegenerationTarget(
+            campaign_id=campaign.id, toc_entry_id=ids["toc_ids"][0],
+            output_language=language, phase_plan=_PHASE_PLAN,
+            status="abandoned", terminal_at=_now(), terminal_reason="pytest",
+            publication_version=version, publication_released_at=_now(),
+        ))
+        await session.commit()
+
+
+async def test_reservation_uses_the_campaign_version_not_max_plus_one():
+    """V2 and V3 are already consumed on this lineage, so `max + 1` would say
+    4. The campaign declared 5, and 5 is what the operator approved and what
+    the Notion page will be titled — the allocator must not renumber it."""
+    from app.db import SessionLocal
+    from app.repositories import regeneration_targets as targets_repo
+
+    ids = await _seed(publication_version=5)
+    try:
+        await _consume_version(ids, 2)
+        await _consume_version(ids, 3)
+        async with SessionLocal() as session:
+            claim = await targets_repo.claim_next_publication(
+                session, now=_now(), lease_seconds=300)
+            await session.commit()
+
+        async with SessionLocal() as session:
+            version = await targets_repo.reserve_publication_version(
+                session, target_id=claim.target_id, claim_token=claim.claim_token)
+            await session.commit()
+        assert version == 5
+        assert (await _target(claim.target_id)).publication_version == 5
+
+        async with SessionLocal() as session:
+            again = await targets_repo.reserve_publication_version(
+                session, target_id=claim.target_id, claim_token=claim.claim_token)
+            await session.commit()
+        assert again == 5, "every retry of one delivery publishes the same page"
+    finally:
+        await _purge(ids)
+
+
+async def test_reservation_refuses_a_campaign_version_already_consumed():
+    """Never a silent fall-forward to 5. The operator approved V4 and reviewed
+    a V4 destination; publishing V5 instead would put reviewed content behind a
+    title nobody signed off."""
+    from app.db import SessionLocal
+    from app.repositories import regeneration_targets as targets_repo
+
+    ids = await _seed(publication_version=4)
+    try:
+        await _consume_version(ids, 4)
+        async with SessionLocal() as session:
+            claim = await targets_repo.claim_next_publication(
+                session, now=_now(), lease_seconds=300)
+            await session.commit()
+
+        async with SessionLocal() as session:
+            with pytest.raises(targets_repo.PublicationVersionUnavailable) as exc:
+                await targets_repo.reserve_publication_version(
+                    session, target_id=claim.target_id,
+                    claim_token=claim.claim_token)
+        assert "V4" in str(exc.value)
+        assert (await _target(claim.target_id)).publication_version is None
+    finally:
+        await _purge(ids)
+
+
+async def test_reservation_refuses_a_reserved_version_that_is_not_the_campaigns():
+    """Both numbers are immutable once written, so they cannot be reconciled
+    automatically; an operator has to see the disagreement rather than have one
+    of the two silently win."""
+    from sqlalchemy import update
+
+    from app.db import SessionLocal
+    from app.models.regeneration_target import RegenerationTarget
+    from app.repositories import regeneration_targets as targets_repo
+
+    ids = await _seed(publication_version=6)
+    try:
+        async with SessionLocal() as session:
+            claim = await targets_repo.claim_next_publication(
+                session, now=_now(), lease_seconds=300)
+            await session.commit()
+        async with SessionLocal() as session:
+            await session.execute(
+                update(RegenerationTarget)
+                .where(RegenerationTarget.id == claim.target_id)
+                .values(publication_version=2))
+            await session.commit()
+
+        async with SessionLocal() as session:
+            with pytest.raises(targets_repo.PublicationVersionUnavailable):
+                await targets_repo.reserve_publication_version(
+                    session, target_id=claim.target_id,
+                    claim_token=claim.claim_token)
+        assert (await _target(claim.target_id)).publication_version == 2
+    finally:
+        await _purge(ids)
+
+
+async def test_a_null_version_campaign_keeps_the_historical_max_plus_one():
+    """Campaigns drafted before the guided wizard declare no version, and every
+    internal constructor through Tasks 2-5 still may. Those must keep counting
+    from the lineage's own highest RESERVED number."""
+    from app.db import SessionLocal
+    from app.repositories import regeneration_targets as targets_repo
+
+    ids = await _seed()
+    try:
+        await _consume_version(ids, 2)
+        await _consume_version(ids, 3)
+        async with SessionLocal() as session:
+            claim = await targets_repo.claim_next_publication(
+                session, now=_now(), lease_seconds=300)
+            await session.commit()
+        async with SessionLocal() as session:
+            version = await targets_repo.reserve_publication_version(
+                session, target_id=claim.target_id, claim_token=claim.claim_token)
+            await session.commit()
+        assert version == 4
     finally:
         await _purge(ids)
 
