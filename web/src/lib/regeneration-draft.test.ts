@@ -84,14 +84,20 @@ const SERVER_CANONICAL_PHASES = [
 ];
 
 /** A draft mid-compose: two lessons ticked, a phase list, an acknowledged
- *  exclusion, a pinned model. Exactly the thing a reload must not lose. */
+ *  exclusion, a pinned model. Exactly the thing a reload must not lose.
+ *
+ *  The two phase lists are DISJOINT because the server refuses any overlap
+ *  outright (`_PhaseSelectionIn._validate_phases`: "phase(s) [...] are both
+ *  selected and excluded"), so a fixture that overlapped would be pinning a
+ *  draft no operator could ever launch. Each list carries one phase this
+ *  subject's flow really has and one it does not. */
 const savedDraft: GuidedRegenerationDraft = {
   ...defaultGuidedRegenerationDraft(),
   step: "review",
   mode: "selective",
   selectedTocEntryIds: ["kept", "gone"],
   selectedPhases: ["reflection", "practice-abacus"],
-  excludedPhases: ["reflection", "practice-abacus"],
+  excludedPhases: ["memory-check", "practice-slide-rule"],
   acknowledged: true,
   canarySize: 2,
   provider: "gemini",
@@ -141,6 +147,9 @@ test("a saved draft comes back with every operator choice intact", () => {
 });
 
 test("the draft is stored under the versioned key, as JSON", () => {
+  // The LITERAL, on purpose: round-tripping through the constant on both sides
+  // passes happily while an edited string orphans every draft in the field.
+  assert.strictEqual(REGENERATION_DRAFT_KEY, "hcga.regeneration.draft.v1");
   const storage = memoryStorage();
   saveRegenerationDraft(storage, savedDraft);
   const raw = storage.getItem(REGENERATION_DRAFT_KEY);
@@ -280,6 +289,16 @@ test("a decoded canary can never exceed the lessons the draft still carries", ()
   );
 });
 
+test("a decoded selective draft with no phases left falls back to full mode", () => {
+  // Pruning only runs once `/eligible` and the manifest resolve, so a failed
+  // fetch would otherwise leave the wizard holding a selection the server
+  // refuses outright ("phase selection is empty — pick at least one phase").
+  const raw = JSON.stringify({ ...savedDraft, mode: "selective", selectedPhases: "reflection" });
+  const { draft } = loadRegenerationDraft(memoryStorage({ [REGENERATION_DRAFT_KEY]: raw }));
+  assert.deepStrictEqual(draft.selectedPhases, []);
+  assert.strictEqual(draft.mode, "full");
+});
+
 /* ════════════════════════════════════════════════════════════════════
  * 4. Every way writing a draft can fail
  * ════════════════════════════════════════════════════════════════════ */
@@ -322,12 +341,12 @@ test("pruning drops phases that left the subject's flow", () => {
   const restored = pruneRegenerationDraft(savedDraft, {
     eligibleTocEntryIds: new Set(["kept", "gone"]),
     validModelRefs: new Set(["gemini/gemini-3.6-flash"]),
-    validPhaseNames: new Set(["reflection"]),
+    validPhaseNames: new Set(["reflection", "memory-check"]),
   });
   // Requested AND excluded: a phase name the server would refuse as unknown
   // has to leave both lists, not just the one the operator ticked.
   assert.deepStrictEqual(restored.draft.selectedPhases, ["reflection"]);
-  assert.deepStrictEqual(restored.draft.excludedPhases, ["reflection"]);
+  assert.deepStrictEqual(restored.draft.excludedPhases, ["memory-check"]);
   assert.strictEqual(restored.removedLessonCount, 0);
 });
 
@@ -394,7 +413,12 @@ test("pruning leaves a draft that is still entirely valid alone", () => {
   const inputs = {
     eligibleTocEntryIds: new Set(["kept", "gone"]),
     validModelRefs: new Set(["gemini/gemini-3.6-flash"]),
-    validPhaseNames: new Set(["reflection", "practice-abacus"]),
+    validPhaseNames: new Set([
+      "reflection",
+      "practice-abacus",
+      "memory-check",
+      "practice-slide-rule",
+    ]),
   };
   const restored = pruneRegenerationDraft(savedDraft, inputs);
   assert.strictEqual(restored.removedLessonCount, 0);
@@ -436,6 +460,13 @@ test("the effective phase list is never an alias of the draft's own array", () =
   const selective = { ...savedDraft, mode: "selective" as const, selectedPhases: ["flashcards"] };
   effectiveSelectedPhases(selective, []).push("boss-arena");
   assert.deepStrictEqual(selective.selectedPhases, ["flashcards"]);
+
+  // The full branch hands back its ARGUMENT, which a caller owns and may go on
+  // to filter in place; `deepStrictEqual` alone cannot tell a copy from the
+  // very same array.
+  const selectable = regenerationSelectablePhases(SERVER_CANONICAL_PHASES);
+  effectiveSelectedPhases({ ...savedDraft, mode: "full" }, selectable).push("extract");
+  assert.ok(!selectable.includes("extract"), "the caller's own list was mutated");
 });
 
 /* ════════════════════════════════════════════════════════════════════
@@ -454,11 +485,37 @@ test("an automatic draft shows the highest next version its lessons expect", () 
   );
 });
 
-test("an automatic draft never shows a version below V3", () => {
+test("an automatic draft never displays a version below V3", () => {
   const automatic = { ...savedDraft, publicationVersionMode: "automatic" as const };
-  // Regeneration publishes V3 upward; nothing selected still reads as V3.
+  // V3 is what AUTOMATIC opens on, not a floor on what a campaign may carry:
+  // the first version the database allocates is 2, and the publisher accepts
+  // it. Nothing selected still reads as V3, and one V2-bound lesson does not
+  // drag the whole campaign back below the number the wizard offered.
   assert.strictEqual(displayedPublicationVersion(automatic, []), 3);
   assert.strictEqual(displayedPublicationVersion(automatic, [{ next_expected_version: 2 }]), 3);
+});
+
+test("a manual V2 draft survives the round trip exactly as typed", () => {
+  // The server's real minimum: `publication_version must be >= 2`, and a fresh
+  // lineage is allocated 2. Rounding a manual 2 up to 3 on the way back in
+  // would silently publish a version the operator never chose.
+  const manualV2 = {
+    ...savedDraft,
+    publicationVersion: 2,
+    publicationVersionMode: "manual" as const,
+  };
+  const restored = loadRoundTrip(manualV2);
+  assert.strictEqual(restored.publicationVersion, 2);
+  assert.strictEqual(restored.publicationVersionMode, "manual");
+  assert.strictEqual(displayedPublicationVersion(restored, [{ next_expected_version: 9 }]), 2);
+});
+
+test("a saved version the server would refuse falls back to the opening V3", () => {
+  for (const bad of [1, 0, -8, 2.5, "3", null]) {
+    const raw = JSON.stringify({ ...savedDraft, publicationVersion: bad });
+    const { draft } = loadRegenerationDraft(memoryStorage({ [REGENERATION_DRAFT_KEY]: raw }));
+    assert.strictEqual(draft.publicationVersion, 3, `publicationVersion ${String(bad)}`);
+  }
 });
 
 test("a manual draft shows the exact version the operator typed", () => {

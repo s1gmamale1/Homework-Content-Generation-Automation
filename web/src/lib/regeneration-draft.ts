@@ -33,6 +33,13 @@
  * names is deliberate: `regenerationNarrowScope` and
  * `regenerationToggleLesson` stay the ONE authority for what a scope change
  * clears, and this module never restates their rules.
+ *
+ * KNOWN DUPLICATION: `provider`, `model` and `refreshExtraction` are declared
+ * both here and on the old wizard's `RegenerationDraftState`
+ * (`components/regeneration/regeneration-wizard.tsx`). The shared scope half is
+ * one type, so TypeScript catches drift there — these three it cannot. Hoisting
+ * `RegenerationDraftState` into `api.ts` and extending it is the real fix and
+ * belongs with the guided route that replaces that wizard.
  */
 import { type RegenerationScopeState, clampCanarySize } from "./api";
 import {
@@ -48,9 +55,19 @@ export const REGENERATION_DRAFT_KEY = "hcga.regeneration.draft.v1";
  *  restores a draft nobody composed. */
 const SCHEMA_VERSION = 1;
 
-/** Regeneration publishes V3 upward: a source homework is V1 or V2, so the
- *  first version this wizard can ever produce is 3. */
-const MIN_PUBLICATION_VERSION = 3;
+/** The lowest version a draft may CARRY. The first version the database ever
+ *  allocates is 2 — `reserve_publication_version` computes `max(highest or 1,
+ *  1) + 1` for a fresh lineage, and the publisher refuses `< 2` outright
+ *  (`publication_version must be >= 2`) because logical V1 is the existing
+ *  `Homework` page and owns no version row. A manual 2 is therefore a legal
+ *  operator choice, and persistence may not quietly round it up. */
+const MIN_PUBLICATION_VERSION = 2;
+
+/** What a NEW draft opens on, and the floor the automatic display uses: a
+ *  regeneration of an already-published lesson lands on V3 or above, so 3 is
+ *  the number to show before any lesson has been picked. NOT the persistence
+ *  floor — see `MIN_PUBLICATION_VERSION`. */
+const INITIAL_PUBLICATION_VERSION = 3;
 
 export type RegenerationWizardStep = "lessons" | "content" | "review" | "canary";
 export type RegenerationMode = "full" | "selective";
@@ -73,6 +90,10 @@ export interface GuidedRegenerationDraft extends RegenerationScopeState {
   refreshExtraction: boolean;
   provider: string;
   model: string | null;
+  /** NOT on the wire yet: `CreateCampaignRequest` is `extra="forbid"` and
+   *  declares no `publication_version` on this branch, so folding this into
+   *  `regenerationCampaignBody` before plan Task 2 adds the field 422s every
+   *  create. It is operator input, held here until the contract grows it. */
   publicationVersion: number;
   publicationVersionMode: "automatic" | "manual";
   destinationOverrides: DestinationOverrideDraft[];
@@ -103,7 +124,7 @@ export const REGENERATION_DRAFT_UNREADABLE_WARNING =
   "Your saved regeneration draft could not be read, so this wizard started from a blank draft.";
 
 export const REGENERATION_DRAFT_STALE_WARNING =
-  "Your saved regeneration draft was written by an older version of this screen, so it was " +
+  "Your saved regeneration draft was written by a different version of this screen, so it was " +
   "discarded and this wizard started from a blank draft.";
 
 export const REGENERATION_DRAFT_SAVE_WARNING =
@@ -137,7 +158,7 @@ export function defaultGuidedRegenerationDraft(): GuidedRegenerationDraft {
     // content model precisely so nobody freezes a campaign onto whatever
     // happens to be first in the manifest.
     model: null,
-    publicationVersion: MIN_PUBLICATION_VERSION,
+    publicationVersion: INITIAL_PUBLICATION_VERSION,
     publicationVersionMode: "automatic",
     destinationOverrides: [],
   };
@@ -178,10 +199,28 @@ function textList(value: unknown): string[] {
   return [...new Set(strings)];
 }
 
+/**
+ * Selective with nothing selected is a campaign the server refuses outright
+ * ("phase selection is empty — pick at least one phase, or set
+ * refresh_extraction=true"), so the honest reading of "there is nothing in my
+ * phase list" is a full rebuild — which is also what the wizard opens on.
+ *
+ * BOTH entry points enforce it. Pruning is what usually empties the list, but
+ * a decode can produce the same state (a saved `selectedPhases` that is not an
+ * array), and pruning only runs once `/eligible` and the manifest have
+ * resolved — a failed fetch would otherwise leave the wizard holding a
+ * selection the server cannot accept.
+ */
+function modeForPhases(mode: RegenerationMode, selectedPhases: string[]): RegenerationMode {
+  return mode === "selective" && selectedPhases.length === 0 ? "full" : mode;
+}
+
+/** A saved version is believed whenever the server would accept it. Anything
+ *  else — a float, a string, a 1 — falls back to what a new draft opens on. */
 function decodePublicationVersion(value: unknown): number {
   return typeof value === "number" && Number.isInteger(value) && value >= MIN_PUBLICATION_VERSION
     ? value
-    : MIN_PUBLICATION_VERSION;
+    : INITIAL_PUBLICATION_VERSION;
 }
 
 /** An override with no lesson, no destination page or a language this product
@@ -208,16 +247,17 @@ function decodeDestinationOverrides(value: unknown): DestinationOverrideDraft[] 
 function decodeDraft(raw: Record<string, unknown>): GuidedRegenerationDraft {
   const fallback = defaultGuidedRegenerationDraft();
   const selectedTocEntryIds = textList(raw.selectedTocEntryIds);
+  const selectedPhases = textList(raw.selectedPhases);
   return {
     schemaVersion: SCHEMA_VERSION,
     step: known(WIZARD_STEPS, raw.step, fallback.step),
-    mode: known(REGENERATION_MODES, raw.mode, fallback.mode),
+    mode: modeForPhases(known(REGENERATION_MODES, raw.mode, fallback.mode), selectedPhases),
     subjectFilter: nullableText(raw.subjectFilter),
     gradeFilter: nullableText(raw.gradeFilter),
     bookId: nullableText(raw.bookId),
     language: known(REGENERATION_OUTPUT_LANGUAGES, raw.language, fallback.language),
     selectedTocEntryIds,
-    selectedPhases: textList(raw.selectedPhases),
+    selectedPhases,
     excludedPhases: textList(raw.excludedPhases),
     acknowledged: flag(raw.acknowledged, fallback.acknowledged),
     // Clamped on the way in as well as on the way out: `canary_size` is POSTed
@@ -295,7 +335,11 @@ export interface RegenerationDraftPruneInputs {
   eligibleTocEntryIds: ReadonlySet<string>;
   /** `provider/model` pairs the manifest still offers. */
   validModelRefs: ReadonlySet<string>;
-  /** Phase names in this subject's own flow. */
+  /** Exactly what `regenerationSelectablePhases(plan.canonical_phases)`
+   *  returned — never the raw `canonical_phases`, which leads with `extract`.
+   *  An `extract` that survives pruning ends up in `selected_phases`, where
+   *  `build_phase_plan` raises `UnknownPhaseError` and the operator sees a
+   *  422 on a chip the screen invited them to click. */
   validPhaseNames: ReadonlySet<string>;
 }
 
@@ -307,6 +351,13 @@ export interface RegenerationDraftPruneResult {
 
 /**
  * Reconcile a restored draft with what the server still offers.
+ *
+ * `bookId`, `subjectFilter` and `gradeFilter` are deliberately NOT reconciled
+ * here even though a book can be deleted: narrowing belongs to
+ * `regenerationNarrowScope`, and clearing a book here would have to clear the
+ * lessons and the phase list with it — discarding more of the draft than the
+ * operator actually lost. A book that vanished surfaces as an empty lesson
+ * list, which the picker already renders as itself.
  *
  * Only the model, not the provider, is checked against `validModelRefs`: a
  * retired MODEL is a real event (`RETIRED_GEMINI_MODELS` 404 on the live API
@@ -332,10 +383,7 @@ export function pruneRegenerationDraft(
       selectedTocEntryIds,
       selectedPhases,
       excludedPhases,
-      // Selective with nothing left to select is a campaign the server refuses
-      // outright; the honest reading of "every phase I picked is gone" is a
-      // full rebuild, which is also what the wizard opens on.
-      mode: draft.mode === "selective" && selectedPhases.length === 0 ? "full" : draft.mode,
+      mode: modeForPhases(draft.mode, selectedPhases),
       // Consent to one exact set of skipped phases. A restored draft has not
       // been shown the set it would be consenting to.
       acknowledged: false,
@@ -393,6 +441,6 @@ export function displayedPublicationVersion(
       Number.isFinite(source.next_expected_version)
         ? Math.max(highest, source.next_expected_version)
         : highest,
-    MIN_PUBLICATION_VERSION,
+    INITIAL_PUBLICATION_VERSION,
   );
 }

@@ -188,8 +188,10 @@ export const api = {
    * tripwire: a library that outgrew the picker has to say so rather than hand
    * back a quietly truncated list.
    *
-   * Cached under its own `["books", "all"]` key, so Fleet's and Library's
-   * 100-row `["books"]` entry can never overwrite it.
+   * Callers MUST cache this under its own `["books", "all"]` key. Fleet and
+   * Library hold the 100-row result under `["books"]` and Fleet refetches it
+   * every few seconds, so sharing that key means the short list overwrites the
+   * complete one and the picker quietly loses books again.
    */
   async listAllBooks(): Promise<Book[]> {
     const rows = await unwrap<Book[]>(await authFetch("/api/v1/books?limit=2001&offset=0"));
