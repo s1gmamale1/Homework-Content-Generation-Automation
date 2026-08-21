@@ -684,9 +684,33 @@ Version numbers count per **lesson + output language**, so Uzbek V2 and Russian 
 lesson are independent. The first number the database allocates is **2**, because V1 is the
 pre-existing page and has no row.
 
+**And so are their destinations.** Each language's `Homework V{n}` is resolved beneath *that*
+language's configured subject page (`{lang}:{subject}|{grade}`) → its `Generated Homeworks`
+container → the Lesson Topic inside it. The shared `toc_entries.notion_lesson_page_id` is a
+single language-blind column owned by whichever lineage archived first, so the publisher treats
+it as a **hint, never as authority**: it short-circuits the title lookup only after one child
+listing proves the page belongs to *this* language's container, and is otherwise ignored.
+Following it unconditionally would file an `ru` revision under the `uz` Lesson Topic — a
+`VersionPageCollision` at best, a quiet write beside the wrong V1 at worst. The page title is
+unchanged either way (`Homework V{n}`, no language suffix); the separation is the tree, not the
+title. The pre-spend preflight matches that rule: it requires **each target language's own
+subject mapping**, and a populated shared pointer does not substitute for one.
+
 **Prompts are never chosen.** There is no prompt-set picker. A campaign always uses the prompt
 files deployed with the running app, and records the Git revision plus each regenerated phase's
 prompt hash for the audit trail. Deploy the prompts you want, *then* run the campaign.
+
+**That revision is a hard precondition, not a nicety.** `app_git_revision` is written once, into
+an immutable column, resolving in strict order: an explicit `app_git_revision` in the request →
+the **`APP_GIT_REVISION` environment variable** (what the build says about itself) → the
+process's own checkout (`code_version.GIT_SHA`) → a structured
+**`409 app_git_revision_unavailable`** that refuses to create the campaign rather than record
+unknown provenance. Blank is treated as absent at every level. The SPA posts `null` by design so the
+server's own identity wins. CI bakes the built commit into the image as a Docker build arg
+(`APP_GIT_REVISION=${{ github.sha }}`) which the runtime re-exports as `ENV`; a **hand-built or
+pre-existing image has neither that value nor a `.git`**, so campaign creation there fails with
+that 409 until the build arg, a runtime env var, a real checkout or an explicit request field
+supplies it. No flag makes it resolvable.
 
 **You pick phases; the graph decides the rest.** Selecting a phase automatically pulls in
 everything downstream of it in `PHASE_DEPS` — otherwise a copied phase would have been written

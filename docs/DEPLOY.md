@@ -72,6 +72,7 @@ not `localhost:8000`. (For a bare local run without Traefik, publish port 8000 y
 | `REGENERATION_PUBLISHER_MAX_ATTEMPTS` | no | `5` | Automatic delivery attempts before a target parks in `publication_failed` for an operator. Must be ≥ 1. |
 | `REGENERATION_PUBLISHER_BACKOFF_BASE_SECONDS` / `_MAX_SECONDS` | no | `60` / `3600` | Exponential backoff between delivery attempts, and its ceiling. |
 | `REGENERATION_LAUNCH_WAVE_SIZE` / `_INTERVAL_SECONDS` | no | `4` / `60` | Launch stagger for a campaign's bulk wave. Same mechanism as `BATCH_LAUNCH_WAVE_*`, deliberately more conservative because a regeneration wave re-runs whole snapshots on top of whatever the fleet is already generating. Either at `0` disables the stagger. |
+| `APP_GIT_REVISION` | **in a container, yes** (for regeneration) | *(empty)* | The commit this build was made from. Campaign creation stamps an immutable `app_git_revision` and resolves it: explicit request field → **this variable** → the process's own git checkout → structured `409 app_git_revision_unavailable` (refusal, never NULL). Blank counts as absent. The `Dockerfile` declares it as an `ARG` and re-exports it as `ENV`, and CI binds it to the built commit, so a GHCR image from `docker-publish.yml` already carries it. A hand-built image does not. Irrelevant on a bare-metal head from git — and there, a stale value in a shared `.env` **outranks** the checkout and mis-stamps campaigns, so leave it unset. |
 | `MAX_FILE_MB` | no | `50` | Upload size limit. |
 | `ENABLE_DOCS` | no | `false` | Swagger UI at `/docs`. Disable in prod. |
 | `ALLOW_ORIGINS` | no | `*` | Comma-separated CORS allow-list. |
@@ -379,6 +380,29 @@ as-is always ships the regeneration UI hidden — on a bare-metal head, build th
 the host (`cd web && VITE_REGENERATION_ENABLED=1 npm run build`; FastAPI serves
 `web/dist`).
 
+**Regeneration needs the image to know its own commit.** A campaign is an audit record, so
+`POST /regeneration/campaigns` refuses with a structured `409 app_git_revision_unavailable`
+rather than store unknown provenance. The resolution order is: explicit `app_git_revision` in
+the request → the `APP_GIT_REVISION` environment variable → `code_version.GIT_SHA` from a real
+checkout → the refusal. A container has **no `.git` and no git binary**, so inside one only the
+first two can answer. CI already handles this — `.github/workflows/docker-publish.yml` passes
+`APP_GIT_REVISION=${{ github.sha }}` as a build arg and the `Dockerfile` re-exports it as a
+runtime `ENV`. But an image built by hand without `--build-arg`, or one built before this
+existed, ships an empty value and cannot create campaigns at all. **No flag turns this on;** the
+fixes are a rebuild with the build arg, `APP_GIT_REVISION=<sha>` in the running container's
+environment, running from a git checkout, or sending the field on the request. On a bare-metal
+head the checkout answers by itself — and a stale `APP_GIT_REVISION` copied into a shared `.env`
+**overrides** it and silently mis-stamps every campaign, permanently.
+
+**Each output language needs its own Notion subject mapping before a campaign spends.** The
+pre-spend preflight requires every target's `{lang}:{subject}|{grade}` destination to resolve,
+per language — a populated `toc_entries.notion_lesson_page_id` does **not** substitute for one.
+That column is language-blind (whichever lineage archived first owns it), so the publisher treats
+it as a hint and only honours it once a child listing proves it belongs to that language's own
+`Generated Homeworks` container; every delivery is otherwise resolved beneath the target's own
+language subject page. Configure the `ru`/`en` roots before launching a campaign in those
+languages, or the launch is blocked with an actionable list and nothing is spent.
+
 **Regeneration and the cost caps — both scopes.** Revision jobs carry `batch_id=NULL`
 (enforced by CHECK), and the per-batch cap joins usage rows to a batch, so
 `COST_CAP_BATCH_USD` **never applies to a regeneration campaign**, however large. The
@@ -411,8 +435,9 @@ rollback deletes nothing.
 **It does, however, strand any lesson caught mid-campaign.**
 `uq_regeneration_targets_active_lineage` allows one **non-terminal** target per
 `(toc_entry_id, output_language)`, and only `published`/`abandoned` are terminal — so a
-target left in any other status keeps holding its lineage, while the routes that would
-clear it (`retry-generation`, `retry-publication`, `abandon`) 404 with the feature off.
+target left in any other status keeps holding its lineage, while all four routes that would
+clear it (`retry-generation`, `retry-publication`, `abandon`, and the campaign-level `cancel`,
+which converges every non-terminal target of its campaign) 404 with the feature off.
 No new campaign can touch those lessons until the flags are restored and an operator
 drives each target to `published` or `abandoned`. That is a uniqueness fence, not data
 loss or a Notion change. If a re-launch is expected soon, drain or abandon in-flight

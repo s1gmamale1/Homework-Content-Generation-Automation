@@ -45,6 +45,50 @@ Practical consequence: **deploy the prompts you want first, then run the campaig
 The feature adds no draining or mixed-prompt handling; the operator is expected to
 ensure no ordinary generation is mid-flight during a prompt cutover.
 
+### 2a. Where the recorded revision comes from — and when creation is refused
+
+`app_git_revision` is written **once**, at campaign creation, into an immutable audit
+column. There is no later chance to fill it in, so a campaign whose revision cannot be
+named is **not created at all**. Four steps, in descending authority
+(`_resolve_app_git_revision`, `app/api/v1/regeneration.py`):
+
+| # | Source | When it wins |
+|---|---|---|
+| 1 | An explicit `app_git_revision` in the `POST /regeneration/campaigns` body | Always, when non-blank. The escape hatch for an operator who knows the deployed revision better than the artifact does — a mis-baked image, a hotfix. |
+| 2 | The **`APP_GIT_REVISION` environment variable** — the build's own statement about itself | The production source. A container has no `.git` and no git binary, so the build stamping the commit it built is the only thing left that knows it. |
+| 3 | The process's own checkout, `code_version.GIT_SHA` (`git rev-parse --short HEAD`) | A bare-metal head run straight out of git. Last, because a source tree merely being present is not evidence of what was imported. |
+| 4 | **Structured `409 app_git_revision_unavailable`** | Nothing above produced a value. The campaign is refused rather than recorded with unknown provenance. |
+
+Blank counts as **absent** at every level, deliberately: `APP_GIT_REVISION=""` never
+shadows a perfectly good checkout, and `""` is never stored in the column.
+
+**The SPA posts `app_git_revision: null` by design** (`web/src/routes/regeneration.tsx`),
+so the browser never dictates provenance — the server's own identity wins. On a container
+that means everything rests on step 2; on a bare-metal head, on step 3.
+
+**Where the baked value comes from.** CI passes the exact built commit as a Docker build
+arg — `APP_GIT_REVISION=${{ github.sha }}` under `build-args` in
+`.github/workflows/docker-publish.yml` — and the `Dockerfile` declares that `ARG` and
+re-exports it as a runtime `ENV`, so a GHCR image built by that workflow already carries
+its own commit and needs nothing set at deploy time.
+
+**A hand-built or older image cannot create campaigns.** An image built by hand
+(`docker build` with no `--build-arg`), or built before this was added, ships an empty
+value **and** has no `.git` to fall back to, so every `POST /regeneration/campaigns` on it
+answers `409 app_git_revision_unavailable`. **No flag enables this** — neither
+regeneration flag, nor any setting, makes the revision resolvable; the deployment has to
+supply it. The remedies are exactly:
+
+- rebuild with `docker build --build-arg APP_GIT_REVISION=<sha> …`; or
+- set `APP_GIT_REVISION=<sha>` in the **running container's** environment; or
+- run the API from a real git checkout; or
+- send `app_git_revision` explicitly in that one request.
+
+> ⚠ **The environment outranks the checkout.** On a bare-metal head running from git, a
+> stale `APP_GIT_REVISION` in a shared or copied `.env` silently overrides the checkout's
+> real Git SHA and mis-stamps every campaign that head creates — permanently, in a column
+> that is never corrected. Leave it unset there and let the checkout answer.
+
 ## 3. Turning it on — the three flags
 
 Three separate switches. All three must be right or you will see a partial, confusing
@@ -243,8 +287,17 @@ thereafter — never re-resolved.
 ### Step 4 — Launch the canary
 
 Before any spend, a Notion preflight checks that **every** target — canary or not —
-has a reachable Lesson Topic destination. Missing destinations come back as one
-actionable list and block the launch.
+has a reachable destination. Missing destinations come back as one actionable list and
+block the launch; nothing is spent and no revision job is created while one is missing.
+
+**Each target language needs its own `{lang}:{subject}|{grade}` subject mapping, and a
+populated `toc_entries.notion_lesson_page_id` does not substitute for it.** That pointer
+is a single language-blind column (§8, *Two languages under one TOC row*), so a lesson
+already archived in Uzbek says nothing about whether the Russian tree is configured — and
+the publisher resolves every delivery beneath the target's **own** language subject page.
+Preflight therefore requires the mapping per target language, rather than passing a
+lineage on the strength of the shared pointer. Configure the missing language root and
+relaunch.
 
 Then only the **canary** targets get revision jobs. Non-canary targets stay as plan
 rows with no job, so no worker can start bulk work before the human gate.
@@ -306,7 +359,7 @@ add a stricter publication gate.
 
 | `judge_status` | Means |
 |---|---|
-| `unavailable` | The judge could not be reached (retried once). The phase content is kept ungraded. |
+| `unavailable` | The judge produced no usable verdict, so the phase ships ungraded. **It does not imply a retry happened.** A malformed or empty verdict is retried exactly once — the schema-validation retry inside `run_phase`. A reachability failure is not: the raised error is caught and degraded immediately. (Rate-limit and transient-network errors have their own bounded backoff *inside* the spawn, a different mechanism; on an `api` job an auth/401 error is re-raised as a job failure instead of degrading.) |
 | `refused` | The judge hit a content-policy refusal. Not retried. |
 | `major_shipped` | Major findings survived the `max_judge_regens` budget; the best artifact was kept. |
 | `major_regen_failed` | The repair generation itself failed; the best available artifact was kept. |
@@ -393,6 +446,32 @@ Neither exit is automatic, and there is no third option. Decide deliberately.
   delivery, not by a cancellation, not by a later campaign.
 - Every retry of the same target publishes at the **same** reserved version and page
   identity.
+
+### Two languages under one TOC row — each publishes into its own tree
+
+One TOC row can carry both a `uz` and an `ru` lineage. They are independent publications
+with independent version sequences, and they are also **independent destinations**: each
+language's `Homework V{n}` is resolved beneath **that language's own configured subject
+page** (`{lang}:{subject}|{grade}`), then that tree's `Generated Homeworks` container,
+then the Lesson Topic inside it.
+
+`toc_entries.notion_lesson_page_id` does **not** override that. It is a single,
+language-blind column owned by whichever lineage archived first, so it is treated as a
+**hint, never as authority**: the Lesson Topic is resolved beneath this target's own
+subject page on **every** delivery, and the stored pointer short-circuits the title
+lookup only after one child listing proves it is a child of *that* tree's
+`Generated Homeworks` container. Proven, it keeps its real value — a lesson whose
+disambiguating title suffix has since changed stays on the page it already has.
+Unproven, it is ignored.
+
+Reusing the pointer unconditionally is exactly the failure this rule exists to prevent:
+the second language's revision would be written under the **first** language's Lesson
+Topic, where it either collides with that language's `Homework V{n}` — a
+`VersionPageCollision` that parks un-retryably — or, worse, lands quietly beside the
+wrong V1.
+
+The page **title is unchanged**: still `Homework V{n}`, with no language suffix. The
+separation comes entirely from the distinct configured subject trees, not from the title.
 
 ## 9. Cost caps — both scopes, precisely
 
@@ -498,8 +577,10 @@ IS NULL` permits at most one **non-terminal** target per lineage across all camp
 and only `published` and `abandoned` stamp `terminal_at`. So every target left in
 `planned`, `generating`, `awaiting_canary_approval`, `publication_pending`, `publishing`,
 `generation_failed` or `publication_failed` at the moment you flip the flags keeps
-holding its lineage — while the three routes that could clear it
-(`retry-generation`, `retry-publication`, `abandon`) are **404 with the feature off**.
+holding its lineage — while all **four** routes that could clear it are **404 with the
+feature off**: `retry-generation`, `retry-publication`, `abandon`, and the
+campaign-level `cancel` (which converges every non-terminal target of its campaign,
+abandoning planned work outright).
 Those lessons are therefore **blocked from any new campaign until the flags are turned
 back on** and an operator drives each target to `published` or `abandoned`.
 
@@ -518,20 +599,38 @@ and constraint tests, repository concurrency and publication-claim tests, servic
 pipeline isolation tests, and API/schema tests. No paid model call, no production
 database and no live Notion write was involved in any of it.
 
-**What that proof does and does not cover, as of this commit.** Those suites exercise
-the feature component by component. The **full fake end-to-end lane** — one campaign
-driven across its entire lifecycle (draft → estimate → canary → approve → publish) in a
-single test — is being built in parallel as **Task 11**, and **is not part of this
-commit**. So read the paragraph above as "every component is covered against fakes",
-not as "a whole-lifecycle run has been executed here". This is a statement about what
-this commit contains — not a finding that the Task 11 lane failed or was skipped. When
-it is integrated, update this paragraph to name the lane and record its result.
+**The full fake end-to-end lane is now in the branch.** The component suites above are
+joined by the **Task 11** lane, which drives one campaign across its whole lifecycle:
 
-**Not proven, and explicitly outstanding.** CLAUDE.md's real-generation acceptance gate
-has **not** been satisfied for this feature. A bounded, separately authorized sample
-campaign against real models and real Notion is still owed before the feature can be
-considered operationally accepted. Neither a green local suite nor a branch review
-substitutes for that gate.
+- `tests/integration/test_regeneration_e2e.py` — the happy path: estimate → create →
+  launch canary → run the revision through the real pipeline → approve once → publish
+  `V2` → a later campaign sourced from the published V2 publishing `V3` → an independent
+  RU `V2` of the same lesson.
+- `tests/integration/test_regeneration_failure_e2e.py` — the failure and cancellation
+  half.
+
+Both run against a **real PostgreSQL**, with only two boundaries faked and both at the
+outermost edge: the provider (which still writes the `agent_usages` row a real call
+would, so campaign cost is summed from real accounting rows) and Notion (the same
+in-memory `FakeNotion` the publisher unit tests use). Every other spawn entry point on
+`agent`, and `NotionClientWrapper` itself, are tripwires.
+
+Both files carry a module-level
+`skipif(os.environ.get("RUN_DB_INTEGRATION") != "1")`, so they need `RUN_DB_INTEGRATION=1`
+and a `DATABASE_URL`. A plain `uv run python -m pytest tests/ -q` reports them **skipped**,
+and a skip is not a result — run them deliberately.
+
+**The assembled-branch controller gate ran this lane with zero xfail and zero skip.** That
+is the integrated acceptance for the fake path, and it supersedes the earlier note that
+Task 11 was not yet part of this work. It remains a fake-boundary gate.
+
+**Not proven, and explicitly outstanding.** **No paid model call and no live Notion write
+has been made by this feature at any point** — not by the component suites, not by the
+Task 11 lane, not by the controller gate. CLAUDE.md's real-generation acceptance gate is
+therefore still **unsatisfied and owed**: a bounded, separately authorized sample campaign
+against real models and real Notion remains required before the feature can be called
+operationally accepted. A green fake-boundary lane is the strongest claim available
+without it, and does not substitute for it — neither does a branch review.
 
 **Not authorized by shipping this code:** enabling either flag in production, running
 a sample or production campaign, deploying a prompt change, making a paid model call,
