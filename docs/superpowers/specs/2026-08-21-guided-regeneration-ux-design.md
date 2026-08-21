@@ -66,8 +66,9 @@ Each lesson row shows:
 - subject, grade, textbook and output language;
 - current published homework version;
 - the proposed campaign version; and
-- a plain destination status: existing Lesson Topic found, new page required, ambiguous, or
-  unavailable.
+- a cheap DB hint: stored Lesson Topic pointer known, or destination will be
+  checked in Review. Exact existing/new/ambiguous/unavailable status appears
+  only after Step 3's explicit Notion check.
 
 ### Step 2 — Content
 
@@ -107,6 +108,15 @@ The review is the last non-spending screen. It shows:
 - estimated cost range;
 - worker-executability result; and
 - Notion destination result with a link when an existing Lesson Topic will be reused.
+
+Cost/phase/worker estimation remains DB-only and reactive. Notion resolution is
+not part of that query: Step 3 has a deliberate **Check Notion destinations**
+action that runs once for the current lesson/language/version selection. Any
+change to those destination-relevant inputs invalidates the result and requires
+a fresh check; phase, model and canary-size edits do not repeat Notion reads.
+The check scans every selected target up to the existing campaign cap and says
+that a large campaign may take minutes. It never silently leaves targets
+unchecked.
 
 The primary button reads **Create campaign and start N canary lesson(s)** and is explicitly marked as
 the first paid action. The frontend may orchestrate the existing create and canary endpoints, but it
@@ -150,8 +160,10 @@ On restore:
 
 1. parse and schema-check the record without throwing;
 2. discard unknown fields and migrate or reset unsupported schema versions;
-3. re-fetch books, eligibility, models, plan, estimate and destinations;
-4. remove selections that are no longer eligible and tell the operator what changed;
+3. re-fetch books, eligibility, models, plan and the DB-only estimate; keep the
+   Notion destination result empty until the explicit Step 3 check;
+4. remove lessons and phase names that are no longer eligible/valid, tell the
+   operator what changed, and return an emptied selective phase set to full mode;
 5. reset dependency-exclusion acknowledgement to false so a restored warning is consciously
    re-approved; and
 6. clamp canary size to the surviving target count.
@@ -216,9 +228,19 @@ the browser draft; candidate lists and resolved statuses remain server-derived a
 Changing the book, language or selected lessons prunes overrides that no longer belong to the
 selection.
 
-The resolved parent page ID (or explicit create-new decision) is frozen on the regeneration target so
-publication uses exactly what the operator reviewed. The publisher revalidates parent membership
-before writing. It does not redo a looser title decision that could diverge from review.
+The resolved `Generated Homeworks` container decision and Lesson Topic parent
+page ID (or their explicit create-new decisions) are frozen on the regeneration
+target so publication uses exactly what the operator reviewed. The publisher
+revalidates both membership edges before writing. It does not redo a looser
+container/title decision that could diverge from review.
+
+Review and publication use `notion.page_creator._normalize` as their one title
+normalizer, including its trailing `(N)` folding. A create-new decision that
+later sees exactly one normalized match adopts it; multiple normalized matches
+fail closed as ambiguous. Remote Notion reads occur only after all required DB
+facts have been copied out and the DB session/row locks are closed. Canary-start
+revalidation follows the same two-stage rule and never holds campaign or target
+locks during HTTP.
 
 Remote reads should be cached per language/subject/grade container during one preflight so a bulk
 campaign does not perform one full child scan per target. Rate limits surface as a retryable preflight
@@ -232,7 +254,10 @@ Expected interface changes:
 - Eligible/estimate responses distinguish source version from requested campaign version.
 - Estimate/review returns worker executability and resolved Notion destination data per target plus
   rollups.
-- Regeneration targets persist the reviewed Lesson Topic parent or explicit create-new decision.
+- `/estimate` remains DB-only. A separate destination-check endpoint performs
+  the explicitly triggered read-only Notion scan and returns its digest.
+- Regeneration targets persist the reviewed `Generated Homeworks` container and
+  Lesson Topic parent, or each explicit create-new decision.
 - Campaign reports always show the campaign version and the actual published page link.
 
 The exact migration number is chosen only after rebasing onto the current single Alembic head. This
@@ -246,6 +271,9 @@ design must not assume that today's local `0063` remains available.
 - Missing PDF with extraction enabled: block before campaign creation when local availability can be
   known; otherwise show a retryable generation error without consuming a publication version.
 - Missing Notion subject mapping: block before spend.
+- Notion disabled or uncredentialed on the head: block destination check and
+  campaign creation with a plain configuration message; generation cannot be
+  approved for automatic publication without a verified publisher.
 - Ambiguous Lesson Topic: block before spend and show the candidates.
 - Existing campaign-version collision: block before spend.
 - Campaign created but canary launch failed: navigate to that campaign and offer **Retry canary**.
@@ -281,7 +309,11 @@ design must not assume that today's local `0063` remains available.
 
 ### Isolated end-to-end gate
 
-Before any merge into `Nggaev-v2`, run in a separate branch/worktree with a test-specific environment:
+Before any merge into `Nggaev-v2`, run in a separate branch/worktree with a
+test-specific environment and a dedicated Notion sandbox subject page. The
+sandbox contains one known Lesson Topic and is the only remote tree the test may
+mutate; using a curriculum/production subject page requires a separate explicit
+user approval after the exact target tree is shown.
 
 1. restore a browser-persisted draft;
 2. select a book outside the original first-100 window;

@@ -6,7 +6,7 @@
 
 **Goal:** Replace the dense regeneration screen with a browser-persistent four-step flow that defaults to a full current-prompt rebuild, assigns one exact campaign version such as V3, proves worker and Notion readiness before spend, launches the canary in one safe action, and automatically publishes approved results under the reviewed Lesson Topic.
 
-**Architecture:** Extend the existing regeneration campaign rather than creating a second workflow. A nullable-for-history but required-for-new-campaign `publication_version` is frozen on the campaign; every new target also freezes a reviewed Notion parent decision. Read-only estimate preflight resolves the effective worker requirements and exact Notion destinations, signs those destination decisions with a digest, and campaign creation re-resolves and compares the digest before writing. The React route is decomposed into small guided-step components backed by a versioned local-storage adapter; server-derived plans, prices, workers and Notion data are always refreshed.
+**Architecture:** Extend the existing regeneration campaign rather than creating a second workflow. A nullable-for-history but required-for-new-campaign `publication_version` is frozen on the campaign; every new target also freezes a reviewed Notion parent decision. Reactive estimate stays DB-only and resolves effective worker requirements; an explicitly triggered, read-only Notion check produces the destination digest, and campaign creation re-resolves it outside any DB transaction before a short insert transaction compares/freezes it. The React route is decomposed into small guided-step components backed by a versioned local-storage adapter; server-derived plans, prices, workers and Notion data are always refreshed.
 
 **Tech Stack:** Python 3.13, FastAPI, Pydantic v2, SQLAlchemy async/PostgreSQL, Alembic, pytest, React 19, TypeScript, TanStack Query, browser `localStorage`, Notion API wrapper.
 
@@ -26,10 +26,13 @@
 - Full rebuild is the default. It regenerates every canonical content phase; extraction remains reused unless the operator explicitly enables refresh.
 - Canary review is the sole human content gate. Approval automatically releases publication and the remaining bounded wave. A one-target campaign has no empty bulk approval step.
 - Estimate and campaign creation perform no model call. Campaign creation alone also spends nothing. The first paid action is launching the canary.
+- `/estimate` remains DB-only and reactive. Live Notion reads run only from the explicit destination-check action, campaign creation revalidation, canary-start revalidation and publication, always outside an open DB transaction or held row lock.
+- Review and publication both use `app.services.notion.page_creator._normalize` unchanged; no second title-normalization rule is permitted.
 - A newly created campaign cannot silently adopt another campaign's `Homework Vn`; only retry of the same target may adopt a page with the complete matching revision marker.
 - An ambiguous Lesson Topic blocks creation until the operator chooses a server-returned safe candidate or removes that target.
 - Persist only operator input in `localStorage`; never persist eligibility, plan, estimate, manifest, worker or Notion response data.
 - All automated provider and Notion tests use fakes. Live Notion and Gemini are permitted only in Task 8's isolated acceptance environment, after every offline gate passes.
+- Task 8 may mutate only a dedicated Notion sandbox subject page unless the user separately approves the exact curriculum page tree immediately before the write.
 - No merge into `Nggaev-v2`, push, PR mutation, deployment or production flag change is authorized by this plan.
 
 ## File and Responsibility Map
@@ -40,6 +43,7 @@
 - `app/repositories/regeneration_targets.py`: target insert and exact-version reservation under the existing lineage lock.
 - `app/repositories/regeneration_sources.py`: read-only version-consumption/conflict queries.
 - `app/services/regeneration_destination.py`: read-only exact Notion Lesson Topic/version-page resolution and stable digest.
+- `app/services/regeneration_notion_readiness.py`: shared side-effect-free Notion enablement/credential readiness predicate.
 - `app/services/regeneration_executability.py`: pure effective-provider computation plus active-worker compatibility.
 - `app/services/regeneration_campaign.py`: authoritative create-time revalidation and freezing of version/destination decisions.
 - `app/services/regeneration_publisher.py`: consume the frozen parent decision and revalidate membership before writing.
@@ -79,6 +83,48 @@
 - Each task uses a fresh manually-created worktree and branch from the current reviewed preview integration SHA. A later task never starts from an unreviewed dependency.
 - At most three Claude controllers run concurrently. Each controller uses a fresh implementation subagent, then a different Opus 5 spec reviewer, then a different Opus 5 quality reviewer. Codex independently inspects the diff and reruns the task's named tests before cherry-picking it into the preview worktree.
 
+## External-Agent and Disposable-Database Protocol
+
+Before dispatching each lane, Codex records `git fetch --all --prune`, current
+preview/base SHAs, all worktrees/branches, open PR authors and actual overlapping
+path diffs. Create worktrees manually with `git worktree add`; do not let Claude
+choose or reuse a worktree. The controller receives the exact task section,
+allowed files, forbidden files, base SHA and commands. It uses an implementation
+subagent, an independent spec reviewer and an independent quality reviewer, all
+on `claude-opus-5`. The controller may commit only task-owned files after RED →
+GREEN. Codex reads the diff, confirms ownership, reruns every named command and
+only then cherry-picks into the local preview branch.
+
+DB-writing lanes use separate databases and never share them:
+
+| Task | Database |
+|---|---|
+| Task 1 | `hcga_guided_regen_t1` |
+| Task 2 | `hcga_guided_regen_t2` |
+| Task 3 | `hcga_guided_regen_t3` |
+| Task 6 | `hcga_guided_regen_t6` |
+| Task 8 | `hcga_guided_regen_acceptance` |
+
+Before creation, run the literal-name existence check below with the owning
+name. If it returns a row, stop and establish ownership; never drop or reuse an
+unknown database.
+
+```bash
+psql -h 127.0.0.1 -U macmini5 -d postgres -Atc \
+  "SELECT datname FROM pg_database WHERE datname='hcga_guided_regen_t1'"
+createdb -h 127.0.0.1 -U macmini5 hcga_guided_regen_t1
+export DATABASE_URL='postgresql+asyncpg://macmini5@127.0.0.1:5432/hcga_guided_regen_t1'
+export RUN_DB_INTEGRATION=1
+export REGEN_REQUIRE_DB=1
+uv run alembic upgrade head
+```
+
+Repeat with the exact owning name; do not use a shell-computed name. Preserve
+Task 8's database for the user's evidence review. Cleanup is a separate final
+action: re-resolve the exact name and host, confirm it is one of the table's
+disposable names, then use one literal `dropdb -h 127.0.0.1 -U macmini5 NAME`
+per approved database. No live credential enters Tasks 1–7.
+
 ---
 
 ### Task 1: Campaign Version and Reviewed Destination Persistence
@@ -95,13 +141,15 @@
 
 **Interfaces:**
 - Consumes: current `RegenerationCampaign`, `RegenerationTarget`, target partial unique indexes and migration head `0063_regeneration_campaigns` as observed on the planning branch.
-- Produces: `RegenerationCampaign.publication_version: Optional[int]`; `RegenerationTarget.notion_parent_policy: Optional[str]`; `RegenerationTarget.reviewed_notion_lesson_page_id: Optional[str]`; `RegenerationTarget.reviewed_notion_lesson_title: Optional[str]`; extended repository insert parameters with the same names.
+- Produces: `RegenerationCampaign.publication_version: Optional[int]`; `RegenerationTarget.notion_container_policy: Optional[str]`; `RegenerationTarget.reviewed_notion_container_page_id: Optional[str]`; `RegenerationTarget.notion_parent_policy: Optional[str]`; `RegenerationTarget.reviewed_notion_lesson_page_id: Optional[str]`; `RegenerationTarget.reviewed_notion_lesson_title: Optional[str]`; extended repository insert parameters with the same names.
 
 - [ ] **Step 1: Write failing model and migration tests**
 
 ```python
 def test_new_campaign_version_and_target_destination_columns_are_declared():
     assert RegenerationCampaign.__table__.c.publication_version.nullable is True
+    assert RegenerationTarget.__table__.c.notion_container_policy.nullable is True
+    assert RegenerationTarget.__table__.c.reviewed_notion_container_page_id.nullable is True
     assert RegenerationTarget.__table__.c.notion_parent_policy.nullable is True
     assert RegenerationTarget.__table__.c.reviewed_notion_lesson_page_id.nullable is True
     assert RegenerationTarget.__table__.c.reviewed_notion_lesson_title.nullable is True
@@ -110,12 +158,16 @@ def test_destination_check_accepts_only_legacy_reuse_or_create_shapes(db_conn):
     legacy = insert_target(db_conn, notion_parent_policy=None)
     reuse = insert_target(
         db_conn,
+        notion_container_policy="reuse",
+        reviewed_notion_container_page_id="container-1",
         notion_parent_policy="reuse",
         reviewed_notion_lesson_page_id="lesson-page",
         reviewed_notion_lesson_title="7 Photosynthesis",
     )
     create = insert_target(
         db_conn,
+        notion_container_policy="create",
+        reviewed_notion_container_page_id=None,
         notion_parent_policy="create",
         reviewed_notion_lesson_page_id=None,
         reviewed_notion_lesson_title="7 Photosynthesis",
@@ -123,7 +175,12 @@ def test_destination_check_accepts_only_legacy_reuse_or_create_shapes(db_conn):
     assert {legacy, reuse, create}
 ```
 
-Also assert that `publication_version=1`, `reuse` without a page ID, `create` with a page ID, an unknown policy, or a non-null reviewed field with null policy is rejected by named checks. The migration test upgrades from the execution-time single head, inspects the four columns and both checks, downgrades, and confirms they disappear.
+Also assert that `publication_version=1`, container/lesson `reuse` without a
+page ID, `create` with a page ID, an unknown policy, a reused Lesson Topic under
+a create-new container, or any non-null reviewed field with null policy is
+rejected by named checks. The migration test upgrades from the execution-time
+single head, inspects all six columns and both checks, downgrades, and confirms
+they disappear.
 
 - [ ] **Step 2: Run the new tests and record RED**
 
@@ -134,7 +191,7 @@ uv run pytest -q tests/models/test_regeneration_models.py tests/migrations/test_
 RUN_DB_INTEGRATION=1 REGEN_REQUIRE_DB=1 uv run pytest -q tests/integration/test_regeneration_constraints.py -k 'campaign_version or destination'
 ```
 
-Expected: failures name missing columns/checks; DB tests must run with zero skips against the lane's explicit localhost disposable database.
+Expected: failures name missing columns/checks; DB tests must run with zero skips against the lane's explicit `127.0.0.1` disposable database.
 
 - [ ] **Step 3: Add the nullable historical columns and named constraints**
 
@@ -143,6 +200,8 @@ Expected: failures name missing columns/checks; DB tests must run with zero skip
 publication_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 # RegenerationTarget
+notion_container_policy: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+reviewed_notion_container_page_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 notion_parent_policy: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 reviewed_notion_lesson_page_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 reviewed_notion_lesson_title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -156,16 +215,28 @@ publication_version IS NULL OR publication_version >= 2
 
 ```sql
 (notion_parent_policy IS NULL
+ AND notion_container_policy IS NULL
+ AND reviewed_notion_container_page_id IS NULL
  AND reviewed_notion_lesson_page_id IS NULL
  AND reviewed_notion_lesson_title IS NULL)
 OR
-(notion_parent_policy = 'reuse'
- AND reviewed_notion_lesson_page_id IS NOT NULL
- AND reviewed_notion_lesson_title IS NOT NULL)
-OR
-(notion_parent_policy = 'create'
- AND reviewed_notion_lesson_page_id IS NULL
- AND reviewed_notion_lesson_title IS NOT NULL)
+(notion_parent_policy IN ('reuse','create')
+ AND reviewed_notion_lesson_title IS NOT NULL
+ AND (
+   (notion_container_policy = 'reuse'
+    AND reviewed_notion_container_page_id IS NOT NULL)
+   OR
+   (notion_container_policy = 'create'
+    AND reviewed_notion_container_page_id IS NULL)
+ )
+ AND (
+   (notion_parent_policy = 'reuse'
+    AND notion_container_policy = 'reuse'
+    AND reviewed_notion_lesson_page_id IS NOT NULL)
+   OR
+   (notion_parent_policy = 'create'
+    AND reviewed_notion_lesson_page_id IS NULL)
+ ))
 ```
 
 Name them `ck_regeneration_campaigns_publication_version` and `ck_regeneration_targets_notion_parent_decision`. Keep the columns nullable so historical campaigns/targets are not assigned false campaign-wide semantics; new-service non-null enforcement belongs to Task 2/4.
@@ -177,6 +248,7 @@ async def create_campaign(
     session: AsyncSession,
     *,
     publication_version: Optional[int] = None,
+    status: str = "draft",
     selection_spec: dict,
     requested_phases: list[str],
     excluded_phases: list[str],
@@ -203,6 +275,8 @@ async def create_target(
     source_job_id: Optional[UUID] = None,
     is_canary: bool = False,
     status: str = "planned",
+    notion_container_policy: Optional[str] = None,
+    reviewed_notion_container_page_id: Optional[str] = None,
     notion_parent_policy: Optional[str] = None,
     reviewed_notion_lesson_page_id: Optional[str] = None,
     reviewed_notion_lesson_title: Optional[str] = None,
@@ -224,6 +298,7 @@ uv run alembic heads
 uv run alembic upgrade head
 uv run alembic downgrade -1
 uv run alembic upgrade head
+uv run pytest -q
 ```
 
 Expected: zero skips in DB tests and exactly one Alembic head.
@@ -243,14 +318,17 @@ git commit -m "feat(regeneration): persist campaign version and destination"
 - Modify: `app/repositories/regeneration_sources.py`
 - Modify: `app/repositories/regeneration_targets.py`
 - Modify: `app/services/regeneration_campaign.py`
+- Modify: `app/services/regeneration_publisher.py`
 - Modify: `tests/services/test_regeneration_campaign.py`
+- Modify: `tests/services/test_regeneration_publisher.py`
 - Modify: `tests/repositories/test_regeneration_repositories.py`
 - Modify: `tests/integration/test_regeneration_source_and_version_queries.py`
 - Modify: `tests/integration/test_regeneration_publication_claims.py`
+- Modify: `tests/integration/test_regeneration_campaign_concurrency.py`
 
 **Interfaces:**
 - Consumes: Task 1's `RegenerationCampaign.publication_version` and campaign repository argument.
-- Produces: `VersionConflict`; `publication_version_conflicts(...)`; `CreateCampaignSpec.publication_version: int`; exact-number behavior in `reserve_publication_version(...)`.
+- Produces: `VersionConflict`; `publication_version_conflicts(...)`; backward-compatible `CreateCampaignSpec.publication_version: Optional[int]`; exact-number behavior in `reserve_publication_version(...)`; non-retryable `PublicationVersionUnavailable` handling.
 
 - [ ] **Step 1: Write RED tests for V1-to-V3, consumed, stale and concurrent conflicts**
 
@@ -267,7 +345,15 @@ async def test_reservation_uses_campaign_version_not_max_plus_one(repo_fixture):
     ) == 5
 ```
 
-Add cases for source version `>= requested`, an already-consumed DB version, two concurrent reservations for the same lineage/version, retry returning the already-reserved number, and a legacy campaign with null version being refused before reservation.
+Add cases for source version `>= requested`, an already-consumed DB version,
+two concurrent reservations for the same lineage/version, retry returning the
+already-reserved number, and a historical null-version campaign retaining the
+existing `max + 1` behavior.
+In `tests/integration/test_regeneration_campaign_concurrency.py`, race two
+`create_campaign` calls requesting the same exact version for one lineage and
+race two claimed-target reservations for that lineage/version. Exactly one wins
+each race; the loser is a typed, non-retryable operator-facing conflict and no
+second campaign/number is silently created.
 
 - [ ] **Step 2: Run the version suite and record RED**
 
@@ -307,7 +393,7 @@ class CreateCampaignSpec:
     selection: CampaignSelection
     contract: LaunchContract
     selected_phases: tuple[str, ...]
-    publication_version: int
+    publication_version: Optional[int] = None
     excluded_affected_phases: tuple[str, ...] = ()
     refresh_extraction: bool = False
     exclusion_acknowledged: bool = False
@@ -319,7 +405,12 @@ class CreateCampaignSpec:
     notes: dict = field(default_factory=dict)
 ```
 
-Reject `<2`, collect every conflict before inserting the campaign, and raise `RequestedPublicationVersionConflict(conflicts)` so the API can render every affected lesson at once.
+Reject a non-null value `<2`, collect every conflict before inserting the
+campaign, and raise `RequestedPublicationVersionConflict(conflicts)` so the API
+can render every affected lesson at once. `None` preserves existing internal and
+API constructors through Tasks 2–5 and keeps legacy automatic-version tests
+green. Task 6 makes the public estimate/create request require an integer and
+therefore makes every newly-created operator campaign exact-versioned.
 
 - [ ] **Step 5: Change reservation under the existing advisory lock**
 
@@ -327,12 +418,18 @@ After locking the lineage and target, load the owning campaign and use:
 
 ```python
 requested = campaign.publication_version
-if requested is None:
-    raise PublicationVersionUnavailable("legacy campaign has no exact requested version")
 if target.publication_version is not None:
-    if target.publication_version != requested:
+    if requested is not None and target.publication_version != requested:
         raise PublicationVersionUnavailable("reserved version differs from campaign")
     return target.publication_version
+if requested is None:
+    highest = await session.scalar(
+        select(func.max(RegenerationTarget.publication_version)).where(
+            RegenerationTarget.toc_entry_id == toc_entry_id,
+            RegenerationTarget.output_language == output_language,
+        )
+    )
+    requested = max(highest or 1, 1) + 1  # historical campaign compatibility
 conflict = await session.scalar(
     select(RegenerationTarget.id).where(
         RegenerationTarget.toc_entry_id == toc_entry_id,
@@ -350,17 +447,29 @@ version = requested
 
 Retain the existing claim-token fence, target row lock, advisory lock and partial unique index. Never silently fall forward to another number.
 
+Define `PublicationVersionUnavailable` beside `StalePublicationClaim` in
+`app/repositories/regeneration_targets.py`. In
+`RegenerationPublisher._prepare`, translate it and an `IntegrityError` whose
+constraint is `uq_regeneration_targets_publication_version` into
+`_Refusal(reason, retryable=False)` only after explicitly rolling back the
+failed preparation session. The outer publisher then records the refusal in its
+normal fresh outcome session. Other `IntegrityError` values still roll back and
+raise; do not hide unrelated database defects behind a version message.
+
 - [ ] **Step 6: Run unit, repository and concurrent DB tests**
 
 ```bash
 uv run pytest -q tests/services/test_regeneration_campaign.py tests/repositories/test_regeneration_repositories.py -k 'version or create_campaign'
 RUN_DB_INTEGRATION=1 REGEN_REQUIRE_DB=1 uv run pytest -q tests/integration/test_regeneration_source_and_version_queries.py tests/integration/test_regeneration_publication_claims.py
+RUN_DB_INTEGRATION=1 REGEN_REQUIRE_DB=1 uv run pytest -q tests/integration/test_regeneration_campaign_concurrency.py -k publication_version
+uv run pytest -q tests/services/test_regeneration_publisher.py -k publication_version
+uv run pytest -q
 ```
 
 - [ ] **Step 7: Commit the reviewed task**
 
 ```bash
-git add app/repositories/regeneration_sources.py app/repositories/regeneration_targets.py app/services/regeneration_campaign.py tests/services/test_regeneration_campaign.py tests/repositories/test_regeneration_repositories.py tests/integration/test_regeneration_source_and_version_queries.py tests/integration/test_regeneration_publication_claims.py
+git add app/repositories/regeneration_sources.py app/repositories/regeneration_targets.py app/services/regeneration_campaign.py app/services/regeneration_publisher.py tests/services/test_regeneration_campaign.py tests/services/test_regeneration_publisher.py tests/repositories/test_regeneration_repositories.py tests/integration/test_regeneration_source_and_version_queries.py tests/integration/test_regeneration_publication_claims.py tests/integration/test_regeneration_campaign_concurrency.py
 git commit -m "feat(regeneration): reserve exact campaign version"
 ```
 
@@ -371,11 +480,11 @@ git commit -m "feat(regeneration): reserve exact campaign version"
 **Files:**
 - Create: `app/services/regeneration_executability.py`
 - Create: `tests/services/test_regeneration_executability.py`
-- Modify: `tests/repositories/test_regeneration_fleet_isolation.py`
+- Create: `tests/repositories/test_regeneration_claim_parity.py`
 
 **Interfaces:**
 - Consumes: `ResolvedLaunchContract`, `model_tiers.resolve_judge`, `model_tiers.resolve_solver`, `agent_models.resolve_role_transport`, and `workers_repo.list_with_liveness(...)`.
-- Produces: `required_api_providers(contract) -> frozenset[str]`; `worker_can_execute(contract, worker) -> bool`; `async check_active_workers(session, contract, stale_after_seconds) -> WorkerExecutability`.
+- Produces: `required_api_providers(contract) -> frozenset[str]`; `worker_can_execute(contract, worker, fleet_api_paused) -> bool`; `async check_active_workers(session, contract, stale_after_seconds) -> WorkerExecutability`.
 
 - [ ] **Step 1: Write pure RED tests matching the claim gate**
 
@@ -395,6 +504,8 @@ def test_worker_needs_every_effective_api_provider():
 ```
 
 Cover content, extract, judge and solver; inherited transport; self-grade/self-solve fallback; offline/stale/draining workers; missing capability blobs; and one compatible worker among several incompatible workers.
+Add a fleet-budget-paused case that refuses every API contract even when the
+credential set is otherwise compatible.
 
 - [ ] **Step 2: Run and record RED**
 
@@ -413,6 +524,7 @@ class WorkerExecutability:
     workers_online: int
     compatible_worker_ids: tuple[str, ...]
     required_api_providers: tuple[str, ...]
+    fleet_api_paused: bool
     reason: Optional[str]
 
 def required_api_providers(
@@ -434,11 +546,21 @@ def required_api_providers(
     return frozenset(required)
 ```
 
-`worker_can_execute` requires `worker["online"] is True`, `worker["status"] == "online"`, and truthy `worker["capabilities"]["api"][provider]` for every required provider. `check_active_workers` calls `list_with_liveness`, returns every compatible `pc_id`, and emits a plain reason naming missing providers when none match.
+`check_active_workers` reads `budget_repo.get_state(session)` and refuses first
+when `api_paused_at` is non-null, with reason `fleet API spend is paused`.
+`worker_can_execute` requires `fleet_api_paused is False`,
+`worker["online"] is True`, `worker["status"] == "online"`, and truthy
+`worker["capabilities"]["api"][provider]` for every required provider.
+`draining` is deliberately a safe preflight refusal: the worker may claim only
+until it observes the drain signal and must not be promised as capacity for a
+new campaign. The SQL parity table uses status-online workers because
+`claim_next_job` receives credential flags, not registry status.
 
 - [ ] **Step 4: Add a parity test against real claim behavior**
 
-For a table of resolved contracts and capability blobs, create a pending revision job in the repository test fixture and assert:
+In `tests/repositories/test_regeneration_claim_parity.py`, for a table of
+resolved contracts, capability blobs and fleet-pause states, create a pending
+revision job in the repository test fixture and assert:
 
 ```python
 assert worker_can_execute(contract, worker_view) is (
@@ -447,6 +569,7 @@ assert worker_can_execute(contract, worker_view) is (
         worker_id="parity-worker",
         max_attempts=3,
         capabilities=credential_caps(worker_view),
+        fleet_api_paused=fleet_api_paused,
     )
     is not None
 )
@@ -458,13 +581,14 @@ This prevents the preflight and SQL claim gate from drifting on self-grade/self-
 
 ```bash
 uv run pytest -q tests/services/test_regeneration_executability.py
-RUN_DB_INTEGRATION=1 REGEN_REQUIRE_DB=1 uv run pytest -q tests/repositories/test_regeneration_fleet_isolation.py -k executability
+RUN_DB_INTEGRATION=1 REGEN_REQUIRE_DB=1 uv run pytest -q tests/repositories/test_regeneration_claim_parity.py
+uv run pytest -q
 ```
 
 - [ ] **Step 6: Commit the reviewed task**
 
 ```bash
-git add app/services/regeneration_executability.py tests/services/test_regeneration_executability.py tests/repositories/test_regeneration_fleet_isolation.py
+git add app/services/regeneration_executability.py tests/services/test_regeneration_executability.py tests/repositories/test_regeneration_claim_parity.py
 git commit -m "feat(regeneration): preflight active worker compatibility"
 ```
 
@@ -474,23 +598,22 @@ git commit -m "feat(regeneration): preflight active worker compatibility"
 
 **Files:**
 - Create: `app/services/regeneration_destination.py`
-- Modify: `app/services/regeneration_campaign.py`
+- Create: `app/services/regeneration_notion_readiness.py`
 - Modify: `app/services/regeneration_publisher.py`
-- Modify: `tests/services/test_regeneration_campaign.py`
 - Create: `tests/services/test_regeneration_destination.py`
 - Modify: `tests/services/test_regeneration_publisher.py`
 - Modify: `tests/services/test_regeneration_publisher_lifespan.py`
 
 **Interfaces:**
-- Consumes: Task 1 destination columns, Task 2 `CreateCampaignSpec.publication_version`, `notion_archive.resolve_lesson_title`, `_resolve_subject_page_id`, and `NotionClientWrapper.get_child_pages/get_page_parent`.
-- Produces: `DestinationOverride`, `DestinationCandidate`, `DestinationResolution`, `DestinationPreflight`, `resolve_destinations(...)`, `destination_digest(...)`; campaign create fields `destination_overrides` and `approved_destination_digest`.
+- Consumes: Task 1 destination-column shapes, `notion_archive.resolve_lesson_title`, `_resolve_subject_page_id`, `notion.page_creator._normalize`, and `NotionClientWrapper.get_child_pages/get_page_parent`.
+- Produces: shared `publication_unavailable_reason()` in the neutral readiness module; scalar-only `DestinationSource`, `DestinationOverride`, `DestinationCandidate`, `DestinationResolution`, `DestinationPreflight`, `resolve_destinations(...)`, and `destination_digest(...)`; backward-compatible publisher support for frozen decisions.
 
 - [ ] **Step 1: Write RED resolver tests with a fake Notion reader**
 
 ```python
 async def test_valid_stored_pointer_is_reused(resolver):
     result = await resolver.resolve(sources=[source(pointer="lesson-1")], overrides=())
-    assert result.resolutions[0].policy == "reuse"
+    assert result.resolutions[0].lesson_policy == "reuse"
     assert result.resolutions[0].lesson_page_id == "lesson-1"
 
 async def test_two_safe_matches_block_until_operator_selects_one(resolver):
@@ -500,7 +623,7 @@ async def test_two_safe_matches_block_until_operator_selects_one(resolver):
     assert result.ok is False
 ```
 
-Cover one normalized match, no match (`policy=create`), invalid stored pointer in a different language container, valid override, override not in candidates, missing subject mapping, missing/ambiguous `Generated Homeworks` container, existing `Homework V3`, stable digest ordering, and a simulated rate-limit exception surfaced as retryable preflight failure.
+Cover one normalized match, no match (`lesson_policy=create`), invalid stored pointer in a different language container, valid override, override not in candidates, missing subject mapping, missing/ambiguous `Generated Homeworks` container, existing `Homework V3`, stable digest ordering, a disabled/uncredentialed Notion head, the 500-target bound, and a simulated rate-limit exception surfaced as retryable preflight failure. Include the measured duplicate shape where both `7 Photosynthesis` and `7 Photosynthesis (2)` exist; it must be ambiguous in review.
 
 - [ ] **Step 2: Run resolver tests and record RED**
 
@@ -512,6 +635,21 @@ uv run pytest -q tests/services/test_regeneration_destination.py
 
 ```python
 LineageKey = tuple[UUID, str]
+
+@dataclass(frozen=True)
+class DestinationSource:
+    toc_entry_id: UUID
+    output_language: str
+    source_job_id: UUID
+    subject: str
+    grade: Optional[str]
+    book_filename: str
+    section_number: Optional[str]
+    section_title: str
+    chapter_title: str
+    page_start: Optional[int]
+    notion_lesson_page_id: Optional[str]
+    lesson_title: str
 
 @dataclass(frozen=True)
 class DestinationOverride:
@@ -530,7 +668,9 @@ class DestinationResolution:
     output_language: str
     lesson_title: str
     status: Literal["reuse", "create", "ambiguous", "blocked"]
-    policy: Optional[Literal["reuse", "create"]]
+    container_policy: Optional[Literal["reuse", "create"]]
+    container_page_id: Optional[str]
+    lesson_policy: Optional[Literal["reuse", "create"]]
     lesson_page_id: Optional[str]
     candidates: tuple[DestinationCandidate, ...]
     reason: Optional[str]
@@ -542,65 +682,94 @@ class DestinationPreflight:
     digest: str
 ```
 
-`destination_digest` canonicalizes sorted lineage, requested version, title, status, policy and chosen page ID as compact JSON and returns SHA-256. Candidate-list ordering does not alter the digest once a unique reviewed decision exists.
+`destination_digest` canonicalizes sorted lineage, requested version, title,
+status, container policy/ID, Lesson Topic policy/ID as compact JSON and returns SHA-256.
+Candidate-list ordering does not alter the digest once a unique reviewed
+decision exists. The module accepts only scalar dataclasses—never an ORM row or
+session—so callers must close their DB transaction before invoking it.
 
 - [ ] **Step 4: Implement bounded cached remote reads**
 
-The async entry point performs all synchronous Notion work through one `asyncio.to_thread` call:
+The async entry point performs all synchronous Notion work through one
+`asyncio.to_thread` call and owns one client/rate limiter for the entire bounded
+scan:
 
 ```python
 async def resolve_destinations(
-    session: AsyncSession,
     *,
-    sources: Sequence[EligibleRegenerationSource],
+    sources: Sequence[DestinationSource],
     requested_version: int,
     overrides: Sequence[DestinationOverride],
     client_factory: Callable[[], NotionClientWrapper] = default_client,
+    maximum_targets: int = 500,
 ) -> DestinationPreflight:
 ```
 
-Within one call, cache subject-page resolution, `Generated Homeworks` child scans, Lesson Topic child scans, and page-parent lookups by ID. Do not call `find_or_create` or any write method. A stored pointer is valid only when its page ID is present in the exact language/subject/grade container. Normalize titles with the same trailing-number/title folding used by `notion.page_creator`, but retain section number and the existing canonical `resolve_lesson_title` disambiguators. An override must exactly equal a returned safe candidate for the same lineage. For a resolved existing lesson, scan its children for `version_page_title(requested_version)`; any matching title blocks before spend regardless of marker, because a new campaign may not adopt it.
+Move the existing side-effect-free `publication_unavailable_reason()` from
+`regeneration_publisher.py` into `regeneration_notion_readiness.py`; the
+publisher imports and re-exports it so existing callers/tests do not break.
+Both publisher and resolver use this one predicate, avoiding a campaign ↔
+publisher import cycle. Call it before constructing a client; a
+non-null reason raises `DestinationServiceUnavailable` and no result is treated
+as approved. Reject more than `maximum_targets` instead of scanning a prefix.
+Within one call, cache subject-page resolution, `Generated Homeworks` child
+scans, Lesson Topic child scans, and page-parent lookups by ID. Zero normalized
+container matches produces `container_policy="create"`; exactly one produces
+`container_policy="reuse"` plus its page ID; multiple containers block as
+ambiguous. Do not call
+`find_or_create` or any write method. A stored pointer is valid only when its
+page ID is present in the exact language/subject/grade container. Import and
+call `notion.page_creator._normalize` verbatim for both canonical titles and
+child titles; do not copy its regex. Retain section number and the existing
+canonical `resolve_lesson_title` disambiguators. An override must exactly equal
+a returned safe candidate for the same lineage. For a resolved existing lesson,
+scan its children for `version_page_title(requested_version)`; any matching
+title blocks before spend regardless of marker, because a new campaign may not
+adopt it. The response reports `checked_target_count == len(sources)`.
 
-- [ ] **Step 5: Re-resolve and freeze the reviewed decision at create time**
+- [ ] **Step 5: Make the publisher consume frozen decisions without breaking legacy targets**
 
-Extend `CreateCampaignSpec` with required, non-default fields immediately after
-`publication_version`:
+Keep `PublicationInputs.legacy_lesson_page_id` and add optional reviewed fields:
 
 ```python
-destination_overrides: tuple[DestinationOverride, ...]
-approved_destination_digest: str
-```
-
-After source/version validation but before campaign insert, call `resolve_destinations`. Refuse non-OK results. Compare the recomputed digest with `approved_destination_digest`; raise `DestinationReviewChanged` on mismatch so the UI must show a fresh review. Pass each lineage's exact `policy`, `lesson_page_id`, and `lesson_title` to `create_target`.
-
-Add `revalidate_frozen_destinations(session, targets, requested_version)` to the
-resolver. `launch_canary` calls it before creating a revision job, so a campaign
-created yesterday cannot spend today against a moved parent or a newly occupied
-`Homework V3`. A failed revalidation leaves the campaign/targets in their
-pre-launch state and returns an actionable retryable preflight error.
-
-- [ ] **Step 6: Make the publisher consume, then revalidate, the frozen parent**
-
-Replace `PublicationInputs.legacy_lesson_page_id` with:
-
-```python
-notion_parent_policy: Literal["reuse", "create"]
+notion_container_policy: Optional[Literal["reuse", "create"]]
+reviewed_container_page_id: Optional[str]
+notion_parent_policy: Optional[Literal["reuse", "create"]]
 reviewed_lesson_page_id: Optional[str]
-reviewed_lesson_title: str
+reviewed_lesson_title: Optional[str]
 ```
 
-In `_prepare`, refuse legacy targets whose decision is null. In `_resolve_lesson_parent`:
+`_prepare` copies the five new target columns. A historical target whose
+policy is null follows the existing `legacy_lesson_page_id` +
+`notion_archive.find_or_create` path unchanged. A reviewed target uses:
 
 ```python
-container_id, _ = notion_archive.find_or_create(
-    client, inputs.subject_page_id, notion_archive.CONTAINER_TITLE
-)
+subject_children = client.get_child_pages(inputs.subject_page_id)
+container_matches = [
+    page for page in subject_children
+    if _normalize(page["title"]) == _normalize(notion_archive.CONTAINER_TITLE)
+]
+if inputs.notion_container_policy == "reuse":
+    if not any(p["id"] == inputs.reviewed_container_page_id for p in container_matches):
+        raise ReviewedDestinationChanged("reviewed Generated Homeworks container moved")
+    container_id = cast(str, inputs.reviewed_container_page_id)
+elif len(container_matches) == 0:
+    container_id = client.create_page(
+        inputs.subject_page_id, notion_archive.CONTAINER_TITLE
+    )["id"]
+elif len(container_matches) == 1:
+    container_id = container_matches[0]["id"]
+else:
+    raise ReviewedDestinationChanged("reviewed container creation became ambiguous")
 children = client.get_child_pages(container_id)
 if inputs.notion_parent_policy == "reuse":
     if not any(p["id"] == inputs.reviewed_lesson_page_id for p in children):
         raise ReviewedDestinationChanged("reviewed Lesson Topic left its container")
     return cast(str, inputs.reviewed_lesson_page_id)
-matches = exact_safe_title_matches(children, inputs.reviewed_lesson_title)
+matches = [
+    page for page in children
+    if _normalize(page["title"]) == _normalize(cast(str, inputs.reviewed_lesson_title))
+]
 if len(matches) == 1:
     return matches[0]["id"]
 if len(matches) > 1:
@@ -608,24 +777,26 @@ if len(matches) > 1:
 return client.create_page(container_id, inputs.reviewed_lesson_title)["id"]
 ```
 
-`exact_safe_title_matches` uses the same canonical identity matcher as review and
-does not strip Notion's trailing `(N)` suffix. The create policy may adopt only
-one exact reviewed title created after the campaign was frozen; a suffixed or
-ambiguous result fails closed. Version-page marker rules remain the final
-authority below it. Stamp `toc_entries.notion_lesson_page_id` only for `create`,
-never to overwrite a valid stored pointer for a reused destination.
+Because review and publication import the same `_normalize`, trailing `(N)` is
+folded identically. A create policy adopts one normalized match, creates only
+when there are zero, and fails closed when there are multiple. Version-page
+marker rules remain the final authority below it. Preserve the current pointer
+backfill: when `legacy_lesson_page_id` was absent, stamp the resolved/created
+Lesson Topic for both `reuse` and `create`; `_stamp_lesson_page` already writes
+only when the TOC pointer is null and therefore never overwrites a valid pointer.
 
-- [ ] **Step 7: Run resolver, campaign and publisher suites**
+- [ ] **Step 6: Run resolver and publisher suites plus repo-wide regression**
 
 ```bash
-uv run pytest -q tests/services/test_regeneration_destination.py tests/services/test_regeneration_campaign.py -k 'destination or create_campaign'
+uv run pytest -q tests/services/test_regeneration_destination.py
 uv run pytest -q tests/services/test_regeneration_publisher.py tests/services/test_regeneration_publisher_lifespan.py
+uv run pytest -q
 ```
 
-- [ ] **Step 8: Commit the reviewed task**
+- [ ] **Step 7: Commit the reviewed task**
 
 ```bash
-git add app/services/regeneration_destination.py app/services/regeneration_campaign.py app/services/regeneration_publisher.py tests/services/test_regeneration_destination.py tests/services/test_regeneration_campaign.py tests/services/test_regeneration_publisher.py tests/services/test_regeneration_publisher_lifespan.py
+git add app/services/regeneration_destination.py app/services/regeneration_notion_readiness.py app/services/regeneration_publisher.py tests/services/test_regeneration_destination.py tests/services/test_regeneration_publisher.py tests/services/test_regeneration_publisher_lifespan.py
 git commit -m "feat(regeneration): freeze reviewed Notion destination"
 ```
 
@@ -640,7 +811,7 @@ git commit -m "feat(regeneration): freeze reviewed Notion destination"
 - Modify: `web/src/lib/regeneration-api.test.ts`
 
 **Interfaces:**
-- Consumes: current `RegenerationDraftState` fields and `/api/v1/books?limit=&offset=`.
+- Consumes: current `RegenerationDraftState` fields and bounded `/api/v1/books?limit=2001&offset=0`.
 - Produces: `GuidedRegenerationDraft`; `loadRegenerationDraft`; `saveRegenerationDraft`; `clearRegenerationDraft`; `pruneRegenerationDraft`; `effectiveSelectedPhases`; `api.listAllBooks()`.
 
 - [ ] **Step 1: Write RED storage and pagination tests**
@@ -658,6 +829,7 @@ test("restoring a draft resets acknowledgement and prunes stale lessons", () => 
   const restored = pruneRegenerationDraft(savedDraft, {
     eligibleTocEntryIds: new Set(["kept"]),
     validModelRefs: new Set(["gemini/gemini-3.6-flash"]),
+    validPhaseNames: new Set(["reflection"]),
   });
   assert.deepEqual(restored.draft.selectedTocEntryIds, ["kept"]);
   assert.equal(restored.draft.acknowledged, false);
@@ -665,7 +837,11 @@ test("restoring a draft resets acknowledgement and prunes stale lessons", () => 
 });
 ```
 
-Add corrupt JSON, unknown schema version, storage read/write exceptions, destination-override pruning, canary clamping, full-mode canonical phases, selective-mode explicit phases, and 246 books loaded over three 100-row requests. Assert a twentieth full page throws a bounded-library error instead of scanning forever.
+Add corrupt JSON, unknown schema version, storage read/write exceptions,
+destination-override pruning, canary clamping, full-mode canonical phases,
+unknown requested/excluded phase pruning, selective-empty fallback to full mode,
+and all 246 books loaded by one bounded 2001-row request. Assert a 2001-row
+response throws a bounded-library error instead of silently truncating.
 
 - [ ] **Step 2: Run frontend unit tests and record RED**
 
@@ -703,32 +879,35 @@ export interface GuidedRegenerationDraft {
   provider: string;
   model: string | null;
   publicationVersion: number;
+  publicationVersionMode: "automatic" | "manual";
   canarySize: number;
   destinationOverrides: DestinationOverrideDraft[];
 }
 ```
 
-Use explicit field-by-field parsing; do not cast parsed JSON to the interface. `loadRegenerationDraft(storage)` returns `{draft, warning}` and never throws. `saveRegenerationDraft` catches quota/private-mode failures and returns a warning. Derived estimates/plans/destination results have no field in this type.
+Use explicit field-by-field parsing; do not cast parsed JSON to the interface.
+`loadRegenerationDraft(storage)` returns `{draft, warning}` and never throws.
+`saveRegenerationDraft` catches quota/private-mode failures and returns a
+warning. Derived estimates/plans/destination results have no field in this
+type. While `publicationVersionMode === "automatic"`, compute the displayed
+version as `max(3, ...selectedSources.map(s => s.next_expected_version))`;
+editing the version flips the mode to `manual` and persists the exact choice.
 
-- [ ] **Step 4: Implement bounded all-books pagination**
+- [ ] **Step 4: Implement one bounded complete-library read**
 
 ```typescript
 async listAllBooks(): Promise<Book[]> {
-  const pageSize = 100;
-  const maxPages = 20;
-  const books: Book[] = [];
-  for (let page = 0; page < maxPages; page += 1) {
-    const rows = unwrap<Book[]>(await authFetch(
-      `/api/v1/books?limit=${pageSize}&offset=${page * pageSize}`,
-    ));
-    books.push(...rows);
-    if (rows.length < pageSize) return books;
+  const rows = unwrap<Book[]>(await authFetch("/api/v1/books?limit=2001&offset=0"));
+  if (rows.length > 2000) {
+    throw new Error("Book library exceeded the guided picker safety limit of 2000 rows");
   }
-  throw new Error("Book library exceeded the guided picker safety limit of 2000 rows");
+  return rows;
 }
 ```
 
-De-duplicate by book ID while preserving API order so a concurrent insert between pages cannot render duplicate choices.
+This single database statement avoids unstable offset windows. The guided route
+uses the dedicated TanStack key `["books", "all"]`; Fleet and Library retain
+their existing `["books"]` 100-row cache and cannot overwrite this result.
 
 - [ ] **Step 5: Run tests and TypeScript build**
 
@@ -756,6 +935,8 @@ git commit -m "feat(web): persist regeneration draft and load full library"
 - Modify: `tests/schemas/test_regeneration_schemas.py`
 - Modify: `tests/api/test_regeneration_api.py`
 - Modify: `tests/api/test_regeneration_reports.py`
+- Modify: `tests/integration/test_regeneration_campaign_concurrency.py`
+- Modify: `tests/integration/test_regeneration_e2e.py`
 - Modify: `web/src/lib/api.ts`
 - Modify: `web/src/lib/regeneration-api.test.ts`
 
@@ -766,13 +947,23 @@ git commit -m "feat(web): persist regeneration draft and load full library"
 - [ ] **Step 1: Write failing schema/API tests for the full review contract**
 
 ```python
-def test_estimate_requires_campaign_version_and_returns_readiness(client):
+def test_estimate_requires_campaign_version_and_returns_db_readiness(client):
     response = client.post("/api/v1/regeneration/estimate", json=estimate_body(3))
     assert response.status_code == 200
     body = response.json()
     assert body["publication_version"] == 3
     assert body["worker_executability"]["ok"] is True
+    assert "destination_digest" not in body
+    assert fake_notion.calls == []
+
+def test_destination_check_is_explicit_and_returns_every_target(client):
+    response = client.post(
+        "/api/v1/regeneration/destinations", json=destination_body(3)
+    )
+    assert response.status_code == 200
+    body = response.json()
     assert len(body["destination_digest"]) == 64
+    assert body["checked_target_count"] == body["target_count"]
     assert body["destinations"][0]["status"] == "reuse"
 
 def test_create_refuses_changed_destination_digest_without_a_row(client):
@@ -785,7 +976,12 @@ def test_create_refuses_changed_destination_digest_without_a_row(client):
     assert campaign_count() == 0
 ```
 
-Add request validation for V1, duplicate/malformed overrides, override outside selection, no compatible worker, source/consumed/Notion V3 conflicts, ambiguous destination, and legacy campaign report labeling.
+Add request validation for V1, duplicate/malformed overrides, override outside
+selection, no compatible worker, fleet API paused, source/consumed/Notion V3
+conflicts, ambiguous destination, Notion disabled/uncredentialed, all-target
+scan accounting, destination HTTP occurring with no active DB transaction, and
+legacy campaign report labeling. Add a launch test proving remote
+revalidation runs before the campaign/target `FOR UPDATE` phase.
 
 - [ ] **Step 2: Run API/schema tests and record RED**
 
@@ -805,16 +1001,23 @@ class EstimateRequest(_PhaseSelectionIn):
     selection: CampaignSelectionIn = Field(default_factory=CampaignSelectionIn)
     contract: LaunchContract
     publication_version: int = Field(ge=2)
-    destination_overrides: list[DestinationOverrideIn] = Field(default_factory=list)
     canary_size: int = Field(default=1, ge=1)
 
 class CreateCampaignRequest(EstimateRequest):
-    approved_destination_digest: str = Field(min_length=64, max_length=64)
+    destination_overrides: list[DestinationOverrideIn] = Field(default_factory=list)
+    approved_destination_digest: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
     estimated_cost_low_usd: Optional[float] = Field(default=None, ge=0)
     estimated_cost_high_usd: Optional[float] = Field(default=None, ge=0)
     app_git_revision: Optional[str] = Field(default=None, max_length=64)
     actor: str = ""
     notes: dict = Field(default_factory=dict)
+
+class DestinationCheckRequest(_Strict):
+    selection: CampaignSelectionIn
+    publication_version: int = Field(ge=2)
+    destination_overrides: list[DestinationOverrideIn] = Field(default_factory=list)
 ```
 
 Validate override languages, unique lineage keys, and that each override lineage belongs to the request selection. Define output models matching Task 4 types plus:
@@ -825,20 +1028,20 @@ class WorkerExecutabilityOut(BaseModel):
     workers_online: int
     compatible_worker_ids: list[str]
     required_api_providers: list[str]
+    fleet_api_paused: bool
     reason: Optional[str]
 ```
 
-- [ ] **Step 4: Use one shared preview function in estimate and create**
+- [ ] **Step 4: Separate DB-only estimate from explicit remote destination check**
 
-Add a router/service helper that performs, in order: bounded selection,
-discovery, phase plans, launch-contract resolution, exact-version DB conflicts,
-worker executability, destination resolution, extraction-source availability,
-then pricing. When `refresh_extraction=true`, every selected book's
-`storage.book_pdf_path(book.id)` must exist on the head/shared volume or the
-preview returns a per-book blocking failure before campaign creation. Estimate
-returns every result and creates nothing. Campaign creation repeats the
-authoritative checks and refuses before insert if version, worker, PDF or
-destination state changed.
+Add a DB-only helper that performs, in order: bounded selection, discovery,
+phase plans, launch-contract resolution, exact-version DB conflicts, worker
+executability, extraction-source warning calculation, then pricing. A missing
+head-local PDF with `refresh_extraction=true` is a warning, not a refusal:
+R13 workers can already have or pull a cached copy and `VAR_DIR` is not
+guaranteed shared. Keep `estimate()`'s existing “makes no Notion call” docstring
+true and retain `regeneration_discovery.preflight_notion_destinations` as its
+current cheap mapping-only helper.
 
 ```python
 @dataclass(frozen=True)
@@ -848,22 +1051,90 @@ class CampaignPreview:
     contract: ResolvedLaunchContract
     publication_version: int
     worker_executability: WorkerExecutability
-    destinations: DestinationPreflight
+    source_availability_warnings: tuple[str, ...]
 ```
 
-Do not trust frontend `ok` booleans or candidate metadata. The only echoed authority is the destination digest, which is compared to a freshly server-derived digest.
+Implement `POST /api/v1/regeneration/destinations` as a separate action. Its DB
+phase loads `EligibleRegenerationSource` rows, sibling-derived lesson titles and
+all `DestinationSource` scalars, then commits/closes the session. The route does
+not inject a request-lifetime `AsyncSession`; it calls the service's bounded
+short-session loader. Only then does
+it call Task 4's `resolve_destinations` in a worker thread. If Notion is off or
+uncredentialed, return structured `notion_destination_unavailable`; do not
+degrade to an unverified campaign. The response always reports
+`checked_target_count`, `target_count`, per-target results and the digest.
 
-Immediately before `launch_canary` creates any revision job, re-run active
-worker executability against the campaign's stored resolved contract and call
-Task 4's `revalidate_frozen_destinations`. This is the last free gate before a
-model call. A failure leaves the campaign in `draft` and exposes `Retry canary`
-after the operator fixes workers, PDF storage, Notion mapping or destination.
+- [ ] **Step 5: Re-resolve outside transactions, then freeze inside a short create transaction**
 
-- [ ] **Step 5: Extend campaign/report outputs**
+Keep `CreateCampaignSpec` backward-compatible for direct historical callers:
+
+```python
+publication_version: Optional[int] = None
+destination_overrides: tuple[DestinationOverride, ...] = ()
+approved_destination_digest: str = ""
+```
+
+The public schema always supplies all three. Refactor service creation into
+three explicit phases:
+
+```python
+async def prepare_campaign(self, spec: CreateCampaignSpec) -> PreparedCampaign:
+    # open session -> resolve DB facts/contract/plans -> copy scalars -> close
+
+async def resolve_prepared_destinations(
+    self, prepared: PreparedCampaign, spec: CreateCampaignSpec
+) -> DestinationPreflight:
+    # no DB session -> Notion thread call
+
+async def insert_prepared_campaign(
+    self,
+    prepared: PreparedCampaign,
+    destinations: DestinationPreflight,
+    spec: CreateCampaignSpec,
+) -> RegenerationCampaign:
+    # new session -> recheck source IDs, active lineages, version conflicts,
+    # digest and worker pause/capability -> insert campaign/targets -> commit
+```
+
+`create_campaign` composes those phases. It refuses an empty digest when
+`publication_version` is non-null, re-resolves destinations, compares the fresh
+digest with `approved_destination_digest`, and raises
+`DestinationReviewChanged` before insert on mismatch. The short insert phase
+passes every target's container policy/ID and Lesson Topic policy/ID/title to
+`create_target`. It performs no Notion call and never holds a session idle
+across HTTP. Direct legacy callers
+with `publication_version=None` retain the current automatic-version/current
+publisher path until migrated.
+
+The current router-level `_reconcile(session)` call must not leave its injected
+session transaction open while service creation performs Notion I/O. Replace it
+for create/canary with a short `SessionLocal` reconciliation helper that commits
+and closes before calling the three-phase service; open the response/report
+session only after the remote phase returns.
+
+- [ ] **Step 6: Revalidate canary readiness outside row locks**
+
+Split `launch_canary` similarly:
+
+1. Open a read session, load campaign/target/source scalars and stored contract,
+   then close it without locks.
+2. In a short DB session, run worker/budget executability; close it.
+3. With no DB session open, resolve the frozen destinations again and require
+   their decisions/digest to match the stored targets and requested version.
+4. Open a new session, lock campaign then targets in the existing order,
+   re-check status/source/version/lineage facts, prepare the canary wave and
+   commit before `_create_wave` performs its existing job creation.
+
+A failed phase 2/3 leaves the campaign in `draft`, creates no job and returns an
+actionable `Retry canary` reason. The unavoidable Notion race after phase 3 is
+still caught by publisher membership/marker validation; no DB or remote lock can
+atomically cover both systems.
+
+- [ ] **Step 7: Extend campaign/report outputs**
 
 New campaigns return integer `publication_version`; legacy rows return null plus `publication_version_label="Legacy mixed/automatic version"`. Each target report returns reviewed parent policy/title/page link separately from `notion_page_id`, which remains the actual published `Homework Vn` page.
 
-- [ ] **Step 6: Mirror the exact contract in TypeScript**
+- [ ] **Step 8: Mirror the exact contract in TypeScript**
 
 ```typescript
 export interface RegenerationDestinationOverride {
@@ -874,7 +1145,6 @@ export interface RegenerationDestinationOverride {
 
 export interface RegenerationEstimateRequest {
   publication_version: number;
-  destination_overrides: RegenerationDestinationOverride[];
   selection: RegenerationSelection;
   contract: RegenerationLaunchContract;
   selected_phases: string[];
@@ -885,27 +1155,39 @@ export interface RegenerationEstimateRequest {
 }
 
 export interface RegenerationCreateRequest extends RegenerationEstimateRequest {
+  destination_overrides: RegenerationDestinationOverride[];
   approved_destination_digest: string;
   estimated_cost_low_usd: number | null;
   estimated_cost_high_usd: number | null;
 }
+
+export interface RegenerationDestinationCheckRequest {
+  publication_version: number;
+  selection: RegenerationSelection;
+  destination_overrides: RegenerationDestinationOverride[];
+}
 ```
 
-`approved_destination_digest` is absent from estimate requests and required by `createRegenerationCampaign`'s input type. Do not represent both with one loose optional type.
+`approved_destination_digest` and overrides are absent from estimate requests.
+`api.checkRegenerationDestinations` owns the explicit remote request; the create
+type requires the returned digest. Do not represent these with one loose
+optional type.
 
-- [ ] **Step 7: Run backend and frontend contract suites**
+- [ ] **Step 9: Run backend, real-DB and frontend contract suites**
 
 ```bash
 uv run pytest -q tests/schemas/test_regeneration_schemas.py tests/api/test_regeneration_api.py tests/api/test_regeneration_reports.py
+RUN_DB_INTEGRATION=1 REGEN_REQUIRE_DB=1 uv run pytest -q tests/integration/test_regeneration_campaign_concurrency.py tests/integration/test_regeneration_e2e.py
+uv run pytest -q
 cd web
 npm test
 npm run build
 ```
 
-- [ ] **Step 8: Commit the reviewed task**
+- [ ] **Step 10: Commit the reviewed task**
 
 ```bash
-git add app/schemas/regeneration.py app/api/v1/regeneration.py app/services/regeneration_campaign.py tests/schemas/test_regeneration_schemas.py tests/api/test_regeneration_api.py tests/api/test_regeneration_reports.py web/src/lib/api.ts web/src/lib/regeneration-api.test.ts
+git add app/schemas/regeneration.py app/api/v1/regeneration.py app/services/regeneration_campaign.py tests/schemas/test_regeneration_schemas.py tests/api/test_regeneration_api.py tests/api/test_regeneration_reports.py tests/integration/test_regeneration_campaign_concurrency.py tests/integration/test_regeneration_e2e.py web/src/lib/api.ts web/src/lib/regeneration-api.test.ts
 git commit -m "feat(regeneration): expose exact campaign readiness review"
 ```
 
@@ -943,7 +1225,15 @@ test("created campaign plus failed canary never permits create again", () => {
 });
 ```
 
-Add full-rebuild-first, extraction-off, selective expansion copy, advanced exclusion acknowledgement reset, ambiguous candidate selection, destination override pruning, stale restored lessons message, successful-create draft clearing, and one-target approval copy with no bulk wording. Also assert that an empty/new draft adopts `content_provider` and `content_model` from `api.getLaunchDefaults()`, while a restored explicit model choice is never overwritten by a later defaults response.
+Add full-rebuild-first, extraction-off, selective expansion copy, advanced
+exclusion acknowledgement reset, ambiguous candidate selection, destination
+override pruning, destination-result invalidation only on lesson/language/version
+changes, stale restored lessons/phases messages, successful-create draft
+clearing, mutation-only wave-failure preservation, and one-target approval copy
+with no bulk wording. Also assert that an empty/new draft adopts
+`content_provider` and `content_model` from `api.getLaunchDefaults()`, while a
+restored explicit model choice is never overwritten by a later defaults
+response.
 
 - [ ] **Step 2: Run frontend tests and record RED**
 
@@ -954,7 +1244,21 @@ npm test -- --test-name-pattern='guided|review|canary|draft'
 
 - [ ] **Step 3: Split the wizard into four focused presentational steps**
 
-`GuidedProgress` receives `active`, `highestReachable`, and `onSelect`. `LessonStep` filters the fully loaded book list by subject/grade, fetches eligible rows for one selected book, and renders candidate buttons for ambiguous destinations. `ContentStep` uses:
+`GuidedProgress` receives `active`, `highestReachable`, and `onSelect`.
+`LessonStep` reads the dedicated `["books", "all"]` query, filters the fully
+loaded book list by subject/grade, fetches eligible rows for one selected book,
+and shows only the DB-known-pointer hint; it makes no Notion call and does not
+claim an exact destination. Ambiguous candidate buttons render in `ReviewStep`
+after the explicit destination check. Add a named adapter
+from the persistent `subject`/`grade` fields to the existing helper contract:
+
+```typescript
+function wizardScope(draft: GuidedRegenerationDraft): RegenerationScopeState {
+  return { subjectFilter: draft.subject ?? "", gradeFilter: draft.grade ?? "" };
+}
+```
+
+`ContentStep` uses:
 
 ```typescript
 export function effectiveSelectedPhases(
@@ -976,6 +1280,17 @@ no explicit model (new draft or a restored null), set provider/model from the
 launch-default content pair once. Track that initialization separately so a
 subsequent refetch cannot overwrite an operator's model choice.
 
+Replace the existing `defaultRegenerationDraft` comment that says the model is
+never defaulted; this feature now intentionally uses the operator-controlled DB
+launch default, not the first manifest entry.
+
+Keep `/estimate` as its current reactive DB-only query. Add a separate disabled
+TanStack query/mutation for `api.checkRegenerationDestinations` and run it only
+when the operator clicks **Check Notion destinations** in Step 3. A change to
+selected lesson IDs, output language, publication version or destination
+overrides clears that result; phase, model, extraction and canary-size changes
+do not. Never write the returned candidates/digest to local storage.
+
 - [ ] **Step 5: Orchestrate one safe first-paid action**
 
 Use a mutation whose variables are a frozen submitted request, not live React state:
@@ -989,8 +1304,10 @@ type CreateCanaryResult = {
 
 async function createAndStartCanary(
   request: RegenerationCreateRequest,
+  onCampaignCreated: (campaign: RegenerationCampaignDetail) => void,
 ): Promise<CreateCanaryResult> {
   const campaign = await api.createRegenerationCampaign(request);
+  onCampaignCreated(campaign);
   try {
     return {
       campaign: await api.launchRegenerationCanary(campaign.id),
@@ -1003,11 +1320,27 @@ async function createAndStartCanary(
 }
 ```
 
-On campaign-create success, clear the draft and select/navigate to that campaign before attempting canary. If canary fails, retain `campaign.id`, show `Campaign created; canary not started`, and render only `Retry canary`. Never re-run create from that state.
+`onCampaignCreated` synchronously clears local storage, resets the in-memory
+draft, calls `adopt(campaign)`, invalidates eligibility, and selects/navigates
+to `campaign.id` before the canary request begins. This closes the browser-crash
+window between the two requests. Canary success calls `forgetFailures` then
+`adopt`; a response carrying `released_failures` passes through
+`rememberFailures` exactly as today's mutations do. If canary fails, retain
+`campaign.id`, show `Campaign created; canary not started`, and render only
+`Retry canary`. Never re-run create from that state. If a restored pre-create
+draft nevertheless hits `active_lineage_conflict`, link to the conflicting
+existing campaign rather than presenting creation as retryable.
 
 - [ ] **Step 6: Render the review and canary behavior**
 
-Review shows exact `Homework V3`, target/canary counts, regenerated/copied phases, extract mode, model, estimate, compatible worker count and each frozen Notion decision/link. Its button label is `Create campaign and start N canary lesson(s)` with `First paid action` text.
+Review first shows the DB-only estimate and worker result. Its **Check Notion
+destinations** action warns that the complete bounded scan can take minutes and
+shows checked/total counts. Only after every target resolves does it show exact
+`Homework Vn`, target/canary counts, regenerated/copied phases, extract mode,
+model, estimate, compatible worker count and every Notion decision/link. The
+create button label is `Create campaign and start N canary lesson(s)` with
+`First paid action` text. Notion-disabled/credential errors block it with the
+server's configuration message.
 
 Canary step reuses the existing phase progress, judge report, homework preview, approve and reject actions. Approval copy is `Approve canary and continue`; after approval, successful targets publish automatically. For one target, say `Approve and publish this lesson`; never display an empty bulk gate.
 
@@ -1062,7 +1395,7 @@ unrelated worktree was modified.
 
 - [ ] **Step 2: Run fresh-database migration and backend gates**
 
-Create one new explicit localhost database after confirming its name does not exist. Point only this worktree's `DATABASE_URL` at it, then run:
+Create one new explicit `127.0.0.1` database after confirming its name does not exist. Point only this worktree's `DATABASE_URL` at it, then run:
 
 ```bash
 RUN_DB_INTEGRATION=1 REGEN_REQUIRE_DB=1 uv run alembic upgrade head
@@ -1071,6 +1404,7 @@ RUN_DB_INTEGRATION=1 REGEN_REQUIRE_DB=1 uv run pytest -q \
   tests/integration/test_regeneration_constraints.py \
   tests/integration/test_regeneration_source_and_version_queries.py \
   tests/integration/test_regeneration_publication_claims.py \
+  tests/integration/test_regeneration_campaign_concurrency.py \
   tests/integration/test_regeneration_e2e.py \
   tests/integration/test_regeneration_failure_e2e.py
 uv run pytest -q tests/services/test_regeneration_*.py tests/api/test_regeneration_*.py tests/schemas/test_regeneration_schemas.py
@@ -1106,11 +1440,33 @@ Critical/Major findings return to the owning task and repeat its RED/GREEN/revie
 
 - [ ] **Step 5: Build a test-specific environment without copying the whole `.env`**
 
-Start from an empty explicit file outside tracked paths and copy only values required for the test: localhost test `DATABASE_URL`, auth token, `GEMINI_API_KEY`, Notion key and the exact subject-page mapping for the chosen lesson. Set `REGENERATION_ENABLED=true`, `REGENERATION_PUBLISHER_ENABLED=true`, `NOTION_ENABLED=true`, test-specific ports/`VAR_DIR`, and safe bounded worker concurrency. Do not echo secret values into logs or commit the environment file.
+Start from an empty explicit file outside tracked paths and copy only values
+required for the test: `127.0.0.1` test `DATABASE_URL`, auth token,
+`GEMINI_API_KEY`, Notion key and a mapping whose page ID is the dedicated
+sandbox subject page. Set `REGENERATION_ENABLED=true`,
+`REGENERATION_PUBLISHER_ENABLED=true`, `NOTION_ENABLED=true`, test-specific
+ports/`VAR_DIR`, and safe bounded worker concurrency. Do not echo secret values
+into logs or commit the environment file. Before starting, print only
+`app.config.__file__`, the redacted database host/name and `settings.var_dir`;
+assert the module path belongs to this worktree and the database host is exactly
+`127.0.0.1`, preventing parent-directory `.env` discovery or the dual-local-PG
+trap.
 
-- [ ] **Step 6: Execute the isolated browser-restart and live V3 canary**
+- [ ] **Step 6: Gate and prepare the dedicated Notion sandbox**
 
-Use a source lesson whose existing V1 homework and Lesson Topic parent are known. Record IDs before starting. Then:
+Resolve the exact sandbox subject page ID and child tree read-only. If no
+dedicated sandbox exists, stop and ask the user to approve creating one; do not
+substitute a curriculum subject page. Before any write, present the sandbox URL,
+the one Lesson Topic title/ID to be reused, the intended `Homework V3` title,
+and the exact cleanup action (archive that V3 page only). Record that approval
+in the acceptance document. The live run is single-shot: do not repeat it until
+the prior V3 page has been inspected and explicitly cleaned up or a new version
+is chosen.
+
+- [ ] **Step 7: Execute the isolated browser-restart and live V3 canary**
+
+Use one source lesson whose test-DB TOC pointer is deliberately mapped to the
+known sandbox Lesson Topic. Record IDs before starting. Then:
 
 1. Select a book beyond the first 100 rows and a lesson.
 2. Leave full rebuild selected, extraction refresh off, model at the launch-default `gemini-3.6-flash`, and version at V3.
@@ -1120,14 +1476,14 @@ Use a source lesson whose existing V1 homework and Lesson Topic parent are known
 6. Click the one paid action once; confirm exactly one campaign and one canary revision job exist.
 7. Monitor all 11 content phases, existing judge bounded retries/fallback, spend and final snapshot.
 8. Open the generated homework and judge report; approve the canary.
-9. Confirm automatic publication creates exactly one `Homework V3` under the reviewed existing Lesson Topic, creates no duplicate Lesson Topic, preserves V1/V2, and reaches terminal campaign state.
+9. Confirm automatic publication creates exactly one `Homework V3` under the reviewed existing sandbox Lesson Topic, creates no duplicate Lesson Topic, preserves the sandbox's V1/V2 fixtures, and reaches terminal campaign state.
 10. Confirm campaign/target reports show requested V3, actual V3 page link, source version, frozen parent decision and real `agent_usages` cost.
 
-- [ ] **Step 7: Write the acceptance record**
+- [ ] **Step 8: Write the acceptance record**
 
 `docs/testing/REGENERATION-V3-GUIDED-ACCEPTANCE.md` records: date, branch/head SHA, migration head, exact test commands/counts, test DB name, source/campaign/target/revision IDs, reviewed Lesson Topic ID, published V3 ID, prompt revision, model/worker, phase count, extraction mode, judge result, token/cost totals, screenshots or URLs without credentials, cleanup instructions and reviewer verdict.
 
-- [ ] **Step 8: Commit evidence and stop**
+- [ ] **Step 9: Commit evidence and stop**
 
 ```bash
 git add docs/testing/REGENERATION-V3-GUIDED-ACCEPTANCE.md
@@ -1146,8 +1502,8 @@ decision.
 
 - [ ] Branch-collision record is current and no project-manager-owned PR was changed.
 - [ ] Every Task 1–7 commit passed implementation review, spec review, quality review and Codex rerun before integration.
-- [ ] One single Alembic head upgrades on a fresh localhost database with zero skipped regeneration DB tests.
-- [ ] New campaign version is exact and immutable; V1 can intentionally produce V3; no silent version increment exists.
+- [ ] One single Alembic head upgrades on a fresh `127.0.0.1` database with zero skipped regeneration DB tests.
+- [ ] New campaign version is exact and immutable; V1 can intentionally produce V3; no silent version increment exists. This cross-table invariant is service-enforced (not a PostgreSQL cross-table CHECK) and is proven by the Task 2 service/reservation race tests.
 - [ ] Review and creation reject source/equal, consumed-DB and existing-Notion version conflicts.
 - [ ] Review shows exact Lesson Topic decision; ambiguity requires a validated operator choice; publisher uses and revalidates the frozen decision.
 - [ ] Worker preflight agrees with actual claim behavior, including self-grade/self-solve fallback credentials.
