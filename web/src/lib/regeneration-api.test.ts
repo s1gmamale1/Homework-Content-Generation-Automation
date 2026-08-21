@@ -819,4 +819,90 @@ for (const row of [
   assert.ok(!/^\s*\[/.test(emptyView.message));
 }
 
+/* ════════════════════════════════════════════════════════════════════
+ * 18. GET /books is read COMPLETE for the guided picker, or refuses
+ *
+ * `list_books(limit: int = 100, offset: int = 0)` answers the first 100 rows
+ * to a caller that names no limit, so `api.listBooks()` hides most of a
+ * ~246-book library behind a page nobody asked for and the guided picker
+ * silently cannot reach the missing books. Paging would walk an offset window
+ * that moves under an upload landing mid-walk; ONE over-sized statement
+ * cannot. The extra row is the tripwire: a library that outgrew the picker has
+ * to say so rather than hand back a quietly truncated list.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/** `Book`-shaped enough for the client, which does no shape validation. */
+function books(count: number): unknown[] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `book-${i}`,
+    subject: "biology",
+    grade: "6",
+    original_filename: `book-${i}.pdf`,
+    source_language: "uz",
+    status: "toc_ready",
+    error_message: null,
+    gemini_file_expires_at: null,
+    file_size_bytes: 1024,
+    created_at: "2026-08-21T00:00:00Z",
+    toc: null,
+  }));
+}
+
+{
+  const library = books(246);
+  const call = await sent(() => api.listAllBooks(), library);
+  assert.strictEqual(call.method, "GET");
+  assert.strictEqual(path(call.url), "/api/v1/books");
+  const q = query(call.url);
+  // One statement, explicitly bounded — NOT the router's 100-row default.
+  assert.strictEqual(q.get("limit"), "2001");
+  assert.strictEqual(q.get("offset"), "0");
+  assert.strictEqual(call.body, undefined, "a GET must not carry a body");
+}
+
+{
+  // Every book reaches the caller: the whole point of the wider read.
+  calls.length = 0;
+  nextStatus = 200;
+  nextBody = books(246);
+  const rows = await api.listAllBooks();
+  assert.strictEqual(rows.length, 246);
+  assert.strictEqual(calls.length, 1, "the complete library is ONE request, never a page walk");
+  assert.strictEqual(rows[245].id, "book-245", "the tail of the library must survive the read");
+}
+
+{
+  // The boundary itself is fine — 2000 rows is a complete library, not an
+  // overflowing one, so `> 2000` must not fire at the limit.
+  calls.length = 0;
+  nextStatus = 200;
+  nextBody = books(2000);
+  const rows = await api.listAllBooks();
+  assert.strictEqual(rows.length, 2000);
+}
+
+{
+  // 2001 rows means row 2001 exists and the answer may already be short of the
+  // truth. Refusing loudly beats a picker that is missing books it never
+  // mentions.
+  calls.length = 0;
+  nextStatus = 200;
+  nextBody = books(2001);
+  const overflowing = api.listAllBooks();
+  await assert.rejects(overflowing, (err: unknown) => {
+    assert.ok(err instanceof Error, `expected an Error, got ${String(err)}`);
+    assert.ok(!(err instanceof ApiError), "a full library is not an HTTP failure");
+    assert.match(err.message, /safety limit of 2000 rows/);
+    return true;
+  });
+}
+
+{
+  // A refusal from the router is still a refusal: the guided picker must see
+  // the structured error, not an empty library.
+  const err = await failed(() => api.listAllBooks(), 503, { detail: "database unavailable" });
+  assert.strictEqual(err.status, 503);
+  assert.strictEqual(err.message, "database unavailable");
+}
+
 console.log("OK");

@@ -177,6 +177,28 @@ export const api = {
     return unwrap<Book[]>(res);
   },
 
+  /**
+   * The COMPLETE library, in one bounded statement.
+   *
+   * `list_books(limit=100, offset=0)` answers the first 100 rows to a caller
+   * that names no limit, so `listBooks` hides most of a ~246-book library —
+   * fine for a paged Library screen, fatal for a picker whose whole job is
+   * "choose any book". Paging would walk an offset window that moves under an
+   * upload landing mid-walk; one over-sized read cannot. The extra row is the
+   * tripwire: a library that outgrew the picker has to say so rather than hand
+   * back a quietly truncated list.
+   *
+   * Cached under its own `["books", "all"]` key, so Fleet's and Library's
+   * 100-row `["books"]` entry can never overwrite it.
+   */
+  async listAllBooks(): Promise<Book[]> {
+    const rows = await unwrap<Book[]>(await authFetch("/api/v1/books?limit=2001&offset=0"));
+    if (rows.length > 2000) {
+      throw new Error("Book library exceeded the guided picker safety limit of 2000 rows");
+    }
+    return rows;
+  },
+
   async getCoverage(outputLanguage: OutputLanguage): Promise<CoverageResponse> {
     const res = await authFetch(
       `/api/v1/dashboard/coverage?output_language=${encodeURIComponent(outputLanguage)}`,
