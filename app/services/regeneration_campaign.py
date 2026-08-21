@@ -229,14 +229,20 @@ class RequestedPublicationVersionConflict(CampaignError):
     the version that is in the way.
     """
 
-    def __init__(self, conflicts):
+    def __init__(self, conflicts: Sequence[sources_repo.VersionConflict]):
         self.conflicts = tuple(conflicts)
+        # Asserted rather than degraded to a "V None … 0 of these lessons"
+        # message: the sole raise site is already guarded by `if
+        # version_conflicts:`, so an empty tuple is a caller bug, and a
+        # refusal that names no version and no lesson would be reported to an
+        # operator as if it were a real conflict.
+        assert self.conflicts, "a version conflict must carry at least one lineage"
         listed = ", ".join(
             f"{c.toc_entry_id}/{c.output_language} ({c.reason}, "
             f"V{c.existing_version})"
             for c in self.conflicts[:5]
         )
-        requested = self.conflicts[0].requested_version if self.conflicts else None
+        requested = self.conflicts[0].requested_version
         super().__init__(
             f"V{requested} cannot be published for {len(self.conflicts)} of "
             f"these lessons: {listed} — pick a higher version, or drop them "

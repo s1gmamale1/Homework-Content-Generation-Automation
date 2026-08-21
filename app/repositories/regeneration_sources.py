@@ -224,8 +224,11 @@ async def publication_version_conflicts(
     it came from.
     """
     if not sources:
-        # An empty `or_()` compiles away and would match every lineage in the
-        # table; there is nothing to ask about anyway.
+        # A PERFORMANCE guard, not a correctness one: the loop below iterates
+        # the same empty `sources` and would return `()` either way. It is here
+        # because an empty `or_()` compiles away and leaves only
+        # `publication_version == requested_version` — a scan of every lineage
+        # sitting at that version, asked on behalf of no lesson at all.
         return ()
 
     result = await session.execute(
@@ -270,10 +273,18 @@ async def lock_lineage(
 ) -> list[RegenerationTarget]:
     """``SELECT … FOR UPDATE`` over every target row of one lineage.
 
-    Serialises two campaigns that read :func:`next_expected_version` and then
-    write: without it both read the same max and both try to reserve the same
-    number, and the loser hits an ``IntegrityError`` deep inside publication
-    instead of waiting its turn here.
+    Blocks any other transaction that touches a target of this
+    ``(toc_entry_id, output_language)`` until this one ends, and returns the
+    locked rows.
+
+    NO PRODUCTION CALLER TODAY — it is exercised by tests only. This once
+    serialised the read-then-write version allocation; lineage version
+    allocation no longer goes through it, or through any lineage row lock. A
+    publication version is now serialised by the transaction-scoped advisory
+    lock inside :func:`regeneration_targets.reserve_publication_version`, with
+    the partial unique index ``uq_regeneration_targets_publication_version`` as
+    the final fence. Kept as the row-lock primitive for a future caller that
+    has to freeze a whole lineage.
 
     Terminal rows are deliberately INCLUDED — a published target is exactly the
     row that pins the consumed version, and skipping it would leave the number
