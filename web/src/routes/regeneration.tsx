@@ -18,6 +18,7 @@ import {
   regenerationDraftSignature,
   regenerationEligibleQuery,
   regenerationErrorView,
+  regenerationLatestMutationError,
   regenerationListPollMs,
   regenerationMutationView,
   regenerationPollDecision,
@@ -430,8 +431,14 @@ export function RegenerationPage() {
     (vars: { target: RegenerationTargetReport }) => vars.target.campaign_id === selectedId,
   );
 
-  // The canary panel owns the three campaign-level gate actions.
-  const campaignActionError = canaryView.error ?? approveView.error ?? rejectView.error;
+  // The newest submitted gate action owns the visible result. A stale approve
+  // refusal must not mask the reject the operator just attempted, and a newer
+  // success supersedes every older refusal.
+  const campaignActionError = regenerationLatestMutationError([
+    { submittedAt: canaryMut.submittedAt, error: canaryView.error },
+    { submittedAt: approveMut.submittedAt, error: approveView.error },
+    { submittedAt: rejectMut.submittedAt, error: rejectView.error },
+  ]);
   // A target refusal is about ONE lesson, so it renders on that lesson's row.
   const targetError =
     targetView.error && targetMut.variables
@@ -530,9 +537,9 @@ export function RegenerationPage() {
                     confirmations in local state, and they render at a fixed
                     position in this tree — so React reconciled them across a
                     change of selection and carried that state over. Nothing
-                    unmounted them either: `staleTime` is 30s and `adopt` writes
-                    each campaign back with `setQueryData`, so a campaign
-                    visited earlier this session answers from cache on the very
+                    unmounted them either: resident TanStack query data and
+                    `adopt`'s `setQueryData` mean an earlier campaign can answer
+                    from cache on the very
                     render the selection changes and `selected` is never falsy
                     in between. Campaign B opened with A's reject panel expanded
                     and A's reason in the box — one click from being stored as
@@ -571,7 +578,9 @@ export function RegenerationPage() {
                   )}
                   retryAuditByTarget={retryAuditByTarget}
                   pendingByTarget={pendingByTarget}
-                  onAction={(kind, target, reason) => targetMut.mutate({ kind, target, reason })}
+                  onAction={(kind, target, reason) =>
+                    targetMut.mutateAsync({ kind, target, reason })
+                  }
                   onCancelCampaign={(reason) =>
                     cancelMut.mutateAsync({ campaignId: selected.id, reason })
                   }

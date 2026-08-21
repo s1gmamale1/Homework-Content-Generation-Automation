@@ -648,6 +648,59 @@ const CREATE_ONLY_KEYS = [
   assert.match(view.hint ?? "", /refresh|reload|up to date|moved on/i);
 }
 
+// Scope and canary refusals carry operator-specific recovery, not a generic
+// stale-screen hint.
+for (const row of [
+  {
+    status: 422,
+    detail: {
+      error: "unbounded_selection",
+      message: "selection must include a book_id or toc_entry_id",
+    },
+    title: /book|lesson/i,
+    hint: /choose|select/i,
+  },
+  {
+    status: 422,
+    detail: {
+      error: "selection_too_large",
+      message: "selection contains 501 eligible targets",
+      count: 501,
+      maximum: 500,
+    },
+    title: /too many/i,
+    hint: /split|narrow/i,
+  },
+  {
+    status: 422,
+    detail: {
+      error: "selection_discovery_too_large",
+      message: "selection resolves to at least 1001 candidates",
+      count_at_least: 1001,
+      maximum: 1000,
+    },
+    title: /too broad/i,
+    hint: /book|lesson/i,
+  },
+  {
+    status: 409,
+    detail: {
+      error: "canary_not_reviewable",
+      message: "one canary failed",
+      blockers: ["generation_failed"],
+      canary_count: 2,
+      reason_code: "blocked",
+      remedy: "Retry or abandon the failed canary in the campaign report.",
+    },
+    title: /canary/i,
+    hint: /retry or abandon/i,
+  },
+] as const) {
+  const view = regenerationErrorView(new ApiError(row.status, row.detail.message, row.detail));
+  assert.match(view.title, row.title);
+  assert.match(view.hint ?? "", row.hint);
+}
+
 // A non-JSON body must not crash the renderer.
 {
   const err = new ApiError(500, "Internal Server Error");

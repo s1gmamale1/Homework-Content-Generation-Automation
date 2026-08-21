@@ -53,6 +53,7 @@ import {
   regenerationIneligibleLine,
   regenerationJudgeCounts,
   regenerationKeyedLines,
+  regenerationLatestMutationError,
   regenerationListPollMs,
   regenerationMutationView,
   regenerationNarrowScope,
@@ -2498,6 +2499,35 @@ function apiBook(over: Partial<Book> = {}): Book {
     ),
     { pending: false, error: null },
   );
+
+  const older = regenerationErrorView(
+    new ApiError(409, "older approve refusal", {
+      error: "illegal_campaign_state",
+      message: "older approve refusal",
+    }),
+  );
+  const newer = regenerationErrorView(
+    new ApiError(409, "newer reject refusal", {
+      error: "canary_not_reviewable",
+      message: "newer reject refusal",
+    }),
+  );
+  assert.strictEqual(
+    regenerationLatestMutationError([
+      { submittedAt: 10, error: older },
+      { submittedAt: 20, error: newer },
+    ])?.message,
+    "newer reject refusal",
+    "the refusal from the action the operator just took must not be masked by an older one",
+  );
+  assert.strictEqual(
+    regenerationLatestMutationError([
+      { submittedAt: 10, error: older },
+      { submittedAt: 20, error: null },
+    ]),
+    null,
+    "a newer successful action supersedes an older refusal",
+  );
 }
 
 /* ── minor 1: a stranded release beside real work keeps polling ─────── */
@@ -3467,8 +3497,6 @@ assert.ok(
   "the campaign-detail retry must re-run the detail query",
 );
 
-console.log("OK");
-
 /* ══════════════════════════════════════════════════════════════════════
  * Task 11 acceptance corrections (a–h).
  *
@@ -3752,8 +3780,6 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
   }
 }
 
-console.log("OK");
-
 /* ══════════════════════════════════════════════════════════════════════
  * Final-review blocker I3 — a destructive confirmation must never outlive
  * the campaign it was opened for.
@@ -3762,9 +3788,9 @@ console.log("OK");
  * `useState`, and the route renders both at a FIXED position in the tree. So
  * React reconciles them across a change of `selectedId` and PRESERVES that
  * state; the only thing that ever remounted them was the accident of the
- * detail query missing its cache. It usually does not miss: `staleTime` is
- * 30s and every mutation writes its campaign back with `setQueryData`, so a
- * campaign already visited this session answers from cache on the very
+ * detail query missing its cache. It usually does not miss: resident TanStack
+ * query data and every mutation's `setQueryData` let a campaign already
+ * visited this session answer from cache on the very
  * render the selection changes. `selected` is therefore never falsy in
  * between, nothing unmounts, and campaign B opens with campaign A's reject
  * panel already expanded and A's typed reason in the box — one click from
@@ -3792,13 +3818,12 @@ console.log("OK");
 {
   /** The key EXPRESSION as written on the tag, `${…}` interpolation included. */
   function keyExpression(tag: string): string {
-    const match = new RegExp(`<${tag}\\s+key=\\{((?:[^{}]|\\$\\{[^{}]*\\})*)\\}`).exec(
+    const match = new RegExp(`<${tag}\\b[^>]*\\bkey=\\{((?:[^{}]|\\$\\{[^{}]*\\})*)\\}`).exec(
       acceptanceRouteSrc,
     );
     assert.ok(
       match !== null,
-      `${tag} must be keyed by the selected campaign — without it React reuses ` +
-        "one instance across campaigns and its confirmation state leaks into the next",
+      `${tag} must be keyed by the selected campaign — without it React reuses one instance across campaigns and its confirmation state leaks into the next`,
     );
     return match[1];
   }
@@ -3830,61 +3855,46 @@ console.log("OK");
       "never unmounts, and the confirmation state this block guards survives anyway",
   );
 
-  // The reset does BOTH halves. A panel that closed but kept its text reopens
-  // pre-filled with a reason written about an entirely different decision.
-  assert.ok(
-    /const clearRejectConfirmation = \(\) => \{\s*setConfirmingReject\(false\);\s*setRejectReason\(""\);\s*\};/.test(
-      acceptanceCanarySrc,
-    ),
-    "a finished reject must close the panel AND clear the typed reason",
-  );
-  assert.ok(
-    /const clearCancelConfirmation = \(\) => \{\s*setConfirmingCancel\(false\);\s*setCancelReason\(""\);\s*\};/.test(
-      acceptanceReportSrc,
-    ),
-    "a finished cancel must close the panel AND clear the typed reason",
-  );
-
-  // ...and each reset is wired to the RESOLVED mutation rather than to the
-  // click, so a refusal (409, stale state) leaves the panel open holding the
-  // reason the operator is about to retry with.
-  assert.ok(
-    /onReject\(rejectReason\)\)\s*\.then\(clearRejectConfirmation\)/.test(acceptanceCanarySrc),
-    "the reject reset must run on success only, never on the click",
-  );
-  assert.ok(
-    /onCancelCampaign\(cancelReason\)\)\s*\.then\(clearCancelConfirmation\)/.test(
-      acceptanceReportSrc,
-    ),
-    "the cancel reset must run on success only, never on the click",
-  );
-  // Which is only possible if the route hands back the mutation's own promise.
-  for (const call of ["rejectMut.mutateAsync(", "cancelMut.mutateAsync("]) {
+  // Destructive reason forms all receive promises and await the real request:
+  // a rejection leaves the form and its audit text intact; only success clears.
+  for (const call of [
+    "rejectMut.mutateAsync(",
+    "cancelMut.mutateAsync(",
+    "targetMut.mutateAsync(",
+  ]) {
     assert.ok(
       acceptanceRouteSrc.includes(call),
       `the route must return ${call.slice(0, -1)}'s promise so the panel can close on success`,
     );
   }
-
-  // …and taking that promise means OWNING its rejection. `mutateAsync` rejects
-  // on a refusal — a 409 is the ordinary one here — and this chain is the only
-  // consumer, so an uncaught leg becomes an unhandled promise rejection while
-  // the refusal itself is already being rendered from `useMutation.error`. The
-  // `.catch` must sit on the SAME chain as the reset, after it: a `.then` added
-  // below an already-terminated chain would swallow nothing.
   assert.ok(
-    /onReject\(rejectReason\)\)\s*\.then\(clearRejectConfirmation\)\s*\.catch\(/.test(
-      acceptanceCanarySrc,
-    ),
-    "the reject chain must catch its own rejection — a refused reject must not " +
-      "surface as an unhandled promise rejection",
+    /onReject:\s*\(reason:\s*string\)\s*=>\s*Promise<unknown>/.test(acceptanceCanarySrc),
+    "reject callers must be required to return a promise",
   );
   assert.ok(
-    /onCancelCampaign\(cancelReason\)\)\s*\.then\(clearCancelConfirmation\)\s*\.catch\(/.test(
+    /onCancelCampaign:\s*\(reason:\s*string\)\s*=>\s*Promise<unknown>/.test(
       acceptanceReportSrc,
     ),
-    "the cancel chain must catch its own rejection — a refused cancel must not " +
-      "surface as an unhandled promise rejection",
+    "cancel callers must be required to return a promise",
+  );
+  assert.ok(
+    /\)\s*=>\s*Promise<unknown>;/.test(acceptanceReportSrc),
+    "target actions must be promise-returning so abandon preserves its reason on refusal",
+  );
+  for (const [name, source, call] of [
+    ["reject", acceptanceCanarySrc, "await onReject(rejectReason)"],
+    ["cancel", acceptanceReportSrc, "await onCancelCampaign(cancelReason)"],
+    ["target action", acceptanceReportSrc, "await onAction(open.kind, target, reason)"],
+  ] as const) {
+    assert.ok(source.includes(call), `${name} must await the server before clearing its form`);
+  }
+  assert.ok(
+    acceptanceCanarySrc.includes('rejecting ? "Rejecting…" : gate.rejectLabel'),
+    "reject progress must remain visible after a campaign-key remount",
+  );
+  assert.ok(
+    acceptanceReportSrc.includes('cancelling ? "Cancelling…" : "Cancel campaign"'),
+    "cancel progress must remain visible after a campaign-key remount",
   );
 }
 

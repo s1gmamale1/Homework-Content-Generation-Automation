@@ -79,7 +79,7 @@ function TargetRow({
     kind: RegenerationActionKind,
     target: RegenerationTargetReport,
     reason: string,
-  ) => void;
+  ) => Promise<unknown>;
 }) {
   const [openKind, setOpenKind] = useState<RegenerationActionKind | null>(null);
   const [reason, setReason] = useState("");
@@ -251,12 +251,17 @@ function TargetRow({
               type="button"
               className={cn(GHOST_BTN, "px-2 py-1 text-xs")}
               disabled={!open.enabled || (open.requiresReason && reasonError !== null)}
-              onClick={() => {
-                onAction(open.kind, target, reason);
+              onClick={async () => {
+                try {
+                  await onAction(open.kind, target, reason);
+                } catch {
+                  return;
+                }
                 setOpenKind(null);
+                setReason("");
               }}
             >
-              Confirm · {open.label}
+              {pendingKind === open.kind ? "Working…" : `Confirm · ${open.label}`}
             </button>
             {open.requiresReason && reasonError && (
               <span className="text-xs text-amber-100/80">{reasonError}</span>
@@ -289,11 +294,9 @@ export function CampaignReport({
     kind: RegenerationActionKind,
     target: RegenerationTargetReport,
     reason: string,
-  ) => void;
-  /** Returns the cancel mutation's own promise, so this panel can close itself
-   *  on the SUCCESS rather than on the click — see `clearCancelConfirmation`. A
-   *  caller that returns nothing simply resets immediately. */
-  onCancelCampaign: (reason: string) => void | Promise<unknown>;
+  ) => Promise<unknown>;
+  /** The real mutation promise: only a successful response clears this form. */
+  onCancelCampaign: (reason: string) => Promise<unknown>;
   cancelling: boolean;
   /** The CAMPAIGN-level refusal — today only cancel. */
   actionError: RegenerationErrorView | null;
@@ -366,8 +369,6 @@ export function CampaignReport({
         </div>
       )}
 
-      {actionError && <RegenerationProblem view={actionError} />}
-
       <div className="space-y-3">
         {buckets.map((bucket) => (
           <div key={bucket.bucket} className="space-y-1.5">
@@ -415,8 +416,9 @@ export function CampaignReport({
             disabled={cancelling}
             onClick={() => setConfirmingCancel((v) => !v)}
           >
-            Cancel campaign
+            {cancelling ? "Cancelling…" : "Cancel campaign"}
           </button>
+          {actionError && <RegenerationProblem view={actionError} />}
           {confirmingCancel && (
             <div className="space-y-2 rounded-xl border border-amber-300/25 bg-amber-300/[0.07] p-3">
               <p
@@ -446,14 +448,17 @@ export function CampaignReport({
                   type="button"
                   className={GLASS_BTN}
                   disabled={cancelReasonError !== null || cancelling}
-                  onClick={() => {
+                  onClick={async () => {
                     // SUCCESS-scoped, deliberately not on the click: this used
                     // to close on the click, which hid a refusal's own panel
                     // while silently keeping the typed reason. A refusal now
                     // leaves both exactly as they were, ready to retry.
-                    void Promise.resolve(onCancelCampaign(cancelReason))
-                      .then(clearCancelConfirmation)
-                      .catch(() => undefined);
+                    try {
+                      await onCancelCampaign(cancelReason);
+                    } catch {
+                      return;
+                    }
+                    clearCancelConfirmation();
                   }}
                 >
                   {cancelling ? "Cancelling…" : "Confirm cancel"}

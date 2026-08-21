@@ -1991,8 +1991,9 @@ export function regenerationNextVersion(target: RegenerationTargetReport): numbe
  *  abandoning every target one at a time.
  *
  *  Approve stays narrow on purpose: `approve_canary` also accepts
- *  `attention_required`, but there is no reviewed canary behind it, so offering
- *  "approve and publish" there would invite a release nobody looked at.
+ *  `attention_required`, but at least one canary still needs repair or an
+ *  explicit abandon decision, so offering "approve and publish" there would
+ *  invite a release before the gate is reviewable.
  */
 export interface RegenerationDecisionGate {
   canApprove: boolean;
@@ -2035,9 +2036,10 @@ export function regenerationDecisionGate(
     canReject,
     rejectNote:
       canReject && !canApprove
-        ? "This campaign has no reviewed canary to approve. Rejecting it abandons " +
-          "every canary and planned lesson; no Notion page is created and no " +
-          "publication version is consumed."
+        ? "One or more canary lessons need attention. Use their controls in the campaign " +
+          "report to retry failed work or abandon an unrecoverable lesson. Approval returns " +
+          "when a reviewable canary is ready; rejecting ends the whole campaign without " +
+          "creating a Notion page or consuming a publication version."
         : null,
   };
 }
@@ -2590,6 +2592,22 @@ export interface RegenerationMutationView {
   error: RegenerationErrorView | null;
 }
 
+export interface RegenerationTimedMutationError {
+  submittedAt: number;
+  error: RegenerationErrorView | null;
+}
+
+/** Error from the most recently submitted action, including a successful
+ * newer action whose null error supersedes an older refusal. */
+export function regenerationLatestMutationError(
+  actions: readonly RegenerationTimedMutationError[],
+): RegenerationErrorView | null {
+  if (actions.length === 0) return null;
+  return actions.reduce((latest, action) =>
+    action.submittedAt >= latest.submittedAt ? action : latest,
+  ).error;
+}
+
 /**
  * A mutation result, scoped to the thing that produced it.
  *
@@ -2672,6 +2690,11 @@ function text(row: Record<string, unknown>, key: string): string {
 function rowsOf(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
   const value = record[key];
   return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function stringsOf(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  return Array.isArray(value) ? value.filter((row): row is string => typeof row === "string") : [];
 }
 
 /** One `{loc, msg}` row of a FastAPI validation error, as a sentence.
@@ -2844,6 +2867,35 @@ export function regenerationErrorView(err: unknown): RegenerationErrorView {
           "read inconsistently. Tick the acknowledgement box and try again.",
         hint: null,
       };
+    case "unbounded_selection":
+      return {
+        ...base,
+        title: "Choose a book or lesson first",
+        hint: "Select at least one book or individual lesson, then request the estimate again.",
+      };
+    case "selection_too_large":
+      return {
+        ...base,
+        title: "Too many eligible lessons for one campaign",
+        hint: "Narrow the selection or split it into separately reviewed campaigns.",
+      };
+    case "selection_discovery_too_large":
+      return {
+        ...base,
+        title: "That selection is too broad to inspect safely",
+        hint: "Choose a specific book or a smaller set of lessons, then try again.",
+      };
+    case "canary_not_reviewable": {
+      const remedy = text(detail ?? {}, "remedy");
+      return {
+        ...base,
+        title: "The canary is not ready for approval",
+        details: stringsOf(detail ?? {}, "blockers").map(
+          (blocker) => `Blocked by ${humanise(blocker)}`,
+        ),
+        hint: remedy || "Retry or abandon the affected canary lessons in the campaign report.",
+      };
+    }
     case "illegal_campaign_state":
     case "illegal_target_state":
       return { ...base, title: "That is not possible from here", hint: REGENERATION_STALE_HINT };

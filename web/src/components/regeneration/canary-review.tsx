@@ -70,10 +70,8 @@ export function CanaryReview({
   detail: RegenerationCampaignDetail;
   onLaunchCanary: () => void;
   onApprove: () => void;
-  /** Returns the reject mutation's own promise, so this panel can close itself
-   *  on the SUCCESS rather than on the click — see `clearRejectConfirmation`. A
-   *  caller that returns nothing simply resets immediately. */
-  onReject: (reason: string) => void | Promise<unknown>;
+  /** The real mutation promise: only a successful response clears this form. */
+  onReject: (reason: string) => Promise<unknown>;
   launching: boolean;
   approving: boolean;
   rejecting: boolean;
@@ -352,7 +350,7 @@ export function CanaryReview({
               disabled={busy}
               onClick={() => setConfirmingReject((v) => !v)}
             >
-              {gate.rejectLabel}
+              {rejecting ? "Rejecting…" : gate.rejectLabel}
             </button>
           </div>
 
@@ -388,14 +386,17 @@ export function CanaryReview({
                   type="button"
                   className={GLASS_BTN}
                   disabled={reasonError !== null || busy}
-                  onClick={() => {
+                  onClick={async () => {
                     // SUCCESS-scoped, deliberately not on the click: a refusal
                     // (409, stale state) has to leave this panel open holding
                     // the reason the operator is about to retry with. Clearing
                     // it here would delete exactly what the retry needs.
-                    void Promise.resolve(onReject(rejectReason))
-                      .then(clearRejectConfirmation)
-                      .catch(() => undefined);
+                    try {
+                      await onReject(rejectReason);
+                    } catch {
+                      return;
+                    }
+                    clearRejectConfirmation();
                   }}
                 >
                   {rejecting ? "Rejecting…" : "Confirm reject"}
