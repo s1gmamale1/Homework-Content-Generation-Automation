@@ -86,6 +86,26 @@ MISSING_GRADE_REASON = (
 )
 
 
+class DiscoverySelectionTooLarge(RuntimeError):
+    """The bounded lineage query overflowed before per-lineage discovery.
+
+    ``count_at_least`` is intentionally a lower bound: SQL fetches only
+    ``maximum + 1`` rows, which proves the refusal without loading the rest.
+    """
+
+    def __init__(self, count_at_least: int, maximum: int):
+        self.count_at_least = int(count_at_least)
+        self.maximum = int(maximum)
+        super().__init__(
+            f"selection resolves to at least {self.count_at_least} candidate "
+            f"lineages; discovery supports at most {self.maximum} at once — "
+            "narrow the book or lesson selection"
+        )
+
+    def __reduce__(self):
+        return (type(self), (self.count_at_least, self.maximum))
+
+
 class NoEligibleSource(LookupError):
     """:func:`resolve_default_source` found no usable snapshot.
 
@@ -266,12 +286,16 @@ async def list_source_candidates(
     they are indexed point queries, and batching them would duplicate the
     resolution rule in a second, join-shaped form.
     """
+    maximum = int(settings.regeneration_max_discovery_lineages)
     lineages = await sources_repo.candidate_lineages(
         session,
         book_ids=book_ids,
         toc_entry_ids=toc_entry_ids,
         output_languages=output_languages,
+        limit=maximum + 1,
     )
+    if len(lineages) > maximum:
+        raise DiscoverySelectionTooLarge(len(lineages), maximum)
 
     picked: list[tuple] = []
     for lineage in lineages:

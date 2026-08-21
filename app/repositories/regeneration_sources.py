@@ -198,6 +198,7 @@ async def candidate_lineages(
     book_ids: Optional[Collection[UUID]] = None,
     toc_entry_ids: Optional[Collection[UUID]] = None,
     output_languages: Optional[Collection[str]] = None,
+    limit: Optional[int] = None,
 ) -> list[LineageCandidate]:
     """Every lineage that has at least one completed homework, filtered by the
     operator's selection. ``None`` for a filter means "do not filter"; an EMPTY
@@ -247,6 +248,8 @@ async def candidate_lineages(
         stmt = stmt.where(HomeworkJob.toc_entry_id.in_(list(toc_entry_ids)))
     if output_languages is not None:
         stmt = stmt.where(HomeworkJob.output_language.in_(list(output_languages)))
+    if limit is not None:
+        stmt = stmt.limit(limit)
 
     rows = (await session.execute(stmt)).all()
     return [

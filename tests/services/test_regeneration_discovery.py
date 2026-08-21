@@ -115,12 +115,14 @@ class _FakeRepo:
         self.missing_source = dict(missing_source or {})
         self.versions = dict(versions or {})
         self.phase_row_calls: list[list[uuid.UUID]] = []
+        self.candidate_limits: list[Optional[int]] = []
 
     def install(self, monkeypatch):
         from app.repositories import regeneration_sources as sources_repo
         from app.repositories import regeneration_targets as targets_repo
 
         async def candidate_lineages(session, **kwargs):
+            self.candidate_limits.append(kwargs.get("limit"))
             return list(self.candidates)
 
         async def latest_v1_source_job(session, *, toc_entry_id, output_language):
@@ -159,6 +161,35 @@ class _FakeRepo:
             targets_repo, "revision_job_for_target", revision_job_for_target
         )
         return self
+
+
+@pytest.mark.asyncio
+async def test_discovery_refuses_overwide_work_before_per_lineage_queries(
+    monkeypatch,
+):
+    from app.services import regeneration_discovery as discovery
+
+    maximum = 2
+    monkeypatch.setattr(
+        discovery.settings, "regeneration_max_discovery_lineages", maximum
+    )
+    repo = _FakeRepo(candidates=[_candidate(_Job()) for _ in range(maximum + 1)])
+    repo.install(monkeypatch)
+
+    async def _must_not_pick(*_args, **_kwargs):
+        raise AssertionError("overwide discovery reached per-lineage queries")
+
+    monkeypatch.setattr(discovery, "_pick_source_job", _must_not_pick)
+
+    with pytest.raises(discovery.DiscoverySelectionTooLarge) as excinfo:
+        await discovery.list_source_candidates(
+            None, book_ids=[uuid.uuid4()], toc_entry_ids=None,
+            output_languages=None,
+        )
+
+    assert repo.candidate_limits == [maximum + 1]
+    assert excinfo.value.count_at_least == maximum + 1
+    assert excinfo.value.maximum == maximum
 
 
 def _one_lineage(monkeypatch, *, job=None, rows=None, **repo_kwargs) -> _Job:

@@ -67,6 +67,23 @@ class _FakeSession:
         return self._scalars.pop(0) if self._scalars else None
 
 
+@pytest.mark.asyncio
+async def test_canary_statuses_locks_only_canary_rows_for_the_gate():
+    from app.repositories import regeneration_targets as repo
+
+    campaign_id = uuid.uuid4()
+    session = _FakeSession(execute_results=[["awaiting_canary_approval"]])
+    statuses = await repo.canary_statuses_for_campaign(
+        session, campaign_id, for_update=True
+    )
+
+    assert statuses == ["awaiting_canary_approval"]
+    sql = _sql(session.statements[0])
+    assert "regeneration_targets.campaign_id = " in sql
+    assert "regeneration_targets.is_canary IS true" in sql
+    assert "FOR UPDATE" in sql
+
+
 # ─────────────────────── latest_v1_source_job ────────────────────────
 
 
@@ -239,6 +256,24 @@ async def test_candidate_lineages_applies_only_the_filters_it_was_given():
     # Even with no selection filter, only completed student homework counts.
     assert "homework_jobs.status = " in sql
     assert "homework_jobs.kind = " in sql
+
+
+@pytest.mark.asyncio
+async def test_candidate_lineages_applies_the_discovery_workload_limit():
+    from app.repositories import regeneration_sources as repo
+
+    session = _FakeSession(execute_results=[[]])
+    await repo.candidate_lineages(
+        session,
+        book_ids=[uuid.uuid4()],
+        toc_entry_ids=None,
+        output_languages=None,
+        limit=1001,
+    )
+
+    compiled = session.statements[0].compile(dialect=postgresql.dialect())
+    assert "LIMIT" in str(compiled)
+    assert 1001 in compiled.params.values()
 
 
 @pytest.mark.asyncio

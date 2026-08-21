@@ -407,6 +407,13 @@ class Settings(BaseSettings):
     # to 0 to disable staggering entirely (every revision claimable at once).
     regeneration_launch_wave_size: int = Field(default=4, ge=0)
     regeneration_launch_wave_interval_seconds: int = Field(default=60, ge=0)
+    # Maximum ELIGIBLE lessons in one campaign. Ineligible discovery rows are
+    # reported to the operator but do not consume campaign capacity.
+    regeneration_max_campaign_targets: int = Field(default=500, ge=1)
+    # Separate workload guard for discovery itself. Discovery performs indexed
+    # per-lineage source checks, so refuse before that fan-out when the initial
+    # bounded SQL query finds more than this many candidate lineages.
+    regeneration_max_discovery_lineages: int = Field(default=1000, ge=1)
 
     # ─── Budget monitor (kill-switch) ─────────────────────────────────────
     # Per-batch api spend cap (USD). 0 = disabled (no per-batch pause).

@@ -27,7 +27,9 @@ would be asserting on the fake.
 """
 from __future__ import annotations
 
+import copy
 import os
+import pickle
 import uuid
 from types import SimpleNamespace
 
@@ -35,6 +37,7 @@ import pytest
 
 from app.schemas.regeneration_contract import LaunchContract, ResolvedLaunchContract
 from app.services import regeneration_campaign as svc
+from app.services import regeneration_states
 from app.services.flows import flow_for
 from app.services.regeneration_planner import build_phase_plan
 
@@ -292,6 +295,40 @@ def test_derivation_defers_to_the_shared_pure_rollup():
     assert svc.roll_up_campaign is regeneration_states.roll_up_campaign
 
 
+def test_derivation_carries_the_canary_rows_through_to_the_rollup():
+    """The gate is a claim about the CANARIES. If this wrapper drops them, the
+    rollup falls back to its flat reading and the stale gate comes back."""
+    assert svc.derive_campaign_status(
+        target_statuses=["awaiting_canary_approval", "planned"],
+        approved=False,
+        canary_statuses=["awaiting_canary_approval", "planned"],
+    ) == "attention_required"
+    assert svc.derive_campaign_status(
+        target_statuses=["awaiting_canary_approval", "planned"],
+        approved=False,
+        canary_statuses=["awaiting_canary_approval"],
+    ) == "awaiting_canary_approval"
+
+
+@pytest.mark.parametrize(
+    "status", sorted(regeneration_states.TARGET_STATUSES)
+)
+def test_the_rollup_and_the_approval_guard_agree_on_every_canary_status(status):
+    """One predicate, two consumers — asserted behaviourally rather than by
+    identity, because the failure mode is not "someone re-implemented it", it
+    is "the two answers drifted". A status the rollup calls a gate and the
+    guard refuses is exactly the bug: the operator is shown a button whose
+    handler 409s.
+    """
+    gate_ready = regeneration_states.is_canary_gate_ready([status])
+    try:
+        svc.assert_canary_gate_ready([status])
+        guard_ready = True
+    except svc.CanaryNotReviewable:
+        guard_ready = False
+    assert gate_ready is guard_ready, status
+
+
 @pytest.mark.parametrize("terminal", ["completed", "completed_with_abandonments",
                                       "cancelled", "rejected"])
 def test_a_terminal_campaign_status_over_live_targets_is_refused(terminal):
@@ -360,6 +397,50 @@ def test_the_gate_refusal_is_an_illegal_campaign_action():
     assert issubclass(svc.CanaryNotReviewable, svc.IllegalCampaignAction)
 
 
+def test_gate_refusals_preserve_actionable_metadata_across_copy_and_pickle():
+    """A middleware/logging boundary may copy or pickle an exception. Losing
+    the remedy or blocker kinds there would turn the structured 409 into a
+    generic refusal even though the service produced the useful answer."""
+    original = pytest.raises(
+        svc.CanaryNotReviewable,
+        svc.assert_canary_gate_ready,
+        ["generation_failed", "generation_failed", "planned"],
+    ).value
+
+    assert original.blockers == ("generation_failed", "planned")
+    assert "launch" in original.remedy and "retry" in original.remedy
+    for restored in (copy.copy(original), pickle.loads(pickle.dumps(original))):
+        assert restored.blockers == original.blockers
+        assert restored.total == 3
+        assert restored.reason_code == "not_reviewable"
+        assert restored.remedy == original.remedy
+        assert str(restored) == str(original)
+
+
+def test_all_abandoned_and_unlaunched_canaries_name_the_real_next_action():
+    with pytest.raises(svc.CanaryNotReviewable) as abandoned:
+        svc.assert_canary_gate_ready(["abandoned", "abandoned"])
+    assert abandoned.value.blockers == ()
+    assert "retry or abandon" not in str(abandoned.value).lower()
+    assert "cancel" in abandoned.value.remedy or "reject" in abandoned.value.remedy
+
+    with pytest.raises(svc.CanaryNotReviewable) as planned:
+        svc.assert_canary_gate_ready(["planned"])
+    assert planned.value.blockers == ("planned",)
+    assert "launch" in planned.value.remedy
+
+
+def test_selection_limit_refusal_is_copy_and_pickle_safe():
+    original = svc.SelectionTooLarge(
+        501, maximum=500, what="create a regeneration campaign"
+    )
+    for restored in (copy.copy(original), pickle.loads(pickle.dumps(original))):
+        assert restored.count == 501
+        assert restored.maximum == 500
+        assert restored.what == "create a regeneration campaign"
+        assert str(restored) == str(original)
+
+
 def _returns(value):
     """A stand-in for any awaitable repository/service call."""
     async def _call(*_args, **_kwargs):
@@ -403,11 +484,8 @@ async def test_approval_reads_the_canary_rows_not_the_campaign_status(monkeypatc
         svc.campaigns_repo, "get_campaign_for_update", _returns(campaign)
     )
     monkeypatch.setattr(
-        svc.targets_repo, "list_for_campaign",
-        _returns([SimpleNamespace(
-            id=uuid.uuid4(), status="generation_failed", is_canary=True,
-            abandon_requested_at=None, publication_released_at=None,
-        )]),
+        svc.targets_repo, "canary_statuses_for_campaign",
+        _returns(["generation_failed"]),
     )
     stamped: list = []
     monkeypatch.setattr(
@@ -451,20 +529,21 @@ def test_books_or_lessons_each_bound_a_selection():
     )
 
 
-def test_the_campaign_scope_cap_is_five_hundred_lineages():
-    assert svc.MAX_CAMPAIGN_TARGETS == 500
+def test_the_campaign_scope_cap_defaults_to_five_hundred_targets():
+    assert svc.settings.regeneration_max_campaign_targets == 500
 
 
-def test_the_cap_admits_its_own_boundary_and_refuses_one_more():
+def test_the_cap_admits_its_own_boundary_and_refuses_one_more(monkeypatch):
+    monkeypatch.setattr(svc.settings, "regeneration_max_campaign_targets", 7)
     svc.require_selection_within_cap(
-        svc.MAX_CAMPAIGN_TARGETS, what="create a regeneration campaign"
+        7, what="create a regeneration campaign"
     )
     with pytest.raises(svc.SelectionTooLarge) as excinfo:
         svc.require_selection_within_cap(
-            svc.MAX_CAMPAIGN_TARGETS + 1, what="create a regeneration campaign"
+            8, what="create a regeneration campaign"
         )
-    assert excinfo.value.count == svc.MAX_CAMPAIGN_TARGETS + 1
-    assert excinfo.value.maximum == svc.MAX_CAMPAIGN_TARGETS
+    assert excinfo.value.count == 8
+    assert excinfo.value.maximum == 7
 
 
 async def test_an_unbounded_selection_is_refused_before_a_session_is_opened():
@@ -497,14 +576,18 @@ async def test_an_oversized_selection_is_refused_before_any_campaign_row(
         svc.RegenerationCampaignService, "_resolve_contract_once",
         _returns(_CONTRACT),
     )
+    monkeypatch.setattr(svc.settings, "regeneration_max_campaign_targets", 2)
+    source = SimpleNamespace(
+        book_id=uuid.uuid4(), order_index=0, subject=_SUBJECT,
+    )
     monkeypatch.setattr(
         svc.discovery, "list_source_candidates",
         _returns([
             SimpleNamespace(
                 toc_entry_id=uuid.uuid4(), output_language="uz",
-                source=None, reasons=(),
+                source=source, reasons=(),
             )
-            for _ in range(svc.MAX_CAMPAIGN_TARGETS + 1)
+            for _ in range(3)
         ]),
     )
     monkeypatch.setattr(svc.campaigns_repo, "create_campaign", _never)
@@ -517,6 +600,58 @@ async def test_an_oversized_selection_is_refused_before_any_campaign_row(
             contract=LaunchContract(**_CONTRACT.model_dump()),
             selected_phases=("flashcards",),
         ))
+
+
+async def test_campaign_cap_counts_only_eligible_targets(monkeypatch):
+    """Rejected lineages remain audit-visible but consume neither a target
+    row nor campaign capacity."""
+    monkeypatch.setattr(svc.settings, "regeneration_max_campaign_targets", 2)
+    source = SimpleNamespace(
+        book_id=uuid.uuid4(), order_index=0, subject=_SUBJECT,
+        toc_entry_id=uuid.uuid4(), output_language="uz",
+        source_job_id=uuid.uuid4(),
+    )
+    candidates = [
+        SimpleNamespace(
+            toc_entry_id=source.toc_entry_id, output_language="uz",
+            source=source, reasons=(),
+        ),
+        *[
+            SimpleNamespace(
+                toc_entry_id=uuid.uuid4(), output_language="uz",
+                source=None, reasons=("ineligible",),
+            )
+            for _ in range(5)
+        ],
+    ]
+    monkeypatch.setattr(
+        svc.RegenerationCampaignService, "_resolve_contract_once",
+        _returns(_CONTRACT),
+    )
+    monkeypatch.setattr(
+        svc.discovery, "list_source_candidates", _returns(candidates)
+    )
+    monkeypatch.setattr(
+        svc.targets_repo, "active_targets_for_lineages", _returns([])
+    )
+
+    reached_write = False
+
+    async def _campaign_write(*_args, **_kwargs):
+        nonlocal reached_write
+        reached_write = True
+        raise RuntimeError("stop after proving the eligible-count guard")
+
+    monkeypatch.setattr(svc.campaigns_repo, "create_campaign", _campaign_write)
+    service = svc.RegenerationCampaignService(session_factory=_NullSession)
+
+    with pytest.raises(RuntimeError, match="eligible-count guard"):
+        await service.create_campaign(svc.CreateCampaignSpec(
+            selection=svc.CampaignSelection(book_ids=(uuid.uuid4(),)),
+            contract=LaunchContract(**_CONTRACT.model_dump()),
+            selected_phases=("flashcards",),
+        ))
+    assert reached_write is True
 
 
 # ─── deterministic ordering ──────────────────────────────────────────────
@@ -1277,13 +1412,141 @@ async def test_approval_does_not_release_a_canary_that_is_being_abandoned(seeded
 
 @db_only
 async def test_a_failed_canary_is_not_released_by_approval(seeded):
+    """Approval is REFUSED, not merely ineffective.
+
+    The campaign parks in `attention_required` — which is one of
+    `approve_canary`'s own accepted pre-approval statuses, so nothing about
+    the status stops the next click. The refusal has to come from the canary
+    ROWS, and it has to leave `approved_at` unstamped: `approved_at` is what
+    `trg_regeneration_targets_publication_gate` reads before letting ANY
+    target of the campaign publish, so stamping it here would arm every
+    remaining lesson behind a canary nobody could review.
+    """
     service = _service()
     campaign = await service.create_campaign(_spec(seeded))
     await service.launch_canary(campaign.id)
     await _finish_canary(campaign.id, usable=False)
-    approved = await service.approve_canary(campaign.id, actor="pytest")
+
+    with pytest.raises(svc.CanaryNotReviewable) as excinfo:
+        await service.approve_canary(campaign.id, actor="pytest")
+    assert excinfo.value.blockers == ("generation_failed",)
+    assert "retry or abandon" in str(excinfo.value)
+
     assert [s for s, _, _ in await _statuses(campaign.id)] == ["generation_failed"]
-    assert approved.status == "attention_required"
+    after = await service.roll_up(campaign.id)
+    assert after.status == "attention_required"
+    assert after.approved_at is None, (
+        "the publication gate was armed over an unreviewable canary"
+    )
+
+
+@db_only
+async def test_a_retried_canary_reopens_the_gate_it_had_closed(seeded):
+    """The other half of the refusal: it is not a dead end.
+
+    `attention_required` is an accepted pre-approval status precisely so a
+    canary that failed and was repaired can be approved without an operator
+    having to do anything else. This drives that repair through the real
+    service and proves the gate comes back.
+    """
+    service = _service()
+    campaign = await service.create_campaign(_spec(seeded))
+    await service.launch_canary(campaign.id)
+    await _finish_canary(campaign.id, usable=False)
+    with pytest.raises(svc.CanaryNotReviewable):
+        await service.approve_canary(campaign.id, actor="pytest")
+
+    (target,) = await _targets(campaign.id)
+    await service.retry_generation(target.id)
+    await _finish_canary(campaign.id)
+    assert [s for s, _, _ in await _statuses(campaign.id)] == [
+        "awaiting_canary_approval"]
+
+    approved = await service.approve_canary(campaign.id, actor="pytest")
+    assert approved.approved_at is not None
+    assert [s for s, _, _ in await _statuses(campaign.id)] == [
+        "publication_pending"]
+
+
+@db_only
+async def test_the_rollup_retracts_a_gate_whose_canaries_were_all_abandoned():
+    """The stale-gate bug, end to end and through the real service.
+
+    A campaign genuinely reaches `awaiting_canary_approval` — reviewable
+    canary, bulk target still `planned` — and then the operator abandons the
+    canary. Under the flat rollup the targets imply `draft`, which is not a
+    legal move out of `awaiting_canary_approval`, so `_apply_derived_status`
+    left the row exactly as it found it: a campaign advertising a gate over a
+    wave with nothing in it, one compare-and-set from `approved`.
+    """
+    ids = await _seed(lessons=2)
+    try:
+        service = _service()
+        campaign = await service.create_campaign(_spec(ids, canary_size=1))
+        await service.launch_canary(campaign.id)
+        await _finish_canary(campaign.id)
+        assert (await service.roll_up(campaign.id)).status == (
+            "awaiting_canary_approval")
+
+        (canary,) = [t for t in await _targets(campaign.id) if t.is_canary]
+        await service.abandon(canary.id, actor="pytest", reason="dropped it")
+
+        retracted = await service.roll_up(campaign.id)
+        assert retracted.status == "attention_required", (
+            "the campaign is still advertising a canary gate that can never open"
+        )
+        assert retracted.approved_at is None
+        with pytest.raises(svc.CanaryNotReviewable) as excinfo:
+            await service.approve_canary(campaign.id, actor="pytest")
+        assert excinfo.value.reason == "all_abandoned"
+    finally:
+        await _purge(ids)
+
+
+@db_only
+async def test_a_half_launched_wave_does_not_report_a_gate():
+    """One canary reviewable, one that never got a revision job.
+
+    `planned` is also every bulk target's pre-approval status, so this is the
+    shape a flat status list cannot see — and the one where reporting the gate
+    invites an operator to release the bulk on half a wave.
+    """
+    ids = await _seed(lessons=3)
+    try:
+        service = _service()
+        campaign = await service.create_campaign(_spec(ids, canary_size=2))
+        await service.launch_canary(campaign.id)
+        await _finish_canary(campaign.id)
+
+        # Push ONE canary back to `planned`, exactly as a mid-wave crash
+        # between the campaign's commit and the job's would leave it.
+        from app.db import SessionLocal
+        from app.models.homework_job import HomeworkJob
+        from app.repositories import regeneration_targets as targets_repo
+
+        canaries = [t for t in await _targets(campaign.id) if t.is_canary]
+        stalled = canaries[0]
+        async with SessionLocal() as session:
+            job = await targets_repo.revision_job_for_target(
+                session, target_id=stalled.id
+            )
+            await session.delete(await session.get(HomeworkJob, job.id))
+            await targets_repo.set_target_status(
+                session, target_id=stalled.id, new_status="planned",
+                expected_statuses=["awaiting_canary_approval", "planned"],
+            )
+            await session.commit()
+
+        rolled = await service.roll_up(campaign.id)
+        assert rolled.status == "attention_required", (
+            "half a canary wave was reported as a reviewable gate"
+        )
+        with pytest.raises(svc.CanaryNotReviewable) as excinfo:
+            await service.approve_canary(campaign.id, actor="pytest")
+        assert excinfo.value.blockers == ("planned",)
+        assert "launch" in str(excinfo.value)
+    finally:
+        await _purge(ids)
 
 
 @db_only

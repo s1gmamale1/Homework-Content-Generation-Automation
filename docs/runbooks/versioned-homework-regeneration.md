@@ -214,6 +214,8 @@ canary generation and `retry-generation` all work normally with Notion unconfigu
 | `REGENERATION_PUBLISHER_MAX_ATTEMPTS` | 5 | Automatic delivery attempts before a target parks in `publication_failed` for a human. |
 | `REGENERATION_PUBLISHER_BACKOFF_BASE_SECONDS` / `_MAX_SECONDS` | 60 / 3600 | Exponential backoff between attempts, and its ceiling. |
 | `REGENERATION_LAUNCH_WAVE_SIZE` / `_INTERVAL_SECONDS` | 4 / 60 | Launch stagger for the bulk wave. Deliberately more conservative than the Fleet batch pair (6/60) because a regeneration wave re-runs whole snapshots on top of whatever the fleet is already doing. Either at `0` disables staggering. |
+| `REGENERATION_MAX_CAMPAIGN_TARGETS` | 500 | Maximum eligible lesson/language targets in one campaign. Ineligible discovery rows do not consume this capacity. |
+| `REGENERATION_MAX_DISCOVERY_LINEAGES` | 1000 | Safety bound for candidate discovery before its indexed per-lineage checks. An overflow is refused explicitly; narrow the book or lesson scope rather than expecting truncation. |
 
 **Delivery is serial.** One publisher pass delivers **at most one** page, then loops.
 This is intentional pacing against Notion, not a bug — a 40-target campaign publishes

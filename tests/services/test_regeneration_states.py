@@ -29,7 +29,17 @@ CAMPAIGN_ALLOWED: dict[str, set[str]] = {
     "canary_running": {
         "awaiting_canary_approval", "attention_required", "rejected", "cancelled",
     },
-    "awaiting_canary_approval": {"approved", "rejected", "cancelled"},
+    # `canary_running` and `attention_required` are RETRACTIONS. The gate is a
+    # derived invitation, not a commitment: whatever put the campaign here —
+    # a rollup, an operator override, a canary abandoned since — the next
+    # rollup has to be able to walk it back to the truth. Without these two
+    # edges the derived status is unreachable, `_apply_derived_status` leaves
+    # the row as it found it, and the campaign keeps advertising a gate that
+    # `assert_canary_gate_ready` will refuse.
+    "awaiting_canary_approval": {
+        "approved", "canary_running", "attention_required", "rejected",
+        "cancelled",
+    },
     "approved": {
         "bulk_running", "attention_required", "completed",
         "completed_with_abandonments", "cancelled",
@@ -256,6 +266,27 @@ def test_rollup_empty_target_set_is_a_plain_value_error():
     assert type(exc.value) is ValueError
 
 
+def test_the_canary_gate_can_be_retracted_to_a_pre_approval_state():
+    """Named separately from the table above because it is the whole point of
+    the edge: a campaign sitting in `awaiting_canary_approval` is one
+    compare-and-set away from `approved`, and `approved` is what
+    `trg_regeneration_targets_publication_gate` reads. If the rollup cannot
+    lower the status back down, the only thing left holding the bulk is the
+    row-level guard at the moment of approval."""
+    assert can_transition_campaign(
+        "awaiting_canary_approval", "attention_required"
+    ) is True
+    assert can_transition_campaign(
+        "awaiting_canary_approval", "canary_running"
+    ) is True
+    # It is still a GATE, not a free-for-all: it never falls back to `draft`
+    # and never skips ahead to the bulk.
+    assert can_transition_campaign("awaiting_canary_approval", "draft") is False
+    assert can_transition_campaign(
+        "awaiting_canary_approval", "bulk_running"
+    ) is False
+
+
 def test_illegal_transition_is_a_value_error():
     assert issubclass(IllegalTransition, ValueError)
 
@@ -475,6 +506,130 @@ def test_post_approval_only_failures_is_attention_required():
     assert roll_up_campaign(
         ["publication_failed", "abandoned"], approved=True, cancelled=False
     ) == "attention_required"
+
+
+# ─── the canary gate is a claim about the CANARIES, not about any target ──
+#
+# Every test below distinguishes a canary from a bulk target. Pre-approval the
+# bulk sits in `planned` by definition, so a flat status list cannot tell "the
+# wave never launched" from "the wave is waiting for its gate" — and the two
+# want opposite answers.
+
+
+def test_a_planned_canary_closes_the_gate_the_rollup_reports():
+    """One canary reviewable, one that never got a job.
+
+    `planned` is the NORMAL pre-approval status of every bulk target, so the
+    flat list cannot see this: it reads `awaiting_canary_approval` beside
+    `planned` and reports the gate. Told which rows are canaries, it must
+    report `attention_required` — the operator has to finish launching the
+    wave, and approving now would release the bulk over a canary that was
+    never generated, let alone reviewed.
+    """
+    assert roll_up_campaign(
+        ["awaiting_canary_approval", "planned", "planned"],
+        approved=False, cancelled=False,
+        canary_statuses=["awaiting_canary_approval", "planned"],
+    ) == "attention_required"
+    # and the same target list, with the SECOND planned row being ordinary
+    # bulk, is the gate it looks like.
+    assert roll_up_campaign(
+        ["awaiting_canary_approval", "planned", "planned"],
+        approved=False, cancelled=False,
+        canary_statuses=["awaiting_canary_approval"],
+    ) == "awaiting_canary_approval"
+
+
+def test_every_canary_abandoned_pre_approval_is_attention_required():
+    """The stale gate that motivated all of this.
+
+    Bulk targets still `planned`, every canary dropped by the operator: the
+    flat list says `draft` (nothing failed, nothing running, nothing awaiting),
+    which is not reachable from `awaiting_canary_approval` and so leaves the
+    campaign advertising a gate that can never open again. It needs a decision.
+    """
+    assert roll_up_campaign(
+        ["abandoned", "planned"], approved=False, cancelled=False,
+        canary_statuses=["abandoned"],
+    ) == "attention_required"
+
+
+def test_a_wave_that_has_not_started_is_still_a_draft():
+    """The boundary the rule above must not swallow: before the launch EVERY
+    row is `planned`, canaries included, and that is a draft — not something
+    an operator has to attend to."""
+    assert roll_up_campaign(
+        ["planned", "planned"], approved=False, cancelled=False,
+        canary_statuses=["planned"],
+    ) == "draft"
+
+
+def test_without_canary_information_the_rollup_keeps_its_flat_reading():
+    """`canary_statuses=None` means the caller does not know which rows are
+    canaries — it must not invent an answer."""
+    assert roll_up_campaign(
+        ["awaiting_canary_approval", "planned"], approved=False, cancelled=False,
+    ) == "awaiting_canary_approval"
+    assert roll_up_campaign(
+        ["abandoned", "planned"], approved=False, cancelled=False,
+    ) == "draft"
+
+
+def test_generating_and_failures_still_outrank_the_canary_question():
+    """The gate check is the LAST pre-approval question, so a wave still
+    running reads `canary_running` and a failed one `attention_required`
+    whatever the canary rows say."""
+    assert roll_up_campaign(
+        ["generating", "planned"], approved=False, cancelled=False,
+        canary_statuses=["generating", "planned"],
+    ) == "canary_running"
+    assert roll_up_campaign(
+        ["generation_failed", "planned"], approved=False, cancelled=False,
+        canary_statuses=["generation_failed"],
+    ) == "attention_required"
+
+
+# ─── the shared predicate ────────────────────────────────────────────────
+
+
+def test_the_gate_predicate_dedupes_its_blockers():
+    verdict = rs.canary_gate_verdict(
+        ["generation_failed", "generation_failed", "planned"]
+    )
+    assert verdict.ready is False
+    assert verdict.blockers == ("generation_failed", "planned")
+    assert verdict.total == 3
+
+
+def test_the_gate_predicate_names_the_three_ways_it_refuses():
+    assert rs.canary_gate_verdict([]).reason == "no_canaries"
+    assert rs.canary_gate_verdict(["abandoned"]).reason == "all_abandoned"
+    assert rs.canary_gate_verdict(["planned"]).reason == "not_reviewable"
+    ready = rs.canary_gate_verdict(["awaiting_canary_approval", "abandoned"])
+    assert ready.ready is True and ready.reason == ""
+
+
+def test_an_all_abandoned_wave_has_no_blocker_but_still_lacks_review_evidence():
+    verdict = rs.canary_gate_verdict(["abandoned", "abandoned", "abandoned"])
+    assert verdict.blockers == ()
+    assert verdict.reason == "all_abandoned"
+    assert verdict.total == 3
+
+
+def test_the_gate_remedy_never_tells_an_operator_to_repeat_what_they_did():
+    """The refusal an operator reads has to name a NEXT move. `abandoned`
+    cannot be retried and cannot be abandoned again, so "retry or abandon the
+    blocked canaries" is a dead end on the one wave most likely to hit it."""
+    remedy = rs.canary_gate_remedy(("abandoned",))
+    assert "retry" not in remedy
+    assert "cancel" in remedy or "reject" in remedy
+    assert "launch" in rs.canary_gate_remedy(("planned",))
+    assert "retry" in rs.canary_gate_remedy(("generation_failed",))
+
+
+def test_the_gate_predicate_rejects_an_unknown_status():
+    with pytest.raises(ValueError):
+        rs.canary_gate_verdict(["banana"])
 
 
 def test_rollup_only_ever_returns_valid_campaign_statuses():

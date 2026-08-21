@@ -88,12 +88,13 @@ from app.services.regeneration_planner import (
 from app.services.regeneration_states import (
     TERMINAL_CAMPAIGN_STATUSES,
     TERMINAL_TARGET_STATUSES,
+    canary_gate_remedy,
+    canary_gate_verdict,
     can_transition_campaign,
     roll_up_campaign,
 )
 
 __all__ = [
-    "MAX_CAMPAIGN_TARGETS",
     "ActiveLineageConflict",
     "CampaignError",
     "CampaignNotFound",
@@ -110,6 +111,7 @@ __all__ = [
     "RegenerationCampaignService",
     "RetiredModelRefusal",
     "SelectionTooLarge",
+    "SelectionDiscoveryTooLarge",
     "TargetNotFound",
     "TerminalCampaignWithLiveTargets",
     "UnboundedSelection",
@@ -128,18 +130,6 @@ __all__ = [
 ]
 
 _ROLES = ("extract", "judge", "solver")
-
-#: The most lesson/language lineages one selection may resolve to.
-#:
-#: Applied to what DISCOVERY returned — the same quantity ``/eligible``,
-#: ``/estimate`` and creation each report — so an operator who is refused on
-#: the preview is refused on creation for the identical reason and number, and
-#: never the other way round. It is a SCOPE guard, not a cost guard: the
-#: estimate prices the selection, but a campaign is also one canary gate, one
-#: cancel control and one active-lineage lock over everything it holds, and
-#: those do not scale with a fleet-wide sweep. Several bounded campaigns are
-#: the supported way to do more; each keeps its own gate and its own report.
-MAX_CAMPAIGN_TARGETS = 500
 
 # Target states a wave may still create a revision job for. `generating` is in
 # the set on purpose: `create_revision_job` commits, so a crash between the
@@ -171,6 +161,22 @@ class CampaignNotFound(CampaignError):
 
 class TargetNotFound(CampaignError):
     """No such target row."""
+
+
+class SelectionDiscoveryTooLarge(CampaignError):
+    """Discovery overflowed before campaign eligibility could be resolved."""
+
+    def __init__(self, count_at_least: int, maximum: int):
+        self.count_at_least = int(count_at_least)
+        self.maximum = int(maximum)
+        super().__init__(
+            f"selection resolves to at least {self.count_at_least} candidate "
+            f"lineages; discovery supports at most {self.maximum} at once — "
+            "narrow the book or lesson selection"
+        )
+
+    def __reduce__(self):
+        return (type(self), (self.count_at_least, self.maximum))
 
 
 class NoEligibleTargets(CampaignError):
@@ -314,14 +320,35 @@ class CanaryNotReviewable(IllegalCampaignAction):
     offered over evidence that actually exists.
     """
 
-    def __init__(self, reason: str, *, blockers: Sequence[str] = (), total: int = 0):
-        self.blockers = sorted(blockers)
+    def __init__(
+        self,
+        reason: str,
+        *,
+        blockers: Sequence[str] = (),
+        total: int = 0,
+        reason_code: str = "not_reviewable",
+        remedy: str = "",
+    ):
+        self.reason = reason
+        self.reason_code = reason_code
+        self.blockers = tuple(sorted(set(blockers)))
         self.total = int(total)
-        super().__init__(
-            f"the canary wave is not reviewable: {reason}. Approval releases "
-            "every remaining lesson in one click, so the gate opens only once "
-            "every canary that was not abandoned is awaiting approval — retry "
-            "or abandon the blocked canaries first."
+        self.remedy = remedy
+        message = f"the canary wave is not reviewable: {reason}"
+        if remedy:
+            message = f"{message}. Next: {remedy}"
+        super().__init__(message)
+
+    def __reduce__(self):
+        return (
+            _restore_canary_not_reviewable,
+            (
+                self.reason,
+                self.blockers,
+                self.total,
+                self.reason_code,
+                self.remedy,
+            ),
         )
 
 
@@ -354,6 +381,7 @@ class SelectionTooLarge(CampaignError):
     def __init__(self, count: int, *, maximum: int, what: str):
         self.count = int(count)
         self.maximum = int(maximum)
+        self.what = what
         super().__init__(
             f"cannot {what}: this selection resolves to {self.count} "
             f"lesson/language lineages, over the limit of {self.maximum}. "
@@ -362,6 +390,34 @@ class SelectionTooLarge(CampaignError):
             "its own canary gate, its own cancel control and its own cost "
             "report."
         )
+
+    def __reduce__(self):
+        return (
+            _restore_selection_too_large,
+            (self.count, self.maximum, self.what),
+        )
+
+
+def _restore_canary_not_reviewable(
+    reason: str,
+    blockers: Sequence[str],
+    total: int,
+    reason_code: str,
+    remedy: str,
+) -> CanaryNotReviewable:
+    return CanaryNotReviewable(
+        reason,
+        blockers=blockers,
+        total=total,
+        reason_code=reason_code,
+        remedy=remedy,
+    )
+
+
+def _restore_selection_too_large(
+    count: int, maximum: int, what: str
+) -> SelectionTooLarge:
+    return SelectionTooLarge(count, maximum=maximum, what=what)
 
 
 class TerminalCampaignWithLiveTargets(CampaignError):
@@ -519,28 +575,32 @@ def assert_canary_gate_ready(canary_statuses: Sequence[str]) -> None:
     not a reachable state.
     """
     statuses = list(canary_statuses)
-    if not statuses:
-        raise CanaryNotReviewable(
-            "this campaign has no canary target at all", total=0
+    verdict = canary_gate_verdict(statuses)
+    if verdict.ready:
+        return
+    if verdict.reason == "no_canaries":
+        reason = "this campaign has no canary target at all"
+        remedy = "cancel this invalid campaign and create a new campaign"
+    elif verdict.reason == "all_abandoned":
+        reason = (
+            f"every one of the {verdict.total} canary target(s) was abandoned, "
+            "so nothing was reviewed"
         )
-    blockers = [
-        status for status in statuses
-        if status not in ("awaiting_canary_approval", "abandoned")
-    ]
-    if blockers:
-        raise CanaryNotReviewable(
-            f"{len(blockers)} of {len(statuses)} canary target(s) are "
-            f"{sorted(set(blockers))}, not awaiting approval",
-            blockers=blockers,
-            total=len(statuses),
+        remedy = "reject or cancel this campaign; there is no canary left to retry"
+    else:
+        blocked_count = sum(1 for status in statuses if status in verdict.blockers)
+        reason = (
+            f"{blocked_count} of {verdict.total} canary target(s) are "
+            f"{list(verdict.blockers)}, not awaiting approval"
         )
-    if "awaiting_canary_approval" not in statuses:
-        raise CanaryNotReviewable(
-            f"every one of the {len(statuses)} canary target(s) was abandoned, "
-            "so nothing was reviewed",
-            blockers=statuses,
-            total=len(statuses),
-        )
+        remedy = canary_gate_remedy(verdict.blockers)
+    raise CanaryNotReviewable(
+        reason,
+        blockers=verdict.blockers,
+        total=verdict.total,
+        reason_code=verdict.reason,
+        remedy=remedy,
+    )
 
 
 def require_bounded_selection(selection) -> None:
@@ -554,15 +614,19 @@ def require_bounded_selection(selection) -> None:
         raise UnboundedSelection()
 
 
-def require_selection_within_cap(count: int, *, what: str) -> None:
-    """Refuse a selection resolving to more than :data:`MAX_CAMPAIGN_TARGETS`.
+def require_selection_within_cap(
+    count: int, *, what: str, maximum: Optional[int] = None
+) -> None:
+    """Refuse more eligible targets than one campaign is configured to hold.
 
     Takes the count rather than the rows because it is applied AFTER discovery
     — the number of lineages a selection resolves to is not knowable before
     the read — and at the same point on all three paths that use it.
     """
-    if count > MAX_CAMPAIGN_TARGETS:
-        raise SelectionTooLarge(count, maximum=MAX_CAMPAIGN_TARGETS, what=what)
+    if maximum is None:
+        maximum = int(settings.regeneration_max_campaign_targets)
+    if count > maximum:
+        raise SelectionTooLarge(count, maximum=maximum, what=what)
 
 
 def plan_launch_stagger(
@@ -613,6 +677,7 @@ def derive_campaign_status(
     approved: bool,
     rejected: bool = False,
     cancelled: bool = False,
+    canary_statuses: Optional[Sequence[str]] = None,
 ) -> str:
     """The campaign status implied by its targets.
 
@@ -628,7 +693,12 @@ def derive_campaign_status(
         if statuses and set(statuses) <= TERMINAL_TARGET_STATUSES:
             return "rejected"
         return "attention_required"
-    return roll_up_campaign(statuses, approved, cancelled)
+    return roll_up_campaign(
+        statuses,
+        approved,
+        cancelled,
+        canary_statuses=canary_statuses,
+    )
 
 
 def assert_not_hiding_live_targets(
@@ -685,21 +755,24 @@ class RegenerationCampaignService:
             contract = await self._resolve_contract_once(session, spec.contract)
 
             selection = spec.selection
-            candidates = await discovery.list_source_candidates(
-                session,
-                book_ids=selection.book_ids or None,
-                toc_entry_ids=selection.toc_entry_ids or None,
-                output_languages=selection.output_languages or None,
-            )
-            # On the DISCOVERED count, before the campaign row, before the
-            # targets, and therefore before any active-lineage lock is taken —
-            # an over-wide selection costs one read and leaves nothing behind.
-            # The same count the operator was shown by `/eligible` and
-            # `/estimate`, so the refusal cannot appear for the first time here.
-            require_selection_within_cap(
-                len(candidates), what="create a regeneration campaign"
-            )
+            try:
+                candidates = await discovery.list_source_candidates(
+                    session,
+                    book_ids=selection.book_ids or None,
+                    toc_entry_ids=selection.toc_entry_ids or None,
+                    output_languages=selection.output_languages or None,
+                )
+            except discovery.DiscoverySelectionTooLarge as exc:
+                raise SelectionDiscoveryTooLarge(
+                    exc.count_at_least, exc.maximum
+                ) from exc
             eligible = [c for c in candidates if c.source is not None]
+            # The campaign cap governs rows the campaign will actually own.
+            # Ineligible candidates remain visible in discovery/estimate but
+            # create no target, take no lock and cost no generation spend.
+            require_selection_within_cap(
+                len(eligible), what="create a regeneration campaign"
+            )
             if not eligible:
                 raise NoEligibleTargets(candidates)
 
@@ -907,12 +980,10 @@ class RegenerationCampaignService:
                 # `CanaryNotReviewable`. Row-locked and inside the same
                 # transaction as the stamp below, so a canary cannot fail
                 # between the check and the approval it authorised.
-                canaries = await targets_repo.list_for_campaign(
+                canary_statuses = await targets_repo.canary_statuses_for_campaign(
                     session, campaign_id, for_update=True
                 )
-                assert_canary_gate_ready(
-                    [t.status for t in canaries if t.is_canary]
-                )
+                assert_canary_gate_ready(canary_statuses)
                 moved = await campaigns_repo.set_campaign_status(
                     session,
                     campaign_id=campaign_id,
@@ -1717,6 +1788,7 @@ class RegenerationCampaignService:
             approved=approved,
             rejected=rejected,
             cancelled=cancelled,
+            canary_statuses=[t.status for t in targets if t.is_canary],
         )
         assert_not_hiding_live_targets(derived, statuses)
         audit = {k: v for k, v in audit.items() if v is not None}

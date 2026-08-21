@@ -99,6 +99,7 @@ from app.services.regeneration_campaign import (
     RegenerationCampaignService,
     RetiredModelRefusal,
     SelectionTooLarge,
+    SelectionDiscoveryTooLarge,
     TargetNotFound,
     TerminalCampaignWithLiveTargets,
     UnboundedSelection,
@@ -334,6 +335,13 @@ def _translate_campaign_error(exc: CampaignError, *, request_shaped: bool):
         return _unprocessable(
             "selection_too_large", str(exc), count=exc.count, maximum=exc.maximum
         )
+    if isinstance(exc, SelectionDiscoveryTooLarge):
+        return _unprocessable(
+            "selection_discovery_too_large",
+            str(exc),
+            count_at_least=exc.count_at_least,
+            maximum=exc.maximum,
+        )
     if isinstance(exc, CanaryNotReviewable):
         # BEFORE the `IllegalCampaignAction` branch it would otherwise fall
         # into: the operator's next move is specific (retry or abandon the
@@ -344,6 +352,8 @@ def _translate_campaign_error(exc: CampaignError, *, request_shaped: bool):
             str(exc),
             blockers=list(exc.blockers),
             canary_count=exc.total,
+            reason_code=exc.reason_code,
+            remedy=exc.remedy,
         )
     if isinstance(exc, IllegalTargetAction):
         return _conflict("illegal_target_state", str(exc))
@@ -810,23 +820,18 @@ async def list_eligible(
                 f"unknown output language {language!r}; expected any of "
                 f"{list(out.OUTPUT_LANGUAGES)}",
             )
-    candidates = await discovery.list_source_candidates(
-        session,
-        book_ids=list(book_id) or None,
-        toc_entry_ids=list(toc_entry_id) or None,
-        output_languages=list(output_language) or None,
-    )
-    # A browse may be BROAD — this is the screen an operator picks from, and
-    # requiring a book here would make the picker unusable — but it may not
-    # return more than one campaign could ever hold. Capping the same number
-    # `/estimate` and creation cap means the refusal an operator meets is the
-    # same one at every step, and never a surprise at the last.
     try:
-        require_selection_within_cap(
-            len(candidates), what="list regenerable lessons"
+        candidates = await discovery.list_source_candidates(
+            session,
+            book_ids=list(book_id) or None,
+            toc_entry_ids=list(toc_entry_id) or None,
+            output_languages=list(output_language) or None,
         )
-    except SelectionTooLarge as exc:
-        raise _translate_campaign_error(exc, request_shaped=True) from exc
+    except discovery.DiscoverySelectionTooLarge as exc:
+        raise _unprocessable(
+            "selection_discovery_too_large", str(exc),
+            count_at_least=exc.count_at_least, maximum=exc.maximum,
+        ) from exc
     return out.EligibleSourcesOut.from_candidates(candidates)
 
 
@@ -901,19 +906,25 @@ async def estimate(
         require_bounded_selection(body.selection)
     except UnboundedSelection as exc:
         raise _translate_campaign_error(exc, request_shaped=True) from exc
-    candidates = await discovery.list_source_candidates(
-        session,
-        book_ids=body.selection.book_ids or None,
-        toc_entry_ids=body.selection.toc_entry_ids or None,
-        output_languages=body.selection.output_languages or None,
-    )
+    try:
+        candidates = await discovery.list_source_candidates(
+            session,
+            book_ids=body.selection.book_ids or None,
+            toc_entry_ids=body.selection.toc_entry_ids or None,
+            output_languages=body.selection.output_languages or None,
+        )
+    except discovery.DiscoverySelectionTooLarge as exc:
+        raise _unprocessable(
+            "selection_discovery_too_large", str(exc),
+            count_at_least=exc.count_at_least, maximum=exc.maximum,
+        ) from exc
+    sources = [c.source for c in candidates if c.source is not None]
     try:
         require_selection_within_cap(
-            len(candidates), what="estimate a regeneration campaign"
+            len(sources), what="estimate a regeneration campaign"
         )
     except SelectionTooLarge as exc:
         raise _translate_campaign_error(exc, request_shaped=True) from exc
-    sources = [c.source for c in candidates if c.source is not None]
     listing = out.EligibleSourcesOut.from_candidates(candidates)
     if not sources:
         return out.EstimateOut(
@@ -1001,7 +1012,14 @@ async def create_campaign(
     session: AsyncSession = Depends(get_session),
 ) -> out.CampaignDetailOut:
     """Freeze an immutable campaign and its targets. No job, no model call."""
-    # Provenance is resolved FIRST, before the crash-repair sweep and before
+    # Reject an unbounded request before provenance resolution or the
+    # crash-repair write sweep. The service repeats this as its authority.
+    try:
+        require_bounded_selection(body.selection)
+    except UnboundedSelection as exc:
+        raise _translate_campaign_error(exc, request_shaped=True) from exc
+
+    # Provenance is resolved before the crash-repair sweep and before
     # the service is asked for anything. It is a pure local read with no I/O,
     # and creation is the audit boundary — a request that cannot say which code
     # it ran under must leave no trace at all. Both router-level gates still

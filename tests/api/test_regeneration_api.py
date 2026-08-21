@@ -363,18 +363,32 @@ def test_eligible_still_browses_without_a_book_or_lesson_filter(monkeypatch):
     assert client.get(f"{BASE}/eligible").status_code == 200
 
 
-def test_eligible_refuses_more_lineages_than_one_campaign_may_hold(monkeypatch):
-    over = campaign_service.MAX_CAMPAIGN_TARGETS + 1
+def test_eligible_browse_is_not_limited_to_one_campaign(monkeypatch):
+    over = settings.regeneration_max_campaign_targets + 1
     monkeypatch.setattr(
         discovery, "list_source_candidates",
         AsyncMock(return_value=[_candidate() for _ in range(over)]),
     )
     response = client.get(f"{BASE}/eligible", params={"book_id": str(uuid4())})
+    assert response.status_code == 200
+    assert response.json()["eligible_count"] == over
+
+
+def test_eligible_maps_the_discovery_workload_bound(monkeypatch):
+    monkeypatch.setattr(
+        discovery, "list_source_candidates",
+        AsyncMock(side_effect=discovery.DiscoverySelectionTooLarge(1001, 1000)),
+    )
+
+    response = client.get(f"{BASE}/eligible", params={"book_id": str(uuid4())})
+
     assert response.status_code == 422
-    detail = response.json()["detail"]
-    assert detail["error"] == "selection_too_large"
-    assert detail["count"] == over
-    assert detail["maximum"] == campaign_service.MAX_CAMPAIGN_TARGETS
+    assert response.json()["detail"] == {
+        "error": "selection_discovery_too_large",
+        "message": str(discovery.DiscoverySelectionTooLarge(1001, 1000)),
+        "count_at_least": 1001,
+        "maximum": 1000,
+    }
 
 
 def test_estimate_refuses_an_unbounded_selection_without_scanning(monkeypatch):
@@ -395,11 +409,46 @@ def test_estimate_refuses_an_unbounded_selection_without_scanning(monkeypatch):
     assert listed.await_count == 0
 
 
-def test_estimate_refuses_more_lineages_than_one_campaign_may_hold(monkeypatch):
-    over = campaign_service.MAX_CAMPAIGN_TARGETS + 1
+def test_estimate_cap_counts_only_eligible_targets(monkeypatch):
+    monkeypatch.setattr(settings, "regeneration_max_campaign_targets", 2)
+    candidates = [_candidate()]
+    candidates.extend(
+        SimpleNamespace(
+            toc_entry_id=uuid4(), output_language="uz", source=None,
+            reasons=(discovery.NO_COMPLETED_SOURCE_REASON,), detail="",
+        )
+        for _ in range(5)
+    )
     monkeypatch.setattr(
         discovery, "list_source_candidates",
-        AsyncMock(return_value=[_candidate() for _ in range(over)]),
+        AsyncMock(return_value=candidates),
+    )
+    priced = AsyncMock(return_value=SimpleNamespace(
+        low_usd=1.0, high_usd=2.0, line_items=(), target_count=1,
+        regenerated_phase_count=10, copied_phase_count=1,
+        regenerated_extract_count=0, copied_extract_count=1,
+        window_start=NOW - timedelta(days=30), window_end=NOW,
+        notes=(), is_estimate=True, has_unpriced_lines=False,
+    ))
+    monkeypatch.setattr(regen_api, "_estimate_regeneration", priced)
+    monkeypatch.setattr(
+        discovery, "preflight_notion_destinations", AsyncMock(return_value=[])
+    )
+
+    response = client.post(
+        f"{BASE}/estimate", json=_estimate_body(selection={"book_ids": [str(uuid4())]})
+    )
+
+    assert response.status_code == 200
+    assert response.json()["target_count"] == 1
+    assert priced.await_count == 1
+
+
+def test_estimate_refuses_more_eligible_targets_than_the_campaign_cap(monkeypatch):
+    monkeypatch.setattr(settings, "regeneration_max_campaign_targets", 2)
+    monkeypatch.setattr(
+        discovery, "list_source_candidates",
+        AsyncMock(return_value=[_candidate() for _ in range(3)]),
     )
     priced = AsyncMock()
     monkeypatch.setattr(regen_api, "_estimate_regeneration", priced)
@@ -410,7 +459,21 @@ def test_estimate_refuses_more_lineages_than_one_campaign_may_hold(monkeypatch):
 
     assert response.status_code == 422
     assert response.json()["detail"]["error"] == "selection_too_large"
-    assert priced.await_count == 0, "an over-wide selection was priced anyway"
+    assert priced.await_count == 0
+
+
+def test_create_refuses_an_unbounded_selection_before_any_side_effect(monkeypatch):
+    service = _install_service(monkeypatch, _fake_service())
+
+    response = client.post(
+        f"{BASE}/campaigns",
+        json=_create_body(selection={"output_languages": ["uz"]}),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "unbounded_selection"
+    assert regen_api._reconcile.await_count == 0
+    assert service.create_campaign.await_count == 0
 
 
 @pytest.mark.parametrize(
@@ -419,8 +482,8 @@ def test_estimate_refuses_more_lineages_than_one_campaign_may_hold(monkeypatch):
         (campaign_service.UnboundedSelection(), "unbounded_selection"),
         (
             campaign_service.SelectionTooLarge(
-                campaign_service.MAX_CAMPAIGN_TARGETS + 1,
-                maximum=campaign_service.MAX_CAMPAIGN_TARGETS,
+                501,
+                maximum=500,
                 what="create a regeneration campaign",
             ),
             "selection_too_large",
@@ -450,6 +513,8 @@ def test_the_approval_gate_refusal_is_reported_as_its_own_conflict(monkeypatch):
             side_effect=campaign_service.CanaryNotReviewable(
                 "1 of 2 canary target(s) are ['generation_failed']",
                 blockers=["generation_failed"], total=2,
+                reason_code="blocked",
+                remedy="Retry or abandon the failed canary.",
             )
         )),
     )
@@ -461,6 +526,8 @@ def test_the_approval_gate_refusal_is_reported_as_its_own_conflict(monkeypatch):
     assert detail["error"] == "canary_not_reviewable"
     assert detail["blockers"] == ["generation_failed"]
     assert detail["canary_count"] == 2
+    assert detail["reason_code"] == "blocked"
+    assert detail["remedy"] == "Retry or abandon the failed canary."
 
 
 def test_phase_plan_previews_broken_edges_without_refusing_the_preview():

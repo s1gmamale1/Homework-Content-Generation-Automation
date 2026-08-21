@@ -168,6 +168,29 @@ async def list_for_campaign(
     return list(result.scalars().all())
 
 
+async def canary_statuses_for_campaign(
+    session: AsyncSession, campaign_id: UUID, *, for_update: bool = False
+) -> list[str]:
+    """Status of only the canary rows used by the human approval gate.
+
+    The first approval transaction needs to fence canary state while it stamps
+    the campaign, but it does not need to join/order/lock every bulk target.
+    The later release transaction deliberately loads the full campaign.
+    """
+    stmt = (
+        select(RegenerationTarget.status)
+        .where(
+            RegenerationTarget.campaign_id == campaign_id,
+            RegenerationTarget.is_canary.is_(True),
+        )
+        .order_by(RegenerationTarget.id)
+    )
+    if for_update:
+        stmt = stmt.with_for_update(of=RegenerationTarget)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def active_targets_for_lineages(
     session: AsyncSession, lineages: Sequence[tuple[UUID, str]]
 ) -> list[RegenerationTarget]:
