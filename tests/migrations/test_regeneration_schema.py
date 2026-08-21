@@ -540,7 +540,7 @@ async def test_0064_adds_campaign_version_and_reviewed_destination_and_reverts()
             assert column in destination_rule, column
 
         # ── downgrade removes 0064 and NOTHING of 0063 ──────────────────────
-        _run_alembic(["downgrade", "-1"])
+        _run_alembic(["downgrade", _PREV_0064])
         assert not await _has_column(
             engine, "regeneration_campaigns", "publication_version"
         )
