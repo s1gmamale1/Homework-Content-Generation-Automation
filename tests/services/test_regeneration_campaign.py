@@ -989,6 +989,43 @@ async def test_creation_refuses_a_publication_version_its_source_already_has(see
 
 
 @db_only
+async def test_a_version_conflict_is_decided_before_the_campaign_row_exists(
+    seeded, monkeypatch
+):
+    """The refusal happens BEFORE `campaigns_repo.create_campaign`, not after.
+
+    The outcome is identical either way — creation runs in one transaction, so
+    a conflict raised after the insert rolls the campaign back too, and every
+    other test here would pass with the check moved below the insert. This one
+    cannot: it spies on the insert itself and asserts it never ran.
+
+    Ordering is worth pinning on its own because rolling back is not the same
+    as never writing. The campaign insert allocates a primary key and, once
+    Task 6 makes the number mandatory, would take the version with it; a check
+    that lives after it also has to survive every future edit that adds a
+    commit, a savepoint or an autonomous write between the two. Refusing first
+    is the property, not the rollback that currently rescues it.
+    """
+    await _consume_publication_version(seeded, 3)
+
+    inserts: list = []
+    real_create = svc.campaigns_repo.create_campaign
+
+    async def _spy(session, **kwargs):
+        inserts.append(kwargs.get("publication_version"))
+        return await real_create(session, **kwargs)
+
+    monkeypatch.setattr(svc.campaigns_repo, "create_campaign", _spy)
+
+    with pytest.raises(svc.RequestedPublicationVersionConflict):
+        await _service().create_campaign(_spec(seeded, publication_version=3))
+
+    assert inserts == [], (
+        "the campaign row was inserted before the version conflict was checked"
+    )
+
+
+@db_only
 async def test_creation_accepts_a_publication_version_above_its_source(seeded):
     """The other side of the same rule — a published V2 is a legal source for
     V3, and that is the ordinary case the wizard produces."""
