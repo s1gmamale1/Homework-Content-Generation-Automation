@@ -1146,13 +1146,20 @@ _DESTINATION_CHECK = "ck_regeneration_targets_notion_parent_decision"
 # module — see the comment there for why they live in the no-database one.
 
 
-async def _accepts_destination(campaign_id, toc_id, job_id, **destination) -> None:
+async def _accepts_destination(
+    campaign_id, toc_id, job_id, *, label: str, **destination
+) -> None:
     """Commit one target carrying `destination`, then delete it again.
 
     Deleting is what lets several ACCEPTED shapes be proven against the SAME
     (lesson, language) inside one test: `uq_regeneration_targets_active_lineage`
     allows exactly one non-terminal target per lineage, and the subject here is
     the CHECK, not that index.
+
+    `label` is required for the same reason the refusal assertions carry one:
+    a legal shape that stops being accepted otherwise surfaces as a bare
+    `IntegrityError` from the commit below, naming the constraint but not which
+    of the shapes tripped it.
     """
     from app.db import SessionLocal
     from app.models.regeneration_target import RegenerationTarget
@@ -1166,7 +1173,10 @@ async def _accepts_destination(campaign_id, toc_id, job_id, **destination) -> No
             **destination,
         )
         s.add(target)
-        await s.commit()
+        try:
+            await s.commit()
+        except IntegrityError as exc:  # pragma: no cover - the failure is the report
+            pytest.fail(f"{label} must be accepted, got: {exc}")
         target_id = target.id
     async with SessionLocal() as s:
         await s.execute(
@@ -1245,9 +1255,13 @@ async def test_destination_check_accepts_only_legacy_reuse_or_create_shapes():
 
         # ── accepted ────────────────────────────────────────────────────────
         # Legacy: a target from before the guided wizard carries no decision.
-        await _accepts_destination(campaign_id, toc_id, job_id)
+        await _accepts_destination(
+            campaign_id, toc_id, job_id, label="the legacy no-destination shape"
+        )
         for label, destination in _ACCEPTED_DESTINATIONS.items():
-            await _accepts_destination(campaign_id, toc_id, job_id, **destination)
+            await _accepts_destination(
+                campaign_id, toc_id, job_id, label=label, **destination
+            )
 
         # ── refused ─────────────────────────────────────────────────────────
         for label, destination in _REFUSED_DESTINATIONS.items():
