@@ -1763,7 +1763,7 @@ async def test_the_rollup_retracts_a_gate_whose_canaries_were_all_abandoned():
         assert retracted.approved_at is None
         with pytest.raises(svc.CanaryNotReviewable) as excinfo:
             await service.approve_canary(campaign.id, actor="pytest")
-        assert excinfo.value.reason == "all_abandoned"
+        assert excinfo.value.reason_code == "all_abandoned"
     finally:
         await _purge(ids)
 
