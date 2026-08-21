@@ -3772,19 +3772,63 @@ console.log("OK");
  *
  * There is no DOM here, so the guard is structural, exactly as the note at
  * the top of this file describes. Both halves are asserted because they fix
- * different leaks: `key={selected.id}` is the remount BETWEEN campaigns, and
+ * different leaks: the per-campaign key is the remount BETWEEN campaigns, and
  * the success-scoped reset is what clears a confirmation the operator has
  * finished with ON one campaign — a key alone leaves the reason sitting in
  * the box after the reject it was written for has already succeeded.
+ *
+ * The key must also be UNIQUE AMONG THE SIBLINGS, which is why the two are
+ * compared against each other here. Both panels sit in one fragment, so a
+ * bare `key={selected.id}` gives two siblings the SAME key. React's
+ * `mapRemainingChildren` indexes the old fibers by key into a Map, and the
+ * second sibling overwrites the first; when the campaign changes, the
+ * overwritten fiber is no longer in that Map, so it is never passed to
+ * `deleteChild` — it never unmounts, its cleanup never runs, and its nodes
+ * are left behind. React itself calls this unsupported ("children may be
+ * duplicated and/or omitted"). A collision therefore defeats the very
+ * remount this block exists to guarantee, which is why the prefixes are
+ * required rather than merely conventional.
  * ════════════════════════════════════════════════════════════════════ */
 {
-  for (const tag of ["CanaryReview", "CampaignReport"]) {
+  /** The key EXPRESSION as written on the tag, `${…}` interpolation included. */
+  function keyExpression(tag: string): string {
+    const match = new RegExp(`<${tag}\\s+key=\\{((?:[^{}]|\\$\\{[^{}]*\\})*)\\}`).exec(
+      acceptanceRouteSrc,
+    );
     assert.ok(
-      new RegExp(`<${tag}\\s+key=\\{selected\\.id\\}`).test(acceptanceRouteSrc),
+      match !== null,
       `${tag} must be keyed by the selected campaign — without it React reuses ` +
         "one instance across campaigns and its confirmation state leaks into the next",
     );
+    return match[1];
   }
+
+  const keys = new Map<string, string>();
+  for (const [tag, prefix] of [
+    ["CanaryReview", "canary"],
+    ["CampaignReport", "report"],
+  ] as const) {
+    const expr = keyExpression(tag);
+    // Campaign-derived: a constant key would never remount at all.
+    assert.ok(
+      /\bselected\.id\b/.test(expr),
+      `${tag}'s key must be derived from the selected campaign, got: ${expr}`,
+    );
+    // …and prefixed, so it cannot equal the sibling's key for ANY campaign id.
+    assert.ok(
+      new RegExp(`\\b${prefix}\\b`).test(expr),
+      `${tag}'s key must carry the \`${prefix}\` prefix so two siblings in the same ` +
+        `fragment can never collide, got: ${expr}`,
+    );
+    keys.set(tag, expr);
+  }
+  assert.notStrictEqual(
+    keys.get("CanaryReview"),
+    keys.get("CampaignReport"),
+    "the two panels are SIBLINGS under one fragment, so an identical key expression " +
+      "makes React overwrite one fiber in its reconciliation map — it is never deleted, " +
+      "never unmounts, and the confirmation state this block guards survives anyway",
+  );
 
   // The reset does BOTH halves. A panel that closed but kept its text reopens
   // pre-filled with a reason written about an entirely different decision.
@@ -3821,6 +3865,27 @@ console.log("OK");
       `the route must return ${call.slice(0, -1)}'s promise so the panel can close on success`,
     );
   }
+
+  // …and taking that promise means OWNING its rejection. `mutateAsync` rejects
+  // on a refusal — a 409 is the ordinary one here — and this chain is the only
+  // consumer, so an uncaught leg becomes an unhandled promise rejection while
+  // the refusal itself is already being rendered from `useMutation.error`. The
+  // `.catch` must sit on the SAME chain as the reset, after it: a `.then` added
+  // below an already-terminated chain would swallow nothing.
+  assert.ok(
+    /onReject\(rejectReason\)\)\s*\.then\(clearRejectConfirmation\)\s*\.catch\(/.test(
+      acceptanceCanarySrc,
+    ),
+    "the reject chain must catch its own rejection — a refused reject must not " +
+      "surface as an unhandled promise rejection",
+  );
+  assert.ok(
+    /onCancelCampaign\(cancelReason\)\)\s*\.then\(clearCancelConfirmation\)\s*\.catch\(/.test(
+      acceptanceReportSrc,
+    ),
+    "the cancel chain must catch its own rejection — a refused cancel must not " +
+      "surface as an unhandled promise rejection",
+  );
 }
 
 console.log("OK");

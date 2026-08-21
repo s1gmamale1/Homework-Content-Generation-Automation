@@ -538,9 +538,17 @@ export function RegenerationPage() {
                     and A's reason in the box — one click from being stored as
                     B's audit record. The key makes a change of campaign a
                     remount, which is the only reset that cannot be forgotten as
-                    more confirmations are added here. */}
+                    more confirmations are added here.
+
+                    The two keys are PREFIXED because these are siblings under
+                    one fragment. Given the same key, React's reconciliation map
+                    (`mapRemainingChildren`, keyed by `key`) keeps only the last
+                    fiber that claimed it, so on a change of campaign the other
+                    one is never passed to `deleteChild`: it never unmounts, its
+                    cleanup never runs, and its nodes are left behind — which
+                    silently undoes the remount this key exists for. */}
                 <CanaryReview
-                  key={selected.id}
+                  key={`canary-${selected.id}`}
                   detail={selected}
                   onLaunchCanary={() => canaryMut.mutate(selected.id)}
                   onApprove={() => approveMut.mutate(selected.id)}
@@ -555,7 +563,7 @@ export function RegenerationPage() {
                   actionError={campaignActionError}
                 />
                 <CampaignReport
-                  key={selected.id}
+                  key={`report-${selected.id}`}
                   detail={selected}
                   releasedFailures={mergeReleasedFailures(
                     selected.released_failures,
