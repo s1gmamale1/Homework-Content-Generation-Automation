@@ -605,7 +605,7 @@ async def test_check_active_workers_refuses_when_nothing_is_online(fleet):
     assert result.ok is False
     assert result.workers_online == 0
     assert result.compatible_worker_ids == ()
-    assert result.reason == "no workers are online"
+    assert result.reason == "no workers are live (no fresh heartbeat)"
 
 
 async def test_check_active_workers_refuses_an_empty_registry(fleet):
@@ -616,7 +616,7 @@ async def test_check_active_workers_refuses_an_empty_registry(fleet):
 
     assert result.ok is False
     assert result.workers_online == 0
-    assert result.reason == "no workers are online"
+    assert result.reason == "no workers are live (no fresh heartbeat)"
 
 
 async def test_check_active_workers_refuses_first_on_the_fleet_budget_pause(
@@ -704,7 +704,7 @@ async def test_an_empty_fleet_outranks_a_missing_credential(fleet):
     )
 
     assert result.required_api_providers == ("claude", "gemini")
-    assert result.reason == "no workers are online"
+    assert result.reason == "no workers are live (no fresh heartbeat)"
 
 
 async def test_a_non_online_status_outranks_a_missing_credential(fleet):
@@ -739,6 +739,50 @@ async def test_the_status_rung_names_every_status_it_saw_deterministically(
     assert result.workers_online == 3
     assert result.reason == (
         "no live worker has status 'online' (saw: draining, offline)"
+    )
+
+
+async def test_the_status_rung_caps_the_free_text_it_renders(fleet):
+    """`workers.status` is an unbounded String(32) written by the worker
+    process. A fleet with many distinct statuses must not turn one operator
+    sentence into a kilobyte of worker-supplied text."""
+    fleet(
+        [
+            worker_view(f"pc-{i}", api=_ALL_CREDS, status=status)
+            for i, status in enumerate(
+                ["draining", "offline", "quarantined", "wedged", "unknown"]
+            )
+        ]
+    )
+    result = await check_active_workers(
+        _StubSession(), resolved_contract(), stale_after_seconds=90
+    )
+
+    assert result.workers_online == 5
+    # sorted, first three, then an ellipsis — never all five
+    assert result.reason == (
+        "no live worker has status 'online' "
+        "(saw: draining, offline, quarantined, …)"
+    )
+    assert "wedged" not in result.reason
+    assert "unknown" not in result.reason
+
+
+async def test_the_status_rung_does_not_ellipsize_at_the_cap(fleet):
+    """Exactly three distinct statuses is not truncation — no ellipsis."""
+    fleet(
+        [
+            worker_view(f"pc-{i}", api=_ALL_CREDS, status=status)
+            for i, status in enumerate(["draining", "offline", "quarantined"])
+        ]
+    )
+    result = await check_active_workers(
+        _StubSession(), resolved_contract(), stale_after_seconds=90
+    )
+
+    assert result.reason == (
+        "no live worker has status 'online' "
+        "(saw: draining, offline, quarantined)"
     )
 
 

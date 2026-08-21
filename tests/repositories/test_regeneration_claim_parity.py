@@ -52,7 +52,11 @@ import pytest
 
 from app.repositories import jobs as jobs_repo
 from app.schemas.regeneration_contract import ResolvedLaunchContract
-from app.services.regeneration_executability import worker_can_execute
+from app.services.agent_models import resolve_role_transport
+from app.services.regeneration_executability import (
+    required_api_providers,
+    worker_can_execute,
+)
 
 db_only = pytest.mark.skipif(
     os.environ.get("RUN_DB_INTEGRATION") != "1",
@@ -61,12 +65,20 @@ db_only = pytest.mark.skipif(
 
 _SUBJECT = "math-algebra"
 _MAX_ATTEMPTS = 3
-# Priority is the dominant sort key in `claim_next_job`. This must outrank
-# every other priority literal in the repository, or a row left behind by a
-# hard-killed run wins the claim instead of ours: `tests/services/
+# Priority is the dominant sort key in `claim_next_job`, so this outranks every
+# priority literal in the TEST suite — `tests/services/
 # test_solver_fail_closed_e2e.py` and `tests/services/test_queue_retry_e2e.py`
-# both seed at 1_000_000 against this same scratch DATABASE_URL. Well inside
-# int4. Not a guarantee on its own — see `_sql_gate_would_claim`.
+# both seed at 1_000_000 against this same scratch DATABASE_URL, and a row left
+# behind by a hard-killed run would otherwise win the claim instead of ours.
+#
+# It does NOT outrank everything in the repository, and is deliberately not
+# raised until it does: `scripts/smoke_solver_fail_closed.py` seeds
+# 2_000_000_000 (control 1_999_999_999) and also demands a scratch database
+# name, so it can target this same DB. Going above it would sit inside a
+# rounding error of the int4 ceiling (2_147_483_647) — a worse failure than the
+# one it would fix. That case is handled BEHAVIOURALLY instead, by
+# `_sql_gate_would_claim`'s foreign-claim `pytest.fail`, which is the only real
+# guarantee here; the priority is a convenience that avoids the noise.
 _PRIORITY = 1_000_000_000
 
 
@@ -431,6 +443,30 @@ PARITY_TABLE: list[Row] = [
         worker(gemini=True, claude=True),
         True,
     ),
+    # `job_resolved_api`'s FIRST disjunct (`transport == 'api'`), alone. Every
+    # other paused row leaves at least one role arm true as well, so any single
+    # disjunct satisfies the gate and the content arm is never the deciding
+    # term. Without this row, deleting `HomeworkJob.transport == "api"` from
+    # `job_resolved_api` goes unnoticed and an api-transport job with every
+    # role pinned to cli SPENDS API TOKENS during a fleet-wide budget pause.
+    Row(
+        "paused-api-job-whose-ONLY-api-arm-is-content",
+        contract(
+            **_CLAUDE_CLI,
+            transport="api",
+            extract_transport="cli",
+            extract_provider="gemini",
+            extract_model="gemini-3.1-flash-lite-preview",
+            judge_transport="cli",
+            judge_provider="gemini",
+            judge_model="gemini-3.1-pro-preview",
+            solver_transport="cli",
+            solver_provider="gemini",
+            solver_model="gemini-3-flash-preview",
+        ),
+        worker(gemini=False, claude=True),
+        True,
+    ),
     # ── clodex: `content_ok`'s third arm, and the one provider with no cli
     # fallback (API_ONLY_PROVIDERS) — without the key nothing ever runs it.
     Row(
@@ -678,9 +714,9 @@ async def test_preflight_matches_the_sql_claim_gate(row: Row):
 # all-one-verdict table would otherwise go unnoticed.
 def test_the_parity_table_exercises_both_verdicts():
     """A table that only ever asserts False (or only True) proves nothing —
-    every row would pass against a constant. Prove both branches are present."""
-    from app.services.regeneration_executability import required_api_providers
-
+    every row would pass against a constant. Prove both branches are present,
+    and that every disjunct of the claim gate's fleet-pause rule has a row in
+    which it is the SOLE reason the row is blocked."""
     verdicts = {
         worker_can_execute(
             r.contract, r.worker, fleet_api_paused=r.fleet_api_paused
@@ -691,13 +727,52 @@ def test_the_parity_table_exercises_both_verdicts():
     assert any(
         required_api_providers(r.contract) == frozenset() for r in PARITY_TABLE
     ), "no cli-only row: the conditional content-credential rule is untested"
+    # `job_resolved_api` is a FOUR-disjunct OR (`jobs.py`): content transport,
+    # then judge/extract/solver. A row satisfies the gate as soon as ANY one is
+    # true, so an arm is only PROVEN by a row in which it is the SOLE api arm.
+    # Requiring merely "a paused row with transport='cli'" is not that: the
+    # cli-only paused row satisfies it while touching no api arm at all, which
+    # is how all three role rows could be deleted with this guard still green.
+    for role in ("judge", "extract", "solver"):
+        assert any(
+            r.fleet_api_paused
+            and r.contract.transport == "cli"
+            and resolve_role_transport(
+                getattr(r.contract, f"{role}_transport"), r.contract.transport
+            )
+            == "api"
+            for r in PARITY_TABLE
+        ), (
+            f"no paused row whose {role} resolves to api under a cli content "
+            f"transport: `job_resolved_api`'s {role}_needs_api arm is the only "
+            "thing that would block such a job, so deleting that arm from "
+            "jobs.py would leave this table green while api spend continues "
+            "through a fleet-wide budget pause"
+        )
     assert any(
-        r.fleet_api_paused and r.contract.transport == "cli"
+        r.fleet_api_paused
+        and r.contract.transport == "api"
+        and all(
+            resolve_role_transport(
+                getattr(r.contract, f"{role}_transport"), r.contract.transport
+            )
+            != "api"
+            for role in ("judge", "extract", "solver")
+        )
         for r in PARITY_TABLE
     ), (
-        "no paused row with transport='cli': the pause would only ever be "
-        "decided by `job_resolved_api`'s first disjunct, leaving the per-role "
-        "judge/extract/solver arms unproven"
+        "no paused row whose ONLY api arm is the content transport: "
+        "`job_resolved_api`'s `transport == 'api'` disjunct is unproven, and "
+        "an api job with every role pinned to cli would be claimed and billed "
+        "during a fleet-wide budget pause"
+    )
+    assert any(
+        r.fleet_api_paused and required_api_providers(r.contract) == frozenset()
+        for r in PARITY_TABLE
+    ), (
+        "no paused CLI-ONLY row: `fleet_gate`'s `NOT job_resolved_api` arm — "
+        "the rule that a cli campaign is never blocked by an api spend pause "
+        "(deviation 2) — is unproven against the real gate"
     )
     assert any(r.contract.provider == "clodex" for r in PARITY_TABLE), (
         "no clodex row: `content_ok`'s third arm is unproven, and clodex is "

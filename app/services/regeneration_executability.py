@@ -93,6 +93,15 @@ _STATUS_ONLINE = "online"
 # later tasks; pinned by test so a reword is a visible change.
 _PAUSED_REASON = "fleet API spend is paused"
 
+# How many DISTINCT `workers.status` values the status rung will name.
+# `workers.status` is an unbounded String(32) written by the worker process
+# itself, and the rendered set is otherwise bounded only by the live-worker
+# count — a 40-worker fleet with distinct statuses would put ~1.3 KB of
+# worker-supplied text into one operator-facing sentence. Three is enough to
+# tell "they are all draining" from "some are draining, some went offline",
+# which is the whole decision this rung supports.
+_MAX_STATUSES_IN_REASON = 3
+
 
 @dataclass(frozen=True)
 class WorkerExecutability:
@@ -282,10 +291,13 @@ async def check_active_workers(
        fleet: starting a worker would not help. Worded from ``_pause_blocks``,
        the same predicate ``worker_can_execute`` refused with, so the verdict
        and its explanation cannot drift apart;
-    2. nothing live at all — start a worker;
+    2. nothing live at all — start a worker. Worded "live", never "online":
+       rung 3 reports on ``workers.status``, whose value is the word
+       ``'online'``, and one word meaning two things in one panel is how
+       ``workers_online: 1`` ends up next to "no worker has status 'online'";
     3. live workers exist but none is registered ``status='online'`` — the
-       statuses actually seen are named, because "draining" and "offline" call
-       for different operator actions;
+       statuses actually seen are named (capped, ``_MAX_STATUSES_IN_REASON``),
+       because "draining" and "offline" call for different operator actions;
     4. accepting workers exist but none holds the credentials — the missing
        providers are named, because that is a ``.env`` fix on a specific host.
 
@@ -325,10 +337,20 @@ async def check_active_workers(
     elif _pause_blocks(required, fleet_api_paused):
         reason = _PAUSED_REASON
     elif workers_online == 0:
-        reason = "no workers are online"
+        # "live", not "online": rung 3 below reports on `workers.status`, whose
+        # value is literally the word "online". Two meanings of one word in the
+        # same panel would render as `workers_online: 1` beside "no worker has
+        # status 'online'", which reads like a contradiction.
+        reason = "no workers are live (no fresh heartbeat)"
     elif not accepting:
-        seen = ", ".join(sorted({str(w.get("status")) for w in live}))
-        reason = f"no live worker has status 'online' (saw: {seen})"
+        seen = sorted({str(w.get("status")) for w in live})
+        shown = seen[:_MAX_STATUSES_IN_REASON]
+        if len(seen) > _MAX_STATUSES_IN_REASON:
+            shown = shown + ["…"]
+        reason = (
+            "no live worker has status 'online' "
+            f"(saw: {', '.join(shown)})"
+        )
     else:
         reason = (
             "no online worker holds api credentials for "
