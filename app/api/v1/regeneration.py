@@ -68,7 +68,7 @@ from app.schemas.regeneration_contract import (
     LaunchDefaultsSnapshot,
     resolve_launch_contract,
 )
-from app.services import agent_models, regeneration_job_state
+from app.services import agent_models, code_version, regeneration_job_state
 from app.services import regeneration_discovery as discovery
 from app.services.regeneration_campaign import (
     ActiveLineageConflict,
@@ -286,6 +286,41 @@ def _translate_campaign_error(exc: CampaignError, *, request_shaped: bool):
     if isinstance(exc, (IllegalCampaignAction, TerminalCampaignWithLiveTargets)):
         return _conflict("illegal_campaign_state", str(exc))
     return _conflict("campaign_error", str(exc))
+
+
+def _resolve_app_git_revision(requested: Optional[str]) -> str:
+    """Which application revision is this campaign being created under?
+
+    Design §6: every campaign records it, because "which code produced this
+    packet?" is the first question asked of a regenerated lesson, and the row
+    is immutable once written — there is no later chance to fill it in.
+
+    Two sources, in order. An EXPLICIT value wins: the request field is
+    exposed on purpose, so whatever deployed the code can name the revision
+    it deployed. Otherwise the process serving the request answers for itself
+    via ``code_version.GIT_SHA`` — which is what the SPA relies on, since it
+    posts ``app_git_revision: null`` by design.
+
+    Neither is a refusal, not a fallback to NULL. A container built without
+    ``.git`` reports no SHA, and storing "unknown" in an audit column is worse
+    than not creating the campaign: it is indistinguishable from a campaign
+    whose provenance was never asked for.
+    """
+    explicit = (requested or "").strip()
+    if explicit:
+        return explicit
+    detected = (code_version.GIT_SHA or "").strip()
+    if detected:
+        return detected
+    raise _conflict(
+        "app_git_revision_unavailable",
+        "cannot record which application revision this campaign would be "
+        "created under: this process reports no git revision (it is running "
+        "from a build or container without a .git directory). A campaign is "
+        "an audit record and is never created with unknown provenance. Either "
+        "run the API from a git checkout, or send app_git_revision in this "
+        "request with the revision that was deployed.",
+    )
 
 
 def _translate_plan_error(exc: Exception) -> HTTPException:
@@ -831,6 +866,14 @@ async def create_campaign(
     session: AsyncSession = Depends(get_session),
 ) -> out.CampaignDetailOut:
     """Freeze an immutable campaign and its targets. No job, no model call."""
+    # Provenance is resolved FIRST, before the crash-repair sweep and before
+    # the service is asked for anything. It is a pure local read with no I/O,
+    # and creation is the audit boundary — a request that cannot say which code
+    # it ran under must leave no trace at all. Both router-level gates still
+    # precede it (auth from `include_router`, then the feature 404) and so does
+    # request validation, so neither an anonymous nor a flag-off nor a
+    # malformed caller ever learns this deployment's git state.
+    app_git_revision = _resolve_app_git_revision(body.app_git_revision)
     await _reconcile(session)
     spec = CreateCampaignSpec(
         selection=CampaignSelection(
@@ -846,7 +889,7 @@ async def create_campaign(
         canary_size=body.canary_size,
         estimated_cost_low_usd=body.estimated_cost_low_usd,
         estimated_cost_high_usd=body.estimated_cost_high_usd,
-        app_git_revision=body.app_git_revision,
+        app_git_revision=app_git_revision,
         actor=body.actor,
         notes=body.notes,
     )

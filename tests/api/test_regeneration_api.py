@@ -26,6 +26,7 @@ from app.auth import get_current_user
 from app.config import settings
 from app.db import get_session
 from app.schemas import regeneration as schemas
+from app.services import code_version
 from app.services import regeneration_campaign as campaign_service
 from app.services import regeneration_discovery as discovery
 from app.services.regeneration_planner import build_phase_plan
@@ -36,6 +37,11 @@ client = TestClient(app)
 NOW = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
 SUBJECT = "math-algebra"
 BASE = "/api/v1/regeneration"
+#: What the process under test reports as its own code revision. Pinned by the
+#: autouse fixture so nothing here depends on the checkout the suite runs from
+#: — the real `code_version.GIT_SHA` is whatever HEAD happens to be, and in a
+#: build without `.git` it is None.
+SERVER_SHA = "0ddba11"
 
 
 # ────────────────────────────── fixtures ─────────────────────────────────
@@ -45,6 +51,7 @@ BASE = "/api/v1/regeneration"
 def _feature_on(monkeypatch):
     monkeypatch.setattr(settings, "regeneration_enabled", True)
     monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
+    monkeypatch.setattr(code_version, "GIT_SHA", SERVER_SHA)
     app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
 
     async def _fake_session():
@@ -557,6 +564,167 @@ def test_create_campaign_maps_an_unacknowledged_exclusion_to_422(monkeypatch):
 def test_create_campaign_refuses_a_prompt_set_selector():
     response = client.post(f"{BASE}/campaigns", json=_create_body(prompt_set="old"))
     assert response.status_code == 422
+
+
+# ═══════════════════════ campaign code provenance ════════════════════════
+#
+# §6 of the approved design: every campaign records the application revision it
+# was created under, because "which code produced this packet?" is the first
+# question asked of a regenerated lesson. The SPA posts `app_git_revision:
+# null` deliberately, so the head serving the request is the normal source of
+# the value — and a container built without `.git` has none, which is the case
+# these tests exist for.
+
+
+def _echoing_service(monkeypatch):
+    """A create-service that stamps whatever revision the route resolved onto
+    the campaign it returns, plus a report gather that renders THAT campaign.
+
+    So a test reads the stamped value off the response body — the thing an
+    operator and the audit column actually see — and not only off the spec.
+    """
+    created: list = []
+
+    async def _create(spec):
+        campaign = _campaign(app_git_revision=spec.app_git_revision)
+        created.append(campaign)
+        return campaign
+
+    async def _report(session, campaign_id, *, now):
+        return _detail(created[-1])
+
+    service = _install_service(
+        monkeypatch, _fake_service(create_campaign=AsyncMock(side_effect=_create))
+    )
+    monkeypatch.setattr(regen_api, "_campaign_detail", AsyncMock(side_effect=_report))
+    return service
+
+
+def test_create_campaign_keeps_an_explicit_revision_over_the_servers_own(monkeypatch):
+    """The field is exposed on purpose: whoever deployed the code may know the
+    revision better than the process does. An explicit value is normalized and
+    preserved — never silently replaced by the head's own SHA."""
+    service = _echoing_service(monkeypatch)
+
+    response = client.post(
+        f"{BASE}/campaigns", json=_create_body(app_git_revision="  deadbee  ")
+    )
+
+    assert response.status_code == 201
+    assert service.create_campaign.await_args.args[0].app_git_revision == "deadbee"
+    assert response.json()["app_git_revision"] == "deadbee"
+    # ... and the fallback was genuinely not taken.
+    assert response.json()["app_git_revision"] != SERVER_SHA
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _create_body(),
+        _create_body(app_git_revision=None),
+        _create_body(app_git_revision=""),
+        _create_body(app_git_revision="   "),
+    ],
+    ids=["absent", "explicit-null", "empty", "whitespace"],
+)
+def test_create_campaign_stamps_the_running_processs_revision(monkeypatch, body):
+    """No usable value in the request — including the null the SPA sends by
+    design — means the head that serves the create is the authority."""
+    service = _echoing_service(monkeypatch)
+
+    response = client.post(f"{BASE}/campaigns", json=body)
+
+    assert response.status_code == 201
+    assert service.create_campaign.await_args.args[0].app_git_revision == SERVER_SHA
+    assert response.json()["app_git_revision"] == SERVER_SHA
+
+
+def test_an_explicit_revision_still_works_where_the_process_has_no_git(monkeypatch):
+    """The escape hatch, stated: a `.git`-less build is auditable as long as
+    whatever deployed it says which revision it deployed."""
+    monkeypatch.setattr(code_version, "GIT_SHA", None)
+    _echoing_service(monkeypatch)
+
+    response = client.post(
+        f"{BASE}/campaigns", json=_create_body(app_git_revision="c8a4c18")
+    )
+
+    assert response.status_code == 201
+    assert response.json()["app_git_revision"] == "c8a4c18"
+
+
+@pytest.mark.parametrize("server_sha", [None, "", "   "], ids=["none", "empty", "blank"])
+def test_create_campaign_refuses_when_no_revision_can_be_established(
+    monkeypatch, server_sha
+):
+    """Neither source yields a value, so the campaign is NOT created.
+
+    A NULL in the audit column would read as "unknown code" exactly when an
+    operator most needs to know, and the row would be immutable once written —
+    so this is a refusal, not a silent fallback.
+    """
+    monkeypatch.setattr(code_version, "GIT_SHA", server_sha)
+    service = _install_service(monkeypatch, _fake_service())
+    detail = _install_detail(monkeypatch)
+
+    response = client.post(f"{BASE}/campaigns", json=_create_body())
+
+    assert response.status_code == 409
+    detail_body = response.json()["detail"]
+    assert detail_body["error"] == "app_git_revision_unavailable"
+    # Plain operator guidance: the field to send, and where a SHA comes from.
+    assert "app_git_revision" in detail_body["message"]
+    assert "git" in detail_body["message"].lower()
+    # Refused before ANY side effect — no campaign, no report gather, and not
+    # even the crash-repair sweep. Creation is the audit boundary.
+    assert service.create_campaign.await_count == 0
+    assert detail.await_count == 0
+    assert regen_api._reconcile.await_count == 0
+
+
+def test_the_provenance_gate_stays_behind_the_feature_flag_and_auth(monkeypatch):
+    """The refusal describes THIS deployment, so it must never be the first
+    thing a request meets: flag-off is still 404 and anonymous is still 401,
+    even on a head that could not stamp a revision."""
+    monkeypatch.setattr(code_version, "GIT_SHA", None)
+    service = _install_service(monkeypatch, _fake_service())
+
+    monkeypatch.setattr(settings, "regeneration_enabled", False)
+    assert client.post(f"{BASE}/campaigns", json=_create_body()).status_code == 404
+
+    monkeypatch.setattr(settings, "regeneration_enabled", True)
+    app.dependency_overrides.pop(get_current_user, None)
+    monkeypatch.setattr(auth_module, "valid_auth_tokens", lambda: {"s3cret-token"})
+    assert client.post(f"{BASE}/campaigns", json=_create_body()).status_code == 401
+
+    assert service.create_campaign.await_count == 0
+
+
+def test_a_malformed_draft_is_still_422_on_a_head_with_no_revision(monkeypatch):
+    """Request validation keeps precedence: a body the server cannot even
+    parse must not be answered with a report on the deployment's git state."""
+    monkeypatch.setattr(code_version, "GIT_SHA", None)
+    service = _install_service(monkeypatch, _fake_service())
+
+    response = client.post(f"{BASE}/campaigns", json=_create_body(prompt_set="old"))
+
+    assert response.status_code == 422
+    assert service.create_campaign.await_count == 0
+
+
+def test_estimate_prices_a_draft_on_a_head_that_has_no_revision(monkeypatch):
+    """Estimate creates nothing and spends nothing, so it is not the audit
+    boundary. Hoisting the gate onto the router — or onto this route — would
+    deny an operator a free preview for a reason that only matters at create."""
+    monkeypatch.setattr(code_version, "GIT_SHA", None)
+    monkeypatch.setattr(
+        discovery, "list_source_candidates", AsyncMock(return_value=[])
+    )
+
+    response = client.post(f"{BASE}/estimate", json=_estimate_body())
+
+    assert response.status_code == 200
+    assert response.json()["target_count"] == 0
 
 
 # ═══════════════════════════ campaign reads ══════════════════════════════
