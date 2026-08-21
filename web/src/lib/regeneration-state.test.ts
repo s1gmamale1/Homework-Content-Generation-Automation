@@ -41,22 +41,30 @@ import {
   regenerationBookFacets,
   regenerationBookOptions,
   regenerationBucketViews,
+  regenerationCampaignCountLabel,
   regenerationCampaignListView,
   regenerationCampaignStatusLabel,
+  regenerationCanaryCostView,
+  regenerationDecisionGate,
   regenerationDetailView,
+  regenerationDraftSignature,
   regenerationEligibleQuery,
   regenerationErrorView,
   regenerationIneligibleLine,
+  regenerationJudgeCounts,
   regenerationKeyedLines,
   regenerationListPollMs,
   regenerationMutationView,
   regenerationNarrowScope,
+  regenerationPlanBlockedReason,
   regenerationPlanStepView,
   regenerationPollDecision,
   regenerationPublicationStateLabel,
   regenerationReasonError,
   regenerationReleasedFailureLines,
   regenerationRetryAudit,
+  regenerationRevisionLinksReady,
+  regenerationSelectablePhases,
   regenerationSolverStatusLabel,
   regenerationSourceRow,
   regenerationSourcesView,
@@ -3458,5 +3466,290 @@ assert.ok(
   /onRetry=\{[^}]*detail\.refetch/.test(routeSrc),
   "the campaign-detail retry must re-run the detail query",
 );
+
+console.log("OK");
+
+/* ══════════════════════════════════════════════════════════════════════
+ * Task 11 acceptance corrections (a–h).
+ *
+ * `npm test` has no DOM, so each correction is a pure function here plus a
+ * structural guard that the component actually calls it. Both halves matter:
+ * a helper nothing renders is not a fix.
+ * ════════════════════════════════════════════════════════════════════ */
+
+const acceptanceWizardSrc = readFileSync("src/components/regeneration/regeneration-wizard.tsx", "utf8");
+const acceptanceListSrc = readFileSync("src/components/regeneration/campaign-list.tsx", "utf8");
+const acceptanceReportSrc = readFileSync("src/components/regeneration/campaign-report.tsx", "utf8");
+const acceptanceCanarySrc = readFileSync("src/components/regeneration/canary-review.tsx", "utf8");
+const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
+
+/* ── (a) `extract` is not a selectable phase ─────────────────────────── */
+{
+  const canonical = [
+    "extract",
+    "case-based-preview",
+    "flashcards",
+    "boss-arena",
+    "reflection",
+  ];
+  const offered = regenerationSelectablePhases(canonical);
+  assert.ok(
+    !offered.includes("extract"),
+    "`extract` is refused by build_phase_plan with UnknownPhaseError — offering " +
+      "it as a chip turns one click into a 422 the operator cannot act on",
+  );
+  assert.deepStrictEqual(offered, canonical.slice(1), "every real phase must survive");
+  // The catalog probe is what puts `extract` in the list in the first place, so
+  // an empty or already-clean list must pass through untouched.
+  assert.deepStrictEqual(regenerationSelectablePhases([]), []);
+  assert.deepStrictEqual(regenerationSelectablePhases(["reflection"]), ["reflection"]);
+  assert.ok(
+    /regenerationSelectablePhases\(/.test(acceptanceWizardSrc),
+    "the wizard must filter the catalog through the tested helper",
+  );
+}
+
+/* ── (b) a create error must not outlive the draft it describes ──────── */
+{
+  const base = {
+    bookId: "b1",
+    language: "uz" as const,
+    selectedTocEntryIds: ["t1"],
+    selectedPhases: ["flashcards"],
+    excludedPhases: [] as string[],
+    refreshExtraction: false,
+    acknowledged: false,
+    canarySize: 1,
+    provider: "gemini",
+    model: "gemini-3.6-flash",
+  };
+  const sig = regenerationDraftSignature(base);
+  assert.strictEqual(sig, regenerationDraftSignature({ ...base }), "the signature is stable");
+  assert.notStrictEqual(
+    sig,
+    regenerationDraftSignature({ ...base, selectedTocEntryIds: ["t1", "t2"] }),
+    "picking another lesson makes an `active_lineage_conflict` stale",
+  );
+  assert.notStrictEqual(
+    sig,
+    regenerationDraftSignature({ ...base, selectedPhases: ["reflection"] }),
+    "changing the phase selection makes a phase-shaped 422 stale",
+  );
+  assert.notStrictEqual(sig, regenerationDraftSignature({ ...base, model: "gemini-3.5-flash" }));
+  assert.strictEqual(
+    regenerationDraftSignature({ ...base, canarySize: 1 }),
+    sig,
+    "an unchanged field must not invalidate the error",
+  );
+  assert.ok(
+    /regenerationDraftSignature\(/.test(acceptanceRouteSrc),
+    "the route must scope the create error to the draft that produced it",
+  );
+}
+
+/* ── (c) a capped page is not a total ────────────────────────────────── */
+{
+  const label = (shown: number, count: number | null, offset = 0) =>
+    regenerationCampaignCountLabel({ shown, count, limit: 50, offset });
+  assert.strictEqual(label(12, 12), "12 total");
+  assert.strictEqual(
+    label(50, 137),
+    "50 of 137",
+    "a full page must never claim to be the whole list",
+  );
+  assert.strictEqual(
+    label(37, 137, 100),
+    "101–137 of 137",
+    "a later page has to say which slice it is showing",
+  );
+  assert.strictEqual(label(0, 0), "0 total");
+  assert.strictEqual(
+    label(3, null),
+    "unknown",
+    "a failed read knows nothing about the total, cached rows or not",
+  );
+  assert.ok(
+    /regenerationCampaignCountLabel\(/.test(acceptanceListSrc),
+    "the list header must render the tested label",
+  );
+  assert.ok(
+    /count=\{/.test(acceptanceRouteSrc),
+    "the route must pass the server's own count down to the list",
+  );
+}
+
+/* ── (d) actual-so-far vs a whole-campaign estimate ──────────────────── */
+{
+  const detail = (over: Record<string, unknown>) =>
+    ({
+      target_count: 10,
+      canary_size: 2,
+      estimated_cost_low_usd: 4,
+      estimated_cost_high_usd: 10,
+      actual_cost: { usd: 1.4, revision_job_count: 2 },
+      ...over,
+    }) as never;
+
+  const partial = regenerationCanaryCostView(detail({}));
+  assert.strictEqual(partial.scope, "partial");
+  assert.ok(
+    !/%/.test(partial.text),
+    `a 2-of-10 actual must not be scored against the whole-campaign estimate: ${partial.text}`,
+  );
+  assert.ok(
+    /2 of 10/.test(partial.text),
+    `the comparison has to say what it covers: ${partial.text}`,
+  );
+  assert.strictEqual(partial.direction, "on_target", "a partial run is not 'under budget'");
+
+  const complete = regenerationCanaryCostView(
+    detail({ actual_cost: { usd: 12, revision_job_count: 10 } }),
+  );
+  assert.strictEqual(complete.scope, "complete");
+  assert.ok(/%/.test(complete.text), "a finished campaign IS comparable to its estimate");
+  assert.strictEqual(complete.direction, "over");
+
+  const noEstimate = regenerationCanaryCostView(
+    detail({ estimated_cost_low_usd: null, estimated_cost_high_usd: null }),
+  );
+  assert.ok(/no estimate/i.test(noEstimate.text));
+  assert.ok(
+    /regenerationCanaryCostView\(/.test(acceptanceCanarySrc),
+    "the canary screen must use the scope-aware comparison",
+  );
+}
+
+/* ── (e) judge verdicts are read in words, and `ok` IS a pass ────────── */
+{
+  const counts = regenerationJudgeCounts({ ok: 9, major_shipped: 1 });
+  const pass = counts.find((c) => c.status === "ok");
+  assert.ok(pass, "the backend writes `ok`; it must not fall through to unknown");
+  assert.strictEqual(
+    pass?.signal.severity,
+    "ok",
+    "a clean phase counted as a WARNING tells the operator to hand-read nine " +
+      "phases that passed",
+  );
+  assert.ok(
+    !/unrecognis/i.test(pass?.signal.explanation ?? ""),
+    "`ok` is a verdict this build knows",
+  );
+  const major = counts.find((c) => c.status === "major_shipped");
+  assert.strictEqual(major?.signal.severity, "warning");
+  // Still humanised, never echoed raw.
+  const odd = regenerationJudgeCounts({ some_new_verdict: 2 })[0];
+  assert.strictEqual(odd.signal.label, "Some new verdict");
+  assert.ok(
+    !/judge \{status\}/.test(acceptanceReportSrc) && !/\{status\} ×/.test(acceptanceReportSrc),
+    "the per-target report echoed the raw token instead of the signal label",
+  );
+  assert.ok(
+    /regenerationJudgeCounts\(/.test(acceptanceReportSrc),
+    "the report must read verdicts through the same vocabulary as the canary",
+  );
+}
+
+/* ── (f) "pick a phase" is not what a failed plan read means ─────────── */
+{
+  const reason = (mode: "none" | "loading" | "error" | "ready") =>
+    regenerationPlanBlockedReason({ mode, message: null });
+  assert.strictEqual(reason("none"), "Pick at least one phase, or turn on the extract refresh.");
+  assert.strictEqual(reason("loading"), "Waiting for the planner to answer.");
+  assert.strictEqual(
+    reason("error"),
+    "The dependency plan could not be read, so there is nothing to freeze this campaign to.",
+  );
+  assert.strictEqual(reason("ready"), null);
+  assert.ok(
+    /regenerationPlanBlockedReason\(/.test(acceptanceWizardSrc),
+    "the create gate must state the real reason, not always the selection one",
+  );
+}
+
+/* ── (g) reject is legal before approval, including attention_required ─ */
+{
+  const at = (status: string, over: Record<string, unknown> = {}) =>
+    ({
+      status,
+      approved_at: null,
+      canary_launched_at: "2026-08-21T00:00:00Z",
+      rejected_at: null,
+      cancel_requested_at: null,
+      ...over,
+    }) as never;
+
+  const gate = regenerationDecisionGate(at("awaiting_canary_approval"));
+  assert.strictEqual(gate.canApprove, true);
+  assert.strictEqual(gate.canReject, true);
+
+  const stuck = regenerationDecisionGate(at("attention_required"));
+  assert.strictEqual(
+    stuck.canReject,
+    true,
+    "a campaign whose canary FAILED parks in attention_required before " +
+      "approval; reject_canary is legal there and is the operator's way out",
+  );
+  assert.strictEqual(
+    stuck.canApprove,
+    false,
+    "there is no reviewed canary to approve — publishing it is not the offer",
+  );
+  assert.ok(stuck.rejectNote, "the screen has to say why approve is missing");
+
+  assert.strictEqual(
+    regenerationDecisionGate(at("draft", { canary_launched_at: null })).canReject,
+    false,
+    "a draft has no canary to reject — `reject_canary` refuses it outright and " +
+      "says to cancel the draft instead",
+  );
+  assert.strictEqual(
+    regenerationDecisionGate(at("bulk_running", { approved_at: "2026-08-21T01:00:00Z" }))
+      .canReject,
+    false,
+    "an approved campaign is stopped with cancel, not reject",
+  );
+  assert.strictEqual(regenerationDecisionGate(at("cancelled")).canReject, false);
+  assert.strictEqual(regenerationDecisionGate(at("rejected")).canReject, false);
+  assert.strictEqual(
+    regenerationDecisionGate(at("canary_running")).canReject,
+    false,
+    "`reject_canary` would accept it, but a canary still generating is not " +
+      "stuck: `Cancel campaign` is offered for every non-terminal campaign, " +
+      "and a reject button there reads like a review verdict on work nobody " +
+      "has seen yet",
+  );
+  assert.ok(
+    /regenerationDecisionGate\(/.test(acceptanceCanarySrc),
+    "the canary screen must render the decision gate it is given",
+  );
+}
+
+/* ── (h) a revision has nothing to download until it is done ─────────── */
+{
+  const unfinished = ["pending", "running", "cancelling", "failed", "cancelled", null];
+  assert.strictEqual(regenerationRevisionLinksReady("done"), true);
+  for (const status of unfinished) {
+    assert.strictEqual(
+      regenerationRevisionLinksReady(status as never),
+      false,
+      `a ${status} revision has no complete packet to download`,
+    );
+  }
+  for (const [name, src] of [
+    ["canary review", acceptanceCanarySrc],
+    ["per-target report", acceptanceReportSrc],
+  ] as const) {
+    assert.ok(
+      /regenerationRevisionLinksReady\(/.test(src),
+      `the ${name} must gate its download link on the job's real status`,
+    );
+    // The download is gated; the JOB PAGE deliberately is not — reading the
+    // error is exactly what an operator does with a failed revision.
+    assert.ok(
+      /regenerationRevisionLinksReady\([^)]*\) && \(\s*<a/.test(src),
+      `the ${name} must gate the DOWNLOAD anchor, not the whole link row`,
+    );
+  }
+}
 
 console.log("OK");

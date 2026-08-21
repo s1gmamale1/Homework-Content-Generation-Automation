@@ -1,8 +1,15 @@
 import { clearToken, getToken } from "./auth";
-import { cascadeDisclosure, judgeSignal, lessonCountLabel } from "./regeneration-state";
+import {
+  cascadeDisclosure,
+  costComparison,
+  formatUsd,
+  judgeSignal,
+  lessonCountLabel,
+} from "./regeneration-state";
 import type {
   ApprovalGate,
   CascadeSummary,
+  CostComparison,
   JudgeSignal,
   JudgeStatus,
   PhaseSelection,
@@ -24,6 +31,7 @@ import type {
   DeckResponse,
   Job,
   JobKind,
+  JobStatus,
   LaunchDefaults,
   NotionGrade,
   NotionSubject,
@@ -952,6 +960,43 @@ export function regenerationEstimateBody(
 
 /** The `/campaigns` body: the estimate body plus the figures the operator was
  *  SHOWN, echoed back so the frozen campaign records what was approved. */
+/** A stable fingerprint of everything a create refusal could be ABOUT.
+ *
+ *  `useMutation` keeps `error` until the next `mutate()`, so an
+ *  `active_lineage_conflict` naming three lessons stays on screen after the
+ *  operator has deselected them — describing a draft that no longer exists.
+ *  Comparing this signature against the one captured when the request was sent
+ *  is what scopes the error to its own draft.
+ *
+ *  Deliberately covers only the fields the server reads: a cosmetic state
+ *  change must not silently discard a refusal the operator has not addressed.
+ */
+export function regenerationDraftSignature(draft: {
+  bookId: string | null;
+  language: string;
+  selectedTocEntryIds: string[];
+  selectedPhases: string[];
+  excludedPhases: string[];
+  refreshExtraction: boolean;
+  acknowledged: boolean;
+  canarySize: number;
+  provider: string;
+  model: string | null;
+}): string {
+  return JSON.stringify([
+    draft.bookId,
+    draft.language,
+    [...draft.selectedTocEntryIds].sort(),
+    [...draft.selectedPhases].sort(),
+    [...draft.excludedPhases].sort(),
+    draft.refreshExtraction,
+    draft.acknowledged,
+    draft.canarySize,
+    draft.provider,
+    draft.model,
+  ]);
+}
+
 export function regenerationCampaignBody(
   draft: RegenerationCampaignDraft,
 ): RegenerationCampaignDraft {
@@ -1110,6 +1155,32 @@ export function regenerationBucketViews(
 
 /** The recovery action's label. Deliberately NOT an approval word: the
  *  approval already happened and there is nothing new to review. */
+/** What the campaign list header may honestly claim.
+ *
+ *  `GET /campaigns` is paged (`limit` defaults to 50) and returns its own
+ *  `count` — the total matching the filter. Labelling the rendered array
+ *  "N total" turns a capped first page into a claim about the whole database,
+ *  which is exactly the number an operator uses to decide nothing is missing.
+ *
+ *  `count: null` is a failed read: cached rows may still be on screen, but
+ *  their number says nothing about the total.
+ */
+export function regenerationCampaignCountLabel(input: {
+  shown: number;
+  count: number | null;
+  limit: number;
+  offset: number;
+}): string {
+  if (input.count == null) return "unknown";
+  if (input.shown >= input.count && input.offset === 0) return `${input.count} total`;
+  if (input.offset > 0) {
+    const first = input.offset + 1;
+    const last = input.offset + input.shown;
+    return `${first}\u2013${last} of ${input.count}`;
+  }
+  return `${input.shown} of ${input.count}`;
+}
+
 export const REGENERATION_RELEASE_RETRY_LABEL = "Retry the release";
 export const REGENERATION_CANARY_RETRY_LABEL = "Retry canary generation";
 
@@ -1910,6 +1981,78 @@ export function regenerationNextVersion(target: RegenerationTargetReport): numbe
  * building one would mislabel an English lesson as Uzbek. The state test
  * asserts the two produce identical gates for a campaign both shapes can carry.
  */
+/** Which of the two pre-approval decisions this campaign can still take.
+ *
+ *  Approve and Reject are NOT the same gate. `reject_canary` is legal for any
+ *  campaign that has launched a canary, has not been approved, and is not
+ *  terminal — which includes `attention_required`, the state a campaign parks
+ *  in when its canary FAILED to generate. Rendering both decisions only for
+ *  `awaiting_canary_approval` left exactly that campaign with no way out but
+ *  abandoning every target one at a time.
+ *
+ *  Approve stays narrow on purpose: `approve_canary` also accepts
+ *  `attention_required`, but there is no reviewed canary behind it, so offering
+ *  "approve and publish" there would invite a release nobody looked at.
+ */
+export interface RegenerationDecisionGate {
+  canApprove: boolean;
+  canReject: boolean;
+  /** Why approve is absent while reject is offered; null when both are. */
+  rejectNote: string | null;
+}
+
+const REGENERATION_TERMINAL_CAMPAIGN_STATUSES: readonly RegenerationCampaignStatus[] = [
+  "completed",
+  "completed_with_abandonments",
+  "rejected",
+  "cancelled",
+];
+
+export function regenerationDecisionGate(
+  detail: Pick<
+    RegenerationCampaignDetail,
+    "status" | "approved_at" | "canary_launched_at" | "rejected_at" | "cancel_requested_at"
+  >,
+): RegenerationDecisionGate {
+  const terminal = REGENERATION_TERMINAL_CAMPAIGN_STATUSES.includes(detail.status);
+  const preApproval =
+    !terminal &&
+    detail.approved_at == null &&
+    detail.rejected_at == null &&
+    detail.cancel_requested_at == null;
+  // Narrower than "legal": `reject_canary` also accepts `canary_running`, but a
+  // campaign whose canary is still generating is not stuck — "Cancel campaign"
+  // is offered for every non-terminal campaign — and rejecting there would stop
+  // work in flight under a button that reads like a review verdict. The two
+  // states below are the ones where the operator has actually finished looking.
+  const canReject =
+    preApproval &&
+    detail.canary_launched_at != null &&
+    (detail.status === "awaiting_canary_approval" || detail.status === "attention_required");
+  const canApprove = preApproval && detail.status === "awaiting_canary_approval";
+  return {
+    canApprove,
+    canReject,
+    rejectNote:
+      canReject && !canApprove
+        ? "This campaign has no reviewed canary to approve. Rejecting it abandons " +
+          "every canary and planned lesson; no Notion page is created and no " +
+          "publication version is consumed."
+        : null,
+  };
+}
+
+/** A revision job has nothing to open or download until it is `done`.
+ *
+ *  The download endpoint serves the packet the job produced, so offering the
+ *  link while the revision is pending, running or failed hands the operator a
+ *  link that answers with a partial packet or an error — at the canary gate,
+ *  where "I read it" is the whole decision.
+ */
+export function regenerationRevisionLinksReady(status: JobStatus | null): boolean {
+  return status === "done";
+}
+
 export function regenerationApprovalGate(detail: RegenerationCampaignDetail): ApprovalGate {
   const targetCount = detail.targets.length;
   const singleTarget = targetCount === 1;
@@ -1956,6 +2099,45 @@ export function regenerationApprovalGate(detail: RegenerationCampaignDetail): Ap
 }
 
 /* ── per-target actions ───────────────────────────────────────────────── */
+
+/** Actual spend against the estimate, with the SCOPE stated.
+ *
+ *  At the canary gate only `canary_size` of `target_count` lessons have run, so
+ *  scoring that spend against the whole-campaign high bound always reads
+ *  "far below estimate" — the one moment an operator is deciding whether to
+ *  release the rest. A percentage is only produced once every lesson has a
+ *  revision job; before that the number is reported with what it covers and
+ *  no verdict attached.
+ */
+export interface RegenerationCostView {
+  text: string;
+  direction: CostComparison["direction"];
+  scope: "partial" | "complete";
+}
+
+export function regenerationCanaryCostView(
+  detail: RegenerationCampaignDetail,
+): RegenerationCostView {
+  const actual = detail.actual_cost.usd;
+  const ran = detail.actual_cost.revision_job_count;
+  const total = detail.target_count;
+  const estimated = detail.estimated_cost_high_usd ?? detail.estimated_cost_low_usd ?? 0;
+  if (total > 0 && ran < total) {
+    const covered = `${ran} of ${total} ${plural(total, "lesson", "lessons")}`;
+    return {
+      scope: "partial",
+      direction: "on_target",
+      text:
+        estimated > 0
+          ? `Actual ${formatUsd(actual)} so far, covering ${covered} — the ${formatUsd(
+              estimated,
+            )} estimate covers all ${total}.`
+          : `Actual ${formatUsd(actual)} so far, covering ${covered} — no estimate was recorded for this campaign.`,
+    };
+  }
+  const comparison = costComparison(estimated, actual);
+  return { scope: "complete", direction: comparison.direction, text: comparison.text };
+}
 
 export type RegenerationActionKind = "retry-generation" | "retry-publication" | "abandon";
 
@@ -2073,6 +2255,20 @@ export function regenerationReasonError(reason: string): string | null {
  * `regenerated_phases` + `copied_phases`, so the counts this produces are the
  * server's counts — asserted against them in `regeneration-state.test.ts`.
  */
+/** The extract is not a member of `selected_phases`; it has its own switch.
+ *
+ *  `canonical_phases` is `("extract", *flow_for(subject))`, so the catalog
+ *  probe hands the wizard a phase the server refuses:
+ *  `build_phase_plan(selected_phases=["extract"])` raises `UnknownPhaseError`
+ *  ("pass refresh_extraction=True to re-run the extraction instead"), which
+ *  reaches the operator as a 422 on a chip the screen invited them to click.
+ */
+export const REGENERATION_EXTRACT_PHASE = "extract";
+
+export function regenerationSelectablePhases(canonicalPhases: string[]): string[] {
+  return canonicalPhases.filter((phase) => phase !== REGENERATION_EXTRACT_PHASE);
+}
+
 export function phaseSelectionFromPlan(plan: RegenerationPhasePlan): PhaseSelection {
   return {
     allPhases: plan.canonical_phases,
@@ -2107,6 +2303,15 @@ const REGENERATION_KNOWN_JUDGE_STATUSES: readonly JudgeStatus[] = [
   "major_regen_failed",
 ];
 
+/** The API's token for a clean verdict is `ok`; this build's vocabulary calls
+ *  it `pass` (`regeneration-state.JudgeStatus`).
+ *
+ *  Without this every passing phase fell through to "a verdict this build does
+ *  not recognise" — severity `warning` — so the canary gate counted the phases
+ *  that PASSED as judge warnings and told the operator to hand-read them.
+ */
+const REGENERATION_JUDGE_STATUS_ALIASES: Record<string, JudgeStatus> = { ok: "pass" };
+
 /**
  * `judge_status_counts` rendered as prominent, non-blocking warnings.
  *
@@ -2135,7 +2340,8 @@ export function regenerationJudgeCounts(
   return Object.entries(counts ?? {})
     .filter(([, count]) => count > 0)
     .map(([status, count]) => {
-      const known = REGENERATION_KNOWN_JUDGE_STATUSES.find((s) => s === status);
+      const aliased = REGENERATION_JUDGE_STATUS_ALIASES[status];
+      const known = aliased ?? REGENERATION_KNOWN_JUDGE_STATUSES.find((s) => s === status);
       return {
         status,
         count,
@@ -2230,6 +2436,32 @@ export function regenerationPlanStepView(input: {
   if (input.error) return { mode: "error", message: null };
   if (!input.hasSelection) return { mode: "none", message: REGENERATION_PLAN_NONE };
   return { mode: "loading", message: REGENERATION_PLAN_LOADING };
+}
+
+/** Why the create button is blocked at the dependency-plan step.
+ *
+ *  `plan` is null in three different situations and only one of them is about
+ *  the operator's own selection. Reporting "Pick at least one phase" while a
+ *  plan request is in flight — or while its error block sits directly above
+ *  saying the read failed — sends the operator to change something that was
+ *  never wrong.
+ */
+export function regenerationPlanBlockedReason(
+  planStep: RegenerationPlanStepView,
+): string | null {
+  switch (planStep.mode) {
+    case "ready":
+      return null;
+    case "loading":
+      return "Waiting for the planner to answer.";
+    case "error":
+      return (
+        "The dependency plan could not be read, so there is nothing to freeze " +
+        "this campaign to."
+      );
+    default:
+      return "Pick at least one phase, or turn on the extract refresh.";
+  }
 }
 
 /** One lineage that cannot be regenerated.

@@ -1100,14 +1100,20 @@ async def test_revision_job_must_store_a_concrete_session_limit_strategy():
             )
             await s.commit()
 
+        # Scoped to THIS test's two targets. An unfiltered
+        # `regeneration_target_id IS NOT NULL` reads every revision row in the
+        # database, so any other test that leaves one behind (or simply runs
+        # first) turns this assertion into a failure that has nothing to do
+        # with the constraint under test.
         async with SessionLocal() as s:
             stored = (
                 await s.execute(
                     text(
                         "SELECT session_limit_strategy FROM homework_jobs "
-                        "WHERE regeneration_target_id IS NOT NULL "
+                        "WHERE regeneration_target_id IN (:uz, :ru) "
                         "ORDER BY session_limit_strategy"
-                    )
+                    ),
+                    {"uz": uz_target_id, "ru": ru_target_id},
                 )
             ).scalars().all()
         assert stored == ["pause", "switch"]

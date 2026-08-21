@@ -390,6 +390,58 @@ def test_estimate_is_read_only_and_carries_preflight_and_incompleteness(monkeypa
     assert priced.await_count == 1
 
 
+def test_estimate_refuses_a_retired_model_the_same_way_creation_does(monkeypatch):
+    """A stale `launch_defaults` row is the ONE way a retired model reaches a
+    campaign: the draft body is manifest-validated by pydantic, but that row is
+    not, and gemini-2.5 was retired on 2026-08-03.
+
+    Without this check the estimate prices a dead model and answers 200 (or
+    422-ing on an "unknown (provider, model)" message that never says the word
+    retired). The operator only finds out one request later, at create. The
+    check runs on the RAW pins before contract resolution — the same order
+    `_stored_contract` uses, and for the same reason: a retired model is no
+    longer in MODEL_MANIFEST, so resolution refuses it with a message that
+    tells an operator nothing about retirement.
+    """
+    source = _source()
+    monkeypatch.setattr(
+        discovery, "list_source_candidates",
+        AsyncMock(return_value=[_candidate(source)]),
+    )
+    monkeypatch.setattr(
+        discovery, "preflight_notion_destinations", AsyncMock(return_value=[])
+    )
+    priced = AsyncMock()
+    monkeypatch.setattr(regen_api, "_estimate_regeneration", priced)
+
+    async def _retired_defaults_session():
+        session = MagicMock()
+        session.commit = AsyncMock()
+        session.scalar = AsyncMock(return_value=None)
+        session.get = AsyncMock(return_value=SimpleNamespace(
+            extract_provider="gemini", extract_model="gemini-2.5-flash",
+            extract_transport="api",
+            judge_provider="gemini", judge_model="gemini-3.6-flash",
+            judge_transport="api",
+            solver_provider="gemini", solver_model="gemini-3.6-flash",
+            solver_transport="api",
+        ))
+        yield session
+
+    app.dependency_overrides[get_session] = _retired_defaults_session
+
+    response = client.post(f"{BASE}/estimate", json=_estimate_body())
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["error"] == "retired_model"
+    assert detail["retired"] == [
+        {"role": "extract", "provider": "gemini", "model": "gemini-2.5-flash"}
+    ]
+    assert "retired" in detail["message"]
+    assert priced.await_count == 0, "a retired campaign must not be priced"
+
+
 def test_estimate_with_no_eligible_lineage_reports_it_without_pricing(monkeypatch):
     monkeypatch.setattr(
         discovery, "list_source_candidates",

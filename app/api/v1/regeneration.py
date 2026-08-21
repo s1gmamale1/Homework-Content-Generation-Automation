@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Optional, Sequence
 from uuid import UUID
 
@@ -86,6 +87,7 @@ from app.services.regeneration_campaign import (
     TargetNotFound,
     TerminalCampaignWithLiveTargets,
     require_api_transport,
+    require_live_models,
 )
 from app.services.regeneration_estimator import estimate_regeneration
 from app.services.regeneration_states import CAMPAIGN_STATUSES
@@ -701,6 +703,33 @@ async def preview_phase_plan(body: out.PhasePlanRequest) -> out.PhasePlanOut:
     )
 
 
+def _pinned_selection(draft, defaults: LaunchDefaultsSnapshot) -> SimpleNamespace:
+    """The four ``(provider, model)`` pairs this draft would actually run with.
+
+    Job-shaped on purpose: ``require_live_models`` takes anything carrying the
+    role attributes, so the fleet's single retirement predicate
+    (``job_reactivation.retired_models_in_job``) applies unchanged.
+
+    The per-role fallback is not restated here — it is
+    ``agent_models.resolve_role_selection``, the same production helper
+    ``resolve_launch_contract`` calls — so this cannot drift from what the
+    campaign would freeze. Only the *pins* are needed, so the completion step
+    (`model or default_model(provider)`) is deliberately left out: a NULL role
+    model is not a retired one, and `retired_models_in_job` skips it.
+    """
+    fields: dict[str, object] = {"provider": draft.provider, "model": draft.model}
+    for role in ("extract", "judge", "solver"):
+        provider, model = agent_models.resolve_role_selection(
+            getattr(draft, f"{role}_provider"),
+            getattr(draft, f"{role}_model"),
+            getattr(defaults, f"{role}_provider"),
+            getattr(defaults, f"{role}_model"),
+        )
+        fields[f"{role}_provider"] = provider
+        fields[f"{role}_model"] = model
+    return SimpleNamespace(**fields)
+
+
 @router.post("/estimate", response_model=out.EstimateOut)
 async def estimate(
     body: out.EstimateRequest,
@@ -741,6 +770,18 @@ async def estimate(
         await launch_defaults_repo.get(session)
     )
     try:
+        # Retirement is checked on the RAW pins, BEFORE resolution — the same
+        # order `_stored_contract` uses, and for the same reason: a retired
+        # model has been removed from MODEL_MANIFEST, so
+        # `resolve_launch_contract` would refuse it with an "unknown (provider,
+        # model)" validation error that never says the word retired and gives
+        # an operator nothing to act on. Estimate is where an operator finds
+        # out; without this they would price a dead model here and only learn
+        # the truth one request later, at create.
+        require_live_models(
+            _pinned_selection(body.contract, defaults),
+            what="estimate a regeneration campaign",
+        )
         contract = resolve_launch_contract(
             body.contract,
             defaults=defaults,
@@ -749,7 +790,7 @@ async def estimate(
             ),
         )
         require_api_transport(contract)
-    except NonApiTransport as exc:
+    except (NonApiTransport, RetiredModelRefusal) as exc:
         raise _translate_campaign_error(exc, request_shaped=True) from exc
     except ValueError as exc:
         raise _unprocessable("unresolvable_contract", str(exc)) from exc

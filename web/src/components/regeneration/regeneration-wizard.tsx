@@ -14,7 +14,9 @@ import {
   regenerationKeyedLines,
   regenerationLanguageLabel,
   regenerationNarrowScope,
+  regenerationPlanBlockedReason,
   regenerationPlanStepView,
+  regenerationSelectablePhases,
   regenerationSourceRow,
   regenerationSourcesView,
   regenerationToggleLesson,
@@ -308,6 +310,9 @@ export function RegenerationWizard({
     isLoading: planLoading,
     error: planError,
   });
+  // `canonical_phases` includes `extract`, which `selected_phases` refuses —
+  // it has its own switch in step 6.
+  const selectablePhases = regenerationSelectablePhases(phaseCatalog);
   const warning = selection ? exclusionWarning(selection) : null;
   const localGate = selection
     ? launchGate(selection, state.acknowledged, targetCount)
@@ -334,7 +339,7 @@ export function RegenerationWizard({
     : targetCount === 0
       ? "Select at least one lesson to regenerate."
       : !plan
-        ? "Pick at least one phase, or turn on the extract refresh."
+        ? regenerationPlanBlockedReason(planStep)
         : !localGate.canLaunch
           ? localGate.blockedReason
           : needsAcknowledgement && !state.acknowledged
@@ -503,7 +508,7 @@ export function RegenerationWizard({
         hint="Ticking a phase also rebuilds everything downstream of it. Step 3 shows the real expansion the planner returned."
       >
         <div className="flex flex-wrap gap-1">
-          {phaseCatalog.map((phase) => (
+          {selectablePhases.map((phase) => (
             <Chip
               key={phase}
               active={state.selectedPhases.includes(phase)}
@@ -518,7 +523,7 @@ export function RegenerationWizard({
               {formatPhaseName(phase)}
             </Chip>
           ))}
-          {phaseCatalog.length === 0 && (
+          {selectablePhases.length === 0 && (
             <span className="text-xs text-white/40">
               Pick a lesson first — the phase list comes from that subject's flow.
             </span>

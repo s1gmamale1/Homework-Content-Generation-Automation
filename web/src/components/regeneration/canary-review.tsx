@@ -8,12 +8,15 @@ import {
   api,
   regenerationApprovalGate,
   regenerationCampaignStatusLabel,
+  regenerationCanaryCostView,
+  regenerationDecisionGate,
   regenerationJudgeCounts,
   regenerationReasonError,
+  regenerationRevisionLinksReady,
   regenerationSolverStatusLabel,
   regenerationStrandedRelease,
 } from "@/lib/api";
-import { costComparison, formatUsd } from "@/lib/regeneration-state";
+import { formatUsd } from "@/lib/regeneration-state";
 import type { RegenerationCampaignDetail, RegenerationTargetReport } from "@/lib/types";
 import { CARD, GLASS_BTN, INPUT_GLASS, PRIMARY_BTN } from "@/lib/ui";
 import { cn } from "@/lib/utils";
@@ -77,8 +80,11 @@ export function CanaryReview({
   const [confirmingReject, setConfirmingReject] = useState(false);
 
   const gate = regenerationApprovalGate(detail);
-  const estimated = detail.estimated_cost_high_usd ?? detail.estimated_cost_low_usd ?? 0;
-  const cost = costComparison(estimated, detail.actual_cost.usd);
+  // At the canary gate only `canary_size` of `target_count` lessons have run,
+  // so scoring that spend against the whole-campaign high bound would read
+  // "far below estimate" at the exact moment the operator decides whether to
+  // release the rest.
+  const cost = regenerationCanaryCostView(detail);
   const judge = regenerationJudgeCounts(detail.judge_status_counts);
   const solver = Object.entries(detail.solver_status_counts).filter(([, n]) => n > 0);
   const warnings = judge.filter((j) => j.signal.severity === "warning");
@@ -88,12 +94,17 @@ export function CanaryReview({
   const busy = launching || approving || rejecting;
 
   const canLaunchCanary = detail.status === "draft";
-  const atGate = detail.status === "awaiting_canary_approval";
+  const decision = regenerationDecisionGate(detail);
+  // `attention_required` before approval (a canary that failed to generate) is
+  // rejectable but has nothing to approve, so the section renders on the wider
+  // predicate and the buttons follow the gate.
+  const atGate = decision.canApprove || decision.canReject;
   // Non-null only for a launched, non-terminal campaign with lessons that never
-  // got a revision job. Never overlaps `atGate`: after approval the derivation
-  // cannot return `awaiting_canary_approval`, and before it a canary stuck at
-  // `generating` holds the campaign at `canary_running`
-  // (`regeneration_states.roll_up_campaign`).
+  // got a revision job. It CAN now coexist with the decision section: a
+  // pre-approval campaign parked in `attention_required` may be both stranded
+  // and rejectable, and both offers are real — retry the release, or give up.
+  // It still never coexists with an APPROVE: `awaiting_canary_approval` means
+  // every canary produced a revision.
   const stranded = regenerationStrandedRelease(detail);
   // The recovery re-runs whichever step stalled, so its pending state is that
   // mutation's, not always approve's.
@@ -265,6 +276,11 @@ export function CanaryReview({
                   )}
                   {canary.revision_job_id && (
                     <div className="flex flex-wrap gap-3 text-[0.68rem]">
+                      {/* The job page stays reachable whatever the status —
+                          reading the error IS what an operator does with a
+                          failed revision. The DOWNLOAD does not: it serves the
+                          packet the job produced, so before `done` it answers
+                          with a partial packet or an error. */}
                       <Link
                         to={`/job/${canary.revision_job_id}`}
                         className="inline-flex items-center gap-1 text-sky-200/80 hover:text-sky-100"
@@ -272,13 +288,15 @@ export function CanaryReview({
                         <ExternalLink className="size-3" />
                         Open the full revision
                       </Link>
-                      <a
-                        href={api.jobDownloadUrl(canary.revision_job_id)}
-                        className="inline-flex items-center gap-1 text-sky-200/80 hover:text-sky-100"
-                      >
-                        <Download className="size-3" />
-                        Download it
-                      </a>
+                      {regenerationRevisionLinksReady(canary.revision_job_status) && (
+                        <a
+                          href={api.jobDownloadUrl(canary.revision_job_id)}
+                          className="inline-flex items-center gap-1 text-sky-200/80 hover:text-sky-100"
+                        >
+                          <Download className="size-3" />
+                          Download it
+                        </a>
+                      )}
                     </div>
                   )}
                 </li>
@@ -293,20 +311,28 @@ export function CanaryReview({
       {atGate && (
         <section className={cn(CARD, "space-y-3")}>
           <h3 className="text-sm font-semibold text-white">Campaign decision</h3>
-          <p className="max-w-[75ch] text-xs leading-5 text-white/50">{gate.approveDetail}</p>
-          <p className="max-w-[75ch] text-xs leading-5 text-white/50">
-            {REGENERATION_APPROVE_NOTE}
-          </p>
+          {decision.canApprove ? (
+            <>
+              <p className="max-w-[75ch] text-xs leading-5 text-white/50">{gate.approveDetail}</p>
+              <p className="max-w-[75ch] text-xs leading-5 text-white/50">
+                {REGENERATION_APPROVE_NOTE}
+              </p>
+            </>
+          ) : (
+            <p className="max-w-[75ch] text-xs leading-5 text-white/50">{decision.rejectNote}</p>
+          )}
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              className={PRIMARY_BTN}
-              disabled={!gate.canApprove || busy}
-              onClick={onApprove}
-            >
-              <CircleCheck className="size-4" />
-              {approving ? "Approving…" : gate.approveLabel}
-            </button>
+            {decision.canApprove && (
+              <button
+                type="button"
+                className={PRIMARY_BTN}
+                disabled={!gate.canApprove || busy}
+                onClick={onApprove}
+              >
+                <CircleCheck className="size-4" />
+                {approving ? "Approving…" : gate.approveLabel}
+              </button>
+            )}
             <button
               type="button"
               className={GLASS_BTN}

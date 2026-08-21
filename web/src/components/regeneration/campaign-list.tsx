@@ -1,5 +1,9 @@
 import { RegenerationProblem } from "@/components/regeneration/regeneration-wizard";
-import { regenerationCampaignListView, regenerationCampaignStatusLabel } from "@/lib/api";
+import {
+  regenerationCampaignCountLabel,
+  regenerationCampaignListView,
+  regenerationCampaignStatusLabel,
+} from "@/lib/api";
 import { formatUsd, lessonCountLabel } from "@/lib/regeneration-state";
 import type { RegenerationCampaignStatus, RegenerationCampaignSummary } from "@/lib/types";
 import { CARD, FRAME_OFF, FRAME_ON, PRESSABLE } from "@/lib/ui";
@@ -41,6 +45,9 @@ function estimateText(campaign: RegenerationCampaignSummary): string {
 
 export function CampaignList({
   campaigns,
+  count = null,
+  limit = 0,
+  offset = 0,
   selectedId,
   onSelect,
   isLoading = false,
@@ -48,6 +55,12 @@ export function CampaignList({
   onRetry,
 }: {
   campaigns: RegenerationCampaignSummary[];
+  /** `CampaignListOut.count` — every campaign matching the filter, not just the
+   *  ones on this page. `null` when the read failed. */
+  count?: number | null;
+  /** `CampaignListOut.limit` / `.offset`, so a capped page can say so. */
+  limit?: number;
+  offset?: number;
   selectedId: string | null;
   onSelect: (id: string) => void;
   isLoading?: boolean;
@@ -63,12 +76,15 @@ export function CampaignList({
   // Which of loading / empty / failed is true is a decision, not a render
   // detail: a failed read used to fall through to "no campaigns yet".
   const view = regenerationCampaignListView({ campaigns, isLoading, error });
-  // A failed read knows nothing about the count — unless the cache still holds
-  // rows, in which case that number is still the last thing the server said.
-  const total =
-    view.mode === "error" && view.campaigns.length === 0
-      ? "unknown"
-      : `${view.campaigns.length} total`;
+  // `GET /campaigns` is PAGED. Labelling the rendered rows "N total" turns a
+  // capped first page into a claim about the whole database — and that number
+  // is what an operator reads to decide no campaign is missing.
+  const total = regenerationCampaignCountLabel({
+    shown: view.campaigns.length,
+    count: view.mode === "error" ? null : count,
+    limit,
+    offset,
+  });
   return (
     <section className={cn(CARD, "space-y-2")}>
       <header className="flex items-center justify-between">

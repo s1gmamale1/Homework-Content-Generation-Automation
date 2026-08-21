@@ -435,13 +435,15 @@ async def _seed(*, target_status="published", job_status="done", canary=True):
         session.add(source_phase)
         await session.flush()
         # The V1 run's own spend. It must NEVER reach the campaign's cost.
-        session.add(AgentUsage(
+        source_usage = AgentUsage(
             homework_job_id=source.id, phase_output_id=source_phase.id,
             provider="gemini", model_name="gemini-3.6-flash",
             operation="phase.run", auth_mode="api",
             prompt_tokens=500_000, output_tokens=100_000, total_tokens=600_000,
             success=True,
-        ))
+        )
+        session.add(source_usage)
+        await session.flush()
 
         campaign = RegenerationCampaign(
             status="approved", selection_spec={"marker": _MARKER},
@@ -486,25 +488,151 @@ async def _seed(*, target_status="published", job_status="done", canary=True):
                     source_phase.id if name != "flashcards" else None),
             ))
         await session.flush()
-        session.add(AgentUsage(
+        revision_usage = AgentUsage(
             homework_job_id=revision.id, provider="gemini",
             model_name="gemini-3.6-flash", operation="phase.run",
             auth_mode="api", prompt_tokens=1_000, output_tokens=200,
             total_tokens=1_200, success=True,
-        ))
+        )
+        session.add(revision_usage)
+        await session.flush()
         await session.commit()
         return SimpleNamespace(
             campaign_id=campaign.id, target_id=target.id,
             source_job_id=source.id, revision_job_id=revision.id,
             toc_entry_id=toc.id, book_id=book.id,
+            # `agent_usages.homework_job_id` is SET NULL, so these rows OUTLIVE
+            # their jobs unless they are deleted by id. `_purge` is asserted
+            # against these, not against the (by then null) job link.
+            usage_ids=(source_usage.id, revision_usage.id),
         )
 
 
-@_DB
-async def test_actual_cost_query_reaches_revision_jobs_only():
+async def _purge(seeded) -> None:
+    """Delete every row `_seed` created, child-first.
+
+    Not hygiene for its own sake. A seeded target that is left behind is a
+    NON-TERMINAL regeneration target, so it holds
+    `uq_regeneration_targets_active_lineage` for its lesson forever, and its
+    revision job is picked up by any query in the suite that is not
+    lesson-scoped. Both of those turn a later, unrelated test into a failure
+    that depends only on run order.
+
+    The order below is the FK graph, not a preference: `agent_usages` points at
+    both jobs and at a phase row; `phase_outputs.copied_from_phase_output_id`
+    is RESTRICT, so the revision's copies must go before the source rows they
+    reference; `homework_jobs.regeneration_target_id` and
+    `revision_of_job_id` are RESTRICT, so the revision job goes before both its
+    target and its source.
+    """
+    from sqlalchemy import delete
+
     from app.db import SessionLocal
+    from app.models.agent_usage import AgentUsage
+    from app.models.book import Book
+    from app.models.homework_job import HomeworkJob
+    from app.models.phase_output import PhaseOutput
+    from app.models.regeneration_campaign import RegenerationCampaign
+    from app.models.regeneration_target import RegenerationTarget
+    from app.models.toc_entry import TOCEntry
+
+    job_ids = [seeded.source_job_id, seeded.revision_job_id]
+    async with SessionLocal() as session:
+        await session.execute(
+            delete(AgentUsage).where(AgentUsage.homework_job_id.in_(job_ids)))
+        await session.execute(
+            delete(PhaseOutput)
+            .where(PhaseOutput.job_id.in_(job_ids))
+            .where(PhaseOutput.copied_from_phase_output_id.is_not(None)))
+        await session.execute(
+            delete(PhaseOutput).where(PhaseOutput.job_id.in_(job_ids)))
+        await session.execute(
+            delete(HomeworkJob).where(HomeworkJob.id == seeded.revision_job_id))
+        await session.execute(
+            delete(RegenerationTarget).where(
+                RegenerationTarget.id == seeded.target_id))
+        await session.execute(
+            delete(RegenerationCampaign).where(
+                RegenerationCampaign.id == seeded.campaign_id))
+        await session.execute(
+            delete(HomeworkJob).where(HomeworkJob.id == seeded.source_job_id))
+        await session.execute(
+            delete(TOCEntry).where(TOCEntry.id == seeded.toc_entry_id))
+        await session.execute(delete(Book).where(Book.id == seeded.book_id))
+        await session.commit()
+
+
+@pytest.fixture()
+async def seed():
+    """`_seed`, with its rows removed again afterwards.
+
+    Every real-DB test below goes through this rather than calling `_seed`
+    directly, so the module cannot leave a live lineage or a stray revision job
+    in the database for whatever runs next.
+    """
+    created = []
+
+    async def _factory(**kwargs):
+        seeded = await _seed(**kwargs)
+        created.append(seeded)
+        return seeded
+
+    try:
+        yield _factory
+    finally:
+        for seeded in reversed(created):
+            await _purge(seeded)
+
+
+@_DB
+async def test_the_seed_helper_removes_every_row_it_created():
+    """The fixture teardown above is only worth anything if `_purge` is
+    complete — a forgotten table leaves exactly the residue it exists to
+    prevent, and nothing else in the suite would say so."""
+    from sqlalchemy import func, select
+
+    from app.db import SessionLocal
+    from app.models.agent_usage import AgentUsage
+    from app.models.book import Book
+    from app.models.homework_job import HomeworkJob
+    from app.models.phase_output import PhaseOutput
+    from app.models.regeneration_campaign import RegenerationCampaign
+    from app.models.regeneration_target import RegenerationTarget
+    from app.models.toc_entry import TOCEntry
 
     seeded = await _seed()
+    await _purge(seeded)
+
+    async with SessionLocal() as session:
+        for model, pk in (
+            (Book, seeded.book_id),
+            (TOCEntry, seeded.toc_entry_id),
+            (HomeworkJob, seeded.source_job_id),
+            (HomeworkJob, seeded.revision_job_id),
+            (RegenerationTarget, seeded.target_id),
+            (RegenerationCampaign, seeded.campaign_id),
+        ):
+            assert await session.get(model, pk) is None, (
+                f"{model.__name__} {pk} survived the purge")
+        surviving = await session.scalar(
+            select(func.count()).select_from(PhaseOutput).where(
+                PhaseOutput.job_id.in_(
+                    [seeded.source_job_id, seeded.revision_job_id])))
+        assert surviving == 0, "phase_outputs rows survived the purge"
+        # By ID: the FK is SET NULL, so a usage row that was never deleted is
+        # still sitting there with a null job link and would pass a
+        # link-scoped count.
+        surviving = await session.scalar(
+            select(func.count()).select_from(AgentUsage).where(
+                AgentUsage.id.in_(list(seeded.usage_ids))))
+        assert surviving == 0, "agent_usages rows survived the purge"
+
+
+@_DB
+async def test_actual_cost_query_reaches_revision_jobs_only(seed):
+    from app.db import SessionLocal
+
+    seeded = await seed()
     async with SessionLocal() as session:
         report = await regen_api._campaign_detail(
             session, seeded.campaign_id, now=datetime.now(timezone.utc)
@@ -520,10 +648,10 @@ async def test_actual_cost_query_reaches_revision_jobs_only():
 
 
 @_DB
-async def test_the_report_resolves_the_source_version_and_lesson():
+async def test_the_report_resolves_the_source_version_and_lesson(seed):
     from app.db import SessionLocal
 
-    seeded = await _seed()
+    seeded = await seed()
     async with SessionLocal() as session:
         report = await regen_api._campaign_detail(
             session, seeded.campaign_id, now=datetime.now(timezone.utc)
@@ -539,10 +667,10 @@ async def test_the_report_resolves_the_source_version_and_lesson():
 
 
 @_DB
-async def test_provenance_and_judge_counts_come_from_the_stored_phase_rows():
+async def test_provenance_and_judge_counts_come_from_the_stored_phase_rows(seed):
     from app.db import SessionLocal
 
-    seeded = await _seed()
+    seeded = await seed()
     async with SessionLocal() as session:
         report = await regen_api._campaign_detail(
             session, seeded.campaign_id, now=datetime.now(timezone.utc)
@@ -556,13 +684,13 @@ async def test_provenance_and_judge_counts_come_from_the_stored_phase_rows():
 
 
 @_DB
-async def test_the_report_path_repairs_a_crashed_revision_before_rendering():
+async def test_the_report_path_repairs_a_crashed_revision_before_rendering(seed):
     """The worker died between the job's terminal commit and its target update:
     the target still says `generating` over a finished job."""
     from app.db import SessionLocal
     from app.models.regeneration_target import RegenerationTarget
 
-    seeded = await _seed(target_status="generating", job_status="failed")
+    seeded = await seed(target_status="generating", job_status="failed")
     async with SessionLocal() as session:
         moved = await regen_api._reconcile(session)
         assert moved >= 1
@@ -577,10 +705,10 @@ async def test_the_report_path_repairs_a_crashed_revision_before_rendering():
 
 
 @_DB
-async def test_the_campaign_list_counts_targets_per_campaign():
+async def test_the_campaign_list_counts_targets_per_campaign(seed):
     from app.db import SessionLocal
 
-    seeded = await _seed()
+    seeded = await seed()
     async with SessionLocal() as session:
         campaigns, counts, total = await regen_api._list_campaigns(
             session, statuses=None, limit=200, offset=0
@@ -592,7 +720,7 @@ async def test_the_campaign_list_counts_targets_per_campaign():
 
 
 @_DB
-async def test_the_route_serves_the_whole_report_over_a_real_session(monkeypatch):
+async def test_the_route_serves_the_whole_report_over_a_real_session(seed, monkeypatch):
     """Driven through ASGITransport, not ``TestClient``: the client's own
     portal loop would hand the engine's asyncpg connections to a second event
     loop and the pool would tear down across loops."""
@@ -600,7 +728,7 @@ async def test_the_route_serves_the_whole_report_over_a_real_session(monkeypatch
 
     from app.db import SessionLocal
 
-    seeded = await _seed()
+    seeded = await seed()
     monkeypatch.setattr(settings, "regeneration_enabled", True)
     monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
     app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
@@ -632,10 +760,10 @@ async def test_the_route_serves_the_whole_report_over_a_real_session(monkeypatch
 
 
 @_DB
-async def test_a_single_target_report_matches_the_campaign_report(monkeypatch):
+async def test_a_single_target_report_matches_the_campaign_report(seed, monkeypatch):
     from app.db import SessionLocal
 
-    seeded = await _seed()
+    seeded = await seed()
     async with SessionLocal() as session:
         target = await regen_api._load_target(session, seeded.target_id)
         single = await regen_api._target_report(
@@ -656,12 +784,12 @@ async def test_a_single_target_report_matches_the_campaign_report(monkeypatch):
 
 
 @_DB
-async def test_the_gathered_phase_rows_carry_no_markdown_and_still_assemble():
+async def test_the_gathered_phase_rows_carry_no_markdown_and_still_assemble(seed):
     """The projection must be enough for the whole provenance/judge/solver
     half of the report — and must not have brought the snapshot with it."""
     from app.db import SessionLocal
 
-    seeded = await _seed()
+    seeded = await seed()
     async with SessionLocal() as session:
         grouped = await regen_api._phase_rows(session, [seeded.revision_job_id])
         rows = grouped[seeded.revision_job_id]
@@ -682,7 +810,7 @@ async def test_the_gathered_phase_rows_carry_no_markdown_and_still_assemble():
 
 
 @_DB
-async def test_a_gathered_revision_job_is_read_as_it_is_now_not_from_the_map():
+async def test_a_gathered_revision_job_is_read_as_it_is_now_not_from_the_map(seed):
     """The request session already holds the revision job — ``_reconcile``
     loads exactly these rows before every report and mutation — and the
     service, which owns its OWN session, has since moved it. ``SessionLocal``
@@ -696,7 +824,7 @@ async def test_a_gathered_revision_job_is_read_as_it_is_now_not_from_the_map():
     from app.db import SessionLocal
     from app.models.homework_job import HomeworkJob
 
-    seeded = await _seed(target_status="generating", job_status="failed")
+    seeded = await seed(target_status="generating", job_status="failed")
     async with SessionLocal() as session:
         assert await regen_api._reconcile(session) >= 1
         held = await session.get(HomeworkJob, seeded.revision_job_id)
@@ -720,14 +848,14 @@ async def test_a_gathered_revision_job_is_read_as_it_is_now_not_from_the_map():
 
 
 @_DB
-async def test_the_campaign_list_reports_the_status_as_it_is_now():
+async def test_the_campaign_list_reports_the_status_as_it_is_now(seed):
     """Same safeguard, the other whole-entity gather in this router: the list
     route reconciles first — which loads campaigns into the request session —
     and the status it renders is the one the SERVICE's rollup moves."""
     from app.db import SessionLocal
     from app.models.regeneration_campaign import RegenerationCampaign
 
-    seeded = await _seed()
+    seeded = await seed()
     async with SessionLocal() as session:
         held = await session.get(RegenerationCampaign, seeded.campaign_id)
         assert held.status == "approved"

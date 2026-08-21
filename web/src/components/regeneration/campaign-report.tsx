@@ -5,11 +5,13 @@ import {
   type RegenerationErrorView,
   api,
   regenerationBucketViews,
+  regenerationJudgeCounts,
   regenerationKeyedLines,
   regenerationNextVersion,
   regenerationPublicationStateLabel,
   regenerationReasonError,
   regenerationReleasedFailureLines,
+  regenerationRevisionLinksReady,
   regenerationSolverStatusLabel,
   regenerationTargetActions,
 } from "@/lib/api";
@@ -122,13 +124,13 @@ function TargetRow({
             {target.regenerated_phase_count} rebuilt · {target.copied_phase_count} copied
           </span>
         )}
-        {Object.entries(target.judge_status_counts)
-          .filter(([, n]) => n > 0)
-          .map(([status, n]) => (
-            <span key={status} className="font-mono">
-              judge {status} ×{n}
-            </span>
-          ))}
+        {/* The same vocabulary the canary gate reads. The raw token was echoed
+            here, so a phase the judge PASSED rendered as `judge ok ×9`. */}
+        {regenerationJudgeCounts(target.judge_status_counts).map((j) => (
+          <span key={j.status} title={j.signal.explanation}>
+            judge {j.signal.label} ×{j.count}
+          </span>
+        ))}
         {Object.entries(target.solver_status_counts)
           .filter(([, n]) => n > 0)
           .map(([status, n]) => (
@@ -168,6 +170,9 @@ function TargetRow({
         )}
         {target.revision_job_id && (
           <>
+            {/* The job page is where a FAILED revision's error is read, so it
+                stays reachable. The download serves the packet the job
+                produced, so it only exists once there is one. */}
             <Link
               to={`/job/${target.revision_job_id}`}
               className="inline-flex items-center gap-1 text-sky-200/80 hover:text-sky-100"
@@ -175,13 +180,15 @@ function TargetRow({
               <ExternalLink className="size-3" />
               Open the revision
             </Link>
-            <a
-              href={api.jobDownloadUrl(target.revision_job_id)}
-              className="inline-flex items-center gap-1 text-sky-200/80 hover:text-sky-100"
-            >
-              <Download className="size-3" />
-              Download it
-            </a>
+            {regenerationRevisionLinksReady(target.revision_job_status) && (
+              <a
+                href={api.jobDownloadUrl(target.revision_job_id)}
+                className="inline-flex items-center gap-1 text-sky-200/80 hover:text-sky-100"
+              >
+                <Download className="size-3" />
+                Download it
+              </a>
+            )}
           </>
         )}
       </div>

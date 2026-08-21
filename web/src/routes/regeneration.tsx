@@ -15,6 +15,7 @@ import {
   clampCanarySize,
   mergeReleasedFailures,
   regenerationDetailView,
+  regenerationDraftSignature,
   regenerationEligibleQuery,
   regenerationErrorView,
   regenerationListPollMs,
@@ -169,6 +170,9 @@ export function RegenerationPage() {
   const qc = useQueryClient();
   const [draft, setDraft] = useState<RegenerationDraftState>(defaultRegenerationDraft);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** The draft signature a create refusal belongs to. A refusal is rendered
+   *  only while the draft still matches it. */
+  const [createErrorFor, setCreateErrorFor] = useState<string | null>(null);
   const [pendingByTarget, setPendingByTarget] = useState<
     Record<string, RegenerationActionKind | null>
   >({});
@@ -266,6 +270,12 @@ export function RegenerationPage() {
   };
 
   const createMut = useMutation({
+    // The draft this refusal will be ABOUT. `useMutation` keeps `error` until
+    // the next `mutate()`, so without this an `active_lineage_conflict` naming
+    // three lessons stays on screen after the operator has deselected them —
+    // describing a draft that no longer exists and blaming a selection that is
+    // no longer there.
+    onMutate: () => setCreateErrorFor(regenerationDraftSignature(draft)),
     mutationFn: () =>
       api.createRegenerationCampaign(
         campaignDraft(
@@ -482,13 +492,20 @@ export function RegenerationPage() {
               onChange={setDraft}
               onCreate={() => createMut.mutate()}
               creating={createMut.isPending}
-              createError={view(createMut.error)}
+              createError={
+                createErrorFor === regenerationDraftSignature(draft)
+                  ? view(createMut.error)
+                  : null
+              }
             />
           </div>
 
           <div className="space-y-4">
             <CampaignList
               campaigns={campaigns.data?.campaigns ?? []}
+              count={campaigns.data?.count ?? null}
+              limit={campaigns.data?.limit ?? 0}
+              offset={campaigns.data?.offset ?? 0}
               selectedId={selectedId}
               onSelect={setSelectedId}
               isLoading={campaigns.isLoading}

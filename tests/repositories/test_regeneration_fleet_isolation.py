@@ -284,13 +284,6 @@ async def test_list_for_book_still_SEES_revisions(seeded):
 
 
 @db_only
-@pytest.mark.xfail(
-    reason=(
-        "app/repositories/cost.py is Task 5's file; this pins the Integration "
-        "Checkpoint 2 expectation and should XPASS once Task 5 is cherry-picked"
-    ),
-    strict=False,
-)
 async def test_section_prior_api_cost_ignores_a_revision(seeded):
     """Never-pay-twice must price V1's spend, not the revision's."""
     from app.db import SessionLocal
