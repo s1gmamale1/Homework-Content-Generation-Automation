@@ -200,10 +200,19 @@ function textList(value: unknown): string[] {
 }
 
 /**
- * Selective with nothing selected is a campaign the server refuses outright
- * ("phase selection is empty — pick at least one phase, or set
- * refresh_extraction=true"), so the honest reading of "there is nothing in my
- * phase list" is a full rebuild — which is also what the wizard opens on.
+ * Fall back to a full rebuild ONLY when the selection is one the server would
+ * refuse.
+ *
+ * The whole rule is `_PhaseSelectionIn._validate_phases`: *"if not
+ * self.selected_phases and not self.refresh_extraction"* → "phase selection is
+ * empty — pick at least one phase, or set refresh_extraction=true". Both
+ * halves matter. An empty phase list WITH the extract refresh on is the
+ * legitimate extract-only campaign — "re-read the textbook, regenerate
+ * nothing" — and rewriting that to a full rebuild would launch an 11-phase
+ * regeneration of every selected lesson that nobody asked for, at real
+ * per-lesson cost. Only an empty list with the extract refresh OFF is
+ * unlaunchable, and for that one the honest reading is the full rebuild the
+ * wizard opens on.
  *
  * BOTH entry points enforce it. Pruning is what usually empties the list, but
  * a decode can produce the same state (a saved `selectedPhases` that is not an
@@ -211,8 +220,12 @@ function textList(value: unknown): string[] {
  * resolved — a failed fetch would otherwise leave the wizard holding a
  * selection the server cannot accept.
  */
-function modeForPhases(mode: RegenerationMode, selectedPhases: string[]): RegenerationMode {
-  return mode === "selective" && selectedPhases.length === 0 ? "full" : mode;
+function modeForPhases(
+  mode: RegenerationMode,
+  selectedPhases: string[],
+  refreshExtraction: boolean,
+): RegenerationMode {
+  return mode === "selective" && selectedPhases.length === 0 && !refreshExtraction ? "full" : mode;
 }
 
 /** A saved version is believed whenever the server would accept it. Anything
@@ -248,10 +261,15 @@ function decodeDraft(raw: Record<string, unknown>): GuidedRegenerationDraft {
   const fallback = defaultGuidedRegenerationDraft();
   const selectedTocEntryIds = textList(raw.selectedTocEntryIds);
   const selectedPhases = textList(raw.selectedPhases);
+  const refreshExtraction = flag(raw.refreshExtraction, fallback.refreshExtraction);
   return {
     schemaVersion: SCHEMA_VERSION,
     step: known(WIZARD_STEPS, raw.step, fallback.step),
-    mode: modeForPhases(known(REGENERATION_MODES, raw.mode, fallback.mode), selectedPhases),
+    mode: modeForPhases(
+      known(REGENERATION_MODES, raw.mode, fallback.mode),
+      selectedPhases,
+      refreshExtraction,
+    ),
     subjectFilter: nullableText(raw.subjectFilter),
     gradeFilter: nullableText(raw.gradeFilter),
     bookId: nullableText(raw.bookId),
@@ -267,7 +285,7 @@ function decodeDraft(raw: Record<string, unknown>): GuidedRegenerationDraft {
       typeof raw.canarySize === "number" ? raw.canarySize : Number.NaN,
       selectedTocEntryIds.length,
     ),
-    refreshExtraction: flag(raw.refreshExtraction, fallback.refreshExtraction),
+    refreshExtraction,
     provider: text(raw.provider, fallback.provider),
     model: nullableText(raw.model),
     publicationVersion: decodePublicationVersion(raw.publicationVersion),
@@ -383,7 +401,7 @@ export function pruneRegenerationDraft(
       selectedTocEntryIds,
       selectedPhases,
       excludedPhases,
-      mode: modeForPhases(draft.mode, selectedPhases),
+      mode: modeForPhases(draft.mode, selectedPhases, draft.refreshExtraction),
       // Consent to one exact set of skipped phases. A restored draft has not
       // been shown the set it would be consenting to.
       acknowledged: false,
@@ -426,10 +444,12 @@ export type PublicationVersionSource = Pick<RegenerationEligibleSource, "next_ex
  * on its own.
  *
  * While the mode is `automatic` it tracks the selected lessons: one lesson
- * already on V3 pulls the whole campaign to V4, and a campaign can never
- * publish below V3. Editing the number is what flips the mode to `manual`, and
- * from then on the exact figure the operator typed is what is persisted and
- * shown, whatever the sources do underneath it.
+ * already on V3 pulls the whole campaign to V4, and the AUTOMATIC display
+ * floors at V3 — the number this wizard opens on. That floor is not a limit on
+ * what a campaign may publish: editing the number flips the mode to `manual`,
+ * and from then on the exact figure the operator typed is what is persisted
+ * and shown — down to the persistence floor of V2, the first version the
+ * database ever allocates — whatever the sources do underneath it.
  */
 export function displayedPublicationVersion(
   draft: GuidedRegenerationDraft,

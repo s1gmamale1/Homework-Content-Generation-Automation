@@ -293,10 +293,40 @@ test("a decoded selective draft with no phases left falls back to full mode", ()
   // Pruning only runs once `/eligible` and the manifest resolve, so a failed
   // fetch would otherwise leave the wizard holding a selection the server
   // refuses outright ("phase selection is empty — pick at least one phase").
-  const raw = JSON.stringify({ ...savedDraft, mode: "selective", selectedPhases: "reflection" });
+  const raw = JSON.stringify({
+    ...savedDraft,
+    mode: "selective",
+    selectedPhases: "reflection",
+    refreshExtraction: false,
+  });
   const { draft } = loadRegenerationDraft(memoryStorage({ [REGENERATION_DRAFT_KEY]: raw }));
   assert.deepStrictEqual(draft.selectedPhases, []);
   assert.strictEqual(draft.mode, "full");
+});
+
+test("a decoded extract-only draft keeps its empty phase list and its mode", () => {
+  // `not self.selected_phases and not self.refresh_extraction` — BOTH halves.
+  // "Re-read the textbook, regenerate nothing" is a campaign the server
+  // accepts, so rewriting it to a full rebuild would launch an 11-phase
+  // regeneration of every selected lesson that nobody asked for.
+  const raw = JSON.stringify({
+    ...savedDraft,
+    mode: "selective",
+    selectedPhases: [],
+    refreshExtraction: true,
+  });
+  const { draft, warning } = loadRegenerationDraft(
+    memoryStorage({ [REGENERATION_DRAFT_KEY]: raw }),
+  );
+  assert.strictEqual(warning, null);
+  assert.strictEqual(draft.mode, "selective");
+  assert.strictEqual(draft.refreshExtraction, true);
+  assert.deepStrictEqual(draft.selectedPhases, []);
+  assert.deepStrictEqual(
+    effectiveSelectedPhases(draft, regenerationSelectablePhases(SERVER_CANONICAL_PHASES)),
+    [],
+    "an extract-only draft must regenerate NO phase",
+  );
 });
 
 /* ════════════════════════════════════════════════════════════════════
@@ -398,15 +428,39 @@ test("pruning clears a model the manifest no longer offers", () => {
 });
 
 test("a selective draft pruned down to no phases falls back to full mode", () => {
-  const restored = pruneRegenerationDraft(savedDraft, {
-    eligibleTocEntryIds: new Set(["kept"]),
-    validModelRefs: new Set(["gemini/gemini-3.6-flash"]),
-    validPhaseNames: new Set(["memory-check"]),
-  });
+  // With the extract refresh OFF, an empty selection is unlaunchable.
+  const restored = pruneRegenerationDraft(
+    { ...savedDraft, refreshExtraction: false },
+    {
+      eligibleTocEntryIds: new Set(["kept"]),
+      validModelRefs: new Set(["gemini/gemini-3.6-flash"]),
+      validPhaseNames: new Set(["memory-check"]),
+    },
+  );
   // Selective-with-nothing-selected is a campaign the server refuses outright;
   // the honest reading of "every phase I picked is gone" is a full rebuild.
   assert.deepStrictEqual(restored.draft.selectedPhases, []);
   assert.strictEqual(restored.draft.mode, "full");
+});
+
+test("pruning an extract-only draft leaves it extract-only", () => {
+  const extractOnly = {
+    ...savedDraft,
+    mode: "selective" as const,
+    selectedPhases: [],
+    excludedPhases: [],
+    refreshExtraction: true,
+  };
+  const restored = pruneRegenerationDraft(extractOnly, {
+    eligibleTocEntryIds: new Set(["kept", "gone"]),
+    validModelRefs: new Set(["gemini/gemini-3.6-flash"]),
+    // Nothing in the phase catalog survives — and it does not matter, because
+    // this draft never asked for a phase in the first place.
+    validPhaseNames: new Set<string>(),
+  });
+  assert.strictEqual(restored.draft.mode, "selective");
+  assert.strictEqual(restored.draft.refreshExtraction, true);
+  assert.deepStrictEqual(restored.draft.selectedPhases, []);
 });
 
 test("pruning leaves a draft that is still entirely valid alone", () => {
