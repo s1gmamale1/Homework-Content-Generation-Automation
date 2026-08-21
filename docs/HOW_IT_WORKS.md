@@ -731,7 +731,9 @@ snapshot, campaign, job-state, publisher) + `notion_versioned_homework.py`, the
 (migration 0063), and the `/regeneration` SPA area. It is off behind `REGENERATION_ENABLED` and
 `REGENERATION_PUBLISHER_ENABLED` (backend, both `false`) plus a build-time
 `VITE_REGENERATION_ENABLED=1` on the SPA — and turning any of them on is a separate operator
-decision. Full operator guide: **`docs/runbooks/versioned-homework-regeneration.md`**.
+decision. The publication loop needs **both** backend flags true (`main.py` starts it only
+under `regeneration_enabled and regeneration_publisher_enabled`), so the publisher flag on
+its own starts nothing. Full operator guide: **`docs/runbooks/versioned-homework-regeneration.md`**.
 
 ---
 

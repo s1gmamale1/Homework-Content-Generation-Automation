@@ -53,7 +53,7 @@ state rather than an error.
 | Flag | Where | Default | What it gates |
 |---|---|---|---|
 | `REGENERATION_ENABLED` | backend env, head/API process | `false` | The whole feature. Off ⇒ every `/api/v1/regeneration*` route returns **404** (not 403 — a stale browser tab must not be able to tell the routes exist). |
-| `REGENERATION_PUBLISHER_ENABLED` | backend env, **head/API process only** | `false` | The loop that writes `Homework V{n}` pages to Notion. Independent so generation can be exercised with delivery dark. |
+| `REGENERATION_PUBLISHER_ENABLED` | backend env, **head/API process only** | `false` | The loop that writes `Homework V{n}` pages to Notion. Independent so generation can be exercised with delivery dark — but **not sufficient alone**: `main.py` starts the loop only when `REGENERATION_ENABLED` **and** this flag are both true, so setting this one with the master flag off starts nothing and logs no start line. |
 | `VITE_REGENERATION_ENABLED` | **SPA build**, not runtime | unset | Whether the SPA has the `Regeneration` nav item and the `/regeneration` route compiled into it. |
 
 ### 3a. The frontend flag has exactly one working value: `1`
@@ -99,10 +99,14 @@ it on.
 - **Migration 0063** (`0063_regeneration_campaigns`) must be applied to the shared
   database: `uv run alembic upgrade head`. That is one migration on the shared DB, not
   a per-host step.
-- **The publisher runs on the head/API process only.** It starts from `main.py`'s
-  lifespan, after the startup reconcile, the version-floor stamp and the LISTEN bus,
-  beside the embedded worker. The claim protocol is safe if two processes accidentally
-  run it, but enable it on one designated head anyway.
+- **The publisher runs on the head/API process only, and needs BOTH backend flags.** It
+  starts from `main.py`'s lifespan — guarded by `if settings.regeneration_enabled and
+  settings.regeneration_publisher_enabled` — after the startup reconcile, the
+  version-floor stamp and the LISTEN bus, beside the embedded worker.
+  `REGENERATION_PUBLISHER_ENABLED=true` with `REGENERATION_ENABLED` still false starts
+  **no** loop and prints **no** `Regeneration publisher started` line; nothing warns you.
+  The claim protocol is safe if two processes accidentally run it, but enable it on one
+  designated head anyway.
 - **Worker PCs need neither regeneration flag.** They run a campaign's revision jobs as
   ordinary queue work and reconcile the outcome onto the campaign target. What they
   **do** need is **current code**, because a revision job is a `homework_jobs` row with
@@ -408,9 +412,19 @@ usage rows, and a publication retry never adds model cost.
 
 ## 10. Regeneration history makes the source undeletable
 
-Every regeneration foreign key is `RESTRICT`, because a target row records a version
-number that is consumed forever — letting a delete cascade it away would silently free
-that number for reuse.
+A target row records a version number that is consumed forever, so no delete may
+cascade it away and silently free that number for reuse. **Most** of migration 0063's
+foreign keys are therefore `ON DELETE RESTRICT` — but **not all of them**, and the one
+exception is deliberate:
+
+| Foreign key | On delete | Why |
+|---|---|---|
+| `fk_regeneration_targets_toc_entry_id` | `RESTRICT` | the lesson a consumed version belongs to cannot vanish |
+| `fk_regeneration_targets_campaign_id` | `RESTRICT` | a target never outlives the campaign spec that froze it |
+| `fk_homework_jobs_revision_of_job_id` | `RESTRICT` | a source snapshot cannot be deleted out from under a live revision |
+| `fk_homework_jobs_regeneration_target_id` | `RESTRICT` | a revision job never outlives its target |
+| `fk_phase_outputs_copied_from_phase_output_id` | `RESTRICT` | a copied phase keeps its provenance |
+| **`fk_regeneration_targets_source_job_id`** | **`SET NULL`** | **intentional** — campaign reporting and the consumed version survive a correctly ordered child-first purge |
 
 So while regeneration history exists for a lesson, these routes refuse with a
 structured **409** naming what blocks them, rather than a raw database error:
@@ -421,10 +435,25 @@ structured **409** naming what blocks them, rather than a raw database error:
 | delete a TOC entry | `toc_entry_delete_blocked_by_regeneration` |
 | re-extract a book's TOC (`/toc/retry`) | `toc_retry_blocked_by_regeneration` |
 
-This is deliberate for this release. A future explicit **child-first purge** may remove
-revision children first; until that exists, the answer is "you cannot delete this yet".
-Cancelling or abandoning a campaign does **not** erase the audit history and does not
-unblock these routes.
+**Those 409s do not depend on the asymmetry above.** They are raised ahead of the
+database by `history_for_toc_entry` / `history_for_book`, which refuse on **any** target
+row referencing the lesson, terminal or not — so the operator-facing answer is unchanged
+by `source_job_id` being nullable.
+
+**What the `SET NULL` half means for a future child-first purge.** Because
+`revision_of_job_id` is `RESTRICT` while `source_job_id` is `SET NULL`, a source job can
+only be deleted *after* its revision child already is — the database enforces that
+ordering rather than trusting the operator to follow it. Once the ordering is followed,
+deleting the source **succeeds** and blanks the target's `source_job_id` instead of
+blocking: the row keeps its status, its permanently consumed `publication_version` and
+its `notion_page_id`, but retains no snapshot behind it and nothing to regenerate from.
+`lineage_targets_missing_source` (`source_job_id IS NULL`) is precisely the detector for
+that state, and its callers refuse rather than plan a regeneration with no source.
+
+No such purge tool ships in this release, and nothing above makes a book or lesson
+deletable today — while regeneration history exists, the answer is still "you cannot
+delete this yet". Cancelling or abandoning a campaign does **not** erase the audit
+history and does not unblock these routes.
 
 ## 11. Verifying it is off, and rolling back
 
@@ -449,7 +478,8 @@ to see.
 
 ### Rollback
 
-**Turn both backend flags off and restart the head.** That is the whole rollback:
+**Turn both backend flags off and restart the head.** That is the whole mechanical
+rollback:
 
 - no publication loop starts;
 - every regeneration route returns 404;
@@ -462,6 +492,21 @@ to see.
 
 Rebuild the SPA without `VITE_REGENERATION_ENABLED=1` to remove the UI as well.
 
+**But rollback is not free for a lesson caught mid-campaign — it strands the lineage.**
+`uq_regeneration_targets_active_lineage (toc_entry_id, output_language) WHERE terminal_at
+IS NULL` permits at most one **non-terminal** target per lineage across all campaigns,
+and only `published` and `abandoned` stamp `terminal_at`. So every target left in
+`planned`, `generating`, `awaiting_canary_approval`, `publication_pending`, `publishing`,
+`generation_failed` or `publication_failed` at the moment you flip the flags keeps
+holding its lineage — while the three routes that could clear it
+(`retry-generation`, `retry-publication`, `abandon`) are **404 with the feature off**.
+Those lessons are therefore **blocked from any new campaign until the flags are turned
+back on** and an operator drives each target to `published` or `abandoned`.
+
+Nothing is lost or corrupted by that, and it never touches Notion — the stranding is a
+uniqueness fence, not damage. But if you expect to re-launch soon, drain or `abandon`
+in-flight targets **before** flipping the flags off, not after.
+
 Leaving migration 0063 applied is fine and is the recommended rollback state — the
 tables are simply unused. Do not downgrade it while any campaign row exists.
 
@@ -472,6 +517,15 @@ fake providers and a local database — pure planner/state/estimator tests, migr
 and constraint tests, repository concurrency and publication-claim tests, service and
 pipeline isolation tests, and API/schema tests. No paid model call, no production
 database and no live Notion write was involved in any of it.
+
+**What that proof does and does not cover, as of this commit.** Those suites exercise
+the feature component by component. The **full fake end-to-end lane** — one campaign
+driven across its entire lifecycle (draft → estimate → canary → approve → publish) in a
+single test — is being built in parallel as **Task 11**, and **is not part of this
+commit**. So read the paragraph above as "every component is covered against fakes",
+not as "a whole-lifecycle run has been executed here". This is a statement about what
+this commit contains — not a finding that the Task 11 lane failed or was skipped. When
+it is integrated, update this paragraph to name the lane and record its result.
 
 **Not proven, and explicitly outstanding.** CLAUDE.md's real-generation acceptance gate
 has **not** been satisfied for this feature. A bounded, separately authorized sample
@@ -485,12 +539,19 @@ or writing to live Notion. Each is a separate operator decision.
 
 ### Suggested first-enable sequence, when it is authorized
 
+This is the one order used throughout this runbook and in `docs/DEPLOY.md` — **schema
+→ `REGENERATION_ENABLED` → `REGENERATION_PUBLISHER_ENABLED` → SPA rebuild** (§3b). The
+UI goes last on purpose: it is the only step that puts an `Approve` button in front of a
+human, and approving before the publisher is on can only answer `409 publisher_disabled`.
+
 1. Apply migration 0063 to the shared database.
 2. Enable `REGENERATION_ENABLED` on the head only; confirm routes answer and ordinary
    Fleet generation and archival are unchanged.
-3. Rebuild the SPA with `VITE_REGENERATION_ENABLED=1`; confirm the nav item appears.
-4. Enable `REGENERATION_PUBLISHER_ENABLED` on that one head; confirm the
-   `Regeneration publisher started` log line.
+3. Enable `REGENERATION_PUBLISHER_ENABLED` on that same one head and restart it. The
+   publisher loop requires **both** backend flags together, so confirm the
+   `Regeneration publisher started` log line rather than assuming this flag alone
+   started it.
+4. Rebuild the SPA with `VITE_REGENERATION_ENABLED=1`; confirm the nav item appears.
 5. Run **one single-lesson campaign** on a lesson you are willing to spend on. Review
    the canary against the estimate, approve, and confirm exactly one `Homework V2`
    sibling appears with V1 untouched.

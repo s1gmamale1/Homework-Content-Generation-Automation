@@ -66,7 +66,7 @@ not `localhost:8000`. (For a bare local run without Traefik, publish port 8000 y
 | `SESSION_LIMIT_DEFAULT_TZ` | no | `America/Chicago` | IANA tz used to interpret a session-limit reset clock-time (`resets 12:50am`) when the message states no tz. |
 | `SESSION_LIMIT_DEFAULT_COOLDOWN_SECONDS` | no | `3600` | Fallback worker self-cooldown when a session-limit's reset time can't be parsed. |
 | `REGENERATION_ENABLED` | no | `false` | Master flag for versioned homework regeneration. Off ⇒ every `/api/v1/regeneration*` route returns **404** (deliberately not 403 — a stale SPA must not be able to detect that the routes exist). Head-only; workers need neither regeneration flag. |
-| `REGENERATION_PUBLISHER_ENABLED` | no | `false` | Second, independent flag for the loop that publishes `Homework V{n}` Notion sibling pages. Separate from the flag above so generation can be exercised with delivery dark. **Enable on the ONE designated head/API process** (the claim protocol is safe if two run it, but don't). While it is off, `POST /regeneration/campaigns/{id}/approve` and `POST /regeneration/targets/{id}/retry-publication` return `409 publisher_disabled` — so the flag-on order is schema → `REGENERATION_ENABLED` → this → SPA rebuild. |
+| `REGENERATION_PUBLISHER_ENABLED` | no | `false` | Second, independent flag for the loop that publishes `Homework V{n}` Notion sibling pages. Separate from the flag above so generation can be exercised with delivery dark. **The loop requires BOTH flags** — `main.py` starts it only under `regeneration_enabled and regeneration_publisher_enabled`, so this flag alone (master flag off) starts nothing and logs no start line. **Enable on the ONE designated head/API process** (the claim protocol is safe if two run it, but don't). While it is off, `POST /regeneration/campaigns/{id}/approve` and `POST /regeneration/targets/{id}/retry-publication` return `409 publisher_disabled` — so the flag-on order is schema → `REGENERATION_ENABLED` → this → SPA rebuild (UI last). |
 | `REGENERATION_PUBLISHER_INTERVAL_SECONDS` | no | `30` | Idle sweep interval. A pass that did work loops straight back, so a backlog drains at Notion's pace, not at this interval. Delivery is **serial** — one pass publishes at most one page. |
 | `REGENERATION_PUBLISHER_LEASE_SECONDS` | no | `300` | Durable publication claim lease; keep well above a realistic Notion write (page + children + PDF upload). On shutdown the publisher gets a **30s** grace to finish the target it is on; a target cancelled past that keeps its lease until this expires, and only then can another pass adopt the half-written page by its marker. Don't expect a restarted head to resume a killed delivery immediately. |
 | `REGENERATION_PUBLISHER_MAX_ATTEMPTS` | no | `5` | Automatic delivery attempts before a target parks in `publication_failed` for an operator. Must be ≥ 1. |
@@ -386,12 +386,19 @@ fleet-daily query has no job-kind filter, so regeneration spend **does** count t
 `COST_CAP_FLEET_DAILY_USD` and a big campaign can trip it and **pause ordinary api
 batches fleet-wide**. Budget and stage campaigns accordingly.
 
-**Regeneration history blocks book/TOC deletion.** Every regeneration FK is RESTRICT
-(a target records a publication version consumed forever). While history exists, book
-delete, TOC-entry delete and `/toc/retry` refuse with a structured `409`
-(`book_delete_blocked_by_regeneration` / `toc_entry_delete_blocked_by_regeneration` /
-`toc_retry_blocked_by_regeneration`) rather than a raw FK error. Cancelling or
-abandoning a campaign does not erase the audit history and does not unblock them.
+**Regeneration history blocks book/TOC deletion.** A target records a publication
+version consumed forever, so migration 0063's foreign keys are `RESTRICT` — with **one
+intentional exception: `fk_regeneration_targets_source_job_id` is `SET NULL`**. The
+restrictive half of the source-deletion rule is `fk_homework_jobs_revision_of_job_id`
+(RESTRICT), which forces a child-first order: only once a revision job is deleted can
+its source be, and that delete then blanks the target's `source_job_id` rather than
+blocking. While history exists, book delete, TOC-entry delete and `/toc/retry` refuse
+with a structured `409` (`book_delete_blocked_by_regeneration` /
+`toc_entry_delete_blocked_by_regeneration` / `toc_retry_blocked_by_regeneration`) rather
+than a raw FK error — those refusals match **any** target row for the lesson, so the
+`SET NULL` exception does not weaken them. No child-first purge tool ships in this
+release. Cancelling or abandoning a campaign does not erase the audit history and does
+not unblock them.
 
 **Rolling regeneration back** is just: turn both backend flags off and restart the
 head. No publisher loop starts, every route 404s, in-flight revision jobs still finish
@@ -400,6 +407,16 @@ as ordinary jobs and are never archived to the legacy `Homework` page
 `revision_of_job_id IS NOT NULL`, regardless of `force` or caller), and **every
 existing `Homework` / `Homework V2` / `Homework V3` page in Notion is untouched** —
 rollback deletes nothing.
+
+**It does, however, strand any lesson caught mid-campaign.**
+`uq_regeneration_targets_active_lineage` allows one **non-terminal** target per
+`(toc_entry_id, output_language)`, and only `published`/`abandoned` are terminal — so a
+target left in any other status keeps holding its lineage, while the routes that would
+clear it (`retry-generation`, `retry-publication`, `abandon`) 404 with the feature off.
+No new campaign can touch those lessons until the flags are restored and an operator
+drives each target to `published` or `abandoned`. That is a uniqueness fence, not data
+loss or a Notion change. If a re-launch is expected soon, drain or abandon in-flight
+targets **before** flipping the flags off.
 
 
 ## Dashboard viewer port (worklog 0153)
