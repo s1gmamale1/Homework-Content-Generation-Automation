@@ -70,7 +70,10 @@ export function CanaryReview({
   detail: RegenerationCampaignDetail;
   onLaunchCanary: () => void;
   onApprove: () => void;
-  onReject: (reason: string) => void;
+  /** Returns the reject mutation's own promise, so this panel can close itself
+   *  on the SUCCESS rather than on the click — see `clearRejectConfirmation`. A
+   *  caller that returns nothing simply resets immediately. */
+  onReject: (reason: string) => void | Promise<unknown>;
   launching: boolean;
   approving: boolean;
   rejecting: boolean;
@@ -78,6 +81,16 @@ export function CanaryReview({
 }) {
   const [rejectReason, setRejectReason] = useState("");
   const [confirmingReject, setConfirmingReject] = useState(false);
+
+  /** Both halves, always together: a panel that closed but kept its text
+   *  reopens pre-filled with a reason written about a different decision, and
+   *  the reason is the stored audit record. The route keys this component by
+   *  campaign, which covers a change of SELECTION; this covers finishing with
+   *  the campaign that is already on screen. */
+  const clearRejectConfirmation = () => {
+    setConfirmingReject(false);
+    setRejectReason("");
+  };
 
   const gate = regenerationApprovalGate(detail);
   // At the canary gate only `canary_size` of `target_count` lessons have run,
@@ -375,7 +388,15 @@ export function CanaryReview({
                   type="button"
                   className={GLASS_BTN}
                   disabled={reasonError !== null || busy}
-                  onClick={() => onReject(rejectReason)}
+                  onClick={() => {
+                    // SUCCESS-scoped, deliberately not on the click: a refusal
+                    // (409, stale state) has to leave this panel open holding
+                    // the reason the operator is about to retry with. Clearing
+                    // it here would delete exactly what the retry needs.
+                    void Promise.resolve(onReject(rejectReason))
+                      .then(clearRejectConfirmation)
+                      .catch(() => undefined);
+                  }}
                 >
                   {rejecting ? "Rejecting…" : "Confirm reject"}
                 </button>

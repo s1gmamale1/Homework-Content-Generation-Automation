@@ -3753,3 +3753,74 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
 }
 
 console.log("OK");
+
+/* ══════════════════════════════════════════════════════════════════════
+ * Final-review blocker I3 — a destructive confirmation must never outlive
+ * the campaign it was opened for.
+ *
+ * `CanaryReview` and `CampaignReport` keep their confirmation state in
+ * `useState`, and the route renders both at a FIXED position in the tree. So
+ * React reconciles them across a change of `selectedId` and PRESERVES that
+ * state; the only thing that ever remounted them was the accident of the
+ * detail query missing its cache. It usually does not miss: `staleTime` is
+ * 30s and every mutation writes its campaign back with `setQueryData`, so a
+ * campaign already visited this session answers from cache on the very
+ * render the selection changes. `selected` is therefore never falsy in
+ * between, nothing unmounts, and campaign B opens with campaign A's reject
+ * panel already expanded and A's typed reason in the box — one click from
+ * being stored as B's audit record.
+ *
+ * There is no DOM here, so the guard is structural, exactly as the note at
+ * the top of this file describes. Both halves are asserted because they fix
+ * different leaks: `key={selected.id}` is the remount BETWEEN campaigns, and
+ * the success-scoped reset is what clears a confirmation the operator has
+ * finished with ON one campaign — a key alone leaves the reason sitting in
+ * the box after the reject it was written for has already succeeded.
+ * ════════════════════════════════════════════════════════════════════ */
+{
+  for (const tag of ["CanaryReview", "CampaignReport"]) {
+    assert.ok(
+      new RegExp(`<${tag}\\s+key=\\{selected\\.id\\}`).test(acceptanceRouteSrc),
+      `${tag} must be keyed by the selected campaign — without it React reuses ` +
+        "one instance across campaigns and its confirmation state leaks into the next",
+    );
+  }
+
+  // The reset does BOTH halves. A panel that closed but kept its text reopens
+  // pre-filled with a reason written about an entirely different decision.
+  assert.ok(
+    /const clearRejectConfirmation = \(\) => \{\s*setConfirmingReject\(false\);\s*setRejectReason\(""\);\s*\};/.test(
+      acceptanceCanarySrc,
+    ),
+    "a finished reject must close the panel AND clear the typed reason",
+  );
+  assert.ok(
+    /const clearCancelConfirmation = \(\) => \{\s*setConfirmingCancel\(false\);\s*setCancelReason\(""\);\s*\};/.test(
+      acceptanceReportSrc,
+    ),
+    "a finished cancel must close the panel AND clear the typed reason",
+  );
+
+  // ...and each reset is wired to the RESOLVED mutation rather than to the
+  // click, so a refusal (409, stale state) leaves the panel open holding the
+  // reason the operator is about to retry with.
+  assert.ok(
+    /onReject\(rejectReason\)\)\s*\.then\(clearRejectConfirmation\)/.test(acceptanceCanarySrc),
+    "the reject reset must run on success only, never on the click",
+  );
+  assert.ok(
+    /onCancelCampaign\(cancelReason\)\)\s*\.then\(clearCancelConfirmation\)/.test(
+      acceptanceReportSrc,
+    ),
+    "the cancel reset must run on success only, never on the click",
+  );
+  // Which is only possible if the route hands back the mutation's own promise.
+  for (const call of ["rejectMut.mutateAsync(", "cancelMut.mutateAsync("]) {
+    assert.ok(
+      acceptanceRouteSrc.includes(call),
+      `the route must return ${call.slice(0, -1)}'s promise so the panel can close on success`,
+    );
+  }
+}
+
+console.log("OK");

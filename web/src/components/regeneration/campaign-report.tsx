@@ -290,7 +290,10 @@ export function CampaignReport({
     target: RegenerationTargetReport,
     reason: string,
   ) => void;
-  onCancelCampaign: (reason: string) => void;
+  /** Returns the cancel mutation's own promise, so this panel can close itself
+   *  on the SUCCESS rather than on the click — see `clearCancelConfirmation`. A
+   *  caller that returns nothing simply resets immediately. */
+  onCancelCampaign: (reason: string) => void | Promise<unknown>;
   cancelling: boolean;
   /** The CAMPAIGN-level refusal — today only cancel. */
   actionError: RegenerationErrorView | null;
@@ -300,6 +303,16 @@ export function CampaignReport({
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const cancelReasonError = regenerationReasonError(cancelReason);
+
+  /** Both halves, always together: the panel already closed on the click, but
+   *  the typed reason survived it, so reopening Cancel showed a sentence
+   *  written about a different campaign — and that sentence is the stored
+   *  audit record. The route keys this component by campaign, which covers a
+   *  change of SELECTION; this covers finishing with the one on screen. */
+  const clearCancelConfirmation = () => {
+    setConfirmingCancel(false);
+    setCancelReason("");
+  };
 
   const buckets = regenerationBucketViews(detail);
   // Names, not UUIDs: WaveFailureOut carries ids and the titles live on the
@@ -434,8 +447,13 @@ export function CampaignReport({
                   className={GLASS_BTN}
                   disabled={cancelReasonError !== null || cancelling}
                   onClick={() => {
-                    onCancelCampaign(cancelReason);
-                    setConfirmingCancel(false);
+                    // SUCCESS-scoped, deliberately not on the click: this used
+                    // to close on the click, which hid a refusal's own panel
+                    // while silently keeping the typed reason. A refusal now
+                    // leaves both exactly as they were, ready to retry.
+                    void Promise.resolve(onCancelCampaign(cancelReason))
+                      .then(clearCancelConfirmation)
+                      .catch(() => undefined);
                   }}
                 >
                   {cancelling ? "Cancelling…" : "Confirm cancel"}

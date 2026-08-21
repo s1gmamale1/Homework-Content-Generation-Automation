@@ -526,17 +526,36 @@ export function RegenerationPage() {
             {selected && (
               <>
                 <p className="px-1 text-[0.68rem] leading-5 text-white/35">{poll.reason}</p>
+                {/* KEYED BY CAMPAIGN. Both panels below hold their destructive
+                    confirmations in local state, and they render at a fixed
+                    position in this tree — so React reconciled them across a
+                    change of selection and carried that state over. Nothing
+                    unmounted them either: `staleTime` is 30s and `adopt` writes
+                    each campaign back with `setQueryData`, so a campaign
+                    visited earlier this session answers from cache on the very
+                    render the selection changes and `selected` is never falsy
+                    in between. Campaign B opened with A's reject panel expanded
+                    and A's reason in the box — one click from being stored as
+                    B's audit record. The key makes a change of campaign a
+                    remount, which is the only reset that cannot be forgotten as
+                    more confirmations are added here. */}
                 <CanaryReview
+                  key={selected.id}
                   detail={selected}
                   onLaunchCanary={() => canaryMut.mutate(selected.id)}
                   onApprove={() => approveMut.mutate(selected.id)}
-                  onReject={(reason) => rejectMut.mutate({ campaignId: selected.id, reason })}
+                  // `mutateAsync`, so the panel closes on the SUCCESS and not on
+                  // the click. Identical mutation and cache behaviour — the same
+                  // `onSuccess` runs; it only additionally hands back a promise,
+                  // whose rejection the panel handles.
+                  onReject={(reason) => rejectMut.mutateAsync({ campaignId: selected.id, reason })}
                   launching={canaryView.pending}
                   approving={approveView.pending}
                   rejecting={rejectView.pending}
                   actionError={campaignActionError}
                 />
                 <CampaignReport
+                  key={selected.id}
                   detail={selected}
                   releasedFailures={mergeReleasedFailures(
                     selected.released_failures,
@@ -546,7 +565,7 @@ export function RegenerationPage() {
                   pendingByTarget={pendingByTarget}
                   onAction={(kind, target, reason) => targetMut.mutate({ kind, target, reason })}
                   onCancelCampaign={(reason) =>
-                    cancelMut.mutate({ campaignId: selected.id, reason })
+                    cancelMut.mutateAsync({ campaignId: selected.id, reason })
                   }
                   cancelling={cancelView.pending}
                   actionError={cancelView.error}
