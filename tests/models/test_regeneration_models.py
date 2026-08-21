@@ -326,10 +326,13 @@ def test_reviewed_destination_check_is_declared_and_null_safe():
     SQL is three-valued and a CHECK is SATISFIED by UNKNOWN, so a predicate
     built from bare `col = 'reuse'` comparisons evaluates to NULL — and is
     therefore ACCEPTED — for exactly the half-filled shapes this constraint
-    exists to refuse. `IS NOT DISTINCT FROM` and the leading `IS NOT NULL`
-    guard are what make every comparison total. The behavioural proof is in
-    `tests/integration/test_regeneration_constraints.py`; this pins the SQL so
-    a "simplification" back to `=` cannot pass unnoticed.
+    exists to refuse. `IS NOT DISTINCT FROM` on every DECIDING comparison is
+    what makes them total; the leading `notion_parent_policy IS NOT NULL` is
+    redundant defence-in-depth (the sweep proving that is in the
+    `0064_regen_reviewed_destination` docstring), pinned below only because it
+    names the legal policy set where a reader looks for it. The behavioural
+    proof is in `tests/integration/test_regeneration_constraints.py`; this pins
+    the SQL so a "simplification" back to `=` cannot pass unnoticed.
     """
     checks = _check_constraints(RegenerationTarget)
     assert "ck_regeneration_targets_notion_parent_decision" in checks

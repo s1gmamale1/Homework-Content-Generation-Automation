@@ -313,13 +313,17 @@ class RegenerationTarget(Base, UUIDPK, Timestamps):
         #
         # `IS NOT DISTINCT FROM` on every DECIDING comparison is the
         # load-bearing part, not style. SQL is three-valued and a CHECK
-        # constraint is SATISFIED by UNKNOWN: written with bare
-        # `notion_container_policy = 'reuse'`, this predicate evaluates to NULL
-        # — and PostgreSQL therefore ACCEPTS the row — for exactly the shapes it
-        # exists to refuse, e.g. a `reuse` lesson policy with no container
-        # policy beside it, or every policy NULL with a reviewed title set.
-        # Making each comparison total turns those NULLs into FALSE. Same trap,
-        # same fix as `ck_homework_jobs_revision_session_limit_strategy`.
+        # constraint is SATISFIED by UNKNOWN: with the leading `IS NOT NULL` /
+        # `IN` clause described below still in place but the deciding
+        # comparisons spelled bare (`notion_container_policy = 'reuse'`), this
+        # predicate evaluates to NULL — and PostgreSQL therefore ACCEPTS the
+        # row — for exactly the shapes it exists to refuse: a lesson policy
+        # chosen with NO container policy beside it, `reuse` and `create`
+        # alike. Making each comparison total turns those NULLs into FALSE.
+        # Same trap, same fix as
+        # `ck_homework_jobs_revision_session_limit_strategy`. The measured
+        # sweep behind that claim — and the shapes it does NOT cover — is in
+        # the `0064_regen_reviewed_destination` docstring.
         #
         # The leading `notion_parent_policy IS NOT NULL AND ... IN (...)` is
         # redundant defence-in-depth, kept because it names the legal policy set

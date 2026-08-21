@@ -23,11 +23,18 @@ service-created campaigns is a later task's job, in the service layer.
 In `ck_regeneration_targets_notion_parent_decision` the load-bearing part is
 that every DECIDING comparison is `IS NOT DISTINCT FROM` rather than `=`. SQL
 is three-valued and a CHECK constraint is SATISFIED by UNKNOWN, so the same
-rule spelled with bare `notion_container_policy = 'reuse'` comparisons
-evaluates to NULL — and is therefore ACCEPTED — for precisely the half-filled
-shapes it exists to refuse: a `reuse` lesson policy with no container policy
-beside it, or every policy NULL with a reviewed title set. Total comparisons
-turn those NULLs into FALSE. Same trap, same fix as
+rule — leading clause below still in place, only the deciding comparisons
+spelled bare as `notion_container_policy = 'reuse'` — evaluates to NULL, and
+is therefore ACCEPTED, for precisely the half-filled shapes it exists to
+refuse: a lesson policy chosen with NO container policy beside it, `reuse` and
+`create` alike (`notion_parent_policy='reuse'` + container policy NULL + a
+lesson page id, or `notion_parent_policy='create'` + container policy NULL +
+no page ids). Measured in PostgreSQL over the 1,764-shape space swept below:
+that spelling accepts 27 shapes this rule refuses, and every one of the 27 has
+a NULL container policy. A row with EVERY policy NULL and a reviewed title set
+is not one of them — the leading clause already decides it FALSE; it goes
+UNKNOWN only if that clause is dropped as well. Total comparisons turn those
+NULLs into FALSE. Same trap, same fix as
 `ck_homework_jobs_revision_session_limit_strategy` in 0063.
 
 The leading `notion_parent_policy IS NOT NULL AND notion_parent_policy IN
@@ -43,6 +50,15 @@ PostgreSQL against this exact rule text: 22 rows accepted with the clause, the
 same 22 without it, zero UNKNOWN results either way. Its own `IS NOT NULL`
 exists only so that its `IN` cannot evaluate to UNKNOWN; it neither widens nor
 narrows the rule.
+
+Read "22 rows accepted" as a NULL-awareness result, not a sanity one: the rule
+is NULL-aware, not blank-aware. Only 4 of those 22 are free of empty or
+whitespace-only values — `notion_container_policy='reuse'` with
+`reviewed_notion_container_page_id=''` is accepted, because `''` satisfies
+`IS NOT NULL` here just as it is not `None` in the Python twin
+(`regeneration_targets._validate_reviewed_destination`; both were run against
+that shape and both accept it). Rejecting blanks belongs to the service layer
+that builds the wizard payload (Tasks 2/4), not to this constraint.
 
 `ck_regeneration_campaigns_publication_version` needs no such care: `NULL IS
 NULL` is TRUE, so its first disjunct already decides the NULL case.
