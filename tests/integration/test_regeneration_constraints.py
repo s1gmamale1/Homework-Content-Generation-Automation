@@ -19,6 +19,19 @@ from sqlalchemy.exc import IntegrityError
 
 from app.services.regeneration_planner import RegenerationPhasePlan, build_phase_plan
 
+# The reviewed-destination shape tables live in the always-run, no-database
+# module `tests/repositories/test_regeneration_repositories.py`, and are
+# imported here so the CHECK, the validator and `create_target` are all proven
+# against ONE table. The dependency points that way on purpose: the reverse
+# would make the unit bar import this module, whose `pytestmark` below is a live
+# "needs a real Postgres" skip.
+from tests.repositories.test_regeneration_repositories import (
+    ACCEPTED_DESTINATIONS as _ACCEPTED_DESTINATIONS,
+    NULL_POLICY_DESTINATIONS as _NULL_POLICY_DESTINATIONS,
+    REFUSED_DESTINATIONS as _REFUSED_DESTINATIONS,
+    REUSE_DESTINATION as _REUSE_DESTINATION,
+)
+
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_DB_INTEGRATION") != "1",
     reason="needs a real Postgres; set RUN_DB_INTEGRATION=1 + DATABASE_URL",
@@ -1129,90 +1142,8 @@ async def test_revision_job_must_store_a_concrete_session_limit_strategy():
 _CAMPAIGN_VERSION_CHECK = "ck_regeneration_campaigns_publication_version"
 _DESTINATION_CHECK = "ck_regeneration_targets_notion_parent_decision"
 
-# The two complete, legal reviewed destinations. `container` is the page that
-# holds Lesson Topics; `parent` is the Lesson Topic itself, under which the
-# `Homework V2` sibling is written.
-_REUSE_DESTINATION = dict(
-    notion_container_policy="reuse",
-    reviewed_notion_container_page_id="container-page-1",
-    notion_parent_policy="reuse",
-    reviewed_notion_lesson_page_id="lesson-page-1",
-    reviewed_notion_lesson_title="7 Photosynthesis",
-)
-_CREATE_DESTINATION = dict(
-    notion_container_policy="create",
-    reviewed_notion_container_page_id=None,
-    notion_parent_policy="create",
-    reviewed_notion_lesson_page_id=None,
-    reviewed_notion_lesson_title="7 Photosynthesis",
-)
-
-# Every shape the rule must refuse, keyed by what is wrong with it. Shared by
-# the database test (the CHECK refuses each) and the repository test (the
-# repository refuses each BEFORE the row is built) so the two can never drift.
-_REFUSED_DESTINATIONS = {
-    # 'reuse' with nothing to reuse.
-    "container reuse without a page id": {
-        **_REUSE_DESTINATION,
-        "reviewed_notion_container_page_id": None,
-    },
-    "lesson reuse without a page id": {
-        **_REUSE_DESTINATION,
-        "reviewed_notion_lesson_page_id": None,
-    },
-    # 'create' carrying a page id it would never use.
-    "container create with a page id": {
-        **_CREATE_DESTINATION,
-        "reviewed_notion_container_page_id": "container-page-1",
-    },
-    "lesson create with a page id": {
-        **_CREATE_DESTINATION,
-        "reviewed_notion_lesson_page_id": "lesson-page-1",
-    },
-    "unknown lesson policy": {
-        **_REUSE_DESTINATION,
-        "notion_parent_policy": "adopt",
-    },
-    "unknown container policy": {
-        **_REUSE_DESTINATION,
-        "notion_container_policy": "adopt",
-    },
-    # A brand-new container has no children, so there is no existing Lesson
-    # Topic inside it to reuse.
-    "reused lesson under a created container": {
-        **_REUSE_DESTINATION,
-        "notion_container_policy": "create",
-        "reviewed_notion_container_page_id": None,
-    },
-    # Whatever is written, the operator must have seen its title.
-    "no reviewed title": {
-        **_REUSE_DESTINATION,
-        "reviewed_notion_lesson_title": None,
-    },
-    # A reviewed value with no policy at all is a decision nobody made.
-    "container page id with no policy at all": {
-        "reviewed_notion_container_page_id": "container-page-1",
-    },
-    "lesson page id with no policy at all": {
-        "reviewed_notion_lesson_page_id": "lesson-page-1",
-    },
-}
-
-# The two refusals that only hold if every comparison in the CHECK is TOTAL —
-# see `test_destination_check_is_total_for_a_missing_policy`. Kept apart from
-# the table above because they are the specific proof of that property.
-_NULL_POLICY_DESTINATIONS = {
-    "lesson policy with no container policy beside it": {
-        "notion_container_policy": None,
-        "reviewed_notion_container_page_id": None,
-        "notion_parent_policy": "reuse",
-        "reviewed_notion_lesson_page_id": "lesson-page-1",
-        "reviewed_notion_lesson_title": "7 Photosynthesis",
-    },
-    "reviewed title with no policy at all": {
-        "reviewed_notion_lesson_title": "7 Photosynthesis",
-    },
-}
+# The accepted/refused destination shape tables are imported at the top of this
+# module — see the comment there for why they live in the no-database one.
 
 
 async def _accepts_destination(campaign_id, toc_id, job_id, **destination) -> None:
@@ -1315,20 +1246,8 @@ async def test_destination_check_accepts_only_legacy_reuse_or_create_shapes():
         # ── accepted ────────────────────────────────────────────────────────
         # Legacy: a target from before the guided wizard carries no decision.
         await _accepts_destination(campaign_id, toc_id, job_id)
-        await _accepts_destination(campaign_id, toc_id, job_id, **_REUSE_DESTINATION)
-        await _accepts_destination(campaign_id, toc_id, job_id, **_CREATE_DESTINATION)
-        # Reuse the container, create a NEW Lesson Topic inside it — legal in
-        # the other direction, which is why the two levels are separate fields.
-        await _accepts_destination(
-            campaign_id,
-            toc_id,
-            job_id,
-            notion_container_policy="reuse",
-            reviewed_notion_container_page_id="container-page-1",
-            notion_parent_policy="create",
-            reviewed_notion_lesson_page_id=None,
-            reviewed_notion_lesson_title="7 Photosynthesis",
-        )
+        for label, destination in _ACCEPTED_DESTINATIONS.items():
+            await _accepts_destination(campaign_id, toc_id, job_id, **destination)
 
         # ── refused ─────────────────────────────────────────────────────────
         for label, destination in _REFUSED_DESTINATIONS.items():
@@ -1441,24 +1360,45 @@ async def test_repository_refuses_a_partial_destination_and_a_v1_campaign_versio
                 pytest.fail(f"create_target accepted {label!r}")
             await s.rollback()
 
-        # The whole shape is stored verbatim.
-        async with SessionLocal() as s:
-            target = await targets_repo.create_target(
-                s,
-                campaign_id=campaign_id,
-                toc_entry_id=toc_id,
-                output_language="uz",
-                phase_plan=copy.deepcopy(_PHASE_PLAN),
-                source_job_id=jobs["uz"],
-                **_REUSE_DESTINATION,
-            )
-            await s.commit()
-            target_id = target.id
+        # Every legal non-null shape goes through `create_target` and is stored
+        # verbatim. All three, not just the reuse/reuse one the happy path
+        # uses: `_accepts_destination` above proves the CHECK takes them, but
+        # it inserts the ORM row directly and so never reaches the validator.
+        # An over-strict validator on `create`/`create`, or on the mixed
+        # reuse-container/create-lesson shape, would otherwise ship green.
+        #
+        # The row is deleted between shapes for the same reason
+        # `_accepts_destination` deletes: `uq_regeneration_targets_active_
+        # lineage` allows exactly one non-terminal target per (lesson,
+        # language), and the subject here is the validator, not that index.
+        for label, destination in _ACCEPTED_DESTINATIONS.items():
+            async with SessionLocal() as s:
+                target = await targets_repo.create_target(
+                    s,
+                    campaign_id=campaign_id,
+                    toc_entry_id=toc_id,
+                    output_language="uz",
+                    phase_plan=copy.deepcopy(_PHASE_PLAN),
+                    source_job_id=jobs["uz"],
+                    **destination,
+                )
+                await s.commit()
+                target_id = target.id
+
+            async with SessionLocal() as s:
+                stored = await s.get(RegenerationTarget, target_id)
+                for field, value in destination.items():
+                    assert getattr(stored, field) == value, f"{label}: {field}"
+
+            async with SessionLocal() as s:
+                await s.execute(
+                    delete(RegenerationTarget).where(
+                        RegenerationTarget.id == target_id
+                    )
+                )
+                await s.commit()
 
         async with SessionLocal() as s:
-            stored = await s.get(RegenerationTarget, target_id)
-            for field, value in _REUSE_DESTINATION.items():
-                assert getattr(stored, field) == value, field
             campaign = await campaigns_repo.get_campaign(s, campaign_id)
             assert campaign.publication_version == 2
 

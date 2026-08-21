@@ -1,4 +1,4 @@
-"""Unit tests for ``app/repositories/regeneration_sources.py``.
+"""Unit tests for the regeneration repositories, with no database.
 
 The REAL function bodies run; only the ``session.execute`` / ``session.scalar``
 boundary is faked (the pattern ``tests/repositories/test_cost.py`` uses). Two
@@ -13,6 +13,13 @@ kinds of assertion, both needed:
 The semantics these predicates BUY (which row actually comes back, whether the
 lock really blocks a second transaction) are proven against a real Postgres in
 ``tests/integration/test_regeneration_source_and_version_queries.py``.
+
+This module also owns the reviewed-Notion-destination shape tables and the
+unit tests for ``_validate_reviewed_destination``. That validator is pure and
+needs no session, but until now it was only ever reached through
+``create_target`` inside ``tests/integration/test_regeneration_constraints.py``
+— a module gated behind ``RUN_DB_INTEGRATION`` — so the canonical
+``uv run python -m pytest tests/ -q`` bar covered none of its eight refusals.
 """
 
 from __future__ import annotations
@@ -538,3 +545,205 @@ def test_batch_cost_needs_no_revision_filter_because_a_revision_has_no_batch():
         c.name for c in HomeworkJob.__table__.constraints if c.name is not None
     }
     assert "ck_homework_jobs_revision_no_batch" in names
+
+
+# ── the reviewed Notion destination ──────────────────────────────────────────
+# SOURCE OF TRUTH for the destination shapes, deliberately here and not beside
+# the database tests that also use them. This module has no `pytestmark` and no
+# import-time service call, so `tests/integration/test_regeneration_constraints
+# .py` imports these from HERE. The other direction would make the always-run
+# unit bar import a module whose own `pytestmark` is a live "needs a real
+# Postgres" skip — one `import *` away from silently skipping itself, which is
+# the very shape of invisible-zero-coverage bug these tests were added to close.
+#
+# `container` is the page that holds Lesson Topics; `parent` is the Lesson Topic
+# itself, under which the `Homework V2` sibling is written.
+
+REUSE_DESTINATION = dict(
+    notion_container_policy="reuse",
+    reviewed_notion_container_page_id="container-page-1",
+    notion_parent_policy="reuse",
+    reviewed_notion_lesson_page_id="lesson-page-1",
+    reviewed_notion_lesson_title="7 Photosynthesis",
+)
+CREATE_DESTINATION = dict(
+    notion_container_policy="create",
+    reviewed_notion_container_page_id=None,
+    notion_parent_policy="create",
+    reviewed_notion_lesson_page_id=None,
+    reviewed_notion_lesson_title="7 Photosynthesis",
+)
+# Reuse the container, create a NEW Lesson Topic inside it — legal in that one
+# direction, which is why the two levels are separate fields at all.
+MIXED_DESTINATION = dict(
+    notion_container_policy="reuse",
+    reviewed_notion_container_page_id="container-page-1",
+    notion_parent_policy="create",
+    reviewed_notion_lesson_page_id=None,
+    reviewed_notion_lesson_title="7 Photosynthesis",
+)
+
+# Every non-null shape the rule ACCEPTS. The all-null legacy shape is legal too,
+# but it is the ABSENCE of a destination rather than one, so it is asserted on
+# its own. An over-strict validator that only ever saw `REUSE_DESTINATION` would
+# ship green, which is exactly what happened before these tests existed.
+ACCEPTED_DESTINATIONS = {
+    "reuse container, reuse lesson": REUSE_DESTINATION,
+    "create container, create lesson": CREATE_DESTINATION,
+    "reuse container, create lesson": MIXED_DESTINATION,
+}
+
+# Every shape the rule must refuse, keyed by what is wrong with it. Shared by
+# the database test (the CHECK refuses each), the repository unit test below
+# (the validator refuses each with no session at all) and the repository
+# integration test (`create_target` refuses each BEFORE the row is built), so
+# the three can never drift.
+REFUSED_DESTINATIONS = {
+    # 'reuse' with nothing to reuse.
+    "container reuse without a page id": {
+        **REUSE_DESTINATION,
+        "reviewed_notion_container_page_id": None,
+    },
+    "lesson reuse without a page id": {
+        **REUSE_DESTINATION,
+        "reviewed_notion_lesson_page_id": None,
+    },
+    # 'create' carrying a page id it would never use.
+    "container create with a page id": {
+        **CREATE_DESTINATION,
+        "reviewed_notion_container_page_id": "container-page-1",
+    },
+    "lesson create with a page id": {
+        **CREATE_DESTINATION,
+        "reviewed_notion_lesson_page_id": "lesson-page-1",
+    },
+    "unknown lesson policy": {
+        **REUSE_DESTINATION,
+        "notion_parent_policy": "adopt",
+    },
+    "unknown container policy": {
+        **REUSE_DESTINATION,
+        "notion_container_policy": "adopt",
+    },
+    # A brand-new container has no children, so there is no existing Lesson
+    # Topic inside it to reuse.
+    "reused lesson under a created container": {
+        **REUSE_DESTINATION,
+        "notion_container_policy": "create",
+        "reviewed_notion_container_page_id": None,
+    },
+    # Whatever is written, the operator must have seen its title.
+    "no reviewed title": {
+        **REUSE_DESTINATION,
+        "reviewed_notion_lesson_title": None,
+    },
+    # A reviewed value with no policy at all is a decision nobody made.
+    "container page id with no policy at all": {
+        "reviewed_notion_container_page_id": "container-page-1",
+    },
+    "lesson page id with no policy at all": {
+        "reviewed_notion_lesson_page_id": "lesson-page-1",
+    },
+}
+
+# The two refusals that only hold if every comparison in the CHECK is TOTAL —
+# see `test_destination_check_is_total_for_a_missing_policy`. Kept apart from
+# the table above because they are the specific proof of that property.
+NULL_POLICY_DESTINATIONS = {
+    "lesson policy with no container policy beside it": {
+        "notion_container_policy": None,
+        "reviewed_notion_container_page_id": None,
+        "notion_parent_policy": "reuse",
+        "reviewed_notion_lesson_page_id": "lesson-page-1",
+        "reviewed_notion_lesson_title": "7 Photosynthesis",
+    },
+    "reviewed title with no policy at all": {
+        "reviewed_notion_lesson_title": "7 Photosynthesis",
+    },
+}
+
+# What each refusal must SAY. A bare `pytest.raises(ValueError)` passes on a
+# right-refusal-for-the-wrong-reason — a validator that rejected every `create`
+# container outright would still "refuse" the reused-lesson-under-a-created-
+# container shape, and the wrongness would be invisible.
+REFUSAL_REASONS = {
+    "container reuse without a page id": "notion_container_policy='reuse' needs",
+    "lesson reuse without a page id": "notion_parent_policy='reuse' needs",
+    "container create with a page id": "notion_container_policy='create' must not carry",
+    "lesson create with a page id": "notion_parent_policy='create' must not carry",
+    "unknown lesson policy": "notion_parent_policy must be one of",
+    "unknown container policy": "notion_container_policy must be one of",
+    "reused lesson under a created container": "notion_parent_policy='reuse' requires",
+    "no reviewed title": "reviewed_notion_lesson_title is required",
+    "container page id with no policy at all": "notion_parent_policy must be one of",
+    "lesson page id with no policy at all": "notion_parent_policy must be one of",
+    "lesson policy with no container policy beside it": (
+        "notion_container_policy must be one of"
+    ),
+    "reviewed title with no policy at all": "notion_parent_policy must be one of",
+}
+
+# `create_target` defaults all five arguments to None, so a partial shape above
+# reaches the validator with the rest None — mirrored here rather than assumed.
+_NO_DESTINATION = dict(
+    notion_container_policy=None,
+    reviewed_notion_container_page_id=None,
+    notion_parent_policy=None,
+    reviewed_notion_lesson_page_id=None,
+    reviewed_notion_lesson_title=None,
+)
+
+
+def _validate(**destination) -> None:
+    from app.repositories.regeneration_targets import _validate_reviewed_destination
+
+    _validate_reviewed_destination(**{**_NO_DESTINATION, **destination})
+
+
+def test_create_target_defaults_every_destination_field_to_none():
+    """`_NO_DESTINATION` above must really be what production passes in."""
+    import inspect
+
+    from app.repositories.regeneration_targets import create_target
+
+    params = inspect.signature(create_target).parameters
+    for field in _NO_DESTINATION:
+        assert params[field].default is None, field
+
+
+def test_the_legacy_no_destination_shape_is_accepted():
+    """A target from before the guided wizard carries no decision at all, and
+    back-filling one would invent a publication nobody approved."""
+    _validate()
+
+
+def test_every_legal_non_null_destination_is_accepted():
+    """All THREE complete shapes, not just the one the happy path happens to
+    use. An over-strict validator that refused `create`/`create` — or the mixed
+    reuse-container/create-lesson shape — is a rule the database would accept
+    and the service layer would not, and only this loop sees it."""
+    for label, destination in ACCEPTED_DESTINATIONS.items():
+        try:
+            _validate(**destination)
+        except ValueError as exc:  # pragma: no cover - the assertion is the report
+            pytest.fail(f"{label} must be accepted, got: {exc}")
+
+
+def test_every_refused_destination_raises_for_its_own_reason():
+    for label, destination in {
+        **REFUSED_DESTINATIONS,
+        **NULL_POLICY_DESTINATIONS,
+    }.items():
+        with pytest.raises(ValueError) as exc:
+            _validate(**destination)
+        assert REFUSAL_REASONS[label] in str(exc.value), (
+            f"{label} was refused, but for the wrong reason: {exc.value}"
+        )
+
+
+def test_the_reason_table_covers_exactly_the_refused_shapes():
+    """A shape added to one table and forgotten in the other would otherwise
+    fail with a KeyError that reads like a bug in the test, not a gap."""
+    assert set(REFUSAL_REASONS) == set(REFUSED_DESTINATIONS) | set(
+        NULL_POLICY_DESTINATIONS
+    )
