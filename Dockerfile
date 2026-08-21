@@ -50,6 +50,20 @@ RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
  && chown -R app:app /app
 USER app
 
+# Build identity. This image ships no `.git` (the build context excludes it)
+# and no git binary, so nothing inside the container can work out which commit
+# it was built from — the build has to say so. `app/api/v1/regeneration.py`
+# reads this when stamping a campaign's immutable `app_git_revision`, and
+# refuses to create one when no source can name a revision.
+#
+# CI binds it to the built commit (`--build-arg APP_GIT_REVISION=${{ github.sha }}`
+# in .github/workflows/docker-publish.yml). The default is empty so a manual
+# `docker build` still works; an empty value reads as ABSENT, never as a
+# revision. Declared last on purpose: changing the revision then reuses every
+# cached layer above instead of rebuilding the image.
+ARG APP_GIT_REVISION=""
+ENV APP_GIT_REVISION=${APP_GIT_REVISION}
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

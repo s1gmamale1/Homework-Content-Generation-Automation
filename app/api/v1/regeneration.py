@@ -42,6 +42,7 @@ service-owned and never debounced.
 """
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -288,6 +289,32 @@ def _translate_campaign_error(exc: CampaignError, *, request_shaped: bool):
     return _conflict("campaign_error", str(exc))
 
 
+#: The environment variable a build bakes its own commit into. The runtime
+#: image declares it as an ``ARG`` and exports it as ``ENV``; CI binds it to
+#: ``github.sha``. See ``Dockerfile`` and ``.github/workflows/docker-publish.yml``.
+APP_GIT_REVISION_ENV = "APP_GIT_REVISION"
+
+#: ``regeneration_campaigns.app_git_revision`` is ``String(64)`` — and 64 is
+#: exactly a full SHA-256 git object name, so no real revision is truncated.
+_MAX_APP_GIT_REVISION = 64
+
+
+def _normalize_revision(value: Optional[str]) -> Optional[str]:
+    """One normalization for all three sources: trim, treat whitespace-only as
+    ABSENT, and cap at the audit column's width.
+
+    Blank-is-absent is load-bearing, not tidiness. ``ARG APP_GIT_REVISION=""``
+    with no ``--build-arg`` reaches the process as an empty string, so a
+    present-but-meaningless variable would otherwise shadow a perfectly good
+    git checkout — and store ``""`` in a column that can never be corrected.
+    The cap is the same shape of protection at the other end: only the request
+    field is bounded by the schema, so an over-long build arg would surface as
+    a 500 at INSERT on a request that had already validated.
+    """
+    text = (value or "").strip()
+    return text[:_MAX_APP_GIT_REVISION] if text else None
+
+
 def _resolve_app_git_revision(requested: Optional[str]) -> str:
     """Which application revision is this campaign being created under?
 
@@ -295,31 +322,51 @@ def _resolve_app_git_revision(requested: Optional[str]) -> str:
     packet?" is the first question asked of a regenerated lesson, and the row
     is immutable once written — there is no later chance to fill it in.
 
-    Two sources, in order. An EXPLICIT value wins: the request field is
-    exposed on purpose, so whatever deployed the code can name the revision
-    it deployed. Otherwise the process serving the request answers for itself
-    via ``code_version.GIT_SHA`` — which is what the SPA relies on, since it
-    posts ``app_git_revision: null`` by design.
+    Three sources, in descending order of authority.
 
-    Neither is a refusal, not a fallback to NULL. A container built without
-    ``.git`` reports no SHA, and storing "unknown" in an audit column is worse
-    than not creating the campaign: it is indistinguishable from a campaign
-    whose provenance was never asked for.
+    1. An EXPLICIT request value. The field is exposed on purpose, so an
+       operator who knows the deployed revision better than the artifact does
+       — a mis-baked image, a hotfix — can say so and not be overruled.
+    2. The BUILD's own statement, ``APP_GIT_REVISION`` in the environment.
+       This is the production source: the deployed head is a container, and
+       that container has no git — the build context excludes ``.git`` and the
+       runtime image installs no git binary — so the build stamping the commit
+       it built is the only thing that still knows it.
+    3. The process's own checkout, ``code_version.GIT_SHA``. Last, because a
+       checkout merely being present is not evidence of what was deployed: a
+       mounted source tree drifts from the code already imported. It remains
+       the right answer for a bare-metal head run straight out of git.
+
+    The SPA posts ``app_git_revision: null`` by design, so on a container
+    everything rests on (2) — without it every containerised create would be
+    the refusal below, which is what made this chain necessary.
+
+    None of the three is a refusal, not a fallback to NULL. Storing "unknown"
+    in an audit column is worse than not creating the campaign: it is
+    indistinguishable from a campaign whose provenance was never asked for.
     """
-    explicit = (requested or "").strip()
+    explicit = _normalize_revision(requested)
     if explicit:
         return explicit
-    detected = (code_version.GIT_SHA or "").strip()
+    baked = _normalize_revision(os.environ.get(APP_GIT_REVISION_ENV))
+    if baked:
+        return baked
+    detected = _normalize_revision(code_version.GIT_SHA)
     if detected:
         return detected
     raise _conflict(
         "app_git_revision_unavailable",
         "cannot record which application revision this campaign would be "
-        "created under: this process reports no git revision (it is running "
-        "from a build or container without a .git directory). A campaign is "
-        "an audit record and is never created with unknown provenance. Either "
-        "run the API from a git checkout, or send app_git_revision in this "
-        "request with the revision that was deployed.",
+        "created under: no revision was sent, the APP_GIT_REVISION "
+        "environment variable is unset or blank, and this process reports no "
+        "git revision (it is running from a build or container without a .git "
+        "directory). A campaign is an audit record and is never created with "
+        "unknown provenance. Fix it at whichever level owns the deployment: "
+        "rebuild the image with --build-arg APP_GIT_REVISION=<sha> (CI passes "
+        "the built commit automatically), or set APP_GIT_REVISION=<sha> in the "
+        "running container's environment, or run the API from a git checkout, "
+        "or send app_git_revision in this request with the revision that was "
+        "deployed.",
     )
 
 

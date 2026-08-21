@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import ast
 import inspect
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 import app.auth as auth_module
@@ -52,6 +55,12 @@ def _feature_on(monkeypatch):
     monkeypatch.setattr(settings, "regeneration_enabled", True)
     monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
     monkeypatch.setattr(code_version, "GIT_SHA", SERVER_SHA)
+    # The deployed image bakes its commit into APP_GIT_REVISION, and that
+    # source outranks `code_version.GIT_SHA`. Clear it unconditionally so the
+    # suite reports the same revision on a developer's shell, in CI, and
+    # inside the container it is testing; a test that wants the baked source
+    # sets it explicitly.
+    monkeypatch.delenv("APP_GIT_REVISION", raising=False)
     app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
 
     async def _fake_session():
@@ -725,6 +734,349 @@ def test_estimate_prices_a_draft_on_a_head_that_has_no_revision(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["target_count"] == 0
+
+
+# ═════════════════ the baked build revision (APP_GIT_REVISION) ═══════════
+#
+# The head that serves a create in production is a container, and that
+# container has no git: `.dockerignore` excludes `.git` and the runtime image
+# installs no git binary, so `code_version.GIT_SHA` is None there. The SPA
+# posts `app_git_revision: null` by design. Those two facts together make the
+# git fallback answer nothing and every containerised create a 409 — the
+# feature is unusable exactly where it ships.
+#
+# So the build states the commit it built, into `APP_GIT_REVISION`, and the
+# resolver reads three sources in order: explicit request, baked environment,
+# this process's own git. The environment sits in the middle because it is a
+# deliberate statement by whatever produced the artifact, while a local
+# checkout is only evidence that A checkout exists.
+
+
+def test_the_baked_build_revision_answers_for_a_process_with_no_git(monkeypatch):
+    """The production shape: a container knows its commit only because the
+    build wrote it into the environment."""
+    monkeypatch.setattr(code_version, "GIT_SHA", None)
+    monkeypatch.setenv("APP_GIT_REVISION", "1a2b3c4d5e6f")
+    service = _echoing_service(monkeypatch)
+
+    response = client.post(f"{BASE}/campaigns", json=_create_body())
+
+    assert response.status_code == 201
+    spec = service.create_campaign.await_args.args[0]
+    assert spec.app_git_revision == "1a2b3c4d5e6f"
+    assert response.json()["app_git_revision"] == "1a2b3c4d5e6f"
+
+
+def test_the_baked_build_revision_beats_the_processs_own_git_sha(monkeypatch):
+    """Both sources answer, and the BUILD wins.
+
+    A checkout being present is not evidence of what was deployed — a mounted
+    source tree drifts from the code the process already imported, and a base
+    layer can carry someone else's `.git`. The build named its commit on
+    purpose, so that statement outranks a local guess.
+    """
+    monkeypatch.setenv("APP_GIT_REVISION", "bui1dsha")
+    service = _echoing_service(monkeypatch)
+
+    response = client.post(f"{BASE}/campaigns", json=_create_body())
+
+    assert response.status_code == 201
+    assert service.create_campaign.await_args.args[0].app_git_revision == "bui1dsha"
+    assert response.json()["app_git_revision"] == "bui1dsha"
+    # ... and the git source was genuinely not consulted.
+    assert response.json()["app_git_revision"] != SERVER_SHA
+
+
+def test_an_explicit_request_revision_still_beats_the_baked_one(monkeypatch):
+    """The request field stays the top of the chain, normalization included:
+    an operator correcting a mis-baked image must not be overruled by it."""
+    monkeypatch.setenv("APP_GIT_REVISION", "bui1dsha")
+    service = _echoing_service(monkeypatch)
+
+    response = client.post(
+        f"{BASE}/campaigns", json=_create_body(app_git_revision="  0perator  ")
+    )
+
+    assert response.status_code == 201
+    assert service.create_campaign.await_args.args[0].app_git_revision == "0perator"
+    assert response.json()["app_git_revision"] == "0perator"
+
+
+@pytest.mark.parametrize(
+    "baked", ["", "   ", "\t\n "], ids=["empty", "spaces", "whitespace"]
+)
+def test_a_blank_baked_revision_falls_through_to_the_processs_git(monkeypatch, baked):
+    """`ARG APP_GIT_REVISION=""` with no `--build-arg` exports the variable
+    EMPTY, so a hand-rolled `docker build` — and any dev shell that exported
+    it and moved on — reaches the resolver with the name present and
+    meaningless. Present-but-blank reads as absent, or the middle source
+    shadows a working git checkout with nothing."""
+    monkeypatch.setenv("APP_GIT_REVISION", baked)
+    service = _echoing_service(monkeypatch)
+
+    response = client.post(f"{BASE}/campaigns", json=_create_body())
+
+    assert response.status_code == 201
+    assert service.create_campaign.await_args.args[0].app_git_revision == SERVER_SHA
+    assert response.json()["app_git_revision"] == SERVER_SHA
+
+
+def test_a_blank_baked_revision_on_a_gitless_process_is_still_refused(monkeypatch):
+    """An image built without the arg, on a head with no git: no source can
+    name a revision, so the campaign is not created. A blank string in an
+    immutable audit column is the outcome this whole chain exists to avoid."""
+    monkeypatch.setattr(code_version, "GIT_SHA", None)
+    monkeypatch.setenv("APP_GIT_REVISION", "   ")
+    service = _install_service(monkeypatch, _fake_service())
+    detail = _install_detail(monkeypatch)
+
+    response = client.post(f"{BASE}/campaigns", json=_create_body())
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "app_git_revision_unavailable"
+    # Still refused before any side effect — the audit boundary is unmoved.
+    assert service.create_campaign.await_count == 0
+    assert detail.await_count == 0
+    assert regen_api._reconcile.await_count == 0
+
+
+def test_an_over_long_baked_revision_cannot_overflow_the_audit_column(monkeypatch):
+    """`regeneration_campaigns.app_git_revision` is `String(64)`.
+
+    The request field is bounded by the schema, but nothing bounds a build
+    arg — and an unbounded value would fail at INSERT, turning one mis-set
+    variable into a 500 on a request that had already passed validation. 64 is
+    also exactly a full SHA-256 git object name, so no real revision is lost.
+    """
+    monkeypatch.setattr(code_version, "GIT_SHA", None)
+    monkeypatch.setenv("APP_GIT_REVISION", "  " + "f" * 200 + "  ")
+    service = _echoing_service(monkeypatch)
+
+    response = client.post(f"{BASE}/campaigns", json=_create_body())
+
+    assert response.status_code == 201
+    stamped = service.create_campaign.await_args.args[0].app_git_revision
+    assert stamped == "f" * 64
+    assert response.json()["app_git_revision"] == "f" * 64
+
+
+def test_the_refusal_names_the_build_arg_that_fixes_it(monkeypatch):
+    """The operator meeting this 409 is almost always looking at a container,
+    where "run the API from a git checkout" is not a fix they can apply. The
+    message has to name the variable and the build arg that are."""
+    monkeypatch.setattr(code_version, "GIT_SHA", None)
+    _install_service(monkeypatch, _fake_service())
+    _install_detail(monkeypatch)
+
+    message = client.post(f"{BASE}/campaigns", json=_create_body()).json()[
+        "detail"
+    ]["message"]
+
+    assert "APP_GIT_REVISION" in message
+    assert "build-arg" in message
+    # The two original escape hatches are still offered, not replaced.
+    assert "app_git_revision" in message
+    assert "git" in message.lower()
+
+
+# ═══════════ the build side of the same provenance chain ═════════════════
+#
+# `APP_GIT_REVISION` is a real source only if something actually sets it, so
+# the resolver above and these two files are one mechanism. They are pinned
+# here, next to the behaviour they serve, because the failure they close is
+# precisely the split kind: a resolver that is green over unit fakes while the
+# image it ships in never declares the variable it reads.
+#
+# Every assertion below normalizes whitespace and parses structure rather than
+# matching source lines, so reformatting the Dockerfile or re-indenting the
+# workflow cannot turn a preserved contract into a red test — or a dropped one
+# into a green one.
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_DOCKERFILE = _REPO_ROOT / "Dockerfile"
+_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
+
+
+def _dockerfile_instructions() -> list[tuple[str, str]]:
+    """`(INSTRUCTION, argument)` pairs: comments dropped, `\\`-continuations
+    joined, inner whitespace collapsed."""
+    logical: list[str] = []
+    buffer = ""
+    for raw in _DOCKERFILE.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.endswith("\\"):
+            buffer += line[:-1].strip() + " "
+            continue
+        logical.append((buffer + line).strip())
+        buffer = ""
+    if buffer.strip():
+        logical.append(buffer.strip())
+    parsed = []
+    for line in logical:
+        head, _, rest = line.partition(" ")
+        parsed.append((head.upper(), " ".join(rest.split())))
+    return parsed
+
+
+def _runtime_stage() -> list[tuple[str, str]]:
+    """Only the instructions inside `FROM ... AS runtime`.
+
+    The stage boundary IS the assertion: an `ARG` declared in a builder stage
+    is scoped to that stage and never reaches the shipped image, so a
+    correct-looking line in the wrong stage sets nothing at runtime.
+    """
+    instructions = _dockerfile_instructions()
+    starts = [
+        i
+        for i, (op, arg) in enumerate(instructions)
+        if op == "FROM" and arg.lower().endswith(" as runtime")
+    ]
+    assert len(starts) == 1, f"expected one `FROM ... AS runtime`, got {starts}"
+    start = starts[0]
+    end = next(
+        (i for i in range(start + 1, len(instructions)) if instructions[i][0] == "FROM"),
+        len(instructions),
+    )
+    return instructions[start + 1 : end]
+
+
+def test_the_runtime_image_declares_the_revision_build_arg():
+    """Without an `ARG` in the runtime stage there is nothing for CI's
+    `--build-arg` to bind to: docker warns and drops the value silently."""
+    args = [arg for op, arg in _runtime_stage() if op == "ARG"]
+    names = [entry.split("=", 1)[0].strip() for arg in args for entry in arg.split()]
+    assert "APP_GIT_REVISION" in names, f"runtime-stage ARGs: {args}"
+
+
+def test_the_runtime_image_exports_the_build_arg_into_the_environment():
+    """A build arg is invisible to the running process; only `ENV` survives
+    into the container, and only when the `ARG` is already in scope — an `ENV`
+    placed above its `ARG` expands to empty and looks correct in review."""
+    instructions = _runtime_stage()
+    exported = r"(^|\s)APP_GIT_REVISION\s*=\s*[\"']?\$\{?APP_GIT_REVISION\}?[\"']?(\s|$)"
+    env_at = [
+        i
+        for i, (op, arg) in enumerate(instructions)
+        if op == "ENV" and re.search(exported, arg)
+    ]
+    arg_at = [
+        i
+        for i, (op, arg) in enumerate(instructions)
+        if op == "ARG" and "APP_GIT_REVISION" in arg
+    ]
+    assert env_at, f"runtime-stage ENVs: {[a for o, a in instructions if o == 'ENV']}"
+    assert arg_at and min(arg_at) < min(env_at), (
+        f"ARG at {arg_at} must precede ENV at {env_at}"
+    )
+
+
+def test_the_runtime_image_still_ships_without_git():
+    """The premise the build arg exists for, pinned.
+
+    If the image ever gained `.git` or a git binary this chain would start
+    looking redundant — right up until the next slim rebuild silently removed
+    it again and every containerised create became a 409.
+    """
+    instructions = _runtime_stage()
+    copies = [arg for op, arg in instructions if op == "COPY"]
+    assert not [c for c in copies if re.search(r"(^|\s|/)\.git(\s|/|$)", c)], copies
+    runs = " ".join(arg for op, arg in instructions if op == "RUN")
+    assert not re.search(r"\binstall\b[^&|;]*\bgit\b", runs), runs
+    ignored = {
+        line.strip()
+        for line in (_REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    }
+    assert ".git" in ignored, "the build context must keep excluding .git"
+
+
+def _workflow_document() -> dict:
+    return yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _build_step() -> dict:
+    steps = _workflow_document()["jobs"]["build-and-push"]["steps"]
+    matches = [
+        step
+        for step in steps
+        if str(step.get("uses", "")).startswith("docker/build-push-action")
+    ]
+    assert len(matches) == 1, f"expected one image build step, got {len(matches)}"
+    return matches[0]
+
+
+def _build_args(step: dict) -> dict[str, str]:
+    """`build-args` is a newline-delimited `KEY=VALUE` block, so parse it —
+    a substring match would pass on a commented-out or misspelled entry."""
+    pairs: dict[str, str] = {}
+    for line in str(step.get("with", {}).get("build-args") or "").splitlines():
+        entry = line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        key, sep, value = entry.partition("=")
+        assert sep, f"malformed build-arg entry: {entry!r}"
+        pairs[key.strip()] = value.strip()
+    return pairs
+
+
+def test_ci_bakes_the_built_commit_into_every_image():
+    """The workflow is the only party that still knows the commit: the build
+    context discards `.git`, so nothing downstream can recover it. One build
+    step serves push, tag, PR and dispatch, so wiring it here covers them all.
+    """
+    args = _build_args(_build_step())
+    assert "APP_GIT_REVISION" in args, args
+    assert re.fullmatch(
+        r"\$\{\{\s*github\.sha\s*\}\}", args["APP_GIT_REVISION"]
+    ), args["APP_GIT_REVISION"]
+
+
+def test_the_build_step_keeps_its_publishing_contract():
+    """The build arg is an addition, not a rewrite. Both architectures, the
+    tag set, the GHA cache and max-mode provenance are what make the pushed
+    image usable and attestable, and each is a single line to lose while
+    editing the `with:` block above it."""
+    with_block = _build_step()["with"]
+    assert with_block["context"] == "."
+    assert with_block["push"] == "${{ github.event_name != 'pull_request' }}"
+    assert [p.strip() for p in str(with_block["platforms"]).split(",")] == [
+        "linux/amd64",
+        "linux/arm64",
+    ]
+    assert with_block["tags"] == "${{ steps.meta.outputs.tags }}"
+    assert with_block["labels"] == "${{ steps.meta.outputs.labels }}"
+    assert with_block["cache-from"] == "type=gha"
+    assert with_block["cache-to"] == "type=gha,mode=max"
+    assert with_block["provenance"] == "mode=max"
+    assert with_block["sbom"] is True
+
+
+def test_the_workflow_still_fires_on_every_publishing_event():
+    """Triggers and the tag set, pinned alongside the build arg they feed.
+
+    (`on:` is YAML 1.1's boolean `on` under `safe_load`, hence the two-key
+    lookup — a plain `document["on"]` would KeyError and read as a dropped
+    trigger block.)
+    """
+    document = _workflow_document()
+    triggers = document.get("on", document.get(True))
+    assert set(triggers) == {"push", "pull_request", "workflow_dispatch"}
+    assert triggers["push"]["branches"] == ["master"]
+    assert triggers["push"]["tags"] == ["v*.*.*"]
+    assert triggers["pull_request"]["branches"] == ["master"]
+
+    steps = document["jobs"]["build-and-push"]["steps"]
+    meta = next(step for step in steps if step.get("id") == "meta")
+    declared = {line.strip() for line in str(meta["with"]["tags"]).splitlines()}
+    assert {
+        "type=ref,event=branch",
+        "type=ref,event=pr",
+        "type=sha,prefix=sha-",
+        "type=semver,pattern={{version}}",
+        "type=semver,pattern={{major}}.{{minor}}",
+        "type=raw,value=latest,enable={{is_default_branch}}",
+    } <= declared, declared
 
 
 # ═══════════════════════════ campaign reads ══════════════════════════════
