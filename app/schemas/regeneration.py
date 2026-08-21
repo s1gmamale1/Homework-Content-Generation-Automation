@@ -734,7 +734,10 @@ def _describe_body(
         return f"published as Homework {label}."
     if status == "abandoned":
         reason = terminal_reason or abandon_reason or "abandoned by an operator"
-        text = f"abandoned: {reason} No Notion page was deleted"
+        # Terminated here, not only at the tail: the reason is operator prose
+        # or a service message and carries no punctuation of its own, so the
+        # clause after it would otherwise start mid-sentence.
+        text = f"abandoned: {_sentence(reason)} No Notion page was deleted"
         text += (
             f" and version V{version} stays consumed."
             if version
@@ -748,8 +751,9 @@ def _describe_body(
             "the revision job did not produce a complete snapshot"
         )
         return (
-            f"generation failed: {detail} Retry generation or abandon this "
-            "target — it holds the lesson's active lineage until then."
+            f"generation failed: {_sentence(detail)} Retry generation or "
+            "abandon this target — it holds the lesson's active lineage "
+            "until then."
         )
     if status == "publication_failed":
         detail = last_error or "the Notion write failed"

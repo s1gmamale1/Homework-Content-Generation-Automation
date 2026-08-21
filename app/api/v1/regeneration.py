@@ -48,7 +48,7 @@ from typing import Optional, Sequence
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import Row, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -297,6 +297,18 @@ def _translate_plan_error(exc: Exception) -> HTTPException:
 
 
 # ═══════════════════════════ gather helpers ══════════════════════════════
+#
+# Two rules hold for every helper below.
+#
+# A gather that returns ORM ENTITIES reads with ``populate_existing=True``,
+# exactly as the repositories do. ``SessionLocal`` is ``expire_on_commit=False``
+# and ``_reconcile`` runs on the REQUEST session before every report and every
+# mutation, so an entity the request already holds would otherwise be handed
+# back as it was BEFORE the service — which owns its own session — moved it.
+#
+# A gather that only feeds counts reads COLUMNS, not entities: a report is
+# polled, and it must never drag a phase's generated markdown across the wire
+# to throw it away.
 
 
 async def _load_campaign(
@@ -341,28 +353,53 @@ async def _current_target_statuses(
 async def _revision_jobs(
     session: AsyncSession, target_ids: Sequence[UUID]
 ) -> dict[UUID, HomeworkJob]:
+    """The revision job behind each target, as the rows are NOW.
+
+    ``populate_existing`` for the same reason ``campaigns_repo.get_campaign``
+    has it, and it is load-bearing here: ``_reconcile`` loads exactly these
+    jobs into the REQUEST session before every report and every mutation,
+    the transition that follows is the SERVICE's — a different session — and
+    ``SessionLocal`` is ``expire_on_commit=False``. Without the refresh the
+    identity map answers the gather with the job as it was before the action,
+    so a retry would report the failure it just replaced.
+    """
     if not target_ids:
         return {}
     rows = await session.execute(
-        select(HomeworkJob).where(
-            HomeworkJob.regeneration_target_id.in_(list(target_ids))
-        )
+        select(HomeworkJob)
+        .where(HomeworkJob.regeneration_target_id.in_(list(target_ids)))
+        .execution_options(populate_existing=True)
     )
     return {job.regeneration_target_id: job for job in rows.scalars().all()}
 
 
 async def _phase_rows(
     session: AsyncSession, job_ids: Sequence[UUID]
-) -> dict[UUID, list[PhaseOutput]]:
+) -> dict[UUID, list[Row]]:
+    """Provenance and judge/solver verdicts per job — and NOTHING else.
+
+    A projection, not the entities: a report counts copied-vs-regenerated and
+    tallies the two verdict columns, and every campaign poll would otherwise
+    drag ``output_md`` and ``content_json`` — the whole generated snapshot,
+    for every phase of every lesson in the campaign — across the wire to be
+    thrown away. The schema reads these rows through ``getattr``, so a
+    ``Row`` serves it exactly as an ORM object did.
+    """
     if not job_ids:
         return {}
     rows = await session.execute(
-        select(PhaseOutput)
+        select(
+            PhaseOutput.job_id,
+            PhaseOutput.phase_order,
+            PhaseOutput.copied_from_phase_output_id,
+            PhaseOutput.judge_status,
+            PhaseOutput.solver_status,
+        )
         .where(PhaseOutput.job_id.in_(list(job_ids)))
         .order_by(PhaseOutput.job_id, PhaseOutput.phase_order)
     )
-    grouped: dict[UUID, list[PhaseOutput]] = {}
-    for row in rows.scalars().all():
+    grouped: dict[UUID, list[Row]] = {}
+    for row in rows.all():
         grouped.setdefault(row.job_id, []).append(row)
     return grouped
 
@@ -380,7 +417,9 @@ async def _usage_rows(
     if not job_ids:
         return []
     rows = await session.execute(
-        select(AgentUsage).where(AgentUsage.homework_job_id.in_(list(job_ids)))
+        select(AgentUsage)
+        .where(AgentUsage.homework_job_id.in_(list(job_ids)))
+        .execution_options(populate_existing=True)
     )
     return list(rows.scalars().all())
 
@@ -414,7 +453,9 @@ async def _lessons(
     if not toc_entry_ids:
         return {}
     rows = await session.execute(
-        select(TOCEntry).where(TOCEntry.id.in_(list(toc_entry_ids)))
+        select(TOCEntry)
+        .where(TOCEntry.id.in_(list(toc_entry_ids)))
+        .execution_options(populate_existing=True)
     )
     return {
         entry.id: out.LessonOut(
@@ -520,7 +561,10 @@ async def _list_campaigns(
         stmt = stmt.where(RegenerationCampaign.status.in_(statuses))
         count_stmt = count_stmt.where(RegenerationCampaign.status.in_(statuses))
     rows = await session.execute(
-        stmt.order_by(RegenerationCampaign.created_at.desc()).limit(limit).offset(offset)
+        stmt.order_by(RegenerationCampaign.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .execution_options(populate_existing=True)
     )
     campaigns = list(rows.scalars().all())
     total = int(await session.scalar(count_stmt) or 0)

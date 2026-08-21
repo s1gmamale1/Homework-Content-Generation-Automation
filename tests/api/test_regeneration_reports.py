@@ -315,6 +315,61 @@ def test_the_canary_block_points_at_the_revision_job_to_review():
     assert canary.revision_job_id in {job.id for job in jobs.values()}
 
 
+class _StatementRecorder:
+    """A session stand-in that captures the statement and runs no SQL.
+
+    The projection is the point of the gather, so it is asserted on the
+    STATEMENT rather than on a rendered string: a compiled-SQL substring check
+    would pass the day someone re-adds ``output_md`` under an alias.
+    """
+
+    def __init__(self):
+        self.statements = []
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return _EmptyResult()
+
+
+class _EmptyResult:
+    def all(self):
+        return []
+
+    def scalars(self):
+        return self
+
+
+async def test_the_phase_gather_selects_only_the_columns_the_report_reads():
+    from app.models.phase_output import PhaseOutput
+
+    session = _StatementRecorder()
+    assert await regen_api._phase_rows(session, []) == {}
+    assert session.statements == []          # no ids, no query
+
+    await regen_api._phase_rows(session, [uuid4(), uuid4()])
+    statement = session.statements[0]
+    selected = {column.key for column in statement.selected_columns}
+
+    # Everything the router groups/orders by and the schema counts from.
+    assert selected == {
+        "job_id",
+        "phase_order",
+        "copied_from_phase_output_id",
+        "judge_status",
+        "solver_status",
+    }
+    # The payload columns are the whole weight of a `phase_outputs` row, and a
+    # campaign report reads NONE of them.
+    assert "output_md" not in selected
+    assert "content_json" not in selected
+    # Not a whole-entity select in disguise: `select(PhaseOutput)` describes
+    # itself as the ORM entity and expands to every column.
+    assert all(
+        description["expr"] is not PhaseOutput
+        for description in statement.column_descriptions
+    )
+
+
 def test_the_report_keeps_the_frozen_plan_and_the_extraction_choice():
     report, _targets, _jobs = _report()
     assert report.requested_phases == ["flashcards"]
@@ -598,3 +653,95 @@ async def test_a_single_target_report_matches_the_campaign_report(monkeypatch):
     assert single.source_publication_version == (
         from_campaign.source_publication_version
     )
+
+
+@_DB
+async def test_the_gathered_phase_rows_carry_no_markdown_and_still_assemble():
+    """The projection must be enough for the whole provenance/judge/solver
+    half of the report — and must not have brought the snapshot with it."""
+    from app.db import SessionLocal
+
+    seeded = await _seed()
+    async with SessionLocal() as session:
+        grouped = await regen_api._phase_rows(session, [seeded.revision_job_id])
+        rows = grouped[seeded.revision_job_id]
+        target = await regen_api._load_target(session, seeded.target_id)
+        report = out.TargetReportOut.from_row(
+            target, now=datetime.now(timezone.utc), phase_rows=rows
+        )
+
+    assert [row.phase_order for row in rows] == list(range(len(CANONICAL)))
+    for row in rows:
+        assert not hasattr(row, "output_md")
+        assert not hasattr(row, "content_json")
+
+    assert report.copied_phase_count == len(CANONICAL) - 1
+    assert report.regenerated_phase_count == 1          # flashcards
+    assert report.judge_status_counts == {"major_shipped": 1}
+    assert report.solver_status_counts == {}
+
+
+@_DB
+async def test_a_gathered_revision_job_is_read_as_it_is_now_not_from_the_map():
+    """The request session already holds the revision job — ``_reconcile``
+    loads exactly these rows before every report and mutation — and the
+    service, which owns its OWN session, has since moved it. ``SessionLocal``
+    is ``expire_on_commit=False``, so a plain entity ``select`` is answered
+    from the identity map and would render the job as it was BEFORE the
+    retry, on the very screen an operator uses to confirm the retry took.
+
+    The held reference is the point: SQLAlchemy's identity map is weak, so the
+    stale copy survives exactly as long as something still refers to it.
+    """
+    from app.db import SessionLocal
+    from app.models.homework_job import HomeworkJob
+
+    seeded = await _seed(target_status="generating", job_status="failed")
+    async with SessionLocal() as session:
+        assert await regen_api._reconcile(session) >= 1
+        held = await session.get(HomeworkJob, seeded.revision_job_id)
+        assert held.status == "failed"
+
+        async with SessionLocal() as service_session:
+            job = await service_session.get(HomeworkJob, seeded.revision_job_id)
+            job.status = "pending"
+            job.error_message = None
+            await service_session.commit()
+
+        jobs = await regen_api._revision_jobs(session, [seeded.target_id])
+        target = await regen_api._load_target(session, seeded.target_id)
+        report = await regen_api._target_report(
+            session, target, now=datetime.now(timezone.utc)
+        )
+
+    assert jobs[seeded.target_id].status == "pending"
+    assert jobs[seeded.target_id].error_message is None
+    assert report.revision_job_status == "pending"
+
+
+@_DB
+async def test_the_campaign_list_reports_the_status_as_it_is_now():
+    """Same safeguard, the other whole-entity gather in this router: the list
+    route reconciles first — which loads campaigns into the request session —
+    and the status it renders is the one the SERVICE's rollup moves."""
+    from app.db import SessionLocal
+    from app.models.regeneration_campaign import RegenerationCampaign
+
+    seeded = await _seed()
+    async with SessionLocal() as session:
+        held = await session.get(RegenerationCampaign, seeded.campaign_id)
+        assert held.status == "approved"
+
+        async with SessionLocal() as service_session:
+            campaign = await service_session.get(
+                RegenerationCampaign, seeded.campaign_id
+            )
+            campaign.status = "attention_required"
+            await service_session.commit()
+
+        campaigns, _counts, _total = await regen_api._list_campaigns(
+            session, statuses=["attention_required"], limit=200, offset=0
+        )
+
+    listed = next(c for c in campaigns if c.id == seeded.campaign_id)
+    assert listed.status == "attention_required"

@@ -368,6 +368,71 @@ def test_an_abandoned_target_renders_both_the_abandon_and_the_delivery_error():
     assert "notion 403 forbidden" in out.reason
 
 
+def test_an_abandoned_reason_ends_before_the_notion_clause_begins():
+    """The interpolated reason is operator prose and carries no punctuation of
+    its own, so without terminating it the row reads
+    ``...destination retired No Notion page was deleted``."""
+    out = schemas.TargetReportOut.from_row(
+        _target(
+            status="abandoned",
+            publication_released_at=NOW,
+            publication_version=2,
+            terminal_at=NOW,
+            terminal_reason="destination retired",
+            abandon_requested_at=NOW,
+            abandon_requested_reason="destination retired",
+        ),
+        now=NOW,
+    )
+    assert "abandoned: destination retired. No Notion page was deleted" in out.reason
+    assert "retired No Notion" not in out.reason
+
+
+def test_an_already_punctuated_abandon_reason_is_not_double_terminated():
+    out = schemas.TargetReportOut.from_row(
+        _target(
+            status="abandoned",
+            terminal_at=NOW,
+            terminal_reason="destination retired.",
+        ),
+        now=NOW,
+    )
+    assert "abandoned: destination retired. No Notion page was deleted" in out.reason
+    assert (
+        "No Notion page was deleted and no publication version was consumed."
+        in out.reason
+    )
+    assert ".." not in out.reason
+
+
+def test_a_generation_failure_reason_ends_before_the_retry_instruction():
+    job = SimpleNamespace(
+        id=uuid4(),
+        status="failed",
+        error_message="phase flashcards failed: judge unavailable",
+        last_error=None,
+        scheduled_at=NOW,
+        current_phase="flashcards",
+    )
+    out = schemas.TargetReportOut.from_row(
+        _target(status="generation_failed"), now=NOW, revision_job=job
+    )
+    assert "judge unavailable. Retry generation or abandon" in out.reason
+    assert "unavailable Retry" not in out.reason
+
+
+def test_an_already_punctuated_generation_failure_is_not_double_terminated():
+    out = schemas.TargetReportOut.from_row(
+        _target(
+            status="generation_failed",
+            terminal_reason="the snapshot never validated.",
+        ),
+        now=NOW,
+    )
+    assert "the snapshot never validated. Retry generation or abandon" in out.reason
+    assert ".." not in out.reason
+
+
 def test_a_generation_failure_reads_the_revision_job_error_when_no_reason_exists():
     job = SimpleNamespace(
         id=uuid4(),
