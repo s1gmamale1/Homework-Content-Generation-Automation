@@ -69,6 +69,7 @@ from app.repositories import jobs as jobs_repo
 from app.repositories import launch_defaults as launch_defaults_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import regeneration_campaigns as campaigns_repo
+from app.repositories import regeneration_sources as sources_repo
 from app.repositories import regeneration_targets as targets_repo
 from app.schemas.regeneration_contract import (
     LaunchContract,
@@ -109,6 +110,7 @@ __all__ = [
     "PartialWaveRelease",
     "PreflightBlocked",
     "RegenerationCampaignService",
+    "RequestedPublicationVersionConflict",
     "RetiredModelRefusal",
     "SelectionTooLarge",
     "SelectionDiscoveryTooLarge",
@@ -213,6 +215,32 @@ class ActiveLineageConflict(CampaignError):
             "a non-terminal regeneration target already owns "
             f"{len(self.lineages)} of these lessons: {listed} — retry, or "
             "abandon the existing target first"
+        )
+
+
+class RequestedPublicationVersionConflict(CampaignError):
+    """The exact version the operator asked for is impossible for some of the
+    lessons they selected.
+
+    Carries EVERY affected lineage, not the first one: the wizard renders one
+    blocked list and the operator picks a different number once, instead of
+    discovering the same wall lesson by lesson. Each entry is a
+    ``regeneration_sources.VersionConflict``, which names its own reason and
+    the version that is in the way.
+    """
+
+    def __init__(self, conflicts):
+        self.conflicts = tuple(conflicts)
+        listed = ", ".join(
+            f"{c.toc_entry_id}/{c.output_language} ({c.reason}, "
+            f"V{c.existing_version})"
+            for c in self.conflicts[:5]
+        )
+        requested = self.conflicts[0].requested_version if self.conflicts else None
+        super().__init__(
+            f"V{requested} cannot be published for {len(self.conflicts)} of "
+            f"these lessons: {listed} — pick a higher version, or drop them "
+            "from the selection"
         )
 
 
@@ -465,6 +493,12 @@ class CreateCampaignSpec:
     selection: CampaignSelection
     contract: LaunchContract
     selected_phases: tuple[str, ...]
+    #: The ONE version this whole campaign publishes, frozen at creation.
+    #: ``None`` keeps every pre-wizard internal and API constructor working and
+    #: leaves the historical per-lineage ``max + 1`` allocation in place; Task 6
+    #: makes the public request require an integer, so every newly created
+    #: operator campaign is exact-versioned from then on.
+    publication_version: Optional[int] = None
     excluded_affected_phases: tuple[str, ...] = ()
     refresh_extraction: bool = False
     exclusion_acknowledged: bool = False
@@ -748,6 +782,16 @@ class RegenerationCampaignService:
                 "canary_size must be at least 1 — the canary IS the human gate; "
                 "a campaign with no canary would publish unreviewed content"
             )
+        if spec.publication_version is not None and spec.publication_version < 2:
+            # `campaigns_repo.create_campaign` refuses this too and stays the
+            # authority for direct repository callers — but it only fires after
+            # a whole discovery scan has read every selected lineage, and an
+            # operator typo must not cost that.
+            raise ValueError(
+                "publication_version must be >= 2 — logical V1 is the "
+                "pre-existing Homework page, which no campaign produced "
+                f"(got {spec.publication_version})"
+            )
         # Before a session exists: an unfiltered discovery is a scan of every
         # lineage the fleet has ever generated, so it must not even start.
         require_bounded_selection(spec.selection)
@@ -785,6 +829,18 @@ class RegenerationCampaignService:
                     [(t.toc_entry_id, t.output_language) for t in conflicts]
                 )
 
+            if spec.publication_version is not None:
+                # Before the insert, and for the WHOLE selection at once: the
+                # publisher's own allocator would refuse the same lessons, but
+                # only after the campaign had been approved and generated.
+                version_conflicts = await sources_repo.publication_version_conflicts(
+                    session,
+                    sources=[c.source for c in eligible],
+                    requested_version=spec.publication_version,
+                )
+                if version_conflicts:
+                    raise RequestedPublicationVersionConflict(version_conflicts)
+
             ordered = sorted(
                 eligible,
                 key=lambda c: target_sort_key(
@@ -819,6 +875,7 @@ class RegenerationCampaignService:
                 estimated_cost_low_usd=spec.estimated_cost_low_usd,
                 estimated_cost_high_usd=spec.estimated_cost_high_usd,
                 app_git_revision=spec.app_git_revision,
+                publication_version=spec.publication_version,
             )
 
             created: list[tuple[object, RegenerationTarget]] = []

@@ -23,10 +23,10 @@ from __future__ import annotations
 
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Literal, Optional
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.book import Book
@@ -34,6 +34,16 @@ from app.models.homework_job import HomeworkJob
 from app.models.phase_output import PhaseOutput
 from app.models.regeneration_target import RegenerationTarget
 from app.models.toc_entry import TOCEntry
+
+if TYPE_CHECKING:  # pragma: no cover - annotations only
+    # `EligibleRegenerationSource` lives in the SERVICE
+    # `app.services.regeneration_discovery`, which already imports this module
+    # at module scope. Importing it back at runtime would be a circular import
+    # and a layering inversion (a repository reaching up into a service), so the
+    # import is guarded and `from __future__ import annotations` above keeps the
+    # annotation a string that is never evaluated. Nothing below touches
+    # anything but the three structural attributes named in the docstrings.
+    from app.services.regeneration_discovery import EligibleRegenerationSource
 
 # The deliverable a revision reproduces. `teacher_material` jobs share the
 # `homework_jobs` table but run a different flow and have no publication
@@ -162,6 +172,97 @@ async def next_expected_version(
         )
     )
     return 2 if highest is None else int(highest) + 1
+
+
+@dataclass(frozen=True)
+class VersionConflict:
+    """One lesson+language that cannot publish the version the operator asked
+    for, in the shape the API renders directly.
+
+    Two reasons, and :attr:`existing_version` means something different in each
+    — deliberately, so a UI never has to guess:
+
+    * ``source_not_older`` — the lineage's IMMEDIATE source is already at
+      :attr:`existing_version`, which is ``>= requested_version``. A revision
+      generated from that source would overwrite the page it was made from.
+      :attr:`existing_version` is the source's own
+      ``source_publication_version``.
+    * ``already_consumed`` — some target of this lineage already holds
+      :attr:`requested_version`. A consumed number is never reusable, so here
+      :attr:`existing_version` EQUALS :attr:`requested_version`. That is the
+      answer, not a bug: the field says which number is taken.
+    """
+
+    toc_entry_id: UUID
+    output_language: str
+    requested_version: int
+    reason: Literal["source_not_older", "already_consumed"]
+    existing_version: int
+
+
+async def publication_version_conflicts(
+    session: AsyncSession,
+    *,
+    sources: "Sequence[EligibleRegenerationSource]",
+    requested_version: int,
+) -> tuple[VersionConflict, ...]:
+    """Every reason this exact version cannot be published for these lineages.
+
+    ALL of them, in the selection's own order — the operator sees one list of
+    affected lessons instead of discovering them one refusal at a time.
+
+    The consumed read covers targets in EVERY state, terminal and abandoned
+    included: a number is spent when it is RESERVED, and
+    ``uq_regeneration_targets_publication_version`` is partial on
+    ``publication_version IS NOT NULL`` alone. Filtering on ``status`` here
+    would promise a number the index then refuses, deep inside publication and
+    after the generation spend.
+
+    At most ONE conflict per lineage, ``source_not_older`` first. A source
+    already AT the requested number implies that number was consumed too, so
+    emitting both would make the blocked-lesson list longer than the selection
+    it came from.
+    """
+    if not sources:
+        # An empty `or_()` compiles away and would match every lineage in the
+        # table; there is nothing to ask about anyway.
+        return ()
+
+    result = await session.execute(
+        select(
+            RegenerationTarget.toc_entry_id, RegenerationTarget.output_language
+        ).where(
+            RegenerationTarget.publication_version == requested_version,
+            or_(*[
+                (RegenerationTarget.toc_entry_id == source.toc_entry_id)
+                & (RegenerationTarget.output_language == source.output_language)
+                for source in sources
+            ]),
+        )
+    )
+    consumed = {(row[0], row[1]) for row in result.all()}
+
+    conflicts: list[VersionConflict] = []
+    for source in sources:
+        existing = int(source.source_publication_version)
+        if existing >= requested_version:
+            reason: Literal["source_not_older", "already_consumed"] = (
+                "source_not_older"
+            )
+        elif (source.toc_entry_id, source.output_language) in consumed:
+            reason, existing = "already_consumed", requested_version
+        else:
+            continue
+        conflicts.append(
+            VersionConflict(
+                toc_entry_id=source.toc_entry_id,
+                output_language=source.output_language,
+                requested_version=requested_version,
+                reason=reason,
+                existing_version=existing,
+            )
+        )
+    return tuple(conflicts)
 
 
 async def lock_lineage(

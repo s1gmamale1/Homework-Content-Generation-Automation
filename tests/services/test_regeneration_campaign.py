@@ -1027,6 +1027,12 @@ async def _consume_publication_version(ids, version, *, language="uz", lesson=0)
     version check does not look at status, and a terminal row leaves
     `uq_regeneration_targets_active_lineage` free so campaign creation still
     reaches the version check instead of stopping at the lineage conflict.
+
+    It carries a real `source_job_id` for the same reason. A target with a null
+    link is the signature of a completed child-first purge, and
+    `_pick_source_job` refuses the WHOLE lineage on that predicate first — so a
+    lazily seeded row would make this test pass or fail on the purge check
+    rather than on the version it is about.
     """
     from datetime import datetime, timezone
 
@@ -1035,6 +1041,7 @@ async def _consume_publication_version(ids, version, *, language="uz", lesson=0)
     from app.models.regeneration_target import RegenerationTarget
 
     now = datetime.now(timezone.utc)
+    toc_entry_id = ids["toc_ids"][lesson]
     async with SessionLocal() as session:
         campaign = RegenerationCampaign(
             status="draft", selection_spec={}, requested_phases=["flashcards"],
@@ -1044,8 +1051,9 @@ async def _consume_publication_version(ids, version, *, language="uz", lesson=0)
         session.add(campaign)
         await session.flush()
         session.add(RegenerationTarget(
-            campaign_id=campaign.id, toc_entry_id=ids["toc_ids"][lesson],
+            campaign_id=campaign.id, toc_entry_id=toc_entry_id,
             output_language=language,
+            source_job_id=ids["jobs"][(toc_entry_id, language)],
             phase_plan=build_phase_plan(
                 subject=_SUBJECT, selected_phases=["flashcards"]).to_json(),
             status="abandoned", terminal_at=now, terminal_reason="pytest",

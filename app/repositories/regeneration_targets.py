@@ -49,6 +49,19 @@ class StalePublicationClaim(RuntimeError):
     """
 
 
+class PublicationVersionUnavailable(RuntimeError):
+    """The version this campaign declared cannot be reserved for this target.
+
+    Deliberately NOT a subclass of :class:`StalePublicationClaim`.
+    ``regeneration_publisher._TAKEOVER`` catches that one around the whole
+    delivery and returns having written NOTHING — correct for a lease that was
+    taken over, and catastrophic here: a spent version cannot be freed by
+    retrying, so the target would be re-claimed every lease forever instead of
+    parking for an operator. It is an operator-facing refusal, so the message
+    names the number.
+    """
+
+
 @dataclass(frozen=True)
 class ClaimedRegenerationTarget:
     """One claimed publication, flattened.
@@ -767,8 +780,15 @@ async def reserve_publication_version(
     """Reserve (or re-read) this target's immutable publication version.
 
     Returns an already-reserved number UNCHANGED — every retry of one delivery
-    publishes the same `Homework V{n}` page. Otherwise allocates
-    ``max(existing version for this lineage, 1) + 1``, so the first number is 2:
+    publishes the same `Homework V{n}` page.
+
+    Otherwise the number is the OWNING CAMPAIGN's declared
+    ``publication_version``, exactly: the operator approved that number and
+    reviewed a destination for it, so falling forward to another one would put
+    reviewed content behind a title nobody signed off. Only a campaign that
+    declares none — a historical draft, and every internal caller until Task 6
+    makes the field mandatory — falls back to the old
+    ``max(existing version for this lineage, 1) + 1``, whose first number is 2:
     logical V1 is the pre-existing `Homework` page and has no row here.
 
     Serialised with a transaction-scoped advisory lock on
@@ -781,6 +801,9 @@ async def reserve_publication_version(
 
     Raises :class:`StalePublicationClaim` when the lease was taken over: a
     publisher whose claim is gone must not reserve a number it will never use.
+    Raises :class:`PublicationVersionUnavailable` when the declared number is
+    already spent, or when the row somehow already holds a DIFFERENT one — both
+    are immutable, so neither can be reconciled without a human.
     """
     lineage = (
         await session.execute(
@@ -812,16 +835,57 @@ async def reserve_publication_version(
             f"regeneration target {target_id}: publication claim {claim_token} is "
             "no longer current — refusing to reserve a version"
         )
-    if target.publication_version is not None:
-        return target.publication_version
 
-    highest = await session.scalar(
-        select(func.max(RegenerationTarget.publication_version)).where(
-            RegenerationTarget.toc_entry_id == toc_entry_id,
-            RegenerationTarget.output_language == output_language,
+    # A PLAIN read, not `lock_owning_campaign`. The one global lock order is
+    # campaign -> advisory(lineage) -> target row, and this point is already
+    # past the first two; taking the campaign lock here would invert it for any
+    # caller that does not already hold it, against a trigger
+    # (`trg_regeneration_targets_publication_gate`) that takes `FOR KEY SHARE`
+    # on the campaign from INSIDE a target UPDATE. No lock is needed anyway:
+    # `publication_version` is written once, at campaign insert, and never
+    # updated.
+    requested = await session.scalar(
+        select(RegenerationCampaign.publication_version).where(
+            RegenerationCampaign.id == target.campaign_id
         )
     )
-    version = max(highest or 1, 1) + 1
+
+    if target.publication_version is not None:
+        if requested is not None and target.publication_version != requested:
+            raise PublicationVersionUnavailable(
+                f"regeneration target {target_id}: reserved version "
+                f"V{target.publication_version} differs from the campaign's "
+                f"declared V{requested} — both are immutable"
+            )
+        return target.publication_version
+
+    if requested is None:
+        highest = await session.scalar(
+            select(func.max(RegenerationTarget.publication_version)).where(
+                RegenerationTarget.toc_entry_id == toc_entry_id,
+                RegenerationTarget.output_language == output_language,
+            )
+        )
+        requested = max(highest or 1, 1) + 1  # historical campaign compatibility
+
+    # Under the advisory lock, so this read cannot be raced by another
+    # reservation of the same lineage; the partial unique index remains the
+    # final fence for anything that reaches the UPDATE another way.
+    conflict = await session.scalar(
+        select(RegenerationTarget.id).where(
+            RegenerationTarget.toc_entry_id == toc_entry_id,
+            RegenerationTarget.output_language == output_language,
+            RegenerationTarget.publication_version == requested,
+            RegenerationTarget.id != target.id,
+        )
+    )
+    if conflict is not None:
+        raise PublicationVersionUnavailable(
+            f"Homework V{requested} is already consumed for this lesson and "
+            f"language (regeneration target {conflict})"
+        )
+
+    version = requested
     result = await session.execute(
         update(RegenerationTarget)
         .where(

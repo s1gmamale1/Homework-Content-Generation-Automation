@@ -76,6 +76,7 @@ from typing import Callable, Mapping, Optional, Union
 from uuid import UUID
 
 from loguru import logger
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.db import SessionLocal
@@ -200,6 +201,25 @@ class _Refusal:
 
 class _StaleClaim(RuntimeError):
     """This publisher no longer owns the target; it must write nothing."""
+
+
+#: The partial unique index that makes a publication version consumed forever.
+_VERSION_INDEX = "uq_regeneration_targets_publication_version"
+
+
+def _is_version_collision(exc: IntegrityError) -> bool:
+    """Is this integrity error the version index, and only that one?
+
+    The driver's own ``constraint_name`` is preferred and TRUSTED when present:
+    matching on the message alone would misfire on generated content that
+    happens to quote an index name, and a constraint that names itself as
+    something else is by definition not this one. The text check is the
+    fallback for a driver that reports no name at all.
+    """
+    constraint = getattr(getattr(exc, "orig", None), "constraint_name", None)
+    if constraint is not None:
+        return constraint == _VERSION_INDEX
+    return _VERSION_INDEX in str(exc)
 
 
 # Both ways a takeover surfaces: detected by this module's own token compares,
@@ -412,105 +432,132 @@ class RegenerationPublisher:
         does not permanently consume a version number.
         """
         async with self._sessions() as session:
-            campaign = await targets_repo.lock_owning_campaign(
-                session, campaign_id=claim.campaign_id
-            )
-            if (campaign is None or campaign.approved_at is None
-                    or campaign.status in ("rejected", "cancelled")):
-                return _Refusal(
-                    f"owning campaign {claim.campaign_id} is no longer approved "
-                    "— refusing to publish"
+            try:
+                campaign = await targets_repo.lock_owning_campaign(
+                    session, campaign_id=claim.campaign_id
                 )
-            target = await targets_repo.get_target_for_update(
-                session, claim.target_id
-            )
-            if target is None or target.publication_claim_token != claim.claim_token:
-                raise _StaleClaim(
-                    f"target {claim.target_id}: claim {claim.claim_token} is no "
-                    "longer current — discarding this pass"
+                if (campaign is None or campaign.approved_at is None
+                        or campaign.status in ("rejected", "cancelled")):
+                    return _Refusal(
+                        f"owning campaign {claim.campaign_id} is no longer approved "
+                        "— refusing to publish"
+                    )
+                target = await targets_repo.get_target_for_update(
+                    session, claim.target_id
                 )
-            if target.abandon_requested_at is not None:
-                # Nothing has been sent yet, so there is no unknown-outcome
-                # request to protect: converge now rather than re-claiming this
-                # row every lease and wedging the campaign's rollup forever.
-                return _Refusal(
-                    "abandonment was requested before delivery began", retryable=True
+                if (target is None
+                        or target.publication_claim_token != claim.claim_token):
+                    raise _StaleClaim(
+                        f"target {claim.target_id}: claim {claim.claim_token} is no "
+                        "longer current — discarding this pass"
+                    )
+                if target.abandon_requested_at is not None:
+                    # Nothing has been sent yet, so there is no unknown-outcome
+                    # request to protect: converge now rather than re-claiming this
+                    # row every lease and wedging the campaign's rollup forever.
+                    return _Refusal(
+                        "abandonment was requested before delivery began",
+                        retryable=True,
+                    )
+
+                job = await targets_repo.revision_job_for_target(
+                    session, target_id=claim.target_id
+                )
+                if job is None:
+                    return _Refusal("the target has no revision job")
+                if job.status != "done":
+                    return _Refusal(f"the revision job is {job.status!r}, not done")
+                if job.output_language != target.output_language:
+                    return _Refusal(
+                        f"revision job language {job.output_language!r} does not match "
+                        f"the target's {target.output_language!r}"
+                    )
+                rows = await phase_repo.list_for_job(session, job.id)
+                validation = validate_complete_snapshot(subject=job.subject, rows=rows)
+                if not validation.usable:
+                    return _Refusal(
+                        "incomplete revision snapshot: "
+                        + "; ".join(validation.reasons)
+                    )
+
+                book = await books_repo.get(session, job.book_id)
+                section = await toc_repo.get(session, claim.toc_entry_id)
+                if book is None or section is None:
+                    return _Refusal("the book or TOC row is missing")
+                subject_page_id = notion_archive._resolve_subject_page_id(
+                    settings.notion_subject_pages, job.subject, book.grade,
+                    book.original_filename or "", language=target.output_language,
+                )
+                if not subject_page_id:
+                    return _Refusal(
+                        f"no Notion subject page for language={target.output_language} "
+                        f"{job.subject}|{book.grade}"
+                    )
+
+                version = await targets_repo.reserve_publication_version(
+                    session, target_id=claim.target_id, claim_token=claim.claim_token
                 )
 
-            job = await targets_repo.revision_job_for_target(
-                session, target_id=claim.target_id
-            )
-            if job is None:
-                return _Refusal("the target has no revision job")
-            if job.status != "done":
-                return _Refusal(f"the revision job is {job.status!r}, not done")
-            if job.output_language != target.output_language:
-                return _Refusal(
-                    f"revision job language {job.output_language!r} does not match "
-                    f"the target's {target.output_language!r}"
+                # Sibling titles decide whether this lesson's page needs a
+                # disambiguating suffix — a read that MUST happen here, because
+                # `find_or_create` would otherwise file the revision under another
+                # lesson's page.
+                siblings = await toc_repo.titles_for_subject_grade(
+                    session, subject=job.subject, grade=book.grade,
                 )
-            rows = await phase_repo.list_for_job(session, job.id)
-            validation = validate_complete_snapshot(subject=job.subject, rows=rows)
-            if not validation.usable:
-                return _Refusal(
-                    "incomplete revision snapshot: "
-                    + "; ".join(validation.reasons)
+                lesson_title = notion_archive.resolve_lesson_title(section, siblings)
+                phase_md = {
+                    row.phase_name: (row.output_md or "")
+                    for row in rows
+                    if row.status == "done"
+                    and row.phase_name != "extract"
+                    and (row.output_md or "").strip()
+                }
+                if not notion_archive.layout_groups(phase_md):
+                    # Unreachable while the snapshot validated above, and still
+                    # checked: the writer would raise `ValueError` on a payload that
+                    # renders nothing, and that would look like a transient failure.
+                    return _Refusal("the revision renders no homework content")
+
+                inputs = PublicationInputs(
+                    target_id=claim.target_id,
+                    campaign_id=claim.campaign_id,
+                    toc_entry_id=claim.toc_entry_id,
+                    output_language=target.output_language,
+                    claim_token=claim.claim_token,
+                    publication_version=version,
+                    subject_page_id=subject_page_id,
+                    lesson_title=lesson_title,
+                    legacy_lesson_page_id=section.notion_lesson_page_id,
+                    stored_version_page_id=target.notion_page_id,
+                    revision_job_id=job.id,
+                    phase_md=phase_md,
                 )
-
-            book = await books_repo.get(session, job.book_id)
-            section = await toc_repo.get(session, claim.toc_entry_id)
-            if book is None or section is None:
-                return _Refusal("the book or TOC row is missing")
-            subject_page_id = notion_archive._resolve_subject_page_id(
-                settings.notion_subject_pages, job.subject, book.grade,
-                book.original_filename or "", language=target.output_language,
-            )
-            if not subject_page_id:
+                await session.commit()
+            except targets_repo.PublicationVersionUnavailable as exc:
+                # Not a lease handover (`_TAKEOVER` would discard it) and not a
+                # transient fault: a consumed number cannot be freed by trying
+                # again, so this parks for an operator on the first attempt.
+                await session.rollback()
+                return _Refusal(str(exc), retryable=False)
+            except IntegrityError as exc:
+                # The partial unique index is the allocator's final fence and it
+                # fires at the UPDATE inside the reservation, not only at the
+                # commit above — which is why the whole preparation is wrapped.
+                # The rollback is explicit because the outcome is written in
+                # `_resolve_failure`'s own fresh session, and a session left in
+                # a failed transaction would take that write down with it.
+                await session.rollback()
+                if not _is_version_collision(exc):
+                    # Any other constraint is a database defect. Hiding it
+                    # behind a version message would tell an operator to pick
+                    # another number for a fault no number can fix.
+                    raise
                 return _Refusal(
-                    f"no Notion subject page for language={target.output_language} "
-                    f"{job.subject}|{book.grade}"
+                    "the publication version this campaign declared is already "
+                    f"consumed for this lesson and language ({_VERSION_INDEX})",
+                    retryable=False,
                 )
-
-            version = await targets_repo.reserve_publication_version(
-                session, target_id=claim.target_id, claim_token=claim.claim_token
-            )
-
-            # Sibling titles decide whether this lesson's page needs a
-            # disambiguating suffix — a read that MUST happen here, because
-            # `find_or_create` would otherwise file the revision under another
-            # lesson's page.
-            siblings = await toc_repo.titles_for_subject_grade(
-                session, subject=job.subject, grade=book.grade,
-            )
-            lesson_title = notion_archive.resolve_lesson_title(section, siblings)
-            phase_md = {
-                row.phase_name: (row.output_md or "")
-                for row in rows
-                if row.status == "done"
-                and row.phase_name != "extract"
-                and (row.output_md or "").strip()
-            }
-            if not notion_archive.layout_groups(phase_md):
-                # Unreachable while the snapshot validated above, and still
-                # checked: the writer would raise `ValueError` on a payload that
-                # renders nothing, and that would look like a transient failure.
-                return _Refusal("the revision renders no homework content")
-
-            inputs = PublicationInputs(
-                target_id=claim.target_id,
-                campaign_id=claim.campaign_id,
-                toc_entry_id=claim.toc_entry_id,
-                output_language=target.output_language,
-                claim_token=claim.claim_token,
-                publication_version=version,
-                subject_page_id=subject_page_id,
-                lesson_title=lesson_title,
-                legacy_lesson_page_id=section.notion_lesson_page_id,
-                stored_version_page_id=target.notion_page_id,
-                revision_job_id=job.id,
-                phase_md=phase_md,
-            )
-            await session.commit()
         return inputs
 
     # ─── step 2: the two remote steps, both off the event loop ───────────
