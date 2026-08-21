@@ -330,6 +330,38 @@ async def run(job_id: UUID, lease: Optional[JobLease] = None) -> None:
             # Versioned regeneration: is this a REVISION job? Captured here,
             # inside the session, like every other ORM read in this block.
             job_is_revision: bool = getattr(job, "revision_of_job_id", None) is not None
+            # Does this run owe a genuinely re-read extraction?
+            #
+            # A revision planned with `refresh_extraction=True` has `extract` in
+            # its plan's `regenerated_phases`, so no copied `done` row resumes it
+            # and the head phase below actually runs — but the cross-job extract
+            # cache is keyed on (toc_entry, prompt_hash, extract provider/model),
+            # which the SOURCE job matches exactly. Left alone it would hand back
+            # V1's extract at zero tokens: the campaign pays the estimator's
+            # extraction line for a re-read it never got, and every regenerated
+            # phase stays grounded in the very text the operator asked to replace.
+            # The frozen plan is the only record of that disposition (a revision's
+            # `selected_phases` is NULL), so read it here — through the planner's
+            # own deserializer, the sole sanctioned reader of a stored plan.
+            #
+            # ORDINARY jobs never enter this branch: no target lookup, no extra
+            # round-trip, and the cache behaves exactly as it always has.
+            force_fresh_extract: bool = False
+            if job_is_revision:
+                from app.repositories import regeneration_targets as _targets_repo  # noqa: PLC0415
+                from app.services.regeneration_planner import RegenerationPhasePlan  # noqa: PLC0415
+                _target = await _targets_repo.get_target_by_revision_job(session, job_id=job_id)
+                if _target is None:
+                    # Unreachable through the DB: ck_homework_jobs_revision_pair
+                    # forces the target id to be present and the FK is RESTRICT.
+                    # Refuse loudly rather than silently downgrade a paid-for
+                    # refresh into a cache hit.
+                    raise RuntimeError(
+                        f"revision job {job_id} has no regeneration target row"
+                    )
+                force_fresh_extract = RegenerationPhasePlan.from_json(
+                    _target.phase_plan
+                ).refresh_extraction
             # Session-limit strategy: resolve ONCE per job.
             #
             # A job that carries its OWN concrete strategy (only a revision does;
@@ -474,6 +506,10 @@ async def run(job_id: UUID, lease: Optional[JobLease] = None) -> None:
                     extract_model=extract_model,
                     session_limit_strategy=session_limit_strategy,
                     output_language=job_output_language,
+                    # `extract` is the only phase that reads this, and the head
+                    # is the only place `extract` runs — the parallel content
+                    # tail never schedules it, so it is not threaded there.
+                    force_fresh_extract=force_fresh_extract,
                     lease=lease,
                 )
             except (LeaseLostSignal, CancelWonSignal):
@@ -742,6 +778,7 @@ async def _execute_one_phase(
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
     output_language: str = "uz",
+    force_fresh_extract: bool = False,
     lease: Optional[JobLease] = None,
 ) -> tuple[str, Optional[int], Optional[int], Optional[Any]]:
     """Run a single phase end-to-end with status tracking, SSE emit, and
@@ -815,6 +852,7 @@ async def _execute_one_phase(
                 extract_model=extract_model,
                 session_limit_strategy=session_limit_strategy,
                 output_language=output_language,
+                force_fresh_extract=force_fresh_extract,
                 lease=lease,
             )
     except (LeaseLostSignal, CancelWonSignal):
@@ -1958,6 +1996,7 @@ async def _execute_phase(
     extract_model: Optional[str] = None,
     session_limit_strategy: str = "pause",
     output_language: str = "uz",
+    force_fresh_extract: bool = False,
     lease: Optional[JobLease] = None,
 ) -> tuple[str, Optional[int], Optional[int], str, Optional[Any]]:
     _token = _token_of(lease)
@@ -2020,9 +2059,21 @@ async def _execute_phase(
             # the current builtin extract prompt, reuse the prior output and
             # skip the agent call entirely. Saves ~15s + ~1.5K output tokens
             # per regeneration / repeat job on the same section.
+            #
+            # `force_fresh_extract` opts OUT: a revision planned with
+            # refresh_extraction=True was costed for a real re-read of the book,
+            # and the SOURCE job's extract matches this cache key exactly — so
+            # consulting the cache would return the very text the operator asked
+            # to replace, for free. Skip the query outright; every other job
+            # takes the branch below unchanged.
             cached_extract = None
             section_id = section.get("id")
-            if section_id is not None:
+            if force_fresh_extract:
+                logger.info(
+                    f"[job {job_id}] lesson.extract FORCED FRESH — cross-job "
+                    "cache not consulted (plan: refresh_extraction)"
+                )
+            elif section_id is not None:
                 async with SessionLocal() as session:
                     cached_extract = await phase_repo.find_latest_extract(
                         session,

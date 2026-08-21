@@ -23,11 +23,13 @@ from __future__ import annotations
 import os
 import types
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import app.repositories.regeneration_targets as targets_repo
 from app.services import pipeline
 from app.services.flows import flow_for
 from app.services.regeneration_planner import build_phase_plan
@@ -36,6 +38,12 @@ _SUBJECT = "math-algebra"
 _CANONICAL = ("extract", *flow_for(_SUBJECT))
 _PLAN = build_phase_plan(subject=_SUBJECT, selected_phases=["flashcards"])
 _PHASE_PLAN = _PLAN.to_json()
+# The other extraction disposition: `refresh_extraction=True` puts `extract`
+# in `regenerated_phases` (so it is NOT copied forward) and pulls every content
+# phase into the closure with it.
+_REFRESH_PLAN = build_phase_plan(
+    subject=_SUBJECT, selected_phases=[], refresh_extraction=True)
+_REFRESH_PHASE_PLAN = _REFRESH_PLAN.to_json()
 
 db_only = pytest.mark.skipif(
     os.environ.get("RUN_DB_INTEGRATION") != "1",
@@ -151,12 +159,203 @@ async def test_revision_uses_its_own_column_not_the_mutable_global(head, monkeyp
     from app.config import settings
 
     monkeypatch.setattr(settings, "session_limit_strategy", "pause")
-    head.job.revision_of_job_id = uuid.uuid4()
-    head.job.regeneration_target_id = uuid.uuid4()
+    # `_as_revision` (below) is what a revision actually looks like: its target
+    # row is present, because `ck_homework_jobs_revision_pair` forces the id to
+    # be set and the FK is RESTRICT. A run now reads that target's plan, so a
+    # half-built revision would only be testing the refusal path.
+    _as_revision(head, phase_plan=_PHASE_PLAN, monkeypatch=monkeypatch)
     head.job.session_limit_strategy = "switch"
     assert await _strategy(head) == "switch"
     assert head.batch_lookups == [], (
         "a revision must not need a batch row at all")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# refresh_extraction: the run must FORCE a fresh extract
+#
+# `refresh_extraction=true` is the campaign promising a genuinely re-read
+# extraction — the estimator bills one extract call for it and the runbook
+# says it re-reads the PDF. The pipeline's cross-job extract cache is keyed
+# on (toc_entry, prompt_hash, extract provider/model) and would hand back the
+# SOURCE job's extract at zero tokens, so the run has to tell `_execute_phase`
+# to skip it. Non-refresh revisions never reach here (their extract is a
+# copied `done` row, resumed for free) and ordinary Fleet jobs must keep the
+# cache exactly as it was.
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def _as_revision(head, *, phase_plan, monkeypatch):
+    head.job.revision_of_job_id = uuid.uuid4()
+    head.job.regeneration_target_id = uuid.uuid4()
+    head.job.session_limit_strategy = "pause"
+    lookup = AsyncMock(return_value=types.SimpleNamespace(
+        id=head.job.regeneration_target_id, phase_plan=phase_plan))
+    monkeypatch.setattr(targets_repo, "get_target_by_revision_job", lookup)
+    return lookup
+
+
+async def _head_kwargs(head) -> dict:
+    await pipeline.run(head.job.id)
+    assert head.captured, "the head phase was never reached"
+    assert head.captured[0]["phase_name"] == "extract"
+    return head.captured[0]
+
+
+async def test_a_refresh_revision_forces_a_fresh_extract(head, monkeypatch):
+    """The bug: the extract phase is planned to REGENERATE, then silently
+    served from the cross-job cache — the campaign pays for an extraction it
+    never got, and every regenerated phase is grounded in the V1 extract."""
+    _as_revision(head, phase_plan=_REFRESH_PHASE_PLAN, monkeypatch=monkeypatch)
+    assert (await _head_kwargs(head))["force_fresh_extract"] is True
+
+
+async def test_a_copy_extract_revision_does_not_force_a_fresh_extract(
+    head, monkeypatch
+):
+    """The default disposition stays free: nothing about a non-refresh
+    revision's extract may start billing."""
+    _as_revision(head, phase_plan=_PHASE_PLAN, monkeypatch=monkeypatch)
+    assert (await _head_kwargs(head))["force_fresh_extract"] is False
+
+
+async def test_an_ordinary_job_never_forces_a_fresh_extract(head, monkeypatch):
+    """REGRESSION: ordinary Fleet generation keeps the cross-job cache, and
+    pays for no extra lookup to find that out."""
+    lookup = AsyncMock()
+    monkeypatch.setattr(targets_repo, "get_target_by_revision_job", lookup)
+    assert (await _head_kwargs(head))["force_fresh_extract"] is False
+    lookup.assert_not_awaited()
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# ... and `_execute_phase` must honour it (DB-free, $0 — the agent boundary
+# is faked; the real cache branch runs)
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class _FakePhaseRow:
+    def __init__(self):
+        self.id = uuid.uuid4()
+
+
+class _FakeSession:
+    async def commit(self):
+        return None
+
+
+@asynccontextmanager
+async def _fake_session():
+    yield _FakeSession()
+
+
+def _extract_harness(monkeypatch):
+    """Drive the REAL `_execute_phase` extract branch with no DB and no model.
+
+    Returns the call counters: `cache_lookups` (the cross-job cache query),
+    `summarize` (a real, billed extraction) and `cache_markers` (the $0
+    `agent_usages` row the reuse path writes).
+    """
+    calls = {"cache_lookups": 0, "summarize": 0, "cache_markers": 0}
+    cached = types.SimpleNamespace(
+        id=uuid.uuid4(), job_id=uuid.uuid4(),
+        output_md="# V1 extract\nthe SOURCE job's extraction")
+
+    monkeypatch.setattr(pipeline, "SessionLocal", _fake_session)
+
+    async def _create_or_reset(session, **kw):
+        return _FakePhaseRow()
+
+    async def _noop(*a, **kw):
+        return None
+
+    async def _find_latest_extract(session, **kw):
+        calls["cache_lookups"] += 1
+        return cached
+
+    async def _summarize(**kw):
+        calls["summarize"] += 1
+        return ("# V2 extract\na freshly re-read extraction", 5, 7)
+
+    async def _marker(**kw):
+        calls["cache_markers"] += 1
+
+    monkeypatch.setattr(pipeline.phase_repo, "create_or_reset", _create_or_reset)
+    monkeypatch.setattr(pipeline.phase_repo, "set_status", _noop)
+    monkeypatch.setattr(pipeline.jobs_repo, "set_status", _noop)
+    monkeypatch.setattr(
+        pipeline.phase_repo, "find_latest_extract", _find_latest_extract)
+    monkeypatch.setattr(pipeline.agent, "record_cached_lesson_extract", _marker)
+    monkeypatch.setattr(pipeline.agent, "summarize_lesson", _summarize)
+    # Gates A/B and the density check have their own tests
+    # (`test_pipeline_extract_dispatch.py`); isolate the cache branch here.
+    monkeypatch.setattr(pipeline.agent, "read_whole_book_text", lambda p: "book text")
+    monkeypatch.setattr(pipeline.agent, "pdf_page_count", lambda p: 2)
+    monkeypatch.setattr(pipeline.agent, "extract_text_is_oversize", lambda t: False)
+    monkeypatch.setattr(pipeline.agent, "extract_text_is_too_sparse", lambda t, n: False)
+    monkeypatch.setattr(pipeline.agent, "validate_extract_text", lambda t: None)
+    monkeypatch.setattr(pipeline.agent, "validate_extract_summary", lambda o: None)
+
+    async def _verify(*, out, **kw):
+        return out, 0, 0
+
+    async def _coverage(**kw):
+        return []
+
+    monkeypatch.setattr(pipeline, "_verify_and_maybe_regen_extract", _verify)
+    monkeypatch.setattr(pipeline, "_check_extract_coverage", _coverage)
+    return calls, cached
+
+
+async def _run_extract(**kw):
+    return await pipeline._execute_phase(
+        job_id=uuid.uuid4(),
+        phase_name="extract",
+        phase_order=0,
+        subject=_SUBJECT,
+        provider="gemini",
+        model="gemini-3.5-flash",
+        pdf_path=Path("/fake/book.pdf"),
+        attach_file=True,
+        section={"id": uuid.uuid4(), "title": "L1", "number": "1.1",
+                 "page_start": 1, "page_end": 4},
+        lesson_context=None,
+        prior_outputs={},
+        difficulty=None,
+        transport="api",
+        extract_transport="api",
+        extract_provider="gemini",
+        extract_model="gemini-3.5-flash-lite",
+        **kw,
+    )
+
+
+async def test_execute_phase_skips_the_cross_job_cache_when_forced(monkeypatch):
+    """A forced refresh may not reuse ANY prior job's extract — not even one
+    that matches the cache key exactly."""
+    calls, _cached = _extract_harness(monkeypatch)
+
+    out_md, tin, tout, _hash, _parsed = await _run_extract(force_fresh_extract=True)
+
+    assert calls["cache_lookups"] == 0, (
+        "a forced refresh must not even ASK the cross-job cache")
+    assert calls["summarize"] == 1, "the extraction was never actually re-run"
+    assert calls["cache_markers"] == 0
+    assert out_md.startswith("# V2 extract")
+    assert (tin, tout) == (5, 7), "a real extraction bills real tokens"
+
+
+async def test_execute_phase_still_reuses_the_cross_job_cache_by_default(monkeypatch):
+    """REGRESSION: the ordinary (and non-refresh) path is byte-for-byte what
+    it was — a cache hit is served at zero tokens with its $0 marker row."""
+    calls, cached = _extract_harness(monkeypatch)
+
+    out_md, tin, tout, _hash, _parsed = await _run_extract()
+
+    assert calls["cache_lookups"] == 1
+    assert calls["summarize"] == 0, "a cache hit must never call the model"
+    assert calls["cache_markers"] == 1
+    assert out_md == cached.output_md
+    assert (tin, tout) == (0, 0)
 
 
 # ═════════════════════════════════════════════════════════════════════════
