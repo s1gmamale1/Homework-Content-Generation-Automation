@@ -268,6 +268,81 @@ def test_target_revision_job_is_read_through_the_unique_job_link():
     assert "targets" in RegenerationCampaign.__mapper__.relationships
 
 
+# ── guided regeneration: campaign version + reviewed destination ────────────
+# Two different columns share the name `publication_version`. The one asserted
+# below is on `regeneration_campaigns` — the version the WHOLE campaign
+# publishes. `regeneration_targets.publication_version` already existed and is
+# the per-lesson allocation; every assertion here names its table explicitly so
+# a future edit cannot satisfy one by touching the other.
+
+
+def test_new_campaign_version_and_target_destination_columns_are_declared():
+    from sqlalchemy import Integer, String, Text
+
+    campaign_cols = RegenerationCampaign.__table__.c
+    assert "publication_version" in campaign_cols, (
+        "regeneration_campaigns.publication_version missing"
+    )
+    assert campaign_cols["publication_version"].nullable is True
+    assert isinstance(campaign_cols["publication_version"].type, Integer)
+
+    target_cols = RegenerationTarget.__table__.c
+    # Nullable on purpose: historical targets predate the guided wizard and must
+    # not be assigned a destination decision nobody made. Task 4 is what makes
+    # these mandatory on a NEW service-created campaign.
+    for name, sqltype, length in (
+        ("notion_container_policy", String, 16),
+        ("reviewed_notion_container_page_id", String, 128),
+        ("notion_parent_policy", String, 16),
+        ("reviewed_notion_lesson_page_id", String, 128),
+        ("reviewed_notion_lesson_title", Text, None),
+    ):
+        assert name in target_cols, f"regeneration_targets.{name} missing"
+        assert target_cols[name].nullable is True, f"{name} must stay nullable"
+        assert isinstance(target_cols[name].type, sqltype), name
+        if length is not None:
+            assert target_cols[name].type.length == length, name
+
+
+def test_campaign_version_check_refuses_v1_on_the_campaigns_table():
+    checks = _check_constraints(RegenerationCampaign)
+    assert "ck_regeneration_campaigns_publication_version" in checks
+    sqltext = checks["ck_regeneration_campaigns_publication_version"]
+    # NULL stays legal (historical campaigns); 1 never does — logical V1 is the
+    # pre-existing `Homework` page, which no campaign produced.
+    assert "publication_version IS NULL" in sqltext
+    assert "publication_version >= 2" in sqltext
+
+
+def test_reviewed_destination_check_is_declared_and_null_safe():
+    """The destination CHECK must be TOTAL, not merely correct on non-nulls.
+
+    SQL is three-valued and a CHECK is SATISFIED by UNKNOWN, so a predicate
+    built from bare `col = 'reuse'` comparisons evaluates to NULL — and is
+    therefore ACCEPTED — for exactly the half-filled shapes this constraint
+    exists to refuse. `IS NOT DISTINCT FROM` and the leading `IS NOT NULL`
+    guard are what make every comparison total. The behavioural proof is in
+    `tests/integration/test_regeneration_constraints.py`; this pins the SQL so
+    a "simplification" back to `=` cannot pass unnoticed.
+    """
+    checks = _check_constraints(RegenerationTarget)
+    assert "ck_regeneration_targets_notion_parent_decision" in checks
+    sqltext = checks["ck_regeneration_targets_notion_parent_decision"]
+    assert "notion_parent_policy IS NOT NULL" in sqltext
+    assert "IS NOT DISTINCT FROM" in sqltext
+    # No bare equality against a policy column may survive.
+    assert "notion_parent_policy = " not in sqltext
+    assert "notion_container_policy = " not in sqltext
+    for literal in ("'reuse'", "'create'"):
+        assert literal in sqltext
+    for column in (
+        "reviewed_notion_container_page_id",
+        "reviewed_notion_lesson_page_id",
+        "reviewed_notion_lesson_title",
+    ):
+        assert column in sqltext, f"{column} not constrained"
+
+
 # ── homework_jobs / phase_outputs ───────────────────────────────────────────
 
 

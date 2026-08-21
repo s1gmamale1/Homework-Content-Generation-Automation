@@ -1119,3 +1119,339 @@ async def test_revision_job_must_store_a_concrete_session_limit_strategy():
         assert stored == ["pause", "switch"]
     finally:
         await _purge(book_id)
+
+
+# ── guided regeneration: campaign version + reviewed Notion destination ─────
+# `publication_version` exists on BOTH regeneration tables — 0063 put one on
+# `regeneration_targets` (the per-lesson allocation) and 0064 adds one to
+# `regeneration_campaigns` (the version the whole campaign publishes). Every
+# assertion below names the table it means.
+_CAMPAIGN_VERSION_CHECK = "ck_regeneration_campaigns_publication_version"
+_DESTINATION_CHECK = "ck_regeneration_targets_notion_parent_decision"
+
+# The two complete, legal reviewed destinations. `container` is the page that
+# holds Lesson Topics; `parent` is the Lesson Topic itself, under which the
+# `Homework V2` sibling is written.
+_REUSE_DESTINATION = dict(
+    notion_container_policy="reuse",
+    reviewed_notion_container_page_id="container-page-1",
+    notion_parent_policy="reuse",
+    reviewed_notion_lesson_page_id="lesson-page-1",
+    reviewed_notion_lesson_title="7 Photosynthesis",
+)
+_CREATE_DESTINATION = dict(
+    notion_container_policy="create",
+    reviewed_notion_container_page_id=None,
+    notion_parent_policy="create",
+    reviewed_notion_lesson_page_id=None,
+    reviewed_notion_lesson_title="7 Photosynthesis",
+)
+
+
+async def _accepts_destination(campaign_id, toc_id, job_id, **destination) -> None:
+    """Commit one target carrying `destination`, then delete it again.
+
+    Deleting is what lets several ACCEPTED shapes be proven against the SAME
+    (lesson, language) inside one test: `uq_regeneration_targets_active_lineage`
+    allows exactly one non-terminal target per lineage, and the subject here is
+    the CHECK, not that index.
+    """
+    from app.db import SessionLocal
+    from app.models.regeneration_target import RegenerationTarget
+
+    async with SessionLocal() as s:
+        target = _target(
+            campaign_id=campaign_id,
+            toc_entry_id=toc_id,
+            output_language="uz",
+            source_job_id=job_id,
+            **destination,
+        )
+        s.add(target)
+        await s.commit()
+        target_id = target.id
+    async with SessionLocal() as s:
+        await s.execute(
+            delete(RegenerationTarget).where(RegenerationTarget.id == target_id)
+        )
+        await s.commit()
+
+
+async def _refuses_destination(campaign_id, toc_id, job_id, **destination) -> str:
+    """Try to commit a target with `destination`; return the refusal text."""
+    from app.db import SessionLocal
+
+    async with SessionLocal() as s:
+        s.add(
+            _target(
+                campaign_id=campaign_id,
+                toc_entry_id=toc_id,
+                output_language="uz",
+                source_job_id=job_id,
+                **destination,
+            )
+        )
+        with pytest.raises(IntegrityError) as exc:
+            await s.commit()
+    return str(exc.value)
+
+
+async def test_campaign_version_must_be_two_or_more_or_absent():
+    """Logical V1 is the pre-existing `Homework` page, which no campaign ever
+    produced — so a campaign may claim version 2 upwards, or nothing at all.
+
+    NULL stays legal because historical campaigns predate the column and must
+    not be retro-assigned a version nobody published.
+    """
+    from app.db import SessionLocal
+
+    async with SessionLocal() as s:
+        book_id, toc_id, jobs = await _seed(s)
+    try:
+        for refused in (1, 0, -3):
+            async with SessionLocal() as s:
+                s.add(_campaign(publication_version=refused))
+                with pytest.raises(IntegrityError) as exc:
+                    await s.commit()
+            assert _CAMPAIGN_VERSION_CHECK in str(exc.value), refused
+
+        for accepted in (None, 2, 7):
+            async with SessionLocal() as s:
+                s.add(_campaign(publication_version=accepted))
+                await s.commit()  # must not raise
+    finally:
+        await _purge(book_id)
+
+
+async def test_destination_check_accepts_only_legacy_reuse_or_create_shapes():
+    """The reviewed destination is three fields per level, and only whole,
+    coherent combinations may reach the database.
+
+    A half-filled destination is how a publisher ends up writing `Homework V2`
+    somewhere nobody approved, so the rule is a CHECK rather than a convention
+    the services agree to honour.
+    """
+    from app.db import SessionLocal
+
+    async with SessionLocal() as s:
+        book_id, toc_id, jobs = await _seed(s)
+    try:
+        async with SessionLocal() as s:
+            c = _campaign()
+            s.add(c)
+            await s.flush()
+            campaign_id = c.id
+            await s.commit()
+
+        job_id = jobs["uz"]
+
+        # ── accepted ────────────────────────────────────────────────────────
+        # Legacy: a target from before the guided wizard carries no decision.
+        await _accepts_destination(campaign_id, toc_id, job_id)
+        await _accepts_destination(campaign_id, toc_id, job_id, **_REUSE_DESTINATION)
+        await _accepts_destination(campaign_id, toc_id, job_id, **_CREATE_DESTINATION)
+        # Reuse the container, create a NEW Lesson Topic inside it — legal in
+        # the other direction, which is why the two levels are separate fields.
+        await _accepts_destination(
+            campaign_id,
+            toc_id,
+            job_id,
+            notion_container_policy="reuse",
+            reviewed_notion_container_page_id="container-page-1",
+            notion_parent_policy="create",
+            reviewed_notion_lesson_page_id=None,
+            reviewed_notion_lesson_title="7 Photosynthesis",
+        )
+
+        # ── refused ─────────────────────────────────────────────────────────
+        refusals = {
+            # 'reuse' with nothing to reuse.
+            "container reuse without a page id": {
+                **_REUSE_DESTINATION,
+                "reviewed_notion_container_page_id": None,
+            },
+            "lesson reuse without a page id": {
+                **_REUSE_DESTINATION,
+                "reviewed_notion_lesson_page_id": None,
+            },
+            # 'create' carrying a page id it would never use.
+            "container create with a page id": {
+                **_CREATE_DESTINATION,
+                "reviewed_notion_container_page_id": "container-page-1",
+            },
+            "lesson create with a page id": {
+                **_CREATE_DESTINATION,
+                "reviewed_notion_lesson_page_id": "lesson-page-1",
+            },
+            "unknown lesson policy": {
+                **_REUSE_DESTINATION,
+                "notion_parent_policy": "adopt",
+            },
+            "unknown container policy": {
+                **_REUSE_DESTINATION,
+                "notion_container_policy": "adopt",
+            },
+            # A brand-new container has no children, so there is no existing
+            # Lesson Topic inside it to reuse.
+            "reused lesson under a created container": {
+                **_REUSE_DESTINATION,
+                "notion_container_policy": "create",
+                "reviewed_notion_container_page_id": None,
+            },
+            # Whatever is written, the operator must have seen its title.
+            "no reviewed title": {
+                **_REUSE_DESTINATION,
+                "reviewed_notion_lesson_title": None,
+            },
+            # A reviewed value with no policy is a decision nobody made.
+            "container page id with no policy at all": {
+                "reviewed_notion_container_page_id": "container-page-1",
+            },
+            "lesson page id with no policy at all": {
+                "reviewed_notion_lesson_page_id": "lesson-page-1",
+            },
+        }
+        for label, destination in refusals.items():
+            message = await _refuses_destination(
+                campaign_id, toc_id, job_id, **destination
+            )
+            assert _DESTINATION_CHECK in message, f"{label} was not refused by name"
+    finally:
+        await _purge(book_id)
+
+
+async def test_destination_check_is_total_for_a_missing_policy():
+    """A half-filled destination whose POLICY is NULL must still be refused.
+
+    This is the specific hole a literal reading of the rule leaves open. SQL is
+    three-valued and a CHECK constraint is SATISFIED by UNKNOWN, so a predicate
+    written with bare `notion_container_policy = 'reuse'` comparisons evaluates
+    to NULL — not FALSE — whenever a policy is missing, and PostgreSQL ACCEPTS
+    the row. Both shapes below are exactly that case, and both are ones the rule
+    is meant to reject, so they are the proof that every comparison in the
+    stored constraint is total (`IS NOT DISTINCT FROM` / `IS NOT NULL`).
+    """
+    from app.db import SessionLocal
+
+    async with SessionLocal() as s:
+        book_id, toc_id, jobs = await _seed(s)
+    try:
+        async with SessionLocal() as s:
+            c = _campaign()
+            s.add(c)
+            await s.flush()
+            campaign_id = c.id
+            await s.commit()
+
+        job_id = jobs["uz"]
+
+        # A lesson policy with NO container policy beside it.
+        message = await _refuses_destination(
+            campaign_id,
+            toc_id,
+            job_id,
+            notion_container_policy=None,
+            reviewed_notion_container_page_id=None,
+            notion_parent_policy="reuse",
+            reviewed_notion_lesson_page_id="lesson-page-1",
+            reviewed_notion_lesson_title="7 Photosynthesis",
+        )
+        assert _DESTINATION_CHECK in message
+
+        # Every policy NULL, but a reviewed title present.
+        message = await _refuses_destination(
+            campaign_id,
+            toc_id,
+            job_id,
+            reviewed_notion_lesson_title="7 Photosynthesis",
+        )
+        assert _DESTINATION_CHECK in message
+    finally:
+        await _purge(book_id)
+
+
+async def test_repository_refuses_a_partial_destination_and_a_v1_campaign_version():
+    """The repositories validate the same rules BEFORE the row is built.
+
+    The database CHECK is the authority; these raise `ValueError` so a caller
+    gets a readable refusal instead of an `IntegrityError` from a flush several
+    statements later. Neither repository exposes a way to CHANGE the reviewed
+    decision afterwards — it is what the operator approved.
+    """
+    import inspect as _inspect
+
+    from app.db import SessionLocal
+    from app.models.regeneration_target import RegenerationTarget
+    from app.repositories import regeneration_campaigns as campaigns_repo
+    from app.repositories import regeneration_targets as targets_repo
+
+    async with SessionLocal() as s:
+        book_id, toc_id, jobs = await _seed(s)
+    try:
+        async with SessionLocal() as s:
+            with pytest.raises(ValueError, match=">= 2"):
+                await campaigns_repo.create_campaign(
+                    s,
+                    selection_spec={"mode": "test"},
+                    requested_phases=["flashcards"],
+                    excluded_phases=[],
+                    launch_contract={"provider": "gemini"},
+                    app_git_revision=_MARKER,
+                    publication_version=1,
+                )
+            await s.rollback()
+
+        async with SessionLocal() as s:
+            campaign = await campaigns_repo.create_campaign(
+                s,
+                selection_spec={"mode": "test"},
+                requested_phases=["flashcards"],
+                excluded_phases=[],
+                launch_contract={"provider": "gemini"},
+                app_git_revision=_MARKER,
+                publication_version=2,
+            )
+            await s.commit()
+            campaign_id = campaign.id
+
+        # A lesson policy with no container policy beside it never reaches SQL.
+        async with SessionLocal() as s:
+            with pytest.raises(ValueError):
+                await targets_repo.create_target(
+                    s,
+                    campaign_id=campaign_id,
+                    toc_entry_id=toc_id,
+                    output_language="uz",
+                    phase_plan=copy.deepcopy(_PHASE_PLAN),
+                    source_job_id=jobs["uz"],
+                    notion_parent_policy="reuse",
+                )
+            await s.rollback()
+
+        # The whole shape is stored verbatim.
+        async with SessionLocal() as s:
+            target = await targets_repo.create_target(
+                s,
+                campaign_id=campaign_id,
+                toc_entry_id=toc_id,
+                output_language="uz",
+                phase_plan=copy.deepcopy(_PHASE_PLAN),
+                source_job_id=jobs["uz"],
+                **_REUSE_DESTINATION,
+            )
+            await s.commit()
+            target_id = target.id
+
+        async with SessionLocal() as s:
+            stored = await s.get(RegenerationTarget, target_id)
+            for field, value in _REUSE_DESTINATION.items():
+                assert getattr(stored, field) == value, field
+            campaign = await campaigns_repo.get_campaign(s, campaign_id)
+            assert campaign.publication_version == 2
+
+        # No setter: the reviewed decision is immutable after creation.
+        status_params = _inspect.signature(targets_repo.set_target_status).parameters
+        for field in _REUSE_DESTINATION:
+            assert field not in status_params, f"{field} must not be settable later"
+    finally:
+        await _purge(book_id)

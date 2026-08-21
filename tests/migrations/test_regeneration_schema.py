@@ -1,9 +1,14 @@
-"""Real-DB: migration 0063 creates the regeneration campaign/target schema.
+"""Real-DB: the regeneration migrations, upgraded and reverted for real.
 
-This is the first trigger in the repository, so it is inspected rather than
-assumed: function body, timing/events, the refusal it enforces BEFORE campaign
-approval, the acceptance AFTER approval, and the removal of BOTH the trigger
-and its function on downgrade.
+0063 creates the campaign/target schema. It is the first trigger in the
+repository, so that is inspected rather than assumed: function body,
+timing/events, the refusal it enforces BEFORE campaign approval, the acceptance
+AFTER approval, and the removal of BOTH the trigger and its function on
+downgrade.
+
+0064 adds the guided-wizard columns on top — the campaign-wide publication
+version and the five reviewed-Notion-destination fields — plus the two named
+CHECKs that police them.
 
 Recipe: same as test_0061_credential_slot_index.py (subprocess alembic +
 explicit DATABASE_URL).
@@ -28,6 +33,18 @@ _DB_URL = os.getenv("DATABASE_URL", "")
 _PREV = "0062_cap_pause_provenance"
 _TRIGGER = "trg_regeneration_targets_publication_gate"
 _FUNCTION = "regeneration_target_publication_gate"
+
+# ── 0064: campaign publication version + reviewed Notion destination ────────
+_PREV_0064 = "0063_regeneration_campaigns"
+_CAMPAIGN_VERSION_CHECK = "ck_regeneration_campaigns_publication_version"
+_DESTINATION_CHECK = "ck_regeneration_targets_notion_parent_decision"
+_DESTINATION_COLUMNS = (
+    "notion_container_policy",
+    "reviewed_notion_container_page_id",
+    "notion_parent_policy",
+    "reviewed_notion_lesson_page_id",
+    "reviewed_notion_lesson_title",
+)
 
 
 def _run_alembic(cmd: list[str]) -> None:
@@ -432,6 +449,102 @@ async def test_0063_creates_regeneration_schema_and_reverts_cleanly():
                 text("SELECT proname FROM pg_proc WHERE proname=:n"), {"n": _FUNCTION}
             )
         assert leftover is None, "downgrade left the trigger function behind"
+    finally:
+        _run_alembic(["upgrade", "head"])
+        await engine.dispose()
+
+
+
+async def test_0064_adds_campaign_version_and_reviewed_destination_and_reverts():
+    """0064 is additive: five nullable destination columns on
+    `regeneration_targets`, one nullable version column on
+    `regeneration_campaigns`, and the two named CHECKs that police them.
+
+    `publication_version` is a NAME COLLISION across the two tables — 0063
+    already put one on `regeneration_targets` (the per-lesson allocation). Every
+    assertion here is table-scoped, and the downgrade half explicitly proves the
+    TARGET column survives while the CAMPAIGN one goes.
+    """
+    engine = create_async_engine(_DB_URL)
+    try:
+        # ── RED baseline: nothing of 0064 exists at 0063 ────────────────────
+        _run_alembic(["upgrade", "head"])
+        _run_alembic(["downgrade", _PREV_0064])
+        assert not await _has_column(
+            engine, "regeneration_campaigns", "publication_version"
+        )
+        for column in _DESTINATION_COLUMNS:
+            assert not await _has_column(engine, "regeneration_targets", column), column
+        assert await _constraint_def(engine, _CAMPAIGN_VERSION_CHECK) is None
+        assert await _constraint_def(engine, _DESTINATION_CHECK) is None
+
+        # ── upgrade ─────────────────────────────────────────────────────────
+        _run_alembic(["upgrade", "head"])
+        assert await _has_column(
+            engine, "regeneration_campaigns", "publication_version"
+        ), "regeneration_campaigns.publication_version missing"
+        for column in _DESTINATION_COLUMNS:
+            assert await _has_column(engine, "regeneration_targets", column), column
+
+        # Additive means additive: a pre-0064 row shape must still insert, so
+        # every new column has to be nullable.
+        async with engine.begin() as conn:
+            nullable = dict(
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT column_name, is_nullable FROM information_schema.columns"
+                            " WHERE table_name='regeneration_targets'"
+                            " AND column_name = ANY(:cols)"
+                        ),
+                        {"cols": list(_DESTINATION_COLUMNS)},
+                    )
+                ).all()
+            )
+            campaign_nullable = await conn.scalar(
+                text(
+                    "SELECT is_nullable FROM information_schema.columns"
+                    " WHERE table_name='regeneration_campaigns'"
+                    " AND column_name='publication_version'"
+                )
+            )
+        assert campaign_nullable == "YES"
+        assert nullable == {c: "YES" for c in _DESTINATION_COLUMNS}, nullable
+
+        version_rule = await _constraint_def(engine, _CAMPAIGN_VERSION_CHECK)
+        assert version_rule is not None, f"{_CAMPAIGN_VERSION_CHECK} missing"
+        assert "publication_version" in version_rule
+        assert ">= 2" in version_rule
+
+        destination_rule = await _constraint_def(engine, _DESTINATION_CHECK)
+        assert destination_rule is not None, f"{_DESTINATION_CHECK} missing"
+        # Three-valued logic: a CHECK is SATISFIED by UNKNOWN, so a rule built
+        # from bare `= 'reuse'` comparisons ACCEPTS the half-filled shapes it
+        # was written to refuse. The total operators are the fix, and pg prints
+        # them back verbatim, so they can be pinned here.
+        assert "IS NOT DISTINCT FROM" in destination_rule, destination_rule
+        assert "notion_parent_policy IS NOT NULL" in destination_rule, destination_rule
+        for column in _DESTINATION_COLUMNS:
+            assert column in destination_rule, column
+
+        # ── downgrade removes 0064 and NOTHING of 0063 ──────────────────────
+        _run_alembic(["downgrade", "-1"])
+        assert not await _has_column(
+            engine, "regeneration_campaigns", "publication_version"
+        )
+        for column in _DESTINATION_COLUMNS:
+            assert not await _has_column(engine, "regeneration_targets", column), column
+        assert await _constraint_def(engine, _CAMPAIGN_VERSION_CHECK) is None
+        assert await _constraint_def(engine, _DESTINATION_CHECK) is None
+        # The same-named 0063 column on the OTHER table is untouched, and so are
+        # the tables themselves.
+        assert await _has_column(engine, "regeneration_targets", "publication_version")
+        assert await _has_table(engine, "regeneration_campaigns")
+        assert await _has_table(engine, "regeneration_targets")
+        assert (
+            await _constraint_def(engine, "ck_regeneration_targets_published_complete")
+            is not None
+        )
     finally:
         _run_alembic(["upgrade", "head"])
         await engine.dispose()
