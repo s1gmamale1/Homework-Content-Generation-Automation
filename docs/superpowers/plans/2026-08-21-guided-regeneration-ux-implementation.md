@@ -939,7 +939,7 @@ git commit -m "feat(web): persist regeneration draft and load full library"
 **Files:**
 - Modify: `app/schemas/regeneration.py`
 - Modify: `app/api/v1/regeneration.py`
-- Modify: `app/main.py`
+- Modify: `main.py`
 - Modify: `app/services/regeneration_campaign.py`
 - Modify: `tests/schemas/test_regeneration_schemas.py`
 - Modify: `tests/api/test_regeneration_api.py`
@@ -1003,9 +1003,11 @@ invariants: DB-only `/estimate` remains available while Notion is off; a valid
 destination check or valid campaign-create body returns structured 409
 `notion_destination_unavailable`; malformed `{}` create remains Pydantic 422
 because readiness is checked inside the validated handler, never as a route
-dependency. Update `app/main.py`'s startup warning to say estimation remains
-available but destination check, campaign creation, canary start and publication
-are blocked until Notion is configured.
+dependency. Update root `main.py`'s startup warning to run whenever regeneration
+is enabled and Notion readiness is unavailable (not only when the publisher-loop
+flag is on), and to say estimation remains available but destination check,
+campaign creation, canary start and publication are blocked until Notion is
+configured.
 
 - [ ] **Step 2: Run API/schema tests and record RED**
 
@@ -1227,7 +1229,42 @@ export interface RegenerationDestinationCheckResponse {
   destination_digest: string;
   destinations: RegenerationDestinationResolution[];
 }
+
+export interface RegenerationWorkerExecutability {
+  ok: boolean;
+  workers_online: number;
+  compatible_worker_ids: string[];
+  required_api_providers: string[];
+  fleet_api_paused: boolean;
+  reason: string | null;
+}
 ```
+
+Extend the existing response interfaces in `web/src/lib/types.ts` in the same
+task, rather than leaving Task 7 to cast server data:
+
+```typescript
+// RegenerationEstimateResponse
+publication_version: number;
+worker_executability: RegenerationWorkerExecutability;
+source_availability_warnings: string[];
+
+// RegenerationCampaignSummary
+publication_version: number | null;
+publication_version_label: string;
+
+// RegenerationTargetReport
+notion_container_policy: "reuse" | "create" | null;
+reviewed_notion_container_page_id: string | null;
+reviewed_notion_container_page_url: string | null;
+notion_parent_policy: "reuse" | "create" | null;
+reviewed_notion_lesson_page_id: string | null;
+reviewed_notion_lesson_page_url: string | null;
+reviewed_notion_lesson_title: string | null;
+```
+
+The backend Pydantic response models use these exact JSON field names. Task 7
+consumes them without changing `web/src/lib/types.ts`.
 
 `approved_destination_digest` and overrides are absent from estimate requests.
 `api.checkRegenerationDestinations` owns the explicit remote request; the create
@@ -1241,7 +1278,7 @@ type.
 Before the guided redesign in Task 7, minimally wire the new contract into the
 current screen so Task 6 is independently green and usable. Extend the current
 `RegenerationDraftState` with `publicationVersion` (default 3) and
-`destinationOverrides`; keep the server-derived destination response/digest in
+`destinationOverrides: DestinationOverrideDraft[]`; keep the server-derived destination response/digest in
 route state, never in the draft. Add a plain version input and **Check Notion
 destinations** action to the current final review section. Render every result,
 allow candidate selection, and disable current campaign creation until the
@@ -1268,16 +1305,21 @@ function apiOnlyContract(draft: RegenerationDraftState): RegenerationLaunchContr
   };
 }
 
-function campaignDraft(
+function toApiOverride(
+  value: DestinationOverrideDraft,
+): RegenerationDestinationOverride {
+  return {
+    toc_entry_id: value.tocEntryId,
+    output_language: value.outputLanguage,
+    notion_lesson_page_id: value.notionLessonPageId,
+  };
+}
+
+function estimateRequest(
   draft: RegenerationDraftState,
-  estimateLow: number | null,
-  estimateHigh: number | null,
-  destinations: RegenerationDestinationCheckResponse,
-): RegenerationCampaignDraft {
+): RegenerationEstimateRequest {
   return {
     publication_version: draft.publicationVersion,
-    destination_overrides: draft.destinationOverrides.map(toApiOverride),
-    approved_destination_digest: destinations.destination_digest,
     selection: {
       book_ids: draft.bookId ? [draft.bookId] : [],
       toc_entry_ids: draft.selectedTocEntryIds,
@@ -1289,6 +1331,19 @@ function campaignDraft(
     refresh_extraction: draft.refreshExtraction,
     exclusion_acknowledged: draft.acknowledged,
     canary_size: clampCanarySize(draft.canarySize, draft.selectedTocEntryIds.length),
+  };
+}
+
+function campaignDraft(
+  draft: RegenerationDraftState,
+  estimateLow: number | null,
+  estimateHigh: number | null,
+  destinations: RegenerationDestinationCheckResponse,
+): RegenerationCampaignDraft {
+  return {
+    ...estimateRequest(draft),
+    destination_overrides: draft.destinationOverrides.map(toApiOverride),
+    approved_destination_digest: destinations.destination_digest,
     estimated_cost_low_usd: estimateLow,
     estimated_cost_high_usd: estimateHigh,
     app_git_revision: null,
@@ -1298,8 +1353,10 @@ function campaignDraft(
 }
 ```
 
-`regenerationEstimateBody` builds its own `RegenerationEstimateRequest` and
-therefore never needs a fake digest. Invalidate the destination response only
+The estimate query calls `api.estimateRegeneration(estimateRequest(draft))`;
+retype `api.estimateRegeneration` and `regenerationEstimateBody` to consume and
+return `RegenerationEstimateRequest`, never `RegenerationCampaignDraft`, so the
+path needs no fake digest. Invalidate the destination response only
 when lesson IDs, language, version or overrides change. This bridge is
 deliberately dense but fully safe; Task 7 replaces its presentation while
 reusing the working mutation/API seam.
@@ -1318,7 +1375,7 @@ npm run build
 - [ ] **Step 11: Commit the reviewed task**
 
 ```bash
-git add app/schemas/regeneration.py app/api/v1/regeneration.py app/main.py app/services/regeneration_campaign.py tests/schemas/test_regeneration_schemas.py tests/api/test_regeneration_api.py tests/api/test_regeneration_feature_flag.py tests/api/test_regeneration_reports.py tests/integration/test_regeneration_campaign_concurrency.py tests/integration/test_regeneration_e2e.py web/src/lib/api.ts web/src/lib/types.ts web/src/lib/regeneration-api.test.ts web/src/lib/regeneration-state.test.ts web/src/components/regeneration/regeneration-wizard.tsx web/src/routes/regeneration.tsx
+git add app/schemas/regeneration.py app/api/v1/regeneration.py main.py app/services/regeneration_campaign.py tests/schemas/test_regeneration_schemas.py tests/api/test_regeneration_api.py tests/api/test_regeneration_feature_flag.py tests/api/test_regeneration_reports.py tests/integration/test_regeneration_campaign_concurrency.py tests/integration/test_regeneration_e2e.py web/src/lib/api.ts web/src/lib/types.ts web/src/lib/regeneration-api.test.ts web/src/lib/regeneration-state.test.ts web/src/components/regeneration/regeneration-wizard.tsx web/src/routes/regeneration.tsx
 git commit -m "feat(regeneration): expose exact campaign readiness review"
 ```
 
