@@ -210,13 +210,35 @@ _VERSION_INDEX = "uq_regeneration_targets_publication_version"
 def _is_version_collision(exc: IntegrityError) -> bool:
     """Is this integrity error the version index, and only that one?
 
-    The driver's own ``constraint_name`` is preferred and TRUSTED when present:
-    matching on the message alone would misfire on generated content that
-    happens to quote an index name, and a constraint that names itself as
-    something else is by definition not this one. The text check is the
-    fallback for a driver that reports no name at all.
+    A reported ``constraint_name`` is TRUSTED over the message: matching on the
+    text alone would misfire on generated content that happens to quote an
+    index name, and a constraint that names itself as something else is by
+    definition not this one.
+
+    It has to be looked for in TWO places, because the driver this runs on does
+    not put it where the obvious lookup finds it. SQLAlchemy's asyncpg dialect
+    (``_handle_exception``) builds a FRESH
+    ``AsyncAdapt_asyncpg_dbapi.IntegrityError`` out of a message string, copies
+    only ``pgcode``/``sqlstate`` onto it, and re-raises it ``from`` the original
+    — so on ``transport=api``'s asyncpg engine ``exc.orig`` has NO
+    ``constraint_name`` attribute at all and the real name survives only on
+    ``exc.orig.__cause__``. ``exc.orig`` is still read FIRST so a psycopg-style
+    driver, which does report the name there, keeps working unchanged.
+
+    Both lookups are guarded on ``is not None`` rather than on presence,
+    because asyncpg reports ``constraint_name = None`` for a NOT NULL violation
+    (SQLSTATE 23502): treating that as "named, and not us" would be right by
+    luck here, but it is not a name and must fall through.
+
+    The text check is the last resort, for a driver that reports no name in
+    either place.
     """
-    constraint = getattr(getattr(exc, "orig", None), "constraint_name", None)
+    orig = getattr(exc, "orig", None)
+    constraint = getattr(orig, "constraint_name", None)
+    if constraint is None:
+        constraint = getattr(
+            getattr(orig, "__cause__", None), "constraint_name", None
+        )
     if constraint is not None:
         return constraint == _VERSION_INDEX
     return _VERSION_INDEX in str(exc)

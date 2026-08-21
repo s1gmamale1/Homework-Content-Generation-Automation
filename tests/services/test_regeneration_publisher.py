@@ -1015,17 +1015,70 @@ async def test_a_takeover_detected_during_version_reservation_writes_nothing(h,
 # ═════════════ the campaign's declared publication version ═══════════════
 
 
-def _integrity_error(constraint: str):
-    """An `IntegrityError` shaped like the one asyncpg raises: the constraint
-    name is on `.orig`, which is what the translation must read — matching on
-    the message alone would misfire on generated content that happens to quote
-    an index name."""
+#: A statement and a driver message that name NO constraint. Every builder
+#: below uses them so that a test which passes can only have passed through the
+#: lookup it is named for — a message that quoted the index would let the
+#: substring fallback answer for all three shapes at once, which is exactly how
+#: the earlier `SimpleNamespace(constraint_name=...)` fixture (whose `repr`
+#: leaked the name into `str(exc)`) pinned nothing.
+_NEUTRAL_STATEMENT = "UPDATE regeneration_targets SET publication_version=$1"
+_NEUTRAL_MESSAGE = (
+    "<class 'asyncpg.exceptions.UniqueViolationError'>: "
+    "duplicate key value violates a unique constraint"
+)
+
+
+class _NamedDriverError(Exception):
+    """A driver exception that reports `constraint_name`, psycopg-style — and
+    what asyncpg's OWN exception carries before SQLAlchemy translates it."""
+
+    def __init__(self, message: str, *, constraint_name, sqlstate: str = "23505"):
+        super().__init__(message)
+        self.constraint_name = constraint_name
+        self.sqlstate = sqlstate
+
+
+class _TranslatedDriverError(Exception):
+    """What SQLAlchemy's asyncpg dialect actually puts on `.orig`.
+
+    `sqlalchemy/dialects/postgresql/asyncpg.py::_handle_exception` builds a
+    FRESH `AsyncAdapt_asyncpg_dbapi.IntegrityError` from a message string,
+    copies `pgcode`/`sqlstate` and nothing else, then `raise translated from
+    error` — so `constraint_name` survives only on `__cause__`.
+    """
+
+    def __init__(self, message: str, *, sqlstate: str = "23505"):
+        super().__init__(message)
+        self.pgcode = self.sqlstate = sqlstate
+
+
+def _integrity_error(orig, *, statement: str = _NEUTRAL_STATEMENT):
     from sqlalchemy.exc import IntegrityError
 
-    return IntegrityError(
-        "UPDATE regeneration_targets SET publication_version=$1",
-        {},
-        SimpleNamespace(constraint_name=constraint),
+    return IntegrityError(statement, {}, orig)
+
+
+def _asyncpg_integrity_error(constraint, *, message: str = _NEUTRAL_MESSAGE):
+    """The PRODUCTION shape: `.orig` has no `constraint_name` at all and the
+    name is reachable only through `.orig.__cause__`."""
+    translated = _TranslatedDriverError(message)
+    translated.__cause__ = _NamedDriverError(message, constraint_name=constraint)
+    return _integrity_error(translated, statement=_NEUTRAL_STATEMENT)
+
+
+def _psycopg_integrity_error(constraint):
+    """A driver that reports the name on `.orig` itself."""
+    return _integrity_error(
+        _NamedDriverError(_NEUTRAL_MESSAGE, constraint_name=constraint)
+    )
+
+
+def _nameless_integrity_error(index: str):
+    """A driver that reports no name anywhere; the index is only in the text."""
+    return _integrity_error(
+        _TranslatedDriverError(
+            f'duplicate key value violates unique constraint "{index}"'
+        )
     )
 
 
@@ -1058,10 +1111,62 @@ async def test_a_publication_version_unique_violation_parks_the_target_too(h):
     """The partial unique index is the final fence and it fires at the UPDATE
     inside the reservation, not only at the trailing commit — so the whole
     preparation is covered, and the operator sees the version message rather
-    than a raw database error that would be retried three times first."""
-    h.reserve_error = _integrity_error(
-        "uq_regeneration_targets_publication_version"
+    than a raw database error that would be retried three times first.
+
+    Shape 1 of 3, and the one production actually raises: under the asyncpg
+    dialect the name lives ONLY on `.orig.__cause__`. The fixture proves that
+    by keeping the index out of the statement, the params and `.orig`'s own
+    text, so nothing but the `__cause__` lookup can answer.
+    """
+    exc = _asyncpg_integrity_error("uq_regeneration_targets_publication_version")
+    assert not hasattr(exc.orig, "constraint_name"), (
+        "the translated asyncpg error carries no constraint name"
     )
+    assert pub._VERSION_INDEX not in str(exc), (
+        "the substring fallback must not be able to answer this one"
+    )
+    h.reserve_error = exc
+    h.claim()
+    assert await h.publisher().run_once() is True
+
+    write = h.write("publication_failed")
+    assert pub._VERSION_INDEX in write["publication_last_error"]
+    assert write["publication_next_attempt_at"] is None, "parked, not retried"
+    assert h.rollbacks == 1
+    assert h.notion.calls == []
+
+
+async def test_a_driver_that_names_the_constraint_on_orig_is_read_too(h):
+    """Shape 2 of 3: psycopg reports `constraint_name` on `.orig` itself.
+
+    Kept working deliberately — the asyncpg lookup is an ADDITION, not a
+    replacement, and a driver swap must not silently turn a spent version back
+    into a retried database error.
+    """
+    exc = _psycopg_integrity_error("uq_regeneration_targets_publication_version")
+    assert pub._VERSION_INDEX not in str(exc)
+    h.reserve_error = exc
+    h.claim()
+    assert await h.publisher().run_once() is True
+
+    write = h.write("publication_failed")
+    assert pub._VERSION_INDEX in write["publication_last_error"]
+    assert write["publication_next_attempt_at"] is None, "parked, not retried"
+    assert h.rollbacks == 1
+    assert h.notion.calls == []
+
+
+async def test_a_version_violation_with_no_name_anywhere_falls_back_to_the_text(h):
+    """Shape 3 of 3: no name on `.orig`, none on `.orig.__cause__`.
+
+    The text match is the LAST resort precisely because it is the weak one; it
+    still has to hold, or a driver that reports nothing would retry a number
+    that can never be freed.
+    """
+    exc = _nameless_integrity_error(pub._VERSION_INDEX)
+    assert getattr(exc.orig, "constraint_name", None) is None
+    assert getattr(exc.orig.__cause__, "constraint_name", None) is None
+    h.reserve_error = exc
     h.claim()
     assert await h.publisher().run_once() is True
 
@@ -1074,8 +1179,19 @@ async def test_a_publication_version_unique_violation_parks_the_target_too(h):
 async def test_an_unrelated_integrity_error_is_not_a_publication_version_conflict(h):
     """A different constraint is a database defect, not a spent number. Hiding
     it behind the version message would tell an operator to pick another
-    version for a fault no version can fix."""
-    h.reserve_error = _integrity_error("fk_regeneration_targets_source_job_id")
+    version for a fault no version can fix.
+
+    On the production shape, and with the version index quoted in the driver's
+    own text: a NAME that says something else outranks a message that merely
+    mentions this one. That is the whole reason the text match is last.
+    """
+    h.reserve_error = _asyncpg_integrity_error(
+        "fk_regeneration_targets_campaign_id",
+        message=(
+            "insert or update violates foreign key constraint; DETAIL: the row "
+            f"quotes {pub._VERSION_INDEX} and must not be read as it"
+        ),
+    )
     h.claim()
     assert await h.publisher().run_once() is True
 
