@@ -159,6 +159,15 @@ class _Harness:
             publication_next_attempt_at=None,
             publication_last_error=None,
             notion_page_id=None,
+            # The reviewed Notion destination. NULL here and in every test that
+            # does not call `h.review()`, which is what keeps the historical
+            # `find_or_create` path — the one every test below this line
+            # exercises — under test unchanged.
+            notion_container_policy=None,
+            reviewed_notion_container_page_id=None,
+            notion_parent_policy=None,
+            reviewed_notion_lesson_page_id=None,
+            reviewed_notion_lesson_title=None,
             terminal_at=None,
             terminal_reason=None,
             abandon_requested_at=None,
@@ -214,6 +223,24 @@ class _Harness:
         self.claims.append(claim)
         self.issued.append(claim)
         return claim
+
+    def review(
+        self,
+        *,
+        container_policy: str = "reuse",
+        container_page_id: Optional[str] = None,
+        parent_policy: str = "reuse",
+        lesson_page_id: Optional[str] = None,
+        lesson_title: str = "1 Lesson one",
+    ) -> None:
+        """Freeze an operator-reviewed destination onto the target row, in the
+        column names the model uses (`reviewed_notion_*`, which the publisher's
+        input fields drop the infix from)."""
+        self.target.notion_container_policy = container_policy
+        self.target.reviewed_notion_container_page_id = container_page_id
+        self.target.notion_parent_policy = parent_policy
+        self.target.reviewed_notion_lesson_page_id = lesson_page_id
+        self.target.reviewed_notion_lesson_title = lesson_title
 
     def publisher(self, **kwargs) -> "pub.RegenerationPublisher":
         params = dict(
@@ -1239,3 +1266,264 @@ async def test_an_unrelated_integrity_error_is_not_a_publication_version_conflic
         "an unexplained database error is retryable; only a spent version is not"
     )
     assert h.rollbacks == 1
+
+
+# ═════════════ the reviewed destination: execute, never re-derive ═════════
+#
+# Everything above this line is a HISTORICAL target: all five reviewed columns
+# are null and delivery re-derives its own destination through `find_or_create`,
+# exactly as it always did. That path is not allowed to change, and those tests
+# are the proof it did not.
+#
+# Below, an operator has approved a specific destination in the guided wizard
+# and it is frozen on the row. Delivery EXECUTES that decision. The difference
+# matters because re-deriving at write time is how a run lands somewhere nobody
+# approved: between review and delivery a page can be renamed, moved, or
+# duplicated, and a re-derivation quietly follows the change. Here it stops.
+
+
+def _no_find_or_create(_real, _client, _parent_id, _title):
+    raise AssertionError(
+        "a reviewed destination must be executed, never re-derived through "
+        "find_or_create"
+    )
+
+
+def _reviewed_failure(h: _Harness) -> dict:
+    """The shared shape of every authority change: parked for an operator on
+    the first attempt, with the reserved version still consumed."""
+    failed = h.write("publication_failed")
+    assert failed["publication_next_attempt_at"] is None, (
+        "an authority change is not retryable — a backoff would burn the "
+        "attempt budget on a decision only a human can restore")
+    assert failed.get("clear_publication_next_attempt") is True
+    assert h.target.publication_attempts == 1, "exactly one attempt"
+    assert failed.get("publication_version") is None, (
+        "the reserved version is preserved, never rewritten or cleared")
+    assert h.target.publication_version == 2
+    assert version_page_title(2) in failed["publication_last_error"], (
+        "the report has to say WHICH version stays consumed")
+    assert h.rollups == [h.campaign_id]
+    return failed
+
+
+async def test_a_reviewed_reuse_decision_is_executed_exactly_as_approved(h):
+    """Both policies `reuse`: the container and the Lesson Topic were named by
+    id at review time, and delivery writes into those two pages and no others.
+    The Lesson Topic here wears a suffix `resolve_lesson_title` would not
+    produce today, so adopting it can only have come from the frozen decision."""
+    container = h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    lesson = h.notion.add_page(container, "1 Lesson one · p.7")
+    h.review(container_page_id=container, lesson_page_id=lesson,
+             lesson_title="1 Lesson one · p.7")
+    h.parent_hook = _no_find_or_create
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    assert h.child_ids(_SUBJECT_PAGE) == [container], "no second container"
+    assert h.child_ids(container) == [lesson], "no second Lesson Topic"
+    assert version_page_title(2) in h.notion.child_titles(lesson)
+    assert h.write("published")["notion_page_id"] in h.child_ids(lesson)
+    assert h.lesson_stamps == [(h.toc_entry_id, lesson)], (
+        "the fill-once TOC pointer is still backfilled from a reviewed reuse")
+    assert h.off_loop()
+
+
+async def test_a_reviewed_create_decision_builds_the_approved_tree(h):
+    """Both policies `create`: nothing existed at review time and nothing has
+    appeared since, so delivery makes the container and the Lesson Topic by the
+    title the operator approved."""
+    h.review(container_policy="create", container_page_id=None,
+             parent_policy="create", lesson_page_id=None,
+             lesson_title="1 Lesson one")
+    h.parent_hook = _no_find_or_create
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    assert h.notion.child_titles(_SUBJECT_PAGE) == [_CONTAINER]
+    container = h.child_ids(_SUBJECT_PAGE)[0]
+    assert h.notion.child_titles(container) == ["1 Lesson one"]
+    lesson = h.child_ids(container)[0]
+    assert version_page_title(2) in h.notion.child_titles(lesson)
+    assert h.lesson_stamps == [(h.toc_entry_id, lesson)], (
+        "a created Lesson Topic is stamped too — the pointer is fill-once, not "
+        "reuse-only")
+
+
+async def test_a_reviewed_create_adopts_a_page_that_appeared_since_review(h):
+    """The benign drift: the legacy archive filed this lesson between review and
+    delivery. Creating a second page would split the lesson's homework across
+    two trees, so one normalized match is ADOPTED — and it folds Notion's `(N)`
+    dedup suffix because publication imports the same `_normalize` review did."""
+    container = h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    lesson = h.notion.add_page(container, "Approved title (2)")
+    # Deliberately NOT the title `resolve_lesson_title` derives — the reviewed
+    # title is the authority, so a legacy re-derivation would look for
+    # "1 Lesson one", find nothing, and mint a second page.
+    h.review(container_policy="reuse", container_page_id=container,
+             parent_policy="create", lesson_page_id=None,
+             lesson_title="Approved title")
+    h.parent_hook = _no_find_or_create
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    assert h.child_ids(container) == [lesson], "no second Lesson Topic"
+    assert version_page_title(2) in h.notion.child_titles(lesson)
+    assert h.write("published")["notion_page_id"] in h.child_ids(lesson)
+
+
+async def test_a_reviewed_container_create_adopts_one_that_appeared(h):
+    h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    container = h.child_ids(_SUBJECT_PAGE)[0]
+    h.review(container_policy="create", container_page_id=None,
+             parent_policy="create", lesson_page_id=None,
+             lesson_title="Approved title")
+    h.parent_hook = _no_find_or_create
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    assert h.child_ids(_SUBJECT_PAGE) == [container], "no second container"
+    assert h.notion.child_titles(container) == ["Approved title"]
+    assert h.write("published")["notion_page_id"]
+
+
+async def test_a_reviewed_container_that_moved_parks_non_retryably(h):
+    """The approved container is no longer under this subject page. Falling back
+    to whatever container is there now would deliver into a tree nobody
+    approved, and a retry cannot put it back — only an operator can."""
+    container = h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    lesson = h.notion.add_page(container, "1 Lesson one")
+    h.review(container_page_id="container-that-is-gone", lesson_page_id=lesson)
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    failed = _reviewed_failure(h)
+    assert "container" in failed["publication_last_error"]
+    assert h.notion.child_titles(lesson) == [], "nothing was written anywhere"
+    assert h.lesson_stamps == []
+
+
+async def test_a_reviewed_lesson_topic_that_left_its_container_parks_non_retryably(h):
+    """The approved Lesson Topic was moved out of the approved container. Its id
+    still resolves in Notion — which is exactly why membership, not existence,
+    is the test."""
+    container = h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    elsewhere = h.notion.add_page(_SUBJECT_PAGE, "Some other place")
+    lesson = h.notion.add_page(elsewhere, "1 Lesson one")
+    h.review(container_page_id=container, lesson_page_id=lesson)
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    failed = _reviewed_failure(h)
+    assert "Lesson Topic" in failed["publication_last_error"]
+    assert h.notion.child_titles(lesson) == []
+
+
+async def test_a_create_policy_that_became_ambiguous_parks_non_retryably(h):
+    """Two pages now normalize to the approved title. Adopting either is a
+    coin-flip between two lessons' homework; creating a third makes it worse."""
+    container = h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    h.notion.add_page(container, "1 Lesson one")
+    h.notion.add_page(container, "1 Lesson one (2)")
+    h.review(container_policy="reuse", container_page_id=container,
+             parent_policy="create", lesson_page_id=None)
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    failed = _reviewed_failure(h)
+    assert "ambiguous" in failed["publication_last_error"]
+    assert len(h.child_ids(container)) == 2, "no third page was created"
+
+
+async def test_a_container_create_that_became_ambiguous_parks_non_retryably(h):
+    h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    h.review(container_policy="create", container_page_id=None,
+             parent_policy="create", lesson_page_id=None)
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    failed = _reviewed_failure(h)
+    assert "ambiguous" in failed["publication_last_error"]
+    assert len(h.child_ids(_SUBJECT_PAGE)) == 2, "no third container"
+
+
+@pytest.mark.parametrize(
+    "review_kwargs",
+    [
+        {"container_page_id": "   ", "lesson_page_id": "lesson"},
+        {"container_page_id": "container", "lesson_page_id": ""},
+        {"container_page_id": "container", "lesson_page_id": "lesson",
+         "lesson_title": "   "},
+        {"container_policy": "create", "container_page_id": None,
+         "parent_policy": "create", "lesson_page_id": None, "lesson_title": ""},
+    ],
+    ids=["blank-container-id", "blank-lesson-id", "blank-title",
+         "blank-title-on-create"],
+)
+async def test_an_unexecutable_frozen_decision_refuses_before_the_version(
+    h, review_kwargs
+):
+    """Task 1's check constraint only tests `IS NOT NULL`, so a blank string is
+    a legal row the publisher can still not act on. It is a REFUSAL, not an
+    authority change — nothing moved, the decision was never executable — and it
+    lands with the subject-page check, before the version is reserved, so a
+    malformed row never consumes a `Homework V{n}` identity."""
+    h.review(**review_kwargs)
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    failed = h.write("publication_failed")
+    assert failed["publication_next_attempt_at"] is None
+    assert h.target.publication_version is None, "no version may be consumed"
+    assert h.notion.calls == [], "refused before any remote call"
+    assert "destination" in failed["publication_last_error"]
+
+
+async def test_a_historical_target_still_derives_its_own_destination(h):
+    """The explicit statement of what every test above this section relies on:
+    a null-policy row is the LEGACY path, `find_or_create` and all."""
+    seen: list[str] = []
+
+    def _record(real, client, parent_id, title):
+        seen.append(title)
+        return real(client, parent_id, title)
+
+    h.parent_hook = _record
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    assert seen == [_CONTAINER, "1 Lesson one"]
+    assert h.target.notion_parent_policy is None
+    assert h.write("published")["notion_page_id"]
+
+
+async def test_a_reviewed_destination_still_honours_the_version_page_marker(h):
+    """The frozen decision picks the PARENT. Everything below it — adoption by
+    marker, the collision refusal — is still the writer's authority."""
+    container = h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    lesson = h.notion.add_page(container, "Approved title")
+    h.notion.add_page(lesson, version_page_title(2))   # no marker: not ours
+    h.review(container_page_id=container, lesson_page_id=lesson,
+             lesson_title="Approved title")
+    h.parent_hook = _no_find_or_create
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    failed = h.write("publication_failed")
+    assert failed["publication_next_attempt_at"] is None
+    assert "collision" in failed["publication_last_error"]
+
+
+async def test_a_reviewed_decision_is_never_reached_on_a_stale_claim(h):
+    """The fence outranks the frozen decision: a publisher that lost its lease
+    writes nothing, reviewed destination or not."""
+    container = h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    lesson = h.notion.add_page(container, "1 Lesson one")
+    h.review(container_page_id=container, lesson_page_id=lesson)
+    h.claim()
+    h.target.publication_claim_token = uuid.uuid4()
+
+    assert await h.publisher().run_once() is True
+    assert h.status_writes == []
+    assert h.notion.calls == []

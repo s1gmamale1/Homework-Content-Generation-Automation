@@ -72,7 +72,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Callable, Mapping, Optional, Union
+from typing import Callable, Literal, Mapping, Optional, Union
 from uuid import UUID
 
 from loguru import logger
@@ -86,7 +86,8 @@ from app.repositories import phase_outputs as phase_repo
 from app.repositories import regeneration_targets as targets_repo
 from app.repositories import toc_entries as toc_repo
 from app.services import notion_archive, regeneration_job_state
-from app.services.notion.client import NotionClientWrapper, normalize_api_key
+from app.services.notion.client import NotionClientWrapper
+from app.services.notion.page_creator import _normalize
 from app.services.notion_versioned_homework import (
     HomeworkRevisionMarker,
     VersionPageCollision,
@@ -94,6 +95,7 @@ from app.services.notion_versioned_homework import (
     write_or_adopt_versioned_homework,
 )
 from app.services.regeneration_campaign import RegenerationCampaignService
+from app.services.regeneration_notion_readiness import publication_unavailable_reason
 from app.services.regeneration_planner import validate_complete_snapshot
 
 __all__ = [
@@ -115,36 +117,6 @@ _ABANDONED_REASON = (
 # 2**30 seconds already dwarfs `backoff_max_seconds`; clamping the exponent
 # keeps a pathological attempt count from building a giant int for nothing.
 _MAX_BACKOFF_SHIFT = 30
-
-
-def publication_unavailable_reason() -> Optional[str]:
-    """Why nothing can be published on this deployment, or ``None`` when it can.
-
-    The whole feature's fail-closed answer, in one place, so the three callers
-    that must agree — `main.lifespan` (don't start the loop), the two API routes
-    that promise delivery (refuse before approval) and `run_once` itself (refuse
-    before claiming) — cannot drift apart.
-
-    It is deliberately about the DEPLOYMENT, not about one target: whether this
-    head has a Notion destination at all. A per-lesson destination problem is a
-    different thing and stays where it is, in `_prepare`, which refuses before
-    reserving a version.
-
-    Cheap and side-effect free by contract. It runs on the event loop and inside
-    request handlers, so it must not build a client, open a socket or touch the
-    database — `normalize_api_key` is the constructor's own credential rule with
-    the client construction left out.
-    """
-    if not settings.notion_enabled:
-        return (
-            "NOTION_ENABLED is off, so this deployment has no Notion destination "
-            "to publish a revision to"
-        )
-    try:
-        normalize_api_key(settings.notion_api_key)
-    except ValueError as exc:
-        return f"the Notion credential is unusable: {exc}"
-    return None
 
 
 @dataclass(frozen=True)
@@ -173,6 +145,11 @@ class PublicationInputs:
     stored_version_page_id: Optional[str]
     revision_job_id: UUID
     phase_md: Mapping[str, str]
+    notion_container_policy: Optional[Literal["reuse", "create"]] = None
+    reviewed_container_page_id: Optional[str] = None
+    notion_parent_policy: Optional[Literal["reuse", "create"]] = None
+    reviewed_lesson_page_id: Optional[str] = None
+    reviewed_lesson_title: Optional[str] = None
 
     @property
     def marker(self) -> HomeworkRevisionMarker:
@@ -201,6 +178,10 @@ class _Refusal:
 
 class _StaleClaim(RuntimeError):
     """This publisher no longer owns the target; it must write nothing."""
+
+
+class ReviewedDestinationChanged(RuntimeError):
+    """The Notion tree no longer matches the destination approved in review."""
 
 
 #: The partial unique index that makes a publication version consumed forever.
@@ -257,6 +238,63 @@ def _is_version_collision(exc: IntegrityError) -> bool:
 # so both are caught together and logged as the ordinary lease handover they
 # are, not as an unexpected error.
 _TAKEOVER = (_StaleClaim, targets_repo.StalePublicationClaim)
+
+
+def _validated_reviewed_destination(target) -> Optional[tuple[
+    Literal["reuse", "create"], Optional[str],
+    Literal["reuse", "create"], Optional[str], str,
+]]:
+    """Return one executable reviewed decision, or reject a partial/corrupt row.
+
+    The database CHECK prevents these shapes in ordinary writes, but the
+    publisher is the final safety boundary.  It must also handle historical
+    rows, manual repairs, and whitespace values without consuming a version or
+    making a Notion call.
+    """
+    container_policy = getattr(target, "notion_container_policy", None)
+    container_id = getattr(target, "reviewed_notion_container_page_id", None)
+    parent_policy = getattr(target, "notion_parent_policy", None)
+    lesson_id = getattr(target, "reviewed_notion_lesson_page_id", None)
+    lesson_title = getattr(target, "reviewed_notion_lesson_title", None)
+    values = (container_policy, container_id, parent_policy, lesson_id, lesson_title)
+    if all(value is None for value in values):
+        return None
+    if container_policy not in ("reuse", "create"):
+        raise ValueError("destination container policy must be reuse or create")
+    if parent_policy not in ("reuse", "create"):
+        raise ValueError("destination Lesson Topic policy must be reuse or create")
+    if not isinstance(lesson_title, str) or not lesson_title.strip():
+        raise ValueError("destination Lesson Topic title must not be blank")
+
+    clean_container_id = (
+        container_id.strip() if isinstance(container_id, str) else None
+    )
+    clean_lesson_id = lesson_id.strip() if isinstance(lesson_id, str) else None
+    if container_policy == "reuse":
+        if not clean_container_id:
+            raise ValueError("destination container reuse needs a nonblank page id")
+    elif container_id is not None:
+        raise ValueError("destination container create must not carry a page id")
+
+    if parent_policy == "reuse":
+        if container_policy != "reuse":
+            raise ValueError(
+                "destination Lesson Topic reuse requires a reused container"
+            )
+        if not clean_lesson_id:
+            raise ValueError(
+                "destination Lesson Topic reuse needs a nonblank page id"
+            )
+    elif lesson_id is not None:
+        raise ValueError("destination Lesson Topic create must not carry a page id")
+
+    return (
+        container_policy,
+        clean_container_id,
+        parent_policy,
+        clean_lesson_id,
+        lesson_title.strip(),
+    )
 
 
 class RegenerationPublisher:
@@ -434,6 +472,19 @@ class RegenerationPublisher:
                 claim, f"version page collision: {exc}", retryable=False
             )
             return True
+        except ReviewedDestinationChanged as exc:
+            # The version was reserved before remote delivery began and remains
+            # consumed.  Following a moved/duplicated page would publish to a
+            # destination the operator never approved, while retrying the same
+            # frozen decision cannot repair the Notion tree.
+            await self._resolve_failure(
+                claim,
+                "reviewed Notion destination changed after "
+                f"{version_page_title(prepared.publication_version)} was reserved "
+                f"and remains consumed: {exc}",
+                retryable=False,
+            )
+            return True
         except Exception as exc:  # noqa: BLE001 - transient remote failure
             logger.warning(
                 f"regeneration publisher: delivery of target {claim.target_id} "
@@ -523,18 +574,43 @@ class RegenerationPublisher:
                         f"{job.subject}|{book.grade}"
                     )
 
+                try:
+                    reviewed_destination = _validated_reviewed_destination(target)
+                except ValueError as exc:
+                    return _Refusal(
+                        f"reviewed Notion destination is not executable: {exc}",
+                        retryable=False,
+                    )
+
                 version = await targets_repo.reserve_publication_version(
                     session, target_id=claim.target_id, claim_token=claim.claim_token
                 )
 
-                # Sibling titles decide whether this lesson's page needs a
-                # disambiguating suffix — a read that MUST happen here, because
-                # `find_or_create` would otherwise file the revision under another
-                # lesson's page.
-                siblings = await toc_repo.titles_for_subject_grade(
-                    session, subject=job.subject, grade=book.grade,
-                )
-                lesson_title = notion_archive.resolve_lesson_title(section, siblings)
+                if reviewed_destination is None:
+                    # Historical targets still derive the title exactly as they
+                    # did before reviewed destinations existed.
+                    siblings = await toc_repo.titles_for_subject_grade(
+                        session, subject=job.subject, grade=book.grade,
+                    )
+                    lesson_title = notion_archive.resolve_lesson_title(
+                        section, siblings
+                    )
+                    container_policy = None
+                    reviewed_container_id = None
+                    parent_policy = None
+                    reviewed_lesson_id = None
+                    reviewed_lesson_title = None
+                else:
+                    (
+                        container_policy,
+                        reviewed_container_id,
+                        parent_policy,
+                        reviewed_lesson_id,
+                        reviewed_lesson_title,
+                    ) = reviewed_destination
+                    # This title is part of what the operator approved.  Do not
+                    # re-derive it from mutable sibling rows at delivery time.
+                    lesson_title = reviewed_lesson_title
                 phase_md = {
                     row.phase_name: (row.output_md or "")
                     for row in rows
@@ -561,6 +637,11 @@ class RegenerationPublisher:
                     stored_version_page_id=target.notion_page_id,
                     revision_job_id=job.id,
                     phase_md=phase_md,
+                    notion_container_policy=container_policy,
+                    reviewed_container_page_id=reviewed_container_id,
+                    notion_parent_policy=parent_policy,
+                    reviewed_lesson_page_id=reviewed_lesson_id,
+                    reviewed_lesson_title=reviewed_lesson_title,
                 )
                 await session.commit()
             except targets_repo.PublicationVersionUnavailable as exc:
@@ -654,18 +735,73 @@ class RegenerationPublisher:
         without letting it carry a target across languages.
         """
         client = self._client_factory()
-        container_id, _ = notion_archive.find_or_create(
-            client, inputs.subject_page_id, notion_archive.CONTAINER_TITLE
-        )
-        hint = inputs.legacy_lesson_page_id
-        if hint is not None and any(
-            page.get("id") == hint for page in client.get_child_pages(container_id)
-        ):
-            return hint
-        lesson_id, _ = notion_archive.find_or_create(
-            client, container_id, inputs.lesson_title
-        )
-        return lesson_id
+        if inputs.notion_container_policy is None:
+            # Byte-for-byte behavioural compatibility for historical targets:
+            # derive/adopt the destination exactly as the old publisher did.
+            container_id, _ = notion_archive.find_or_create(
+                client, inputs.subject_page_id, notion_archive.CONTAINER_TITLE
+            )
+            hint = inputs.legacy_lesson_page_id
+            if hint is not None and any(
+                page.get("id") == hint
+                for page in client.get_child_pages(container_id)
+            ):
+                return hint
+            lesson_id, _ = notion_archive.find_or_create(
+                client, container_id, inputs.lesson_title
+            )
+            return lesson_id
+
+        container_matches = [
+            page for page in client.get_child_pages(inputs.subject_page_id)
+            if _normalize(str(page.get("title", "")))
+            == _normalize(notion_archive.CONTAINER_TITLE)
+        ]
+        if inputs.notion_container_policy == "reuse":
+            container_id = inputs.reviewed_container_page_id
+            if not container_id or not any(
+                str(page.get("id")) == container_id for page in container_matches
+            ):
+                raise ReviewedDestinationChanged(
+                    "the approved Generated Homeworks container is no longer "
+                    "under the configured subject page"
+                )
+        else:
+            if len(container_matches) > 1:
+                raise ReviewedDestinationChanged(
+                    "the Generated Homeworks container became ambiguous"
+                )
+            if container_matches:
+                container_id = str(container_matches[0]["id"])
+            else:
+                container_id = str(client.create_page(
+                    inputs.subject_page_id, notion_archive.CONTAINER_TITLE
+                )["id"])
+
+        lesson_children = client.get_child_pages(container_id)
+        if inputs.notion_parent_policy == "reuse":
+            lesson_id = inputs.reviewed_lesson_page_id
+            if not lesson_id or not any(
+                str(page.get("id")) == lesson_id for page in lesson_children
+            ):
+                raise ReviewedDestinationChanged(
+                    "the approved Lesson Topic is no longer inside the approved "
+                    "container"
+                )
+            return lesson_id
+
+        lesson_matches = [
+            page for page in lesson_children
+            if _normalize(str(page.get("title", "")))
+            == _normalize(inputs.lesson_title)
+        ]
+        if len(lesson_matches) > 1:
+            raise ReviewedDestinationChanged(
+                "the approved Lesson Topic title became ambiguous"
+            )
+        if lesson_matches:
+            return str(lesson_matches[0]["id"])
+        return str(client.create_page(container_id, inputs.lesson_title)["id"])
 
     def _write_version_page(
         self, inputs: PublicationInputs, lesson_page_id: str

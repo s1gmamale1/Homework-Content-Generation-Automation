@@ -221,6 +221,16 @@ async def test_the_default_settings_leave_the_publisher_off(wired):
 # start, not something the loop finds out at run time.
 
 
+def test_lifespan_and_publisher_share_one_notion_readiness_predicate():
+    """Startup and delivery cannot disagree about whether publication is usable."""
+    from app.services import regeneration_notion_readiness as readiness
+    from app.services import regeneration_publisher as publisher
+
+    assert publisher.publication_unavailable_reason is (
+        readiness.publication_unavailable_reason
+    )
+
+
 @pytest.mark.parametrize(
     "notion_enabled, key",
     [(False, _USABLE_KEY), (True, ""), (True, "   "), (True, "not-a-notion-key")],
