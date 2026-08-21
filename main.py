@@ -24,6 +24,7 @@ from app.services import (
     events_bus,
     operator_auth,
     regeneration_job_state,
+    regeneration_publisher,
     sa_key_vault,
 )
 from app.services.prompts import load_all as load_prompts
@@ -180,6 +181,30 @@ async def lifespan(app: FastAPI):
             "expecting standalone worker(s) elsewhere"
         )
 
+    # Versioned regeneration publisher (`Homework V{n}` Notion siblings). TWO
+    # flags, both off by default: the master flag gates the whole regeneration
+    # feature, and the second one gates delivery on its own so generation can be
+    # exercised with publication dark. Started here — after the LISTEN bus and
+    # beside the embedded worker — because it CLAIMS work: starting it before
+    # the startup reconcile and the version floor is the shape those steps exist
+    # to prevent. Production enables it on the designated head/API process only,
+    # but the claim protocol is safe if two processes accidentally run it.
+    publisher_stop: Optional[asyncio.Event] = None
+    publisher_task: Optional[asyncio.Task] = None
+    if settings.regeneration_enabled and settings.regeneration_publisher_enabled:
+        publisher_stop = asyncio.Event()
+        publisher_task = asyncio.create_task(
+            regeneration_publisher.build_publisher_from_settings().run_forever(
+                publisher_stop
+            ),
+            name="regeneration-publisher",
+        )
+        log.info(
+            "Regeneration publisher started | "
+            f"interval={settings.regeneration_publisher_interval_seconds}s "
+            f"lease={settings.regeneration_publisher_lease_seconds}s"
+        )
+
     try:
         yield
     finally:
@@ -195,6 +220,25 @@ async def lifespan(app: FastAPI):
                 except (asyncio.CancelledError, Exception):
                     pass
             log.info("Embedded worker stopped")
+        if publisher_stop is not None and publisher_task is not None:
+            # Same shutdown shape as the worker: signal, drain, force. The loop
+            # finishes the target it is on rather than being killed mid-delivery,
+            # which is what keeps a half-written Notion page recoverable.
+            publisher_stop.set()
+            try:
+                await asyncio.wait_for(publisher_task, timeout=30.0)
+            except asyncio.TimeoutError:
+                log.warning(
+                    "Regeneration publisher did not stop within 30s; forcing"
+                )
+                publisher_task.cancel()
+                try:
+                    await publisher_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            except Exception:
+                log.exception("Regeneration publisher exited with an error")
+            log.info("Regeneration publisher stopped")
         await events_bus.stop_listener()
 
 

@@ -4,16 +4,81 @@ Module-level async functions taking the session first, like every other
 repository here. Task 6 uses these as-is; Tasks 7-8 extend this module
 sequentially (version allocation, publisher sweeps) rather than defining their
 own parallel accessors.
-"""
-from typing import Optional, Sequence
-from uuid import UUID
 
-from sqlalchemy import func, or_, select, update
+**Lock order is parent (campaign) then child (target), everywhere.** Every
+campaign-level action (`regeneration_campaign`, `regeneration_job_state`) takes
+that direction, and `trg_regeneration_targets_publication_gate` takes
+`FOR KEY SHARE` on the campaign from INSIDE a target UPDATE. A publisher that
+reached the target first would therefore invert the order and deadlock a
+concurrent cancel or rollup, so :func:`claim_next_publication` and
+:func:`lock_owning_campaign` exist to establish the parent lock first.
+"""
+import hashlib
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Optional, Sequence
+from uuid import UUID, uuid4
+
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.homework_job import HomeworkJob
+from app.models.regeneration_campaign import RegenerationCampaign
 from app.models.regeneration_target import RegenerationTarget
 from app.models.toc_entry import TOCEntry
+
+# How many claimable rows one sweep inspects before giving up for this tick. A
+# bound, not a cap on throughput: a publisher loops, so a full scan that claims
+# nothing (every candidate locked by a peer) simply retries on the next pass.
+_CLAIM_SCAN_LIMIT = 50
+
+# Advisory-lock namespace for publication version allocation. The two-int form
+# of `pg_advisory_xact_lock` is used so this namespace can never collide with a
+# single-bigint advisory lock taken elsewhere in the app.
+_VERSION_LOCK_NAMESPACE = 0x52454756  # 'REGV'
+
+
+class StalePublicationClaim(RuntimeError):
+    """The caller's publication claim token is no longer the one on the row.
+
+    Raised rather than returned because every caller is mid-delivery: a lease
+    that was taken over means this process must stop writing, not branch.
+    """
+
+
+@dataclass(frozen=True)
+class ClaimedRegenerationTarget:
+    """One claimed publication, flattened.
+
+    A value object rather than the ORM row on purpose: the publisher closes its
+    DB session before any Notion call, and a detached ORM instance whose
+    attributes lazily re-load is exactly the shape that turns a remote-I/O path
+    into a surprise database access.
+    """
+
+    target_id: UUID
+    campaign_id: UUID
+    toc_entry_id: UUID
+    output_language: str
+    claim_token: UUID
+    publication_attempts: int
+    publication_version: Optional[int]
+    notion_page_id: Optional[str]
+    abandon_requested_at: Optional[datetime]
+
+
+def _publication_lineage_lock_key(toc_entry_id: UUID, output_language: str) -> int:
+    """Deterministic signed int32 for one `(lesson, language)` lineage.
+
+    Hashed in Python rather than with SQL `hashtext` so the key cannot drift
+    between statements or PostgreSQL versions. A hash collision merely
+    serialises two unrelated lineages against each other — the unique index
+    `uq_regeneration_targets_publication_version` remains the real fence.
+    """
+    digest = hashlib.blake2b(
+        f"{toc_entry_id}:{output_language}".encode(), digest_size=4
+    ).digest()
+    return int.from_bytes(digest, "big", signed=True)
 
 
 async def create_target(
@@ -227,6 +292,8 @@ async def set_target_status(
     abandon_requested_reason: Optional[str] = None,
     clear_publication_claim: bool = False,
     clear_publication_backoff: bool = False,
+    clear_publication_next_attempt: bool = False,
+    clear_terminal_reason: bool = False,
 ) -> bool:
     """Fenced compare-and-set on a target.
 
@@ -252,6 +319,28 @@ async def set_target_status(
     None, which means "leave it alone". Passing an explicit
     ``publication_last_error`` alongside it is contradictory; the clear wins.
 
+    ``clear_publication_next_attempt=True`` is the operator-only HALF of the backoff
+    clear: it drops ``publication_next_attempt_at`` while KEEPING the error text
+    that explains why. Parking an exhausted (or collided) delivery needs exactly
+    that shape — the publisher's claim sweep treats a due-or-past
+    ``publication_next_attempt_at`` on a ``publication_failed`` row as "retry
+    now", so the timestamp that made this attempt claimable has to go or the
+    same failing delivery loops forever; and ``clear_publication_backoff`` would
+    additionally erase the reason the operator needs to read.
+
+    ``clear_terminal_reason=True`` is the fourth of these explicit clears, and
+    it is applied AUTOMATICALLY on the one transition that always needs it: a
+    re-drive out of ``generation_failed`` back into ``generating``.
+    ``terminal_reason`` is the target's only free-text column, so a creation
+    failure ("revision job could not be created: ...") is written there while
+    the row is NOT terminal. Left in place, a retry that then SUCCEEDS carries
+    that stale sentence all the way to ``published`` and the operator report
+    describes a delivered revision as a failed one. Applied here rather than at
+    the call sites because there are two of them — the operator retry and the
+    job reconciler — and both must behave identically. Passing an explicit
+    ``terminal_reason`` alongside wins (the caller is replacing the text, not
+    dropping it).
+
     The database still has the last word: the publication-approval trigger and
     the terminality/published-completeness checks reject an illegal move even if
     the expected status matched.
@@ -276,6 +365,14 @@ async def set_target_status(
     if clear_publication_backoff:
         values["publication_next_attempt_at"] = None
         values["publication_last_error"] = None
+    if clear_publication_next_attempt:
+        values["publication_next_attempt_at"] = None
+    redrive = (
+        new_status == "generating"
+        and "generation_failed" in set(expected_statuses)
+    )
+    if (clear_terminal_reason or redrive) and terminal_reason is None:
+        values["terminal_reason"] = None
 
     where = [
         RegenerationTarget.id == target_id,
@@ -345,3 +442,271 @@ async def claim_target_publication(
         )
     )
     return result.rowcount == 1
+
+
+async def lock_owning_campaign(
+    session: AsyncSession, *, campaign_id: UUID, skip_locked: bool = False
+) -> Optional[RegenerationCampaign]:
+    """Take the PARENT lock before touching a target, and hand back the row.
+
+    ``FOR KEY SHARE`` deliberately, not ``FOR UPDATE``: it is exactly the lock
+    ``trg_regeneration_targets_publication_gate`` takes from inside the target
+    UPDATE, so holding it first means the trigger's own acquisition is already
+    satisfied and the publisher never reaches for the campaign while holding
+    the target. It also conflicts with the ``FOR UPDATE`` every campaign action
+    takes, so an operator cancel cannot slip between this read and the write it
+    guards.
+
+    ``skip_locked=True`` returns None instead of waiting when a campaign action
+    already holds the row ``FOR UPDATE``. That is what makes the CLAIM sweep
+    wait-free: a publisher that never waits for a lock can never be part of a
+    deadlock cycle, and a campaign that is busy is simply re-scanned next tick.
+    Resolution of an ALREADY-claimed target uses ``skip_locked=False`` — by then
+    the remote write has happened and the outcome has to land, and waiting is
+    safe because no target lock is held yet.
+    """
+    return await session.scalar(
+        select(RegenerationCampaign)
+        .where(RegenerationCampaign.id == campaign_id)
+        .with_for_update(read=True, key_share=True, skip_locked=skip_locked)
+        .execution_options(populate_existing=True)
+    )
+
+
+def _campaign_may_publish(campaign: Optional[RegenerationCampaign]) -> bool:
+    """The SAME predicate `trg_regeneration_targets_publication_gate` enforces.
+
+    Stated here so the claim sweep never selects a row the trigger would then
+    RAISE on — an exception from inside the claim aborts the whole sweep
+    transaction, so this is a correctness guard, not an optimisation.
+    """
+    return (
+        campaign is not None
+        and campaign.approved_at is not None
+        and campaign.status not in ("rejected", "cancelled")
+    )
+
+
+def _claimable(target: RegenerationTarget, *, now: datetime, lease_cutoff: datetime) -> bool:
+    """Is this target releasable to a publisher right now?
+
+    Three disjoint cases, and the middle one is the subtle one:
+
+    * ``publication_pending`` — released work nobody holds;
+    * ``publication_failed`` — retry-due ONLY. ``publication_next_attempt_at``
+      must be set AND due. A NULL there means the automatic budget is spent (or
+      the failure was a page collision): operator-only, never auto-claimed. A
+      NULL read as "due now" would loop a permanently failing delivery forever;
+    * ``publishing`` — a dead publisher's row, reclaimable once its lease ends.
+      ``publishing`` has to be claimable or nothing would ever move a crashed
+      delivery.
+    """
+    if target.status == "publication_pending":
+        return True
+    if target.status == "publication_failed":
+        return (
+            target.publication_next_attempt_at is not None
+            and target.publication_next_attempt_at <= now
+        )
+    if target.status == "publishing":
+        return (
+            target.publication_claimed_at is None
+            or target.publication_claimed_at <= lease_cutoff
+        )
+    return False
+
+
+async def claim_next_publication(
+    session: AsyncSession, *, now: datetime, lease_seconds: int
+) -> Optional[ClaimedRegenerationTarget]:
+    """Claim one releasable publication, or return None when there is none.
+
+    The claim is durable: it lives on the row (token + timestamp + attempts),
+    so a publisher that dies mid-delivery keeps its target until the lease
+    expires and only then may a peer take it over.
+
+    **Lock protocol (parent → child, wait-free).** A candidate scan reads
+    without locks, then for each candidate the OWNING CAMPAIGN is locked
+    ``FOR KEY SHARE ... SKIP LOCKED`` before the target is locked
+    ``FOR UPDATE SKIP LOCKED``. Reaching the target first — which is what the
+    older `claim_target_publication` does — inverts the order every campaign
+    action takes, because the publication-gate trigger then reaches BACK to the
+    campaign for its own ``FOR KEY SHARE``; a concurrent cancel holding the
+    campaign and waiting for the target closes the cycle. Skipping (rather than
+    waiting for) both locks means this sweep never waits on anything, and a
+    transaction that never waits can never be the victim OR the cause of a
+    deadlock.
+
+    **Attempts.** Incremented on the CLAIM, not on the outcome, so a
+    crash-looping publisher still exhausts its budget. The counter RESTARTS at
+    1 for a ``publication_pending`` row carrying no outstanding failure — a
+    freshly released target (already 0) or one an operator explicitly retried.
+    Task 7's `retry_publication` deliberately preserves the cumulative count
+    when it clears the backoff, so without this restart an operator retry after
+    exhaustion would buy zero real attempts. The restart is scoped to
+    ``publication_pending`` + ``publication_last_error IS NULL``: a retry-due
+    ``publication_failed`` row always carries its error and keeps counting.
+    """
+    lease_cutoff = now - timedelta(seconds=lease_seconds)
+    candidates = await session.execute(
+        select(RegenerationTarget.id, RegenerationTarget.campaign_id)
+        .join(
+            RegenerationCampaign,
+            RegenerationCampaign.id == RegenerationTarget.campaign_id,
+        )
+        .where(
+            RegenerationCampaign.approved_at.is_not(None),
+            RegenerationCampaign.status.not_in(("rejected", "cancelled")),
+            or_(
+                RegenerationTarget.status == "publication_pending",
+                and_(
+                    RegenerationTarget.status == "publication_failed",
+                    RegenerationTarget.publication_next_attempt_at.is_not(None),
+                    RegenerationTarget.publication_next_attempt_at <= now,
+                ),
+                and_(
+                    RegenerationTarget.status == "publishing",
+                    or_(
+                        RegenerationTarget.publication_claimed_at.is_(None),
+                        RegenerationTarget.publication_claimed_at <= lease_cutoff,
+                    ),
+                ),
+            ),
+        )
+        # Oldest release first, then id: deterministic, so two publishers walk
+        # the same list and `SKIP LOCKED` spreads them across it instead of
+        # both retrying the same head row.
+        .order_by(RegenerationTarget.publication_released_at, RegenerationTarget.id)
+        .limit(_CLAIM_SCAN_LIMIT)
+    )
+    for target_id, campaign_id in candidates.all():
+        campaign = await lock_owning_campaign(
+            session, campaign_id=campaign_id, skip_locked=True
+        )
+        if not _campaign_may_publish(campaign):
+            # Either a campaign action holds it (skip and re-scan next tick) or
+            # approval was withdrawn between the scan and the lock.
+            continue
+        target = await session.scalar(
+            select(RegenerationTarget)
+            .where(RegenerationTarget.id == target_id)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        )
+        if target is None or not _claimable(target, now=now, lease_cutoff=lease_cutoff):
+            continue
+
+        fresh_cycle = (
+            target.status == "publication_pending"
+            and target.publication_last_error is None
+        )
+        attempts = 1 if fresh_cycle else target.publication_attempts + 1
+        claim_token = uuid4()
+        result = await session.execute(
+            update(RegenerationTarget)
+            .where(RegenerationTarget.id == target_id)
+            .values(
+                status="publishing",
+                publication_claim_token=claim_token,
+                publication_claimed_at=now,
+                publication_attempts=attempts,
+                # Only ever FILLS a null: `ck_regeneration_targets_publication_
+                # released` demands a stamp for `publishing`, and re-stamping
+                # would restart the publication clock on a reserved version.
+                publication_released_at=func.coalesce(
+                    RegenerationTarget.publication_released_at, now
+                ),
+                updated_at=now,
+            )
+        )
+        if result.rowcount != 1:  # pragma: no cover - we hold the row lock
+            continue
+        return ClaimedRegenerationTarget(
+            target_id=target_id,
+            campaign_id=campaign_id,
+            toc_entry_id=target.toc_entry_id,
+            output_language=target.output_language,
+            claim_token=claim_token,
+            publication_attempts=attempts,
+            publication_version=target.publication_version,
+            notion_page_id=target.notion_page_id,
+            abandon_requested_at=target.abandon_requested_at,
+        )
+    return None
+
+
+async def reserve_publication_version(
+    session: AsyncSession, *, target_id: UUID, claim_token: UUID
+) -> int:
+    """Reserve (or re-read) this target's immutable publication version.
+
+    Returns an already-reserved number UNCHANGED — every retry of one delivery
+    publishes the same `Homework V{n}` page. Otherwise allocates
+    ``max(existing version for this lineage, 1) + 1``, so the first number is 2:
+    logical V1 is the pre-existing `Homework` page and has no row here.
+
+    Serialised with a transaction-scoped advisory lock on
+    ``(toc_entry_id, output_language)``, taken BEFORE the target row lock and
+    after the caller's campaign lock, preserving the one global order. The
+    advisory lock is what makes the read-then-write safe; the partial unique
+    index ``uq_regeneration_targets_publication_version`` remains the final
+    fence, and a consumed number is never cleared or reused — not by a failed
+    delivery, not by a cancellation, not by a later campaign.
+
+    Raises :class:`StalePublicationClaim` when the lease was taken over: a
+    publisher whose claim is gone must not reserve a number it will never use.
+    """
+    lineage = (
+        await session.execute(
+            select(
+                RegenerationTarget.toc_entry_id, RegenerationTarget.output_language
+            ).where(RegenerationTarget.id == target_id)
+        )
+    ).first()
+    if lineage is None:
+        raise StalePublicationClaim(f"regeneration target {target_id} not found")
+    toc_entry_id, output_language = lineage
+
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:ns, :key)"),
+        {
+            "ns": _VERSION_LOCK_NAMESPACE,
+            "key": _publication_lineage_lock_key(toc_entry_id, output_language),
+        },
+    )
+
+    target = await session.scalar(
+        select(RegenerationTarget)
+        .where(RegenerationTarget.id == target_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if target is None or target.publication_claim_token != claim_token:
+        raise StalePublicationClaim(
+            f"regeneration target {target_id}: publication claim {claim_token} is "
+            "no longer current — refusing to reserve a version"
+        )
+    if target.publication_version is not None:
+        return target.publication_version
+
+    highest = await session.scalar(
+        select(func.max(RegenerationTarget.publication_version)).where(
+            RegenerationTarget.toc_entry_id == toc_entry_id,
+            RegenerationTarget.output_language == output_language,
+        )
+    )
+    version = max(highest or 1, 1) + 1
+    result = await session.execute(
+        update(RegenerationTarget)
+        .where(
+            RegenerationTarget.id == target_id,
+            RegenerationTarget.publication_claim_token == claim_token,
+            RegenerationTarget.publication_version.is_(None),
+        )
+        .values(publication_version=version, updated_at=func.now())
+    )
+    if result.rowcount != 1:  # pragma: no cover - the row lock makes this dead
+        raise StalePublicationClaim(
+            f"regeneration target {target_id}: version reservation lost a race"
+        )
+    return version
