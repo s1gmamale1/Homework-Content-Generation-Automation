@@ -699,6 +699,83 @@ async def test_launch_resumes_a_canary_whose_job_creation_crashed(monkeypatch):
 
 
 @db_only
+async def test_a_permanently_failing_target_does_not_take_the_wave_with_it():
+    """The PERMANENT sibling of the resume test above, and the case that one
+    cannot see.
+
+    A transient failure resumes on the next call; a permanent one never does.
+    One bulk target whose source link was purged can NEVER be given a revision
+    job, and the wave is created in a deterministic order — so without
+    per-target isolation the first permanent failure aborts the loop, strands
+    every later (healthy) target in `generating` with no job, and re-running
+    the action hits the same target first and aborts identically, forever.
+    Those stranded targets hold `uq_regeneration_targets_active_lineage`, so no
+    future campaign can regenerate those lessons either.
+
+    What must happen instead: the healthy targets get their jobs, the broken
+    one lands `generation_failed` with a readable reason (attention-required,
+    retryable, abandonable), and the failure is reported — after the healthy
+    work is committed, never instead of it.
+    """
+    from sqlalchemy import update
+
+    from app.db import SessionLocal
+    from app.models.regeneration_target import RegenerationTarget
+
+    ids = await _seed(lessons=3)
+    try:
+        service = _service()
+        campaign = await service.create_campaign(_spec(ids, canary_size=1))
+        await service.launch_canary(campaign.id)
+        await _finish_canary(campaign.id)
+
+        canary, broken, healthy = await _targets(campaign.id)  # canonical order
+        # The documented child-first purge NULLs this link while the reporting
+        # row survives: `create_revision_job` raises `MissingRevisionSource`
+        # here on every attempt, forever.
+        async with SessionLocal() as session:
+            await session.execute(
+                update(RegenerationTarget)
+                .where(RegenerationTarget.id == broken.id)
+                .values(source_job_id=None))
+            await session.commit()
+
+        with pytest.raises(svc.PartialWaveRelease) as exc:
+            await service.approve_canary(campaign.id, actor="pytest")
+        assert [f.target_id for f in exc.value.failures] == [broken.id]
+        assert str(broken.id) in str(exc.value)
+
+        jobs = await _revision_jobs(campaign.id)
+        # the healthy target ORDERED AFTER the broken one still got its job
+        assert {j.regeneration_target_id for j in jobs} == {canary.id, healthy.id}
+        by_id = {t.id: t for t in await _targets(campaign.id)}
+        assert by_id[healthy.id].status == "generating"
+        assert by_id[canary.id].status == "publication_pending"
+        # ...and the broken one is visibly failed, not invisible in-flight
+        assert by_id[broken.id].status == "generation_failed"
+        assert by_id[broken.id].terminal_at is None
+        assert "source" in (by_id[broken.id].terminal_reason or "")
+
+        # repeating the action is NOT blocked by the failed target, and creates
+        # no duplicate job
+        again = await service.approve_canary(campaign.id, actor="pytest")
+        assert again.status == "bulk_running"
+        assert len(await _revision_jobs(campaign.id)) == 2
+
+        # both operator exits are open on the failed target: retry says so
+        # loudly and leaves it retryable, and abandon still works
+        with pytest.raises(svc.PartialWaveRelease):
+            await service.retry_generation(broken.id)
+        assert (await _targets(campaign.id))[1].status == "generation_failed"
+        abandoned = await service.abandon(
+            broken.id, actor="pytest", reason="source purged")
+        assert abandoned.status == "abandoned"
+        assert len(await _revision_jobs(campaign.id)) == 2
+    finally:
+        await _purge(ids)
+
+
+@db_only
 async def test_job_creation_gets_a_dedicated_session_with_no_pending_writes(
     seeded, monkeypatch
 ):
@@ -876,24 +953,30 @@ async def test_approval_does_not_release_a_canary_that_is_being_abandoned(seeded
             abandon_requested_reason="operator gave up")
         await session.commit()
 
-    # reconciliation converges the abandon request first — a `done` revision
-    # with an abandon request is abandoned, not published
-    parked = await service.roll_up(campaign.id)
-    assert [t.status for t in await _targets(campaign.id)] == ["abandoned"]
-    # nothing legal is left to derive from `canary_running`, so the campaign
-    # parks for an operator instead of reporting progress it will never make
-    assert parked.status == "attention_required"
+    # `roll_up` reconciles the GENERATION repair's states only, so it leaves an
+    # already-reviewable target to the action that owns it — this intent is
+    # only reachable here through the raw repository write above; every service
+    # path (`cancel`/`reject`/`abandon`) converges an `awaiting_canary_approval`
+    # target to `abandoned` in the same transaction that records the intent.
+    await service.roll_up(campaign.id)
+    assert [t.status for t in await _targets(campaign.id)] == [
+        "awaiting_canary_approval"]
 
-    # the state machine reaches a terminal campaign THROUGH attention_required,
-    # so the next rollup completes it — with abandonments, never published
-    converged = await service.roll_up(campaign.id)
-    assert converged.status == "completed_with_abandonments"
-    with pytest.raises(svc.IllegalCampaignAction):
-        await service.approve_canary(campaign.id, actor="pytest")
+    # THE property: approval does not release it. No version is reserved, no
+    # publication clock starts, and no public page can follow.
+    await service.approve_canary(campaign.id, actor="pytest")
     (after,) = await _targets(campaign.id)
-    assert after.status == "abandoned"
+    assert after.status == "awaiting_canary_approval"
     assert after.publication_released_at is None
     assert after.publication_version is None
+    assert after.abandon_requested_reason == "operator gave up"
+
+    # and the operator's real exit still converges it — terminal WITH
+    # abandonments, never published
+    assert (await service.abandon(
+        target.id, actor="pytest", reason="operator gave up")).status == "abandoned"
+    assert (await service.roll_up(campaign.id)).status == (
+        "completed_with_abandonments")
 
 
 @db_only
@@ -981,8 +1064,21 @@ async def test_canary_and_bulk_revisions_share_one_resolved_launch_contract(
         LaunchDefaultsSnapshot, resolve_launch_contract,
     )
 
+    _MUTATED = (
+        "judge_provider", "judge_model", "extract_provider", "extract_model",
+        "solver_provider", "solver_model",
+    )
     ids = await _seed(lessons=3)
+    restore: dict = {}
     try:
+        # Snapshot what is ACTUALLY there before touching it. `launch_defaults`
+        # is a repository-global singleton shared with every other test in a
+        # whole-suite run; restoring a hardcoded tuple would silently rewrite
+        # someone else's row (a failing `test_put_partial_update` leaves it
+        # elsewhere) instead of putting back what this test took.
+        async with SessionLocal() as session:
+            row = await ld_repo.get(session)
+            restore = {name: getattr(row, name) for name in _MUTATED}
         service = _service()
         draft = LaunchContract(
             provider="gemini", model="gemini-3.6-flash", transport="api",
@@ -1027,15 +1123,10 @@ async def test_canary_and_bulk_revisions_share_one_resolved_launch_contract(
                 assert getattr(job, field) == stored[field], (job.id, field)
         assert any(j.id == canary_job.id for j in jobs)
     finally:
-        async with SessionLocal() as session:
-            await ld_repo.update(session, {
-                "judge_provider": "gemini", "judge_model": "gemini-3.5-flash",
-                "extract_provider": "gemini",
-                "extract_model": "gemini-3.5-flash-lite",
-                "solver_provider": "gemini",
-                "solver_model": "gemini-3.1-pro-preview",
-            })
-            await session.commit()
+        if restore:
+            async with SessionLocal() as session:
+                await ld_repo.update(session, restore)
+                await session.commit()
         await _purge(ids)
 
 
@@ -1550,6 +1641,86 @@ async def test_retry_publication_refuses_a_target_that_never_published():
         await _purge(ids)
 
 
+@db_only
+async def test_retry_generation_requeues_a_done_but_unusable_revision():
+    """`done` WITHOUT a usable snapshot is a DESIGNED `generation_failed`
+    (`desired_target_status` maps it there deliberately: publishing a packet
+    with a missing phase is the one outcome regeneration exists to prevent).
+
+    The design calls that state attention-required and RETRYABLE, so the retry
+    has to actually requeue the existing job. Skipping the requeue because the
+    job is `done` returns success, re-derives the target straight back to
+    `generation_failed`, and tells the operator nothing.
+    """
+    from app.db import SessionLocal
+    from app.repositories import jobs as jobs_repo
+    from app.repositories import phase_outputs as phase_repo
+    from app.services import regeneration_job_state
+
+    ids = await _seed()
+    try:
+        service = _service()
+        campaign = await service.create_campaign(_spec(ids))
+        await service.launch_canary(campaign.id)
+        job = (await _revision_jobs(campaign.id))[0]
+        # the worker finished, but the regenerated phase never landed
+        async with SessionLocal() as session:
+            await jobs_repo.set_status(session, job.id, "done")
+            await session.commit()
+            await regeneration_job_state.reconcile_revision_job(session, job.id)
+            await session.commit()
+        (before,) = await _targets(campaign.id)
+        assert before.status == "generation_failed"
+        async with SessionLocal() as session:
+            rows_before = len(await phase_repo.list_for_job(session, job.id))
+        assert rows_before  # the copied snapshot exists and must survive
+
+        target = await service.retry_generation(before.id)
+
+        assert target.status == "generating"
+        assert target.phase_plan == before.phase_plan  # plan preserved
+        async with SessionLocal() as session:
+            fresh = await jobs_repo.get(session, job.id)
+            rows_after = len(await phase_repo.list_for_job(session, job.id))
+        assert fresh.status == "pending"  # actually requeued, not a no-op
+        assert fresh.attempts == 0
+        assert fresh.batch_id is None
+        assert rows_after == rows_before  # ONE snapshot, not a second copy
+        assert len(await _revision_jobs(campaign.id)) == 1  # ONE job
+    finally:
+        await _purge(ids)
+
+
+@db_only
+async def test_publication_retry_rolls_up_only_when_it_actually_retried():
+    """A campaign parked in `attention_required` by a publication failure must
+    come back once the operator retries — and the idempotent already-pending
+    call must stay side-effect-free."""
+    ids = await _seed()
+    try:
+        service, campaign = await _campaign_with_target_in("publication_failed", ids)
+        (target,) = await _targets(campaign.id)
+        assert (await service.roll_up(campaign.id)).status == "attention_required"
+
+        rolled = []
+        real_roll_up = service.roll_up
+
+        async def counting(campaign_id):
+            rolled.append(campaign_id)
+            return await real_roll_up(campaign_id)
+
+        service.roll_up = counting
+        await service.retry_publication(target.id)
+        assert rolled == [campaign.id]
+        assert (await _campaign(campaign.id)).status == "bulk_running"
+
+        again = await service.retry_publication(target.id)  # idempotent
+        assert again.status == "publication_pending"
+        assert rolled == [campaign.id]  # the no-op case rolls nothing up
+    finally:
+        await _purge(ids)
+
+
 # ─── rollup / no hidden live targets ─────────────────────────────────────
 
 
@@ -1587,6 +1758,44 @@ async def test_a_campaign_never_reports_terminal_while_a_target_is_in_flight():
             await regeneration_job_state.reconcile_revision_job(session, bulk[0].id)
             await session.commit()
         assert (await service.roll_up(campaign.id)).status == "cancelled"
+    finally:
+        await _purge(ids)
+
+
+@db_only
+async def test_roll_up_leaves_a_publication_failed_target_to_the_operator():
+    """`roll_up` is documented as safe to call from any action or report — so
+    Task 9's report will run it on every page load. It reconciles GENERATION
+    crashes only: a target that has reached a publication state belongs to the
+    publisher and to `retry_publication`.
+
+    Reconciling one anyway is legal in the transition table
+    (`publication_failed -> publication_pending` is the edge the operator retry
+    itself uses) and therefore silently re-queues the delivery WITHOUT clearing
+    the backoff: the attention signal disappears from the report, and the
+    operator's own retry then hits its idempotent branch and does nothing while
+    `publication_next_attempt_at` still holds the target unclaimable.
+    """
+    ids = await _seed()
+    try:
+        service, campaign = await _campaign_with_target_in("publication_failed", ids)
+        (before,) = await _targets(campaign.id)
+        assert before.publication_last_error and before.publication_next_attempt_at
+
+        rolled = await service.roll_up(campaign.id)
+
+        (after,) = await _targets(campaign.id)
+        assert after.status == "publication_failed"  # untouched
+        assert after.publication_last_error == before.publication_last_error
+        assert after.publication_next_attempt_at is not None
+        assert rolled.status == "attention_required"  # and it SHOWS
+
+        # the operator's retry — and only it — clears the safe fields
+        retried = await service.retry_publication(after.id)
+        assert retried.status == "publication_pending"
+        assert retried.publication_last_error is None
+        assert retried.publication_next_attempt_at is None
+        assert retried.publication_version == before.publication_version
     finally:
         await _purge(ids)
 

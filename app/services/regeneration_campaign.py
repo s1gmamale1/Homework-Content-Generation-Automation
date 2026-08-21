@@ -67,6 +67,7 @@ from app.models.regeneration_campaign import RegenerationCampaign
 from app.models.regeneration_target import RegenerationTarget
 from app.repositories import jobs as jobs_repo
 from app.repositories import launch_defaults as launch_defaults_repo
+from app.repositories import phase_outputs as phase_repo
 from app.repositories import regeneration_campaigns as campaigns_repo
 from app.repositories import regeneration_targets as targets_repo
 from app.schemas.regeneration_contract import (
@@ -80,7 +81,10 @@ from app.services import agent_models, regeneration_job_state, regeneration_snap
 from app.services import regeneration_discovery as discovery
 from app.services.job_reactivation import retired_models_in_job
 from app.services.launch_stagger import stagger_offset
-from app.services.regeneration_planner import build_phase_plan
+from app.services.regeneration_planner import (
+    build_phase_plan,
+    validate_complete_snapshot,
+)
 from app.services.regeneration_states import (
     TERMINAL_CAMPAIGN_STATUSES,
     TERMINAL_TARGET_STATUSES,
@@ -99,11 +103,13 @@ __all__ = [
     "LaunchStaggerPlan",
     "NoEligibleTargets",
     "NonApiTransport",
+    "PartialWaveRelease",
     "PreflightBlocked",
     "RegenerationCampaignService",
     "RetiredModelRefusal",
     "TargetNotFound",
     "TerminalCampaignWithLiveTargets",
+    "WaveFailure",
     "assert_not_hiding_live_targets",
     "derive_campaign_status",
     "plan_launch_stagger",
@@ -121,6 +127,16 @@ _ROLES = ("extract", "judge", "solver")
 # campaign's own commit and the job's leaves exactly this shape, and resuming
 # the action must finish it rather than skip it.
 _CREATABLE_TARGET_STATUSES = ("planned", "generating")
+
+# Target states `roll_up` may still RECONCILE against their job. Read from
+# `regeneration_job_state` rather than copied, because the two must not drift:
+# a target that has reached a publication state belongs to the publisher and to
+# `retry_publication`, and reconciling one anyway is LEGAL in the transition
+# table (`publication_failed -> publication_pending` is the edge the operator
+# retry itself uses) — so a wider set here silently re-queues a failed delivery
+# without clearing its backoff, erases the attention signal from the report,
+# and turns the operator's own retry into a no-op.
+_RECONCILABLE_TARGET_STATUSES = regeneration_job_state._REPAIRABLE_TARGET_STATUSES
 
 
 # ═══════════════════════════ errors ══════════════════════════════════════
@@ -227,6 +243,32 @@ class PreflightBlocked(CampaignError):
         )
 
 
+class PartialWaveRelease(CampaignError):
+    """Some targets of a release could never be given a revision job.
+
+    Raised AFTER every healthy target has its job committed and the campaign
+    has been rolled up — never instead of that work. A revision job is created
+    per target in its own committed session, so isolating a failure costs the
+    wave nothing; NOT isolating it aborts the loop, strands every later
+    (healthy) target in ``generating`` with no job, and — because the wave order
+    is deterministic — re-running the action hits the same target first and
+    aborts identically, forever. Those stranded targets hold
+    ``uq_regeneration_targets_active_lineage``, so no future campaign could
+    regenerate those lessons either.
+
+    ``failures`` is in wave order, so two runs of the same broken selection
+    report the same thing in the same sequence.
+    """
+
+    def __init__(self, failures: Sequence["WaveFailure"]):
+        self.failures = list(failures)
+        listed = "; ".join(str(f) for f in self.failures[:5])
+        super().__init__(
+            f"{len(self.failures)} target(s) could not be released and are "
+            f"now generation_failed (retry or abandon them): {listed}"
+        )
+
+
 class IllegalCampaignAction(CampaignError):
     """The campaign is not in a state where this action is meaningful."""
 
@@ -289,6 +331,24 @@ class CreateCampaignSpec:
     app_git_revision: Optional[str] = None
     actor: str = ""
     notes: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WaveFailure:
+    """One target a release could not give a revision job, and why.
+
+    Carries the SOURCE job id as well as the target id because the refusals are
+    all about the source (a purged link, a snapshot that stopped validating),
+    and an operator reading only ``IncompleteSnapshot``'s text is told about a
+    job they cannot map back to a lesson.
+    """
+
+    target_id: UUID
+    source_job_id: Optional[UUID]
+    reason: str
+
+    def __str__(self) -> str:
+        return f"target {self.target_id} (source {self.source_job_id}): {self.reason}"
 
 
 @dataclass(frozen=True)
@@ -640,8 +700,13 @@ class RegenerationCampaignService:
                 )
             await session.commit()
 
-        await self._create_wave(wave, contract)
-        return await self.roll_up(campaign_id)
+        failures = await self._create_wave(wave, contract)
+        campaign = await self.roll_up(campaign_id)
+        if failures:
+            # AFTER the healthy canaries are committed and the campaign has been
+            # re-derived: a partial release is reported, never rolled back.
+            raise PartialWaveRelease(failures)
+        return campaign
 
     async def approve_canary(
         self, campaign_id: UUID, *, actor: str
@@ -716,8 +781,16 @@ class RegenerationCampaignService:
             wave = await self._prepare_wave(session, campaign_id, targets)
             await session.commit()
 
-        await self._create_wave(wave, contract)
-        return await self.roll_up(campaign_id)
+        failures = await self._create_wave(wave, contract)
+        campaign = await self.roll_up(campaign_id)
+        if failures:
+            # The approval itself STANDS (`approved_at` is stamped, every
+            # healthy revision exists); only the targets that could not be
+            # released are reported. Re-approving is safe and creates nothing
+            # twice — a `generation_failed` target is no longer creatable, so
+            # the same broken lesson cannot block the action a second time.
+            raise PartialWaveRelease(failures)
+        return campaign
 
     async def reject_canary(
         self, campaign_id: UUID, *, actor: str, reason: str
@@ -857,12 +930,31 @@ class RegenerationCampaignService:
             job = await targets_repo.revision_job_for_target(
                 session, target_id=target_id
             )
+            requeue = False
             if job is not None:
                 # A retry reuses the job's PINNED provider/model verbatim on
                 # every role. The generic `/jobs/{id}/retry` guard is
                 # unreachable for a revision, so this is the only thing standing
                 # between an operator retry and a 404-ing dead model.
                 require_live_models(job, what="retry this revision")
+                requeue = job.status in ("failed", "cancelled")
+                if job.status == "done":
+                    # A `done` job WITHOUT a usable snapshot is a DESIGNED
+                    # `generation_failed` (`desired_target_status`: publishing a
+                    # packet with a missing or empty phase is the one outcome
+                    # regeneration exists to prevent) — and the design calls
+                    # that state retryable. `reset_for_retry` is safe on a
+                    # `done` row: it only rewrites the queue columns, the copied
+                    # phase rows stay, and the pipeline resumes over them
+                    # (`_done_phase_md` skips exactly the rows this predicate
+                    # accepts), so the retry re-runs the phase that is missing
+                    # and nothing else. Decided HERE, before the CAS below, so
+                    # the target is never driven to `generating` with no work
+                    # behind it.
+                    rows = await phase_repo.list_for_job(session, job.id)
+                    requeue = not validate_complete_snapshot(
+                        subject=job.subject, rows=rows
+                    ).usable
             if target.status == "generation_failed":
                 await targets_repo.set_target_status(
                     session,
@@ -873,20 +965,29 @@ class RegenerationCampaignService:
             await session.commit()
             job_id = job.id if job is not None else None
 
+        failures: list[WaveFailure] = []
         if job_id is None:
             # The failure happened before the job existed (a crash mid-wave, or
             # a snapshot refusal): finish the creation instead of requeueing.
-            await self._create_wave([target_id], contract)
-        else:
+            failures = await self._create_wave([target_id], contract)
+        elif requeue:
             async with self._sessions() as session:
                 fresh = await jobs_repo.get(session, job_id)
-                if fresh is not None and fresh.status in ("failed", "cancelled"):
+                if (fresh is not None
+                        and fresh.status
+                        in regeneration_job_state.TERMINAL_JOB_STATUSES):
                     # No batch_id: `ck_homework_jobs_revision_no_batch` forbids
                     # one, and a revision is never a Fleet batch member. No
                     # offset either — an operator retry is a single job.
                     await jobs_repo.reset_for_retry(session, job_id)
                     await session.commit()
+        # A job still `pending`/`running` needs nothing (the retry is a no-op on
+        # work already in flight), and a `done` job WITH a usable snapshot needs
+        # no regeneration — the rollup below carries it forward to publication
+        # rather than paying to re-run a revision that succeeded.
         await self.roll_up((await self._read_target(target_id)).campaign_id)
+        if failures:
+            raise PartialWaveRelease(failures)
         return await self._read_target(target_id)
 
     async def retry_publication(self, target_id: UUID) -> RegenerationTarget:
@@ -929,6 +1030,12 @@ class RegenerationCampaignService:
                     "the retry was being applied"
                 )
             await session.commit()
+        # A publication failure parks the campaign in `attention_required`; a
+        # real retry has to bring it back, or the report keeps demanding an
+        # operator decision that was already made. Only on the path that
+        # actually moved a target — the idempotent already-pending return above
+        # changes nothing and must stay side-effect-free.
+        await self.roll_up(campaign.id)
         return await self._read_target(target_id)
 
     async def abandon(
@@ -964,8 +1071,23 @@ class RegenerationCampaignService:
         return await self._read_target(target_id)
 
     async def roll_up(self, campaign_id: UUID) -> RegenerationCampaign:
-        """Reconcile every live target against its job, then re-derive the
-        campaign status. Idempotent, and safe to call from any action or report.
+        """Reconcile every target the GENERATION repair owns against its job,
+        then re-derive the campaign status. Idempotent, and safe to call from
+        any action or report.
+
+        The reconcile is bounded to ``_RECONCILABLE_TARGET_STATUSES`` — exactly
+        the set the crash-repair sweep uses. This method is documented as safe
+        to call from any action or report, so it runs on every report page
+        load; reconciling a target that has already reached a publication state
+        would hand the publisher's and the operator's decisions back to a
+        derived rule. In particular ``publication_failed`` is an
+        attention-required state whose retry is explicitly operator-gated: the
+        transition table ALLOWS ``publication_failed -> publication_pending``
+        (it is the edge ``retry_publication`` uses), so an unbounded reconcile
+        silently re-queues the delivery while leaving
+        ``publication_next_attempt_at``/``publication_last_error`` set — the
+        campaign stops reporting ``attention_required`` and the operator's own
+        retry then hits its idempotent branch and does nothing.
         """
         async with self._sessions() as session:
             campaign = await self._locked_campaign(session, campaign_id)
@@ -974,6 +1096,8 @@ class RegenerationCampaignService:
             )
             for target in targets:
                 if target.terminal_at is not None:
+                    continue
+                if target.status not in _RECONCILABLE_TARGET_STATUSES:
                     continue
                 job = await targets_repo.revision_job_for_target(
                     session, target_id=target.id
@@ -1196,7 +1320,7 @@ class RegenerationCampaignService:
 
     async def _create_wave(
         self, target_ids: Sequence[UUID], contract: ResolvedLaunchContract
-    ) -> None:
+    ) -> list[WaveFailure]:
         """Create one revision job per target, each in its OWN session.
 
         ``create_revision_job`` COMMITS. Handing it a session that still held
@@ -1208,23 +1332,103 @@ class RegenerationCampaignService:
         Offsets are computed over the jobs this call actually creates, and are
         passed to ``create_revision_job`` as ``start_offset_seconds`` — never
         applied afterwards, which would re-stagger an already-queued revision.
+
+        ISOLATED per target. ``create_revision_job``'s refusals
+        (``IncompleteSnapshot``, ``MissingRevisionSource``,
+        ``TargetNotEligible``) are PERMANENT properties of ONE target's source,
+        not of the wave: the source job's phase rows were reset since the
+        campaign was created, or the documented child-first purge nulled the
+        link. Letting one abort the loop strands every later healthy target in
+        ``generating`` with no job and no repair path — see
+        :class:`PartialWaveRelease`. So each one is caught, recorded, and the
+        target is driven to ``generation_failed``; the rest of the wave is
+        created, and the caller raises the aggregate afterwards.
+
+        The catch is deliberately NARROW. Only ``RevisionSnapshotError`` is a
+        per-target creation failure. Anything else — a dropped connection, a
+        bug — is not target-scoped, and is left to propagate with the jobs
+        created so far already committed (their sessions are separate, so
+        nothing rolls back) and the wave resumable by re-running the action.
+        ``asyncio.CancelledError``, ``KeyboardInterrupt`` and ``SystemExit``
+        are ``BaseException``s and are untouched by this ``except`` clause for
+        the same reason: shutdown is not a target's fault.
         """
         if not target_ids:
-            return
+            return []
         plan = plan_launch_stagger(len(target_ids))
         logger.info(
             f"regeneration wave: {plan.job_count} job(s), {plan.wave_count} wave(s), "
             f"final offset {plan.final_offset_seconds}s "
             f"(size={plan.wave_size}, interval={plan.interval_seconds}s)"
         )
+        failures: list[WaveFailure] = []
         for index, target_id in enumerate(target_ids):
-            async with self._sessions() as session:
-                await regeneration_snapshot.create_revision_job(
-                    session,
-                    target_id=target_id,
-                    launch_contract=contract,
-                    start_offset_seconds=plan.offsets[index],
+            try:
+                async with self._sessions() as session:
+                    await regeneration_snapshot.create_revision_job(
+                        session,
+                        target_id=target_id,
+                        launch_contract=contract,
+                        start_offset_seconds=plan.offsets[index],
+                    )
+            except regeneration_snapshot.RevisionSnapshotError as exc:
+                failures.append(await self._fail_target_creation(target_id, exc))
+        return failures
+
+    async def _fail_target_creation(
+        self, target_id: UUID, exc: Exception
+    ) -> WaveFailure:
+        """Land ONE target that cannot be given a revision job, and describe it.
+
+        ``generation_failed`` — not ``generating`` and not terminal — because
+        that is the state the design calls attention-required, retryable and
+        abandonable: the operator sees it in the report, ``retry_generation``
+        can re-attempt it once the source is repaired, and ``abandon`` releases
+        its lineage. The reason is written to ``terminal_reason``, the target's
+        only free-text explanation column, so the report has something to show;
+        a later abandon overwrites it with its own.
+
+        A cancellation or abandon intent WINS: such a target is converged by
+        ``cancel``/``abandon``/the reconciler, and re-driving it here would
+        fight them. Nothing is invented if the row moved on: the write is a
+        compare-and-set from ``generating``.
+        """
+        reason = f"revision job could not be created: {exc}"
+        source_job_id: Optional[UUID] = None
+        async with self._sessions() as session:
+            # Parent → child, the same order every other action takes.
+            campaign_id = await session.scalar(
+                select(RegenerationTarget.campaign_id).where(
+                    RegenerationTarget.id == target_id
                 )
+            )
+            target = None
+            if campaign_id is not None:
+                await campaigns_repo.get_campaign_for_update(session, campaign_id)
+                target = await targets_repo.get_target_for_update(session, target_id)
+            if target is not None:
+                source_job_id = target.source_job_id
+                if (
+                    target.terminal_at is None
+                    and target.abandon_requested_at is None
+                    and target.status == "generating"
+                ):
+                    await targets_repo.set_target_status(
+                        session,
+                        target_id=target_id,
+                        new_status="generation_failed",
+                        expected_statuses=["generating"],
+                        terminal_reason=reason,
+                    )
+            await session.commit()
+        logger.warning(
+            f"regeneration target {target_id} (source {source_job_id}): {reason} "
+            "— left generation_failed; retry it once the source is repaired, or "
+            "abandon it to release the lineage"
+        )
+        return WaveFailure(
+            target_id=target_id, source_job_id=source_job_id, reason=reason
+        )
 
     async def _converge_target(
         self, session: AsyncSession, target: RegenerationTarget, *, reason: str
