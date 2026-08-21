@@ -48,16 +48,43 @@ async def create_campaign(
     return campaign
 
 
+async def get_campaign(
+    session: AsyncSession, campaign_id: UUID
+) -> Optional[RegenerationCampaign]:
+    """Plain read, no lock — reports and read-only API responses.
+
+    ``populate_existing`` for the same reason the locked read below has it:
+    ``SessionLocal`` is ``expire_on_commit=False``, so a session that already
+    holds this campaign would otherwise be handed its own stale copy.
+    """
+    return await session.scalar(
+        select(RegenerationCampaign)
+        .where(RegenerationCampaign.id == campaign_id)
+        .execution_options(populate_existing=True)
+    )
+
+
 async def get_campaign_for_update(
     session: AsyncSession, campaign_id: UUID
 ) -> Optional[RegenerationCampaign]:
     """Row-locked read (``FOR UPDATE``). Every decision that reads the campaign
     status and then writes it — approve, reject, cancel, completion rollup —
-    must go through this, or two operators can both act on the same snapshot."""
+    must go through this, or two operators can both act on the same snapshot.
+
+    ``populate_existing=True`` is load-bearing, not tidiness. ``SessionLocal``
+    is built with ``expire_on_commit=False``, so a session that already loaded
+    this campaign keeps that Python object across commits and the identity map
+    hands it straight back. The lock would then be taken while the caller reads
+    a status that has since moved — approving a campaign an operator cancelled
+    a moment ago — and the compare-and-set that follows would silently do
+    nothing. The refresh makes the locked read mean what it says: the row as it
+    is NOW, under our lock.
+    """
     return await session.scalar(
         select(RegenerationCampaign)
         .where(RegenerationCampaign.id == campaign_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
 
 
