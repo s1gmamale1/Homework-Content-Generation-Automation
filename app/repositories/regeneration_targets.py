@@ -792,9 +792,20 @@ async def reserve_publication_version(
     logical V1 is the pre-existing `Homework` page and has no row here.
 
     Serialised with a transaction-scoped advisory lock on
-    ``(toc_entry_id, output_language)``, taken BEFORE the target row lock and
-    after the caller's campaign lock, preserving the one global order. The
-    advisory lock is what makes the read-then-write safe; the partial unique
+    ``(toc_entry_id, output_language)``. Inside this function that lock is
+    taken before the target row lock, but the order the SOLE production caller
+    actually produces is campaign -> target row -> advisory(lineage):
+    ``regeneration_publisher._prepare`` holds both ``lock_owning_campaign`` and
+    ``get_target_for_update`` on THIS target before calling in, so the advisory
+    lock comes last and the row lock below merely re-locks a row the caller
+    already holds. That is safe for two reasons — this function is the only
+    acquirer of the ``REGV`` advisory namespace anywhere in ``app/``, so there
+    is no second order for it to cycle against, and the re-lock cannot block on
+    anyone but its own holder. A SECOND advisory-lock caller would need care:
+    it would have to take the lock in this same position relative to the target
+    row, or hold no conflicting row lock at all.
+
+    The advisory lock is what makes the read-then-write safe; the partial unique
     index ``uq_regeneration_targets_publication_version`` remains the final
     fence, and a consumed number is never cleared or reused — not by a failed
     delivery, not by a cancellation, not by a later campaign.
@@ -836,12 +847,14 @@ async def reserve_publication_version(
             "no longer current — refusing to reserve a version"
         )
 
-    # A PLAIN read, not `lock_owning_campaign`. The one global lock order is
-    # campaign -> advisory(lineage) -> target row, and this point is already
-    # past the first two; taking the campaign lock here would invert it for any
-    # caller that does not already hold it, against a trigger
-    # (`trg_regeneration_targets_publication_gate`) that takes `FOR KEY SHARE`
-    # on the campaign from INSIDE a target UPDATE. No lock is needed anyway:
+    # A PLAIN read, not `lock_owning_campaign`. Execution here is already past
+    # the target row lock and — for the sole production caller — past the
+    # campaign lock as well: the real order is campaign -> target row ->
+    # advisory(lineage). Taking the campaign lock HERE would invert
+    # parent-then-child for any caller that does not already hold it, against a
+    # trigger (`trg_regeneration_targets_publication_gate`) that takes
+    # `FOR KEY SHARE` on the campaign from INSIDE a target UPDATE. No lock is
+    # needed anyway:
     # `publication_version` is written once, at campaign insert, and never
     # updated.
     requested = await session.scalar(

@@ -566,9 +566,13 @@ class RegenerationPublisher:
                 # The partial unique index is the allocator's final fence and it
                 # fires at the UPDATE inside the reservation, not only at the
                 # commit above — which is why the whole preparation is wrapped.
-                # The rollback is explicit because the outcome is written in
-                # `_resolve_failure`'s own fresh session, and a session left in
-                # a failed transaction would take that write down with it.
+                # The rollback is explicit because this session may not be
+                # ours to discard: `session_factory` is injectable, and a
+                # caller that hands in a SHARED session would be left holding a
+                # poisoned transaction (the test harness does exactly that, and
+                # pins `rollbacks == 1`). It is NOT what protects the outcome
+                # write — that runs in `_resolve_failure`'s own fresh session,
+                # and closing this one rolls it back anyway.
                 await session.rollback()
                 if not _is_version_collision(exc):
                     # Any other constraint is a database defect. Hiding it
